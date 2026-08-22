@@ -6,21 +6,24 @@
  * groups back, so grouping composes with the exit animation instead of
  * fighting it.
  *
- * The rules, from the issue:
- * - One group per label, in the user's chosen order, whether or not it holds
- *   any sessions: an empty group is still the user's structure.
- * - Unlabelled sessions fall into a single default group at the end. A session
- *   pointing at a label that no longer exists counts as unlabelled — the
- *   assignment broadcast can land a beat after the deletion broadcast.
+ * The rules:
+ * - A label earns a heading only by holding sessions. An empty label is still
+ *   the user's structure, but it lives in the label manager, not as a row of
+ *   sidebar chrome the user has to scroll past.
+ * - Unlabelled sessions are not a category. They sit at the top, ungrouped and
+ *   unheaded (`label: null`), exactly where they sat before labels existed. A
+ *   session pointing at a label that no longer exists counts as unlabelled —
+ *   the assignment broadcast can land a beat after the deletion broadcast.
  * - Within a group the incoming order holds (updated_at DESC upstream).
- * - With zero labels defined there are no groups at all: the caller renders
- *   the flat list exactly as it always has.
+ * - If no label holds anything — none defined, or none used — there are no
+ *   groups at all: the caller renders the flat list exactly as it always has.
+ *   That is the whole promise of the feature to someone who ignores it.
  */
 
 import type { Label, SessionMeta } from "~/protocol";
 
 export interface SessionGroup {
-  /** Null for the default group holding unlabelled sessions. */
+  /** Null for the leading run of unlabelled sessions, which renders headerless. */
   label: Label | null;
   sessions: SessionMeta[];
 }
@@ -36,12 +39,13 @@ export function buildGroups(sessions: SessionMeta[], labels: Label[]): SessionGr
     else unlabelled.push(s);
   }
 
-  const groups: SessionGroup[] = labels.map((label) => ({
-    label,
-    sessions: byLabel.get(label.id)!,
-  }));
-  // The default group earns its header only by holding something; an empty
-  // "everything else" bucket is noise, not structure.
+  const used = labels.filter((label) => byLabel.get(label.id)!.length > 0);
+  // Nothing is actually filed: every heading would be empty, so there is no
+  // structure to show. Hand back the flat list rather than a lone null group.
+  if (used.length === 0) return null;
+
+  const groups: SessionGroup[] = [];
   if (unlabelled.length > 0) groups.push({ label: null, sessions: unlabelled });
+  for (const label of used) groups.push({ label, sessions: byLabel.get(label.id)! });
   return groups;
 }
