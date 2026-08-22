@@ -1127,6 +1127,49 @@ func TestClosedSessionRemainsAttachableWithoutHarness(t *testing.T) {
 	}
 }
 
+func TestStoppedActorCallsReturnInsteadOfWaitingOnUnreadInbox(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fa.session().closeStarted = started
+	fa.session().closeRelease = release
+	closeDone := make(chan struct{})
+	go func() {
+		actor.Close("test")
+		close(closeDone)
+	}()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stateDone := make(chan error, 1)
+	go func() {
+		_, err := actor.State(ctx)
+		stateDone <- err
+	}()
+	waitFor(t, func() bool { return len(actor.inbox) == 1 })
+	close(release)
+	<-closeDone
+	if err := <-stateDone; !errors.Is(err, ErrClosed) {
+		t.Fatalf("state on stopped actor err=%v; want ErrClosed", err)
+	}
+}
+
+func TestStoppedActorRejectsLateSubscriber(t *testing.T) {
+	actor, _, _ := newTestActor(t)
+	actor.Close("test")
+
+	sub := actor.Subscribe()
+	select {
+	case _, ok := <-sub.Ch:
+		if ok {
+			t.Fatal("stopped actor delivered an event to a late subscriber")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late subscriber was left open on a stopped actor")
+	}
+}
+
 func TestGetCannotResumeWhileCloseIsInProgress(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "lifecycle.db"))
 	if err != nil {

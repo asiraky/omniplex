@@ -403,6 +403,12 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 	}
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupFinished, map[string]any{}))
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceReleased, map[string]any{}))
+	// Closing changes the durable phase to closed before the actor's exit hook
+	// removes it from the live map. Keep Get behind the lifecycle lock across
+	// that transition so it can never return the dying cleanup actor. For a
+	// purge, keep the deletion in the same critical section so Get cannot
+	// restore a transcript in the gap between close and delete either.
+	m.lifecycle.Lock()
 	a.Close("workspace released")
 	if purge {
 		// Only once the session is actually gone: a failed delete leaves the
@@ -414,6 +420,7 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 			m.purgeAttachments(meta.ID)
 		}
 	}
+	m.lifecycle.Unlock()
 	m.notifyList()
 }
 
