@@ -280,8 +280,17 @@ function SessionList({
                     // fading timestamp alone covers one control; a second one
                     // would sit on top of the title, so with labels in play the
                     // hovered line reserves the pair's full width.
+                    //
+                    // The open label menu is the third case: Radix moves focus
+                    // into a portal, so once the pointer leaves the row neither
+                    // hover nor focus-within holds, yet the trigger stays lit.
+                    // `has` reads it off the trigger's own aria-expanded, which
+                    // — unlike data-state — no tooltip on the same element can
+                    // claim. Deliberately not transitioned: an animated padding
+                    // hands the tag ~150ms sitting on the title, which is the
+                    // bug in miniature. The line yields first, then it fades in.
                     labels.length > 0
-                      ? "pr-16 md:pr-0 md:transition-[padding] md:group-hover:pr-16 md:group-focus-within:pr-16"
+                      ? "pr-16 md:pr-0 md:group-hover:pr-16 md:group-focus-within:pr-16 md:group-has-[[aria-expanded=true]]:pr-16"
                       : "pr-8 md:pr-0",
                   )}
                 >
@@ -350,7 +359,11 @@ function SessionList({
                           aria-label={`Label session ${s.title || "Untitled"}`}
                           // Sits one control-width left of the X and reveals
                           // the same way, so the pair reads as one action rail.
-                          className="absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:opacity-0 md:after:hidden md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100"
+                          // It also stays up while its menu is: keyed off
+                          // aria-expanded, because the tooltip wrapped around
+                          // this same element wins the data-state attribute and
+                          // reports "closed" with the menu plainly open.
+                          className="absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:opacity-0 md:after:hidden md:group-hover:opacity-100 md:focus-visible:opacity-100 md:aria-expanded:opacity-100"
                         >
                           <TagIcon />
                         </Button>
