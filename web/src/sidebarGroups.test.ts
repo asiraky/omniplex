@@ -26,28 +26,36 @@ describe("buildGroups", () => {
     expect(buildGroups([session("a")], [])).toBeNull();
   });
 
-  it("groups by label in the given order, unlabelled last", () => {
+  it("returns null when labels exist but none are used", () => {
+    expect(buildGroups([session("a"), session("b")], [label("l1", 0), label("l2", 1)])).toBeNull();
+  });
+
+  it("puts unlabelled sessions first, headerless, then labels in order", () => {
     const groups = buildGroups(
       [session("s1", "l2"), session("s2"), session("s3", "l1"), session("s4", "l1")],
       [label("l1", 0), label("l2", 1)],
     )!;
-    expect(groups.map((g) => g.label?.id ?? null)).toEqual(["l1", "l2", null]);
-    expect(groups[0].sessions.map((s) => s.id)).toEqual(["s3", "s4"]);
-    expect(groups[1].sessions.map((s) => s.id)).toEqual(["s1"]);
-    expect(groups[2].sessions.map((s) => s.id)).toEqual(["s2"]);
+    expect(groups.map((g) => g.label?.id ?? null)).toEqual([null, "l1", "l2"]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["s2"]);
+    expect(groups[1].sessions.map((s) => s.id)).toEqual(["s3", "s4"]);
+    expect(groups[2].sessions.map((s) => s.id)).toEqual(["s1"]);
   });
 
-  it("keeps an empty label group but drops an empty default group", () => {
-    const groups = buildGroups([session("s1", "l1")], [label("l1", 0), label("l2", 1)])!;
-    expect(groups.map((g) => g.label?.id)).toEqual(["l1", "l2"]);
-    expect(groups[1].sessions).toEqual([]);
+  it("drops labels holding nothing", () => {
+    const groups = buildGroups([session("s1", "l2")], [label("l1", 0), label("l2", 1)])!;
+    expect(groups.map((g) => g.label?.id)).toEqual(["l2"]);
+  });
+
+  it("omits the unlabelled run when every session is filed", () => {
+    const groups = buildGroups([session("s1", "l1")], [label("l1", 0)])!;
+    expect(groups.map((g) => g.label?.id)).toEqual(["l1"]);
   });
 
   it("treats a dangling labelId as unlabelled", () => {
-    const groups = buildGroups([session("s1", "gone")], [label("l1", 0)])!;
-    expect(groups[0].sessions).toEqual([]);
-    expect(groups[1].label).toBeNull();
-    expect(groups[1].sessions.map((s) => s.id)).toEqual(["s1"]);
+    const groups = buildGroups([session("s1", "gone"), session("s2", "l1")], [label("l1", 0)])!;
+    expect(groups[0].label).toBeNull();
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["s1"]);
+    expect(groups[1].sessions.map((s) => s.id)).toEqual(["s2"]);
   });
 
   it("preserves the incoming order inside a group", () => {
