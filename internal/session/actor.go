@@ -364,23 +364,11 @@ func (a *Actor) Attention() string {
 // State returns a snapshot of the projection as of Head. It is produced inside
 // the actor loop so it can never observe a half-applied event.
 func (a *Actor) State(ctx context.Context) (*projection.State, error) {
-	reply := make(chan cmdResult, 1)
-	select {
-	case a.inbox <- command{kind: "state", reply: reply}:
-	case <-a.quit:
-		return nil, errors.New("session closed")
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	v, err := a.call(ctx, command{kind: "state"})
+	if err != nil {
+		return nil, err
 	}
-	select {
-	case r := <-reply:
-		if r.err != nil {
-			return nil, r.err
-		}
-		return r.value.(*projection.State), nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return v.(*projection.State), nil
 }
 
 // Subscribe registers a live listener. Callers must Unsubscribe.
@@ -395,7 +383,14 @@ func (a *Actor) Subscribe() *Subscriber {
 		ComposerChanged: make(chan struct{}, 1),
 	}
 	a.mu.Lock()
-	a.subs[sub.ID] = sub
+	select {
+	case <-a.quit:
+		// shutdown already drained the subscriber map, so registering now
+		// would leave this channel open forever on an actor nobody can drive.
+		close(sub.Ch)
+	default:
+		a.subs[sub.ID] = sub
+	}
 	a.mu.Unlock()
 	return sub
 }
@@ -413,13 +408,24 @@ func (a *Actor) call(ctx context.Context, c command) (any, error) {
 	select {
 	case a.inbox <- c:
 	case <-a.quit:
-		return nil, errors.New("session closed")
+		return nil, ErrClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 	select {
 	case r := <-c.reply:
 		return r.value, r.err
+	case <-a.quit:
+		// The actor may stop after accepting this command but before handling
+		// it (for example when a close command was already queued). Prefer a
+		// reply that made it out during shutdown, otherwise do not strand a
+		// caller on an inbox that nobody reads anymore.
+		select {
+		case r := <-c.reply:
+			return r.value, r.err
+		default:
+			return nil, ErrClosed
+		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
