@@ -30,6 +30,6 @@
     "clean": "rm -f omniplex omni && rm -rf cmd/omniplex/webdist && mkdir -p cmd/omniplex/webdist && touch cmd/omniplex/webdist/.gitkeep"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^10.0.5"
   }
 }
