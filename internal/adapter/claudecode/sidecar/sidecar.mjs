@@ -7,7 +7,7 @@
 //
 // Wire format: JSON-RPC 2.0, one object per line, over stdin/stdout.
 //
-//   host -> here (notifications):  prompt, interrupt
+//   host -> here (notifications):  prompt (text + image paths), interrupt
 //   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands
 //   here -> host (notifications):  message, models, fatal
 //   here -> host (request):        permission  -> {behavior, updatedInput?, message?}
@@ -17,6 +17,7 @@
 import { writeFrame } from "./guard.mjs";
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 const send = writeFrame;
@@ -63,16 +64,44 @@ const config = JSON.parse(process.argv[2] ?? "{}");
 // ---------------------------------------------------------------------------
 const queued = [];
 const waiters = [];
-const pushPrompt = (text) => (waiters.length ? waiters.shift()(text) : queued.push(text));
+const pushPrompt = (turn) => (waiters.length ? waiters.shift()(turn) : queued.push(turn));
 const nextPrompt = () =>
   new Promise((resolve) => (queued.length ? resolve(queued.shift()) : waiters.push(resolve)));
 
+// The host sends image paths, not bytes; the picture becomes a base64 content
+// block here, at the last possible moment. An image that cannot be read becomes
+// a note in its place rather than failing the turn: losing a screenshot is recoverable,
+// losing the question that came with it is not.
+async function imageBlocks(images) {
+  const blocks = [];
+  for (const image of images ?? []) {
+    try {
+      const data = await readFile(image.path);
+      blocks.push({
+        type: "image",
+        source: { type: "base64", media_type: image.mediaType, data: data.toString("base64") },
+      });
+    } catch (e) {
+      // Say so in the message rather than inventing an event: the model is
+      // told an image was meant to be here, and the transcript the host
+      // renders is untouched.
+      blocks.push({ type: "text", text: `[an attached image could not be read: ${e?.message ?? e}]` });
+    }
+  }
+  return blocks;
+}
+
 async function* prompts() {
   while (!shuttingDown) {
-    const text = await nextPrompt();
+    const { text, images } = await nextPrompt();
+    // Images lead: the model is being asked about them, and the question that
+    // follows reads as a caption rather than a preamble. An image-only message
+    // carries no empty text block, which the API rejects.
+    const content = [...(await imageBlocks(images))];
+    if (text || content.length === 0) content.push({ type: "text", text });
     yield {
       type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
+      message: { role: "user", content },
       parent_tool_use_id: null,
     };
   }
@@ -203,7 +232,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
   switch (frame.method) {
     case "prompt":
-      pushPrompt(frame.params.text);
+      pushPrompt({ text: frame.params.text ?? "", images: frame.params.images ?? [] });
       break;
     case "interrupt":
       session.interrupt().catch((e) => notify("fatal", { message: `interrupt failed: ${e?.message ?? e}` }));

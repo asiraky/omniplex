@@ -24,7 +24,9 @@ import type { Item, Turn } from "./protocol";
 // model kept to itself. There is nothing to render and nothing to hide, so it
 // is dropped rather than left to print a blank line.
 function isEmptyMessage(item: Item) {
-  return item.kind === "message" && (item.text ?? "").trim() === "";
+  // A prompt that is nothing but pictures has no text and is not empty: the
+  // images are the message.
+  return item.kind === "message" && (item.text ?? "").trim() === "" && !item.images?.length;
 }
 
 function isAgentText(item: Item) {

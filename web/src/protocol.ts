@@ -37,6 +37,14 @@ export interface ToolContent {
   newText?: string;
 }
 
+/** One image a human attached to a prompt. The bytes are read back from the
+    attachment endpoint, so a transcript replayed on another device shows the
+    picture without it ever having been in the event log. */
+export interface PromptImage {
+  id: string;
+  mediaType: string;
+}
+
 export interface Item {
   id: string;
   kind: "message" | "tool" | "notice";
@@ -48,6 +56,8 @@ export interface Item {
   role?: "user" | "agent";
   contentKind?: "text" | "thought";
   text?: string;
+  /** Images on a user message. */
+  images?: PromptImage[];
   toolKind?: ToolKind;
   title?: string;
   status?: ToolStatus;
@@ -152,6 +162,7 @@ export interface TurnRecovery {
 export interface Turn {
   id: string;
   prompt: string;
+  images?: PromptImage[];
   stopReason?: StopReason;
   error?: string;
   done: boolean;

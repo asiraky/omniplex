@@ -38,6 +38,10 @@ type CreateOptions struct {
 type PromptInput struct {
 	TurnID string
 	Text   string
+	// Images the human attached, already stored on this host. Each carries the
+	// path the harness reads the bytes from; a harness that cannot take images
+	// simply ignores them.
+	Images []proto.PromptImage
 }
 
 // Adapter creates harness sessions.

@@ -228,7 +228,7 @@ export class Client {
   }
 }
 
-function uuid(): string {
+export function uuid(): string {
   // crypto.randomUUID exists only in a secure context. http://localhost counts
   // as one, but http://<host>.ts.net does not — so this is undefined on exactly
   // the origins we tell people to use from a phone. getRandomValues carries no

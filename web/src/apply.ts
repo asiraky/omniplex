@@ -42,6 +42,13 @@ function upsert(state: SessionState, id: string, mut: (it: Item) => void): Item[
 
 // applyEvent returns a new state. Events at or below the applied cursor are
 // discarded, which is what makes at-least-once delivery safe.
+/** Names a session whose first prompt was pictures and no words. Mirrors
+    proto.ImageTitle in Go. */
+function imageTitle(n: number): string {
+  if (n === 0) return "";
+  return n === 1 ? "1 image" : `${n} images`;
+}
+
 export function applyEvent(state: SessionState, ev: Event): SessionState {
   if (ev.seq <= state.seq) return state;
   const s: SessionState = { ...state, seq: ev.seq };
@@ -91,17 +98,19 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         phase: "turn",
         // A recovery prompt is the server talking to itself, so it never
         // names the session.
-        title: s.title || (p.recovery ? "" : p.prompt?.slice(0, 60) || ""),
-        turns: [...s.turns, { id: p.turnId, prompt: p.prompt, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
+        title: s.title || (p.recovery ? "" : p.prompt?.slice(0, 60) || imageTitle(p.images?.length ?? 0)),
+        turns: [...s.turns, { id: p.turnId, prompt: p.prompt, images: p.images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
         // A harness-initiated turn has no prompt — nobody asked anything —
-        // so there is no prompt item to add.
-        items: p.prompt
+        // so there is no prompt item to add. A prompt that is nothing but
+        // pictures still has one.
+        items: p.prompt || p.images?.length
           ? upsert(s, `prompt:${p.turnId}`, (it) => {
               it.kind = "message";
               it.receivedAt ??= ev.timestamp;
               it.role = "user";
               it.contentKind = "text";
               it.text = p.prompt;
+              it.images = p.images;
               it.turnId = p.turnId;
             })
           : s.items,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Client, wsURL, type ConnectionStatus } from "./client";
+import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useSessionPR } from "./useSessionPR";
 import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UserConfig, Workspace } from "./protocol";
@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
+import { isSupportedImage, MAX_IMAGE_BYTES, prepareImage, uploadAttachment, type Attachment } from "./lib/attachments";
 import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "./lib/recentSkills";
 import { loadResume } from "./resume";
 import { cn } from "./lib/utils";
@@ -105,6 +106,11 @@ export function App() {
   // still be there when you come back. Session scope only: no persistence, and
   // the map is pruned as sessions go away (see below).
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Images staged for the next message, per session and for the same reason as
+  // the drafts: switching away and back must not lose what you attached. The
+  // upload starts as soon as a picture is picked, so by send time this is a
+  // list of ids the server already holds.
+  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
   const [composerRevision, setComposerRevision] = useState(0);
   // Where each session's transcript was scrolled, kept up here for the same
   // reason as the drafts: switching sessions unmounts the Transcript, so a
@@ -131,6 +137,73 @@ export function App() {
       setDrafts((d) => (d[id] === text ? d : { ...d, [id]: text })),
     [],
   );
+  const patchAttachment = useCallback((sessionId: string, key: string, patch: Partial<Attachment>) => {
+    setAttachments((all) => {
+      const list = all[sessionId];
+      if (!list?.some((a) => a.key === key)) return all;
+      return { ...all, [sessionId]: list.map((a) => (a.key === key ? { ...a, ...patch } : a)) };
+    });
+  }, []);
+
+  // Picked, dropped, or pasted images. Each is uploaded on its own the moment
+  // it arrives: the composer stays usable, and a slow picture on a slow
+  // connection never blocks typing the question that goes with it.
+  // The in-flight upload behind each staged image, so removing one can stop it.
+  const uploadsInFlight = useRef<Map<string, AbortController>>(new Map());
+
+  const attachImages = useCallback(
+    (files: File[]) => {
+      const sessionId = activeId;
+      if (!sessionId) return;
+      for (const file of files) {
+        if (!isSupportedImage(file)) {
+          toast.error(`${file.name} is not an image omniplex can send`, {
+            description: "PNG, JPEG, GIF and WebP only.",
+          });
+          continue;
+        }
+        // Not `crypto.randomUUID`: that exists only in a secure context, and
+        // the origins a phone reaches this server on are not one.
+        const key = uuid();
+        const staged: Attachment = {
+          key,
+          name: file.name || "pasted image",
+          previewUrl: URL.createObjectURL(file),
+          status: "uploading",
+        };
+        setAttachments((all) => ({ ...all, [sessionId]: [...(all[sessionId] ?? []), staged] }));
+        // Shrunk before it is sent, not after: a phone camera's 4 MB frame is
+        // more picture than any model looks at, and the upload is the slow
+        // part of attaching it.
+        const abort = new AbortController();
+        uploadsInFlight.current.set(key, abort);
+        prepareImage(file)
+          .then((ready) => {
+            if (ready.size > MAX_IMAGE_BYTES) throw new Error("This image is too large to send.");
+            return uploadAttachment(sessionId, ready, abort.signal);
+          })
+          .then((up) => patchAttachment(sessionId, key, { status: "ready", id: up.id }))
+          .catch((e: Error) => {
+            // An abort means the picture was taken back; there is nothing left
+            // to report it to.
+            if (e.name !== "AbortError") patchAttachment(sessionId, key, { status: "error", error: e.message });
+          })
+          .finally(() => uploadsInFlight.current.delete(key));
+      }
+    },
+    [activeId, patchAttachment],
+  );
+
+  const removeAttachment = useCallback((sessionId: string, key: string) => {
+    uploadsInFlight.current.get(key)?.abort();
+    setAttachments((all) => {
+      const list = all[sessionId] ?? [];
+      const going = list.find((a) => a.key === key);
+      if (going) URL.revokeObjectURL(going.previewUrl);
+      return { ...all, [sessionId]: list.filter((a) => a.key !== key) };
+    });
+  }, []);
+
   const isDesktop = useIsDesktop();
   // Whether the last-session key was set at boot. Read once, before anything
   // can write it, because it decides what the very first frame shows. Storage
@@ -465,11 +538,20 @@ export function App() {
   const send = useCallback(
     (text: string) => {
       if (!activeId) return;
-      clientRef.current?.command("prompt", { sessionId: activeId, text }).catch((e) => {
+      const staged = attachments[activeId] ?? [];
+      const imageIds = staged.filter((a) => a.status === "ready").map((a) => a.id!);
+      // Left out entirely when there are none: the overwhelming majority of
+      // prompts carry no picture, and the frame is persisted for retry.
+      const args = { sessionId: activeId, text, ...(imageIds.length ? { imageIds } : {}) };
+      clientRef.current?.command("prompt", args).catch((e) => {
         toast.error("Could not send that prompt", { description: e.message });
       });
+      // Cleared optimistically, like the draft: the message is on its way, and
+      // the transcript is about to show the same pictures back from the server.
+      for (const a of staged) URL.revokeObjectURL(a.previewUrl);
+      setAttachments((all) => (all[activeId]?.length ? { ...all, [activeId]: [] } : all));
     },
-    [activeId],
+    [activeId, attachments],
   );
 
   const loadComposerItems = useCallback(async (): Promise<ComposerItem[]> => {
@@ -790,6 +872,21 @@ export function App() {
       }
       return changed ? next : d;
     });
+    // Staged images go the same way, releasing their preview URLs as they do:
+    // a deleted session must not leak blobs for the life of the tab.
+    setAttachments((all) => {
+      const live = new Set(sessions.map((s) => s.id));
+      const next: Record<string, Attachment[]> = {};
+      let changed = false;
+      for (const [id, list] of Object.entries(all)) {
+        if (live.has(id) || !seenSessions.current.has(id)) next[id] = list;
+        else {
+          for (const a of list) URL.revokeObjectURL(a.previewUrl);
+          changed = true;
+        }
+      }
+      return changed ? next : all;
+    });
   }, [sessions]);
 
   // Nothing measures the composer on its own, so a fixed padding could only
@@ -1028,6 +1125,9 @@ export function App() {
                 busy={state.phase === "turn"}
                 onSend={send}
                 onCancel={cancel}
+                attachments={activeId ? (attachments[activeId] ?? []) : []}
+                onAttachImages={attachImages}
+                onRemoveAttachment={(key) => activeId && removeAttachment(activeId, key)}
                 harnesses={harnesses}
                 harness={state.harness}
                 instance={meta?.providerInstance ?? ""}

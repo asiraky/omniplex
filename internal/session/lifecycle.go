@@ -405,8 +405,13 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceReleased, map[string]any{}))
 	a.Close("workspace released")
 	if purge {
+		// Only once the session is actually gone: a failed delete leaves the
+		// transcript in place, and a transcript whose pictures were thrown away
+		// is worse than one that is simply still there.
 		if err := m.store.DeleteSession(ctx, meta.ID); err != nil {
 			m.logf("delete cleaned session %s: %v", meta.ID, err)
+		} else {
+			m.purgeAttachments(meta.ID)
 		}
 	}
 	m.notifyList()

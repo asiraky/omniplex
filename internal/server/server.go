@@ -18,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
+	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/overlay"
@@ -44,6 +45,9 @@ type Server struct {
 	devProxy   http.Handler
 	allowAny   bool
 	endpoints  *endpoints.Builder
+	// attachments holds images a human added to a prompt. Nil in tests that
+	// never upload one, in which case the endpoints report the feature off.
+	attachments *attachment.Store
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -71,20 +75,24 @@ type Options struct {
 	// AllowAnyOrigin permits cross-origin WebSocket upgrades, which the Vite
 	// dev server needs. Off for release builds serving their own bundle.
 	AllowAnyOrigin bool
+	// Attachments stores images attached to prompts. Nil turns the feature
+	// off: uploads are refused and nothing else changes.
+	Attachments *attachment.Store
 }
 
 func New(o Options) *Server {
 	s := &Server{
-		live:       map[*conn]struct{}{},
-		termLive:   map[*websocket.Conn]string{},
-		id:         uuid.NewString(),
-		mgr:        o.Manager,
-		store:      o.Store,
-		guard:      o.Guard,
-		endpoints:  o.Endpoints,
-		defaultCwd: o.DefaultCwd,
-		webFS:      o.WebFS,
-		allowAny:   o.AllowAnyOrigin,
+		live:        map[*conn]struct{}{},
+		termLive:    map[*websocket.Conn]string{},
+		id:          uuid.NewString(),
+		mgr:         o.Manager,
+		store:       o.Store,
+		guard:       o.Guard,
+		endpoints:   o.Endpoints,
+		defaultCwd:  o.DefaultCwd,
+		webFS:       o.WebFS,
+		allowAny:    o.AllowAnyOrigin,
+		attachments: o.Attachments,
 	}
 	if o.WebFS != nil {
 		// Prepared once: hashing the bundle per request would put a read of
@@ -196,6 +204,13 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs, "files": files})
 	})
+
+	// Images a human attached to a prompt. Uploaded once, referred to by id
+	// everywhere afterwards, and read back here by whatever device is looking
+	// at the transcript — including one that was not in the room when the
+	// picture was sent.
+	mux.HandleFunc("POST /api/sessions/{id}/attachments", s.handleUploadAttachment)
+	mux.HandleFunc("GET /api/sessions/{id}/attachments/{attachmentId}", s.handleGetAttachment)
 
 	mux.HandleFunc("/ws", s.serveWS)
 

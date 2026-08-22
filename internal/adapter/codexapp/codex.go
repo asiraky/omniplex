@@ -285,9 +285,19 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.turnID = in.TurnID
 	s.mu.Unlock()
 
+	// Images lead the input, the way every chat UI orders them: codex reads
+	// each path itself, so nothing is copied or re-encoded here. An
+	// image-only message is legal, and sends no empty text item.
+	input := make([]map[string]any, 0, len(in.Images)+1)
+	for _, img := range in.Images {
+		input = append(input, map[string]any{"type": "localImage", "path": img.Path})
+	}
+	if in.Text != "" || len(input) == 0 {
+		input = append(input, map[string]any{"type": "text", "text": in.Text})
+	}
 	params := map[string]any{
 		"threadId": s.threadID,
-		"input":    []map[string]any{{"type": "text", "text": in.Text}},
+		"input":    input,
 	}
 	// effort and model are both mutable mid-session (SetEffort/SetModel), so
 	// read them together under the lock.

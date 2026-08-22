@@ -5,6 +5,7 @@ package proto
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -176,9 +177,35 @@ type SessionClosedPayload struct {
 	Reason string `json:"reason"`
 }
 
+// PromptImage is one image a human attached to a prompt.
+//
+// The bytes stay in the attachment store: this is the reference a presenter
+// resolves back to a picture through the attachment endpoint, so replaying a
+// long transcript on a phone costs the same as it did before images existed.
+type PromptImage struct {
+	ID        string `json:"id"`
+	MediaType string `json:"mediaType"`
+	// Path is where the bytes are on the host running the harness. It is
+	// deliberately not serialised: it is how the adapter reaches the file, and
+	// nothing a client is told.
+	Path string `json:"-"`
+}
+
+// ImageTitle names a prompt that was nothing but pictures, so a session sent
+// from a phone with one screenshot and no words still reads as something in
+// the sidebar.
+func ImageTitle(n int) string {
+	if n == 1 {
+		return "1 image"
+	}
+	return fmt.Sprintf("%d images", n)
+}
+
 type TurnStartedPayload struct {
 	TurnID string `json:"turnId"`
 	Prompt string `json:"prompt"`
+	// Images the prompt carried, in the order they were attached.
+	Images []PromptImage `json:"images,omitempty"`
 	// Recovery is set only on a turn the server started by itself, to finish
 	// work a restart interrupted. It is absent on every human prompt.
 	Recovery *TurnRecovery `json:"recovery,omitempty"`

@@ -33,10 +33,11 @@ import { RecentSkills } from "~/components/RecentSkills";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
-import type { ComposerItem, Item, PullRequest, SessionState, ToolStatus, Turn } from "~/protocol";
+import type { ComposerItem, Item, PromptImage, PullRequest, SessionState, ToolStatus, Turn } from "~/protocol";
 import { saveResume } from "~/resume";
 import { buildRows, foldLabel, rowTurnID, summarise } from "~/rows";
 import { atBottom, useAutoScroll } from "~/useAutoScroll";
@@ -306,7 +307,34 @@ const COLLAPSED_USER_MESSAGE_MASK = `linear-gradient(to bottom, black calc(100% 
 // an overlay: it needs no knowledge of the bubble's colour, so it works in both
 // themes for free. Expanded state is per-message and never persisted —
 // reopening the session starts collapsed again.
-function UserMessage({ item }: { item: Item }) {
+// The pictures a prompt carried. Read from the attachment endpoint rather than
+// from anything the event carried, so a phone attaching to a session it was not
+// in the room for sees exactly what was sent. Each thumbnail is also a link: a
+// screenshot cropped to a tile is a reminder of what was sent, not a look at it.
+function PromptImages({ sessionId, images }: { sessionId: string; images: PromptImage[] }) {
+  return (
+    <div className="mb-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5">
+      {images.map((image) => (
+        <a
+          key={image.id}
+          href={attachmentUrl(sessionId, image.id)}
+          target="_blank"
+          rel="noreferrer"
+          className="focus-visible:ring-ring rounded-lg outline-none focus-visible:ring-2"
+        >
+          <img
+            src={attachmentUrl(sessionId, image.id)}
+            alt="Attached image"
+            loading="lazy"
+            className="max-h-36 max-w-[9rem] rounded-lg border object-cover"
+          />
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function UserMessage({ item, sessionId }: { item: Item; sessionId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -347,26 +375,31 @@ function UserMessage({ item }: { item: Item }) {
 
   return (
     <div ref={wrapRef} data-msg-id={item.id} className="group fade-in flex flex-col items-end">
-      <div
-        ref={bodyRef}
-        style={
-          clamped
-            ? {
-                maxHeight: `${MAX_COLLAPSED_USER_MESSAGE_LINES}lh`,
-                ...(overflowing && {
-                  WebkitMaskImage: COLLAPSED_USER_MESSAGE_MASK,
-                  maskImage: COLLAPSED_USER_MESSAGE_MASK,
-                }),
-              }
-            : undefined
-        }
-        className={cn(
-          "bg-user-bubble text-user-bubble-foreground max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2 text-[14px] leading-relaxed break-words whitespace-pre-wrap",
-          clamped && "overflow-hidden",
-        )}
-      >
-        {item.text}
-      </div>
+      {item.images && item.images.length > 0 && <PromptImages sessionId={sessionId} images={item.images} />}
+      {/* An image-only message has no bubble to draw: an empty one reads as a
+          message that failed to arrive. */}
+      {(item.text || !item.images?.length) && (
+        <div
+          ref={bodyRef}
+          style={
+            clamped
+              ? {
+                  maxHeight: `${MAX_COLLAPSED_USER_MESSAGE_LINES}lh`,
+                  ...(overflowing && {
+                    WebkitMaskImage: COLLAPSED_USER_MESSAGE_MASK,
+                    maskImage: COLLAPSED_USER_MESSAGE_MASK,
+                  }),
+                }
+              : undefined
+          }
+          className={cn(
+            "bg-user-bubble text-user-bubble-foreground max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2 text-[14px] leading-relaxed break-words whitespace-pre-wrap",
+            clamped && "overflow-hidden",
+          )}
+        >
+          {item.text}
+        </div>
+      )}
       {overflowing && (
         <button
           type="button"
@@ -382,7 +415,17 @@ function UserMessage({ item }: { item: Item }) {
   );
 }
 
-function Message({ item, streaming, recovered }: { item: Item; streaming: boolean; recovered: boolean }) {
+function Message({
+  item,
+  sessionId,
+  streaming,
+  recovered,
+}: {
+  item: Item;
+  sessionId: string;
+  streaming: boolean;
+  recovered: boolean;
+}) {
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
   const text = useSmoothText(item.text ?? "", streaming);
@@ -402,7 +445,7 @@ function Message({ item, streaming, recovered }: { item: Item; streaming: boolea
   }
 
   if (item.role === "user") {
-    return <UserMessage item={item} />;
+    return <UserMessage item={item} sessionId={sessionId} />;
   }
 
   if (item.contentKind === "thought") {
@@ -950,6 +993,7 @@ export function Transcript({
                 ) : (
                   <Message
                     item={row.item}
+                    sessionId={state.sessionId}
                     streaming={state.phase === "turn" && row.item.id === liveAgentId}
                     recovered={!!row.item.turnId && recoveredTurns.has(row.item.turnId)}
                   />

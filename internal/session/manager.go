@@ -56,6 +56,11 @@ type Manager struct {
 	// it.
 	leases sync.Mutex
 
+	// attachments is where a prompt's images are stored, so deleting a
+	// session takes its pictures with it. Nil in tests and in a server built
+	// without the feature.
+	attachments AttachmentPurger
+
 	probeMu sync.Mutex
 	probes  map[string]probeResult
 
@@ -129,6 +134,27 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		m.register(registered{inst: provider.Default(ad.ID(), ad.Meta().Name), ad: ad})
 	}
 	return m
+}
+
+// AttachmentPurger removes the images a session accumulated. Narrow on
+// purpose: the manager has no business knowing anything else about them.
+type AttachmentPurger interface {
+	PurgeSession(sessionID string) error
+}
+
+// SetAttachments tells the manager where prompt images live. A session that is
+// deleted takes them with it; without this they would outlive it on disk.
+func (m *Manager) SetAttachments(p AttachmentPurger) { m.attachments = p }
+
+// purgeAttachments is best effort: a picture left behind must never be the
+// reason a session cannot be deleted.
+func (m *Manager) purgeAttachments(id string) {
+	if m.attachments == nil {
+		return
+	}
+	if err := m.attachments.PurgeSession(id); err != nil {
+		m.logf("purge attachments for %s: %v", id, err)
+	}
 }
 
 // register adds or replaces one instance, preserving order on replacement so a
@@ -1020,6 +1046,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		if err := m.store.DeleteSession(ctx, id); err != nil {
 			return err
 		}
+		m.purgeAttachments(id)
 		m.notifyList()
 		return nil
 	}
@@ -1030,6 +1057,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		if err := m.store.DeleteSession(ctx, id); err != nil {
 			return err
 		}
+		m.purgeAttachments(id)
 		m.notifyList()
 		return nil
 	}
@@ -1143,6 +1171,7 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	if err := m.store.DeleteSession(ctx, id); err != nil {
 		return err
 	}
+	m.purgeAttachments(id)
 	m.notifyList()
 	return nil
 }

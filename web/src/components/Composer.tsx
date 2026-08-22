@@ -1,4 +1,4 @@
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
 import { ContextMeter } from "~/components/ContextMeter";
@@ -7,6 +7,7 @@ import { Button } from "~/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "~/components/ui/command";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "~/components/ui/sheet";
+import { Spinner } from "~/components/ui/spinner";
 import {
   detectComposerTrigger,
   rankComposerItems,
@@ -14,6 +15,8 @@ import {
   submittedComposerAction,
 } from "~/lib/composerItems";
 import { formatContextWindow, pickerInstances, resolveInstance, resolveModel } from "~/lib/models";
+import { cn } from "~/lib/utils";
+import { dragHasFiles, imageFilesFrom, IMAGE_ACCEPT, type Attachment } from "~/lib/attachments";
 import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
@@ -31,6 +34,9 @@ export function Composer({
   busy,
   onSend,
   onCancel,
+  attachments = [],
+  onAttachImages,
+  onRemoveAttachment,
   disabledPlaceholder,
   harnesses = [],
   harness = "",
@@ -57,6 +63,13 @@ export function Composer({
   busy: boolean;
   onSend: (text: string) => void;
   onCancel: () => void;
+  /** Images staged for the next message. Owned by the parent for the same
+      reason the draft is: a session switch unmounts this component. */
+  attachments?: Attachment[];
+  /** Hands picked, dropped, or pasted images to the parent, which uploads
+      them. Anything that is not a file is left to the textarea. */
+  onAttachImages?: (files: File[]) => void;
+  onRemoveAttachment?: (key: string) => void;
   disabledPlaceholder?: string;
   /** Every harness the server reports; the picker reads this session's out. */
   harnesses?: HarnessMeta[];
@@ -99,6 +112,23 @@ export function Composer({
   const [dismissedTrigger, setDismissedTrigger] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Dragging over a child fires dragleave on the parent, so a boolean set from
+  // those two events flickers as the pointer crosses the textarea. Depth counts
+  // enters against leaves instead, and only zero means the drag has gone.
+  const dragDepth = useRef(0);
+  const [dragging, setDragging] = useState(false);
+
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const sendableImages = attachments.filter((a) => a.status === "ready").length;
+
+  const attach = useCallback(
+    (files: File[]) => {
+      if (disabled || files.length === 0) return;
+      onAttachImages?.(files);
+    },
+    [disabled, onAttachImages],
+  );
 
   const items = useMemo<ComposerItem[]>(() => {
     const clientItems: ComposerItem[] = [
@@ -253,7 +283,12 @@ export function Composer({
 
   const send = async () => {
     const t = draft.trim();
-    if (!t || disabled) return;
+    // A message may be nothing but pictures: "what is this?" is often the whole
+    // question, and the picture is the rest of it.
+    if ((!t && sendableImages === 0) || disabled) return;
+    // Sending now would send the message without the image still on its way up,
+    // which is not what attaching it meant.
+    if (uploading) return;
     if (t.startsWith("/") && !catalogueReady) return;
     // Recorded on submit rather than on completion: choosing from the menu is
     // browsing, sending is the use. The token is reported whatever the message
@@ -340,6 +375,14 @@ export function Composer({
         changeDraft(e.target.value);
         setCursor(e.target.selectionStart);
       }}
+      onPaste={(e) => {
+        // A screenshot on the clipboard is the fastest way to attach one, and
+        // the reason the terminal habit transfers. Text pastes are untouched.
+        const files = imageFilesFrom(e.clipboardData);
+        if (files.length === 0) return;
+        e.preventDefault();
+        attach(files);
+      }}
       onFocus={() => setComposerFocused(true)}
       onBlur={() => setComposerFocused(false)}
       onClick={(e) => setCursor(e.currentTarget.selectionStart)}
@@ -380,9 +423,78 @@ export function Composer({
     />
   );
 
+  // Thumbnails of what is going out with the next message. Sized for a thumb:
+  // the remove button is always visible, because there is no hover on a phone.
+  const strip = attachments.length > 0 && (
+    <div className="flex flex-wrap gap-2 px-3 pt-3">
+      {attachments.map((a) => (
+        <div key={a.key} className="relative">
+          <img
+            src={a.previewUrl}
+            alt={a.name}
+            className={cn("size-16 rounded-lg border object-cover", a.status === "error" && "opacity-40")}
+          />
+          {a.status === "uploading" && (
+            <span className="bg-background/60 absolute inset-0 grid place-items-center rounded-lg">
+              <Spinner className="size-5" />
+            </span>
+          )}
+          {a.status === "error" && (
+            <span
+              title={a.error}
+              className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
+            >
+              {a.error ?? "Upload failed"}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => onRemoveAttachment?.(a.key)}
+            aria-label={`Remove ${a.name}`}
+            className="bg-background text-muted-foreground hover:text-foreground absolute -top-2 -right-2 grid size-6 place-items-center rounded-full border shadow-sm"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-3xl px-4 pb-[calc(0.875rem+env(safe-area-inset-bottom))] md:px-5">
-      <div className="bg-card focus-within:border-ring focus-within:ring-ring/50 rounded-2xl border shadow-lg transition-[color,box-shadow] focus-within:ring-[3px]">
+      <div
+        className={cn(
+          "bg-card focus-within:border-ring focus-within:ring-ring/50 relative rounded-2xl border shadow-lg transition-[color,box-shadow] focus-within:ring-[3px]",
+          dragging && "border-primary ring-primary/50 ring-[3px]",
+        )}
+        onDragEnter={(e) => {
+          if (!dragHasFiles(e.dataTransfer)) return;
+          e.preventDefault();
+          dragDepth.current++;
+          setDragging(true);
+        }}
+        onDragOver={(e) => {
+          if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+        }}
+        onDragLeave={() => {
+          if (dragDepth.current > 0) dragDepth.current--;
+          if (dragDepth.current === 0) setDragging(false);
+        }}
+        onDrop={(e) => {
+          if (!dragHasFiles(e.dataTransfer)) return;
+          e.preventDefault();
+          dragDepth.current = 0;
+          setDragging(false);
+          attach(imageFilesFrom(e.dataTransfer));
+        }}
+      >
+        {dragging && (
+          <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
+            <ImageIcon className="size-4" />
+            Drop images to attach
+          </div>
+        )}
+        {strip}
         {isDesktop ? (
           <Popover open={menuOpen}>
             <PopoverAnchor asChild>{textarea}</PopoverAnchor>
@@ -418,6 +530,31 @@ export function Composer({
         )}
 
         <div className="flex items-center gap-1 px-2.5 pb-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={IMAGE_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              attach(Array.from(e.target.files ?? []));
+              // Cleared so picking the same file twice in a row still fires.
+              e.target.value = "";
+            }}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={disabled}
+            onClick={() => fileInputRef.current?.click()}
+            aria-label="Attach images"
+            title="Attach images"
+            className="text-muted-foreground hover:text-foreground size-11 shrink-0 rounded-full md:size-8"
+          >
+            <PlusIcon />
+          </Button>
+
           {usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />}
 
           <span className="flex-1" />
@@ -473,7 +610,7 @@ export function Composer({
           ) : (
             <Button
               size="icon"
-              disabled={disabled || !draft.trim()}
+              disabled={disabled || uploading || (!draft.trim() && sendableImages === 0)}
               onClick={() => void send()}
               aria-label="Send"
               className="ml-1.5 size-11 shrink-0 rounded-full md:ml-2 md:size-8"

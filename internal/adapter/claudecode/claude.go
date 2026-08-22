@@ -356,7 +356,18 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.sawResult = false
 	s.mu.Unlock()
 
-	return s.conn.Notify("prompt", map[string]any{"text": in.Text})
+	params := map[string]any{"text": in.Text}
+	// Paths, not bytes: the sidecar reads the files and base64s them into the
+	// SDK's image blocks, so a 10 MB screenshot never crosses this pipe as
+	// JSON.
+	if len(in.Images) > 0 {
+		images := make([]map[string]any, 0, len(in.Images))
+		for _, img := range in.Images {
+			images = append(images, map[string]any{"path": img.Path, "mediaType": img.MediaType})
+		}
+		params["images"] = images
+	}
+	return s.conn.Notify("prompt", params)
 }
 
 func (s *session) Cancel(ctx context.Context) error {

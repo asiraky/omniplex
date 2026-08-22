@@ -62,6 +62,17 @@ describe("buildRows on a finished turn", () => {
     const rows = buildRows([prompt("go"), msg(""), msg("Answer.")], [turn("turn1")], "idle");
     expect(shape(rows)).toEqual(["message:user", "message:agent"]);
   });
+
+  // "what is this?" is often the picture alone. Such a prompt has no text, and
+  // dropping it as empty would take the images with it.
+  it("keeps a prompt that is nothing but images", () => {
+    const rows = buildRows(
+      [prompt("", { images: [{ id: "i1", mediaType: "image/png" }] }), msg("A walrus.")],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "message:agent"]);
+  });
 });
 
 describe("buildRows on a running turn", () => {

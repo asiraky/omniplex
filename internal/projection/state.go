@@ -99,6 +99,9 @@ type Item struct {
 	Role        string `json:"role,omitempty"`
 	ContentKind string `json:"contentKind,omitempty"` // text | thought
 	Text        string `json:"text,omitempty"`
+	// Images a user message carried. References, not bytes: a presenter reads
+	// each one back from the attachment endpoint.
+	Images []proto.PromptImage `json:"images,omitempty"`
 
 	// tool
 	ToolKind string              `json:"toolKind,omitempty"`
@@ -116,11 +119,12 @@ type Item struct {
 
 // Turn records the lifecycle of one prompt/response cycle.
 type Turn struct {
-	ID         string `json:"id"`
-	Prompt     string `json:"prompt"`
-	StopReason string `json:"stopReason,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Done       bool   `json:"done"`
+	ID         string              `json:"id"`
+	Prompt     string              `json:"prompt"`
+	Images     []proto.PromptImage `json:"images,omitempty"`
+	StopReason string              `json:"stopReason,omitempty"`
+	Error      string              `json:"error,omitempty"`
+	Done       bool                `json:"done"`
 	// Recovery is set when the server started this turn itself to continue
 	// work a restart interrupted.
 	Recovery *proto.TurnRecovery `json:"recovery,omitempty"`
@@ -337,14 +341,17 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.TurnStartedPayload
 		decode(ev.Payload, &p)
 		s.Phase = "turn"
-		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Recovery: p.Recovery, StartedAt: ev.Timestamp})
+		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Images: p.Images, Recovery: p.Recovery, StartedAt: ev.Timestamp})
 		if s.Title == "" {
 			s.Title = truncate(p.Prompt, 60)
+			if s.Title == "" && len(p.Images) > 0 {
+				s.Title = proto.ImageTitle(len(p.Images))
+			}
 		}
 		// The prompt itself is a timeline item so the UI shows what was asked.
 		// A harness-initiated turn has no prompt — nobody asked anything — so
 		// there is no item to add.
-		if p.Prompt != "" {
+		if p.Prompt != "" || len(p.Images) > 0 {
 			s.upsert("prompt:"+p.TurnID, func(it *Item) {
 				it.Kind = ItemMessage
 				if it.ReceivedAt == 0 {
@@ -353,6 +360,7 @@ func (s *State) Apply(ev proto.Event) {
 				it.Role = "user"
 				it.ContentKind = "text"
 				it.Text = p.Prompt
+				it.Images = p.Images
 				it.TurnID = p.TurnID
 			})
 		}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/adapter/codexapp"
+	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
 	"github.com/asiraky/omniplex/internal/endpoints"
@@ -88,6 +89,11 @@ func main() {
 		claudecode.New(*claudePath),
 		codexapp.New(*codexBin),
 	)
+
+	// Images attached to prompts live beside the event log, not inside it, and
+	// go away with the session that collected them.
+	attachments := attachment.New(filepath.Join(filepath.Dir(*dbPath), "attachments"))
+	mgr.SetAttachments(attachments)
 	defer mgr.Shutdown()
 
 	// Provider instances: configured accounts layered over the default
@@ -129,13 +135,14 @@ func main() {
 	access := endpoints.NewBuilder(plan, plan.Port)
 
 	srv := server.New(server.Options{
-		Manager:    mgr,
-		Store:      st,
-		Guard:      guard,
-		Endpoints:  access,
-		DefaultCwd: *cwd,
-		WebFS:      webFS,
-		DevViteURL: devViteURL,
+		Manager:     mgr,
+		Store:       st,
+		Guard:       guard,
+		Endpoints:   access,
+		DefaultCwd:  *cwd,
+		WebFS:       webFS,
+		DevViteURL:  devViteURL,
+		Attachments: attachments,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
 		AllowAnyOrigin: false,

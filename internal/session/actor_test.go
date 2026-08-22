@@ -182,7 +182,7 @@ func TestComposerActionReservesTheTurnBeforeCallingHarness(t *testing.T) {
 	if state.Phase != "turn" || len(state.Turns) == 0 || state.Turns[len(state.Turns)-1].Prompt != "/review focus on races" {
 		t.Fatalf("action did not become a canonical turn: %+v", state)
 	}
-	if _, err := actor.Prompt(ctx, "must wait"); !errors.Is(err, ErrBusy) {
+	if _, err := actor.Prompt(ctx, "must wait", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("concurrent prompt error = %v, want ErrBusy", err)
 	}
 
@@ -705,7 +705,7 @@ func TestDisconnectIsNotCancel(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	sess := fa.session()
 
-	turnID, err := actor.Prompt(context.Background(), "do a thing")
+	turnID, err := actor.Prompt(context.Background(), "do a thing", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +784,7 @@ func TestResumeFinishesInterruptedTurnAndCancelsPendingPermission(t *testing.T) 
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "keep working"); err != nil {
+	if _, err := actor.Prompt(context.Background(), "keep working", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -834,7 +834,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "do the long thing"); err != nil {
+	if _, err := actor.Prompt(context.Background(), "do the long thing", nil); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -909,7 +909,7 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 		t.Fatalf("continue on a fresh session: %v; want ErrNothingToContinue", err)
 	}
 
-	if _, err := actor.Prompt(context.Background(), "start"); err != nil {
+	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -993,7 +993,7 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "long job"); err != nil {
+	if _, err := actor.Prompt(context.Background(), "long job", nil); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1037,7 +1037,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "start"); err != nil {
+	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1122,7 +1122,7 @@ func TestClosedSessionRemainsAttachableWithoutHarness(t *testing.T) {
 	if !state.Closed || state.Phase != "closed" {
 		t.Fatalf("closed transcript state: closed=%v phase=%q", state.Closed, state.Phase)
 	}
-	if _, err := view.Prompt(context.Background(), "must not run"); !errors.Is(err, ErrClosed) {
+	if _, err := view.Prompt(context.Background(), "must not run", nil); !errors.Is(err, ErrClosed) {
 		t.Fatalf("prompt on closed transcript err=%v; want ErrClosed", err)
 	}
 }
@@ -1198,7 +1198,7 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 	})
 
 	// The turn is real: a prompt while it runs is busy, not accepted.
-	if _, err := actor.Prompt(ctx, "hello"); err != ErrBusy {
+	if _, err := actor.Prompt(ctx, "hello", nil); err != ErrBusy {
 		t.Fatalf("prompt during harness-initiated turn: err = %v, want ErrBusy", err)
 	}
 
@@ -1220,7 +1220,7 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 	})
 
 	// And the session is promptable again.
-	if _, err := actor.Prompt(ctx, "hello"); err != nil {
+	if _, err := actor.Prompt(ctx, "hello", nil); err != nil {
 		t.Fatalf("prompt after harness-initiated turn finished: %v", err)
 	}
 }

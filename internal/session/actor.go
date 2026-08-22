@@ -95,6 +95,7 @@ type Actor struct {
 type command struct {
 	kind         string
 	prompt       string
+	images       []proto.PromptImage
 	reqID        string
 	outcome      adapter.PermissionOutcome
 	perm         permAsk
@@ -424,9 +425,10 @@ func (a *Actor) call(ctx context.Context, c command) (any, error) {
 	}
 }
 
-// Prompt starts a turn.
-func (a *Actor) Prompt(ctx context.Context, text string) (string, error) {
-	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text})
+// Prompt starts a turn. Images are already stored on this host; each carries
+// the path the harness reads it from.
+func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage) (string, error) {
+	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text, images: images})
 	if err != nil {
 		return "", err
 	}
@@ -793,14 +795,19 @@ func (a *Actor) handle(c command) (stop bool) {
 		cancelBase()
 
 		// append records the phase change; no SetPhase needed here.
-		a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: c.prompt, Recovery: c.recovery}))
+		a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: c.prompt, Images: c.images, Recovery: c.recovery}))
 		// A recovery prompt is the server talking to itself; naming a session
 		// after it would bury what the human actually asked for.
 		if c.recovery == nil {
-			_ = a.store.SetTitle(ctx, a.ID, truncate(c.prompt, 60))
+			title := truncate(c.prompt, 60)
+			if title == "" && len(c.images) > 0 {
+				// An image-only prompt still deserves a name in the sidebar.
+				title = proto.ImageTitle(len(c.images))
+			}
+			_ = a.store.SetTitle(ctx, a.ID, title)
 		}
 
-		if err := a.sess.Prompt(ctx, adapter.PromptInput{TurnID: turnID, Text: c.prompt}); err != nil {
+		if err := a.sess.Prompt(ctx, adapter.PromptInput{TurnID: turnID, Text: c.prompt, Images: c.images}); err != nil {
 			// turnActive is left for append to clear: a prompt that failed on
 			// the way out may still have reached the harness, and the closing
 			// snapshot is the only way to find out what it did.

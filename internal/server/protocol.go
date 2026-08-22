@@ -112,6 +112,11 @@ type saveProjectArgs struct {
 type promptArgs struct {
 	SessionID string `json:"sessionId"`
 	Text      string `json:"text"`
+	// ImageIDs names images already uploaded to this session, in the order
+	// they were attached. The bytes are not on this path: a prompt frame is
+	// stored for idempotent retry, and inlining a screenshot would put a
+	// megabyte in the command log and on every reconnect that replays it.
+	ImageIDs []string `json:"imageIds,omitempty"`
 }
 
 type sessionArgs struct {

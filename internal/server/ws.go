@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
@@ -392,7 +393,23 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		turnID, err := actor.Prompt(ctx, a.Text)
+		var images []proto.PromptImage
+		if len(a.ImageIDs) > 0 {
+			if c.srv.attachments == nil {
+				return nil, errors.New("this server does not store attachments")
+			}
+			if len(a.ImageIDs) > attachment.MaxPerPrompt {
+				return nil, fmt.Errorf("a message may carry at most %d images", attachment.MaxPerPrompt)
+			}
+			metas, paths, resolveErr := c.srv.attachments.Resolve(a.SessionID, a.ImageIDs)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			for i, m := range metas {
+				images = append(images, proto.PromptImage{ID: m.ID, MediaType: m.MediaType, Path: paths[i]})
+			}
+		}
+		turnID, err := actor.Prompt(ctx, a.Text, images)
 		if err != nil {
 			return nil, err
 		}
