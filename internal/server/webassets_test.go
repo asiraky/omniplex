@@ -179,3 +179,20 @@ func TestMissingAssetIsNotTheDocument(t *testing.T) {
 		t.Fatalf("a missing asset returned %s; a script request must not receive HTML", ct)
 	}
 }
+
+// The manifest only installs if it arrives as JSON. Content sniffing calls it
+// text on a host whose mime table has no .webmanifest entry, and a home-screen
+// install then silently falls back to defaults.
+func TestManifestIsServedAsJSON(t *testing.T) {
+	fsys := testBundle("index-aaaa1111.js", "console.log('app')")
+	fsys["manifest.webmanifest"] = &fstest.MapFile{Data: []byte(`{"name":"Omniplex"}`)}
+	assets, err := newWebAssets(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := serve(t, assets, "/manifest.webmanifest", nil)
+	if got := res.Header.Get("Content-Type"); got != "application/manifest+json" {
+		t.Errorf("Content-Type = %q; want application/manifest+json", got)
+	}
+}

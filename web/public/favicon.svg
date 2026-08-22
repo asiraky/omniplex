@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Omniplex">
+  <!-- The app mark: an indigo tile with a white O. The tile is opaque on
+       purpose: a bare glyph disappears against a tab strip of the same colour
+       in whichever theme it was not drawn for. -->
+  <rect width="32" height="32" rx="7" fill="#505ac8" />
+  <circle cx="16" cy="16" r="8" fill="none" stroke="#ffffff" stroke-width="4" />
+</svg>

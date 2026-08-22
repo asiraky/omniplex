@@ -24,6 +24,7 @@ const pairPage = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
 <meta name="color-scheme" content="dark">
 <title>Pair this device — omniplex</title>
 <style>

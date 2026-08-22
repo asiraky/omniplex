@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
+import { useDocumentTitle } from "./useDocumentTitle";
 import { useSessionPR } from "./useSessionPR";
 import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
@@ -807,6 +808,18 @@ export function App() {
   );
   const pending = state?.pendingPermissions?.[0];
   const elicitation = state?.pendingElicitations?.[0];
+  // The tab is named after whatever is attached, so a phone with several
+  // sessions open in several tabs can tell them apart without switching to
+  // each one.
+  // The list entry, not just the attached state: switching sessions drops
+  // `state` until the snapshot lands, and on a slow connection that would
+  // leave every tab called "Omniplex" for exactly as long as it takes to
+  // reconnect — which is when telling them apart matters most.
+  useDocumentTitle(
+    activeId
+      ? { title: state?.title ?? meta?.title, needsAttention: Boolean(pending || elicitation) }
+      : null,
+  );
   const activeProject = projects.find((p) => p.id === meta?.projectId);
   const workspaceBusy = state ? ["creating","provisioning","cleaning"].includes(state.phase) : false;
   const workspaceFailed = state ? ["provision_failed","cleanup_failed"].includes(state.phase) : false;

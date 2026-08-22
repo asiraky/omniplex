@@ -135,6 +135,14 @@ func (w *webAssets) handler() http.Handler {
 			return
 		}
 
+		// Go's table has no entry for .webmanifest on some systems, and
+		// content sniffing calls it plain text — which browsers refuse to
+		// install as a manifest. Naming it here is cheaper than depending on
+		// the host's mime database.
+		if strings.HasSuffix(p, ".webmanifest") {
+			rw.Header().Set("Content-Type", "application/manifest+json")
+		}
+
 		// Hashed assets are immutable: the name changes with the content, so a
 		// cached copy can never be wrong. Anything else revalidates.
 		if strings.HasPrefix(p, "assets/") {

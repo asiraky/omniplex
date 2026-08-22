@@ -9,7 +9,32 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <meta name="theme-color" content="#09090b" />
+    <!-- One element, deliberately: applyTheme in src/lib/theme.ts rewrites
+         this from the resolved --background, and the theme can be chosen in
+         the app rather than by the system. A media-conditional pair would let
+         the browser keep using the entry matching the *system* scheme after a
+         manual switch had repainted the page the other way. The content below
+         is only what the first paint uses; the script further down corrects it
+         before that paint. -->
+    <meta name="theme-color" content="#121418" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Omniplex drives coding sessions across harnesses, and attaches to them from any device." />
+    <!-- A personal server, not a site. Nothing here should ever be indexed. -->
+    <meta name="robots" content="noindex, nofollow" />
+
+    <!-- The SVG is what any current browser uses; the .ico is only there
+         because browsers ask for /favicon.ico whatever the markup says, and
+         without a file that request falls through to the document. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Added to the home screen on iOS, the app runs without browser chrome
+         and keeps its own name under the icon. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Omniplex" />
     <!-- Stamped with the bundle's content hash when the Go server serves this
          document. It stays "dev" under the Vite dev server, which is how the
          client knows to skip build-mismatch checks during development. -->
@@ -28,6 +53,11 @@
             : window.matchMedia("(prefers-color-scheme: dark)").matches;
           document.documentElement.classList.toggle("dark", dark);
           document.documentElement.style.colorScheme = dark ? "dark" : "light";
+          // The two literals are the --background values of the two themes.
+          // applyTheme takes this over from the real computed value as soon
+          // as the bundle runs; this is only for the frame before that.
+          var chrome = document.querySelector('meta[name="theme-color"]');
+          if (chrome) chrome.setAttribute("content", dark ? "#121418" : "#fcfcfc");
         } catch (e) {
           /* Private-mode storage can throw. The default class stands. */
         }

@@ -7,8 +7,10 @@
 # Dependencies and generated frontend output
 node_modules/
 /web/dist/
-/cmd/omniplex/webdist/assets/
-/cmd/omniplex/webdist/index.html
+# The build output, all of it. Only the placeholder that keeps the embed
+# directory present in a fresh clone is tracked.
+/cmd/omniplex/webdist/*
+!/cmd/omniplex/webdist/.gitkeep
 *.tsbuildinfo
 
 # Worktrees omniplex provisions for its own sessions, which live inside the checkout
