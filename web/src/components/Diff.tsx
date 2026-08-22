@@ -69,8 +69,23 @@ function gutter(n?: number) {
 /**
  * A unified diff, with the gutters and colouring the eye expects. Split view
  * would need horizontal room this panel does not have on a phone.
+ *
+ * Unwrapped, each row is `w-max min-w-full`: the row is as wide as its longest
+ * line, so a long line makes the scroll container actually scroll instead of
+ * spilling out of a container-width box, and the add/delete tint still covers
+ * the row once it is scrolled. Wrapped, rows are held to the container and the
+ * text breaks — including mid-token, which is the only thing that helps with
+ * the minified line that made someone tick the box.
  */
-export function Diff({ patch, className }: { patch: string; className?: string }) {
+export function Diff({
+  patch,
+  wrap = false,
+  className,
+}: {
+  patch: string;
+  wrap?: boolean;
+  className?: string;
+}) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
 
   if (lines.length === 0) {
@@ -83,7 +98,8 @@ export function Diff({ patch, className }: { patch: string; className?: string }
         <div
           key={i}
           className={cn(
-            "flex whitespace-pre",
+            "flex",
+            wrap ? "w-full whitespace-pre-wrap [overflow-wrap:anywhere]" : "w-max min-w-full whitespace-pre",
             line.kind === "add" && "bg-success/10",
             line.kind === "del" && "bg-destructive/10",
             line.kind === "hunk" && "bg-muted/70 text-muted-foreground",
@@ -109,7 +125,7 @@ export function Diff({ patch, className }: { patch: string; className?: string }
               >
                 {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
               </span>
-              <span className="min-w-0 flex-1 pr-3">{line.text || " "}</span>
+              <span className={cn("pr-3", wrap ? "min-w-0 flex-1" : "shrink-0")}>{line.text || " "}</span>
             </>
           )}
         </div>

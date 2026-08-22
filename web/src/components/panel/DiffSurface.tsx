@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Diff } from "~/components/Diff";
 import { IconButton } from "~/components/IconButton";
+import { Checkbox } from "~/components/ui/checkbox";
 import { Spinner } from "~/components/ui/spinner";
+import { useDiffWrap } from "~/lib/diffWrap";
 import { cn } from "~/lib/utils";
 import type { ChangedFile, FileDiff, SessionChanges } from "~/protocol";
 
@@ -40,6 +42,7 @@ function FileRow({
   diff,
   loading,
   error,
+  wrap,
   onToggle,
 }: {
   file: ChangedFile;
@@ -48,6 +51,7 @@ function FileRow({
   diff?: FileDiff;
   loading: boolean;
   error?: string;
+  wrap: boolean;
   onToggle: () => void;
 }) {
   const slash = file.path.lastIndexOf("/");
@@ -90,14 +94,19 @@ function FileRow({
           )}
           {error && <p className="text-destructive px-3 py-2 font-mono text-[11px]">{error}</p>}
           {diff && !loading && !error && (
-            <div className="scroll-thin max-h-[60vh] overflow-auto overscroll-contain">
+            <div
+              className={cn(
+                "scroll-thin max-h-[60vh] overscroll-contain",
+                wrap ? "overflow-y-auto" : "overflow-auto",
+              )}
+            >
               {diff.binary ? (
                 <p className="text-muted-foreground px-3 py-2 text-[12px]">
                   Binary file — nothing to show as text.
                 </p>
               ) : (
                 <>
-                  <Diff patch={diff.patch} />
+                  <Diff patch={diff.patch} wrap={wrap} />
                   {diff.truncated && (
                     <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
                       Diff truncated — open the file in the worktree to see the rest.
@@ -135,6 +144,7 @@ export function DiffSurface({
   reveal?: { path: string; nonce: number } | null;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [wrap, setWrap] = useDiffWrap();
   const [diffs, setDiffs] = useState<Record<string, { diff?: FileDiff; loading: boolean; error?: string }>>({});
 
   // Paths already asked for, so expanding a row twice does not re-read it.
@@ -199,15 +209,19 @@ export function DiffSurface({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-1.5">
-        <span className="text-[12px]">
+        <span className="shrink-0 text-[12px] whitespace-nowrap">
           {files.length} file{files.length === 1 ? "" : "s"} changed
         </span>
-        <span className="text-muted-foreground truncate font-mono text-[10px]">
+        <span className="text-muted-foreground min-w-0 truncate font-mono text-[10px]">
           {changes?.branch ?? "…"}
           {changes?.baseRef && ` vs ${changes.baseRef}`}
         </span>
         <span className="flex-1" />
         {changes && <Counts additions={changes.additions} deletions={changes.deletions} />}
+        <label className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 text-[11px] select-none md:min-h-0">
+          <Checkbox checked={wrap} onCheckedChange={(v) => setWrap(v === true)} className="size-3.5" />
+          Wrap text
+        </label>
         <IconButton label="Re-read the worktree" onClick={onRefresh}>
           <RefreshCwIcon className={cn(loading && "animate-spin")} />
         </IconButton>
@@ -240,6 +254,7 @@ export function DiffSurface({
             diff={diffs[f.path]?.diff}
             loading={!!diffs[f.path]?.loading}
             error={diffs[f.path]?.error}
+            wrap={wrap}
             onToggle={() => toggle(f.path)}
           />
         ))}
