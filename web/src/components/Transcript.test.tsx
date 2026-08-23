@@ -377,3 +377,76 @@ describe("recent skills on an empty transcript", () => {
     expect(screen.queryByText("/work-issue")).toBeNull();
   });
 });
+
+// The bug this guards against: a turn that failed for a reason of its own —
+// an expired login, fixed with /login — was described as a server restart, in
+// the card offering to continue it and in the pill above the continuation.
+// Nothing had restarted, and the reader was sent looking for the wrong fault.
+describe("a turn that ended in an error", () => {
+  function renderState(extra: any) {
+    return render(
+      <Transcript
+        state={{ ...state("working on it"), ...extra }}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+      />,
+    );
+  }
+
+  // The card the reader is offered against the failed turn.
+  function renderCard(error: string) {
+    return renderState({
+      items: [],
+      turns: [{ id: "t1", prompt: "do the thing", done: true, stopReason: "error", error }],
+    });
+  }
+
+  // The pill that stands in for the continuation prompt the server wrote.
+  function renderContinuation(cause?: "restart" | "error") {
+    return renderState({
+      items: [
+        { id: "m2", kind: "message", role: "user", text: "[omniplex] continue", turnId: "t2", receivedAt: 2 },
+      ],
+      turns: [
+        { id: "t1", prompt: "do the thing", done: true, stopReason: "error", error: "boom" },
+        { id: "t2", prompt: "[omniplex] continue", done: true, recovery: { resumeOf: "t1", attempt: 1, cause } },
+      ],
+    });
+  }
+
+  it("quotes the harness's own error instead of blaming a restart", () => {
+    renderCard("Invalid API key · Please run /login");
+
+    expect(screen.queryByText(/server restarted/i)).toBeNull();
+    expect(screen.getByText(/Invalid API key/)).toBeTruthy();
+    expect(screen.getByText(/This turn ended with an error/)).toBeTruthy();
+  });
+
+  it("still names the restart on a turn a resume closed", () => {
+    renderCard("server restarted during turn");
+
+    expect(screen.getByText(/The server restarted and this turn was interrupted/)).toBeTruthy();
+  });
+
+  it("says the turn ended early above a continuation that followed an error", () => {
+    renderContinuation("error");
+
+    expect(screen.getByText(/The turn ended early — the agent was asked/)).toBeTruthy();
+  });
+
+  it("says the server restarted above a continuation that followed one", () => {
+    renderContinuation("restart");
+
+    expect(screen.getByText(/Server restarted — the agent was asked/)).toBeTruthy();
+  });
+
+  it("reads a continuation with no recorded cause as a restart, as older logs are", () => {
+    renderContinuation();
+
+    expect(screen.getByText(/Server restarted — the agent was asked/)).toBeTruthy();
+  });
+});

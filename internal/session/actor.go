@@ -278,7 +278,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	for _, turn := range state.Turns {
 		if !turn.Done {
 			a.enqueueEmission(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-				TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn",
+				TurnID: turn.ID, StopReason: proto.StopError, Error: proto.ErrServerRestarted,
 			}))
 		}
 	}
@@ -596,9 +596,17 @@ func (a *Actor) handle(c command) (stop bool) {
 		if last.Recovery != nil {
 			attempt = last.Recovery.Attempt + 1
 		}
+		// Why the last turn stopped decides what the agent is told: only a
+		// turn a resume closed was actually interrupted by a restart. A turn
+		// that failed on its own — an expired login is the common one — gets
+		// told that instead, rather than a restart that never happened.
+		cause := proto.RecoveryError
+		if last.Error == proto.ErrServerRestarted {
+			cause = proto.RecoveryRestart
+		}
 		c.kind = cmdPrompt
-		c.prompt = recoveryPrompt
-		c.recovery = &proto.TurnRecovery{ResumeOf: last.ID, Attempt: attempt}
+		c.recovery = &proto.TurnRecovery{ResumeOf: last.ID, Attempt: attempt, Cause: cause}
+		c.prompt = continuationPrompt(cause)
 	}
 
 	switch c.kind {

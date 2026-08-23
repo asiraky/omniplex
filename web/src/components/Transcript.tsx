@@ -37,6 +37,7 @@ import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
+import { SERVER_RESTARTED } from "~/protocol";
 import type { ComposerItem, Item, PromptImage, PullRequest, SessionState, ToolStatus, Turn } from "~/protocol";
 import { saveResume } from "~/resume";
 import { buildRows, foldLabel, rowTurnID, summarise } from "~/rows";
@@ -424,21 +425,26 @@ function Message({
   item: Item;
   sessionId: string;
   streaming: boolean;
-  recovered: boolean;
+  /** Set when this message is the prompt that continued an interrupted turn,
+      and says why that turn stopped. Undefined on every human message. */
+  recovered?: "restart" | "error";
 }) {
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
   const text = useSmoothText(item.text ?? "", streaming);
 
-  // The prompt that restarts interrupted work was written by the server, not
+  // The prompt that continues interrupted work was written by the server, not
   // by the person reading this. Showing it as their own message would be a
-  // lie; what they need to know is that a restart happened and the agent was
-  // put back to work.
+  // lie; what they need to know is what stopped the work and that the agent
+  // was put back on it. Naming a restart that never happened is the same lie
+  // in a different place, so the cause decides the wording.
   if (recovered && item.role === "user") {
     return (
       <div className="fade-in flex justify-center">
         <div className="text-muted-foreground rounded-full border px-3 py-1 text-[12px]">
-          Server restarted — the agent was asked to pick the work back up
+          {recovered === "error"
+            ? "The turn ended early — the agent was asked to pick the work back up"
+            : "Server restarted — the agent was asked to pick the work back up"}
         </div>
       </div>
     );
@@ -691,7 +697,10 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
 // work — which is precisely when a human has to decide.
 function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => void }) {
   const [sending, setSending] = useState(false);
-  const restarted = (turn.error ?? "").includes("restarted");
+  // Only a turn a resume closed was interrupted by a restart, and it says so
+  // in those exact words. Every other error is the turn's own — an expired
+  // login, most often — and is quoted below rather than blamed on the server.
+  const restarted = turn.error === SERVER_RESTARTED;
 
   return (
     <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
@@ -704,9 +713,11 @@ function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => v
         <p className="text-destructive mt-1.5 font-mono text-[11px] break-words">{turn.error}</p>
       )}
       <p className="text-muted-foreground mt-1.5 text-[12px]">
-        {turn.recovery
-          ? "Picking it back up automatically did not work."
-          : "The work was left unfinished."}
+        {!turn.recovery
+          ? "The work was left unfinished."
+          : (turn.recovery.cause ?? "restart") === "restart"
+            ? "Picking it back up automatically did not work."
+            : "Continuing it did not work either."}
       </p>
       <Button
         size="sm"
@@ -925,8 +936,15 @@ export function Transcript({
   );
   const lastTurnID = state.turns[state.turns.length - 1]?.id;
 
+  // Turn id -> why the turn it continues stopped. Older logs recorded no
+  // cause, and every recovery in them was a restart.
   const recoveredTurns = useMemo(
-    () => new Set(state.turns.filter((t) => t.recovery).map((t) => t.id)),
+    () =>
+      new Map(
+        state.turns
+          .filter((t) => t.recovery)
+          .map((t) => [t.id, t.recovery!.cause ?? "restart"] as const),
+      ),
     [state.turns],
   );
 
@@ -995,7 +1013,7 @@ export function Transcript({
                     item={row.item}
                     sessionId={state.sessionId}
                     streaming={state.phase === "turn" && row.item.id === liveAgentId}
-                    recovered={!!row.item.turnId && recoveredTurns.has(row.item.turnId)}
+                    recovered={row.item.turnId ? recoveredTurns.get(row.item.turnId) : undefined}
                   />
                 )}
                 {diff && (

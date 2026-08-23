@@ -29,14 +29,34 @@ var ErrNothingToContinue = errors.New("the last turn did not end in an error")
 // forever; after this many tries it is left idle for a human to look at.
 const maxRecoveryAttempts = 3
 
-// recoveryPrompt is deliberately about the state of the world rather than the
-// state of the conversation. The harness repairs its own transcript on resume
-// (an interrupted tool call is closed off before the next request), so what
-// the agent cannot know is which of its side effects actually landed.
-const recoveryPrompt = "[omniplex] The omniplex server restarted and interrupted your previous turn. " +
+// The continuation prompts are deliberately about the state of the world
+// rather than the state of the conversation. The harness repairs its own
+// transcript on resume (an interrupted tool call is closed off before the next
+// request), so what the agent cannot know is which of its side effects
+// actually landed.
+//
+// There are two of them because there are two ways a turn stops, and telling
+// the agent the wrong one is a lie it then repeats to the reader. A restart is
+// the server dying underneath the work. An error is the turn itself failing —
+// most often an expired login, fixed with /login and a click on Continue —
+// with no restart anywhere in the story.
+const restartPrompt = "[omniplex] The omniplex server restarted and interrupted your previous turn. " +
 	"Any tool call that was in flight did not report its result back, so you cannot assume it succeeded or failed. " +
 	"Check the real state of the work first — the files, the diff, whatever you had just run — then continue from where you left off. " +
 	"Do not redo work that is already done, and do not start over."
+
+const errorPrompt = "[omniplex] Your previous turn ended with an error before it finished, and you have been asked to pick it back up. " +
+	"Any tool call that was in flight did not report its result back, so you cannot assume it succeeded or failed. " +
+	"Check the real state of the work first — the files, the diff, whatever you had just run — then continue from where you left off. " +
+	"Do not redo work that is already done, and do not start over."
+
+// continuationPrompt is the prompt that fits the reason the turn stopped.
+func continuationPrompt(cause string) string {
+	if cause == proto.RecoveryError {
+		return errorPrompt
+	}
+	return restartPrompt
+}
 
 // planRecovery decides whether a resumed session should continue by itself,
 // and under which attempt number. It reads the state as of the moment before
@@ -60,7 +80,7 @@ func planRecovery(state *projection.State) *proto.TurnRecovery {
 		if attempt > maxRecoveryAttempts {
 			return nil
 		}
-		return &proto.TurnRecovery{ResumeOf: turn.ID, Attempt: attempt}
+		return &proto.TurnRecovery{ResumeOf: turn.ID, Attempt: attempt, Cause: proto.RecoveryRestart}
 	}
 	return nil
 }
@@ -84,7 +104,7 @@ func (a *Actor) Recover(ctx context.Context) error {
 	if rec == nil {
 		return nil
 	}
-	_, err := a.call(ctx, command{kind: cmdPrompt, prompt: recoveryPrompt, recovery: rec})
+	_, err := a.call(ctx, command{kind: cmdPrompt, prompt: continuationPrompt(rec.Cause), recovery: rec})
 	return err
 }
 

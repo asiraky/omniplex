@@ -211,13 +211,34 @@ type TurnStartedPayload struct {
 	Recovery *TurnRecovery `json:"recovery,omitempty"`
 }
 
-// TurnRecovery describes a turn the server started to continue interrupted
-// work. Attempt counts consecutive recoveries so a session that dies on every
-// resume stops rather than restarting itself forever.
+// TurnRecovery describes a turn started to continue interrupted work. Attempt
+// counts consecutive recoveries so a session that dies on every resume stops
+// rather than restarting itself forever.
 type TurnRecovery struct {
 	ResumeOf string `json:"resumeOf"`
 	Attempt  int    `json:"attempt"`
+	// Cause says why the previous turn stopped, because the two reasons read
+	// very differently to whoever is watching: RecoveryRestart is the server
+	// dying under a turn, RecoveryError is the turn itself failing — an
+	// expired login, a refused request — and nothing restarting at all.
+	// Empty on turns recorded before this field existed; read those as
+	// RecoveryRestart, which is what they all were.
+	Cause string `json:"cause,omitempty"`
 }
+
+const (
+	// RecoveryRestart: the omniplex server went down mid-turn and the harness
+	// process went with it.
+	RecoveryRestart = "restart"
+	// RecoveryError: the turn ended in an error and someone asked for it to be
+	// picked back up.
+	RecoveryError = "error"
+)
+
+// ErrServerRestarted is the error a turn is closed with when a resume finds it
+// still open — the server died under it. The UI matches on this exactly to
+// explain the turn, so it is a constant rather than a phrase typed twice.
+const ErrServerRestarted = "server restarted during turn"
 
 // ChangedFile is one path a change set touched, aggregated over the whole set:
 // a file edited five times appears once.

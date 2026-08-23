@@ -1037,10 +1037,19 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 
 func (s *session) handleResult(msg map[string]json.RawMessage) {
 	var r struct {
-		IsError      bool    `json:"is_error"`
-		StopReason   string  `json:"stop_reason"`
-		TotalCostUSD float64 `json:"total_cost_usd"`
-		Usage        struct {
+		IsError    bool   `json:"is_error"`
+		StopReason string `json:"stop_reason"`
+		Subtype    string `json:"subtype"`
+		// Result carries the harness's own message on a result that failed —
+		// "Invalid API key · Please run /login" is the one that matters most,
+		// because the fix is a slash command the reader has to be told about.
+		Result string `json:"result"`
+		// Errors is the newer, structured channel for the same thing; an
+		// error result carries these instead of Result.
+		Errors         []string `json:"errors"`
+		TerminalReason string   `json:"terminal_reason"`
+		TotalCostUSD   float64  `json:"total_cost_usd"`
+		Usage          struct {
 			InputTokens              int64 `json:"input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
@@ -1106,7 +1115,37 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		return
 	}
 
-	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn, StopReason: stop}))
+	failure := ""
+	if stop == proto.StopError {
+		failure = resultError(r.Result, r.Errors, r.TerminalReason, r.Subtype)
+	}
+	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn, StopReason: stop, Error: failure}))
+}
+
+// resultError picks the most legible explanation a failed result carries.
+// Something is always returned: a turn that ends with an unexplained error is
+// the whole reason a reader reaches for the wrong explanation — a restart that
+// never happened — when the real one was an expired login.
+func resultError(result string, errs []string, terminal, subtype string) string {
+	if m := strings.TrimSpace(result); m != "" {
+		return m
+	}
+	parts := make([]string, 0, len(errs))
+	for _, e := range errs {
+		if e = strings.TrimSpace(e); e != "" {
+			parts = append(parts, e)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "; ")
+	}
+	if terminal = strings.TrimSpace(terminal); terminal != "" {
+		return "the harness stopped: " + strings.ReplaceAll(terminal, "_", " ")
+	}
+	if subtype = strings.TrimSpace(subtype); subtype != "" && subtype != "success" {
+		return "the harness reported " + strings.ReplaceAll(subtype, "_", " ")
+	}
+	return "the harness reported an error without saying what it was"
 }
 
 // ---- helpers ----
