@@ -31,6 +31,7 @@ export function Composer({
   draft,
   onDraftChange,
   disabled,
+  sendDisabled = false,
   busy,
   onSend,
   onCancel,
@@ -60,6 +61,10 @@ export function Composer({
   draft: string;
   onDraftChange: (text: string) => void;
   disabled: boolean;
+  /** Blocks sending without locking the input. The workspace being prepared is
+      not a reason to stop someone writing the first message — only a reason to
+      hold it back until there is something to send it to. */
+  sendDisabled?: boolean;
   busy: boolean;
   onSend: (text: string) => void;
   onCancel: () => void;
@@ -176,6 +181,16 @@ export function Composer({
       });
   }, [loadComposerItems]);
 
+  // The catalogue cannot load while the workspace is still being prepared: the
+  // actor has no session to ask, so the request fails and `catalogueReady`
+  // stays false. Retry on the edge where sending becomes possible, or a slash
+  // command written during the wait would be silently refused afterwards.
+  const wasSendBlocked = useRef(sendDisabled);
+  useEffect(() => {
+    if (wasSendBlocked.current && !sendDisabled) reloadItems();
+    wasSendBlocked.current = sendDisabled;
+  }, [reloadItems, sendDisabled]);
+
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
@@ -261,6 +276,9 @@ export function Composer({
         return;
       }
       if (item.behavior === "adapter-action" && item.action) {
+        // An adapter action is a turn by another name: it goes to the same
+        // session the send button is waiting on, so it waits with it.
+        if (sendDisabled) return;
         const next = replaceComposerTrigger(draft, trigger, "");
         setDismissedTrigger(triggerKey);
         // Keep the literal command in place if the provider rejects it; App
@@ -278,14 +296,14 @@ export function Composer({
       setDismissedTrigger(triggerKey);
       focusAt(next.cursor);
     },
-    [changeDraft, draft, focusAt, onRunClientAction, onRunComposerAction, trigger, triggerKey],
+    [changeDraft, draft, focusAt, onRunClientAction, onRunComposerAction, sendDisabled, trigger, triggerKey],
   );
 
   const send = async () => {
     const t = draft.trim();
     // A message may be nothing but pictures: "what is this?" is often the whole
     // question, and the picture is the rest of it.
-    if ((!t && sendableImages === 0) || disabled) return;
+    if ((!t && sendableImages === 0) || disabled || sendDisabled) return;
     // Sending now would send the message without the image still on its way up,
     // which is not what attaching it meant.
     if (uploading) return;
@@ -365,7 +383,7 @@ export function Composer({
       disabled={disabled}
       aria-label="Message"
       placeholder={
-        disabled
+        disabled || sendDisabled
           ? (disabledPlaceholder ?? "Session closed")
           : isDesktop
             ? "Ask anything…  (↵ to send · ⇧↵ for newline)"
@@ -610,7 +628,7 @@ export function Composer({
           ) : (
             <Button
               size="icon"
-              disabled={disabled || uploading || (!draft.trim() && sendableImages === 0)}
+              disabled={disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0)}
               onClick={() => void send()}
               aria-label="Send"
               className="ml-1.5 size-11 shrink-0 rounded-full md:ml-2 md:size-8"

@@ -821,7 +821,12 @@ export function App() {
       : null,
   );
   const activeProject = projects.find((p) => p.id === meta?.projectId);
-  const workspaceBusy = state ? ["creating","provisioning","cleaning"].includes(state.phase) : false;
+  // Preparing is not closed: the worktree is still being cut, but the user can
+  // already write the first message — only sending waits. Cleaning is different:
+  // the workspace is going away, so there is nothing left to write to.
+  const workspacePreparing = state ? ["creating","provisioning"].includes(state.phase) : false;
+  const workspaceCleaning = state?.phase === "cleaning";
+  const workspaceBusy = workspacePreparing || workspaceCleaning;
   const workspaceFailed = state ? ["provision_failed","cleanup_failed"].includes(state.phase) : false;
 
   useEffect(() => {
@@ -1133,8 +1138,9 @@ export function App() {
                 ref={composerRef}
                 draft={activeId ? (drafts[activeId] ?? "") : ""}
                 onDraftChange={(text) => activeId && setDraft(activeId, text)}
-                disabled={state.closed || workspaceBusy || workspaceFailed}
-                disabledPlaceholder={workspaceBusy ? (state.phase === "cleaning" ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
+                disabled={state.closed || workspaceCleaning || workspaceFailed}
+                sendDisabled={workspacePreparing}
+                disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
                 busy={state.phase === "turn"}
                 onSend={send}
                 onCancel={cancel}

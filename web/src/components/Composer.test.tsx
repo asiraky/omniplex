@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { render } from "~/test/harness";
+import { render, wrap } from "~/test/harness";
 import { Composer } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
 
@@ -25,7 +25,7 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
   const onSend = vi.fn();
   const onAttachImages = vi.fn();
   const onRemoveAttachment = vi.fn();
-  render(
+  const view = render(
     <Composer
       draft=""
       onDraftChange={vi.fn()}
@@ -38,7 +38,24 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
       {...over}
     />,
   );
-  return { onSend, onAttachImages, onRemoveAttachment };
+  const rerender = (next: Partial<React.ComponentProps<typeof Composer>> = {}) =>
+    view.rerender(
+      wrap(
+        <Composer
+          draft=""
+          onDraftChange={vi.fn()}
+          disabled={false}
+          busy={false}
+          onSend={onSend}
+          onCancel={vi.fn()}
+          onAttachImages={onAttachImages}
+          onRemoveAttachment={onRemoveAttachment}
+          {...over}
+          {...next}
+        />,
+      ),
+    );
+  return { onSend, onAttachImages, onRemoveAttachment, rerender };
 }
 
 const fileInput = () => document.querySelector<HTMLInputElement>("input[type=file]")!;
@@ -108,9 +125,64 @@ describe("sending with images", () => {
     expect(sendButton()).toHaveProperty("disabled", true);
   });
 
+  it("stays writable while the workspace is being prepared, but holds the message back", () => {
+    const onDraftChange = vi.fn();
+    const { onSend } = mount({
+      draft: "start on the parser",
+      sendDisabled: true,
+      disabledPlaceholder: "Preparing workspace…",
+      onDraftChange,
+    });
+    expect(box()).toHaveProperty("disabled", false);
+    fireEvent.change(box(), { target: { value: "start on the parser now" } });
+    expect(onDraftChange).toHaveBeenCalledWith("start on the parser now");
+    expect(sendButton()).toHaveProperty("disabled", true);
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("removes a staged image", () => {
     const { onRemoveAttachment } = mount({ attachments: [staged()] });
     fireEvent.click(screen.getByRole("button", { name: "Remove shot.png" }));
     expect(onRemoveAttachment).toHaveBeenCalledWith("k1");
+  });
+});
+
+describe("a workspace that is still being prepared", () => {
+  const compact = {
+    id: "command:compact",
+    name: "compact",
+    description: "Compact the transcript",
+    kind: "command" as const,
+    trigger: "/",
+    insertText: "/compact",
+    origin: "project" as const,
+    behavior: "adapter-action" as const,
+    action: "compact",
+  };
+
+  it("refuses an adapter command picked from the menu while sending is held back", async () => {
+    const onRunComposerAction = vi.fn().mockResolvedValue(undefined);
+    mount({
+      draft: "/comp",
+      sendDisabled: true,
+      loadComposerItems: async () => [compact],
+      onRunComposerAction,
+    });
+    fireEvent.focus(box());
+    fireEvent.click(await screen.findByText("/compact"));
+    expect(onRunComposerAction).not.toHaveBeenCalled();
+  });
+
+  it("reloads the command catalogue once the workspace can take commands", async () => {
+    // The first load fails the way the actor fails before it has a session.
+    const loadComposerItems = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("workspace is not ready"))
+      .mockResolvedValue([compact]);
+    const { rerender } = mount({ draft: "", sendDisabled: true, loadComposerItems });
+    await waitFor(() => expect(loadComposerItems).toHaveBeenCalledTimes(1));
+    await act(async () => rerender({ sendDisabled: false }));
+    await waitFor(() => expect(loadComposerItems).toHaveBeenCalledTimes(2));
   });
 });
