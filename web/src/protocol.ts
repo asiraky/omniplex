@@ -399,11 +399,6 @@ export interface Label {
   color: string;
   /** The user's chosen sidebar order, smallest first. */
   position: number;
-  /**
-   * Start this group folded. Only the default is shared; live collapse state
-   * is device-local, like the sidebar width.
-   */
-  collapsedByDefault?: boolean;
   createdAt: number;
 }
 

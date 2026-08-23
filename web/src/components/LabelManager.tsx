@@ -17,8 +17,6 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Input } from "~/components/ui/input";
-import { Switch } from "~/components/ui/switch";
-import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import type { Label } from "~/protocol";
 
 /**
@@ -105,10 +103,11 @@ function NameField({ label, onSave }: { label: Label; onSave: (l: Label) => void
 }
 
 /**
- * The one place labels are created, renamed, recoloured, reordered, given a
- * collapse default, and deleted. Every change goes straight to the server; the
- * dialog renders whatever the broadcast last said, so two devices editing at
- * once converge instead of diverging.
+ * The one place labels are created, renamed, recoloured, reordered and
+ * deleted, reached from the sidebar's label filter — there is no second label
+ * button in the header. Every change goes straight to the server; the dialog
+ * renders whatever the broadcast last said, so two devices editing at once
+ * converge instead of diverging.
  */
 export function LabelManager({
   labels,
@@ -156,8 +155,8 @@ export function LabelManager({
         <DialogHeader>
           <DialogTitle>Labels</DialogTitle>
           <DialogDescription>
-            Group sessions your way. A label means only what you decide it means; deleting one
-            never deletes a session.
+            File sessions your way. A label shows in the sidebar as its colour, and the filter
+            beside it decides which ones you see. Deleting a label never deletes a session.
           </DialogDescription>
         </DialogHeader>
 
@@ -170,18 +169,6 @@ export function LabelManager({
                 onChange={(color) => onSave({ ...label, color })}
               />
               <NameField label={label} onSave={onSave} />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Switch
-                    aria-label={`Collapse ${label.name} by default`}
-                    checked={!!label.collapsedByDefault}
-                    onCheckedChange={(collapsedByDefault) =>
-                      onSave({ ...label, collapsedByDefault })
-                    }
-                  />
-                </TooltipTrigger>
-                <TooltipContent>Collapse this group by default</TooltipContent>
-              </Tooltip>
               <IconButton
                 label={`Move ${label.name} up`}
                 disabled={i === 0}
@@ -209,7 +196,8 @@ export function LabelManager({
           ))}
           {labels.length === 0 && (
             <p className="text-muted-foreground py-2 text-[13px]">
-              No labels yet. Create one below and the sidebar starts grouping by it.
+              No labels yet. Create one below and it becomes a dot on the sessions you file
+              under it.
             </p>
           )}
         </div>

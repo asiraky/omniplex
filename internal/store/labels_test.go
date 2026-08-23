@@ -32,7 +32,7 @@ func TestLabelsRoundTrip(t *testing.T) {
 	// position is ignored — it would be a value read before the insert, and
 	// two devices can read the same one.
 	for i, l := range []Label{
-		{ID: "a", Name: "Parked", Color: "#8d8d8d", Position: 99, CollapsedByDefault: true, CreatedAt: 1},
+		{ID: "a", Name: "Parked", Color: "#8d8d8d", Position: 99, CreatedAt: 1},
 		{ID: "b", Name: "In progress", Color: "#0091ff", Position: 99, CreatedAt: 2},
 	} {
 		got, err := s.CreateLabel(ctx, l)
@@ -50,10 +50,6 @@ func TestLabelsRoundTrip(t *testing.T) {
 	if len(labels) != 2 || labels[0].ID != "a" || labels[1].ID != "b" {
 		t.Fatalf("wrong order: %+v", labels)
 	}
-	if !labels[0].CollapsedByDefault || labels[1].CollapsedByDefault {
-		t.Fatalf("collapse default lost: %+v", labels)
-	}
-
 	// Save rewrites in place; an unknown id is refused, not upserted.
 	if err := s.SaveLabel(ctx, Label{ID: "a", Name: "Iced", Color: "#46a758", Position: 5}); err != nil {
 		t.Fatalf("save label: %v", err)
@@ -62,7 +58,7 @@ func TestLabelsRoundTrip(t *testing.T) {
 		t.Fatalf("saving an unknown label: got %v, want ErrNotFound", err)
 	}
 	labels, _ = s.ListLabels(ctx)
-	if labels[1].Name != "Iced" || labels[1].Position != 5 || labels[1].CollapsedByDefault {
+	if labels[1].Name != "Iced" || labels[1].Position != 5 {
 		t.Fatalf("save did not stick: %+v", labels[1])
 	}
 }

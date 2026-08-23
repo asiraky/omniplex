@@ -505,8 +505,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		label, err := c.srv.mgr.SaveLabel(ctx, store.Label{
-			ID: a.LabelID, Name: a.Name, Color: a.Color,
-			Position: a.Position, CollapsedByDefault: a.CollapsedByDefault,
+			ID: a.LabelID, Name: a.Name, Color: a.Color, Position: a.Position,
 		})
 		if err != nil {
 			return nil, err
