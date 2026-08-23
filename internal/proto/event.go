@@ -206,8 +206,9 @@ type TurnStartedPayload struct {
 	Prompt string `json:"prompt"`
 	// Images the prompt carried, in the order they were attached.
 	Images []PromptImage `json:"images,omitempty"`
-	// Recovery is set only on a turn the server started by itself, to finish
-	// work a restart interrupted. It is absent on every human prompt.
+	// Recovery is set only on a turn that continues an earlier one — started
+	// by the server after a restart, or by a reader pressing Continue on a
+	// turn that failed. It is absent on every human prompt.
 	Recovery *TurnRecovery `json:"recovery,omitempty"`
 }
 

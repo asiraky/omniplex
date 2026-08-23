@@ -443,10 +443,56 @@ describe("a turn that ended in an error", () => {
 
     expect(screen.getByText(/Server restarted — the agent was asked/)).toBeTruthy();
   });
+});
 
-  it("reads a continuation with no recorded cause as a restart, as older logs are", () => {
-    renderContinuation();
+// Logs written before the cause was recorded still say what stopped the turn,
+// one turn back: a continuation of a turn a resume closed was a restart, and a
+// continuation of anything else was someone pressing the button.
+describe("a continuation recorded before the cause was", () => {
+  function renderLegacy(firstError: string) {
+    return render(
+      <Transcript
+        state={{
+          ...state("working on it"),
+          items: [
+            {
+              id: "m2",
+              kind: "message",
+              role: "user",
+              text: "[omniplex] continue",
+              turnId: "t2",
+              receivedAt: 2,
+            },
+          ],
+          turns: [
+            { id: "t1", prompt: "do the thing", done: true, stopReason: "error", error: firstError },
+            {
+              id: "t2",
+              prompt: "[omniplex] continue",
+              done: true,
+              recovery: { resumeOf: "t1", attempt: 1 },
+            },
+          ],
+        }}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+      />,
+    );
+  }
+
+  it("reads a continuation of a restart-closed turn as a restart", () => {
+    renderLegacy("server restarted during turn");
 
     expect(screen.getByText(/Server restarted — the agent was asked/)).toBeTruthy();
+  });
+
+  it("does not invent a restart behind a turn that failed on its own", () => {
+    renderLegacy("Invalid API key · Please run /login");
+
+    expect(screen.getByText(/The turn ended early — the agent was asked/)).toBeTruthy();
   });
 });

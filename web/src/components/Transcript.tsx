@@ -695,7 +695,17 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
 // work is unfinished and nobody is coming back for it. The server retries by
 // itself after a restart, so this appears when that did not happen or did not
 // work — which is precisely when a human has to decide.
-function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => void }) {
+function InterruptedCard({
+  turn,
+  cause,
+  onContinue,
+}: {
+  turn: Turn;
+  /** Why the turn this one continued stopped, when it continued one at all.
+      Undefined on a turn nobody had continued. */
+  cause?: "restart" | "error";
+  onContinue: () => void;
+}) {
   const [sending, setSending] = useState(false);
   // Only a turn a resume closed was interrupted by a restart, and it says so
   // in those exact words. Every other error is the turn's own — an expired
@@ -713,11 +723,11 @@ function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => v
         <p className="text-destructive mt-1.5 font-mono text-[11px] break-words">{turn.error}</p>
       )}
       <p className="text-muted-foreground mt-1.5 text-[12px]">
-        {!turn.recovery
+        {!cause
           ? "The work was left unfinished."
-          : (turn.recovery.cause ?? "restart") === "restart"
-            ? "Picking it back up automatically did not work."
-            : "Continuing it did not work either."}
+          : cause === "error"
+            ? "Continuing it did not work either."
+            : "Picking it back up automatically did not work."}
       </p>
       <Button
         size="sm"
@@ -936,17 +946,23 @@ export function Transcript({
   );
   const lastTurnID = state.turns[state.turns.length - 1]?.id;
 
-  // Turn id -> why the turn it continues stopped. Older logs recorded no
-  // cause, and every recovery in them was a restart.
-  const recoveredTurns = useMemo(
-    () =>
-      new Map(
-        state.turns
-          .filter((t) => t.recovery)
-          .map((t) => [t.id, t.recovery!.cause ?? "restart"] as const),
-      ),
-    [state.turns],
-  );
+  // Turn id -> why the turn it continues stopped. Logs written before the
+  // cause was recorded still say it, one turn back: only a turn a resume
+  // closed carries the restart error, so anything else was a failure someone
+  // chose to continue.
+  const recoveredTurns = useMemo(() => {
+    const errors = new Map(state.turns.map((t) => [t.id, t.error]));
+    return new Map(
+      state.turns
+        .filter((t) => t.recovery)
+        .map((t) => {
+          const cause =
+            t.recovery!.cause ??
+            (errors.get(t.recovery!.resumeOf) === SERVER_RESTARTED ? "restart" : "error");
+          return [t.id, cause] as const;
+        }),
+    );
+  }, [state.turns]);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1031,7 +1047,13 @@ export function Transcript({
               </div>
             )}
 
-          {interrupted && <InterruptedCard turn={interrupted} onContinue={onContinue} />}
+          {interrupted && (
+            <InterruptedCard
+              turn={interrupted}
+              cause={recoveredTurns.get(interrupted.id)}
+              onContinue={onContinue}
+            />
+          )}
 
           {/* Last, because it is the latest news about the work above it. */}
           {pr?.merged && <MergedCard pr={pr} onFinish={onFinish} />}
