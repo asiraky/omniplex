@@ -354,8 +354,8 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	// server restart. Refuse with the reason the bridge actually gave.
 	select {
 	case <-s.conn.Done():
-		reason, _ := s.exitReason()
-		return errors.New(reason)
+		reason, kind := s.exitReason()
+		return &adapter.FailureError{Kind: kind, Err: errors.New(reason)}
 	default:
 	}
 
@@ -1119,9 +1119,14 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		Result string `json:"result"`
 		// TerminalReason distinguishes a turn that failed talking to the API
 		// from one that failed on its own terms.
-		TerminalReason string  `json:"terminal_reason"`
-		TotalCostUSD   float64 `json:"total_cost_usd"`
-		Usage          struct {
+		TerminalReason string `json:"terminal_reason"`
+		// Errors is where the SDK's error-shaped results carry their
+		// diagnostics: that variant has no result field at all, so a turn that
+		// failed before it could start — an expired login among them — says so
+		// only here.
+		Errors       []string `json:"errors"`
+		TotalCostUSD float64  `json:"total_cost_usd"`
+		Usage        struct {
 			InputTokens              int64 `json:"input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
@@ -1181,7 +1186,7 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	// happened.
 	var failure, failureKind string
 	if stop == proto.StopError {
-		failure, failureKind = resultFailure(r.Result, r.TerminalReason)
+		failure, failureKind = resultFailure(r.Result, strings.Join(r.Errors, "\n"), r.TerminalReason)
 	}
 
 	s.mu.Lock()
@@ -1205,12 +1210,16 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 // resultFailure turns the harness's last word on a failed turn into something
 // worth showing. An authentication failure gets the instruction that fixes it;
 // anything else is passed through as the harness phrased it.
-func resultFailure(result, terminalReason string) (message, failure string) {
-	if msg, ok := loginRequired(result); ok {
-		return msg, proto.FailureAuth
+func resultFailure(result, diagnostics, terminalReason string) (message, failure string) {
+	for _, said := range []string{result, diagnostics} {
+		if msg, ok := loginRequired(said); ok {
+			return msg, proto.FailureAuth
+		}
 	}
-	if text := briefly(result); text != "" {
-		return text, ""
+	for _, said := range []string{result, diagnostics} {
+		if text := briefly(said); text != "" {
+			return text, ""
+		}
 	}
 	if terminalReason != "" {
 		return "the turn failed: " + terminalReason, ""

@@ -6,6 +6,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 
@@ -357,4 +358,28 @@ type Summarizer interface {
 type SummaryResult struct {
 	Text  string
 	Model string
+}
+
+// FailureError is an error that already knows how it should be presented. An
+// adapter that refuses a prompt because the harness needs a login knows that
+// much at the point of refusal; without somewhere to put it, the classification
+// is lost and the turn recorded by the caller looks like any other failure —
+// which is how a sign-in problem came to be offered a "continue" button.
+//
+// Kind is one of the proto.Failure* constants.
+type FailureError struct {
+	Kind string
+	Err  error
+}
+
+func (e *FailureError) Error() string { return e.Err.Error() }
+func (e *FailureError) Unwrap() error { return e.Err }
+
+// FailureOf reports how err wants to be classified, or "" if it has no opinion.
+func FailureOf(err error) string {
+	var fe *FailureError
+	if errors.As(err, &fe) {
+		return fe.Kind
+	}
+	return ""
 }

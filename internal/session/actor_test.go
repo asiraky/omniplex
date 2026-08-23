@@ -102,11 +102,18 @@ type fakeSession struct {
 	closeStarted chan struct{}
 	closeRelease <-chan struct{}
 
-	mu   sync.Mutex
-	mode string
+	mu     sync.Mutex
+	mode   string
+	refuse error
 }
 
 func (s *fakeSession) Prompt(ctx context.Context, in adapter.PromptInput) error {
+	s.mu.Lock()
+	refuse := s.refuse
+	s.mu.Unlock()
+	if refuse != nil {
+		return refuse
+	}
 	s.prompts <- in
 	return nil
 }
@@ -1334,5 +1341,39 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 		if m.ID == actor.ID && m.Phase == "turn" {
 			t.Fatal("the session is still marked mid-turn after the harness died")
 		}
+	}
+}
+
+// An adapter that refuses a prompt because the harness needs a login has
+// already worked out what kind of failure this is. Recording the wording and
+// throwing the classification away leaves the turn indistinguishable from a
+// crash, which is what gets offered a continue button that cannot help.
+func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
+	actor, fa, st := newTestActor(t)
+	ctx := context.Background()
+
+	// Make the session refuse, the way the Claude bridge does once it has
+	// died on a login failure.
+	sess := fa.session()
+	sess.mu.Lock()
+	sess.refuse = &adapter.FailureError{Kind: proto.FailureAuth, Err: errors.New("claude needs you to sign in again")}
+	sess.mu.Unlock()
+
+	if _, err := actor.Prompt(ctx, "do the thing", nil); err == nil {
+		t.Fatal("the refused prompt reported success")
+	}
+
+	waitFor(t, func() bool {
+		state, err := loadState(ctx, st, actor.ID)
+		return err == nil && len(state.Turns) > 0 && state.Turns[len(state.Turns)-1].Done
+	})
+
+	state, err := loadState(ctx, st, actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := state.Turns[len(state.Turns)-1]
+	if last.Failure != proto.FailureAuth {
+		t.Fatalf("failure kind = %q, want %q (error %q)", last.Failure, proto.FailureAuth, last.Error)
 	}
 }

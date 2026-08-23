@@ -124,6 +124,12 @@ func TestPromptRefusesADeadBridge(t *testing.T) {
 	if !strings.Contains(err.Error(), "sign in") {
 		t.Fatalf("refusal does not name the login failure: %q", err)
 	}
+	// The refusal has to carry its classification, not just its wording: the
+	// actor records this error against the turn, and a caller that reads only
+	// the text has nothing to branch on but English.
+	if kind := adapter.FailureOf(err); kind != proto.FailureAuth {
+		t.Fatalf("refusal failure kind = %q, want %q", kind, proto.FailureAuth)
+	}
 }
 
 func waitFor(t *testing.T, cond func() bool) {
@@ -181,13 +187,13 @@ func TestErrorResultCarriesTheHarnessReason(t *testing.T) {
 // A failure the classifier does not recognise is still passed through in the
 // harness's own words rather than swallowed.
 func TestErrorResultWithoutAKnownCauseStillSaysSomething(t *testing.T) {
-	if got, kind := resultFailure("", "api_error"); got != "the turn failed: api_error" || kind != "" {
+	if got, kind := resultFailure("", "", "api_error"); got != "the turn failed: api_error" || kind != "" {
 		t.Fatalf("bare terminal reason = %q (%q)", got, kind)
 	}
-	if got, _ := resultFailure("Credit balance too low", ""); got != "Credit balance too low" {
+	if got, _ := resultFailure("Credit balance too low", "", ""); got != "Credit balance too low" {
 		t.Fatalf("harness wording was not preserved: %q", got)
 	}
-	if got, _ := resultFailure("", ""); got == "" {
+	if got, _ := resultFailure("", "", ""); got == "" {
 		t.Fatal("a failed turn was left with no explanation at all")
 	}
 }
@@ -203,4 +209,37 @@ func rawMessage(t *testing.T, m map[string]any) map[string]json.RawMessage {
 		out[k] = b
 	}
 	return out
+}
+
+// The SDK's error-shaped result has no result field at all — a turn that never
+// got started reports itself through errors[] and a terminal_reason. Reading
+// only result left those turns unclassified, and unclassified is what gets
+// offered a continue button.
+func TestErrorResultReadsTheDiagnosticsArray(t *testing.T) {
+	s, _ := newBridgeSession(t)
+	s.turnID = "turn-5"
+
+	s.handleSDKMessage(rawMessage(t, map[string]any{
+		"type":            "result",
+		"subtype":         "error_during_execution",
+		"is_error":        true,
+		"terminal_reason": "turn_setup_failed",
+		"errors":          []any{"Not logged in · Please run /login"},
+	}))
+
+	for {
+		select {
+		case em := <-s.events:
+			if em.Type != proto.TurnFinished {
+				continue
+			}
+			p := em.Payload.(proto.TurnFinishedPayload)
+			if p.Failure != proto.FailureAuth {
+				t.Fatalf("failure kind = %q, want %q (error %q)", p.Failure, proto.FailureAuth, p.Error)
+			}
+			return
+		case <-time.After(2 * time.Second):
+			t.Fatal("the failed turn never finished")
+		}
+	}
 }

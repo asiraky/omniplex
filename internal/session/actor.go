@@ -788,8 +788,13 @@ func (a *Actor) handle(c command) (stop bool) {
 		})
 		cancel()
 		if err != nil {
+			// The adapter may already know what kind of failure this is —
+			// a harness that needs a login says so when it refuses the
+			// prompt — and dropping that leaves the turn looking generic
+			// enough to be offered a continue button it cannot use.
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+				Failure: adapter.FailureOf(err),
 			}))
 		}
 		c.reply <- cmdResult{value: value, err: err}
@@ -837,8 +842,13 @@ func (a *Actor) handle(c command) (stop bool) {
 			// turnActive is left for append to clear: a prompt that failed on
 			// the way out may still have reached the harness, and the closing
 			// snapshot is the only way to find out what it did.
+			// The adapter may already know what kind of failure this is —
+			// a harness that needs a login says so when it refuses the
+			// prompt — and dropping that leaves the turn looking generic
+			// enough to be offered a continue button it cannot use.
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+				Failure: adapter.FailureOf(err),
 			}))
 			c.reply <- cmdResult{err: err}
 			return false
