@@ -157,7 +157,17 @@ export interface TurnDiff {
 export interface TurnRecovery {
   resumeOf: string;
   attempt: number;
+  /** Why the turn being continued stopped. "restart" is the server dying
+      under it; "error" is the turn failing on its own — an expired login is
+      the usual one — with nothing having restarted. Absent on turns recorded
+      before the field existed; read those as "restart". */
+  cause?: "restart" | "error";
 }
+
+/** The error a turn is closed with when a resume finds it still open, matched
+    exactly (proto.ErrServerRestarted in Go). Anything else in `Turn.error` is
+    the harness's own explanation and belongs on screen verbatim. */
+export const SERVER_RESTARTED = "server restarted during turn";
 
 export interface Turn {
   id: string;
@@ -166,8 +176,8 @@ export interface Turn {
   stopReason?: StopReason;
   error?: string;
   done: boolean;
-  // Present only on a turn the server started itself, to continue work a
-  // restart interrupted.
+  // Present only on a turn that continues an earlier one: after a restart the
+  // server starts it itself, after an error someone asks for it.
   recovery?: TurnRecovery;
   // What the turn changed on disk. Absent until the turn has finished and been
   // measured, and on any turn that changed nothing.

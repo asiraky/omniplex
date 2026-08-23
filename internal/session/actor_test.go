@@ -1267,3 +1267,108 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 		t.Fatalf("prompt after harness-initiated turn finished: %v", err)
 	}
 }
+
+// A turn that failed on its own — an expired login is the everyday case — is
+// not a restart, and continuing it must not tell the agent (or, through the
+// transcript, the reader) that the server went down.
+func TestContinueAfterAFailedTurnDoesNotBlameARestart(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "continue-error.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	fa := &fakeAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr.Shutdown()
+	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return actor.Head() >= 1 })
+
+	if _, err := actor.Prompt(context.Background(), "do the thing", nil); err != nil {
+		t.Fatal(err)
+	}
+	in := <-fa.session().prompts
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: in.TurnID, StopReason: proto.StopError, Error: "Invalid API key · Please run /login",
+	}))
+	waitFor(t, func() bool {
+		s, _ := actor.State(context.Background())
+		return s.Phase == "idle"
+	})
+
+	if _, err := actor.Continue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	again := <-fa.session().prompts
+	if strings.Contains(again.Text, "restarted") {
+		t.Fatalf("continue prompt = %q; want no claim that the server restarted", again.Text)
+	}
+	if !strings.Contains(again.Text, "ended with an error") {
+		t.Fatalf("continue prompt = %q; want it to name the error that stopped the turn", again.Text)
+	}
+	waitFor(t, func() bool {
+		s, _ := actor.State(context.Background())
+		return len(s.Turns) == 2
+	})
+	state, _ := actor.State(context.Background())
+	rec := state.Turns[1].Recovery
+	if rec == nil || rec.Cause != proto.RecoveryError {
+		t.Fatalf("continued turn = %+v; want recovery cause %q", state.Turns[1], proto.RecoveryError)
+	}
+	// The error the harness reported survives into the log, so the card above
+	// the button can say what actually went wrong.
+	if state.Turns[0].Error != "Invalid API key · Please run /login" {
+		t.Fatalf("failed turn error = %q; want the harness's own message", state.Turns[0].Error)
+	}
+}
+
+// The restart path keeps its own wording, and now says so in the event too.
+func TestRestartRecoveryRecordsItsCause(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "restart-cause.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	fa := &fakeAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return actor.Head() >= 1 })
+	if _, err := actor.Prompt(context.Background(), "long job", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-fa.session().prompts
+	waitFor(t, func() bool {
+		s, _ := actor.State(context.Background())
+		return s.Phase == "turn"
+	})
+	id := actor.ID
+	mgr.Shutdown()
+
+	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr2.Shutdown()
+	resumed, err := mgr2.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in := <-fa.session().prompts; !strings.Contains(in.Text, "restarted") {
+		t.Fatalf("recovery prompt = %q; want it to explain the restart", in.Text)
+	}
+	waitFor(t, func() bool {
+		s, _ := resumed.State(context.Background())
+		return len(s.Turns) == 2
+	})
+	state, _ := resumed.State(context.Background())
+	if state.Turns[0].Error != proto.ErrServerRestarted {
+		t.Fatalf("interrupted turn error = %q; want %q", state.Turns[0].Error, proto.ErrServerRestarted)
+	}
+	if rec := state.Turns[1].Recovery; rec == nil || rec.Cause != proto.RecoveryRestart {
+		t.Fatalf("continuation = %+v; want recovery cause %q", state.Turns[1], proto.RecoveryRestart)
+	}
+}

@@ -37,6 +37,7 @@ import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
+import { SERVER_RESTARTED } from "~/protocol";
 import type { ComposerItem, Item, PromptImage, PullRequest, SessionState, ToolStatus, Turn } from "~/protocol";
 import { saveResume } from "~/resume";
 import { buildRows, foldLabel, rowTurnID, summarise } from "~/rows";
@@ -424,21 +425,26 @@ function Message({
   item: Item;
   sessionId: string;
   streaming: boolean;
-  recovered: boolean;
+  /** Set when this message is the prompt that continued an interrupted turn,
+      and says why that turn stopped. Undefined on every human message. */
+  recovered?: "restart" | "error";
 }) {
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
   const text = useSmoothText(item.text ?? "", streaming);
 
-  // The prompt that restarts interrupted work was written by the server, not
+  // The prompt that continues interrupted work was written by the server, not
   // by the person reading this. Showing it as their own message would be a
-  // lie; what they need to know is that a restart happened and the agent was
-  // put back to work.
+  // lie; what they need to know is what stopped the work and that the agent
+  // was put back on it. Naming a restart that never happened is the same lie
+  // in a different place, so the cause decides the wording.
   if (recovered && item.role === "user") {
     return (
       <div className="fade-in flex justify-center">
         <div className="text-muted-foreground rounded-full border px-3 py-1 text-[12px]">
-          Server restarted — the agent was asked to pick the work back up
+          {recovered === "error"
+            ? "The turn ended early — the agent was asked to pick the work back up"
+            : "Server restarted — the agent was asked to pick the work back up"}
         </div>
       </div>
     );
@@ -689,9 +695,22 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
 // work is unfinished and nobody is coming back for it. The server retries by
 // itself after a restart, so this appears when that did not happen or did not
 // work — which is precisely when a human has to decide.
-function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => void }) {
+function InterruptedCard({
+  turn,
+  cause,
+  onContinue,
+}: {
+  turn: Turn;
+  /** Why the turn this one continued stopped, when it continued one at all.
+      Undefined on a turn nobody had continued. */
+  cause?: "restart" | "error";
+  onContinue: () => void;
+}) {
   const [sending, setSending] = useState(false);
-  const restarted = (turn.error ?? "").includes("restarted");
+  // Only a turn a resume closed was interrupted by a restart, and it says so
+  // in those exact words. Every other error is the turn's own — an expired
+  // login, most often — and is quoted below rather than blamed on the server.
+  const restarted = turn.error === SERVER_RESTARTED;
 
   return (
     <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
@@ -704,9 +723,11 @@ function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => v
         <p className="text-destructive mt-1.5 font-mono text-[11px] break-words">{turn.error}</p>
       )}
       <p className="text-muted-foreground mt-1.5 text-[12px]">
-        {turn.recovery
-          ? "Picking it back up automatically did not work."
-          : "The work was left unfinished."}
+        {!cause
+          ? "The work was left unfinished."
+          : cause === "error"
+            ? "Continuing it did not work either."
+            : "Picking it back up automatically did not work."}
       </p>
       <Button
         size="sm"
@@ -925,10 +946,23 @@ export function Transcript({
   );
   const lastTurnID = state.turns[state.turns.length - 1]?.id;
 
-  const recoveredTurns = useMemo(
-    () => new Set(state.turns.filter((t) => t.recovery).map((t) => t.id)),
-    [state.turns],
-  );
+  // Turn id -> why the turn it continues stopped. Logs written before the
+  // cause was recorded still say it, one turn back: only a turn a resume
+  // closed carries the restart error, so anything else was a failure someone
+  // chose to continue.
+  const recoveredTurns = useMemo(() => {
+    const errors = new Map(state.turns.map((t) => [t.id, t.error]));
+    return new Map(
+      state.turns
+        .filter((t) => t.recovery)
+        .map((t) => {
+          const cause =
+            t.recovery!.cause ??
+            (errors.get(t.recovery!.resumeOf) === SERVER_RESTARTED ? "restart" : "error");
+          return [t.id, cause] as const;
+        }),
+    );
+  }, [state.turns]);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -995,7 +1029,7 @@ export function Transcript({
                     item={row.item}
                     sessionId={state.sessionId}
                     streaming={state.phase === "turn" && row.item.id === liveAgentId}
-                    recovered={!!row.item.turnId && recoveredTurns.has(row.item.turnId)}
+                    recovered={row.item.turnId ? recoveredTurns.get(row.item.turnId) : undefined}
                   />
                 )}
                 {diff && (
@@ -1013,7 +1047,13 @@ export function Transcript({
               </div>
             )}
 
-          {interrupted && <InterruptedCard turn={interrupted} onContinue={onContinue} />}
+          {interrupted && (
+            <InterruptedCard
+              turn={interrupted}
+              cause={recoveredTurns.get(interrupted.id)}
+              onContinue={onContinue}
+            />
+          )}
 
           {/* Last, because it is the latest news about the work above it. */}
           {pr?.merged && <MergedCard pr={pr} onFinish={onFinish} />}
