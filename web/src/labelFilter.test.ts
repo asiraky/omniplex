@@ -29,6 +29,13 @@ describe("visibleSessions", () => {
     expect(visibleSessions(sessions, labels, new Set(["deleted-label"]))).toBe(sessions);
   });
 
+  it("filters by nothing once the last label is deleted", () => {
+    // Deleting the last label unlabels every session. A "No label" switched
+    // off beforehand would empty the sidebar, and the menu no longer carries
+    // the checkbox to switch it back on.
+    expect(visibleSessions(sessions, [], new Set([UNLABELLED, "l1"]))).toBe(sessions);
+  });
+
   it("can hide everything, which the sidebar renders as its own empty state", () => {
     expect(visibleSessions(sessions, labels, new Set(["l1", "l2", UNLABELLED]))).toEqual([]);
   });

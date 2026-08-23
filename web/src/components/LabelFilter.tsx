@@ -41,8 +41,9 @@ export function LabelFilter({
 }) {
   // Only what is both hidden and still real counts as filtering: a hidden id
   // left behind by a deleted label hides nothing, so it must not light the
-  // trigger up either.
-  const live = [UNLABELLED, ...labels.map((l) => l.id)];
+  // trigger up either. With no labels left there is nothing to filter by at
+  // all — including "No label", whose checkbox is not in the menu either.
+  const live = labels.length === 0 ? [] : [UNLABELLED, ...labels.map((l) => l.id)];
   const offCount = live.filter((key) => hidden.has(key)).length;
   const filtering = offCount > 0;
   const name = filtering ? `Filter by label — ${offCount} hidden` : "Filter by label";

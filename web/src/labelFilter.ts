@@ -18,7 +18,10 @@
  *   beat after the deletion broadcast.
  * - Hidden ids for labels that no longer exist are ignored, so deleting a
  *   hidden label cannot leave sessions stranded behind a checkbox that is no
- *   longer in the menu.
+ *   longer in the menu. With no labels left at all that includes `UNLABELLED`:
+ *   deleting the last label unlabels every session, and a filter switched off
+ *   before that would otherwise empty the sidebar with no checkbox left in the
+ *   menu to switch back on.
  */
 
 import type { Label, SessionMeta } from "~/protocol";
@@ -38,7 +41,7 @@ export function visibleSessions(
   labels: Label[],
   hidden: Set<string>,
 ): SessionMeta[] {
-  if (hidden.size === 0) return sessions;
+  if (hidden.size === 0 || labels.length === 0) return sessions;
   const live = new Set<string>([UNLABELLED, ...labels.map((l) => l.id)]);
   const off = new Set([...hidden].filter((id) => live.has(id)));
   if (off.size === 0) return sessions;
