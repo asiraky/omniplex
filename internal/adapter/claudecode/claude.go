@@ -324,6 +324,12 @@ type session struct {
 	sawResult bool
 	model     string
 	effort    string
+	// fatal is the last thing the bridge said before it died. The SDK reports
+	// a harness that refuses to start — an expired login above all — by
+	// throwing, and that throw is the only description of what went wrong
+	// anyone will ever get. Keeping it here is what lets the turn that dies
+	// say why instead of "the process is gone".
+	fatal string
 
 	// usage carries both cost accounting and window occupancy; it is kept on
 	// the session and re-emitted whole so a result (accounting + fallback
@@ -341,6 +347,18 @@ type session struct {
 func (s *session) Events() <-chan proto.Emission { return s.events }
 
 func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
+	// A bridge that has already died cannot be prompted, and pretending
+	// otherwise is how a login failure turned into a mystery: the turn opened,
+	// the write failed on a broken pipe (or the actor had already torn the
+	// session down), and every screen downstream fell back to describing a
+	// server restart. Refuse with the reason the bridge actually gave.
+	select {
+	case <-s.conn.Done():
+		reason, _ := s.exitReason()
+		return errors.New(reason)
+	default:
+	}
+
 	s.mu.Lock()
 	// The actor believed the session was idle when it accepted this prompt,
 	// but the harness may have started work by itself in the meantime — the
@@ -442,11 +460,62 @@ func (s *session) watchExit() {
 	s.mu.Unlock()
 
 	if turn != "" && !saw {
+		reason, kind := s.exitReason()
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: turn, StopReason: proto.StopError, Error: "claude bridge exited",
+			TurnID: turn, StopReason: proto.StopError, Error: reason, Failure: kind,
 		}))
 	}
 	close(s.events)
+}
+
+// exitReason explains a bridge that is no longer there, in the terms the
+// person reading it can act on. The common case by far is an account that
+// needs to log in again: Claude Code exits immediately, the SDK throws, and
+// without this the only trace is a line in the server log.
+func (s *session) exitReason() (message, failure string) {
+	s.mu.Lock()
+	fatal := s.fatal
+	s.mu.Unlock()
+
+	if msg, ok := loginRequired(fatal); ok {
+		return msg, proto.FailureAuth
+	}
+	if fatal != "" {
+		return "claude exited: " + briefly(fatal), ""
+	}
+	return "claude bridge exited", ""
+}
+
+// authNeedles are what an unauthenticated Claude Code says on its way out. The
+// wording moves between releases, so this matches the several shapes it has
+// taken rather than one exact string.
+var authNeedles = []string{
+	"/login",
+	"not logged in",
+	"authentication_failed",
+	"invalid api key",
+	"authentication_error",
+	"authentication failed",
+	"oauth token has expired",
+	"oauth token is invalid",
+	"please run claude login",
+	"unauthorized",
+	"status 401",
+	"http 401",
+}
+
+// loginRequired reports whether a bridge failure was an authentication
+// failure, and returns the message to show if so. The message names the fix,
+// because "log in" is something only the human at the keyboard can do.
+func loginRequired(fatal string) (string, bool) {
+	low := strings.ToLower(fatal)
+	for _, needle := range authNeedles {
+		if strings.Contains(low, needle) {
+			return "claude needs you to sign in again: run `claude` in a terminal and use /login, " +
+				"or give this provider instance a valid CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY", true
+		}
+	}
+	return "", false
 }
 
 func (s *session) drainStderr(r io.ReadCloser) {
@@ -674,8 +743,12 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(params, &p)
+		// "session ended" is the bridge finishing normally, not a failure.
 		if p.Message != "session ended" {
 			s.host.Logf("claude bridge fatal: %s", p.Message)
+			s.mu.Lock()
+			s.fatal = p.Message
+			s.mu.Unlock()
 		}
 	}
 }
@@ -1037,10 +1110,18 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 
 func (s *session) handleResult(msg map[string]json.RawMessage) {
 	var r struct {
-		IsError      bool    `json:"is_error"`
-		StopReason   string  `json:"stop_reason"`
-		TotalCostUSD float64 `json:"total_cost_usd"`
-		Usage        struct {
+		IsError    bool   `json:"is_error"`
+		StopReason string `json:"stop_reason"`
+		// Result is the harness's own last word on the turn. On a failure it
+		// is the whole explanation — "Not logged in · Please run /login" is a
+		// result, not a crash — and dropping it left the turn saying only that
+		// something went wrong.
+		Result string `json:"result"`
+		// TerminalReason distinguishes a turn that failed talking to the API
+		// from one that failed on its own terms.
+		TerminalReason string  `json:"terminal_reason"`
+		TotalCostUSD   float64 `json:"total_cost_usd"`
+		Usage          struct {
 			InputTokens              int64 `json:"input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
@@ -1093,6 +1174,16 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		stop = proto.StopEndTurn
 	}
 
+	// A failed turn must say why. This is the path a login failure actually
+	// takes — the harness does not crash, it answers with an error result —
+	// and an error with no message left the only recourse a "continue where
+	// it left off" button, whose prompt announces a server restart that never
+	// happened.
+	var failure, failureKind string
+	if stop == proto.StopError {
+		failure, failureKind = resultFailure(r.Result, r.TerminalReason)
+	}
+
 	s.mu.Lock()
 	turn := s.turnID
 	s.sawResult = true
@@ -1106,7 +1197,25 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		return
 	}
 
-	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn, StopReason: stop}))
+	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind,
+	}))
+}
+
+// resultFailure turns the harness's last word on a failed turn into something
+// worth showing. An authentication failure gets the instruction that fixes it;
+// anything else is passed through as the harness phrased it.
+func resultFailure(result, terminalReason string) (message, failure string) {
+	if msg, ok := loginRequired(result); ok {
+		return msg, proto.FailureAuth
+	}
+	if text := briefly(result); text != "" {
+		return text, ""
+	}
+	if terminalReason != "" {
+		return "the turn failed: " + terminalReason, ""
+	}
+	return "the turn failed and the harness did not say why", ""
 }
 
 // ---- helpers ----
@@ -1185,6 +1294,19 @@ func toolTitle(name string, input json.RawMessage) string {
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i] + " …"
+	}
+	return s
+}
+
+// briefly reduces a thrown stack to something a one-line error can carry: the
+// message, without the frames under it.
+func briefly(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > 300 {
+		s = s[:300] + "…"
 	}
 	return s
 }

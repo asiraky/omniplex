@@ -424,21 +424,23 @@ function Message({
   item: Item;
   sessionId: string;
   streaming: boolean;
-  recovered: boolean;
+  recovered?: "restart" | "continue";
 }) {
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
   const text = useSmoothText(item.text ?? "", streaming);
 
-  // The prompt that restarts interrupted work was written by the server, not
-  // by the person reading this. Showing it as their own message would be a
-  // lie; what they need to know is that a restart happened and the agent was
-  // put back to work.
+  // The prompt that picks interrupted work back up was written by the server,
+  // not by the person reading this. Showing it as their own message would be a
+  // lie; so would saying the server restarted when it did not — the same
+  // prompt goes out when a human continues a turn that simply failed.
   if (recovered && item.role === "user") {
     return (
       <div className="fade-in flex justify-center">
         <div className="text-muted-foreground rounded-full border px-3 py-1 text-[12px]">
-          Server restarted — the agent was asked to pick the work back up
+          {recovered === "restart"
+            ? "Server restarted — the agent was asked to pick the work back up"
+            : "Asked the agent to pick the work back up"}
         </div>
       </div>
     );
@@ -691,7 +693,29 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
 // work — which is precisely when a human has to decide.
 function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => void }) {
   const [sending, setSending] = useState(false);
-  const restarted = (turn.error ?? "").includes("restarted");
+  const error = turn.error ?? "";
+  // The server says what kind of failure this was; reading the message for it
+  // is how every death — a harness that exited, an account that needs to log
+  // in again — came to be told as a story about a restart.
+  const restarted = turn.failure === "restart";
+  // A turn that died for want of a login is not an interruption, and
+  // continuing it cannot work: the next attempt fails the same way. What it
+  // needs is the one instruction that fixes it.
+  const needsLogin = turn.failure === "auth";
+
+  if (needsLogin) {
+    return (
+      <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
+        <p className="text-[13px]">Claude is not signed in, so this turn could not run.</p>
+        <p className="text-muted-foreground mt-1.5 text-[12px]">
+          Run <span className="font-mono">claude</span> in a terminal and use{" "}
+          <span className="font-mono">/login</span>, or give this provider instance a valid{" "}
+          <span className="font-mono">CLAUDE_CODE_OAUTH_TOKEN</span> or{" "}
+          <span className="font-mono">ANTHROPIC_API_KEY</span>. Then send the prompt again.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
@@ -700,13 +724,15 @@ function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => v
           ? "The server restarted and this turn was interrupted before it finished."
           : "This turn ended with an error before it finished."}
       </p>
-      {turn.error && !restarted && (
-        <p className="text-destructive mt-1.5 font-mono text-[11px] break-words">{turn.error}</p>
+      {error && !restarted && (
+        <p className="text-destructive mt-1.5 font-mono text-[11px] break-words">{error}</p>
       )}
       <p className="text-muted-foreground mt-1.5 text-[12px]">
-        {turn.recovery
-          ? "Picking it back up automatically did not work."
-          : "The work was left unfinished."}
+        {!turn.recovery
+          ? "The work was left unfinished."
+          : turn.recovery.cause === "continue"
+            ? "Continuing it did not work either."
+            : "Picking it back up automatically did not work."}
       </p>
       <Button
         size="sm"
@@ -925,8 +951,16 @@ export function Transcript({
   );
   const lastTurnID = state.turns[state.turns.length - 1]?.id;
 
+  // Keyed by cause, not merely by "this was recovered": the note the reader
+  // gets is a claim about what happened to their work, and only a restart is
+  // allowed to claim one.
   const recoveredTurns = useMemo(
-    () => new Set(state.turns.filter((t) => t.recovery).map((t) => t.id)),
+    () =>
+      new Map(
+        state.turns
+          .filter((t) => t.recovery)
+          .map((t) => [t.id, t.recovery!.cause ?? "restart"] as const),
+      ),
     [state.turns],
   );
 
@@ -995,7 +1029,9 @@ export function Transcript({
                     item={row.item}
                     sessionId={state.sessionId}
                     streaming={state.phase === "turn" && row.item.id === liveAgentId}
-                    recovered={!!row.item.turnId && recoveredTurns.has(row.item.turnId)}
+                    recovered={
+                      (row.item.turnId && recoveredTurns.get(row.item.turnId)) || undefined
+                    }
                   />
                 )}
                 {diff && (

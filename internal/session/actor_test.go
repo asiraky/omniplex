@@ -957,8 +957,13 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := <-fa.session().prompts
-	if !strings.Contains(in.Text, "restarted") {
-		t.Fatalf("continue prompt = %q; want the same continuation the server writes", in.Text)
+	// A human continuing a failed turn is not a restart, and must not be
+	// described as one — to the agent or on the screen.
+	if strings.Contains(in.Text, "restarted") {
+		t.Fatalf("continue prompt claims a restart: %q", in.Text)
+	}
+	if !strings.Contains(in.Text, "ended in an error") {
+		t.Fatalf("continue prompt = %q; want it to say the turn failed", in.Text)
 	}
 	waitFor(t, func() bool {
 		s, _ := a.State(context.Background())
@@ -976,6 +981,9 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 	}
 	if started.Recovery.ResumeOf != last.ID {
 		t.Fatalf("continued turn resumes %q; want %q", started.Recovery.ResumeOf, last.ID)
+	}
+	if started.Recovery.Cause != proto.RecoveryContinue {
+		t.Fatalf("continued turn cause = %q; want %q", started.Recovery.Cause, proto.RecoveryContinue)
 	}
 }
 
@@ -1021,6 +1029,12 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 		s, _ := resumed.State(context.Background())
 		return len(s.Turns) == 2 && s.Turns[1].Recovery != nil
 	})
+	// The screen distinguishes a restart from every other reason a turn is
+	// picked back up, so the log has to.
+	final, _ := resumed.State(context.Background())
+	if final.Turns[1].Recovery.Cause != proto.RecoveryRestart {
+		t.Fatalf("recovery cause = %q; want %q", final.Turns[1].Recovery.Cause, proto.RecoveryRestart)
+	}
 }
 
 func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
@@ -1265,5 +1279,60 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 	// And the session is promptable again.
 	if _, err := actor.Prompt(ctx, "hello", nil); err != nil {
 		t.Fatalf("prompt after harness-initiated turn finished: %v", err)
+	}
+}
+
+// A harness that dies mid-turn used to leave the turn open in the log. The
+// only other thing that leaves a turn open is a server restart, so every
+// screen downstream — and the automatic recovery that follows one — described
+// the death as a restart and offered to resume work that no restart had
+// interrupted. The most common cause by far is an expired login, where the
+// harness exits within a second of being asked to work.
+func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
+	actor, fa, st := newTestActor(t)
+	ctx := context.Background()
+
+	turnID, err := actor.Prompt(ctx, "do the thing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-fa.session().prompts
+
+	// The harness dies without ever reporting a result: its event stream ends.
+	_ = fa.session().Close()
+
+	waitFor(t, func() bool {
+		state, err := loadState(ctx, st, actor.ID)
+		return err == nil && len(state.Turns) > 0 && state.Turns[len(state.Turns)-1].Done
+	})
+
+	state, err := loadState(ctx, st, actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := state.Turns[len(state.Turns)-1]
+	if last.ID != turnID {
+		t.Fatalf("closed turn = %s, want %s", last.ID, turnID)
+	}
+	if last.StopReason != proto.StopError {
+		t.Fatalf("stop reason = %q, want error", last.StopReason)
+	}
+	if strings.Contains(last.Error, "restart") {
+		t.Fatalf("a harness death was described as a restart: %q", last.Error)
+	}
+	if last.Error == "" {
+		t.Fatal("the turn was closed without saying why")
+	}
+
+	// The session row must not claim work is still in flight either; that is
+	// what makes the next start treat it as an interrupted turn and resume it.
+	metas, err := st.ListSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range metas {
+		if m.ID == actor.ID && m.Phase == "turn" {
+			t.Fatal("the session is still marked mid-turn after the harness died")
+		}
 	}
 }

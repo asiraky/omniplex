@@ -128,7 +128,14 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         phase: match ? "idle" : s.phase,
         turns: s.turns.map((t) =>
           t.id === p.turnId
-            ? { ...t, done: true, stopReason: p.stopReason, error: p.error, finishedAt: ev.timestamp }
+            ? {
+                ...t,
+                done: true,
+                stopReason: p.stopReason,
+                error: p.error,
+                failure: p.failure,
+                finishedAt: ev.timestamp,
+              }
             : t,
         ),
         // Any tool of this turn left mid-flight is no longer running; tools

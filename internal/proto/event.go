@@ -206,18 +206,31 @@ type TurnStartedPayload struct {
 	Prompt string `json:"prompt"`
 	// Images the prompt carried, in the order they were attached.
 	Images []PromptImage `json:"images,omitempty"`
-	// Recovery is set only on a turn the server started by itself, to finish
-	// work a restart interrupted. It is absent on every human prompt.
+	// Recovery is set only on a turn that continues work an earlier turn left
+	// unfinished — after a restart, or because a human asked. It is absent on
+	// every ordinary prompt.
 	Recovery *TurnRecovery `json:"recovery,omitempty"`
 }
 
-// TurnRecovery describes a turn the server started to continue interrupted
-// work. Attempt counts consecutive recoveries so a session that dies on every
-// resume stops rather than restarting itself forever.
+// TurnRecovery describes a turn started to continue work an earlier turn did
+// not finish. Attempt counts consecutive recoveries so a session that dies on
+// every resume stops rather than restarting itself forever.
 type TurnRecovery struct {
 	ResumeOf string `json:"resumeOf"`
 	Attempt  int    `json:"attempt"`
+	// Cause says what left the earlier turn unfinished. A restart is the
+	// server's own doing and worth announcing; a turn that failed on its own
+	// is not, and saying "the server restarted" about one is simply untrue.
+	Cause string `json:"cause,omitempty"`
 }
+
+// Causes for TurnRecovery.
+const (
+	// RecoveryRestart: the server died mid-turn and picked the work back up.
+	RecoveryRestart = "restart"
+	// RecoveryContinue: a human asked to continue a turn that ended in error.
+	RecoveryContinue = "continue"
+)
 
 // ChangedFile is one path a change set touched, aggregated over the whole set:
 // a file edited five times appears once.
@@ -253,7 +266,21 @@ type TurnFinishedPayload struct {
 	TurnID     string `json:"turnId"`
 	StopReason string `json:"stopReason"`
 	Error      string `json:"error,omitempty"`
+	// Failure classifies the error for anyone who has to decide what to offer
+	// the human. A presenter that reads the message instead ends up matching
+	// on English, which is how a login failure came to be reported as a server
+	// restart. Empty means unclassified: show the message and nothing more.
+	Failure string `json:"failure,omitempty"`
 }
+
+// Failure kinds for turn.finished.
+const (
+	// FailureAuth: the harness has no usable credentials. Retrying is
+	// pointless until someone logs in.
+	FailureAuth = "auth"
+	// FailureRestart: the server died while the turn was running.
+	FailureRestart = "restart"
+)
 
 // MessageChunkPayload carries a delta of assistant (or replayed user) content.
 // BlockID groups deltas belonging to one content block so a projection can
