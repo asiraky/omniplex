@@ -156,14 +156,40 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// CreateSession inserts the session, checking in the same transaction that its
+// project is still there. That check is what makes DeleteProject's refusal
+// hold: creating a session reads the project long before it writes the row —
+// probing the harness and resolving a workspace happen in between — and a
+// delete landing in that gap would otherwise count zero sessions, commit, and
+// leave this insert to succeed against a project that no longer exists.
 func (s *Store) CreateSession(ctx context.Context, m SessionMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// A session with no project is the pre-project shape and still legal;
+	// there is nothing to check for one.
+	if m.ProjectID != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE id = ?`, m.ProjectID).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: project %s", ErrNotFound, m.ProjectID)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
 		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)`,
-		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript)
-	return err
+		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Append writes one event at seq = head_seq+1 and bumps head_seq in the same
@@ -296,6 +322,27 @@ func (s *Store) PutProject(ctx context.Context, p project.Project) error {
 	return err
 }
 
+// UpdateProject writes back a project that must already exist. PutProject is
+// an upsert, which is right for adding one and wrong for saving one: a save
+// racing a delete would read the row, lose the race, and then insert the stale
+// copy straight back. This updates or reports ErrNotFound, so the delete wins.
+func (s *Store) UpdateProject(ctx context.Context, p project.Project) error {
+	b, err := json.Marshal(p.Config)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE projects SET root=?, config=?, updated_at=? WHERE id=?`, p.Root, b, p.UpdatedAt, p.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) Project(ctx context.Context, id string) (project.Project, error) {
 	var p project.Project
 	var b []byte
@@ -328,6 +375,48 @@ func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// ErrProjectInUse is returned when a project still owns sessions. Deleting it
+// anyway would leave those sessions pointing at a project that no longer
+// exists, and the sessions are the thing with a transcript and a checkout
+// behind them — so the sessions go first, deliberately, and the project after.
+var ErrProjectInUse = errors.New("project still has sessions")
+
+// DeleteProject forgets a project. Nothing on disk is touched: the project
+// directory is the user's, not omniplex's, and .omniplex/project.json stays
+// where it is so re-adding the directory restores its settings.
+func (s *Store) DeleteProject(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Counted inside the transaction, so a session created between the check
+	// and the delete cannot be orphaned by it.
+	var sessions int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, id).Scan(&sessions); err != nil {
+		return err
+	}
+	if sessions > 0 {
+		noun := "sessions"
+		if sessions == 1 {
+			noun = "session"
+		}
+		return fmt.Errorf("%w: delete its %d %s first", ErrProjectInUse, sessions, noun)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteSession(ctx context.Context, id string) error {

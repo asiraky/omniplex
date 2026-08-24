@@ -501,6 +501,13 @@ export function App() {
 
   const addProject = useCallback(async (root: string) => { const res=await clientRef.current!.command("add_project",{root}); setProjects(p=>[res.project,...p.filter(x=>x.id!==res.project.id)]); },[]);
   const saveProject = useCallback(async (projectId:string,config:ProjectConfig) => { const res=await clientRef.current!.command("save_project",{projectId,config}); setProjects(p=>p.map(x=>x.id===projectId?res.project:x)); },[]);
+  // Forgetting a project touches nothing on disk, so the only thing to undo
+  // locally is the list. The server broadcasts the new one to every other
+  // device anyway; dropping it here just means this one does not wait for it.
+  const deleteProject = useCallback(async (projectId: string) => {
+    await clientRef.current!.command("delete_project", { projectId });
+    setProjects((p) => p.filter((x) => x.id !== projectId));
+  }, []);
 
   // Git is the source of truth for what a session changed: it catches the
   // formatter and the codemod as well as the edits we parsed out of tool calls.
@@ -1253,6 +1260,12 @@ export function App() {
           userConfig={userConfig}
           onAdd={addProject}
           onSave={saveProject}
+          onDelete={deleteProject}
+          sessionCount={
+            projectSettings === "add"
+              ? 0
+              : sessions.filter((s) => s.projectId === projectSettings.id).length
+          }
           onSaveUserConfig={saveUserConfig}
           onClose={() => setProjectSettings(null)}
         />
