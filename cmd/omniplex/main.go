@@ -84,7 +84,10 @@ func main() {
 	// The bind decision drives the auth policy: reachable from another
 	// machine means every request from one needs a paired device. It is
 	// re-derived below from what actually bound.
-	guard := auth.New(st, plan.Reachable)
+	// plan.Port, not the flag: a cookie is scoped by host and never by port, so
+	// a worktree instance beside the primary one would otherwise share its
+	// cookie and evict its device tokens on every pairing.
+	guard := auth.New(st, plan.Reachable, plan.Port)
 
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
 
