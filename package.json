@@ -19,7 +19,7 @@
   "scripts": {
     "dev": "./scripts/dev",
     "build": "npm run build:web && npm run build:server",
-    "build:web": "./scripts/web tsc -b && ./scripts/web vite build",
+    "build:web": "./scripts/web tsc -b && ./scripts/web vite build && node ./scripts/check-web-bundle.mjs",
     "build:server": "go build -o omniplex ./cmd/omniplex && ln -sfn omniplex omni",
     "build:bundled": "npm run build:web && npm run build:sidecar && go build -tags bundled_sidecar -o omniplex ./cmd/omniplex && ln -sfn omniplex omni",
     "build:sidecar": "cd internal/adapter/claudecode/sidecar && npm install && bun build --compile sidecar.mjs --outfile dist/omniplex-claude-sidecar",

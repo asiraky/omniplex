@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ type Server struct {
 	// attachments holds images a human added to a prompt. Nil in tests that
 	// never upload one, in which case the endpoints report the feature off.
 	attachments *attachment.Store
+	logf        func(string, ...any)
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -85,6 +87,8 @@ type Options struct {
 	// a deploy verifiable: without it "the server restarted" and "the server
 	// restarted running the new binary" look identical from outside.
 	Commit string
+	// Logf receives compact performance diagnostics. Nil disables logging.
+	Logf func(string, ...any)
 }
 
 func New(o Options) *Server {
@@ -101,6 +105,10 @@ func New(o Options) *Server {
 		allowAny:    o.AllowAnyOrigin,
 		attachments: o.Attachments,
 		commit:      o.Commit,
+		logf:        o.Logf,
+	}
+	if s.logf == nil {
+		s.logf = func(string, ...any) {}
 	}
 	if o.WebFS != nil {
 		// Prepared once: hashing the bundle per request would put a read of
@@ -175,7 +183,8 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("GET /api/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
-		actor, err := s.mgr.Get(r.Context(), r.PathValue("id"))
+		started := time.Now()
+		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -185,7 +194,20 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, state)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("turnLimit"))
+		itemLimit, _ := strconv.Atoi(r.URL.Query().Get("itemLimit"))
+		if limit > 0 || itemLimit > 0 {
+			state = state.Window(limit, r.URL.Query().Get("beforeTurn"), itemLimit, r.URL.Query().Get("beforeItem"))
+		}
+		payload, err := json.Marshal(state)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payload)
+		s.logf("session_snapshot session=%s duration_ms=%d payload_bytes=%d turns=%d has_more=%t",
+			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns), state.History != nil && state.History.HasMore)
 	})
 
 	// Directory browsing, so the UI can pick a working directory.
@@ -255,7 +277,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", s.web.handler())
 	}
 
-	return withCORS(s.gate(mux), s.allowAny)
+	return withCORS(compressHTTP(s.gate(mux)), s.allowAny)
 }
 
 func isScriptExtension(name string) bool {
@@ -311,7 +333,12 @@ func wantsHTML(r *http.Request) bool {
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
-	opts := &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled}
+	// Session snapshots and tool output are highly repetitive JSON. Context
+	// takeover keeps the dictionary across frames, which matters for streamed
+	// deltas as well as the initial snapshot. Peers without permessage-deflate
+	// support simply negotiate no extension; the compressed HTTP snapshot path
+	// remains their efficient bootstrap.
+	opts := &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover}
 	if s.allowAny {
 		opts.InsecureSkipVerify = true
 	}

@@ -158,17 +158,19 @@ func (c *conn) sendLabels() {
 // attach implements the ordering the spec calls load-bearing: subscribe first,
 // then read history, then mark synchronized, then drain what buffered.
 func (c *conn) attach(f clientFrame) {
+	started := time.Now()
 	if f.SessionID == "" {
 		c.send(serverFrame{Type: "error", Error: "attach requires sessionId"})
 		return
 	}
 	c.detach(f.SessionID) // re-attach is idempotent
 
-	actor, err := c.srv.mgr.Get(c.ctx, f.SessionID)
+	actor, err := c.srv.mgr.View(c.ctx, f.SessionID)
 	if err != nil {
 		c.send(serverFrame{Type: "error", SessionID: f.SessionID, Error: err.Error()})
 		return
 	}
+	restoreDuration := time.Since(started)
 
 	// 1. Subscribe first, so nothing can land in the gap between the read
 	//    below and the start of live delivery.
@@ -187,16 +189,23 @@ func (c *conn) attach(f clientFrame) {
 		return
 	}
 
+	payloadBytes := 0
 	switch res.Kind {
 	case session.AttachSnapshot:
-		c.send(serverFrame{Type: "snapshot", SessionID: f.SessionID, Seq: res.Seq, State: res.Snapshot})
+		state := res.Snapshot
+		if f.TurnLimit > 0 || f.ItemLimit > 0 {
+			state = state.Window(f.TurnLimit, "", f.ItemLimit, "")
+		}
+		payloadBytes += c.send(serverFrame{Type: "snapshot", SessionID: f.SessionID, Seq: res.Seq, State: state})
 	default:
 		for i := range res.Events {
 			ev := res.Events[i]
-			c.send(serverFrame{Type: "event", SessionID: f.SessionID, Seq: ev.Seq, Event: &ev})
+			payloadBytes += c.send(serverFrame{Type: "event", SessionID: f.SessionID, Seq: ev.Seq, Event: &ev})
 		}
 	}
-	c.send(serverFrame{Type: "synchronized", SessionID: f.SessionID, Seq: res.Seq})
+	payloadBytes += c.send(serverFrame{Type: "synchronized", SessionID: f.SessionID, Seq: res.Seq})
+	c.srv.logf("session_attach session=%s duration_ms=%d restore_ms=%d payload_bytes=%d kind=%s seq=%d",
+		f.SessionID, time.Since(started).Milliseconds(), restoreDuration.Milliseconds(), payloadBytes, res.Kind, res.Seq)
 
 	ctx, cancel := context.WithCancel(c.ctx)
 	c.amu.Lock()
@@ -817,14 +826,15 @@ func (c *conn) ack(commandID string, result any, err error) {
 	c.send(f)
 }
 
-func (c *conn) send(f serverFrame) {
+func (c *conn) send(f serverFrame) int {
 	b, err := json.Marshal(f)
 	if err != nil {
-		return
+		return 0
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
 	_ = c.ws.Write(ctx, websocket.MessageText, b)
+	return len(b)
 }

@@ -834,17 +834,41 @@ func (m *Manager) Cleanup(ctx context.Context, id string) error {
 	return nil
 }
 
-// Get returns the live actor for a session, resuming it from the log if the
-// process was restarted since it was last used.
+// Get returns an actor with its harness active. Commands use this path; a
+// process restored for viewing is activated here on first real use.
 func (m *Manager) Get(ctx context.Context, id string) (*Actor, error) {
+	return m.get(ctx, id, true)
+}
+
+// View returns the attach/state surface without starting a provider process.
+// Opening a transcript is a read and should stay cheap after a server restart.
+func (m *Manager) View(ctx context.Context, id string) (*Actor, error) {
+	return m.get(ctx, id, false)
+}
+
+func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, error) {
 	m.lifecycle.Lock()
-	defer m.lifecycle.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			m.lifecycle.Unlock()
+		}
+	}()
+	release := func() {
+		m.lifecycle.Unlock()
+		locked = false
+	}
 
 	m.mu.RLock()
 	a, ok := m.actors[id]
 	m.mu.RUnlock()
 	if ok {
-		return a, nil
+		meta, err := m.store.Session(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		release()
+		return m.finishGet(ctx, a, meta, activate)
 	}
 
 	meta, err := m.store.Session(ctx, id)
@@ -890,23 +914,36 @@ func (m *Manager) Get(ctx context.Context, id string) (*Actor, error) {
 		if envErr != nil {
 			return nil, envErr
 		}
-		a, err = Resume(ctx, m.store, reg.ad, meta, env, m.logf)
+		a, err = RestoreIdle(ctx, m.store, reg.ad, meta, env, m.logf)
 	}
 	if err != nil {
 		return nil, err
 	}
 	m.adopt(a)
+	release()
+	return m.finishGet(ctx, a, meta, activate)
+}
 
-	// A session resumed from a turn the server died in the middle of carries
-	// on by itself. Off the lifecycle lock and off this goroutine: the prompt
-	// reaches a harness that has just started, and nothing else — including
-	// the attach that triggered this — should wait behind it.
-	go func() {
-		if err := a.Recover(context.Background()); err != nil {
-			m.logf("continue interrupted turn on %s: %v", a.ID, err)
-		}
-	}()
+func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.SessionMeta, activate bool) (*Actor, error) {
+	if !activate || (meta.Phase != "idle" && meta.Phase != "turn") {
+		return a, nil
+	}
+	// Process startup is intentionally outside the global lifecycle lock. The
+	// actor serializes duplicate activations for this session; unrelated reads
+	// must remain instant while a provider takes seconds to start.
+	if err := a.ActivateResume(ctx); err != nil {
+		return nil, err
+	}
+	if meta.Phase == "turn" {
+		go m.recoverActor(a)
+	}
 	return a, nil
+}
+
+func (m *Manager) recoverActor(a *Actor) {
+	if err := a.Recover(context.Background()); err != nil {
+		m.logf("continue interrupted turn on %s: %v", a.ID, err)
+	}
 }
 
 // Peek returns the live actor if one exists, without starting a harness.

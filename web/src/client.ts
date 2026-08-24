@@ -28,6 +28,10 @@ export interface ClientEvents {
 }
 
 const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
+const INITIAL_TURN_LIMIT = 10;
+const OLDER_TURN_LIMIT = 20;
+const INITIAL_ITEM_LIMIT = 30;
+const OLDER_ITEM_LIMIT = 50;
 
 export class Client {
   private ws: WebSocket | null = null;
@@ -43,6 +47,7 @@ export class Client {
   private sessionId: string | null = null;
   private cursor = 0;
   private state: SessionState | null = null;
+  private snapshotRequest: AbortController | null = null;
 
   constructor(private url: string, private events: ClientEvents) {}
 
@@ -62,8 +67,8 @@ export class Client {
         this.raw({ type: "hello", protocolVersion: 1, clientId: clientId() });
 
         // Re-attach where we left off; the server sends only what we missed.
-        if (this.sessionId) {
-          this.raw({ type: "attach", sessionId: this.sessionId, afterSeq: this.cursor });
+        if (this.sessionId && !this.snapshotRequest) {
+          this.raw({ type: "attach", sessionId: this.sessionId, afterSeq: this.cursor, turnLimit: INITIAL_TURN_LIMIT, itemLimit: INITIAL_ITEM_LIMIT });
         }
         // Re-send in-flight commands with their original ids. The server
         // replays stored results rather than executing twice.
@@ -112,16 +117,71 @@ export class Client {
 
   /** Attach to a session, replacing any current attachment. */
   attach(sessionId: string) {
+    this.snapshotRequest?.abort();
     if (this.sessionId && this.sessionId !== sessionId) {
       this.raw({ type: "detach", sessionId: this.sessionId });
     }
     this.sessionId = sessionId;
     this.cursor = 0;
     this.state = null;
-    this.raw({ type: "attach", sessionId });
+    const request = new AbortController();
+    this.snapshotRequest = request;
+    const started = performance.now();
+    fetch(`/api/sessions/${encodeURIComponent(sessionId)}?turnLimit=${INITIAL_TURN_LIMIT}&itemLimit=${INITIAL_ITEM_LIMIT}`, {
+      signal: request.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`snapshot failed (${response.status})`);
+        return (await response.json()) as SessionState;
+      })
+      .then((state) => {
+        if (request.signal.aborted || this.sessionId !== sessionId) return;
+        this.state = state;
+        this.cursor = state.seq;
+        this.events.onState(sessionId, state);
+        performance.measure("omniplex.session_snapshot", { start: started });
+        this.raw({ type: "attach", sessionId, afterSeq: state.seq, turnLimit: INITIAL_TURN_LIMIT, itemLimit: INITIAL_ITEM_LIMIT });
+      })
+      .catch((error) => {
+        if (request.signal.aborted || this.sessionId !== sessionId) return;
+        console.warn("HTTP snapshot failed; falling back to WebSocket", error);
+        this.raw({ type: "attach", sessionId, turnLimit: INITIAL_TURN_LIMIT, itemLimit: INITIAL_ITEM_LIMIT });
+      })
+      .finally(() => {
+        if (this.snapshotRequest === request) this.snapshotRequest = null;
+      });
+  }
+
+  /** Load one older page without retaining any other session's state. */
+  async loadOlder(): Promise<void> {
+    const state = this.state;
+    const sessionId = this.sessionId;
+    const beforeItem = state?.history?.beforeItem;
+    const beforeTurn = state?.history?.beforeTurn;
+    if (!state || !sessionId || !state.history?.hasMore || (!beforeItem && !beforeTurn)) return;
+    const query = new URLSearchParams({ turnLimit: String(OLDER_TURN_LIMIT), itemLimit: String(OLDER_ITEM_LIMIT) });
+    if (beforeItem) query.set("beforeItem", beforeItem);
+    else if (beforeTurn) query.set("beforeTurn", beforeTurn);
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}?${query}`);
+    if (!response.ok) throw new Error(`older history failed (${response.status})`);
+    const page = (await response.json()) as SessionState;
+    const latest = this.state;
+    if (this.sessionId !== sessionId || !latest) return;
+    const itemIds = new Set(latest.items.map((item) => item.id));
+    const turnIds = new Set(latest.turns.map((turn) => turn.id));
+    const merged: SessionState = {
+      ...latest,
+      items: [...page.items.filter((item) => !itemIds.has(item.id)), ...latest.items],
+      turns: [...page.turns.filter((turn) => !turnIds.has(turn.id)), ...latest.turns],
+      history: page.history,
+    };
+    this.state = merged;
+    this.events.onState(sessionId, merged);
   }
 
   detach() {
+    this.snapshotRequest?.abort();
+    this.snapshotRequest = null;
     if (this.sessionId) this.raw({ type: "detach", sessionId: this.sessionId });
     this.sessionId = null;
     this.cursor = 0;
@@ -208,7 +268,7 @@ export class Client {
         // The server dropped our queue. Reattach from the applied cursor; if
         // we have fallen far enough behind it answers with a snapshot.
         if (f.sessionId === this.sessionId) {
-          this.raw({ type: "attach", sessionId: f.sessionId, afterSeq: this.cursor });
+          this.raw({ type: "attach", sessionId: f.sessionId, afterSeq: this.cursor, turnLimit: INITIAL_TURN_LIMIT, itemLimit: INITIAL_ITEM_LIMIT });
         }
         break;
 

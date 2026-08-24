@@ -17,7 +17,6 @@ import {
   XIcon,
 } from "lucide-react";
 import {
-  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -25,6 +24,7 @@ import {
   useState,
   type ComponentType,
 } from "react";
+import { toast } from "sonner";
 
 import { ChangedFiles } from "~/components/ChangedFiles";
 import { IconButton } from "~/components/IconButton";
@@ -763,6 +763,7 @@ export function Transcript({
   recents = [],
   recentsSeeded = false,
   onPickRecent,
+  onLoadOlder,
 }: {
   state: SessionState;
   /** Where this session was last scrolled — the position the parent kept from
@@ -789,7 +790,9 @@ export function Transcript({
   recentsSeeded?: boolean;
   /** Writes the skill's token into the composer. Omitted, the list is hidden. */
   onPickRecent?: (item: ComposerItem) => void;
+  onLoadOlder?: () => Promise<void>;
 }) {
+  const [loadingOlder, setLoadingOlder] = useState(false);
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
   // never provisioned — leaves the empty state to speak.
@@ -988,6 +991,25 @@ export function Transcript({
             onCleanup={onCleanup}
             onForceDelete={onForceDelete}
           />
+          {state.history?.hasMore && onLoadOlder && (
+            <div className="flex justify-center">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={loadingOlder}
+                onClick={() => {
+                  setLoadingOlder(true);
+                  void onLoadOlder()
+                    .catch((error) => toast.error("Could not load earlier turns", {
+                      description: error instanceof Error ? error.message : String(error),
+                    }))
+                    .finally(() => setLoadingOlder(false));
+                }}
+              >
+                {loadingOlder ? "Loading earlier…" : "Load earlier turns"}
+              </Button>
+            </div>
+          )}
           {/* The empty state used to hide behind any workspace phase at all,
               which left a dismissed-but-ready workspace showing nothing
               whatever. It only needs to stand aside while the provisioner is
@@ -1015,7 +1037,10 @@ export function Transcript({
             const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
 
             return (
-              <Fragment key={key}>
+              <div
+                key={key}
+                className="[content-visibility:auto] [contain-intrinsic-size:auto_120px]"
+              >
                 {row.kind === "fold" ? (
                   <TurnFold turn={row.turn} items={row.items} />
                 ) : row.kind === "run" ? (
@@ -1037,7 +1062,7 @@ export function Transcript({
                 {diff && (
                   <ChangedFiles diff={diff} latest={turnID === lastTurnID} onOpenDiff={onOpenDiff} />
                 )}
-              </Fragment>
+              </div>
             );
           })}
 

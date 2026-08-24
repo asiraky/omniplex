@@ -100,10 +100,10 @@ func (a *Actor) Recover(ctx context.Context) error {
 
 // recoverAll resumes every session that was mid-turn when the server stopped.
 //
-// Resume is otherwise lazy — a session comes back when a presenter attaches to
-// it — which is the right default for a conversation nobody is watching. It is
-// the wrong default for work in flight: an agent that was three tool calls into
-// a task should not wait for someone to open a browser tab before it continues.
+// Resume is otherwise lazy — idle sessions come back when a command needs the
+// harness, while read-only presenter attachment restores only their projection.
+// Work in flight is different: an agent that was three tool calls into a task
+// should not wait for a command or an open browser tab before it continues.
 func (m *Manager) recoverAll(ctx context.Context) {
 	metas, err := m.store.ListSessions(ctx)
 	if err != nil {

@@ -103,6 +103,7 @@ type command struct {
 	elicitResult adapter.ElicitationResult
 	emission     *proto.Emission
 	hard         bool // close: append session.closed, rather than just disposing
+	resume       bool // activate: resume an existing harness conversation
 	reply        chan cmdResult
 	model        string
 	mode         string
@@ -286,6 +287,31 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	return a, nil
 }
 
+// RestoreIdle rebuilds the projection and actor surface without starting the
+// provider process. It is used by read-only attachment; ActivateResume pays
+// the process cost only when a later command actually needs the harness.
+func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.SessionMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
+	state, err := loadState(ctx, st, meta.ID)
+	if err != nil {
+		return nil, err
+	}
+	a := &Actor{
+		ID: meta.ID, Harness: meta.Harness, Cwd: meta.Cwd,
+		store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}),
+		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
+		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
+		recovery: planRecovery(state),
+	}
+	for _, turn := range state.Turns {
+		if !turn.Done {
+			a.turnActive = turn.ID
+		}
+	}
+	a.wg.Add(1)
+	go a.run()
+	return a, nil
+}
+
 // RestoreClosed creates a read-only actor for a closed transcript. It has no
 // harness process, but retains the same attach/state/fanout surface so closed
 // sessions remain inspectable by presenters.
@@ -460,6 +486,14 @@ func (a *Actor) Emit(ctx context.Context, em proto.Emission) error {
 
 func (a *Actor) Activate(ctx context.Context, cwd, model, mode, effort string) error {
 	_, err := a.call(ctx, command{kind: cmdActivate, prompt: cwd, model: model, mode: mode, effort: effort})
+	return err
+}
+
+// ActivateResume starts the provider process for an actor restored only for
+// viewing. Attaching to a transcript must not pay this process-start cost;
+// the first command that needs the harness does.
+func (a *Actor) ActivateResume(ctx context.Context) error {
+	_, err := a.call(ctx, command{kind: cmdActivate, resume: true})
 	return err
 }
 
@@ -639,6 +673,10 @@ func (a *Actor) handle(c command) (stop bool) {
 		return true
 
 	case cmdActivate:
+		if a.state.Closed {
+			c.reply <- cmdResult{}
+			return false
+		}
 		if a.sess != nil {
 			c.reply <- cmdResult{}
 			return false
@@ -650,14 +688,37 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this session's provider instance is no longer configured")}
 			return false
 		}
-		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{SessionID: a.ID, Cwd: c.prompt, Model: c.model, Mode: c.mode, Effort: c.effort, Env: a.env})
+		cwd, model, mode, effort := c.prompt, c.model, c.mode, c.effort
+		if c.resume {
+			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
+		}
+		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
+			SessionID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
+			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
+		})
 		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		a.Cwd, a.sess = c.prompt, sess
+		a.Cwd, a.sess = cwd, sess
 		a.pump(sess)
 		a.startCheckpoints()
+		if c.resume {
+			// Server death ends anything that was waiting in the old process.
+			// Do this only when the harness is actually resumed: viewing the
+			// durable transcript is read-only and must not rewrite its history.
+			for _, pending := range append([]projection.PendingPermission(nil), a.state.Pending...) {
+				a.append(proto.Emit(proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: pending.RequestID, Outcome: proto.OutcomeCancelled}))
+			}
+			for _, pending := range append([]projection.PendingElicitation(nil), a.state.Elicitations...) {
+				a.append(proto.Emit(proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: pending.RequestID, Action: "cancel"}))
+			}
+			for _, turn := range append([]projection.Turn(nil), a.state.Turns...) {
+				if !turn.Done {
+					a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn", Failure: proto.FailureRestart}))
+				}
+			}
+		}
 		c.reply <- cmdResult{}
 
 	case cmdSetMode:
@@ -857,6 +918,18 @@ func (a *Actor) handle(c command) (stop bool) {
 
 	case cmdCancel:
 		if a.turnActive == "" {
+			c.reply <- cmdResult{value: "idle"}
+			return false
+		}
+		if a.sess == nil {
+			// A read-only restore may expose the interrupted turn before the
+			// recovery worker activates its process. Stop means do not recover it.
+			a.mu.Lock()
+			a.recovery = nil
+			a.mu.Unlock()
+			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+				TurnID: a.turnActive, StopReason: proto.StopCancelled,
+			}))
 			c.reply <- cmdResult{value: "idle"}
 			return false
 		}

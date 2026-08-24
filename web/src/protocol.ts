@@ -266,6 +266,7 @@ export interface SessionState {
   usage: Usage;
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];
+  history?: { hasMore: boolean; beforeTurn?: string; beforeItem?: string };
 }
 
 export interface WorkspaceState {
