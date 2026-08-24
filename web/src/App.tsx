@@ -964,6 +964,7 @@ export function App() {
         onDelete={remove}
         onShowAccess={() => setShowAccess(true)}
         accentOf={accentOf}
+        projects={projects}
         projectName={(id)=>projects.find(p=>p.id===id)?.config.name}
         projectRoot={(id)=>projects.find(p=>p.id===id)?.root}
         labels={labels}

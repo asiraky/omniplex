@@ -1,4 +1,12 @@
-import { CircleAlertIcon, FolderIcon, GitBranchIcon, PanelLeftIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  CircleAlertIcon,
+  FolderIcon,
+  GitBranchIcon,
+  PanelLeftIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -17,6 +25,7 @@ import { HarnessBadge } from "~/components/HarnessBadge";
 import { IconButton } from "~/components/IconButton";
 import { LabelFilter } from "~/components/LabelFilter";
 import { LabelDot, LabelMenu } from "~/components/LabelMenu";
+import { ProjectFilter } from "~/components/ProjectFilter";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -29,7 +38,8 @@ import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { visibleSessions } from "~/labelFilter";
 import { cn } from "~/lib/utils";
-import type { Label, SessionMeta } from "~/protocol";
+import { groupSessions, visibleByProject } from "~/projectGroups";
+import type { Label, Project, SessionMeta } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
 const BUSY_PHASES = ["turn", "provisioning", "creating", "cleaning"];
@@ -64,14 +74,49 @@ const WIDTH_KEY = "omniplex.sidebarWidth";
 // the phone is usually filtered down to one thing and the desktop is not, and
 // making that travel would mean one of them is always wrong.
 const FILTER_KEY = "omniplex.labelFilter";
+// Which projects this device is hiding, and which of the groups it is showing
+// are folded shut. Device-local for the same reason as the label filter and
+// the width: the phone is usually narrowed to the one thing being worked on
+// and the desktop is not.
+const PROJECT_FILTER_KEY = "omniplex.projectFilter";
+const COLLAPSED_KEY = "omniplex.projectCollapsed";
 
-function loadHidden(): Set<string> {
+function loadKeys(key: string): Set<string> {
   try {
-    const raw = JSON.parse(localStorage.getItem(FILTER_KEY) ?? "[]");
+    const raw = JSON.parse(localStorage.getItem(key) ?? "[]");
     return new Set(Array.isArray(raw) ? raw.filter((k) => typeof k === "string") : []);
   } catch {
     return new Set();
   }
+}
+
+function saveKeys(key: string, next: Set<string>): Set<string> {
+  try {
+    localStorage.setItem(key, JSON.stringify([...next]));
+  } catch {
+    // Storage can be blocked outright; the filter still works for this page.
+  }
+  return next;
+}
+
+function loadHidden(): Set<string> {
+  return loadKeys(FILTER_KEY);
+}
+
+/**
+ * The project filter and the collapse state, threaded to the header and the
+ * list together. They travel as one because they are one control surface: the
+ * menu decides which groups exist and the headers decide which are open.
+ */
+interface ProjectView {
+  /** Project ids switched off in the header menu. */
+  hidden: Set<string>;
+  /** Group keys folded shut. Remembered across reloads, per device. */
+  collapsed: Set<string>;
+  onToggle: (id: string, show: boolean) => void;
+  onShowAll: () => void;
+  onHideAll: () => void;
+  onToggleCollapse: (key: string) => void;
 }
 const MIN_WIDTH = 208;
 const MAX_WIDTH = 480;
@@ -95,6 +140,11 @@ interface SidebarProps {
   onShowAccess: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
+  /**
+   * The project registry, in the server's order. The sidebar groups by it and
+   * filters by it, so unlike projectName it needs the list itself.
+   */
+  projects: Project[];
   projectName: (id?: string) => string | undefined;
   /** The project's own checkout, which is never a worktree omniplex may remove. */
   projectRoot: (id?: string) => string | undefined;
@@ -191,7 +241,9 @@ function SessionList({
   activeId,
   onSelect,
   accentOf,
+  projects,
   projectName,
+  projectView,
   labels,
   onSetLabel,
   onManageLabels,
@@ -199,19 +251,36 @@ function SessionList({
   onShowAll,
 }: Pick<
   SidebarProps,
-  "activeId" | "onSelect" | "accentOf" | "projectName" | "labels" | "onSetLabel" | "onManageLabels"
+  | "activeId"
+  | "onSelect"
+  | "accentOf"
+  | "projects"
+  | "projectName"
+  | "labels"
+  | "onSetLabel"
+  | "onManageLabels"
 > & {
   flow: DeleteFlow;
   /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
   hidden: Set<string>;
+  projectView: ProjectView;
   onShowAll: () => void;
 }) {
   const { rows, ask, deleting, exiting } = flow;
 
-  // Filtering runs over the delete flow's rows — frozen order, exiting row and
-  // all — so a departing session folds away in place instead of vanishing the
-  // instant the filter is recomputed.
-  const shown = visibleSessions(rows, labels, hidden);
+  // Both filters run over the delete flow's rows — frozen order, exiting row
+  // and all — so a departing session folds away in place instead of vanishing
+  // the instant a filter is recomputed. Grouping runs over the result for the
+  // same reason: it preserves order within a group, so the row still leaves
+  // from exactly where it stood.
+  const shown = visibleByProject(
+    visibleSessions(rows, labels, hidden),
+    projects,
+    projectView.hidden,
+  );
+  const groups = groupSessions(shown, projects);
+  // One group is not a grouping, however it came to be the only one.
+  const grouped = groups.length > 1;
 
   // No sessions is no sessions: labels are a way to narrow a list, not a
   // thing to show in place of one.
@@ -232,9 +301,20 @@ function SessionList({
     return (
       <div className="px-3 py-10 text-center">
         <p className="text-muted-foreground text-[13px]">
-          {rows.length} session{rows.length === 1 ? "" : "s"} hidden by the label filter.
+          {rows.length} session{rows.length === 1 ? "" : "s"} hidden by the filters.
         </p>
-        <Button variant="outline" size="sm" onClick={onShowAll} className="mt-3 h-8">
+        {/* Both, because the message cannot know which one emptied the list
+            and hunting through two menus to find out is the thing this button
+            exists to save. */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            onShowAll();
+            projectView.onShowAll();
+          }}
+          className="mt-3 h-8"
+        >
           Show all
         </Button>
       </div>
@@ -246,7 +326,7 @@ function SessionList({
   // delete X (and, with labels defined, the label tag beside it) overlays the
   // timestamp's corner instead of owning a column of its own, so an un-hovered
   // row has no phantom right margin; on hover (desktop) the timestamp yields.
-  const row = (s: SessionMeta) => {
+  const row = (s: SessionMeta, showProject: boolean) => {
     const active = s.id === activeId;
     const leaving = exiting?.id === s.id;
     const going = deleting?.id === s.id;
@@ -352,20 +432,43 @@ function SessionList({
                   </span>
                 </span>
                 <span className="text-muted-foreground mt-1 flex min-w-0 items-center gap-1 font-mono text-[10px]">
-                  <FolderIcon aria-hidden className="size-3 shrink-0" />
-                  {/* With a branch alongside it the project keeps its natural
-                      width up to half the line and the branch takes what is
-                      left, so a long branch can no longer shrink a short
-                      project name to a letter and an ellipsis. With no branch
-                      there is nothing to share with, and the cap would only
-                      truncate a name that fits. */}
-                  <span className={cn("truncate", s.branch ? "max-w-[50%] shrink-0" : "min-w-0")}>
-                    {projectName(s.projectId) ?? s.cwd.split("/").slice(-2).join("/")}
-                  </span>
-                  {s.branch && (
+                  {/* Under a group header the project is already named a few
+                      pixels up, so the line gives the space to the branch —
+                      the thing that actually tells two sessions in one project
+                      apart. Ungrouped, the project comes back: there is no
+                      header then, and the row is the only thing that says it. */}
+                  {showProject ? (
                     <>
-                      <GitBranchIcon aria-hidden className="ml-1 size-3 shrink-0" />
+                      <FolderIcon aria-hidden className="size-3 shrink-0" />
+                      {/* With a branch alongside it the project keeps its natural
+                          width up to half the line and the branch takes what is
+                          left, so a long branch can no longer shrink a short
+                          project name to a letter and an ellipsis. With no branch
+                          there is nothing to share with, and the cap would only
+                          truncate a name that fits. */}
+                      <span className={cn("truncate", s.branch ? "max-w-[50%] shrink-0" : "min-w-0")}>
+                        {projectName(s.projectId) ?? s.cwd.split("/").slice(-2).join("/")}
+                      </span>
+                      {s.branch && (
+                        <>
+                          <GitBranchIcon aria-hidden className="ml-1 size-3 shrink-0" />
+                          <span className="min-w-0 flex-1 truncate">{s.branch}</span>
+                        </>
+                      )}
+                    </>
+                  ) : s.branch ? (
+                    <>
+                      <GitBranchIcon aria-hidden className="size-3 shrink-0" />
                       <span className="min-w-0 flex-1 truncate">{s.branch}</span>
+                    </>
+                  ) : (
+                    // No branch to show and no project to repeat: the checkout
+                    // is the only thing left that distinguishes the row.
+                    <>
+                      <FolderIcon aria-hidden className="size-3 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {s.cwd.split("/").slice(-2).join("/")}
+                      </span>
                     </>
                   )}
                   <span className="ml-auto flex shrink-0 items-center pl-1.5">
@@ -463,15 +566,71 @@ function SessionList({
         );
   };
 
-  // One flat list, most recent first. Labels narrow it from the header now;
-  // they no longer carve it into sections.
-  return <>{shown.map(row)}</>;
+  // One project on screen has nothing to group: the header would name the
+  // only thing there is, on every row, forever.
+  if (!grouped) return <>{shown.map((s) => row(s, true))}</>;
+
+  return (
+    <>
+      {groups.map((g) => {
+        const folded = projectView.collapsed.has(g.key);
+        // The last session in a group is taking the group with it. Without
+        // this the row folds away and the header snaps out from under it a
+        // frame later; with it they leave together.
+        const leaving = g.sessions.length === 1 && g.sessions[0].id === exiting?.id;
+        return (
+          <div
+            key={g.key}
+            className={cn(
+              "grid transition-[grid-template-rows,opacity] duration-[260ms] ease-out motion-reduce:transition-none",
+              leaving ? "grid-rows-[0fr] opacity-0" : "mt-2 grid-rows-[1fr] first:mt-0",
+            )}
+          >
+            <div className={cn("min-w-0", leaving && "overflow-hidden")}>
+              {/* Sticky, so the project you are scrolling through keeps saying
+                  which one it is. Opaque rather than translucent: rows sliding
+                  under a blurred header read as a rendering fault on a phone. */}
+              <button
+                type="button"
+                onClick={() => projectView.onToggleCollapse(g.key)}
+                aria-expanded={!folded}
+                aria-label={`${g.name}, ${g.sessions.length} session${
+                  g.sessions.length === 1 ? "" : "s"
+                }`}
+                className="bg-sidebar text-muted-foreground hover:text-foreground focus-visible:ring-ring sticky top-0 z-10 flex w-full min-w-0 cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 outline-none focus-visible:ring-2"
+              >
+                <ChevronRightIcon
+                  aria-hidden
+                  className={cn(
+                    "size-3 shrink-0 transition-transform duration-200 motion-reduce:transition-none",
+                    !folded && "rotate-90",
+                  )}
+                />
+                <span className="truncate font-mono text-[10px] font-semibold tracking-wide uppercase">
+                  {g.name}
+                </span>
+                <span className="ml-auto shrink-0 pl-1.5 font-mono text-[10px] tabular-nums">
+                  {g.sessions.length}
+                </span>
+              </button>
+
+              {/* Folded groups render nothing at all. A collapsed group that
+                  still costs a row of chrome is the thing #116 deleted; the
+                  header alone is the whole cost here. */}
+              {!folded && <div className="mt-0.5">{g.sessions.map((c) => row(c, false))}</div>}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 function SidebarPanel({
   showCollapse,
   flow,
   hidden,
+  projectView,
   onToggleLabel,
   onShowAll,
   ...props
@@ -479,10 +638,17 @@ function SidebarPanel({
   showCollapse: boolean;
   flow: DeleteFlow;
   hidden: Set<string>;
+  projectView: ProjectView;
   onToggleLabel: (key: string, show: boolean) => void;
   onShowAll: () => void;
 }) {
-  const shownCount = visibleSessions(props.sessions, props.labels, hidden).length;
+  // Both filters, because the footer's job is to admit that sessions are
+  // missing and it cannot know which control removed them.
+  const shownCount = visibleByProject(
+    visibleSessions(props.sessions, props.labels, hidden),
+    props.projects,
+    projectView.hidden,
+  ).length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
       {/* One quiet header row: what the panel is, and the one action it
@@ -492,6 +658,16 @@ function SidebarPanel({
         <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
         {/* One label control, not two: what is showing, and the way to the
             manager that creates and edits them. */}
+        {/* Project first: it decides the shape of the list, where the label
+            filter only thins it. Hidden entirely with one project, which is
+            the common case and has nothing to choose between. */}
+        <ProjectFilter
+          projects={props.projects}
+          hidden={projectView.hidden}
+          onToggle={projectView.onToggle}
+          onShowAll={projectView.onShowAll}
+          onHideAll={projectView.onHideAll}
+        />
         <LabelFilter
           labels={props.labels}
           hidden={hidden}
@@ -519,7 +695,9 @@ function SidebarPanel({
           activeId={props.activeId}
           onSelect={props.onSelect}
           accentOf={props.accentOf}
+          projects={props.projects}
           projectName={props.projectName}
+          projectView={projectView}
           labels={props.labels}
           onSetLabel={props.onSetLabel}
           onManageLabels={props.onManageLabels}
@@ -589,6 +767,47 @@ export function Sidebar(props: SidebarProps) {
   }, []);
   const onShowAll = useCallback(() => setHidden(() => persist(new Set())), []);
 
+  // The project filter and the fold state of the groups it produces. Same
+  // reasoning as the label filter above: held over both shapes, and only the
+  // user's own choices are stored, so a project added on a paired device
+  // arrives showing rather than pre-hidden.
+  const [hiddenProjects, setHiddenProjects] = useState<Set<string>>(() =>
+    loadKeys(PROJECT_FILTER_KEY),
+  );
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadKeys(COLLAPSED_KEY));
+
+  const projectView: ProjectView = {
+    hidden: hiddenProjects,
+    collapsed,
+    onToggle: useCallback((id: string, show: boolean) => {
+      setHiddenProjects((current) => {
+        const next = new Set(current);
+        if (show) next.delete(id);
+        else next.add(id);
+        return saveKeys(PROJECT_FILTER_KEY, next);
+      });
+    }, []),
+    onShowAll: useCallback(
+      () => setHiddenProjects(() => saveKeys(PROJECT_FILTER_KEY, new Set())),
+      [],
+    ),
+    onHideAll: useCallback(
+      () =>
+        setHiddenProjects(() =>
+          saveKeys(PROJECT_FILTER_KEY, new Set(props.projects.map((p) => p.id))),
+        ),
+      [props.projects],
+    ),
+    onToggleCollapse: useCallback((key: string) => {
+      setCollapsed((current) => {
+        const next = new Set(current);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return saveKeys(COLLAPSED_KEY, next);
+      });
+    }, []),
+  };
+
   // Below md the sidebar is a drawer over the transcript, which is a sheet's
   // whole job: overlay, focus trap, escape to close. At md it is the docked
   // panel again and collapses by margin, exactly as before — the breakpoint
@@ -628,6 +847,7 @@ export function Sidebar(props: SidebarProps) {
               {...props}
               flow={flow}
               hidden={hidden}
+              projectView={projectView}
               onToggleLabel={onToggleLabel}
               onShowAll={onShowAll}
               showCollapse={props.activeId !== null}
@@ -645,6 +865,7 @@ export function Sidebar(props: SidebarProps) {
         {...props}
         flow={flow}
         hidden={hidden}
+        projectView={projectView}
         onToggleLabel={onToggleLabel}
         onShowAll={onShowAll}
       />
@@ -656,12 +877,14 @@ export function Sidebar(props: SidebarProps) {
 function DockedSidebar({
   flow,
   hidden,
+  projectView,
   onToggleLabel,
   onShowAll,
   ...props
 }: SidebarProps & {
   flow: DeleteFlow;
   hidden: Set<string>;
+  projectView: ProjectView;
   onToggleLabel: (key: string, show: boolean) => void;
   onShowAll: () => void;
 }) {
@@ -720,6 +943,7 @@ function DockedSidebar({
         {...props}
         flow={flow}
         hidden={hidden}
+        projectView={projectView}
         onToggleLabel={onToggleLabel}
         onShowAll={onShowAll}
         showCollapse
