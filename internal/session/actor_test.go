@@ -1333,15 +1333,20 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 
 	// The session row must not claim work is still in flight either; that is
 	// what makes the next start treat it as an interrupted turn and resume it.
-	metas, err := st.ListSessions(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range metas {
-		if m.ID == actor.ID && m.Phase == "turn" {
-			t.Fatal("the session is still marked mid-turn after the harness died")
+	// The row is written when the actor shuts down, a moment after the closing
+	// event reaches the log, so it is waited for rather than read once.
+	waitFor(t, func() bool {
+		metas, err := st.ListSessions(ctx)
+		if err != nil {
+			return false
 		}
-	}
+		for _, m := range metas {
+			if m.ID == actor.ID {
+				return m.Phase != "turn"
+			}
+		}
+		return false
+	})
 }
 
 // An adapter that refuses a prompt because the harness needs a login has
