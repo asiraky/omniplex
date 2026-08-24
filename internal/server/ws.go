@@ -752,6 +752,16 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"project": p}, nil
 
+	case "delete_project":
+		var a deleteProjectArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.DeleteProject(ctx, a.ProjectID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "deleted"}, nil
+
 	case "retry_provision":
 		var a sessionArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

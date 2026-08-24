@@ -1,4 +1,4 @@
-import { FileIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
+import { FileIcon, FolderIcon, FolderOpenIcon, Trash2Icon } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
 import { Alert, AlertDescription } from "~/components/ui/alert";
@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
+import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import { formatEffort } from "~/lib/efforts";
 import { cn } from "~/lib/utils";
@@ -214,6 +215,91 @@ function HookField({
   );
 }
 
+/**
+ * Forgetting a project. Deliberately not in the footer next to Save: this is
+ * the one control on the screen that cannot be undone by editing a field
+ * back, and a destructive button sitting a thumb's width from the one you
+ * press every time is how it gets pressed by accident on a phone.
+ *
+ * Nothing on disk goes with it — not the checkout, not its worktrees, not
+ * .omniplex/project.json — so re-adding the same directory brings every
+ * setting on this screen back. The copy says so, because "delete" on a screen
+ * full of paths reads like it might mean the paths.
+ */
+function DeleteProjectSection({
+  name,
+  sessionCount,
+  onDelete,
+  onError,
+}: {
+  name: string;
+  sessionCount: number;
+  onDelete: () => Promise<void>;
+  onError: (message: string | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Sessions have transcripts, and often a worktree, behind them. The server
+  // refuses this outright; saying so here means the user learns it before
+  // pressing rather than from an error afterwards.
+  const blocked = sessionCount > 0;
+
+  const run = async () => {
+    setBusy(true);
+    onError(null);
+    try {
+      await onDelete();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <SectionHeading note="cannot be undone">Remove project</SectionHeading>
+      <p className="text-muted-foreground text-[11px]">
+        {blocked
+          ? `${sessionCount} session${sessionCount === 1 ? "" : "s"} still belong${sessionCount === 1 ? "s" : ""} to this project. Delete ${sessionCount === 1 ? "it" : "them"} first.`
+          : "Takes it out of Omniplex only. The checkout, its worktrees and its project.json are left exactly as they are, so adding the directory again restores these settings."}
+      </p>
+      {confirming && !blocked ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12px]">Remove “{name || "Untitled"}”?</span>
+          <div className="ml-auto flex gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => void run()} disabled={busy}>
+              {busy ? (
+                <>
+                  <Spinner aria-hidden className="size-4" />
+                  Removing…
+                </>
+              ) : (
+                "Remove"
+              )}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={blocked}
+          onClick={() => setConfirming(true)}
+          className="text-destructive hover:text-destructive"
+        >
+          <Trash2Icon />
+          Remove project
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function ProjectSettings({
   project,
   defaultRoot,
@@ -221,6 +307,8 @@ export function ProjectSettings({
   userConfig,
   onAdd,
   onSave,
+  onDelete,
+  sessionCount,
   onSaveUserConfig,
   onClose,
 }: {
@@ -230,6 +318,10 @@ export function ProjectSettings({
   userConfig: UserConfig | null;
   onAdd: (root: string) => Promise<void>;
   onSave: (id: string, cfg: ProjectConfig) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  /** How many sessions still belong to this project; a project with any is
+      not deletable, and the screen says so before the button is pressed. */
+  sessionCount: number;
   onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
   onClose: () => void;
 }) {
@@ -471,6 +563,18 @@ export function ProjectSettings({
               <BranchFormatField
                 value={user.branchFormat ?? ""}
                 onChange={(v) => setUser({ ...user, branchFormat: v })}
+              />
+
+              <Separator />
+
+              <DeleteProjectSection
+                name={cfg.name}
+                sessionCount={sessionCount}
+                onError={setError}
+                onDelete={async () => {
+                  await onDelete(project.id);
+                  onClose();
+                }}
               />
             </div>
           )}

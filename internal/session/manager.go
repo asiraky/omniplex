@@ -764,6 +764,23 @@ func (m *Manager) ReloadProjects(ctx context.Context) error {
 	return nil
 }
 
+// DeleteProject removes a project from the registry. It is a registry
+// operation and nothing more: the checkout, its worktrees and its
+// .omniplex/project.json are all left exactly as they are, so a project added
+// with the wrong path can be dropped without putting anything on disk at risk.
+//
+// A project that still owns sessions is refused rather than cascaded. Those
+// sessions have transcripts and, often, worktrees behind them; deleting them
+// as a side effect of tidying the project list is not something anybody asked
+// for. The store enforces this, in the same transaction as the delete.
+func (m *Manager) DeleteProject(ctx context.Context, id string) error {
+	if err := m.store.DeleteProject(ctx, id); err != nil {
+		return err
+	}
+	m.notifyList()
+	return nil
+}
+
 func (m *Manager) Projects(ctx context.Context) ([]project.Project, error) {
 	return m.store.ListProjects(ctx)
 }

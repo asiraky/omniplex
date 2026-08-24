@@ -109,6 +109,13 @@ type saveProjectArgs struct {
 	Config    project.Config `json:"config"`
 }
 
+// deleteProjectArgs carries only the id: deleting a project removes the
+// registry entry and nothing else, so there is no "and also remove…" to ask
+// about the way a session delete has one.
+type deleteProjectArgs struct {
+	ProjectID string `json:"projectId"`
+}
+
 type promptArgs struct {
 	SessionID string `json:"sessionId"`
 	Text      string `json:"text"`

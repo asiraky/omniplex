@@ -330,6 +330,48 @@ func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
 	return out, rows.Err()
 }
 
+// ErrProjectInUse is returned when a project still owns sessions. Deleting it
+// anyway would leave those sessions pointing at a project that no longer
+// exists, and the sessions are the thing with a transcript and a checkout
+// behind them — so the sessions go first, deliberately, and the project after.
+var ErrProjectInUse = errors.New("project still has sessions")
+
+// DeleteProject forgets a project. Nothing on disk is touched: the project
+// directory is the user's, not omniplex's, and .omniplex/project.json stays
+// where it is so re-adding the directory restores its settings.
+func (s *Store) DeleteProject(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Counted inside the transaction, so a session created between the check
+	// and the delete cannot be orphaned by it.
+	var sessions int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, id).Scan(&sessions); err != nil {
+		return err
+	}
+	if sessions > 0 {
+		noun := "sessions"
+		if sessions == 1 {
+			noun = "session"
+		}
+		return fmt.Errorf("%w: delete its %d %s first", ErrProjectInUse, sessions, noun)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
