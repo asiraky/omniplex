@@ -1077,20 +1077,6 @@ export function App() {
 
               {isDesktop ? (
                 <>
-                  <IconButton
-                    label={showChanges ? "Hide the panel" : "Show the panel"}
-                    onClick={() => setShowChanges((v) => !v)}
-                    className={cn("relative", showChanges && "bg-accent")}
-                  >
-                    <PanelRightIcon />
-                    {/* A live agent-count badge: work is happening off-transcript. */}
-                    {liveAgentCount(state.items) > 0 && (
-                      <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
-                        {liveAgentCount(state.items)}
-                      </span>
-                    )}
-                  </IconButton>
-
                   <IconButton label="Summarise this session" onClick={openSummary}>
                     <SparklesIcon />
                   </IconButton>
@@ -1110,6 +1096,20 @@ export function App() {
                       <SettingsIcon />
                     </IconButton>
                   )}
+
+                  <IconButton
+                    label={showChanges ? "Hide the panel" : "Show the panel"}
+                    onClick={() => setShowChanges((v) => !v)}
+                    className={cn("relative", showChanges && "bg-accent")}
+                  >
+                    <PanelRightIcon />
+                    {/* A live agent-count badge: work is happening off-transcript. */}
+                    {liveAgentCount(state.items) > 0 && (
+                      <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
+                        {liveAgentCount(state.items)}
+                      </span>
+                    )}
+                  </IconButton>
                 </>
               ) : (
                 <DropdownMenu>
@@ -1187,7 +1187,7 @@ export function App() {
             </>
           ) : (
             <span className="text-muted-foreground flex-1 text-[13px]">
-              {meta ? "Attaching…" : restoring ? "" : "No session selected"}
+              {meta ? "Attaching…" : ""}
             </span>
           )}
         </header>
