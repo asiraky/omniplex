@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -194,11 +193,6 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		limit, _ := strconv.Atoi(r.URL.Query().Get("turnLimit"))
-		itemLimit, _ := strconv.Atoi(r.URL.Query().Get("itemLimit"))
-		if limit > 0 || itemLimit > 0 {
-			state = state.Window(limit, r.URL.Query().Get("beforeTurn"), itemLimit, r.URL.Query().Get("beforeItem"))
-		}
 		payload, err := json.Marshal(state)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -206,8 +200,8 @@ func (s *Server) Handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(payload)
-		s.logf("session_snapshot session=%s duration_ms=%d payload_bytes=%d turns=%d has_more=%t",
-			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns), state.History != nil && state.History.HasMore)
+		s.logf("session_snapshot session=%s duration_ms=%d payload_bytes=%d turns=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns))
 	})
 
 	// Directory browsing, so the UI can pick a working directory.
