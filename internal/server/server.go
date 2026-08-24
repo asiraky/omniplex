@@ -137,13 +137,18 @@ func (s *Server) Handler() http.Handler {
 		// from a failed one that left the old binary running. It is withheld
 		// from unauthenticated callers because this probe is deliberately mute.
 		//
-		// Gating on `paired` alone is deliberate. Authorize already grants a
-		// loopback request, which is how the deploy reads it from the box
-		// itself, and it withdraws that grant when the request carries proxy
-		// headers. Testing auth.IsLocal here as well would hand the commit to
-		// an unpaired stranger arriving through `tailscale serve`, undoing the
-		// downgrade looksProxied exists to perform.
-		if s.commit != "" && paired {
+		// Gating on `paired` alone was wrong, and quietly broke every deploy
+		// the day `tailscale serve` went up in front of this server. Authorize
+		// stops granting anything on locality while a proxy is in front of it,
+		// and it applies that to every request, including the deploy's own
+		// probe from the box. The verify step then waited 30s for a commit
+		// that would never come and rolled a good release back.
+		//
+		// auth.DirectlyLocal asks the narrower question the probe actually
+		// needs: did this request come from this machine without being
+		// relayed. A stranger arriving through `tailscale serve` fails it on
+		// the headers Tailscale sets, so the probe stays mute to them.
+		if s.commit != "" && (paired || auth.DirectlyLocal(r)) {
 			body["commit"] = s.commit
 		}
 		writeJSON(w, body)

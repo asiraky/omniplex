@@ -338,3 +338,76 @@ func TestHealthWithholdsCommitFromUnpairedDevices(t *testing.T) {
 		t.Errorf("a local request saw commit %v, want deadbeef", got)
 	}
 }
+
+// The regression this guards against took a whole deploy down and rolled a
+// good release back. Putting `tailscale serve` in front of the server sets the
+// guard's proxied flag, Authorize stops granting anything on locality while it
+// is set, and the deploy's own probe from the box was swept up with every
+// other request: no commit, thirty seconds of waiting, rollback. The probe
+// needs the narrower question — did this come from this machine, unrelayed —
+// which is what auth.DirectlyLocal answers.
+func TestHealthGivesCommitToTheBoxEvenBehindAProxy(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "health-proxied.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	guard := auth.New(st, true)
+	// What `tailscale serve --https=443` does to a running server.
+	guard.SetProxied(true)
+	mgr := session.NewManager(st, func(string, ...any) {})
+	t.Cleanup(mgr.Shutdown)
+
+	handler := New(Options{
+		Manager:    mgr,
+		Store:      st,
+		Guard:      guard,
+		DefaultCwd: t.TempDir(),
+		Commit:     "deadbeef",
+	}).Handler()
+
+	read := func(h http.Handler) map[string]any {
+		ts := httptest.NewServer(h)
+		defer ts.Close()
+		res, err := http.Get(ts.URL + "/api/health")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	// The deploy, asking from the box itself while a proxy is in front.
+	if got := read(handler)["commit"]; got != "deadbeef" {
+		t.Errorf("the deploy's own probe saw commit %v, want deadbeef — "+
+			"a proxy in front of the server does not make the box a stranger", got)
+	}
+
+	// A stranger arriving through that proxy. Their request reaches the
+	// handler over loopback too, so only the headers Tailscale sets tell them
+	// apart from the deploy — every one of these was observed on a real
+	// relayed request.
+	for _, h := range []string{
+		"Tailscale-User-Login",
+		"Tailscale-Headers-Info",
+		"X-Forwarded-For",
+		"X-Forwarded-Proto",
+	} {
+		relayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Set(h, "something")
+			handler.ServeHTTP(w, r)
+		})
+		if got := read(relayed)["commit"]; got != nil {
+			t.Errorf("a caller relayed with %s saw commit %v; the probe must stay mute to them", h, got)
+		}
+	}
+
+	// And an unpaired caller from another machine, as before.
+	if got := read(asRemote(handler))["commit"]; got != nil {
+		t.Errorf("an unpaired remote device saw commit %v", got)
+	}
+}
