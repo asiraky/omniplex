@@ -45,6 +45,9 @@ type Server struct {
 	devProxy   http.Handler
 	allowAny   bool
 	endpoints  *endpoints.Builder
+	// commit is the git revision this binary was built from, empty when it
+	// was not built from a checkout.
+	commit string
 	// attachments holds images a human added to a prompt. Nil in tests that
 	// never upload one, in which case the endpoints report the feature off.
 	attachments *attachment.Store
@@ -78,6 +81,10 @@ type Options struct {
 	// Attachments stores images attached to prompts. Nil turns the feature
 	// off: uploads are refused and nothing else changes.
 	Attachments *attachment.Store
+	// Commit is the git revision this binary was built from. It is what makes
+	// a deploy verifiable: without it "the server restarted" and "the server
+	// restarted running the new binary" look identical from outside.
+	Commit string
 }
 
 func New(o Options) *Server {
@@ -93,6 +100,7 @@ func New(o Options) *Server {
 		webFS:       o.WebFS,
 		allowAny:    o.AllowAnyOrigin,
 		attachments: o.Attachments,
+		commit:      o.Commit,
 	}
 	if o.WebFS != nil {
 		// Prepared once: hashing the bundle per request would put a read of
@@ -118,12 +126,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/pair", s.handlePair)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		_, paired := s.guard.Authorize(r)
-		writeJSON(w, map[string]any{
+		body := map[string]any{
 			"ok":              true,
 			"protocolVersion": ProtocolVersion,
 			"paired":          paired,
 			"build":           s.web.BuildID(),
-		})
+		}
+		// The commit names the exact build, which is the whole point: a deploy
+		// that checks only for a live server cannot tell a successful restart
+		// from a failed one that left the old binary running. It is withheld
+		// from unauthenticated callers because this probe is deliberately mute.
+		//
+		// Gating on `paired` alone is deliberate. Authorize already grants a
+		// loopback request, which is how the deploy reads it from the box
+		// itself, and it withdraws that grant when the request carries proxy
+		// headers. Testing auth.IsLocal here as well would hand the commit to
+		// an unpaired stranger arriving through `tailscale serve`, undoing the
+		// downgrade looksProxied exists to perform.
+		if s.commit != "" && paired {
+			body["commit"] = s.commit
+		}
+		writeJSON(w, body)
 	})
 
 	mux.HandleFunc("GET /api/devices", func(w http.ResponseWriter, r *http.Request) {

@@ -290,3 +290,51 @@ func TestRevokingADeviceClosesItsWebSocket(t *testing.T) {
 		return // the server closed it, as required
 	}
 }
+
+// The health probe is the one unauthenticated window into a running server, and
+// the commit it can carry names the exact build. A deploy reads it over
+// loopback to tell a real restart from one that left the old binary running;
+// nobody else has any business knowing. If this test starts failing because the
+// commit leaked to an unpaired caller, the fix is the handler, not the test.
+func TestHealthWithholdsCommitFromUnpairedDevices(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "health.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	guard := auth.New(st, true)
+	mgr := session.NewManager(st, func(string, ...any) {})
+	t.Cleanup(mgr.Shutdown)
+
+	handler := New(Options{
+		Manager:    mgr,
+		Store:      st,
+		Guard:      guard,
+		DefaultCwd: t.TempDir(),
+		Commit:     "deadbeef",
+	}).Handler()
+
+	read := func(h http.Handler) map[string]any {
+		ts := httptest.NewServer(h)
+		defer ts.Close()
+		res, err := http.Get(ts.URL + "/api/health")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	if got := read(asRemote(handler))["commit"]; got != nil {
+		t.Errorf("an unpaired device saw commit %v; the probe must stay mute", got)
+	}
+	// Loopback is how the deploy asks, and it must get a straight answer or it
+	// cannot verify anything.
+	if got := read(handler)["commit"]; got != "deadbeef" {
+		t.Errorf("a local request saw commit %v, want deadbeef", got)
+	}
+}
