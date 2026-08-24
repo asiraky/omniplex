@@ -281,6 +281,9 @@ var proxyHeaders = []string{
 	"Tailscale-User-Name",
 	"Tailscale-User-Profile-Pic",
 	"Tailscale-App-Capabilities",
+	// Set on every relayed request as a pointer to Tailscale's own docs, so
+	// it marks a relay even if the identity headers above ever change.
+	"Tailscale-Headers-Info",
 	"X-Forwarded-For",
 	"X-Forwarded-Host",
 	"X-Forwarded-Proto",
@@ -295,6 +298,23 @@ func looksProxied(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// DirectlyLocal reports a request that came from this machine and was not
+// relayed to reach it.
+//
+// It differs from the locality test inside Authorize in what it ignores: the
+// standing proxied flag. That flag records that something sits in front of the
+// server — a fact about the server, not about this request. Authorize is right
+// to treat it as disqualifying, because a request it admits gets to act. This
+// is for the narrower question of whether the caller is the box itself, where
+// a loopback peer bearing none of a relay's marks is exactly that and the flag
+// says nothing about it.
+//
+// Verified against `tailscale serve`: a relayed request arrives with six of
+// the headers above set and a direct one with none of them.
+func DirectlyLocal(r *http.Request) bool {
+	return IsLocal(r) && !looksProxied(r)
 }
 
 // Authorize reports whether a request may proceed, and as which device.
