@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Sidebar } from "./Sidebar";
 import { render, viewport } from "~/test/harness";
-import type { Label, SessionMeta } from "~/protocol";
+import type { Label, Project, SessionMeta } from "~/protocol";
 
 const session = (id: string, over: Partial<SessionMeta> = {}): SessionMeta =>
   ({
@@ -36,6 +36,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     onDelete: vi.fn(),
     onShowAccess: vi.fn(),
     accentOf: () => undefined,
+    projects: [] as Project[],
     projectName: () => "repo",
     projectRoot: () => "/tmp/repo",
     labels: [],
@@ -64,6 +65,7 @@ function renderLive(sessions: SessionMeta[], over: Partial<React.ComponentProps<
     onDelete: vi.fn(() => Promise.resolve()),
     onShowAccess: vi.fn(),
     accentOf: () => undefined,
+    projects: [] as Project[],
     projectName: () => "repo",
     projectRoot: () => "/tmp/repo",
     labels: [],
@@ -431,7 +433,7 @@ describe("Sidebar", () => {
       // can say so.
       localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1", "l2", "none"]));
       renderSidebar({ sessions: filed, labels });
-      expect(screen.getByText("3 sessions hidden by the label filter.")).toBeTruthy();
+      expect(screen.getByText("3 sessions hidden by the filters.")).toBeTruthy();
 
       fireEvent.click(screen.getByRole("button", { name: "Show all" }));
       expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
@@ -445,6 +447,77 @@ describe("Sidebar", () => {
       // unlabelled is showing.
       expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
       expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
+    });
+  });
+  describe("projects", () => {
+    const projects = [
+      { id: "p1", root: "/src/omniplex", config: { name: "omniplex" }, createdAt: 1, updatedAt: 1 },
+      { id: "p2", root: "/src/worksauce", config: { name: "worksauce" }, createdAt: 1, updatedAt: 1 },
+    ] as Project[];
+    // Most recently updated first, the way the server sends them.
+    const mixed = [
+      session("a", { projectId: "p2" }),
+      session("b", { projectId: "p1" }),
+      session("c", { projectId: "p2" }),
+    ];
+    const header = (name: string, count: number) =>
+      screen.queryByRole("button", { name: `${name}, ${count} session${count === 1 ? "" : "s"}` });
+
+    afterEach(() => localStorage.clear());
+
+    it("groups under headers once two projects have sessions on screen", () => {
+      renderSidebar({ sessions: mixed, projects });
+
+      // "worksauce" leads because its newest session is the newest session.
+      expect(header("worksauce", 2)).toBeTruthy();
+      expect(header("omniplex", 1)).toBeTruthy();
+      expect(rowOrder()).toEqual(["Session a", "Session c", "Session b"]);
+    });
+
+    it("shows no header when every session on screen is one project's", () => {
+      renderSidebar({ sessions: [session("a"), session("b")], projects });
+      expect(header("omniplex", 2)).toBeNull();
+      expect(rowOrder()).toEqual(["Session a", "Session b"]);
+    });
+
+    it("drops the grouping when the filter leaves one project populated", () => {
+      localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
+      renderSidebar({ sessions: mixed, projects });
+
+      expect(rowOrder()).toEqual(["Session b"]);
+      expect(header("omniplex", 1)).toBeNull();
+      expect(screen.getByText("1 of 3 sessions")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter by project — 1 hidden" })).toBeTruthy();
+    });
+
+    it("offers no project filter when there is nothing to choose between", () => {
+      renderSidebar({ sessions: mixed, projects: [projects[0]] });
+      expect(screen.queryByRole("button", { name: /Filter by project/ })).toBeNull();
+    });
+
+    it("folds a group shut, and remembers it", () => {
+      renderSidebar({ sessions: mixed, projects });
+
+      fireEvent.click(header("worksauce", 2)!);
+      // The header stays — it is the way back — but its rows are gone.
+      expect(header("worksauce", 2)).toBeTruthy();
+      expect(rowOrder()).toEqual(["Session b"]);
+      expect(localStorage.getItem("omniplex.projectCollapsed")).toBe(JSON.stringify(["p2"]));
+    });
+
+    it("comes back folded exactly where it was left", () => {
+      localStorage.setItem("omniplex.projectCollapsed", JSON.stringify(["p1"]));
+      renderSidebar({ sessions: mixed, projects });
+
+      expect(rowOrder()).toEqual(["Session a", "Session c"]);
+      expect(header("omniplex", 1)!.getAttribute("aria-expanded")).toBe("false");
+      expect(header("worksauce", 2)!.getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("ignores a stored id whose project has since been removed", () => {
+      localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
+      renderSidebar({ sessions: mixed, projects: [projects[0]] });
+      expect(rowOrder()).toEqual(["Session a", "Session c", "Session b"]);
     });
   });
 });
