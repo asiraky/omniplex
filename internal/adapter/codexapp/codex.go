@@ -752,25 +752,19 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 					CachedInputTokens     int64 `json:"cachedInputTokens"`
 					CacheWriteInputTokens int64 `json:"cacheWriteInputTokens"`
 				} `json:"total"`
-				// Last is the most recent request, whose prompt is the
-				// conversation so far — which is what "context used" means.
+				// Last is the most recent request. Its total is the current
+				// active context; cached input is already included in input.
 				Last struct {
-					InputTokens       int64 `json:"inputTokens"`
-					OutputTokens      int64 `json:"outputTokens"`
-					CachedInputTokens int64 `json:"cachedInputTokens"`
+					TotalTokens int64 `json:"totalTokens"`
 				} `json:"last"`
-				ContextWindow int64 `json:"contextWindow"`
+				ModelContextWindow int64 `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
-			ContextWindow int64 `json:"contextWindow"`
 		}
 		_ = json.Unmarshal(params, &p)
 		t := p.TokenUsage.Total
 		var pct float64
-		window := p.TokenUsage.ContextWindow
-		if window == 0 {
-			window = p.ContextWindow
-		}
-		used := p.TokenUsage.Last.InputTokens + p.TokenUsage.Last.CachedInputTokens + p.TokenUsage.Last.OutputTokens
+		window := p.TokenUsage.ModelContextWindow
+		used := p.TokenUsage.Last.TotalTokens
 		if used > 0 && window > 0 {
 			// Unclamped, matching the claude path: an over-limit reading is a
 			// real signal, and the meter renders the raw ratio rather than a
