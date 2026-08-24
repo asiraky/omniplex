@@ -70,7 +70,9 @@ export function groupSessions(sessions: SessionMeta[], projects: Project[]): Pro
 
   for (const s of sessions) {
     const project = s.projectId ? byId.get(s.projectId) : undefined;
-    const key = project ? project.id : `cwd:${cwdName(s)}`;
+    // Keyed on the whole checkout, named by its tail: two checkouts ending
+    // in the same two segments are still two different things.
+    const key = project ? project.id : `cwd:${s.cwd}`;
     const existing = groups.get(key);
     if (existing) {
       existing.sessions.push(s);

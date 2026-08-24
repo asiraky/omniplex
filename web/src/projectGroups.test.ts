@@ -75,6 +75,15 @@ describe("groupSessions", () => {
     ]);
   });
 
+  it("keeps two unresolvable checkouts apart even when their tails match", () => {
+    expect(
+      groupSessions(
+        [session("a", undefined, "/srv/one/app/repo"), session("b", undefined, "/srv/two/app/repo")],
+        projects,
+      ),
+    ).toHaveLength(2);
+  });
+
   it("keeps two unresolvable sessions apart when their checkouts differ", () => {
     expect(
       shape([session("a", undefined, "/a/one"), session("b", "gone", "/b/two")]),
