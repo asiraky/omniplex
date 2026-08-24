@@ -87,9 +87,11 @@ func (a *Actor) lastTurn() *projection.Turn {
 // Recover continues an interrupted turn, if this actor was resumed from one.
 // It is a no-op on every other actor, so callers need not ask first.
 func (a *Actor) Recover(ctx context.Context) error {
+	// The plan stays set until the actor loop takes the prompt: it is what
+	// keeps a queued prompt from starting ahead of the continuation in the
+	// gap between here and the command being handled.
 	a.mu.Lock()
 	rec := a.recovery
-	a.recovery = nil
 	a.mu.Unlock()
 	if rec == nil {
 		return nil

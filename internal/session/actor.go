@@ -893,10 +893,22 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: ErrClosed}
 			return false
 		}
+		if c.recovery != nil {
+			// The continuation is being taken now, whatever becomes of it;
+			// a second Recover racing this one has nothing left to send.
+			a.mu.Lock()
+			a.recovery = nil
+			a.mu.Unlock()
+		}
 		if a.turnActive != "" {
+			if c.recovery != nil {
+				// The server's own continuation does not wait in line: if
+				// work is already running there is nothing to continue.
+				c.reply <- cmdResult{err: ErrBusy}
+				return false
+			}
 			// Not refused: the prompt waits in the log and starts its own
-			// turn when this one ends. Recovery prompts are the server's
-			// own and never arrive while a turn is running.
+			// turn when this one ends.
 			queueID := uuid.NewString()
 			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
@@ -1153,6 +1165,15 @@ func (a *Actor) isQueued(queueID string) bool {
 // across the transcript.
 func (a *Actor) dispatchQueued(ctx context.Context) {
 	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed {
+		return
+	}
+	// A restart interrupted a turn and the continuation has not been sent
+	// yet. It goes first: the queue was written behind that work, not
+	// instead of it.
+	a.mu.Lock()
+	recovering := a.recovery != nil
+	a.mu.Unlock()
+	if recovering {
 		return
 	}
 	next := a.state.Queued[0]

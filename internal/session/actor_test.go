@@ -1664,3 +1664,49 @@ func TestCancelDropsQueuedPrompts(t *testing.T) {
 		t.Fatalf("queue survived cancel: %+v", state.Queued)
 	}
 }
+
+// TestQueuedPromptWaitsForRestartRecovery: a restart mid-turn resumes the
+// interrupted work first. A prompt queued behind that work runs after the
+// continuation, not instead of it.
+func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "queued.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	fa := &fakeAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return actor.Head() >= 1 })
+	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-fa.session().prompts
+	if res, err := actor.Prompt(context.Background(), "after", nil); err != nil || !res.Queued() {
+		t.Fatalf("queued prompt = %+v, %v", res, err)
+	}
+	id := actor.ID
+	mgr.Shutdown()
+
+	m := NewManager(st, func(string, ...any) {}, fa)
+	defer m.Shutdown()
+	a, err := m.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := <-fa.session().prompts
+	if first.Text != restartPrompt {
+		t.Fatalf("first prompt after restart = %q, want the continuation", first.Text)
+	}
+	if s, _ := a.State(context.Background()); len(s.Queued) != 1 {
+		t.Fatalf("queue after restart = %+v, want the queued prompt still waiting", s.Queued)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	if next := <-fa.session().prompts; next.Text != "after" {
+		t.Fatalf("prompt after continuation = %q, want the queued one", next.Text)
+	}
+}
