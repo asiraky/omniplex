@@ -17,6 +17,7 @@ import {
   XIcon,
 } from "lucide-react";
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1014,10 +1015,16 @@ export function Transcript({
             const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
 
             return (
-              <div
-                key={key}
-                className="[content-visibility:auto] [contain-intrinsic-size:auto_120px]"
-              >
+              // A plain fragment, not a `content-visibility: auto` box. Skipping
+              // the render of off-screen rows costs nothing to measure and a lot
+              // to scroll: a row that has never been on screen is laid out at
+              // its `contain-intrinsic-size` guess, and rows here are anything
+              // from a one-line tool call to a screenful of markdown, so every
+              // one the reader scrolls up into swaps a 120px placeholder for its
+              // real height and shoves the view. That is the scroll-up stutter,
+              // and it healed only on the way back down because by then each row
+              // had been rendered once and its size remembered.
+              <Fragment key={key}>
                 {row.kind === "fold" ? (
                   <TurnFold turn={row.turn} items={row.items} />
                 ) : row.kind === "run" ? (
@@ -1039,7 +1046,7 @@ export function Transcript({
                 {diff && (
                   <ChangedFiles diff={diff} latest={turnID === lastTurnID} onOpenDiff={onOpenDiff} />
                 )}
-              </div>
+              </Fragment>
             );
           })}
 
