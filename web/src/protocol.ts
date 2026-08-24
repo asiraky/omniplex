@@ -549,6 +549,7 @@ export interface ServerFrame {
     | "sessions"
     | "harnesses"
     | "labels"
+    | "projects"
     | "composer_items_changed"
     | "snapshot"
     | "event"

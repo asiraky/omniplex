@@ -85,6 +85,11 @@ type Manager struct {
 	// Broadcast of label-definition changes, so every paired device sees a
 	// created, renamed, reordered, or deleted label without reconnecting.
 	labelSub map[string]chan struct{}
+	// Broadcast of project-registry changes. Projects rode on notifyList
+	// before, which only ever sends a session frame — so a project added,
+	// edited or removed on the phone stayed on the laptop's screen until it
+	// reconnected, and a removed one could still be picked in new-session.
+	projectSub map[string]chan struct{}
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -125,6 +130,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		listSub:    map[string]chan struct{}{},
 		harnessSub: map[string]chan struct{}{},
 		labelSub:   map[string]chan struct{}{},
+		projectSub: map[string]chan struct{}{},
 	}
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
@@ -708,7 +714,7 @@ func (m *Manager) AddProject(ctx context.Context, root string) (project.Project,
 	if err := m.store.PutProject(ctx, p); err != nil {
 		return p, err
 	}
-	m.notifyList()
+	m.notifyProjects()
 	return p, nil
 }
 
@@ -723,10 +729,10 @@ func (m *Manager) SaveProject(ctx context.Context, id string, cfg project.Config
 	}
 	p.Config = cfg
 	p.UpdatedAt = proto.NowMillis()
-	if err := m.store.PutProject(ctx, p); err != nil {
+	if err := m.store.UpdateProject(ctx, p); err != nil {
 		return p, err
 	}
-	m.notifyList()
+	m.notifyProjects()
 	return p, nil
 }
 
@@ -753,13 +759,17 @@ func (m *Manager) ReloadProjects(ctx context.Context) error {
 			continue
 		}
 		p.Config, p.UpdatedAt = cfg, proto.NowMillis()
-		if err := m.store.PutProject(ctx, p); err != nil {
+		// Not an upsert: a project deleted while this sweep was reading the
+		// disk must stay deleted, not be written back from the cache.
+		if err := m.store.UpdateProject(ctx, p); errors.Is(err, store.ErrNotFound) {
+			continue
+		} else if err != nil {
 			return err
 		}
 		changed = true
 	}
 	if changed {
-		m.notifyList()
+		m.notifyProjects()
 	}
 	return nil
 }
@@ -777,7 +787,7 @@ func (m *Manager) DeleteProject(ctx context.Context, id string) error {
 	if err := m.store.DeleteProject(ctx, id); err != nil {
 		return err
 	}
-	m.notifyList()
+	m.notifyProjects()
 	return nil
 }
 
@@ -1273,6 +1283,35 @@ func (m *Manager) notifyLabels() {
 	m.listMu.Lock()
 	defer m.listMu.Unlock()
 	for _, ch := range m.labelSub {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// SubscribeProjects registers for project-registry changes: add, save,
+// reload, delete. The registry is machine-level and shared across paired
+// devices, so a change on one pushes the whole list to every connection.
+func (m *Manager) SubscribeProjects() (string, chan struct{}) {
+	id := uuid.NewString()
+	ch := make(chan struct{}, 1)
+	m.listMu.Lock()
+	m.projectSub[id] = ch
+	m.listMu.Unlock()
+	return id, ch
+}
+
+func (m *Manager) UnsubscribeProjects(id string) {
+	m.listMu.Lock()
+	delete(m.projectSub, id)
+	m.listMu.Unlock()
+}
+
+func (m *Manager) notifyProjects() {
+	m.listMu.Lock()
+	defer m.listMu.Unlock()
+	for _, ch := range m.projectSub {
 		select {
 		case ch <- struct{}{}:
 		default:

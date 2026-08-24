@@ -231,14 +231,20 @@ function DeleteProjectSection({
   sessionCount,
   onDelete,
   onError,
+  busy,
+  setBusy,
 }: {
   name: string;
   sessionCount: number;
   onDelete: () => Promise<void>;
   onError: (message: string | null) => void;
+  /** Owned by the screen, not this section: Save has to go dead while a
+      delete is in flight. Saving mid-delete writes the project back, and an
+      upsert would have resurrected the row the delete had just removed. */
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   // Sessions have transcripts, and often a worktree, behind them. The server
   // refuses this outright; saying so here means the user learns it before
@@ -340,6 +346,7 @@ export function ProjectSettings({
   );
   const [user, setUser] = useState<UserConfig>(userConfig ?? { version: 1 });
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
@@ -570,6 +577,8 @@ export function ProjectSettings({
               <DeleteProjectSection
                 name={cfg.name}
                 sessionCount={sessionCount}
+                busy={deleting}
+                setBusy={setDeleting}
                 onError={setError}
                 onDelete={async () => {
                   await onDelete(project.id);
@@ -589,10 +598,12 @@ export function ProjectSettings({
         </div>
 
         <DialogFooter className="border-t px-6 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] md:pb-4">
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose} disabled={deleting}>
             Cancel
           </Button>
-          <Button disabled={busy || (!project && !root)} onClick={save}>
+          {/* Dead while a delete is in flight: a save landing after the
+              delete commits would write the project straight back. */}
+          <Button disabled={busy || deleting || (!project && !root)} onClick={save}>
             {busy ? "Saving…" : project ? "Save" : "Add project"}
           </Button>
         </DialogFooter>

@@ -86,6 +86,29 @@ describe("removing a project", () => {
     expect(screen.getByRole("button", { name: /remove project/i })).toBeTruthy();
   });
 
+  // A save landing after the delete commits writes the project straight back,
+  // so Save has to be dead for as long as the delete is in flight.
+  it("takes Save out of reach while the delete is running", async () => {
+    let release: () => void = () => {};
+    const props = open({
+      onDelete: vi.fn(() => new Promise<void>((r) => (release = r))),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /remove project/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(props.onSave).not.toHaveBeenCalled();
+
+    release();
+    await waitFor(() => expect(props.onClose).toHaveBeenCalled());
+  });
+
   // Adding a project is the same dialog with no project behind it. There is
   // nothing to remove yet, and offering it would be offering a no-op.
   it("is not offered while adding a project", () => {

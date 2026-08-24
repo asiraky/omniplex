@@ -156,14 +156,40 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// CreateSession inserts the session, checking in the same transaction that its
+// project is still there. That check is what makes DeleteProject's refusal
+// hold: creating a session reads the project long before it writes the row —
+// probing the harness and resolving a workspace happen in between — and a
+// delete landing in that gap would otherwise count zero sessions, commit, and
+// leave this insert to succeed against a project that no longer exists.
 func (s *Store) CreateSession(ctx context.Context, m SessionMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// A session with no project is the pre-project shape and still legal;
+	// there is nothing to check for one.
+	if m.ProjectID != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE id = ?`, m.ProjectID).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: project %s", ErrNotFound, m.ProjectID)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
 		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)`,
-		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript)
-	return err
+		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Append writes one event at seq = head_seq+1 and bumps head_seq in the same
@@ -294,6 +320,27 @@ func (s *Store) PutProject(ctx context.Context, p project.Project) error {
 	defer s.mu.Unlock()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO projects(id,root,config,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,config=excluded.config,updated_at=excluded.updated_at`, p.ID, p.Root, b, p.CreatedAt, p.UpdatedAt)
 	return err
+}
+
+// UpdateProject writes back a project that must already exist. PutProject is
+// an upsert, which is right for adding one and wrong for saving one: a save
+// racing a delete would read the row, lose the race, and then insert the stale
+// copy straight back. This updates or reports ErrNotFound, so the delete wins.
+func (s *Store) UpdateProject(ctx context.Context, p project.Project) error {
+	b, err := json.Marshal(p.Config)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE projects SET root=?, config=?, updated_at=? WHERE id=?`, p.Root, b, p.UpdatedAt, p.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) Project(ctx context.Context, id string) (project.Project, error) {

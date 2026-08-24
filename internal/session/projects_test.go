@@ -181,3 +181,85 @@ func TestDeleteProjectReportsAnUnknownID(t *testing.T) {
 		t.Fatalf("deleting an unknown project gave %v, want ErrNotFound", err)
 	}
 }
+
+// The refusal is only as good as the window it covers. Creating a session
+// reads its project long before it writes the row — probing the harness and
+// resolving a workspace happen in between — so the check that matters is the
+// one in the insert's own transaction.
+func TestCreateSessionRefusesADeletedProject(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+
+	// Stands in for the gap: the caller read the project, then it went.
+	if err := st.DeleteProject(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := store.SessionMeta{ID: "s1", Cwd: root, Harness: "fake", ProjectID: p.ID, Phase: "creating", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
+	if err := st.CreateSession(context.Background(), meta); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("creating a session in a deleted project gave %v, want ErrNotFound", err)
+	}
+	sessions, err := st.ListSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("the orphaned session was written anyway: %d rows", len(sessions))
+	}
+}
+
+// A session with no project at all is the pre-project shape and still legal.
+// The new check must not turn it into an error.
+func TestCreateSessionStillAllowsNoProject(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, _ := testProject(t, root)
+
+	meta := store.SessionMeta{ID: "s1", Cwd: root, Harness: "fake", Phase: "idle", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
+	if err := st.CreateSession(context.Background(), meta); err != nil {
+		t.Fatalf("a session with no project was refused: %v", err)
+	}
+}
+
+// Saving is an update, not an upsert. A save that read the project before a
+// delete and wrote after it would otherwise put the row straight back.
+func TestSaveProjectCannotResurrectADeletedOne(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SaveProject(context.Background(), p.ID, p.Config); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("saving a deleted project gave %v, want ErrNotFound", err)
+	}
+	projects, err := mgr.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("the deleted project came back: %d rows", len(projects))
+	}
+}
+
+// The registry is shared across paired devices, so a project removed on one
+// has to leave the others' lists without a reconnect.
+func TestProjectChangesReachEveryConnection(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	id, ch := mgr.SubscribeProjects()
+	defer mgr.UnsubscribeProjects(id)
+
+	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ch:
+	default:
+		t.Fatal("deleting a project woke no project subscriber, so other devices keep showing it")
+	}
+}

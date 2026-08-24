@@ -71,6 +71,12 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	labelsID, labelsCh := s.mgr.SubscribeLabels()
 	defer s.mgr.UnsubscribeLabels(labelsID)
 
+	// The project registry is machine-level and shared across paired devices,
+	// so adding, editing or removing one pushes the whole list to every
+	// connection rather than waiting for each to reconnect.
+	projectsID, projectsCh := s.mgr.SubscribeProjects()
+	defer s.mgr.UnsubscribeProjects(projectsID)
+
 	go func() {
 		for {
 			select {
@@ -82,6 +88,8 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 				c.send(serverFrame{Type: "harnesses", Harnesses: s.mgr.Harnesses(ctx)})
 			case <-labelsCh:
 				c.sendLabels()
+			case <-projectsCh:
+				c.sendProjects()
 			}
 		}
 	}()
@@ -145,6 +153,14 @@ func (c *conn) sendSessions() {
 		return
 	}
 	c.send(serverFrame{Type: "sessions", Sessions: sessions})
+}
+
+func (c *conn) sendProjects() {
+	projects, err := c.srv.mgr.Projects(c.ctx)
+	if err != nil {
+		return
+	}
+	c.send(serverFrame{Type: "projects", Projects: projects})
 }
 
 func (c *conn) sendLabels() {

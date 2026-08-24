@@ -170,6 +170,13 @@ export class Client {
         this.events.onHarnesses(f.harnesses ?? [], f.cwd ?? "");
         break;
 
+      // The project registry changed somewhere — this device or a paired one.
+      // The list travels whole; absent means the last project was removed, so
+      // a project deleted on the phone leaves the laptop's picker too.
+      case "projects":
+        this.events.onProjects(f.projects ?? []);
+        break;
+
       // Label definitions changed somewhere — this device or a paired one.
       // The list travels whole; absent means the last label was deleted.
       case "labels":
