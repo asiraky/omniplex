@@ -209,9 +209,6 @@ func (c *conn) attach(f clientFrame) {
 	switch res.Kind {
 	case session.AttachSnapshot:
 		state := res.Snapshot
-		if f.TurnLimit > 0 || f.ItemLimit > 0 {
-			state = state.Window(f.TurnLimit, "", f.ItemLimit, "")
-		}
 		payloadBytes += c.send(serverFrame{Type: "snapshot", SessionID: f.SessionID, Seq: res.Seq, State: state})
 	default:
 		for i := range res.Events {
