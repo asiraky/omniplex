@@ -18,7 +18,13 @@ import { ElicitationPrompt } from "./components/ElicitationPrompt";
 import { DeleteSessionDialog, useDeleteSession } from "./components/DeleteSessionDialog";
 import { LabelManager } from "./components/LabelManager";
 import { LabelDot, LabelMenu } from "./components/LabelMenu";
-import { DropdownMenu, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu";
 import { Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { IconButton } from "./components/IconButton";
@@ -42,9 +48,10 @@ import {
   CheckIcon,
   CoffeeIcon,
   CopyIcon,
-  FileDiffIcon,
+  EllipsisIcon,
   MessagesSquareIcon,
   PanelLeftIcon,
+  PanelRightIcon,
   PlusIcon,
   SettingsIcon,
   SparklesIcon,
@@ -1051,38 +1058,83 @@ export function App() {
                 </DropdownMenu>
               )}
 
-              <IconButton
-                label={showChanges ? "Hide the panel" : "Show the panel"}
-                onClick={() => setShowChanges((v) => !v)}
-                className={cn("relative", showChanges && "bg-accent")}
-              >
-                <FileDiffIcon />
-                {/* A live agent-count badge: work is happening off-transcript. */}
-                {liveAgentCount(state.items) > 0 && (
-                  <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
-                    {liveAgentCount(state.items)}
-                  </span>
-                )}
-              </IconButton>
+              {isDesktop ? (
+                <>
+                  <IconButton
+                    label={showChanges ? "Hide the panel" : "Show the panel"}
+                    onClick={() => setShowChanges((v) => !v)}
+                    className={cn("relative", showChanges && "bg-accent")}
+                  >
+                    <PanelRightIcon />
+                    {/* A live agent-count badge: work is happening off-transcript. */}
+                    {liveAgentCount(state.items) > 0 && (
+                      <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
+                        {liveAgentCount(state.items)}
+                      </span>
+                    )}
+                  </IconButton>
 
-              <IconButton label="Summarise this session" onClick={openSummary}>
-                <SparklesIcon />
-              </IconButton>
+                  <IconButton label="Summarise this session" onClick={openSummary}>
+                    <SparklesIcon />
+                  </IconButton>
 
-              <IconButton
-                label={transcriptCopied ? "Transcript copied" : "Copy transcript"}
-                onClick={() => void copyTranscript(transcriptMarkdown(state.items, state.turns))}
-              >
-                {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
-              </IconButton>
+                  <IconButton
+                    label={transcriptCopied ? "Transcript copied" : "Copy transcript"}
+                    onClick={() => void copyTranscript(transcriptMarkdown(state.items, state.turns))}
+                  >
+                    {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
+                  </IconButton>
 
-              {activeProject && (
-                <IconButton
-                  label={`${activeProject.config.name} settings`}
-                  onClick={() => setProjectSettings(activeProject)}
-                >
-                  <SettingsIcon />
-                </IconButton>
+                  {activeProject && (
+                    <IconButton
+                      label={`${activeProject.config.name} settings`}
+                      onClick={() => setProjectSettings(activeProject)}
+                    >
+                      <SettingsIcon />
+                    </IconButton>
+                  )}
+                </>
+              ) : (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="More session actions"
+                      className="relative size-11 shrink-0"
+                    >
+                      <EllipsisIcon />
+                      {liveAgentCount(state.items) > 0 && (
+                        <span className="bg-primary text-primary-foreground absolute top-0.5 right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
+                          {liveAgentCount(state.items)}
+                        </span>
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-48">
+                    <DropdownMenuItem onSelect={() => setShowChanges(true)}>
+                      <PanelRightIcon /> Open panel
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={openSummary}>
+                      <SparklesIcon /> Summarise session
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => void copyTranscript(transcriptMarkdown(state.items, state.turns))}
+                    >
+                      {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
+                      {transcriptCopied ? "Transcript copied" : "Copy transcript"}
+                    </DropdownMenuItem>
+                    {activeProject && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onSelect={() => setProjectSettings(activeProject)}>
+                          <SettingsIcon /> {activeProject.config.name} settings
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
 
             </>

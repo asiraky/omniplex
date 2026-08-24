@@ -135,6 +135,56 @@ describe("copying a transcript", () => {
   });
 });
 
+describe("session actions on a phone", () => {
+  const openSession = async () => {
+    viewport("phone");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness], "/tmp/repo");
+      events.onSessions([session("a")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Session a"));
+      events.onState("a", state("a", "default"));
+    });
+  };
+
+  it("puts the header actions in one overflow menu", async () => {
+    await openSession();
+
+    expect(screen.queryByRole("button", { name: "Copy transcript" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Summarise this session" })).toBeNull();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More session actions" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(screen.getByRole("menuitem", { name: "Open panel" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Summarise session" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy transcript" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "repo settings" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /diff/i })).toBeNull();
+  });
+
+  it("opens the whole panel directly, with terminal available from its surface menu", async () => {
+    await openSession();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More session actions" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open panel" }));
+
+    const panel = await screen.findByRole("dialog", { name: "Session panel" });
+    fireEvent.pointerDown(within(panel).getByRole("button", { name: "Open a surface" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(await screen.findByRole("menuitem", { name: "Terminal" })).toBeTruthy();
+  });
+});
+
 describe("a bypass session is just a session", () => {
   it("opens with no confirmation, banner, or acknowledgement", async () => {
     const confirm = vi.fn(() => true);
