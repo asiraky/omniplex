@@ -17,6 +17,12 @@ const (
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
+	// PromptQueued is a prompt sent while a turn was running. It waits in the
+	// log, not in a connection, and starts its own turn once the session is
+	// idle. PromptDequeued removes it: because it started, because a human
+	// took it back, or because the running turn was interrupted.
+	PromptQueued   = "prompt.queued"
+	PromptDequeued = "prompt.dequeued"
 	// TurnDiff reports what one turn changed on disk. It arrives after
 	// turn.finished, because it is measured by snapshotting the checkout once
 	// the harness has stopped writing to it.
@@ -200,6 +206,25 @@ func ImageTitle(n int) string {
 	}
 	return fmt.Sprintf("%d images", n)
 }
+
+type PromptQueuedPayload struct {
+	QueueID string        `json:"queueId"`
+	Prompt  string        `json:"prompt"`
+	Images  []PromptImage `json:"images,omitempty"`
+}
+
+type PromptDequeuedPayload struct {
+	QueueID string `json:"queueId"`
+	// Reason is one of started, removed, cancelled.
+	Reason string `json:"reason"`
+}
+
+// Reasons for PromptDequeued.
+const (
+	DequeueStarted   = "started"
+	DequeueRemoved   = "removed"
+	DequeueCancelled = "cancelled"
+)
 
 type TurnStartedPayload struct {
 	TurnID string `json:"turnId"`

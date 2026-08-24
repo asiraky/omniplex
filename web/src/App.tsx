@@ -626,8 +626,33 @@ export function App() {
   );
 
   const cancel = useCallback(() => {
-    if (activeId) clientRef.current?.command("cancel", { sessionId: activeId });
-  }, [activeId]);
+    if (!activeId) return;
+    // Stop drops whatever was queued behind the turn; the text comes back to
+    // the composer rather than vanishing, in front of anything already typed.
+    const queued = state?.queuedPrompts ?? [];
+    if (queued.length > 0) {
+      const restored = queued.map((q) => q.prompt).filter(Boolean);
+      const current = drafts[activeId] ?? "";
+      setDraft(activeId, [...restored, current].filter(Boolean).join("\n\n"));
+    }
+    clientRef.current?.command("cancel", { sessionId: activeId });
+  }, [activeId, drafts, setDraft, state]);
+
+  const dequeue = useCallback(
+    (queueId: string) => {
+      if (!activeId) return;
+      const text = state?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
+      clientRef.current?.command("dequeue_prompt", { sessionId: activeId, queueId }).then(
+        () => {
+          if (!text) return;
+          const current = drafts[activeId] ?? "";
+          setDraft(activeId, [text, current].filter(Boolean).join("\n\n"));
+        },
+        (e) => toast.error("Could not remove that prompt", { description: e.message }),
+      );
+    },
+    [activeId, drafts, setDraft, state],
+  );
 
   const resolvePermission = useCallback(
     (requestId: string, outcome: string, optionId: string) => {
@@ -1199,7 +1224,7 @@ export function App() {
             <div className="from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b to-transparent" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} />
+              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the

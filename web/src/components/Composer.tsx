@@ -611,7 +611,7 @@ export function Composer({
             />
           )}
 
-          {busy ? (
+          {busy && (
             <Button
               variant="destructive"
               size="icon"
@@ -625,12 +625,17 @@ export function Composer({
             >
               <SquareIcon className="size-3.5 fill-current" />
             </Button>
-          ) : (
+          )}
+          {/* Sending while a turn runs queues the message behind it. The
+              button only appears once there is something to queue, so an
+              idle-looking stop button is not crowded by a dead send. */}
+          {(!busy || draft.trim() || sendableImages > 0) && (
             <Button
               size="icon"
               disabled={disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0)}
               onClick={() => void send()}
-              aria-label="Send"
+              aria-label={busy ? "Queue" : "Send"}
+              title={busy ? "Queue for after this turn" : undefined}
               className="ml-1.5 size-11 shrink-0 rounded-full md:ml-2 md:size-8"
             >
               <ArrowUpIcon />

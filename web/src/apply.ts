@@ -23,6 +23,7 @@ export function emptyState(sessionId: string): SessionState {
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     pendingPermissions: [],
     pendingElicitations: [],
+    queuedPrompts: [],
   };
 }
 
@@ -115,6 +116,15 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
             })
           : s.items,
       };
+
+    case "prompt.queued":
+      return {
+        ...s,
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+      };
+
+    case "prompt.dequeued":
+      return { ...s, queuedPrompts: (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) };
 
     case "turn.finished": {
       // Only the finish of the turn that is actually open may take the

@@ -132,3 +132,18 @@ describe("applyEvent config changes", () => {
     expect(s.model).toBe("sonnet");
   });
 });
+
+describe("queued prompts", () => {
+  it("adds on prompt.queued and removes on prompt.dequeued, leaving the turn list alone", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "prompt.queued", { queueId: "q1", prompt: "then this" }, 2000));
+    s = applyEvent(s, ev(3, "prompt.queued", { queueId: "q2", prompt: "and this" }));
+    expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q1", "q2"]);
+    expect(s.queuedPrompts[0].queuedAt).toBe(2000);
+    expect(s.turns).toHaveLength(1);
+    expect(s.phase).toBe("turn");
+    s = applyEvent(s, ev(4, "prompt.dequeued", { queueId: "q1", reason: "started" }));
+    expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q2"]);
+  });
+});

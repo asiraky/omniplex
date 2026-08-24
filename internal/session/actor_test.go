@@ -375,15 +375,16 @@ func TestComposerActionReservesTheTurnBeforeCallingHarness(t *testing.T) {
 	if state.Phase != "turn" || len(state.Turns) == 0 || state.Turns[len(state.Turns)-1].Prompt != "/review focus on races" {
 		t.Fatalf("action did not become a canonical turn: %+v", state)
 	}
-	if _, err := actor.Prompt(ctx, "must wait", nil); !errors.Is(err, ErrBusy) {
-		t.Fatalf("concurrent prompt error = %v, want ErrBusy", err)
+	res, err := actor.Prompt(ctx, "must wait", nil)
+	if err != nil || !res.Queued() {
+		t.Fatalf("concurrent prompt = %+v, %v; want queued", res, err)
 	}
 
 	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: in.TurnID, StopReason: proto.StopEndTurn}))
-	waitFor(t, func() bool {
-		next, _ := actor.State(ctx)
-		return next.Phase == "idle"
-	})
+	// The action's turn ending releases the queued prompt.
+	if next := <-fa.session().prompts; next.Text != "must wait" {
+		t.Fatalf("queued prompt after action = %+v", next)
+	}
 }
 
 // TestSetModeSwitchesHarnessAndRecordsEvent covers the mid-session switch: the
@@ -898,7 +899,8 @@ func TestDisconnectIsNotCancel(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	sess := fa.session()
 
-	turnID, err := actor.Prompt(context.Background(), "do a thing", nil)
+	res, err := actor.Prompt(context.Background(), "do a thing", nil)
+	turnID := res.TurnID
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1447,9 +1449,10 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 		return err == nil && state.Phase == "turn"
 	})
 
-	// The turn is real: a prompt while it runs is busy, not accepted.
-	if _, err := actor.Prompt(ctx, "hello", nil); err != ErrBusy {
-		t.Fatalf("prompt during harness-initiated turn: err = %v, want ErrBusy", err)
+	// The turn is real: a prompt while it runs waits behind it rather than
+	// starting a second one.
+	if res, err := actor.Prompt(ctx, "hello", nil); err != nil || !res.Queued() {
+		t.Fatalf("prompt during harness-initiated turn = %+v, %v; want queued", res, err)
 	}
 
 	// The store's phase follows too, so the session list agrees.
@@ -1464,15 +1467,14 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: "harness-turn", StopReason: proto.StopEndTurn,
 	}))
+	// The harness's turn ending releases the queued prompt as a turn of its own.
+	if in := <-fa.session().prompts; in.Text != "hello" {
+		t.Fatalf("queued prompt after harness-initiated turn = %+v", in)
+	}
 	waitFor(t, func() bool {
 		state, err := actor.State(ctx)
-		return err == nil && state.Phase == "idle" && len(state.Turns) == 1 && state.Turns[0].Done
+		return err == nil && state.Phase == "turn" && len(state.Turns) == 2 && state.Turns[0].Done && len(state.Queued) == 0
 	})
-
-	// And the session is promptable again.
-	if _, err := actor.Prompt(ctx, "hello", nil); err != nil {
-		t.Fatalf("prompt after harness-initiated turn finished: %v", err)
-	}
 }
 
 // A harness that dies mid-turn used to leave the turn open in the log. The
@@ -1485,7 +1487,8 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	ctx := context.Background()
 
-	turnID, err := actor.Prompt(ctx, "do the thing", nil)
+	res, err := actor.Prompt(ctx, "do the thing", nil)
+	turnID := res.TurnID
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1566,5 +1569,98 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 	last := state.Turns[len(state.Turns)-1]
 	if last.Failure != proto.FailureAuth {
 		t.Fatalf("failure kind = %q, want %q (error %q)", last.Failure, proto.FailureAuth, last.Error)
+	}
+}
+
+// TestPromptQueuesBehindRunningTurn: a prompt sent mid-turn is not refused. It
+// waits in the log, shows in the projection, and starts its own turn — with
+// its own prompt item — the moment the running turn ends.
+func TestPromptQueuesBehindRunningTurn(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+
+	first, err := actor.Prompt(ctx, "first", nil)
+	if err != nil || first.Queued() {
+		t.Fatalf("first prompt = %+v, %v", first, err)
+	}
+	<-fa.session().prompts
+
+	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	if err != nil || !second.Queued() {
+		t.Fatalf("second prompt = %+v, %v; want queued", second, err)
+	}
+	state, _ := actor.State(ctx)
+	if len(state.Queued) != 1 || state.Queued[0].QueueID != second.QueueID || state.Queued[0].Prompt != "second" || len(state.Turns) != 1 {
+		t.Fatalf("queued state = %+v", state.Queued)
+	}
+
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.session().prompts
+	if in.Text != "second" || len(in.Images) != 1 || in.TurnID == "" || in.TurnID == first.TurnID {
+		t.Fatalf("dispatched prompt = %+v", in)
+	}
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return len(next.Queued) == 0 && len(next.Turns) == 2 && next.Turns[1].Prompt == "second" && next.Phase == "turn"
+	})
+}
+
+// TestDequeuePromptTakesItBack: a queued prompt can be removed before it runs,
+// and removing it twice is an error rather than a silent no-op.
+func TestDequeuePromptTakesItBack(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	<-fa.session().prompts
+	queued, _ := actor.Prompt(ctx, "later", nil)
+	if err := actor.DequeuePrompt(ctx, queued.QueueID); err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.DequeuePrompt(ctx, queued.QueueID); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("second dequeue err = %v, want ErrNotQueued", err)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "idle"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("removed prompt still ran: %+v", in)
+	default:
+	}
+	state, _ := actor.State(ctx)
+	if len(state.Queued) != 0 || len(state.Turns) != 1 {
+		t.Fatalf("state after dequeue = %+v", state)
+	}
+}
+
+// TestCancelDropsQueuedPrompts: interrupting a turn must not let the next
+// queued prompt start the instant the interrupt lands.
+func TestCancelDropsQueuedPrompts(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	<-fa.session().prompts
+	if _, err := actor.Prompt(ctx, "later", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "idle"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("cancelled queue still ran: %+v", in)
+	default:
+	}
+	if state, _ := actor.State(ctx); len(state.Queued) != 0 {
+		t.Fatalf("queue survived cancel: %+v", state.Queued)
 	}
 }

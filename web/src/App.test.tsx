@@ -101,6 +101,7 @@ const state = (id: string, mode: string): any => ({
   usage: {},
   pendingPermissions: [],
   pendingElicitations: [],
+  queuedPrompts: [],
 });
 
 describe("copying a transcript", () => {

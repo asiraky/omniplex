@@ -143,10 +143,16 @@ const (
 	cmdHarnessEvent  = "harness_event"
 	cmdHarnessExit   = "harness_exit"
 	cmdContinue      = "continue"
+	cmdDequeue       = "dequeue_prompt"
 )
 
-// ErrBusy is returned when a prompt arrives while a turn is already running.
+// ErrBusy is returned when a composer action arrives while a turn is already
+// running. A plain prompt is never refused for this: it queues instead.
 var ErrBusy = errors.New("a turn is already in progress")
+
+// ErrNotQueued is returned when asked to remove a queued prompt that is not
+// waiting — it already started, or was removed by someone else.
+var ErrNotQueued = errors.New("that prompt is no longer queued")
 
 // ErrClosed is returned when a command tries to mutate a closed transcript.
 var ErrClosed = errors.New("session is closed")
@@ -458,14 +464,32 @@ func (a *Actor) call(ctx context.Context, c command) (any, error) {
 	}
 }
 
-// Prompt starts a turn. Images are already stored on this host; each carries
-// the path the harness reads it from.
-func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage) (string, error) {
+// PromptResult says what became of a prompt: the turn it started, or the
+// queue entry it became because a turn was already running.
+type PromptResult struct {
+	TurnID  string
+	QueueID string
+}
+
+// Queued reports whether the prompt is waiting rather than running.
+func (r PromptResult) Queued() bool { return r.QueueID != "" }
+
+// Prompt starts a turn, or queues one if a turn is already running: the
+// queued prompt starts its own turn once the session is idle. Images are
+// already stored on this host; each carries the path the harness reads it
+// from.
+func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage) (PromptResult, error) {
 	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text, images: images})
 	if err != nil {
-		return "", err
+		return PromptResult{}, err
 	}
-	return v.(string), nil
+	return v.(PromptResult), nil
+}
+
+// DequeuePrompt takes back a prompt that is still waiting its turn.
+func (a *Actor) DequeuePrompt(ctx context.Context, queueID string) error {
+	_, err := a.call(ctx, command{kind: cmdDequeue, reqID: queueID})
+	return err
 }
 
 // Continue restarts work that ended in an error, on a human's say-so. It is
@@ -476,7 +500,7 @@ func (a *Actor) Continue(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return v.(string), nil
+	return v.(PromptResult).TurnID, nil
 }
 
 func (a *Actor) Emit(ctx context.Context, em proto.Emission) error {
@@ -612,6 +636,10 @@ func (a *Actor) run() {
 			if a.handle(c) {
 				return
 			}
+			// Every command that can end a turn — a harness event, a cancel,
+			// a resume closing an interrupted turn — comes through here, so
+			// this is the one place a queued prompt needs to be picked up.
+			a.dispatchQueued(context.Background())
 		}
 	}
 }
@@ -866,57 +894,42 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		if a.turnActive != "" {
-			c.reply <- cmdResult{err: ErrBusy}
+			// Not refused: the prompt waits in the log and starts its own
+			// turn when this one ends. Recovery prompts are the server's
+			// own and never arrive while a turn is running.
+			queueID := uuid.NewString()
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
 		if a.sess == nil {
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
 		}
-		turnID := uuid.NewString()
-		a.turnActive = turnID
-
-		// The baseline this turn is measured against has to be a picture of the
-		// checkout from before the harness could touch it, so it is taken — and
-		// waited for — before the prompt goes out. The wait is bounded: a slow
-		// checkout should cost this turn its card, not the turn itself.
-		baseCtx, cancelBase := context.WithTimeout(ctx, checkpointBaselineWait)
-		if a.checkpoints.baseline(baseCtx, turnID) {
-			a.measuring = turnID
-		}
-		cancelBase()
-
-		// append records the phase change; no SetPhase needed here.
-		a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: c.prompt, Images: c.images, Recovery: c.recovery}))
-		// A recovery prompt is the server talking to itself; naming a session
-		// after it would bury what the human actually asked for.
-		if c.recovery == nil {
-			title := truncate(c.prompt, 60)
-			if title == "" && len(c.images) > 0 {
-				// An image-only prompt still deserves a name in the sidebar.
-				title = proto.ImageTitle(len(c.images))
-			}
-			_ = a.store.SetTitle(ctx, a.ID, title)
-		}
-
-		if err := a.sess.Prompt(ctx, adapter.PromptInput{TurnID: turnID, Text: c.prompt, Images: c.images}); err != nil {
-			// turnActive is left for append to clear: a prompt that failed on
-			// the way out may still have reached the harness, and the closing
-			// snapshot is the only way to find out what it did.
-			// The adapter may already know what kind of failure this is —
-			// a harness that needs a login says so when it refuses the
-			// prompt — and dropping that leaves the turn looking generic
-			// enough to be offered a continue button it cannot use.
-			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
-				Failure: adapter.FailureOf(err),
-			}))
+		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery)
+		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		c.reply <- cmdResult{value: turnID}
+		c.reply <- cmdResult{value: PromptResult{TurnID: turnID}}
+
+	case cmdDequeue:
+		if a.state.Closed {
+			c.reply <- cmdResult{err: ErrClosed}
+			return false
+		}
+		if !a.isQueued(c.reqID) {
+			c.reply <- cmdResult{err: ErrNotQueued}
+			return false
+		}
+		a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: c.reqID, Reason: proto.DequeueRemoved}))
+		c.reply <- cmdResult{}
 
 	case cmdCancel:
+		// Stop means stop: a prompt queued behind the interrupted turn would
+		// otherwise start the moment the interrupt landed. The web puts the
+		// text back in the composer before it asks.
+		a.dropQueue()
 		if a.turnActive == "" {
 			c.reply <- cmdResult{value: "idle"}
 			return false
@@ -1076,6 +1089,87 @@ func (a *Actor) startCheckpoints() {
 		return
 	}
 	a.checkpoints = newCheckpointer(a.Cwd, a.ID, a.enqueueEmission, a.logf)
+}
+
+// startTurn opens a turn for a prompt and sends it to the harness. The caller
+// has already checked that the session is open, activated, and idle.
+func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.PromptImage, recovery *proto.TurnRecovery) (string, error) {
+	turnID := uuid.NewString()
+	a.turnActive = turnID
+
+	// The baseline this turn is measured against has to be a picture of the
+	// checkout from before the harness could touch it, so it is taken — and
+	// waited for — before the prompt goes out. The wait is bounded: a slow
+	// checkout should cost this turn its card, not the turn itself.
+	baseCtx, cancelBase := context.WithTimeout(ctx, checkpointBaselineWait)
+	if a.checkpoints.baseline(baseCtx, turnID) {
+		a.measuring = turnID
+	}
+	cancelBase()
+
+	// append records the phase change; no SetPhase needed here.
+	a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: prompt, Images: images, Recovery: recovery}))
+	// A recovery prompt is the server talking to itself; naming a session
+	// after it would bury what the human actually asked for.
+	if recovery == nil {
+		title := truncate(prompt, 60)
+		if title == "" && len(images) > 0 {
+			// An image-only prompt still deserves a name in the sidebar.
+			title = proto.ImageTitle(len(images))
+		}
+		_ = a.store.SetTitle(ctx, a.ID, title)
+	}
+
+	if err := a.sess.Prompt(ctx, adapter.PromptInput{TurnID: turnID, Text: prompt, Images: images}); err != nil {
+		// turnActive is left for append to clear: a prompt that failed on
+		// the way out may still have reached the harness, and the closing
+		// snapshot is the only way to find out what it did.
+		// The adapter may already know what kind of failure this is —
+		// a harness that needs a login says so when it refuses the
+		// prompt — and dropping that leaves the turn looking generic
+		// enough to be offered a continue button it cannot use.
+		a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+			TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+			Failure: adapter.FailureOf(err),
+		}))
+		return "", err
+	}
+	return turnID, nil
+}
+
+func (a *Actor) isQueued(queueID string) bool {
+	for _, q := range a.state.Queued {
+		if q.QueueID == queueID {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchQueued starts the oldest queued prompt if the session is idle and
+// able to run one. A prompt that fails on the way out takes the rest of the
+// queue with it: whatever refused it — a login, a dead bridge — would refuse
+// them all, and firing them one per command would only spread the failure
+// across the transcript.
+func (a *Actor) dispatchQueued(ctx context.Context) {
+	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed {
+		return
+	}
+	next := a.state.Queued[0]
+	a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: next.QueueID, Reason: proto.DequeueStarted}))
+	if _, err := a.startTurn(ctx, next.Prompt, next.Images, nil); err != nil {
+		a.logf("queued prompt on %s: %v", a.ID, err)
+		a.dropQueue()
+	}
+}
+
+// dropQueue takes every waiting prompt out of the queue. Presenters that
+// want the text back read it from the state before asking for whatever
+// caused this.
+func (a *Actor) dropQueue() {
+	for _, q := range append([]projection.QueuedPrompt(nil), a.state.Queued...) {
+		a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: q.QueueID, Reason: proto.DequeueCancelled}))
+	}
 }
 
 // append writes the event, folds it into the projection, and fans it out.

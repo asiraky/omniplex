@@ -431,12 +431,32 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 				images = append(images, proto.PromptImage{ID: m.ID, MediaType: m.MediaType, Path: paths[i]})
 			}
 		}
-		turnID, err := actor.Prompt(ctx, a.Text, images)
+		res, err := actor.Prompt(ctx, a.Text, images)
 		if err != nil {
 			return nil, err
 		}
 		c.srv.mgr.NotifyList()
-		return map[string]any{"turnId": turnID}, nil
+		if res.Queued() {
+			return map[string]any{"queueId": res.QueueID}, nil
+		}
+		return map[string]any{"turnId": res.TurnID}, nil
+
+	case "dequeue_prompt":
+		var a struct {
+			SessionID string `json:"sessionId"`
+			QueueID   string `json:"queueId"`
+		}
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if err := actor.DequeuePrompt(ctx, a.QueueID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "removed"}, nil
 
 	case "continue_session":
 		var a sessionArgs
