@@ -1,6 +1,5 @@
-import { ChevronRightIcon, CircleAlertIcon, FolderIcon, GitBranchIcon, PanelLeftIcon, PlusIcon, TagIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, FolderIcon, GitBranchIcon, PanelLeftIcon, PlusIcon, XIcon } from "lucide-react";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -16,6 +15,7 @@ import {
 } from "~/components/DeleteSessionDialog";
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { IconButton } from "~/components/IconButton";
+import { LabelFilter } from "~/components/LabelFilter";
 import { LabelDot, LabelMenu } from "~/components/LabelMenu";
 import {
   DropdownMenu,
@@ -27,9 +27,9 @@ import { Button } from "~/components/ui/button";
 import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { visibleSessions } from "~/labelFilter";
 import { cn } from "~/lib/utils";
 import type { Label, SessionMeta } from "~/protocol";
-import { buildGroups } from "~/sidebarGroups";
 import { useIsDesktop } from "~/useMediaQuery";
 
 const BUSY_PHASES = ["turn", "provisioning", "creating", "cleaning"];
@@ -60,17 +60,17 @@ function ago(ms: number) {
 }
 
 const WIDTH_KEY = "omniplex.sidebarWidth";
-// Which label groups this device has folded shut. Deliberately device-local,
-// like the width: only the per-label "collapsed by default" flag syncs, so a
-// phone and a desktop can hold different groups open.
-const COLLAPSE_KEY = "omniplex.labelCollapse";
+// Which labels this device is currently hiding. Device-local like the width:
+// the phone is usually filtered down to one thing and the desktop is not, and
+// making that travel would mean one of them is always wrong.
+const FILTER_KEY = "omniplex.labelFilter";
 
-function loadCollapse(): Record<string, boolean> {
+function loadHidden(): Set<string> {
   try {
-    const raw = JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? "{}");
-    return raw && typeof raw === "object" ? (raw as Record<string, boolean>) : {};
+    const raw = JSON.parse(localStorage.getItem(FILTER_KEY) ?? "[]");
+    return new Set(Array.isArray(raw) ? raw.filter((k) => typeof k === "string") : []);
   } catch {
-    return {};
+    return new Set();
   }
 }
 const MIN_WIDTH = 208;
@@ -195,20 +195,25 @@ function SessionList({
   labels,
   onSetLabel,
   onManageLabels,
-  collapsed,
-  onToggleGroup,
+  hidden,
+  onShowAll,
 }: Pick<
   SidebarProps,
   "activeId" | "onSelect" | "accentOf" | "projectName" | "labels" | "onSetLabel" | "onManageLabels"
 > & {
   flow: DeleteFlow;
-  /** Effective per-group overrides; absence falls back to the label's default. */
-  collapsed: Record<string, boolean>;
-  onToggleGroup: (key: string, collapsed: boolean) => void;
+  /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
+  hidden: Set<string>;
+  onShowAll: () => void;
 }) {
   const { rows, ask, deleting, exiting } = flow;
 
-  // No sessions is no sessions: labels are a way to arrange a list, not a
+  // Filtering runs over the delete flow's rows — frozen order, exiting row and
+  // all — so a departing session folds away in place instead of vanishing the
+  // instant the filter is recomputed.
+  const shown = visibleSessions(rows, labels, hidden);
+
+  // No sessions is no sessions: labels are a way to narrow a list, not a
   // thing to show in place of one.
   if (rows.length === 0) {
     return (
@@ -217,6 +222,22 @@ function SessionList({
         <br />
         <span className="text-[12px]">Start one to see it here.</span>
       </p>
+    );
+  }
+
+  // There are sessions; the filter is the only reason none of them are here,
+  // so the way out of that is the message rather than something to go hunting
+  // for in the header.
+  if (shown.length === 0) {
+    return (
+      <div className="px-3 py-10 text-center">
+        <p className="text-muted-foreground text-[13px]">
+          {rows.length} session{rows.length === 1 ? "" : "s"} hidden by the label filter.
+        </p>
+        <Button variant="outline" size="sm" onClick={onShowAll} className="mt-3 h-8">
+          Show all
+        </Button>
+      </div>
     );
   }
 
@@ -229,6 +250,9 @@ function SessionList({
     const active = s.id === activeId;
     const leaving = exiting?.id === s.id;
     const going = deleting?.id === s.id;
+    // Undefined for unlabelled, and for a label another device has just
+    // deleted — the assignment broadcast can land after the deletion one.
+    const label = labels.find((l) => l.id === s.labelId);
     return (
           // The row leaves from wherever it stands: it fades and slides out
           // while its own height folds shut under it, so the rows below close
@@ -289,9 +313,15 @@ function SessionList({
                     // claim. Deliberately not transitioned: an animated padding
                     // hands the tag ~150ms sitting on the title, which is the
                     // bug in miniature. The line yields first, then it fades in.
-                    labels.length > 0
-                      ? "pr-16 md:pr-0 md:group-hover:pr-16 md:group-focus-within:pr-16 md:group-has-[[aria-expanded=true]]:pr-16"
-                      : "pr-8 md:pr-0",
+                    // A filed session shows its dot at all times, so on
+                    // desktop the line has to yield at all times too —
+                    // hover-only reservation would leave the title running
+                    // under a dot that is already there.
+                    label
+                      ? "pr-16"
+                      : labels.length > 0
+                        ? "pr-16 md:pr-0 md:group-hover:pr-16 md:group-focus-within:pr-16 md:group-has-[[aria-expanded=true]]:pr-16"
+                        : "pr-8 md:pr-0",
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate text-[13px]">
@@ -356,20 +386,46 @@ function SessionList({
                         <Button
                           variant="ghost"
                           size="icon"
-                          aria-label={`Label session ${s.title || "Untitled"}`}
+                          aria-label={
+                            label
+                              ? `Labelled ${label.name} — change label`
+                              : `Label session ${s.title || "Untitled"}`
+                          }
                           // Sits one control-width left of the X and reveals
                           // the same way, so the pair reads as one action rail.
                           // It also stays up while its menu is: keyed off
                           // aria-expanded, because the tooltip wrapped around
                           // this same element wins the data-state attribute and
                           // reports "closed" with the menu plainly open.
-                          className="absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:opacity-0 md:after:hidden md:group-hover:opacity-100 md:focus-visible:opacity-100 md:aria-expanded:opacity-100"
+                          //
+                          // A filed session keeps its dot on screen at all
+                          // times — the dot *is* the label now, and it is the
+                          // only place the filing shows. An unfiled one keeps
+                          // the old hover-in behaviour, so an untouched list
+                          // stays as quiet as it was.
+                          className={cn(
+                            "absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:after:hidden md:aria-expanded:opacity-100",
+                            !label &&
+                              "md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+                          )}
                         >
-                          <TagIcon />
+                          {label ? (
+                            <LabelDot color={label.color} className="size-2.5 shrink-0 rounded-full" />
+                          ) : (
+                            // Unfiled reads as an empty socket rather than a
+                            // grey label: a ring, not a filled dot.
+                            <span
+                              aria-hidden
+                              className="border-muted-foreground/60 size-2.5 shrink-0 rounded-full border"
+                            />
+                          )}
                         </Button>
                       </DropdownMenuTrigger>
                     </TooltipTrigger>
-                    <TooltipContent>Label session</TooltipContent>
+                    {/* The name lives here and nowhere else, which is the
+                        trade the dot makes: no truncated text in the row, one
+                        hover (or one tap, on the menu) to find out. */}
+                    <TooltipContent>{label ? label.name : "Label session"}</TooltipContent>
                   </Tooltip>
                   <LabelMenu
                     labels={labels}
@@ -407,61 +463,26 @@ function SessionList({
         );
   };
 
-  // No label in use: the flat list, exactly as it has always rendered.
-  // Grouping is computed over the delete flow's rows — frozen order, exiting
-  // row and all — so a departing session folds away inside its own group.
-  const groups = buildGroups(rows, labels);
-  if (!groups) return <>{rows.map(row)}</>;
-
-  return (
-    <>
-      {groups.map((g) => {
-        // The unlabelled run is not a group the user made, so it gets no
-        // heading, no chevron and no count — it is just the top of the list,
-        // the way it looked before any label existed.
-        if (!g.label) return <Fragment key="unlabelled">{g.sessions.map(row)}</Fragment>;
-        const isCollapsed = collapsed[g.label.id] ?? g.label.collapsedByDefault ?? false;
-        return (
-          <section key={g.label.id} aria-label={g.label.name}>
-            <button
-              type="button"
-              onClick={() => onToggleGroup(g.label!.id, !isCollapsed)}
-              aria-expanded={!isCollapsed}
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 pt-2 pb-1 text-[11px] font-medium outline-none focus-visible:ring-2"
-            >
-              <ChevronRightIcon
-                aria-hidden
-                className={cn(
-                  "size-3 shrink-0 transition-transform motion-reduce:transition-none",
-                  !isCollapsed && "rotate-90",
-                )}
-              />
-              <LabelDot color={g.label.color} />
-              <span className="truncate">{g.label.name}</span>
-              <span className="ml-auto font-mono text-[10px] tabular-nums">
-                {g.sessions.length}
-              </span>
-            </button>
-            {!isCollapsed && g.sessions.map(row)}
-          </section>
-        );
-      })}
-    </>
-  );
+  // One flat list, most recent first. Labels narrow it from the header now;
+  // they no longer carve it into sections.
+  return <>{shown.map(row)}</>;
 }
 
 function SidebarPanel({
   showCollapse,
   flow,
-  collapsed,
-  onToggleGroup,
+  hidden,
+  onToggleLabel,
+  onShowAll,
   ...props
 }: SidebarProps & {
   showCollapse: boolean;
   flow: DeleteFlow;
-  collapsed: Record<string, boolean>;
-  onToggleGroup: (key: string, collapsed: boolean) => void;
+  hidden: Set<string>;
+  onToggleLabel: (key: string, show: boolean) => void;
+  onShowAll: () => void;
 }) {
+  const shownCount = visibleSessions(props.sessions, props.labels, hidden).length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
       {/* One quiet header row: what the panel is, and the one action it
@@ -469,13 +490,15 @@ function SidebarPanel({
           lives in the footer, still one click from the access panel. */}
       <div className="flex items-center gap-2 px-3 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-1.5">
         <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
-        <IconButton
-          label="Labels"
-          onClick={props.onManageLabels}
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <TagIcon />
-        </IconButton>
+        {/* One label control, not two: what is showing, and the way to the
+            manager that creates and edits them. */}
+        <LabelFilter
+          labels={props.labels}
+          hidden={hidden}
+          onToggle={onToggleLabel}
+          onShowAll={onShowAll}
+          onManage={props.onManageLabels}
+        />
         <IconButton label="New session" onClick={props.onNew} className="text-muted-foreground hover:text-foreground">
           <PlusIcon />
         </IconButton>
@@ -500,16 +523,20 @@ function SidebarPanel({
           labels={props.labels}
           onSetLabel={props.onSetLabel}
           onManageLabels={props.onManageLabels}
-          collapsed={collapsed}
-          onToggleGroup={onToggleGroup}
+          hidden={hidden}
+          onShowAll={onShowAll}
         />
       </nav>
 
       <Separator />
 
       <div className="flex items-center gap-2 px-3 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+        {/* Filtered, the count says so: with grouping gone there is nothing
+            else on screen to admit that sessions are missing. */}
         <span className="text-muted-foreground flex-1 text-[11px]">
-          {props.sessions.length} session{props.sessions.length === 1 ? "" : "s"}
+          {shownCount < props.sessions.length
+            ? `${shownCount} of ${props.sessions.length} sessions`
+            : `${props.sessions.length} session${props.sessions.length === 1 ? "" : "s"}`}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -540,21 +567,27 @@ export function Sidebar(props: SidebarProps) {
   // selects it.
   const flow = useDeleteFlow(props);
 
-  // Which groups this device has folded, above both shapes for the same
-  // reason as the delete flow. Only explicit toggles are stored: a group the
-  // user never touched keeps following its label's synced default.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(loadCollapse);
-  const onToggleGroup = useCallback((key: string, value: boolean) => {
-    setCollapsed((current) => {
-      const next = { ...current, [key]: value };
-      try {
-        localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
-      } catch {
-        // Storage can be blocked outright; the toggle still works for this page.
-      }
-      return next;
+  // Which labels this device is hiding, above both shapes for the same reason
+  // as the delete flow. Only what the user switched off is stored, so a label
+  // created later — here or on a paired device — arrives showing.
+  const [hidden, setHidden] = useState<Set<string>>(loadHidden);
+  const persist = (next: Set<string>) => {
+    try {
+      localStorage.setItem(FILTER_KEY, JSON.stringify([...next]));
+    } catch {
+      // Storage can be blocked outright; the filter still works for this page.
+    }
+    return next;
+  };
+  const onToggleLabel = useCallback((key: string, show: boolean) => {
+    setHidden((current) => {
+      const next = new Set(current);
+      if (show) next.delete(key);
+      else next.add(key);
+      return persist(next);
     });
   }, []);
+  const onShowAll = useCallback(() => setHidden(() => persist(new Set())), []);
 
   // Below md the sidebar is a drawer over the transcript, which is a sheet's
   // whole job: overlay, focus trap, escape to close. At md it is the docked
@@ -594,8 +627,9 @@ export function Sidebar(props: SidebarProps) {
             <SidebarPanel
               {...props}
               flow={flow}
-              collapsed={collapsed}
-              onToggleGroup={onToggleGroup}
+              hidden={hidden}
+              onToggleLabel={onToggleLabel}
+              onShowAll={onShowAll}
               showCollapse={props.activeId !== null}
             />
           </SheetContent>
@@ -607,7 +641,13 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <>
-      <DockedSidebar {...props} flow={flow} collapsed={collapsed} onToggleGroup={onToggleGroup} />
+      <DockedSidebar
+        {...props}
+        flow={flow}
+        hidden={hidden}
+        onToggleLabel={onToggleLabel}
+        onShowAll={onShowAll}
+      />
       <DeleteSessionDialog flow={flow.session} />
     </>
   );
@@ -615,13 +655,15 @@ export function Sidebar(props: SidebarProps) {
 
 function DockedSidebar({
   flow,
-  collapsed,
-  onToggleGroup,
+  hidden,
+  onToggleLabel,
+  onShowAll,
   ...props
 }: SidebarProps & {
   flow: DeleteFlow;
-  collapsed: Record<string, boolean>;
-  onToggleGroup: (key: string, collapsed: boolean) => void;
+  hidden: Set<string>;
+  onToggleLabel: (key: string, show: boolean) => void;
+  onShowAll: () => void;
 }) {
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_KEY));
@@ -677,8 +719,9 @@ function DockedSidebar({
       <SidebarPanel
         {...props}
         flow={flow}
-        collapsed={collapsed}
-        onToggleGroup={onToggleGroup}
+        hidden={hidden}
+        onToggleLabel={onToggleLabel}
+        onShowAll={onShowAll}
         showCollapse
       />
       <div

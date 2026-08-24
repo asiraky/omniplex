@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Sidebar } from "./Sidebar";
 import { render, viewport } from "~/test/harness";
-import type { SessionMeta } from "~/protocol";
+import type { Label, SessionMeta } from "~/protocol";
 
 const session = (id: string, over: Partial<SessionMeta> = {}): SessionMeta =>
   ({
@@ -383,5 +383,68 @@ describe("Sidebar", () => {
 
     serverSays([session("b")]);
     expect(screen.queryByRole("button", { name: /Deleting/ })).toBeNull();
+  });
+
+  describe("labels", () => {
+    const labels: Label[] = [
+      { id: "l1", name: "Parked", color: "#8d8d8d", position: 0, createdAt: 1 },
+      { id: "l2", name: "In progress", color: "#0091ff", position: 1, createdAt: 2 },
+    ];
+    const filed = [session("a", { labelId: "l1" }), session("b", { labelId: "l2" }), session("c")];
+
+    afterEach(() => localStorage.clear());
+
+    it("names the label on its dot, and offers filing on an unlabelled row", () => {
+      // The name is not in the row any more — it is the accessible name of the
+      // dot, which is also what the tooltip says on hover.
+      renderSidebar({ sessions: filed, labels });
+      expect(screen.getByRole("button", { name: "Labelled Parked — change label" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Label session Session c" })).toBeTruthy();
+    });
+
+    it("carries one label control in the header, and it is the filter", () => {
+      renderSidebar({ sessions: filed, labels });
+      expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
+      // The old second button — a bare "Labels" that opened the manager — is
+      // gone; the manager is an item inside the filter menu now.
+      expect(screen.queryByRole("button", { name: "Labels" })).toBeNull();
+    });
+
+    it("hides the sessions under a switched-off label, and says so in the footer", () => {
+      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1"]));
+      renderSidebar({ sessions: filed, labels });
+
+      expect(rowOrder()).toEqual(["Session b", "Session c"]);
+      expect(screen.getByText("2 of 3 sessions")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter by label — 1 hidden" })).toBeTruthy();
+    });
+
+    it("switches unlabelled sessions off on their own", () => {
+      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["none"]));
+      renderSidebar({ sessions: filed, labels });
+      expect(rowOrder()).toEqual(["Session a", "Session b"]);
+    });
+
+    it("offers the way back when the filter has hidden everything", () => {
+      // Filtered to nothing is not "no sessions yet": the sessions are there,
+      // and with no groups left on screen the message is the only thing that
+      // can say so.
+      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1", "l2", "none"]));
+      renderSidebar({ sessions: filed, labels });
+      expect(screen.getByText("3 sessions hidden by the label filter.")).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+      expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
+      expect(localStorage.getItem("omniplex.labelFilter")).toBe("[]");
+    });
+
+    it("ignores a stored id whose label has since been deleted", () => {
+      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l2"]));
+      renderSidebar({ sessions: filed, labels: [labels[0]] });
+      // "b" was filed under the deleted label, so it is unlabelled now — and
+      // unlabelled is showing.
+      expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
+      expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
+    });
   });
 });

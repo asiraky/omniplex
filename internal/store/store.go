@@ -69,7 +69,6 @@ CREATE TABLE IF NOT EXISTS labels (
   name          TEXT NOT NULL,
   color         TEXT NOT NULL DEFAULT '',
   position      INTEGER NOT NULL DEFAULT 0,
-  collapsed     INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL
 );
 `
@@ -362,17 +361,13 @@ type Label struct {
 	Name  string `json:"name"`
 	Color string `json:"color"`
 	// Position is the user's chosen sidebar order, smallest first.
-	Position int `json:"position"`
-	// CollapsedByDefault marks a group that should start folded — a "Parked"
-	// group stays out of the way without hiding its sessions. Live collapse
-	// state is a device-local concern; only this default is shared.
-	CollapsedByDefault bool  `json:"collapsedByDefault"`
-	CreatedAt          int64 `json:"createdAt"`
+	Position  int   `json:"position"`
+	CreatedAt int64 `json:"createdAt"`
 }
 
 func (s *Store) ListLabels(ctx context.Context) ([]Label, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, color, position, collapsed, created_at FROM labels ORDER BY position ASC, created_at ASC, id ASC`)
+		`SELECT id, name, color, position, created_at FROM labels ORDER BY position ASC, created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -381,11 +376,9 @@ func (s *Store) ListLabels(ctx context.Context) ([]Label, error) {
 	out := []Label{}
 	for rows.Next() {
 		var l Label
-		var collapsed int
-		if err := rows.Scan(&l.ID, &l.Name, &l.Color, &l.Position, &collapsed, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.Name, &l.Color, &l.Position, &l.CreatedAt); err != nil {
 			return nil, err
 		}
-		l.CollapsedByDefault = collapsed != 0
 		out = append(out, l)
 	}
 	return out, rows.Err()
@@ -399,9 +392,9 @@ func (s *Store) CreateLabel(ctx context.Context, l Label) (Label, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO labels (id, name, color, position, collapsed, created_at)
-		 VALUES (?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM labels),?,?)`,
-		l.ID, l.Name, l.Color, boolInt(l.CollapsedByDefault), l.CreatedAt)
+		`INSERT INTO labels (id, name, color, position, created_at)
+		 VALUES (?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM labels),?)`,
+		l.ID, l.Name, l.Color, l.CreatedAt)
 	if err != nil {
 		return Label{}, err
 	}
@@ -412,15 +405,15 @@ func (s *Store) CreateLabel(ctx context.Context, l Label) (Label, error) {
 	return l, nil
 }
 
-// SaveLabel rewrites an existing definition — rename, recolour, reorder, or
-// the collapse default. Unknown ids are refused rather than upserted, so a
-// stale client cannot resurrect a label another device just deleted.
+// SaveLabel rewrites an existing definition — rename, recolour, reorder.
+// Unknown ids are refused rather than upserted, so a stale client cannot
+// resurrect a label another device just deleted.
 func (s *Store) SaveLabel(ctx context.Context, l Label) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE labels SET name=?, color=?, position=?, collapsed=? WHERE id=?`,
-		l.Name, l.Color, l.Position, boolInt(l.CollapsedByDefault), l.ID)
+		`UPDATE labels SET name=?, color=?, position=? WHERE id=?`,
+		l.Name, l.Color, l.Position, l.ID)
 	if err != nil {
 		return err
 	}
@@ -480,13 +473,6 @@ func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) 
 		return ErrNotFound
 	}
 	return nil
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // ---- Snapshots (a cache; deleting the table changes only latency) ----

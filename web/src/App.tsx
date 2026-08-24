@@ -487,7 +487,6 @@ export function App() {
         name: label.name,
         color: label.color,
         position: label.position,
-        collapsedByDefault: !!label.collapsedByDefault,
       })
       .catch((e) => {
         toast.error("Could not save that label", { description: e.message });

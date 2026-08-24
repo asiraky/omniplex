@@ -166,14 +166,13 @@ type createLabelArgs struct {
 	Color string `json:"color"`
 }
 
-// saveLabelArgs is the whole definition, restated: rename, recolour, reorder,
-// and the collapse default all travel through the one shape.
+// saveLabelArgs is the whole definition, restated: rename, recolour and
+// reorder all travel through the one shape.
 type saveLabelArgs struct {
-	LabelID            string `json:"labelId"`
-	Name               string `json:"name"`
-	Color              string `json:"color"`
-	Position           int    `json:"position"`
-	CollapsedByDefault bool   `json:"collapsedByDefault"`
+	LabelID  string `json:"labelId"`
+	Name     string `json:"name"`
+	Color    string `json:"color"`
+	Position int    `json:"position"`
 }
 
 type deleteLabelArgs struct {
