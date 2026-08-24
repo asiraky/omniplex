@@ -157,6 +157,12 @@ export interface TurnDiff {
 export interface TurnRecovery {
   resumeOf: string;
   attempt: number;
+  /**
+   * What left the earlier turn unfinished: "restart" when the server died
+   * under it, "continue" when a human asked to carry on from an error. Only a
+   * restart may be described as one.
+   */
+  cause?: "restart" | "continue";
 }
 
 export interface Turn {
@@ -165,9 +171,16 @@ export interface Turn {
   images?: PromptImage[];
   stopReason?: StopReason;
   error?: string;
+  /**
+   * What kind of failure `error` describes, when the server could say: "auth"
+   * (no usable credentials — retrying is pointless until someone logs in) or
+   * "restart" (the server died mid-turn). Absent means unclassified; show the
+   * message and nothing more. Branch on this rather than on the wording.
+   */
+  failure?: "auth" | "restart";
   done: boolean;
-  // Present only on a turn the server started itself, to continue work a
-  // restart interrupted.
+  // Present only on a turn that continues work an earlier turn left
+  // unfinished — after a restart, or because a human asked.
   recovery?: TurnRecovery;
   // What the turn changed on disk. Absent until the turn has finished and been
   // measured, and on any turn that changed nothing.

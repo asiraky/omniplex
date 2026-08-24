@@ -278,7 +278,8 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	for _, turn := range state.Turns {
 		if !turn.Done {
 			a.enqueueEmission(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-				TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn",
+				TurnID: turn.ID, StopReason: proto.StopError,
+				Error: "server restarted during turn", Failure: proto.FailureRestart,
 			}))
 		}
 	}
@@ -596,9 +597,15 @@ func (a *Actor) handle(c command) (stop bool) {
 		if last.Recovery != nil {
 			attempt = last.Recovery.Attempt + 1
 		}
+		// A restart is the only thing that entitles anyone to say one
+		// happened. This is a human continuing a turn that ended in an error —
+		// which is true whether or not a restart caused the original failure —
+		// so it carries its own prompt and its own cause.
 		c.kind = cmdPrompt
-		c.prompt = recoveryPrompt
-		c.recovery = &proto.TurnRecovery{ResumeOf: last.ID, Attempt: attempt}
+		c.prompt = continuePrompt
+		c.recovery = &proto.TurnRecovery{
+			ResumeOf: last.ID, Attempt: attempt, Cause: proto.RecoveryContinue,
+		}
 	}
 
 	switch c.kind {
@@ -615,6 +622,19 @@ func (a *Actor) handle(c command) (stop bool) {
 		a.append(*c.emission)
 
 	case cmdHarnessExit:
+		// A harness that dies without closing its turn leaves the log saying
+		// work is still in flight. Everything downstream then reads that as a
+		// server restart — the only other way a turn stays open — and offers
+		// to resume work that was never interrupted by a restart at all. The
+		// adapter closes the turn itself whenever it can name a reason; this
+		// is the backstop for the race where the process died between the turn
+		// opening and the adapter learning its id.
+		if a.turnActive != "" {
+			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+				TurnID: a.turnActive, StopReason: proto.StopError,
+				Error: "the harness process ended before the turn finished",
+			}))
+		}
 		a.shutdown(false)
 		return true
 
@@ -768,8 +788,13 @@ func (a *Actor) handle(c command) (stop bool) {
 		})
 		cancel()
 		if err != nil {
+			// The adapter may already know what kind of failure this is —
+			// a harness that needs a login says so when it refuses the
+			// prompt — and dropping that leaves the turn looking generic
+			// enough to be offered a continue button it cannot use.
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+				Failure: adapter.FailureOf(err),
 			}))
 		}
 		c.reply <- cmdResult{value: value, err: err}
@@ -817,8 +842,13 @@ func (a *Actor) handle(c command) (stop bool) {
 			// turnActive is left for append to clear: a prompt that failed on
 			// the way out may still have reached the harness, and the closing
 			// snapshot is the only way to find out what it did.
+			// The adapter may already know what kind of failure this is —
+			// a harness that needs a login says so when it refuses the
+			// prompt — and dropping that leaves the turn looking generic
+			// enough to be offered a continue button it cannot use.
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+				Failure: adapter.FailureOf(err),
 			}))
 			c.reply <- cmdResult{err: err}
 			return false

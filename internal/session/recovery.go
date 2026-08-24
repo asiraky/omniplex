@@ -29,11 +29,21 @@ var ErrNothingToContinue = errors.New("the last turn did not end in an error")
 // forever; after this many tries it is left idle for a human to look at.
 const maxRecoveryAttempts = 3
 
-// recoveryPrompt is deliberately about the state of the world rather than the
+// restartPrompt is deliberately about the state of the world rather than the
 // state of the conversation. The harness repairs its own transcript on resume
 // (an interrupted tool call is closed off before the next request), so what
 // the agent cannot know is which of its side effects actually landed.
-const recoveryPrompt = "[omniplex] The omniplex server restarted and interrupted your previous turn. " +
+const restartPrompt = "[omniplex] The omniplex server restarted and interrupted your previous turn. " +
+	"Any tool call that was in flight did not report its result back, so you cannot assume it succeeded or failed. " +
+	"Check the real state of the work first — the files, the diff, whatever you had just run — then continue from where you left off. " +
+	"Do not redo work that is already done, and do not start over."
+
+// continuePrompt is the same instruction for the other way a turn is left
+// unfinished: it ended in an error, and a human asked to carry on. Sending the
+// restart prompt here — which is what used to happen — told the agent, and the
+// screen showing it, that the server had restarted when nothing of the sort
+// had happened. A turn that failed to authenticate is the common case.
+const continuePrompt = "[omniplex] Your previous turn ended in an error before it finished. " +
 	"Any tool call that was in flight did not report its result back, so you cannot assume it succeeded or failed. " +
 	"Check the real state of the work first — the files, the diff, whatever you had just run — then continue from where you left off. " +
 	"Do not redo work that is already done, and do not start over."
@@ -60,7 +70,7 @@ func planRecovery(state *projection.State) *proto.TurnRecovery {
 		if attempt > maxRecoveryAttempts {
 			return nil
 		}
-		return &proto.TurnRecovery{ResumeOf: turn.ID, Attempt: attempt}
+		return &proto.TurnRecovery{ResumeOf: turn.ID, Attempt: attempt, Cause: proto.RecoveryRestart}
 	}
 	return nil
 }
@@ -84,7 +94,7 @@ func (a *Actor) Recover(ctx context.Context) error {
 	if rec == nil {
 		return nil
 	}
-	_, err := a.call(ctx, command{kind: cmdPrompt, prompt: recoveryPrompt, recovery: rec})
+	_, err := a.call(ctx, command{kind: cmdPrompt, prompt: restartPrompt, recovery: rec})
 	return err
 }
 

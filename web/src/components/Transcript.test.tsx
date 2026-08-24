@@ -377,3 +377,57 @@ describe("recent skills on an empty transcript", () => {
     expect(screen.queryByText("/work-issue")).toBeNull();
   });
 });
+
+// The failure card is the only thing between a person and a wrong story about
+// their work. A turn that died because Claude is not signed in used to be
+// offered a "continue where it left off" button whose prompt — and whose badge
+// once it ran — announced a server restart that never happened.
+describe("a turn that failed", () => {
+  const failed = (turn: Record<string, unknown>) => {
+    const s = state("");
+    s.items = [
+      { id: "u1", kind: "message", role: "user", text: "go", turnId: "t1", receivedAt: 1 },
+    ];
+    s.turns = [{ id: "t1", prompt: "go", done: true, stopReason: "error", ...turn }];
+    return s;
+  };
+
+  it("tells a signed-out user how to fix it, and does not offer to continue", () => {
+    render(view(failed({ failure: "auth", error: "claude needs you to sign in again: …" })));
+
+    expect(screen.getByText(/not signed in/i)).toBeTruthy();
+    expect(screen.getByText(/\/login/)).toBeTruthy();
+    expect(screen.queryByText(/Continue where it left off/)).toBeNull();
+    expect(screen.queryByText(/restart/i)).toBeNull();
+  });
+
+  it("only says the server restarted when the server says so", () => {
+    render(view(failed({ failure: "restart", error: "server restarted during turn" })));
+    expect(screen.getByText(/The server restarted/)).toBeTruthy();
+
+    render(view(failed({ error: "claude exited: ENOENT" })));
+    expect(screen.getByText(/ended with an error/)).toBeTruthy();
+    expect(screen.getByText(/claude exited: ENOENT/)).toBeTruthy();
+  });
+
+  it("does not call a human's continue a restart", () => {
+    const s = failed({ error: "claude exited: ENOENT" });
+    s.items.push({
+      id: "u2",
+      kind: "message",
+      role: "user",
+      text: "[omniplex] Your previous turn ended in an error…",
+      turnId: "t2",
+      receivedAt: 2,
+    });
+    s.turns.push({
+      id: "t2",
+      done: false,
+      recovery: { resumeOf: "t1", attempt: 1, cause: "continue" },
+    });
+    render(view(s));
+
+    expect(screen.getByText("Asked the agent to pick the work back up")).toBeTruthy();
+    expect(screen.queryByText(/Server restarted/)).toBeNull();
+  });
+});

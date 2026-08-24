@@ -124,7 +124,10 @@ type Turn struct {
 	Images     []proto.PromptImage `json:"images,omitempty"`
 	StopReason string              `json:"stopReason,omitempty"`
 	Error      string              `json:"error,omitempty"`
-	Done       bool                `json:"done"`
+	// Failure classifies Error, so a presenter branches on a kind rather than
+	// on the wording of a message.
+	Failure string `json:"failure,omitempty"`
+	Done    bool   `json:"done"`
 	// Recovery is set when the server started this turn itself to continue
 	// work a restart interrupted.
 	Recovery *proto.TurnRecovery `json:"recovery,omitempty"`
@@ -399,6 +402,7 @@ func (s *State) Apply(ev proto.Event) {
 			if s.Turns[i].ID == p.TurnID {
 				s.Turns[i].StopReason = p.StopReason
 				s.Turns[i].Error = p.Error
+				s.Turns[i].Failure = p.Failure
 				s.Turns[i].Done = true
 				s.Turns[i].FinishedAt = ev.Timestamp
 			}
