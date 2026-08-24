@@ -3,6 +3,9 @@
   "name": "omniplex",
   "defaults": {
     "harness": "claude",
+    "model": "claude-opus-5",
+    "effort": "medium",
+    "mode": "bypassPermissions",
     "workspace": "managed",
     "baseBranch": "main"
   },
