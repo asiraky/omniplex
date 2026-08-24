@@ -1,0 +1,141 @@
+# Deploy Omniplex to the always-on box.
+#
+# Dispatch only, and deliberately so. The runner is self-hosted on the machine
+# that holds the Claude and Codex credentials, the Tailscale identity, and the
+# working checkouts — and this repository is public. A `pull_request` trigger
+# here would let any fork run arbitrary code on that machine. Never add one.
+# CI (tests, PR checks) stays on GitHub-hosted runners in ci.yml.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to deploy
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+# A second deploy must not flip the symlink while the first is health-checking.
+concurrency:
+  group: deploy-omniplex
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: build, install, verify
+    runs-on: [self-hosted, omniplex-prod]
+    timeout-minutes: 20
+
+    env:
+      ROOT: /opt/omniplex
+      HEALTH: http://127.0.0.1:8787/api/health
+      # The runner is a system service with no login session, so it has no user
+      # D-Bus and `systemctl --user` fails with "$DBUS_SESSION_BUS_ADDRESS and
+      # $XDG_RUNTIME_DIR not defined". Naming the runtime dir is what connects
+      # it to the user manager that linger keeps alive.
+      XDG_RUNTIME_DIR: /run/user/1000
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          # Go stamps the revision into the binary from the checkout, which is
+          # what /api/health reports back and what the verify step asserts on.
+          # A shallow clone still carries the commit, but fetch the ref cleanly.
+          fetch-depth: 1
+
+      # The box's own toolchain is used rather than actions/setup-*: it is a
+      # machine we control, the versions are pinned by what is installed, and
+      # downloading a second Go and Node per deploy buys nothing. They live in
+      # /usr/local/bin because the real installs are in ~/.bashrc, which the
+      # runner's non-interactive shell never reads.
+      - name: Toolchain
+        run: |
+          export PATH=/usr/local/bin:$PATH
+          go version && node --version && npm --version
+
+      - name: Build
+        run: |
+          export PATH=/usr/local/bin:$PATH
+          npm ci
+          npm run build
+
+      - name: Install release
+        id: install
+        run: |
+          SHA=${{ github.sha }}
+          DEST="$ROOT/releases/$SHA"
+          mkdir -p "$DEST"
+          install -m 0755 omniplex "$DEST/omniplex"
+
+          # Record what is live now so the rollback step can put it back
+          # without guessing.
+          if [ -L "$ROOT/current" ]; then
+            echo "previous=$(readlink -f "$ROOT/current")" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Atomic: write the new link beside the old one and rename over it,
+          # so there is no instant where `current` does not resolve.
+          ln -sfn "$DEST" "$ROOT/current.new"
+          mv -Tf "$ROOT/current.new" "$ROOT/current"
+          echo "installed $SHA"
+
+      - name: Restart
+        run: systemctl --user restart omniplex.service
+
+      # "Is it answering" is not enough: a failed start leaves the old binary
+      # running and answering perfectly. Assert the commit, which only the new
+      # build reports. Loopback is what makes the commit visible at all — the
+      # probe withholds it from unpaired callers.
+      - name: Verify
+        id: verify
+        run: |
+          for i in $(seq 1 30); do
+            RUNNING=$(curl -fsS --max-time 3 "$HEALTH" 2>/dev/null \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || true)
+            if [ "$RUNNING" = "${{ github.sha }}" ]; then
+              echo "healthy on ${{ github.sha }} after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::did not report ${{ github.sha }} within 30s (last saw '${RUNNING:-nothing}')"
+          exit 1
+
+      - name: Roll back
+        if: failure() && steps.install.outcome == 'success' && steps.install.outputs.previous != ''
+        run: |
+          echo "::warning::rolling back to ${{ steps.install.outputs.previous }}"
+          ln -sfn "${{ steps.install.outputs.previous }}" "$ROOT/current.new"
+          mv -Tf "$ROOT/current.new" "$ROOT/current"
+          systemctl --user restart omniplex.service
+          for i in $(seq 1 30); do
+            curl -fsS --max-time 3 "$HEALTH" >/dev/null 2>&1 && { echo "rolled back and healthy"; exit 0; }
+            sleep 1
+          done
+          echo "::error::rollback did not come back healthy — the box needs a look"
+          exit 1
+
+      # Keeping every build forever fills the disk with ~20MB binaries. Five is
+      # enough history to roll back through.
+      - name: Prune old releases
+        if: always()
+        run: |
+          cd "$ROOT/releases"
+          CURRENT=$(basename "$(readlink -f "$ROOT/current")")
+          ls -1t | grep -v "^$CURRENT$" | tail -n +5 | xargs -r rm -rf
+          echo "kept: $(ls -1 | wc -l) releases"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy ${{ job.status }}"
+            echo
+            echo "- ref: \`${{ inputs.ref }}\`"
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- live: \`$(basename "$(readlink -f "$ROOT/current" 2>/dev/null)" 2>/dev/null || echo none)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
