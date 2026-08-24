@@ -145,6 +145,7 @@ func main() {
 		DevViteURL:  devViteURL,
 		Attachments: attachments,
 		Commit:      buildCommit(),
+		Logf:        logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
 		AllowAnyOrigin: false,

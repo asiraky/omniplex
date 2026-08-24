@@ -28,6 +28,8 @@ type clientFrame struct {
 	// attach / detach
 	SessionID string `json:"sessionId,omitempty"`
 	AfterSeq  *int64 `json:"afterSeq,omitempty"`
+	TurnLimit int    `json:"turnLimit,omitempty"`
+	ItemLimit int    `json:"itemLimit,omitempty"`
 
 	// command
 	CommandID string          `json:"commandId,omitempty"`

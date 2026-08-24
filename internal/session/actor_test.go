@@ -29,7 +29,183 @@ type fakeAdapter struct {
 	listCalls int
 	// listGate, when set, holds the listing open so a test can prove the
 	// caller did not wait for it.
-	listGate chan struct{}
+	listGate      chan struct{}
+	createGate    <-chan struct{}
+	createStarted chan<- struct{}
+}
+
+func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "view.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	meta := store.SessionMeta{ID: "viewed", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
+	if err := st.CreateSession(ctx, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, meta.ID, proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness})); err != nil {
+		t.Fatal(err)
+	}
+	fa := &fakeAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr.Shutdown()
+
+	actor, err := mgr.View(ctx, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.session() != nil {
+		t.Fatal("view started a harness")
+	}
+	state, err := actor.State(ctx)
+	if err != nil || state.SessionID != meta.ID {
+		t.Fatalf("viewed state = %+v, err = %v", state, err)
+	}
+	if _, err := mgr.Get(ctx, meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	if fa.session() == nil {
+		t.Fatal("command path did not activate the harness")
+	}
+}
+
+func TestViewedInterruptedTurnRecoversWhenActivated(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "view-turn.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	first := &fakeAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, first)
+	actor, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.Prompt(ctx, "keep going", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-first.session().prompts
+	waitFor(t, func() bool {
+		state, _ := actor.State(ctx)
+		return state.Phase == "turn"
+	})
+	id := actor.ID
+	mgr.Shutdown()
+
+	resumed := &fakeAdapter{}
+	mgr = NewManager(st, func(string, ...any) {}, resumed)
+	defer mgr.Shutdown()
+	if _, err := mgr.View(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if resumed.session() != nil {
+		t.Fatal("view of interrupted turn started a harness")
+	}
+	if _, err := mgr.Get(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		session := resumed.session()
+		if session == nil {
+			return false
+		}
+		select {
+		case prompt := <-session.prompts:
+			return strings.Contains(prompt.Text, "restarted")
+		default:
+			return false
+		}
+	})
+}
+
+func TestCancelProcesslessInterruptedTurn(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "cancel-passive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	meta := store.SessionMeta{ID: "interrupted", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "turn"}
+	if err := st.CreateSession(ctx, meta); err != nil {
+		t.Fatal(err)
+	}
+	for _, emission := range []proto.Emission{
+		proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness}),
+		proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "work"}),
+	} {
+		if _, err := st.Append(ctx, meta.ID, emission); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+	actor, err := mgr.View(ctx, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := actor.State(ctx)
+	if state.Phase != "idle" || !state.Turns[0].Done || state.Turns[0].StopReason != proto.StopCancelled {
+		t.Fatalf("state after passive cancel = %+v", state)
+	}
+}
+
+func TestHarnessActivationDoesNotBlockUnrelatedView(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "activation-lock.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	for _, id := range []string{"slow", "reader"} {
+		meta := store.SessionMeta{ID: id, Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
+		if err := st.CreateSession(ctx, meta); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Append(ctx, id, proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate := make(chan struct{})
+	var gateOnce sync.Once
+	release := func() { gateOnce.Do(func() { close(gate) }) }
+	started := make(chan struct{}, 1)
+	fa := &fakeAdapter{createGate: gate, createStarted: started}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr.Shutdown()
+	defer release()
+	if _, err := mgr.View(ctx, "slow"); err != nil {
+		t.Fatal(err)
+	}
+	activation := make(chan error, 1)
+	go func() {
+		_, err := mgr.Get(ctx, "slow")
+		activation <- err
+	}()
+	<-started
+
+	viewed := make(chan error, 1)
+	go func() {
+		_, err := mgr.View(ctx, "reader")
+		viewed <- err
+	}()
+	select {
+	case err := <-viewed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unrelated view blocked behind harness activation")
+	}
+	release()
+	if err := <-activation; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *fakeAdapter) ID() string { return "fake" }
@@ -77,6 +253,16 @@ func (f *fakeAdapter) Probe(ctx context.Context, env map[string]string) adapter.
 }
 
 func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
+	if f.createStarted != nil {
+		f.createStarted <- struct{}{}
+	}
+	if f.createGate != nil {
+		select {
+		case <-f.createGate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	s := &fakeSession{
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),

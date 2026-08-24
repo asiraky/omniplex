@@ -11,7 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { IconButton } from "~/components/IconButton";
-import { AgentsSurface, liveAgentCount } from "~/components/panel/AgentsSurface";
+import { AgentsSurface } from "~/components/panel/AgentsSurface";
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
 import { TerminalSurface } from "~/components/panel/TerminalSurface";
@@ -23,6 +23,7 @@ import {
 } from "~/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { fileIconFor } from "~/lib/fileIcons";
+import { liveAgentCount } from "~/lib/agents";
 import {
   closeSurface,
   fileSurface,

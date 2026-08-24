@@ -198,8 +198,17 @@ type State struct {
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
+	History      *HistoryWindow            `json:"history,omitempty"`
 
 	itemIndex map[string]int `json:"-"`
+}
+
+// HistoryWindow describes the bounded timeline carried by a transport
+// snapshot. It is never populated on canonical/persisted projection state.
+type HistoryWindow struct {
+	HasMore    bool   `json:"hasMore"`
+	BeforeTurn string `json:"beforeTurn,omitempty"`
+	BeforeItem string `json:"beforeItem,omitempty"`
 }
 
 func New(sessionID string) *State {
@@ -624,4 +633,101 @@ func (s *State) Clone() *State {
 	}
 
 	return &out
+}
+
+// Window bounds both turns and timeline items. Item bounds matter even with a
+// small turn count: one long-running coding turn can contain megabytes of tool
+// output. Scalar state remains current.
+func (s *State) Window(turnLimit int, beforeTurn string, itemLimit int, beforeItem string) *State {
+	out := s.Clone()
+	if turnLimit <= 0 && itemLimit <= 0 {
+		return out
+	}
+
+	// Once item paging starts, its cursor is globally ordered and sufficient;
+	// deriving the page from all items lets it cross a turn boundary cleanly.
+	if beforeItem != "" && itemLimit > 0 {
+		end := -1
+		for i := range out.Items {
+			if out.Items[i].ID == beforeItem {
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			out.Items = []Item{}
+			out.Turns = []Turn{}
+			out.History = &HistoryWindow{}
+			return out
+		}
+		start := end - itemLimit
+		if start < 0 {
+			start = 0
+		}
+		out.Items = append([]Item(nil), out.Items[start:end]...)
+		keptTurns := make(map[string]struct{})
+		for _, item := range out.Items {
+			if item.TurnID != "" {
+				keptTurns[item.TurnID] = struct{}{}
+			}
+		}
+		turns := make([]Turn, 0, len(keptTurns))
+		for _, turn := range out.Turns {
+			if _, ok := keptTurns[turn.ID]; ok {
+				turns = append(turns, turn)
+			}
+		}
+		out.Turns = turns
+		out.History = &HistoryWindow{HasMore: start > 0}
+		if start > 0 && len(out.Items) > 0 {
+			out.History.BeforeItem = out.Items[0].ID
+		}
+		return out
+	}
+
+	end := len(out.Turns)
+	if beforeTurn != "" {
+		for i := range out.Turns {
+			if out.Turns[i].ID == beforeTurn {
+				end = i
+				break
+			}
+		}
+	}
+	start := 0
+	if turnLimit > 0 {
+		start = end - turnLimit
+	}
+	if start < 0 {
+		start = 0
+	}
+	turns := append([]Turn(nil), out.Turns[start:end]...)
+	kept := make(map[string]struct{}, len(turns))
+	for _, turn := range turns {
+		kept[turn.ID] = struct{}{}
+	}
+	items := make([]Item, 0, len(out.Items))
+	for _, item := range out.Items {
+		if item.TurnID == "" {
+			items = append(items, item)
+			continue
+		}
+		if _, ok := kept[item.TurnID]; ok {
+			items = append(items, item)
+		}
+	}
+	out.Items = items
+	out.Turns = turns
+	itemsHaveMore := false
+	if itemLimit > 0 && len(out.Items) > itemLimit {
+		out.Items = append([]Item(nil), out.Items[len(out.Items)-itemLimit:]...)
+		itemsHaveMore = true
+	}
+	out.History = &HistoryWindow{HasMore: start > 0 || itemsHaveMore}
+	if itemsHaveMore && len(out.Items) > 0 {
+		out.History.BeforeItem = out.Items[0].ID
+	} else if start > 0 && len(turns) > 0 {
+		out.History.BeforeTurn = turns[0].ID
+	}
+	return out
 }

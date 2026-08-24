@@ -2,42 +2,9 @@ import { BotIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 
 import { cn } from "~/lib/utils";
+import { collectSubagents, type SubagentRow } from "~/lib/agents";
 import type { Item } from "~/protocol";
 import { formatDuration } from "~/rows";
-
-export interface SubagentRow {
-  /** The Task/Agent tool call that is the agent. */
-  task: Item;
-  /** Everything that ran inside it, in log order. */
-  children: Item[];
-}
-
-/**
- * The subagents a session has spawned: every Task/Agent tool call, plus every
- * item whose parent link points at it. Order is the transcript's own.
- */
-export function collectSubagents(items: Item[]): SubagentRow[] {
-  const children = new Map<string, Item[]>();
-  for (const it of items) {
-    if (!it.parentId) continue;
-    const list = children.get(it.parentId) ?? [];
-    list.push(it);
-    children.set(it.parentId, list);
-  }
-  return items
-    .filter((it) => it.kind === "tool" && (children.has(it.id) || isTaskCall(it)))
-    .map((task) => ({ task, children: children.get(task.id) ?? [] }));
-}
-
-// A Task call is recognisable before any child arrives: the adapter titles it
-// "Task: …" (or the raw tool name), and its input carries the SDK's fields.
-function isTaskCall(it: Item): boolean {
-  if (it.toolKind !== "think") return false;
-  const title = it.title ?? "";
-  if (title === "Task" || title === "Agent" || title.startsWith("Task:") || title.startsWith("Agent:")) return true;
-  const input = it.input as Record<string, unknown> | undefined;
-  return !!input && typeof input === "object" && ("subagent_type" in input || "prompt" in input);
-}
 
 function running(it: Item): boolean {
   return it.status === "pending" || it.status === "in_progress";
@@ -140,9 +107,4 @@ export function AgentsSurface({ items }: { items: Item[] }) {
       ))}
     </div>
   );
-}
-
-/** How many subagents are running right now — the panel toggle's badge. */
-export function liveAgentCount(items: Item[]): number {
-  return collectSubagents(items).filter((a) => running(a.task)).length;
 }

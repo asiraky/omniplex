@@ -74,6 +74,20 @@ describe("copying an agent message", () => {
   });
 });
 
+it("loads bounded transcript history on demand", async () => {
+  const onLoadOlder = vi.fn().mockResolvedValue(undefined);
+  const paged = state("latest");
+  paged.history = { hasMore: true, beforeItem: "m0" };
+  render(<Transcript {...{
+    state: paged,
+    onRetryProvision: () => {}, onCleanup: () => {}, onForceDelete: () => {},
+    onContinue: () => {}, onOpenDiff: () => {}, onFinish: () => {}, onLoadOlder,
+  }} />);
+
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Load earlier turns" })));
+  expect(onLoadOlder).toHaveBeenCalledTimes(1);
+});
+
 describe("copying a user message", () => {
   it("copies the entire raw prompt from its footer", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);

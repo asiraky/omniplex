@@ -1,18 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useSessionPR } from "./useSessionPR";
 import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
-import { SessionSummaryPanel } from "./components/SessionSummary";
-import { Panel, type PanelRequest } from "./components/panel/Panel";
-import { liveAgentCount } from "./components/panel/AgentsSurface";
+import type { PanelRequest } from "./components/panel/Panel";
+import { liveAgentCount } from "./lib/agents";
 import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { NewSession } from "./components/NewSession";
 import type { NewSessionInput } from "./components/NewSession";
-import { ProjectSettings } from "./components/ProjectSettings";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { ElicitationPrompt } from "./components/ElicitationPrompt";
 import { DeleteSessionDialog, useDeleteSession } from "./components/DeleteSessionDialog";
@@ -22,7 +20,6 @@ import { DropdownMenu, DropdownMenuTrigger } from "./components/ui/dropdown-menu
 import { Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { IconButton } from "./components/IconButton";
-import { ThemePreview } from "./components/ThemePreview";
 import { Button } from "./components/ui/button";
 import { Spinner } from "./components/ui/spinner";
 import {
@@ -53,6 +50,11 @@ import {
 import { toast } from "sonner";
 
 const LAST_SESSION = "omniplex.lastSession";
+
+const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
+const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
+const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
+const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
 
 // The permission-mode switcher is parked, not removed: changing modes mid-chat
 // is not something we want to offer right now, and hiding it is cheaper to
@@ -251,6 +253,10 @@ export function App() {
   const [access, setAccess] = useState<Access | null>(null);
   const [showAccess, setShowAccess] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
+  const [panelLoaded, setPanelLoaded] = useState(false);
+  useEffect(() => {
+    if (showChanges) setPanelLoaded(true);
+  }, [showChanges]);
   // One click takes the diff panel to the full content width; another brings
   // it back. There is no in-between state on purpose.
   const [changesExpanded, setChangesExpanded] = useState(false);
@@ -949,7 +955,7 @@ export function App() {
     // measured elements are remounted under it: re-run to observe the new ones.
   }, [hasSession, themePreview]);
 
-  if (themePreview) return <ThemePreview />;
+  if (themePreview) return <Suspense fallback={<div className="flex h-dvh items-center justify-center"><Spinner /></div>}><ThemePreview /></Suspense>;
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -1107,7 +1113,7 @@ export function App() {
             <div className="from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b to-transparent" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} />
+              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onLoadOlder={()=>clientRef.current?.loadOlder() ?? Promise.resolve()} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1177,8 +1183,9 @@ export function App() {
         )}
       </main>
 
-      {state && activeId && (
-        <Panel
+      {state && activeId && panelLoaded && (
+        <Suspense fallback={null}>
+          <Panel
           // Remounted per session: the tab model is per-session state.
           key={activeId}
           sessionId={activeId}
@@ -1194,11 +1201,13 @@ export function App() {
           loadTree={loadFileTree}
           loadFile={loadFile}
           request={panelRequest}
-        />
+          />
+        </Suspense>
       )}
 
       {showSummary && activeId && (
-        <SessionSummaryPanel
+        <Suspense fallback={null}>
+          <SessionSummaryPanel
           summary={summaries[activeId] ?? null}
           loading={!!summarizing[activeId]}
           error={summaryErrors[activeId] ?? null}
@@ -1209,7 +1218,8 @@ export function App() {
           onRegenerate={() => void summarize(activeId)}
           onSavePrompt={saveSummaryPrompt}
           onClose={() => setShowSummary(false)}
-        />
+          />
+        </Suspense>
       )}
 
       {manageLabels && (
@@ -1253,7 +1263,8 @@ export function App() {
         />
       )}
       {projectSettings && (
-        <ProjectSettings
+        <Suspense fallback={null}>
+          <ProjectSettings
           project={projectSettings === "add" ? null : projectSettings}
           defaultRoot={defaultCwd}
           harnesses={harnesses}
@@ -1268,7 +1279,8 @@ export function App() {
           }
           onSaveUserConfig={saveUserConfig}
           onClose={() => setProjectSettings(null)}
-        />
+          />
+        </Suspense>
       )}
     </div>
   );
