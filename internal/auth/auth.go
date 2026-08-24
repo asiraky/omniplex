@@ -15,6 +15,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sort"
@@ -28,11 +29,36 @@ import (
 	"github.com/asiraky/omniplex/internal/store"
 )
 
-// CookieName carries the device token in browsers. It is httpOnly, so page
+// cookiePrefix carries the device token in browsers. It is httpOnly, so page
 // scripts cannot read it, and it rides WebSocket upgrades to the same origin
 // automatically, which is why the browser client needs no token handling of
 // its own.
-const CookieName = "omniplex_device"
+const cookiePrefix = "omniplex_device"
+
+// DefaultPort is the port a server listens on when nothing says otherwise. The
+// instance on it owns the unsuffixed cookie name.
+const DefaultPort = 8787
+
+// CookieName is the device token cookie for a server listening on port.
+//
+// Cookies are scoped by host and never by port, so two Omniplex instances on
+// one machine share a jar: pairing with a worktree on :8800 overwrites the
+// token the instance on :8787 issued, that instance then sees a token it never
+// minted, and sends the browser back to /pair. Pairing there overwrites the
+// first one straight back. It presents as pairing "randomly falling out",
+// which is a miserable thing to debug, and it is guaranteed on any machine
+// running a dev instance beside a real one.
+//
+// The port is what tells instances apart — it is already how worktrees are
+// distinguished — so it is what the cookie keys on. The default port keeps the
+// bare name so the primary instance is untouched by this change and nothing
+// has to pair again.
+func CookieName(port int) string {
+	if port == DefaultPort {
+		return cookiePrefix
+	}
+	return fmt.Sprintf("%s_%d", cookiePrefix, port)
+}
 
 // PairingTTL bounds how long a printed code stays valid. Long enough to walk
 // to another room and find your phone, short enough that a code left on a
@@ -54,6 +80,9 @@ type Guard struct {
 	store  *store.Store
 	policy Policy
 
+	// cookie is this instance's device-token cookie name. See CookieName.
+	cookie string
+
 	limiter *limiter
 
 	// proxied records that a reverse proxy is publishing this server to other
@@ -66,13 +95,16 @@ type Guard struct {
 
 // New builds a guard. reachable says whether any bound address can be reached
 // from another machine; the caller works that out when it decides what to bind.
-func New(st *store.Store, reachable bool) *Guard {
+func New(st *store.Store, reachable bool, port int) *Guard {
 	policy := PolicyLoopback
 	if reachable {
 		policy = PolicyReachable
 	}
-	return &Guard{store: st, policy: policy, limiter: newLimiter()}
+	return &Guard{store: st, policy: policy, limiter: newLimiter(), cookie: CookieName(port)}
 }
+
+// CookieName is the cookie this guard issues and reads.
+func (g *Guard) CookieName() string { return g.cookie }
 
 func (g *Guard) Policy() Policy { return g.policy }
 
@@ -320,7 +352,7 @@ func (g *Guard) Authorize(r *http.Request) (store.Device, bool) {
 		return store.Device{}, false
 	}
 
-	token := tokenFrom(r)
+	token := g.tokenFrom(r)
 	if token == "" {
 		return store.Device{}, false
 	}
@@ -338,8 +370,8 @@ func WithDevice(r *http.Request, d store.Device) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), ctxKey{}, d))
 }
 
-func tokenFrom(r *http.Request) string {
-	if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
+func (g *Guard) tokenFrom(r *http.Request) string {
+	if c, err := r.Cookie(g.cookie); err == nil && c.Value != "" {
 		return c.Value
 	}
 	// Bearer, for native clients that carry no cookie jar.
@@ -377,9 +409,9 @@ func TokenSubprotocol(r *http.Request) (string, bool) {
 // cookie Secure on a plain-HTTP origin would stop the browser sending it back
 // at all, which is the common case here: a LAN address and an overlay address
 // are both http://, and over an overlay the transport is already encrypted.
-func SetCookie(w http.ResponseWriter, r *http.Request, token string) {
+func (g *Guard) SetCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
+		Name:     g.cookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
@@ -390,9 +422,9 @@ func SetCookie(w http.ResponseWriter, r *http.Request, token string) {
 }
 
 // ClearCookie removes a device token from a browser.
-func ClearCookie(w http.ResponseWriter) {
+func (g *Guard) ClearCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
+		Name:     g.cookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
