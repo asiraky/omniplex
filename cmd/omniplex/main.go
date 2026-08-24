@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
@@ -143,6 +144,7 @@ func main() {
 		WebFS:       webFS,
 		DevViteURL:  devViteURL,
 		Attachments: attachments,
+		Commit:      buildCommit(),
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
 		AllowAnyOrigin: false,
@@ -325,6 +327,36 @@ func envStr(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildCommit reports the git revision this binary was built from.
+//
+// Go stamps this automatically when building inside a checkout, so nothing has
+// to pass -ldflags and a local build is as identifiable as a released one. A
+// binary built outside a checkout reports nothing rather than lying.
+func buildCommit() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	var rev, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value
+		}
+	}
+	if rev == "" {
+		return ""
+	}
+	// An uncommitted build is not the commit it claims, and a deploy that
+	// cannot tell the difference is worse than one that reports nothing.
+	if modified == "true" {
+		return rev + "-dirty"
+	}
+	return rev
 }
 
 func defaultDB() string {
