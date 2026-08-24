@@ -152,9 +152,15 @@ describe("session actions on a phone", () => {
 
   it("puts the header actions in one overflow menu", async () => {
     await openSession();
+    await act(async () =>
+      events.onLabels([
+        { id: "label-1", name: "Parked", color: "#f59e0b", position: 0, createdAt: 1 },
+      ]),
+    );
 
     expect(screen.queryByRole("button", { name: "Copy transcript" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Summarise this session" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Label this session" })).toBeNull();
     fireEvent.pointerDown(screen.getByRole("button", { name: "More session actions" }), {
       button: 0,
       ctrlKey: false,
@@ -164,6 +170,7 @@ describe("session actions on a phone", () => {
     expect(screen.getByRole("menuitem", { name: "Summarise session" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy transcript" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "repo settings" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Label session" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: /diff/i })).toBeNull();
   });
 

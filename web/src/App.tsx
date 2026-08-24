@@ -17,12 +17,15 @@ import { PermissionPrompt } from "./components/PermissionPrompt";
 import { ElicitationPrompt } from "./components/ElicitationPrompt";
 import { DeleteSessionDialog, useDeleteSession } from "./components/DeleteSessionDialog";
 import { LabelManager } from "./components/LabelManager";
-import { LabelDot, LabelMenu } from "./components/LabelMenu";
+import { LabelDot, LabelMenu, LabelMenuItems } from "./components/LabelMenu";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
 import { Sidebar } from "./components/Sidebar";
@@ -1022,7 +1025,7 @@ export function App() {
               {/* Filing the open session — the same menu the sidebar row
                   carries, so a session can be labelled from either place.
                   Invisible until the user has defined a label. */}
-              {labels.length > 0 && activeId && (
+              {isDesktop && labels.length > 0 && activeId && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     {(() => {
@@ -1131,6 +1134,36 @@ export function App() {
                         <DropdownMenuItem onSelect={() => setProjectSettings(activeProject)}>
                           <SettingsIcon /> {activeProject.config.name} settings
                         </DropdownMenuItem>
+                      </>
+                    )}
+                    {labels.length > 0 && activeId && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            {(() => {
+                              const current = labels.find((l) => l.id === meta?.labelId);
+                              return current ? (
+                                <>
+                                  <LabelDot color={current.color} />
+                                  <span className="truncate">{current.name}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <TagIcon /> Label session
+                                </>
+                              );
+                            })()}
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="min-w-40">
+                            <LabelMenuItems
+                              labels={labels}
+                              current={meta?.labelId}
+                              onSelect={(labelId) => setSessionLabel(activeId, labelId)}
+                              onManage={openLabelManager}
+                            />
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
                       </>
                     )}
                   </DropdownMenuContent>

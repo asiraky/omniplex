@@ -43,6 +43,30 @@ export function LabelMenu({
 }) {
   return (
     <DropdownMenuContent align="end" className="min-w-40">
+      <LabelMenuItems
+        labels={labels}
+        current={current}
+        onSelect={onSelect}
+        onManage={onManage}
+      />
+    </DropdownMenuContent>
+  );
+}
+
+/** The assignment controls without their content wrapper, for nested menus. */
+export function LabelMenuItems({
+  labels,
+  current,
+  onSelect,
+  onManage,
+}: {
+  labels: Label[];
+  current?: string;
+  onSelect: (labelId: string) => void;
+  onManage: () => void;
+}) {
+  return (
+    <>
       <DropdownMenuRadioGroup
         value={current || NONE}
         onValueChange={(v) => onSelect(v === NONE ? "" : v)}
@@ -62,6 +86,6 @@ export function LabelMenu({
         <SettingsIcon className="size-3.5" />
         Manage labels…
       </DropdownMenuItem>
-    </DropdownMenuContent>
+    </>
   );
 }
