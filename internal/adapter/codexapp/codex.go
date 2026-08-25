@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +134,30 @@ func settingsFor(mode string) (modeSettings, error) {
 	}
 }
 
+// trustArgs marks the session's own directory trusted for this app-server run.
+//
+// Codex disables a repository's project-local `.codex` — its agent
+// definitions, hooks and exec policies — until the folder is trusted, and
+// answers with nothing but a line on stderr. The CLI can prompt a human and
+// write the answer to config.toml; app-server cannot, so an untrusted
+// directory silently loses everything the repo configured and the model runs
+// with a stripped-down toolkit it was never told about. A managed worktree is
+// a brand-new path every session, which is exactly the case the CLI's
+// remembered answer does not cover.
+//
+// Adding a directory to omniplex and starting a session in it is the consent
+// codex is asking for, so the grant is made here — per run, via -c, never
+// written to the user's config.toml. Trust is inherited by subpaths, so
+// naming the cwd covers a worktree beneath it without enumerating them.
+func trustArgs(cwd string) []string {
+	if cwd == "" {
+		return nil
+	}
+	// The path is quoted as a TOML basic string: a repo path may contain
+	// characters that a bare dotted key cannot carry.
+	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
+}
+
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	// Resolve the mode before spawning anything: an unknown id should fail
 	// legibly, not leave an orphaned app-server.
@@ -141,7 +166,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	cmd := exec.Command(a.Bin, "app-server")
+	cmd := exec.Command(a.Bin, append([]string{"app-server"}, trustArgs(o.Cwd)...)...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account CODEX_HOME isolates config and login.
@@ -868,25 +893,19 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 					CachedInputTokens     int64 `json:"cachedInputTokens"`
 					CacheWriteInputTokens int64 `json:"cacheWriteInputTokens"`
 				} `json:"total"`
-				// Last is the most recent request, whose prompt is the
-				// conversation so far — which is what "context used" means.
+				// Last is the most recent request. Its total is the current
+				// active context; cached input is already included in input.
 				Last struct {
-					InputTokens       int64 `json:"inputTokens"`
-					OutputTokens      int64 `json:"outputTokens"`
-					CachedInputTokens int64 `json:"cachedInputTokens"`
+					TotalTokens int64 `json:"totalTokens"`
 				} `json:"last"`
-				ContextWindow int64 `json:"contextWindow"`
+				ModelContextWindow int64 `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
-			ContextWindow int64 `json:"contextWindow"`
 		}
 		_ = json.Unmarshal(params, &p)
 		t := p.TokenUsage.Total
 		var pct float64
-		window := p.TokenUsage.ContextWindow
-		if window == 0 {
-			window = p.ContextWindow
-		}
-		used := p.TokenUsage.Last.InputTokens + p.TokenUsage.Last.CachedInputTokens + p.TokenUsage.Last.OutputTokens
+		window := p.TokenUsage.ModelContextWindow
+		used := p.TokenUsage.Last.TotalTokens
 		if used > 0 && window > 0 {
 			// Unclamped, matching the claude path: an over-limit reading is a
 			// real signal, and the meter renders the raw ratio rather than a

@@ -37,7 +37,7 @@ import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
-import type { ComposerItem, Item, PromptImage, PullRequest, SessionState, ToolStatus, Turn } from "~/protocol";
+import type { ComposerItem, Item, PromptImage, PullRequest, QueuedPrompt, SessionState, ToolStatus, Turn } from "~/protocol";
 import { saveResume } from "~/resume";
 import { buildRows, foldLabel, rowTurnID, summarise } from "~/rows";
 import { atBottom, useAutoScroll } from "~/useAutoScroll";
@@ -197,7 +197,10 @@ function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
             <span className="min-w-0 flex-1 truncate text-[12px]">{summarise(items)}</span>
           </>
         )}
-        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px]">
+        {/* `leading-none`, or this span is 12px tall (just the chevron) while the
+            label is empty and 15px once "2 calls" arrives with the run's second
+            call — and the row centres, so the chevron twitches up 1.5px. */}
+        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none">
           {open ? "hide" : items.length === 1 ? "" : `${items.length} calls`}
           <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
         </span>
@@ -749,6 +752,33 @@ function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => v
   );
 }
 
+// QueuedCard is a prompt waiting for the running turn to end. It sits where
+// its turn will start and looks like the user bubble it is about to become,
+// dimmed, so the reader can see what is coming — and take it back.
+function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; sessionId: string; onDequeue: (queueId: string) => void }) {
+  return (
+    <div data-queue-id={queued.queueId} className="fade-in flex flex-col items-end opacity-60">
+      {queued.images && queued.images.length > 0 && <PromptImages sessionId={sessionId} images={queued.images} />}
+      {(queued.prompt || !queued.images?.length) && (
+        <div className="bg-user-bubble text-user-bubble-foreground max-w-[85%] rounded-2xl rounded-br-md border border-dashed border-current/30 px-3.5 py-2 text-[14px] leading-relaxed break-words whitespace-pre-wrap">
+          {queued.prompt}
+        </div>
+      )}
+      <div className="text-muted-foreground mt-1 flex items-center gap-1 text-[12px]">
+        <span>Queued</span>
+        <span aria-hidden>·</span>
+        <button
+          type="button"
+          onClick={() => onDequeue(queued.queueId)}
+          className="hover:text-foreground focus-visible:ring-ring rounded-sm px-1 transition-colors outline-none focus-visible:ring-2"
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Transcript({
   state,
   initialScroll,
@@ -763,6 +793,7 @@ export function Transcript({
   recents = [],
   recentsSeeded = false,
   onPickRecent,
+  onDequeue,
 }: {
   state: SessionState;
   /** Where this session was last scrolled — the position the parent kept from
@@ -789,6 +820,8 @@ export function Transcript({
   recentsSeeded?: boolean;
   /** Writes the skill's token into the composer. Omitted, the list is hidden. */
   onPickRecent?: (item: ComposerItem) => void;
+  /** Takes a queued prompt back before it runs. */
+  onDequeue?: (queueId: string) => void;
 }) {
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
@@ -1059,6 +1092,10 @@ export function Transcript({
             )}
 
           {interrupted && <InterruptedCard turn={interrupted} onContinue={onContinue} />}
+
+          {(state.queuedPrompts ?? []).map((q) => (
+            <QueuedCard key={q.queueId} queued={q} sessionId={state.sessionId} onDequeue={(id) => onDequeue?.(id)} />
+          ))}
 
           {/* Last, because it is the latest news about the work above it. */}
           {pr?.merged && <MergedCard pr={pr} onFinish={onFinish} />}

@@ -17,6 +17,12 @@ const (
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
+	// PromptQueued is a prompt sent while a turn was running. It waits in the
+	// log, not in a connection, and starts its own turn once the session is
+	// idle. PromptDequeued removes it: because it started, because a human
+	// took it back, or because the running turn was interrupted.
+	PromptQueued   = "prompt.queued"
+	PromptDequeued = "prompt.dequeued"
 	// TurnDiff reports what one turn changed on disk. It arrives after
 	// turn.finished, because it is measured by snapshotting the checkout once
 	// the harness has stopped writing to it.
@@ -201,6 +207,26 @@ func ImageTitle(n int) string {
 	return fmt.Sprintf("%d images", n)
 }
 
+type PromptQueuedPayload struct {
+	QueueID string        `json:"queueId"`
+	Prompt  string        `json:"prompt"`
+	Images  []PromptImage `json:"images,omitempty"`
+}
+
+type PromptDequeuedPayload struct {
+	QueueID string `json:"queueId"`
+	// Reason is removed (a human took it back) or cancelled (the turn it
+	// waited on was interrupted). A prompt that started is not dequeued by
+	// this event but by the turn.started that names it.
+	Reason string `json:"reason"`
+}
+
+// Reasons for PromptDequeued.
+const (
+	DequeueRemoved   = "removed"
+	DequeueCancelled = "cancelled"
+)
+
 type TurnStartedPayload struct {
 	TurnID string `json:"turnId"`
 	Prompt string `json:"prompt"`
@@ -210,6 +236,10 @@ type TurnStartedPayload struct {
 	// unfinished — after a restart, or because a human asked. It is absent on
 	// every ordinary prompt.
 	Recovery *TurnRecovery `json:"recovery,omitempty"`
+	// QueueID names the queued prompt this turn started from. Starting is
+	// what takes a prompt out of the queue: one event, so a crash cannot
+	// leave the log with neither the queued prompt nor its turn.
+	QueueID string `json:"queueId,omitempty"`
 }
 
 // TurnRecovery describes a turn started to continue work an earlier turn did
