@@ -197,7 +197,10 @@ function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
             <span className="min-w-0 flex-1 truncate text-[12px]">{summarise(items)}</span>
           </>
         )}
-        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px]">
+        {/* `leading-none`, or this span is 12px tall (just the chevron) while the
+            label is empty and 15px once "2 calls" arrives with the run's second
+            call — and the row centres, so the chevron twitches up 1.5px. */}
+        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none">
           {open ? "hide" : items.length === 1 ? "" : `${items.length} calls`}
           <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
         </span>
