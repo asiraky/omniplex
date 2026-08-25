@@ -300,6 +300,20 @@ describe("useAutoScroll anchoring", () => {
     expect(scroller().scrollTop).toBe(content - VIEWPORT);
   });
 
+  it("still lets the reader scroll down out of the anchor", () => {
+    anchorPrompt(PROMPT_AT);
+    // The turn grew before the observer got a look in, so there is now room
+    // below the anchored position — and the reader went down into it. Ending
+    // at the bottom does not make that the browser: a clamp can only ever
+    // move the view up.
+    content += 50;
+    scrollTo(content + reserve() - VIEWPORT);
+
+    // The hold is gone, so the tail is theirs again — which is exactly what
+    // holding on through a downward move would have denied them.
+    expect(pinned()).toBe(true);
+  });
+
   it("does not let its own scroll re-arm the pin", () => {
     // The reserve is sized so the anchored position is the last screenful,
     // which means the scroll event the hook's own write produces arrives

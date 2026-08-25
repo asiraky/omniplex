@@ -226,13 +226,17 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
       // Every position this hook writes is recorded as it is written, so a
       // position that is not the recorded one came from the reader — and a
       // reader who moves the view has taken it back from the anchor.
-      // Unless it is still the bottom: the reserve is sized so the
-      // anchored position *is* the last screenful, so a move that ends there
-      // is the browser clamping the view as content above the anchor shrinks
-      // (a card collapsing, a run folding), not a hand on the wheel. Reading
-      // that as intent lost the hold to every collapse that happened to land
-      // mid-turn, and left the reserve behind with nothing holding it up.
-      if (anchored.current && Math.abs(top - lastTop.current) > 1 && !atBottom(el))
+      // Unless it is a drop that ends at the bottom: the reserve is sized so
+      // the anchored position *is* the last screenful, so the view arriving
+      // there from below is the browser clamping as content above the anchor
+      // shrinks (a card collapsing, a run folding), not a hand on the wheel.
+      // Reading that as intent lost the hold to every collapse that happened
+      // to land mid-turn, and left the reserve behind with nothing holding it
+      // up. It has to be a drop: clamping can only ever move the view up, so
+      // a move *down* to the bottom is a reader who has gone looking for the
+      // tail, and yanking them back to the prompt is the whole complaint.
+      const clamped = top < lastTop.current && atBottom(el);
+      if (anchored.current && Math.abs(top - lastTop.current) > 1 && !clamped)
         anchored.current = false;
       // A position that went up — under the reader's hand or the scrollbar's
       // — ends the pin, and it does so even a few pixels from the bottom:
