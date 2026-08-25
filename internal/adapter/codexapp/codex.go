@@ -361,10 +361,22 @@ func (s *session) Cancel(ctx context.Context) error {
 	if turnID == "" || inFlight {
 		return nil
 	}
-	return s.conn.Call(ctx, "turn/interrupt", map[string]any{
+	err := s.conn.Call(ctx, "turn/interrupt", map[string]any{
 		"threadId": s.threadID,
 		"turnId":   turnID,
 	}, nil)
+	if err != nil {
+		// An interrupt codex refused will never be answered by a
+		// turn/completed, so nothing else clears the flag. Leaving it set
+		// would coalesce — and so silently swallow — every later press of the
+		// stop button for the life of the session.
+		s.mu.Lock()
+		if s.serverTurnID == turnID {
+			s.interrupting = false
+		}
+		s.mu.Unlock()
+	}
+	return err
 }
 
 // SetMode switches the permission preset mid-thread. thread/settings/update
@@ -674,8 +686,96 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 
 // ---- server → client notifications ----
 
+// delta is the shape every streaming notification shares.
+type delta struct {
+	ItemID string `json:"itemId"`
+	TurnID string `json:"turnId"`
+	Delta  string `json:"delta"`
+}
+
+func parseDelta(params json.RawMessage) delta {
+	var p delta
+	_ = json.Unmarshal(params, &p)
+	return p
+}
+
+func (s *session) emitMessageDelta(turn string, p delta) {
+	s.mu.Lock()
+	s.streamed[p.ItemID] = true
+	s.mu.Unlock()
+	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
+		TurnID: turn, Role: "agent", Kind: "text", BlockID: p.ItemID, Delta: p.Delta,
+	}))
+}
+
+func (s *session) emitReasoningDelta(turn string, p delta) {
+	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
+		TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
+	}))
+}
+
+// foreignThread reports whether a notification is about a codex thread other
+// than this session's. Codex runs a spawned subagent (the collaboration
+// spawn_agent tool) as its own thread and multiplexes that thread's
+// notifications over this same connection, tagged with its own threadId.
+//
+// A notification carrying no threadId is connection-scoped, so it is ours.
+func (s *session) foreignThread(params json.RawMessage) bool {
+	if s.threadID == "" {
+		return false
+	}
+	var p struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(params, &p)
+	return p.ThreadID != "" && p.ThreadID != s.threadID
+}
+
+// handleSubagentNotification renders a spawned subagent's work inside the turn
+// that spawned it. Text, reasoning and tool calls are the whole of it:
+// everything else a thread reports — turn lifecycle, token usage, plan,
+// compaction — is about that thread, and applying it here would relabel this
+// session's turn, meter or plan with another thread's state.
+//
+// With no turn of our own open there is nothing to attach to, and the output is
+// dropped rather than allowed to open one. That case is exactly the stop
+// button: interrupting this thread does not stop a subagent it spawned, so the
+// subagent keeps talking after the turn is cancelled. Opening a turn for it
+// made the session look like it had started the work over, and left a stop
+// button that addressed another thread's turn — which codex ignores, so the
+// phantom turn could not be stopped at all.
+func (s *session) handleSubagentNotification(method, turn string, params json.RawMessage) {
+	if turn == "" {
+		return
+	}
+	switch method {
+	case "item/started", "item/completed":
+		// A subagent compacting its own context says nothing about this
+		// session's, and the notice names this session's turn — drop it.
+		var p struct {
+			Item struct {
+				Type string `json:"type"`
+			} `json:"item"`
+		}
+		_ = json.Unmarshal(params, &p)
+		if p.Item.Type == "contextCompaction" {
+			return
+		}
+		s.handleItem(method == "item/completed", turn, params)
+	case "item/agentMessage/delta":
+		s.emitMessageDelta(turn, parseDelta(params))
+	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
+		s.emitReasoningDelta(turn, parseDelta(params))
+	}
+}
+
 func (s *session) handleNotification(method string, params json.RawMessage) {
 	turn := s.currentTurn()
+
+	if s.foreignThread(params) {
+		s.handleSubagentNotification(method, turn, params)
+		return
+	}
 
 	switch method {
 	case "skills/changed":
@@ -704,37 +804,20 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		s.handleItem(method == "item/completed", turn, params)
 
 	case "item/agentMessage/delta":
-		var p struct {
-			ItemID string `json:"itemId"`
-			TurnID string `json:"turnId"`
-			Delta  string `json:"delta"`
-		}
-		_ = json.Unmarshal(params, &p)
+		p := parseDelta(params)
 		// Streaming while idle is a harness-initiated turn; see ensureTurn.
 		if turn == "" {
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.mu.Lock()
-		s.streamed[p.ItemID] = true
-		s.mu.Unlock()
-		s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			TurnID: turn, Role: "agent", Kind: "text", BlockID: p.ItemID, Delta: p.Delta,
-		}))
+		s.emitMessageDelta(turn, p)
 
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
-		var p struct {
-			ItemID string `json:"itemId"`
-			TurnID string `json:"turnId"`
-			Delta  string `json:"delta"`
-		}
-		_ = json.Unmarshal(params, &p)
+		p := parseDelta(params)
 		// Streaming while idle is a harness-initiated turn; see ensureTurn.
 		if turn == "" {
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
-		}))
+		s.emitReasoningDelta(turn, p)
 
 	case "item/commandExecution/outputDelta", "command/exec/outputDelta":
 		// Streamed output is dropped; the completed item carries the
