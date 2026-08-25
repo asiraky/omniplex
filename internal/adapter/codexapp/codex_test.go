@@ -9,6 +9,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
+	"github.com/asiraky/omniplex/internal/proto"
 )
 
 // serverConn pairs a client jsonrpc.Conn with an in-memory server whose handler
@@ -116,6 +117,33 @@ func TestDoubleCancelIsCoalesced(t *testing.T) {
 	}
 	if n := rec.count("turn/interrupt"); n != 1 {
 		t.Fatalf("turn/interrupt sent %d times, want 1", n)
+	}
+}
+
+func TestTokenUsageUsesCodexModelContextWindow(t *testing.T) {
+	s := &session{events: make(chan proto.Emission, 1), done: make(chan struct{})}
+	s.handleNotification("thread/tokenUsage/updated", json.RawMessage(`{
+		"threadId":"thread-1","turnId":"turn-1","tokenUsage":{
+			"total":{"inputTokens":72000,"cachedInputTokens":45000,"cacheWriteInputTokens":123,"outputTokens":500},
+			"last":{"inputTokens":52000,"cachedInputTokens":45000,"cacheWriteInputTokens":0,"outputTokens":1000,"totalTokens":53000},
+			"modelContextWindow":114000
+		}
+	}`))
+
+	e := <-s.events
+	if e.Type != proto.UsageUpdated {
+		t.Fatalf("event type = %q, want %q", e.Type, proto.UsageUpdated)
+	}
+	u, ok := e.Payload.(proto.UsageUpdatedPayload)
+	if !ok {
+		t.Fatalf("payload type = %T, want UsageUpdatedPayload", e.Payload)
+	}
+	if u.ContextUsed != 53000 || u.ContextWindow != 114000 {
+		t.Fatalf("context = %d / %d, want 53000 / 114000", u.ContextUsed, u.ContextWindow)
+	}
+	wantPct := float64(53000) / 114000 * 100
+	if u.ContextPct != wantPct {
+		t.Fatalf("context pct = %v, want %v", u.ContextPct, wantPct)
 	}
 }
 
