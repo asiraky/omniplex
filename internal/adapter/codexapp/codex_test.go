@@ -171,3 +171,28 @@ func TestMCPElicitationIsRoutedThroughHost(t *testing.T) {
 		t.Fatalf("response=%s", blob)
 	}
 }
+
+// TestTrustArgsGrantsProjectLocalConfig guards the fix for a codex session
+// silently losing a repository's own `.codex` agents, hooks and exec policies:
+// codex disables them until the folder is trusted, and app-server cannot ask a
+// human the way the CLI does.
+func TestTrustArgsGrantsProjectLocalConfig(t *testing.T) {
+	args := trustArgs("/home/a/code/zero8/.worktrees/feature-x")
+	want := []string{"-c", `projects."/home/a/code/zero8/.worktrees/feature-x".trust_level="trusted"`}
+	if len(args) != len(want) {
+		t.Fatalf("trustArgs = %q, want %q", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("trustArgs = %q, want %q", args, want)
+		}
+	}
+}
+
+// TestTrustArgsSkipsAnEmptyCwd keeps a session with no directory from spawning
+// an app-server with a malformed override rather than none at all.
+func TestTrustArgsSkipsAnEmptyCwd(t *testing.T) {
+	if args := trustArgs(""); args != nil {
+		t.Fatalf("trustArgs(\"\") = %q, want nil", args)
+	}
+}
