@@ -60,6 +60,7 @@ type Manager struct {
 	// session takes its pictures with it. Nil in tests and in a server built
 	// without the feature.
 	attachments AttachmentPurger
+	imagePath   func(sessionID, id string) (string, error)
 
 	probeMu sync.Mutex
 	probes  map[string]probeResult
@@ -148,9 +149,24 @@ type AttachmentPurger interface {
 	PurgeSession(sessionID string) error
 }
 
+// AttachmentResolver finds a stored image again by session and id. A queued
+// prompt's images come back out of the log without their host path, and the
+// harness needs it when the prompt finally runs.
+type AttachmentResolver interface {
+	Path(sessionID, id string) (path, mediaType string, err error)
+}
+
 // SetAttachments tells the manager where prompt images live. A session that is
 // deleted takes them with it; without this they would outlive it on disk.
-func (m *Manager) SetAttachments(p AttachmentPurger) { m.attachments = p }
+func (m *Manager) SetAttachments(p AttachmentPurger) {
+	m.attachments = p
+	if r, ok := p.(AttachmentResolver); ok {
+		m.imagePath = func(sessionID, id string) (string, error) {
+			path, _, err := r.Path(sessionID, id)
+			return path, err
+		}
+	}
+}
 
 // purgeAttachments is best effort: a picture left behind must never be the
 // reason a session cannot be deleted.
@@ -990,6 +1006,7 @@ func (m *Manager) adopt(a *Actor) {
 	a.mu.Lock()
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
+	a.imagePath = m.imagePath
 	a.mu.Unlock()
 	select {
 	case <-a.quit:

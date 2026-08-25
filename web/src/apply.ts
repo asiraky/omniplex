@@ -101,6 +101,8 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         // names the session.
         title: s.title || (p.recovery ? "" : p.prompt?.slice(0, 60) || imageTitle(p.images?.length ?? 0)),
         turns: [...s.turns, { id: p.turnId, prompt: p.prompt, images: p.images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
+        // Starting is what takes a prompt out of the queue.
+        queuedPrompts: p.queueId ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : s.queuedPrompts,
         // A harness-initiated turn has no prompt — nobody asked anything —
         // so there is no prompt item to add. A prompt that is nothing but
         // pictures still has one.

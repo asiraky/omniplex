@@ -1710,3 +1710,30 @@ func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 		t.Fatalf("prompt after continuation = %q, want the queued one", next.Text)
 	}
 }
+
+// TestQueuedImagesGetTheirPathBack: the log never carries an image's host
+// path, so a queued prompt's images come back without one. Dispatch asks the
+// attachment store for it again rather than sending the harness a blank.
+func TestQueuedImagesGetTheirPathBack(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+	actor.mu.Lock()
+	actor.imagePath = func(sessionID, id string) (string, error) {
+		if sessionID != actor.ID || id != "img" {
+			return "", errors.New("unknown image")
+		}
+		return "/stored/img.png", nil
+	}
+	actor.mu.Unlock()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	<-fa.session().prompts
+	if _, err := actor.Prompt(ctx, "look", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/upload/img.png"}}); err != nil {
+		t.Fatal(err)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.session().prompts
+	if len(in.Images) != 1 || in.Images[0].Path != "/stored/img.png" || in.Images[0].ID != "img" {
+		t.Fatalf("dispatched images = %+v, want the stored path restored", in.Images)
+	}
+}

@@ -356,6 +356,9 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		s.Phase = "turn"
 		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Images: p.Images, Recovery: p.Recovery, StartedAt: ev.Timestamp})
+		if p.QueueID != "" {
+			s.removeQueued(p.QueueID)
+		}
 		if s.Title == "" {
 			s.Title = truncate(p.Prompt, 60)
 			if s.Title == "" && len(p.Images) > 0 {
@@ -387,13 +390,7 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PromptDequeued:
 		var p proto.PromptDequeuedPayload
 		decode(ev.Payload, &p)
-		kept := s.Queued[:0]
-		for _, q := range s.Queued {
-			if q.QueueID != p.QueueID {
-				kept = append(kept, q)
-			}
-		}
-		s.Queued = kept
+		s.removeQueued(p.QueueID)
 
 	case proto.TurnDiff:
 		var p proto.TurnDiffPayload
@@ -594,6 +591,16 @@ func (s *State) Apply(ev proto.Event) {
 		}
 		s.Elicitations = out
 	}
+}
+
+func (s *State) removeQueued(queueID string) {
+	kept := s.Queued[:0]
+	for _, q := range s.Queued {
+		if q.QueueID != queueID {
+			kept = append(kept, q)
+		}
+	}
+	s.Queued = kept
 }
 
 func decode(raw json.RawMessage, v any) {

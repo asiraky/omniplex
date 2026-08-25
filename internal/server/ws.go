@@ -449,7 +449,9 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		// View, not Get: taking a prompt back needs no harness, and activating
+		// one would start the head of the queue before this could remove it.
+		actor, err := c.srv.mgr.View(ctx, a.SessionID)
 		if err != nil {
 			return nil, err
 		}

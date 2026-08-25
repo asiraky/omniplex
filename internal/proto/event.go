@@ -215,13 +215,14 @@ type PromptQueuedPayload struct {
 
 type PromptDequeuedPayload struct {
 	QueueID string `json:"queueId"`
-	// Reason is one of started, removed, cancelled.
+	// Reason is removed (a human took it back) or cancelled (the turn it
+	// waited on was interrupted). A prompt that started is not dequeued by
+	// this event but by the turn.started that names it.
 	Reason string `json:"reason"`
 }
 
 // Reasons for PromptDequeued.
 const (
-	DequeueStarted   = "started"
 	DequeueRemoved   = "removed"
 	DequeueCancelled = "cancelled"
 )
@@ -235,6 +236,10 @@ type TurnStartedPayload struct {
 	// unfinished — after a restart, or because a human asked. It is absent on
 	// every ordinary prompt.
 	Recovery *TurnRecovery `json:"recovery,omitempty"`
+	// QueueID names the queued prompt this turn started from. Starting is
+	// what takes a prompt out of the queue: one event, so a crash cannot
+	// leave the log with neither the queued prompt nor its turn.
+	QueueID string `json:"queueId,omitempty"`
 }
 
 // TurnRecovery describes a turn started to continue work an earlier turn did

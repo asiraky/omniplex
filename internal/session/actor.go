@@ -80,6 +80,10 @@ type Actor struct {
 	// the middle of. Recover consumes it; see recovery.go.
 	recovery *proto.TurnRecovery
 
+	// imagePath finds the host path of a stored image by session and id,
+	// for queued prompts whose images came back out of the log without one.
+	imagePath func(sessionID, imageID string) (string, error)
+
 	// checkpoints snapshots the checkout around each turn, so a finished turn
 	// can say which files it changed. Nil when the session has no Git checkout
 	// to snapshot.
@@ -918,7 +922,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
 		}
-		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery)
+		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery, "")
 		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false
@@ -1105,7 +1109,7 @@ func (a *Actor) startCheckpoints() {
 
 // startTurn opens a turn for a prompt and sends it to the harness. The caller
 // has already checked that the session is open, activated, and idle.
-func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.PromptImage, recovery *proto.TurnRecovery) (string, error) {
+func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.PromptImage, recovery *proto.TurnRecovery, queueID string) (string, error) {
 	turnID := uuid.NewString()
 	a.turnActive = turnID
 
@@ -1120,7 +1124,7 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	cancelBase()
 
 	// append records the phase change; no SetPhase needed here.
-	a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: prompt, Images: images, Recovery: recovery}))
+	a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: prompt, Images: images, Recovery: recovery, QueueID: queueID}))
 	// A recovery prompt is the server talking to itself; naming a session
 	// after it would bury what the human actually asked for.
 	if recovery == nil {
@@ -1159,10 +1163,8 @@ func (a *Actor) isQueued(queueID string) bool {
 }
 
 // dispatchQueued starts the oldest queued prompt if the session is idle and
-// able to run one. A prompt that fails on the way out takes the rest of the
-// queue with it: whatever refused it — a login, a dead bridge — would refuse
-// them all, and firing them one per command would only spread the failure
-// across the transcript.
+// able to run one. A prompt that fails on the way out ends as an errored turn
+// like any other; the rest of the queue stays, each to be tried in its turn.
 func (a *Actor) dispatchQueued(ctx context.Context) {
 	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed {
 		return
@@ -1177,11 +1179,34 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 		return
 	}
 	next := a.state.Queued[0]
-	a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: next.QueueID, Reason: proto.DequeueStarted}))
-	if _, err := a.startTurn(ctx, next.Prompt, next.Images, nil); err != nil {
+	if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
 		a.logf("queued prompt on %s: %v", a.ID, err)
-		a.dropQueue()
 	}
+}
+
+// resolveImages puts the host path back on images that came out of the log,
+// which never carries one. Without a resolver — or when it fails — the image
+// goes without a path, and the adapter says so.
+func (a *Actor) resolveImages(images []proto.PromptImage) []proto.PromptImage {
+	if len(images) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	resolve := a.imagePath
+	a.mu.Unlock()
+	out := make([]proto.PromptImage, len(images))
+	for i, img := range images {
+		out[i] = img
+		if img.Path == "" && resolve != nil {
+			path, err := resolve(a.ID, img.ID)
+			if err != nil {
+				a.logf("queued image %s on %s: %v", img.ID, a.ID, err)
+				continue
+			}
+			out[i].Path = path
+		}
+	}
+	return out
 }
 
 // dropQueue takes every waiting prompt out of the queue. Presenters that

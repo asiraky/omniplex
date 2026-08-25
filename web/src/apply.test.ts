@@ -143,7 +143,18 @@ describe("queued prompts", () => {
     expect(s.queuedPrompts[0].queuedAt).toBe(2000);
     expect(s.turns).toHaveLength(1);
     expect(s.phase).toBe("turn");
-    s = applyEvent(s, ev(4, "prompt.dequeued", { queueId: "q1", reason: "started" }));
+    s = applyEvent(s, ev(4, "prompt.dequeued", { queueId: "q1", reason: "removed" }));
     expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q2"]);
+  });
+});
+
+describe("a queued prompt starting", () => {
+  it("leaves the queue when the turn it became names it", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "next" }));
+    s = applyEvent(s, ev(2, "turn.started", { turnId: "t2", prompt: "next", queueId: "q1" }));
+    expect(s.queuedPrompts).toEqual([]);
+    expect(s.turns.map((t) => t.id)).toEqual(["t2"]);
+    expect(s.items.map((it) => it.id)).toEqual(["prompt:t2"]);
   });
 });

@@ -645,13 +645,14 @@ export function App() {
       clientRef.current?.command("dequeue_prompt", { sessionId: activeId, queueId }).then(
         () => {
           if (!text) return;
-          const current = drafts[activeId] ?? "";
-          setDraft(activeId, [text, current].filter(Boolean).join("\n\n"));
+          // Against the draft as it is when the reply lands, not as it was
+          // when the request left: on a slow link that is seconds apart.
+          setDrafts((d) => ({ ...d, [activeId]: [text, d[activeId] ?? ""].filter(Boolean).join("\n\n") }));
         },
         (e) => toast.error("Could not remove that prompt", { description: e.message }),
       );
     },
-    [activeId, drafts, setDraft, state],
+    [activeId, state],
   );
 
   const resolvePermission = useCallback(
