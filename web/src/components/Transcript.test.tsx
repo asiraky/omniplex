@@ -24,6 +24,7 @@ const state = (text: string): any => ({
   usage: {},
   pendingPermissions: [],
   pendingElicitations: [],
+  queuedPrompts: [],
 });
 
 function transcript(text: string) {
