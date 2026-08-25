@@ -45,12 +45,19 @@ function reserve() {
 }
 
 // Place the prompt element `offset` px into the transcript and hand it to the
-// hook, the way the transcript does when a prompt of its own arrives. Where it
-// sits on screen follows the scroll position, as a real element's box does.
+// hook, the way the transcript does when a prompt of its own arrives. This is
+// a layout position, not a painted one, so unlike a rect it does not move with
+// the scroll position — the hook measures with `offsetTop` precisely so that a
+// half-played fade-in cannot shift it.
+function layoutAt(el: HTMLElement, top: number) {
+  Object.defineProperty(el, "offsetTop", { configurable: true, value: top });
+  Object.defineProperty(el, "offsetParent", { configurable: true, value: null });
+}
+
 function anchorPrompt(offset: number) {
   const target = screen.getByTestId("prompt");
-  target.getBoundingClientRect = () => ({ top: offset - scroller().scrollTop }) as DOMRect;
-  scroller().getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+  layoutAt(target, offset);
+  layoutAt(scroller(), 0);
   act(() => anchorTo(target));
 }
 
@@ -273,6 +280,24 @@ describe("useAutoScroll anchoring", () => {
     content += 1000;
     grew();
     expect(reserve()).toBe(0);
+  });
+
+  it("keeps the hold when content above it collapses", () => {
+    anchorPrompt(PROMPT_AT);
+    // A card above the prompt folds away: the prompt moves up the content and
+    // the browser clamps the view to the shorter bottom on its own. That
+    // scroll event is not a reader taking the view back, and treating it as
+    // one dropped the hold and left the reserve behind with nothing holding
+    // it up — so the tail was never handed back either.
+    content -= 100;
+    layoutAt(screen.getByTestId("prompt"), PROMPT_AT - 100);
+    setTop(scroller().scrollTop);
+    fire(new Event("scroll"));
+
+    content += 1000;
+    grew();
+    expect(pinned()).toBe(true);
+    expect(scroller().scrollTop).toBe(content - VIEWPORT);
   });
 
   it("does not let its own scroll re-arm the pin", () => {

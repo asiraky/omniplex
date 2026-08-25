@@ -31,6 +31,27 @@ const canScroll = (el: HTMLElement) => el.scrollHeight - el.clientHeight > AT_BO
 // enough that it reads as "at the top" without sitting on the edge.
 const ANCHOR_GAP_PX = 16;
 
+// How far an element sits down the scroller's content, in layout terms.
+//
+// Deliberately not `getBoundingClientRect`: a rect is the *painted* box, and
+// the row this is asked about has only just mounted, so its `fade-in` is still
+// playing and the paint is up to 3px below where the row is going to settle.
+// Anchoring to that parks the view 3px off and then snaps it back the first
+// time anything resizes — a small, very visible flick a moment after every
+// prompt is sent. `offsetTop` is the layout box, which is where the animation
+// is heading and where the row will be for the rest of its life.
+//
+// Walking to the document and subtracting, rather than reading one offset,
+// because `offsetTop` is relative to the nearest positioned ancestor and
+// neither the scroller nor the content is required to be one — whatever that
+// ancestor turns out to be, it is on both walks and cancels.
+const layoutTop = (el: HTMLElement) => {
+  let y = 0;
+  for (let node: HTMLElement | null = el; node; node = node.offsetParent as HTMLElement | null)
+    y += node.offsetTop;
+  return y;
+};
+
 /**
  * Keeps a scroller pinned to its own bottom while content grows, and gives up
  * the pin the moment the reader scrolls up.
@@ -144,7 +165,7 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
     const target = anchorEl.current;
     if (!el || !target?.isConnected) return clearAnchor();
 
-    const offset = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    const offset = layoutTop(target) - layoutTop(el);
     const desired = Math.max(0, offset - ANCHOR_GAP_PX);
     // What lies below the anchor on its own merits: the reserve is discounted,
     // or it would keep justifying itself.
@@ -205,7 +226,14 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
       // Every position this hook writes is recorded as it is written, so a
       // position that is not the recorded one came from the reader — and a
       // reader who moves the view has taken it back from the anchor.
-      if (anchored.current && Math.abs(top - lastTop.current) > 1) anchored.current = false;
+      // Unless it is still the bottom: the reserve is sized so the
+      // anchored position *is* the last screenful, so a move that ends there
+      // is the browser clamping the view as content above the anchor shrinks
+      // (a card collapsing, a run folding), not a hand on the wheel. Reading
+      // that as intent lost the hold to every collapse that happened to land
+      // mid-turn, and left the reserve behind with nothing holding it up.
+      if (anchored.current && Math.abs(top - lastTop.current) > 1 && !atBottom(el))
+        anchored.current = false;
       // A position that went up — under the reader's hand or the scrollbar's
       // — ends the pin, and it does so even a few pixels from the bottom:
       // re-arming inside the tolerance would undo a small deliberate nudge

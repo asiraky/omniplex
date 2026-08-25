@@ -130,7 +130,7 @@ function reserve(container: HTMLElement) {
 
 // Give the transcript a body: a scroller that clamps its position the way a
 // real one does, whose height includes the room the anchor reserves, and a
-// prompt whose box moves with the scroll.
+// prompt that sits a fixed way down that content.
 function measured(container: HTMLElement) {
   const el = container.querySelector<HTMLElement>(".overflow-y-auto")!;
   const height = () => HEIGHT + parseInt(reserve(container) || "0", 10);
@@ -144,9 +144,14 @@ function measured(container: HTMLElement) {
     },
     configurable: true,
   });
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    return { top: this.hasAttribute("data-msg-id") ? PROMPT_TOP - top : 0 } as DOMRect;
+  // Layout positions, not painted ones: the hook measures the anchor with
+  // `offsetTop` so a prompt that is still fading in cannot be measured 3px
+  // below where it will settle. So the prompt sits `PROMPT_TOP` down the
+  // content no matter where the view is.
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-msg-id") ? PROMPT_TOP : 0;
   });
+  vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockReturnValue(null);
   return el;
 }
 
