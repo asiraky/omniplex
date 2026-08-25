@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +134,30 @@ func settingsFor(mode string) (modeSettings, error) {
 	}
 }
 
+// trustArgs marks the session's own directory trusted for this app-server run.
+//
+// Codex disables a repository's project-local `.codex` — its agent
+// definitions, hooks and exec policies — until the folder is trusted, and
+// answers with nothing but a line on stderr. The CLI can prompt a human and
+// write the answer to config.toml; app-server cannot, so an untrusted
+// directory silently loses everything the repo configured and the model runs
+// with a stripped-down toolkit it was never told about. A managed worktree is
+// a brand-new path every session, which is exactly the case the CLI's
+// remembered answer does not cover.
+//
+// Adding a directory to omniplex and starting a session in it is the consent
+// codex is asking for, so the grant is made here — per run, via -c, never
+// written to the user's config.toml. Trust is inherited by subpaths, so
+// naming the cwd covers a worktree beneath it without enumerating them.
+func trustArgs(cwd string) []string {
+	if cwd == "" {
+		return nil
+	}
+	// The path is quoted as a TOML basic string: a repo path may contain
+	// characters that a bare dotted key cannot carry.
+	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
+}
+
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	// Resolve the mode before spawning anything: an unknown id should fail
 	// legibly, not leave an orphaned app-server.
@@ -141,7 +166,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	cmd := exec.Command(a.Bin, "app-server")
+	cmd := exec.Command(a.Bin, append([]string{"app-server"}, trustArgs(o.Cwd)...)...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account CODEX_HOME isolates config and login.
