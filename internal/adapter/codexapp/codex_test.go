@@ -281,3 +281,26 @@ func TestFailedInterruptDoesNotWedgeTheStopButton(t *testing.T) {
 		t.Fatalf("turn/interrupt sent %d times, want 2", n)
 	}
 }
+
+// TestSubagentOutlivingItsTurnStaysOutOfTheNextOne: stopping a turn does not
+// stop a subagent it spawned, so its stream can still be arriving when the next
+// prompt opens a turn. That work belongs to the turn that spawned it, not to
+// whatever is running now.
+func TestSubagentOutlivingItsTurnStaysOutOfTheNextOne(t *testing.T) {
+	s := subagentSession(t)
+	s.turnID, s.serverTurnID = "turn-a", "codex-turn-a"
+	s.handleNotification("item/agentMessage/delta", json.RawMessage(
+		`{"threadId":"subagent-9","turnId":"subagent-turn","itemId":"msg-1","delta":"during A"}`))
+	if got := drain(s); len(got) != 1 {
+		t.Fatalf("subagent output during its own turn = %+v, want one chunk", got)
+	}
+
+	// Turn A is stopped and turn B starts while the subagent keeps talking.
+	s.turnID, s.serverTurnID = "turn-b", "codex-turn-b"
+	s.handleNotification("item/agentMessage/delta", json.RawMessage(
+		`{"threadId":"subagent-9","turnId":"subagent-turn","itemId":"msg-1","delta":"after A"}`))
+
+	if got := drain(s); len(got) != 0 {
+		t.Fatalf("orphaned subagent output leaked into turn B: %+v", got)
+	}
+}

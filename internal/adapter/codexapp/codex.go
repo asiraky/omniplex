@@ -164,13 +164,14 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 
 	s := &session{
-		host:     host,
-		cmd:      cmd,
-		cwd:      o.Cwd,
-		events:   make(chan proto.Emission, 256),
-		streamed: map[string]bool{},
-		done:     make(chan struct{}),
-		effort:   o.Effort,
+		host:      host,
+		cmd:       cmd,
+		cwd:       o.Cwd,
+		events:    make(chan proto.Emission, 256),
+		streamed:  map[string]bool{},
+		subagents: map[string]string{},
+		done:      make(chan struct{}),
+		effort:    o.Effort,
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
 
@@ -262,6 +263,10 @@ type session struct {
 	serverTurnID string
 	interrupting bool            // an interrupt for serverTurnID is already in flight
 	streamed     map[string]bool // item ids that arrived as deltas
+	// subagents maps a spawned thread's id to the turn of ours that was
+	// running when it first spoke — the turn that spawned it. Lazily filled;
+	// a session runs few enough subagents that it is never worth pruning.
+	subagents map[string]string
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
 	manualCompact  bool
@@ -720,15 +725,42 @@ func (s *session) emitReasoningDelta(turn string, p delta) {
 // notifications over this same connection, tagged with its own threadId.
 //
 // A notification carrying no threadId is connection-scoped, so it is ours.
-func (s *session) foreignThread(params json.RawMessage) bool {
+func (s *session) foreignThread(params json.RawMessage) string {
 	if s.threadID == "" {
-		return false
+		return ""
 	}
 	var p struct {
 		ThreadID string `json:"threadId"`
 	}
 	_ = json.Unmarshal(params, &p)
-	return p.ThreadID != "" && p.ThreadID != s.threadID
+	if p.ThreadID == s.threadID {
+		return ""
+	}
+	return p.ThreadID
+}
+
+// spawningTurn returns the turn a subagent thread's output belongs in: the one
+// that was running the first time that thread spoke. Empty means nowhere —
+// either nothing of ours was running when it first appeared, or the turn that
+// spawned it has since ended and a subagent that outlives its turn must not
+// spill into whatever turn is running now.
+func (s *session) spawningTurn(thread, turn string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if owner, ok := s.subagents[thread]; ok {
+		if owner == turn {
+			return turn
+		}
+		return ""
+	}
+	if turn == "" {
+		return ""
+	}
+	if s.subagents == nil {
+		s.subagents = map[string]string{}
+	}
+	s.subagents[thread] = turn
+	return turn
 }
 
 // handleSubagentNotification renders a spawned subagent's work inside the turn
@@ -737,14 +769,15 @@ func (s *session) foreignThread(params json.RawMessage) bool {
 // compaction — is about that thread, and applying it here would relabel this
 // session's turn, meter or plan with another thread's state.
 //
-// With no turn of our own open there is nothing to attach to, and the output is
-// dropped rather than allowed to open one. That case is exactly the stop
-// button: interrupting this thread does not stop a subagent it spawned, so the
-// subagent keeps talking after the turn is cancelled. Opening a turn for it
-// made the session look like it had started the work over, and left a stop
-// button that addressed another thread's turn — which codex ignores, so the
-// phantom turn could not be stopped at all.
-func (s *session) handleSubagentNotification(method, turn string, params json.RawMessage) {
+// With no turn of ours to attach it to the output is dropped rather than
+// allowed to open one. That case is exactly the stop button: interrupting this
+// thread does not stop a subagent it spawned, so the subagent keeps talking
+// after the turn is cancelled. Opening a turn for it made the session look like
+// it had started the work over, and left a stop button that addressed another
+// thread's turn — which codex ignores, so the phantom turn could not be stopped
+// at all.
+func (s *session) handleSubagentNotification(method, thread, turn string, params json.RawMessage) {
+	turn = s.spawningTurn(thread, turn)
 	if turn == "" {
 		return
 	}
@@ -772,8 +805,8 @@ func (s *session) handleSubagentNotification(method, turn string, params json.Ra
 func (s *session) handleNotification(method string, params json.RawMessage) {
 	turn := s.currentTurn()
 
-	if s.foreignThread(params) {
-		s.handleSubagentNotification(method, turn, params)
+	if thread := s.foreignThread(params); thread != "" {
+		s.handleSubagentNotification(method, thread, turn, params)
 		return
 	}
 
