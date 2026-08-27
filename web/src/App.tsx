@@ -10,7 +10,6 @@ import { liveAgentCount } from "./lib/agents";
 import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { NewSession } from "./components/NewSession";
-import { LoginDialog } from "./components/LoginDialog";
 import type { NewSessionInput } from "./components/NewSession";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { ElicitationPrompt } from "./components/ElicitationPrompt";
@@ -65,6 +64,8 @@ const LAST_SESSION = "omniplex.lastSession";
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
+// The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
+const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
 
 // The permission-mode switcher is parked, not removed: changing modes mid-chat
@@ -1355,18 +1356,20 @@ export function App() {
         />
       )}
       {loginInstance && (
-        <LoginDialog
-          instanceId={loginInstance}
-          name={
-            harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === loginInstance)?.displayName ??
-            loginInstance
-          }
-          onEnded={recheck}
-          onClose={() => {
-            setLoginInstance(null);
-            recheck();
-          }}
-        />
+        <Suspense fallback={null}>
+          <LoginDialog
+            instanceId={loginInstance}
+            name={
+              harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === loginInstance)?.displayName ??
+              loginInstance
+            }
+            onEnded={recheck}
+            onClose={() => {
+              setLoginInstance(null);
+              recheck();
+            }}
+          />
+        </Suspense>
       )}
       {projectSettings && (
         <Suspense fallback={null}>
