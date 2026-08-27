@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,4 +173,44 @@ func waitForListing(t *testing.T, fa *fakeAdapter, want int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("listing attempts never reached %d", want)
+}
+
+// A harness that starts answering as a different account — signed in after
+// being signed out, above all — offers a different catalogue. The listing
+// cached under the old identity is wrong, not stale, and must go at once:
+// waiting out the TTL is how a fresh login kept showing the signed-out list.
+func TestAccountChangeDropsCachedModels(t *testing.T) {
+	mgr, fa, _ := instTestManager(t)
+	fa.liveErr = errors.New("no")
+	account := "unavailable"
+	var mu sync.Mutex
+	fa.availFor = func(map[string]string) adapter.Availability {
+		mu.Lock()
+		defer mu.Unlock()
+		if account == "unavailable" {
+			return adapter.Unavailable("not signed in")
+		}
+		return adapter.Ready(map[string]string{"account": account})
+	}
+
+	mgr.Harnesses(context.Background())
+	// Signed out: no listing is attempted at all.
+	time.Sleep(20 * time.Millisecond)
+	if fa.listCalls != 0 {
+		t.Fatalf("listed while unavailable: %d", fa.listCalls)
+	}
+
+	mu.Lock()
+	account = "a@b.c"
+	mu.Unlock()
+	mgr.expireProbesForTest()
+	mgr.Harnesses(context.Background())
+	waitForListing(t, &fa.fakeAdapter, 1)
+
+	mu.Lock()
+	account = "z@b.c"
+	mu.Unlock()
+	mgr.expireProbesForTest()
+	mgr.Harnesses(context.Background())
+	waitForListing(t, &fa.fakeAdapter, 2)
 }

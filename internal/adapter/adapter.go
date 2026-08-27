@@ -149,6 +149,9 @@ type Remedy struct {
 	URL string `json:"url,omitempty"`
 	// Command is optional; a shell command the user could run.
 	Command string `json:"command,omitempty"`
+	// Action is optional; names something the server can do on the user's
+	// behalf. The only value today is RemedyLogin.
+	Action string `json:"action,omitempty"`
 }
 
 // Availability is an adapter's self-report. An unavailable adapter is still
@@ -162,6 +165,20 @@ type Availability struct {
 	// verbatim; never interpreted by the core.
 	Facts map[string]string `json:"facts,omitempty"`
 }
+
+// Authenticator is implemented by an adapter whose harness signs in
+// interactively. The server runs the command in a terminal the user can see
+// and type into — the login is the harness's own flow, not omniplex's.
+type Authenticator interface {
+	// LoginCommand is the argv that starts the harness's sign-in flow under the
+	// instance's environment. Unavailable when the harness itself cannot be
+	// found, in which case the error says why.
+	LoginCommand(ctx context.Context) ([]string, error)
+}
+
+// RemedyLogin marks a remedy the server can carry out itself: the UI offers a
+// sign-in that runs the adapter's LoginCommand in a terminal.
+const RemedyLogin = "login"
 
 func Ready(facts map[string]string) Availability {
 	return Availability{State: StateReady, Facts: facts}

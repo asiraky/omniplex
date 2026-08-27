@@ -1,4 +1,4 @@
-import { PlusIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
+import { LogInIcon, PlusIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { ConnectionStatus } from "~/client";
@@ -85,6 +85,7 @@ export function NewSession({
   onAddProject,
   onSettings,
   onRecheck,
+  onLogin,
   onClose,
   status,
 }: {
@@ -98,6 +99,8 @@ export function NewSession({
   onAddProject: () => void;
   onSettings: (project: Project) => void;
   onRecheck: () => void;
+  /** Open the harness's own sign-in for one instance; absent when the server cannot run one. */
+  onLogin?: (instanceId: string) => void;
   onClose: () => void;
   status: ConnectionStatus;
 }) {
@@ -387,17 +390,34 @@ export function NewSession({
               )}
             </div>
 
-            {instance && instance.availability?.state !== "ready" && (
-              <Alert>
-                <AlertDescription>
-                  <span>{instance.availability?.reason}</span>
-                  <Button variant="outline" size="sm" className="mt-2" onClick={onRecheck}>
-                    <RefreshCwIcon />
-                    Check again
-                  </Button>
-                </AlertDescription>
-              </Alert>
-            )}
+            {/* Every account that cannot start, not just the chosen one: the
+                picker quietly falls back to whatever is ready, so a signed-out
+                Claude would otherwise vanish behind a working Codex with no
+                word of why. */}
+            {instances
+              .filter((i) => i.enabled && i.availability?.state !== "ready")
+              .map((i) => (
+                <Alert key={i.id}>
+                  <AlertDescription>
+                    <span>
+                      {instances.length > 1 && <span className="font-medium">{i.name} — </span>}
+                      {i.availability?.reason}
+                    </span>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {onLogin && i.availability?.remedy?.some((r) => r.action === "login") && (
+                        <Button size="sm" onClick={() => onLogin(i.id)}>
+                          <LogInIcon />
+                          Sign in
+                        </Button>
+                      )}
+                      <Button variant="outline" size="sm" onClick={onRecheck}>
+                        <RefreshCwIcon />
+                        Check again
+                      </Button>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              ))}
 
             {modes.length > 0 && (
               <div className="space-y-1.5">

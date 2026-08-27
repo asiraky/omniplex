@@ -337,3 +337,45 @@ describe("NewSession", () => {
     );
   });
 });
+
+// A signed-out harness is the commonest way a session refuses to start, and
+// the fix is the harness's own login. When the server can run that, the alert
+// offers it; when it cannot, only "Check again" remains.
+describe("a signed-out harness", () => {
+  const signedOut = {
+    ...harness,
+    availability: {
+      state: "unavailable",
+      reason: "Claude is not signed in.",
+      remedy: [{ text: "Sign in", command: "claude auth login", action: "login" }],
+    },
+    instances: [
+      {
+        id: "claude",
+        driver: "claude",
+        displayName: "Claude Code",
+        enabled: true,
+        availability: {
+          state: "unavailable",
+          reason: "Claude is not signed in.",
+          remedy: [{ text: "Sign in", command: "claude auth login", action: "login" }],
+        },
+        models: [],
+      },
+    ],
+  } as unknown as HarnessMeta;
+
+  it("offers the harness's own sign-in", async () => {
+    const onLogin = vi.fn();
+    open({ harnesses: [signedOut], onLogin });
+    expect(screen.getByText("Claude is not signed in.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    expect(onLogin).toHaveBeenCalledWith("claude");
+  });
+
+  it("does not offer a sign-in the server cannot run", () => {
+    open({ harnesses: [signedOut] });
+    expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /check again/i })).toBeTruthy();
+  });
+});

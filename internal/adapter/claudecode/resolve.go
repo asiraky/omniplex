@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,10 +184,21 @@ func claudeVersion(ctx context.Context, path string) string {
 // runBriefly runs a fast informational command with a hard deadline, so a
 // wedged binary cannot stall a probe.
 func runBriefly(ctx context.Context, name string, args ...string) string {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	return runBrieflyEnv(ctx, nil, name, args...)
+}
+
+// runBrieflyEnv is runBriefly under a given environment; nil inherits.
+func runBrieflyEnv(ctx context.Context, env []string, name string, args ...string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
-	if err != nil {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
+	out, err := cmd.Output()
+	// A non-zero exit still answered: `claude auth status` exits 1 when
+	// signed out, with the JSON that says so on stdout. Only a command that
+	// could not run at all — or was cut off by the deadline — has nothing.
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || ctx.Err() != nil) {
 		return ""
 	}
 	return string(out)

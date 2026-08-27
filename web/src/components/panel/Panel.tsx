@@ -373,7 +373,7 @@ function PanelBody({
           .filter((s) => s.kind === "terminal")
           .map((s) => (
             <div key={s.id} className={cn("h-full", s.id !== panel.active && "hidden")}>
-              <TerminalSurface sessionId={sessionId} />
+              <TerminalSurface target={{ session: sessionId }} />
             </div>
           ))}
       </div>

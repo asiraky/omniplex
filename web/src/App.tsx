@@ -64,6 +64,8 @@ const LAST_SESSION = "omniplex.lastSession";
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
+// The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
+const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
 
 // The permission-mode switcher is parked, not removed: changing modes mid-chat
@@ -718,6 +720,10 @@ export function App() {
   }, [sessions]);
 
   // Ask the server to re-probe, for when the user has just installed something.
+  // The instance whose sign-in is open, if any. Closing it rechecks, so the
+  // login shows up as "ready" by itself.
+  const [loginInstance, setLoginInstance] = useState<string | null>(null);
+
   const recheck = useCallback(() => {
     clientRef.current?.command("recheck_harnesses", {}).then((res) => {
       if (res?.harnesses) setHarnesses(res.harnesses);
@@ -1370,9 +1376,26 @@ export function App() {
           onAddProject={()=>setProjectSettings("add")}
           onSettings={setProjectSettings}
           onRecheck={recheck}
+          onLogin={(id) => setLoginInstance(id)}
           status={status}
           onClose={() => setCreating(false)}
         />
+      )}
+      {loginInstance && (
+        <Suspense fallback={null}>
+          <LoginDialog
+            instanceId={loginInstance}
+            name={
+              harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === loginInstance)?.displayName ??
+              loginInstance
+            }
+            onEnded={recheck}
+            onClose={() => {
+              setLoginInstance(null);
+              recheck();
+            }}
+          />
+        </Suspense>
       )}
       {projectSettings && (
         <Suspense fallback={null}>
