@@ -28,6 +28,11 @@ const (
 	// AttentionNeedsAnswer: the harness asked a question (elicitation) and is
 	// blocked on the reply. The user's turn.
 	AttentionNeedsAnswer = "needs_answer"
+	// AttentionBackground: no turn is open, but jobs are still live — a
+	// subagent finishing up, a shell the harness has not reaped yet. Not the
+	// user's turn: the composer is sendable, but "waiting for you" would be
+	// a lie while work is running.
+	AttentionBackground = "background"
 	// AttentionNeedsPrompt: idle — the conversation is with the user.
 	AttentionNeedsPrompt = "needs_prompt"
 	// AttentionFailed: workspace provisioning or cleanup failed; the session
@@ -52,9 +57,42 @@ func (s *State) Attention() string {
 		return AttentionNeedsAnswer
 	case s.Phase == "turn" || s.Phase == "provisioning" || s.Phase == "cleaning":
 		return AttentionWorking
+	case s.LiveJobs().Any():
+		return AttentionBackground
 	default:
 		return AttentionNeedsPrompt
 	}
+}
+
+// JobCounts is how many jobs of each kind are live right now.
+type JobCounts struct {
+	Agents   int `json:"agents"`
+	Shells   int `json:"shells"`
+	Monitors int `json:"monitors"`
+}
+
+func (c JobCounts) Any() bool { return c.Agents+c.Shells+c.Monitors > 0 }
+
+// LiveJobs counts the jobs that are still running, by kind. Inert jobs are
+// never live: they are the harness's own housekeeping, not work anyone is
+// waiting on. Liveness is a channel parallel to the turn, not part of it —
+// the turn settles on its own terms, and this says what is still going.
+func (s *State) LiveJobs() JobCounts {
+	var c JobCounts
+	for _, j := range s.Jobs {
+		if proto.JobDone(j.Status) {
+			continue
+		}
+		switch j.Kind {
+		case proto.JobAgent:
+			c.Agents++
+		case proto.JobShell:
+			c.Shells++
+		case proto.JobMonitor:
+			c.Monitors++
+		}
+	}
+	return c
 }
 
 // AttentionForPhase derives attention for a session with no live projection —
@@ -115,6 +153,32 @@ type Item struct {
 	Trigger    string `json:"trigger,omitempty"`    // auto | manual
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
+}
+
+// Job is work running beside the conversation: a subagent, a background
+// shell, a monitor. It is the projection of the job.* events, merged field by
+// field so a usage tick never blanks a name.
+type Job struct {
+	ID          string `json:"id"`
+	ToolCallID  string `json:"toolCallId,omitempty"`
+	ParentJobID string `json:"parentJobId,omitempty"`
+	// Depth is how many parents are above this job: 0 at the top level.
+	Depth        int            `json:"depth"`
+	Kind         string         `json:"kind"`
+	TaskType     string         `json:"taskType,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Role         string         `json:"role,omitempty"`
+	WorkflowName string         `json:"workflowName,omitempty"`
+	Status       string         `json:"status"`
+	Activity     string         `json:"activity,omitempty"`
+	Usage        proto.JobUsage `json:"usage"`
+	Error        string         `json:"error,omitempty"`
+	OutputFile   string         `json:"outputFile,omitempty"`
+	Backgrounded bool           `json:"backgrounded,omitempty"`
+	Hidden       bool           `json:"hidden,omitempty"`
+	TurnID       string         `json:"turnId,omitempty"`
+	StartedAt    int64          `json:"startedAt,omitempty"`
+	FinishedAt   int64          `json:"finishedAt,omitempty"`
 }
 
 // Turn records the lifecycle of one prompt/response cycle.
@@ -194,6 +258,7 @@ type State struct {
 
 	Items        []Item                    `json:"items"`
 	Turns        []Turn                    `json:"turns"`
+	Jobs         []Job                     `json:"jobs"`
 	Plan         []proto.PlanEntry         `json:"plan"`
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
@@ -208,6 +273,7 @@ func New(sessionID string) *State {
 		Phase:        "idle",
 		Items:        []Item{},
 		Turns:        []Turn{},
+		Jobs:         []Job{},
 		Plan:         []proto.PlanEntry{},
 		Pending:      []PendingPermission{},
 		Elicitations: []PendingElicitation{},
@@ -231,6 +297,126 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	}
 	s.reindex()
 	return &s, nil
+}
+
+// jobIndex is a linear scan: a session has a handful of jobs, not thousands,
+// and an index would be one more thing to rebuild after a snapshot.
+func (s *State) job(id string) *Job {
+	for i := range s.Jobs {
+		if s.Jobs[i].ID == id {
+			return &s.Jobs[i]
+		}
+	}
+	return nil
+}
+
+// applyJob folds one job event. Every row carries the linkage bundle, so a
+// job whose start was never seen is created from whatever row arrives first.
+func (s *State) applyJob(ev proto.Event, finished bool) {
+	var p proto.JobPayload
+	decode(ev.Payload, &p)
+	if p.JobID == "" {
+		return
+	}
+	j := s.job(p.JobID)
+	if j == nil {
+		s.Jobs = append(s.Jobs, Job{ID: p.JobID, Status: proto.JobRunning, StartedAt: ev.Timestamp})
+		j = &s.Jobs[len(s.Jobs)-1]
+		// The turn that spawned it, for the transcript to pin its card to.
+		for i := range s.Turns {
+			if !s.Turns[i].Done {
+				j.TurnID = s.Turns[i].ID
+			}
+		}
+	}
+	if p.ToolCallID != "" {
+		j.ToolCallID = p.ToolCallID
+	}
+	if p.ParentJobID != "" {
+		j.ParentJobID = p.ParentJobID
+		if parent := s.job(p.ParentJobID); parent != nil {
+			j.Depth = parent.Depth + 1
+		}
+	}
+	if p.Kind != "" {
+		j.Kind = p.Kind
+	}
+	if j.Kind == "" {
+		j.Kind = proto.ClassifyJob(p.TaskType)
+	}
+	if p.TaskType != "" {
+		j.TaskType = p.TaskType
+	}
+	if p.Name != "" {
+		j.Name = p.Name
+	}
+	if p.Role != "" {
+		j.Role = p.Role
+	}
+	if p.WorkflowName != "" {
+		j.WorkflowName = p.WorkflowName
+	}
+	if p.Activity != "" {
+		j.Activity = p.Activity
+	}
+	if p.Usage != nil {
+		// Usage is a running total: a row that reports less than we have
+		// already seen is a partial (a cost tick without tokens), not a reset.
+		if p.Usage.TotalTokens > 0 {
+			j.Usage.TotalTokens = p.Usage.TotalTokens
+		}
+		if p.Usage.ToolUses > 0 {
+			j.Usage.ToolUses = p.Usage.ToolUses
+		}
+		if p.Usage.DurationMs > 0 {
+			j.Usage.DurationMs = p.Usage.DurationMs
+		}
+		if p.Usage.Cost > 0 {
+			j.Usage.Cost = p.Usage.Cost
+		}
+	}
+	if p.Error != "" {
+		j.Error = p.Error
+	}
+	if p.OutputFile != "" {
+		j.OutputFile = p.OutputFile
+	}
+	if p.Backgrounded != nil {
+		j.Backgrounded = *p.Backgrounded
+	}
+	if p.Hidden {
+		j.Hidden = true
+	}
+	if p.Status != "" {
+		j.Status = p.Status
+	}
+	if finished {
+		if !proto.JobDone(j.Status) {
+			j.Status = proto.JobCompleted
+		}
+		if j.FinishedAt == 0 {
+			j.FinishedAt = ev.Timestamp
+		}
+		// The spawning tool call, if it was still waiting on this job, is
+		// settled by it: a stopped agent's Task row must not spin forever.
+		if j.ToolCallID != "" {
+			if i, ok := s.itemIndex[j.ToolCallID]; ok {
+				it := &s.Items[i]
+				if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+					switch j.Status {
+					case proto.JobFailed:
+						it.Status = proto.StatusFailed
+					case proto.JobCompleted:
+						it.Status = proto.StatusCompleted
+					default:
+						it.Status = proto.StatusCancelled
+					}
+				}
+			}
+		}
+	} else if proto.JobDone(j.Status) && j.FinishedAt == 0 {
+		j.FinishedAt = ev.Timestamp
+	}
 }
 
 func (s *State) upsert(id string, mut func(*Item)) {
@@ -409,14 +595,24 @@ func (s *State) Apply(ev proto.Event) {
 		}
 		if match {
 			s.Phase = "idle"
-			// Any tool of this turn left mid-flight is no longer running. Tools
-			// of other turns are left alone: a stray finish must not paint
-			// unrelated running work as failed.
+			// Any tool of this turn left mid-flight was interrupted, not
+			// broken: it is cancelled, never failed. A call that is standing
+			// for a live job is left alone — it outlived its turn on purpose,
+			// and the job's own finish will settle it. Tools of other turns
+			// are left alone too: a stray finish must not touch unrelated
+			// running work.
+			live := map[string]bool{}
+			for _, j := range s.Jobs {
+				if !proto.JobDone(j.Status) && j.ToolCallID != "" {
+					live[j.ToolCallID] = true
+				}
+			}
 			for i := range s.Items {
-				if s.Items[i].Kind == ItemTool &&
-					(s.Items[i].Status == proto.StatusInProgress || s.Items[i].Status == proto.StatusPending) &&
-					(s.Items[i].TurnID == p.TurnID || s.Items[i].TurnID == "") {
-					s.Items[i].Status = proto.StatusFailed
+				it := &s.Items[i]
+				if it.Kind == ItemTool &&
+					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) &&
+					(it.TurnID == p.TurnID || it.TurnID == "") && !live[it.ID] {
+					it.Status = proto.StatusCancelled
 				}
 			}
 		}
@@ -497,6 +693,12 @@ func (s *State) Apply(ev proto.Event) {
 				it.Content = append(it.Content, p.Content...)
 			}
 		})
+
+	case proto.JobStarted, proto.JobUpdated:
+		s.applyJob(ev, false)
+
+	case proto.JobFinished:
+		s.applyJob(ev, true)
 
 	case proto.PlanUpdated:
 		var p proto.PlanUpdatedPayload
@@ -605,6 +807,8 @@ func (s *State) Clone() *State {
 
 	out.Turns = make([]Turn, len(s.Turns))
 	copy(out.Turns, s.Turns)
+	out.Jobs = make([]Job, len(s.Jobs))
+	copy(out.Jobs, s.Jobs)
 	out.Plan = make([]proto.PlanEntry, len(s.Plan))
 	copy(out.Plan, s.Plan)
 

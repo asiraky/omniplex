@@ -2,7 +2,8 @@
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Event, Item, SessionState, TurnDiff } from "./protocol";
+import type { Event, Item, Job, JobPayload, SessionState, TurnDiff } from "./protocol";
+import { classifyJob, jobDone } from "./lib/jobs";
 
 export function emptyState(sessionId: string): SessionState {
   return {
@@ -19,6 +20,7 @@ export function emptyState(sessionId: string): SessionState {
     workspace: { phase: "" },
     items: [],
     turns: [],
+    jobs: [],
     plan: [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     pendingPermissions: [],
@@ -38,6 +40,72 @@ function upsert(state: SessionState, id: string, mut: (it: Item) => void): Item[
   const it: Item = { id, kind: "message" };
   mut(it);
   return [...state.items, it];
+}
+
+// applyJob folds one job.* row. Every row carries the linkage bundle, so a
+// job whose start was never seen is created from whatever arrives first.
+// Mirrors State.applyJob in internal/projection/state.go.
+function applyJob(s: SessionState, ts: number, p: JobPayload, finished: boolean): SessionState {
+  if (!p.jobId) return s;
+  const jobs = [...s.jobs];
+  let i = jobs.findIndex((j) => j.id === p.jobId);
+  if (i < 0) {
+    const turnId = s.turns.reduce<string | undefined>((acc, t) => (t.done ? acc : t.id), undefined);
+    jobs.push({
+      id: p.jobId,
+      depth: 0,
+      kind: p.kind ?? classifyJob(p.taskType),
+      status: "running",
+      usage: {},
+      startedAt: ts,
+      turnId,
+    });
+    i = jobs.length - 1;
+  }
+  const j: Job = { ...jobs[i], usage: { ...jobs[i].usage } };
+  jobs[i] = j;
+  if (p.toolCallId) j.toolCallId = p.toolCallId;
+  if (p.parentJobId) {
+    j.parentJobId = p.parentJobId;
+    const parent = jobs.find((x) => x.id === p.parentJobId);
+    if (parent) j.depth = parent.depth + 1;
+  }
+  if (p.kind) j.kind = p.kind;
+  if (p.taskType) j.taskType = p.taskType;
+  if (p.name) j.name = p.name;
+  if (p.role) j.role = p.role;
+  if (p.workflowName) j.workflowName = p.workflowName;
+  if (p.activity) j.activity = p.activity;
+  if (p.usage) {
+    // Running totals: a row reporting less than we have is a partial tick.
+    if (p.usage.totalTokens) j.usage.totalTokens = p.usage.totalTokens;
+    if (p.usage.toolUses) j.usage.toolUses = p.usage.toolUses;
+    if (p.usage.durationMs) j.usage.durationMs = p.usage.durationMs;
+    if (p.usage.cost) j.usage.cost = p.usage.cost;
+  }
+  if (p.error) j.error = p.error;
+  if (p.outputFile) j.outputFile = p.outputFile;
+  if (p.backgrounded !== undefined) j.backgrounded = p.backgrounded;
+  if (p.hidden) j.hidden = true;
+  if (p.status) j.status = p.status;
+  let items = s.items;
+  if (finished) {
+    if (!jobDone(j.status)) j.status = "completed";
+    j.finishedAt ??= ts;
+    // The spawning tool call, if still waiting on this job, is settled by it.
+    if (j.toolCallId) {
+      const settled =
+        j.status === "failed" ? "failed" : j.status === "completed" ? "completed" : "cancelled";
+      items = s.items.map((it) =>
+        it.id === j.toolCallId && (it.status === "in_progress" || it.status === "pending")
+          ? { ...it, status: settled as Item["status"] }
+          : it,
+      );
+    }
+  } else if (jobDone(j.status)) {
+    j.finishedAt ??= ts;
+  }
+  return { ...s, jobs, items };
 }
 
 // applyEvent returns a new state. Events at or below the applied cursor are
@@ -138,14 +206,17 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
               }
             : t,
         ),
-        // Any tool of this turn left mid-flight is no longer running; tools
-        // of other turns are left alone.
+        // Any tool of this turn left mid-flight was interrupted, not broken:
+        // cancelled, never failed. A call standing for a live job is left
+        // alone — the job's own finish settles it. Tools of other turns are
+        // left alone too.
         items: match
           ? s.items.map((it) =>
               it.kind === "tool" &&
               (it.status === "in_progress" || it.status === "pending") &&
-              (it.turnId === p.turnId || !it.turnId)
-                ? { ...it, status: "failed" as const }
+              (it.turnId === p.turnId || !it.turnId) &&
+              !s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)
+                ? { ...it, status: "cancelled" as const }
                 : it,
             )
           : s.items,
@@ -213,6 +284,13 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
           if (p.content?.length) it.content = [...(it.content ?? []), ...p.content];
         }),
       };
+
+    case "job.started":
+    case "job.updated":
+      return applyJob(s, ev.timestamp, p as JobPayload, false);
+
+    case "job.finished":
+      return applyJob(s, ev.timestamp, p as JobPayload, true);
 
     case "plan.updated":
       return { ...s, plan: p.entries ?? [] };

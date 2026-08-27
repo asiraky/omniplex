@@ -13,7 +13,7 @@ func event(t *testing.T, seq int64, typ string, payload any) proto.Event {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return proto.Event{Seq: seq, Type: typ, Payload: blob}
+	return proto.Event{Seq: seq, Type: typ, Payload: blob, Timestamp: seq * 1000}
 }
 
 // A harness-initiated turn has no prompt: it must open the turn and flip the
@@ -110,8 +110,8 @@ func TestStaleTurnFinishedDoesNotGoIdle(t *testing.T) {
 	if s.Phase != "idle" || !s.Turns[0].Done {
 		t.Fatalf("after real finish: phase=%q done=%v, want idle/true", s.Phase, s.Turns[0].Done)
 	}
-	if s.Items[1].Status != proto.StatusFailed {
-		t.Fatalf("tool status after its turn finished = %q, want failed", s.Items[1].Status)
+	if s.Items[1].Status != proto.StatusCancelled {
+		t.Fatalf("tool status after its turn finished = %q, want cancelled", s.Items[1].Status)
 	}
 }
 
@@ -212,5 +212,44 @@ func TestClearingEffortSticks(t *testing.T) {
 	s.Apply(event(t, 4, proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Model: "sonnet"}))
 	if s.Effort != "high" {
 		t.Fatalf("effort = %q after an unrelated change, want high", s.Effort)
+	}
+}
+
+// A tool standing for a live job outlives its turn: the turn's finish leaves
+// it in flight, and the job's own finish settles it. Attention reports
+// "background" for the gap. Mirrored by web/src/apply.test.ts.
+func TestJobOutlivesTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindAgent, Title: "Task", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 3, proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent", Name: "Explore"}))
+	s.Apply(event(t, 4, proto.JobUpdated, proto.JobPayload{JobID: "j1", Usage: &proto.JobUsage{TotalTokens: 500}, Activity: "Read"}))
+	s.Apply(event(t, 5, proto.JobStarted, proto.JobPayload{JobID: "j2", ParentJobID: "j1", TaskType: "local_bash"}))
+
+	j := s.job("j1")
+	if j == nil || j.Kind != proto.JobAgent || j.Name != "Explore" || j.Activity != "Read" || j.Usage.TotalTokens != 500 || j.TurnID != "t1" {
+		t.Fatalf("job after merge = %+v", j)
+	}
+	if c := s.job("j2"); c.Kind != proto.JobShell || c.Depth != 1 {
+		t.Fatalf("child job = %+v, want shell at depth 1", c)
+	}
+
+	s.Apply(event(t, 6, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	if s.Items[1].Status != proto.StatusInProgress {
+		t.Fatalf("tool with live job after turn finish = %q, want in_progress", s.Items[1].Status)
+	}
+	if got := s.Attention(); got != AttentionBackground {
+		t.Fatalf("attention with live jobs = %q, want background", got)
+	}
+
+	s.Apply(event(t, 7, proto.JobFinished, proto.JobPayload{JobID: "j2", Status: proto.JobStopped}))
+	s.Apply(event(t, 8, proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobStopped}))
+	if s.Items[1].Status != proto.StatusCancelled {
+		t.Fatalf("tool after job stopped = %q, want cancelled", s.Items[1].Status)
+	}
+	if s.job("j1").FinishedAt == 0 || s.LiveJobs().Any() || s.Attention() != AttentionNeedsPrompt {
+		t.Fatalf("after finish: job=%+v attention=%q", s.job("j1"), s.Attention())
 	}
 }

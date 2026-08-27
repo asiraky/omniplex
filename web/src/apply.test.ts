@@ -57,7 +57,7 @@ describe("applyEvent turn lifecycle", () => {
 
     s = applyEvent(s, ev(4, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
     expect(s.phase).toBe("idle");
-    expect(s.items[1].status).toBe("failed");
+    expect(s.items[1].status).toBe("cancelled");
   });
 
   it("treats a tool going active while idle as a running turn, but not a straggling completion", () => {
@@ -130,5 +130,37 @@ describe("applyEvent config changes", () => {
     s = applyEvent(s, ev(2, "session.config_changed", { model: "sonnet" }));
     expect(s.effort).toBe("high");
     expect(s.model).toBe("sonnet");
+  });
+});
+
+describe("jobs", () => {
+  const ev = (seq: number, type: string, payload: unknown, timestamp = seq * 1000) =>
+    ({ seq, sessionId: "s", type, timestamp, payload }) as unknown as Event;
+
+  it("folds job rows by merging and settles the spawning tool on finish", () => {
+    let s = emptyState("s");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "agent", status: "in_progress", title: "Task" }));
+    s = applyEvent(s, ev(3, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "subagent", name: "Explore" }));
+    s = applyEvent(s, ev(4, "job.updated", { jobId: "j1", usage: { totalTokens: 500 }, activity: "Read" }));
+    expect(s.jobs).toHaveLength(1);
+    expect(s.jobs[0]).toMatchObject({ kind: "agent", name: "Explore", status: "running", turnId: "t1", activity: "Read" });
+    expect(s.jobs[0].usage.totalTokens).toBe(500);
+    // The turn ends while the job is live: its tool is left in flight.
+    s = applyEvent(s, ev(5, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    expect(s.items[1].status).toBe("in_progress");
+    expect(s.phase).toBe("idle");
+    s = applyEvent(s, ev(6, "job.finished", { jobId: "j1", status: "stopped" }));
+    expect(s.jobs[0].status).toBe("stopped");
+    expect(s.jobs[0].finishedAt).toBe(6000);
+    expect(s.items[1].status).toBe("cancelled");
+  });
+
+  it("classifies by task type and nests children", () => {
+    let s = emptyState("s");
+    s = applyEvent(s, ev(1, "job.started", { jobId: "a", taskType: "local_bash" }));
+    s = applyEvent(s, ev(2, "job.started", { jobId: "b", parentJobId: "a", taskType: "whatever" }));
+    expect(s.jobs[0].kind).toBe("shell");
+    expect(s.jobs[1]).toMatchObject({ kind: "agent", depth: 1 });
   });
 });

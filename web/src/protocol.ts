@@ -9,7 +9,7 @@ export type StopReason =
   | "cancelled"
   | "error";
 
-export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
+export type ToolStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
 
 export type ToolKind =
   | "read"
@@ -19,6 +19,7 @@ export type ToolKind =
   | "search"
   | "execute"
   | "think"
+  | "agent"
   | "fetch"
   | "other";
 
@@ -262,10 +263,65 @@ export interface SessionState {
   workspace: WorkspaceState;
   items: Item[];
   turns: Turn[];
+  jobs: Job[];
   plan: PlanEntry[];
   usage: Usage;
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];
+}
+
+export type JobKind = "agent" | "shell" | "monitor" | "inert";
+export type JobStatus = "running" | "paused" | "completed" | "failed" | "stopped" | "interrupted";
+
+export interface JobUsage {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  cost?: number;
+}
+
+/** Work running beside the conversation: a subagent, a background shell, a
+    monitor. Mirrors projection.Job in Go. */
+export interface Job {
+  id: string;
+  toolCallId?: string;
+  parentJobId?: string;
+  depth: number;
+  kind: JobKind;
+  taskType?: string;
+  name?: string;
+  role?: string;
+  workflowName?: string;
+  status: JobStatus;
+  activity?: string;
+  usage: JobUsage;
+  error?: string;
+  outputFile?: string;
+  backgrounded?: boolean;
+  hidden?: boolean;
+  turnId?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+/** Wire payload of job.started / job.updated / job.finished. Every field but
+    jobId is optional and merged, never replaced. */
+export interface JobPayload {
+  jobId: string;
+  toolCallId?: string;
+  parentJobId?: string;
+  kind?: JobKind;
+  taskType?: string;
+  name?: string;
+  role?: string;
+  workflowName?: string;
+  status?: JobStatus;
+  activity?: string;
+  usage?: JobUsage;
+  error?: string;
+  outputFile?: string;
+  backgrounded?: boolean;
+  hidden?: boolean;
 }
 
 export interface WorkspaceState {
