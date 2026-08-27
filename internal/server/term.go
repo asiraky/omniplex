@@ -44,8 +44,9 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// Same working directory as the probe, so a relative
+		// CLAUDE_CONFIG_DIR lands the credentials where the probe looks.
 		cmd = exec.Command(argv[0], argv[1:]...)
-		cmd.Dir, _ = os.UserHomeDir()
 		cmd.Env = append(env, "TERM=xterm-256color")
 	case sessionID != "":
 		root, err := s.mgr.SessionWorkspaceRoot(r.Context(), sessionID)

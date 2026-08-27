@@ -405,9 +405,11 @@ func (m *Manager) availability(ctx context.Context, reg registered) adapter.Avai
 }
 
 // accountOf is the identity a probe answered under: its readiness plus
-// whatever account fact the adapter reported.
+// whatever the adapter reported about who is signed in and how. The plan
+// and the auth method count too: an API key and a subscription see
+// different catalogues even with no email to tell them apart.
 func accountOf(a adapter.Availability) string {
-	return a.State + "|" + a.Facts["account"]
+	return strings.Join([]string{a.State, a.Facts["account"], a.Facts["auth"], a.Facts["plan"]}, "|")
 }
 
 // forgetModels drops one instance's cached listing so the next call asks
