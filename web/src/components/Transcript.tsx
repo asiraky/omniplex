@@ -493,7 +493,13 @@ function WorkspaceCard({
     state.phase === "provisioning" || state.phase === "creating" || state.phase === "cleaning";
   const failed = state.phase === "provision_failed" || state.phase === "cleanup_failed";
   const [open, setOpen] = useState(active || failed);
-  const [dismissed, setDismissed] = useState(false);
+  // A receipt is for the reader who watched the work. A workspace that was
+  // already ready when this transcript mounted — every reopen of an old
+  // session — has nothing to report, so the card never appears: mounting it
+  // only to auto-dismiss it 2.5s later would play its collapse above a
+  // transcript pinned to the tail, and the tail wobbles as the scroller
+  // chases the shrinking content a frame behind.
+  const [dismissed, setDismissed] = useState(ws.phase === "ready" && !active && !failed);
   // The card's exit, in two steps: `leaving` starts the collapse, `dismissed`
   // unmounts it once the collapse has played. A hard unmount would make the
   // rest of the transcript jump.

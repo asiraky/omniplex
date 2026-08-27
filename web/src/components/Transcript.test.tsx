@@ -244,8 +244,8 @@ describe("the merged-pull-request prompt", () => {
 // for the affordance the user actually needs.
 const empty = (over: any = {}): any => ({ ...state(""), items: [], ...over });
 
-function provisioner(s: any) {
-  return render(
+function element(s: any) {
+  return (
     <Transcript
       state={s}
       onRetryProvision={() => {}}
@@ -254,8 +254,17 @@ function provisioner(s: any) {
       onContinue={() => {}}
       onOpenDiff={() => {}}
       onFinish={() => {}}
-    />,
+    />
   );
+}
+
+// Mounts while the provisioner is still working, then lands on `s`: the card
+// is a receipt for work the reader watched, so the tests that expect to see
+// one have to have watched it.
+function provisioner(s: any) {
+  const r = render(element(empty({ phase: "provisioning", workspace: { phase: "provisioning" } })));
+  act(() => r.rerender(wrap(element(s))));
+  return r;
 }
 
 describe("the workspace card leaving on its own", () => {
@@ -278,6 +287,15 @@ describe("the workspace card leaving on its own", () => {
     expect(screen.queryByText("Workspace ready")).toBeNull();
   });
 
+  it("never appears for a workspace that was ready before the transcript mounted", async () => {
+    render(element(empty()));
+    expect(screen.queryByText("Workspace ready")).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(screen.queryByText("Workspace ready")).toBeNull();
+  });
+
   it("keeps a failed workspace on screen — it is asking a question", async () => {
     provisioner(empty({ phase: "provision_failed", workspace: { phase: "provision_failed" } }));
 
@@ -296,19 +314,7 @@ describe("the workspace card leaving on its own", () => {
 
     // The collapse has started but not finished; cleanup begins.
     await act(async () => {
-      rerender(
-        wrap(
-          <Transcript
-            state={empty({ phase: "cleaning", workspace: { phase: "cleaning" } })}
-            onRetryProvision={() => {}}
-            onCleanup={() => {}}
-            onForceDelete={() => {}}
-            onContinue={() => {}}
-            onOpenDiff={() => {}}
-            onFinish={() => {}}
-          />,
-        ),
-      );
+      rerender(wrap(element(empty({ phase: "cleaning", workspace: { phase: "cleaning" } }))));
     });
 
     expect(screen.getByText("Cleaning up workspace")).toBeTruthy();
