@@ -32,14 +32,37 @@ type termClientFrame struct {
 }
 
 func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("session")
-	if sessionID == "" {
-		http.Error(w, "session is required", http.StatusBadRequest)
-		return
-	}
-	root, err := s.mgr.SessionWorkspaceRoot(r.Context(), sessionID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	// Two things run here: the user's shell in a session's checkout, or a
+	// harness's own sign-in flow for one provider instance. Both are a pty the
+	// user types into; only what it runs differs.
+	sessionID, login := r.URL.Query().Get("session"), r.URL.Query().Get("login")
+	var cmd *exec.Cmd
+	switch {
+	case login != "":
+		argv, env, err := s.mgr.LoginCommand(r.Context(), login)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cmd = exec.Command(argv[0], argv[1:]...)
+		cmd.Dir, _ = os.UserHomeDir()
+		cmd.Env = append(env, "TERM=xterm-256color")
+	case sessionID != "":
+		root, err := s.mgr.SessionWorkspaceRoot(r.Context(), sessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// The user's own shell, as a login-ish interactive shell in the checkout.
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		cmd = exec.Command(shell)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	default:
+		http.Error(w, "session or login is required", http.StatusBadRequest)
 		return
 	}
 
@@ -72,15 +95,6 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-
-	// The user's own shell, as a login-ish interactive shell in the checkout.
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	cmd := exec.Command(shell)
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	tty, err := pty.Start(cmd)
 	if err != nil {

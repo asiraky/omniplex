@@ -84,8 +84,69 @@ func (a *Adapter) PermissionModes() []adapter.PermissionModeMeta {
 // so the instance env does not change the answer today; it is accepted so a
 // future credential check can be per instance.
 func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Availability {
-	_, avail := a.resolve(ctx)
+	r, avail := a.resolve(ctx)
+	if !avail.OK() {
+		return avail
+	}
+	// An installed Claude Code is not a usable one: an account that is signed
+	// out fails every session at start, and nothing else on this machine can
+	// say so — the credential may be a file, a keychain entry, or a token in
+	// this instance's env. The harness is the only authority, so ask it.
+	st := authStatus(ctx, r.claudePath, env)
+	switch {
+	case st.known && !st.loggedIn:
+		return adapter.Unavailable(
+			"Claude is not signed in.",
+			adapter.Remedy{Text: "Sign in", Command: "claude auth login", Action: adapter.RemedyLogin},
+			adapter.Remedy{Text: "Or give this instance a CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY"},
+		)
+	case st.known:
+		if st.email != "" {
+			avail.Facts["account"] = st.email
+		}
+		if st.subscription != "" {
+			avail.Facts["plan"] = st.subscription
+		}
+		if st.method != "" {
+			avail.Facts["auth"] = st.method
+		}
+	}
 	return avail
+}
+
+// LoginCommand starts Claude Code's own sign-in flow, which walks the user
+// through the browser and takes the code back on the terminal.
+func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+	r, avail := a.resolve(ctx)
+	if !avail.OK() {
+		return nil, fmt.Errorf("%s", avail.Reason)
+	}
+	return []string{r.claudePath, "auth", "login"}, nil
+}
+
+// claudeAuth is what `claude auth status` reports. known is false when the
+// answer could not be read at all — an older CLI without the command — in
+// which case nothing is claimed either way.
+type claudeAuth struct {
+	known        bool
+	loggedIn     bool
+	method       string
+	email        string
+	subscription string
+}
+
+func authStatus(ctx context.Context, claudePath string, env map[string]string) claudeAuth {
+	out := runBrieflyEnv(ctx, adapter.MergeEnv(os.Environ(), env), claudePath, "auth", "status")
+	var raw struct {
+		LoggedIn         *bool  `json:"loggedIn"`
+		AuthMethod       string `json:"authMethod"`
+		Email            string `json:"email"`
+		SubscriptionType string `json:"subscriptionType"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &raw); err != nil || raw.LoggedIn == nil {
+		return claudeAuth{}
+	}
+	return claudeAuth{known: true, loggedIn: *raw.LoggedIn, method: raw.AuthMethod, email: raw.Email, subscription: raw.SubscriptionType}
 }
 
 // sidecarPath unpacks the bridge next to the user's cache once per process and
@@ -1031,10 +1092,12 @@ func (s *session) handleStreamEvent(msg map[string]json.RawMessage) {
 func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 	var m struct {
 		Message struct {
+			ID      string `json:"id"`
 			Content []struct {
 				Type  string          `json:"type"`
 				ID    string          `json:"id"`
 				Name  string          `json:"name"`
+				Text  string          `json:"text"`
 				Input json.RawMessage `json:"input"`
 			} `json:"content"`
 			Usage struct {
@@ -1057,7 +1120,24 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 	}
 
 	parent := str(msg["parent_tool_use_id"])
-	for _, c := range m.Message.Content {
+	// Text normally arrives as stream deltas and this whole message is a
+	// recap. Not always: a built-in command answered by the harness itself —
+	// /usage, /context, /cost — is a synthetic message with no stream events
+	// at all, so its text exists nowhere but here. Anything not streamed is
+	// emitted now, otherwise the command runs and the transcript shows nothing.
+	s.mu.Lock()
+	st := s.streams[parent]
+	streamed := st != nil && st.messageID == m.Message.ID
+	s.mu.Unlock()
+	for i, c := range m.Message.Content {
+		if c.Type == "text" && !streamed && c.Text != "" {
+			s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
+				TurnID: s.ensureTurn(), Role: "agent", Kind: "text",
+				BlockID: fmt.Sprintf("%s:%d", m.Message.ID, i), Delta: c.Text,
+				ParentToolCallID: parent,
+			}))
+			continue
+		}
 		if c.Type != "tool_use" {
 			continue
 		}

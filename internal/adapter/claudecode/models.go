@@ -166,7 +166,9 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 	}
 	current := make([]adapter.ModelMeta, 0, len(in))
 	byModel := map[string]int{}
-	for _, m := range in {
+	// byAlias remembers which input row a kept row came from.
+	byAlias := map[string]int{}
+	for idx, m := range in {
 		if m.Value == "" || isHaiku(m) {
 			continue
 		}
@@ -188,7 +190,18 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 		if i, seen := byModel[bare]; seen {
 			// Same concrete model under another alias: keep one row, preserving
 			// the recommended flag and a real (non-"default") label.
+			// Same concrete model under another alias: keep one row. The
+			// "default" alias describes itself ("Use the default model
+			// (currently …)") rather than the model, so a named alias for the
+			// same model replaces it wholesale, keeping only the recommended
+			// flag.
 			kept := current[i]
+			if in[byAlias[bare]].Value == "default" && m.Value != "default" {
+				row.Default = true
+				current[i] = row
+				byAlias[bare] = idx
+				continue
+			}
 			kept.Default = kept.Default || row.Default
 			if kept.Label == "" || strings.EqualFold(kept.Label, "default") {
 				kept.Label = row.Label
@@ -196,6 +209,7 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			current[i] = kept
 			continue
 		}
+		byAlias[bare] = idx
 		byModel[bare] = len(current)
 		current = append(current, row)
 	}

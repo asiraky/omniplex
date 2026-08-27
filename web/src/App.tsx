@@ -10,6 +10,7 @@ import { liveAgentCount } from "./lib/agents";
 import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { NewSession } from "./components/NewSession";
+import { LoginDialog } from "./components/LoginDialog";
 import type { NewSessionInput } from "./components/NewSession";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { ElicitationPrompt } from "./components/ElicitationPrompt";
@@ -692,6 +693,10 @@ export function App() {
   }, [sessions]);
 
   // Ask the server to re-probe, for when the user has just installed something.
+  // The instance whose sign-in is open, if any. Closing it rechecks, so the
+  // login shows up as "ready" by itself.
+  const [loginInstance, setLoginInstance] = useState<string | null>(null);
+
   const recheck = useCallback(() => {
     clientRef.current?.command("recheck_harnesses", {}).then((res) => {
       if (res?.harnesses) setHarnesses(res.harnesses);
@@ -1344,8 +1349,23 @@ export function App() {
           onAddProject={()=>setProjectSettings("add")}
           onSettings={setProjectSettings}
           onRecheck={recheck}
+          onLogin={(id) => setLoginInstance(id)}
           status={status}
           onClose={() => setCreating(false)}
+        />
+      )}
+      {loginInstance && (
+        <LoginDialog
+          instanceId={loginInstance}
+          name={
+            harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === loginInstance)?.displayName ??
+            loginInstance
+          }
+          onEnded={recheck}
+          onClose={() => {
+            setLoginInstance(null);
+            recheck();
+          }}
         />
       )}
       {projectSettings && (

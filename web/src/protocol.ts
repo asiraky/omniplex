@@ -458,6 +458,8 @@ export interface Remedy {
   text: string;
   url?: string;
   command?: string;
+  /** Something the server can do itself: "login" runs the harness's sign-in in a terminal. */
+  action?: "login";
 }
 
 export interface Availability {
