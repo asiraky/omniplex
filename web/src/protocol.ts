@@ -440,10 +440,18 @@ export interface SessionMeta {
   /**
    * The derived whose-turn-is-it signal, filled by the server from the live
    * projection: working | needs_permission | needs_answer | needs_prompt |
-   * failed | closed. This — not phase — is what the sidebar indicators and
-   * anything routing on session state should read.
+   * failed | background | closed. This — not phase — is what the sidebar
+   * indicators and anything routing on session state should read.
+   * `background`: no turn open, but jobs (agents, shells, monitors) still run.
    */
-  attention?: string;
+  attention?:
+    | "working"
+    | "needs_permission"
+    | "needs_answer"
+    | "needs_prompt"
+    | "failed"
+    | "background"
+    | "closed";
   projectId?: string;
   branch?: string;
   model?: string;

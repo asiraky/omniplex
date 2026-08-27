@@ -8,7 +8,7 @@
 // Wire format: JSON-RPC 2.0, one object per line, over stdin/stdout.
 //
 //   host -> here (notifications):  prompt (text + image paths), interrupt
-//   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands
+//   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands, stopTask
 //   here -> host (notifications):  message, models, fatal
 //   here -> host (request):        permission  -> {behavior, updatedInput?, message?}
 
@@ -268,6 +268,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       // disable bypass and auto) must reach the human as an error, not vanish.
       session
         .setPermissionMode(frame.params.mode)
+        .then(() => {
+          if (frame.id !== undefined) respond(frame.id, {});
+        })
+        .catch((e) => {
+          if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
+        });
+      break;
+    case "stopTask":
+      // A request, like setModel: a task id the harness does not know must
+      // reach the human as an error. The outcome itself arrives as a
+      // task_notification on the message stream, not in this reply.
+      session
+        .stopTask(frame.params.taskId)
         .then(() => {
           if (frame.id !== undefined) respond(frame.id, {});
         })

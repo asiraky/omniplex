@@ -6,9 +6,10 @@ import { useSessionPR } from "./useSessionPR";
 import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
-import { liveAgentCount } from "./lib/agents";
+import { liveJobCount } from "./lib/jobs";
 import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
+import { JobsStrip } from "./components/JobsStrip";
 import { NewSession } from "./components/NewSession";
 import type { NewSessionInput } from "./components/NewSession";
 import { PermissionPrompt } from "./components/PermissionPrompt";
@@ -294,6 +295,12 @@ export function App() {
   // when the session changed it, the file surface otherwise. An absolute path
   // under the checkout is relativised first; the server only serves the
   // workspace.
+  // Opening the jobs surface from the strip or a spawn card in the transcript.
+  const openJobs = useCallback(() => {
+    setShowChanges(true);
+    setPanelRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
+  }, []);
+
   const openPath = useCallback((path: string, line?: number) => {
     const cwd = stateRef.current?.cwd ?? "";
     let rel = path;
@@ -1104,9 +1111,9 @@ export function App() {
                   >
                     <PanelRightIcon />
                     {/* A live agent-count badge: work is happening off-transcript. */}
-                    {liveAgentCount(state.items) > 0 && (
+                    {liveJobCount(state.jobs) > 0 && (
                       <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
-                        {liveAgentCount(state.items)}
+                        {liveJobCount(state.jobs)}
                       </span>
                     )}
                   </IconButton>
@@ -1121,9 +1128,9 @@ export function App() {
                       className="relative size-11 shrink-0"
                     >
                       <EllipsisIcon />
-                      {liveAgentCount(state.items) > 0 && (
+                      {liveJobCount(state.jobs) > 0 && (
                         <span className="bg-primary text-primary-foreground absolute top-0.5 right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
-                          {liveAgentCount(state.items)}
+                          {liveJobCount(state.jobs)}
                         </span>
                       )}
                     </Button>
@@ -1199,7 +1206,7 @@ export function App() {
             <div className="from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b to-transparent" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} />
+              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1230,6 +1237,8 @@ export function App() {
                   onResolve={(action, value) => resolveElicitation(elicitation.requestId, action, value)}
                 />
               )}
+
+              {liveJobCount(state.jobs) > 0 && <JobsStrip jobs={state.jobs} onOpen={openJobs} />}
 
               <Composer
                 key={activeId}
@@ -1275,7 +1284,8 @@ export function App() {
           // Remounted per session: the tab model is per-session state.
           key={activeId}
           sessionId={activeId}
-          items={state.items}
+          state={state}
+          command={(cmd, args) => clientRef.current!.command(cmd, args)}
           open={showChanges}
           onClose={() => { setShowChanges(false); setChangesExpanded(false); }}
           expanded={changesExpanded}

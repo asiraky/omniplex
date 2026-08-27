@@ -1,9 +1,9 @@
 // The right panel's tab model. Surfaces are an ordered array with stable ids —
-// singletons (`diff`, `files`, `agents`) plus any number of `file:<path>` and
+// singletons (`diff`, `files`, `jobs`) plus any number of `file:<path>` and
 // `terminal:<n>` tabs — persisted per session, so the panel a session was left
 // with is the panel it reopens to.
 
-export type SurfaceKind = "diff" | "files" | "agents" | "file" | "terminal";
+export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal";
 
 export interface Surface {
   /** Stable id: the kind itself for singletons, `file:<path>`, `terminal:<n>`. */
@@ -30,13 +30,16 @@ export function loadPanel(sessionId: string): PanelState {
     if (!raw) return defaultPanel();
     const parsed = JSON.parse(raw) as PanelState;
     if (!Array.isArray(parsed.surfaces) || parsed.surfaces.length === 0) return defaultPanel();
-    const surfaces = parsed.surfaces.filter(
-      (s): s is Surface =>
-        !!s &&
-        typeof s.id === "string" &&
-        ["diff", "files", "agents", "file", "terminal"].includes(s.kind) &&
-        (s.kind !== "file" || typeof s.path === "string"),
-    );
+    const surfaces = parsed.surfaces
+      // The subagents tab was renamed to jobs; a panel saved before that still opens it.
+      .map((s) => (s && (s as { kind?: string }).kind === "agents" ? { ...s, id: "jobs", kind: "jobs" } : s))
+      .filter(
+        (s): s is Surface =>
+          !!s &&
+          typeof s.id === "string" &&
+          ["diff", "files", "jobs", "file", "terminal"].includes(s.kind) &&
+          (s.kind !== "file" || typeof s.path === "string"),
+      );
     if (surfaces.length === 0) return defaultPanel();
     const active = surfaces.some((s) => s.id === parsed.active) ? parsed.active : surfaces[0].id;
     return { surfaces, active };

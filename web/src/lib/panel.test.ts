@@ -16,8 +16,8 @@ describe("panel surfaces", () => {
   it("closing the active tab lands on its left neighbour", () => {
     let p = defaultPanel();
     p = openSurface(p, { id: "files", kind: "files" });
-    p = openSurface(p, { id: "agents", kind: "agents" });
-    p = closeSurface(p, "agents");
+    p = openSurface(p, { id: "jobs", kind: "jobs" });
+    p = closeSurface(p, "jobs");
     expect(p.active).toBe("files");
     // Closing an inactive tab leaves the active one alone.
     p = closeSurface(p, "diff");

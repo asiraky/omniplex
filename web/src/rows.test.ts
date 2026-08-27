@@ -20,6 +20,7 @@ function turn(id: string, over: Partial<Turn> = {}): Turn {
 const shape = (rows: Row[]) =>
   rows.map((r) => {
     if (r.kind === "fold") return `fold(${r.items.length})`;
+    if (r.kind === "jobs") return `jobs(${r.items.length})`;
     if (r.kind === "run") return r.live ? `live(${r.items.length})` : `run(${r.items.length})`;
     return `${r.item.kind}:${r.item.role ?? "tool"}`;
   });
@@ -127,6 +128,33 @@ describe("row identity is stable while a run grows", () => {
     expect((before[0] as Extract<Row, { kind: "run" }>).id).toBe(
       (after[0] as Extract<Row, { kind: "run" }>).id,
     );
+  });
+});
+
+describe("spawn batches", () => {
+  const spawn = (over: Partial<Item> = {}) => tool({ toolKind: "agent", ...over });
+
+  it("groups consecutive spawns into one card, outside the fold", () => {
+    const rows = buildRows(
+      [prompt("go"), tool(), spawn(), spawn(), tool(), msg("Answer.")],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "fold(1)", "jobs(2)", "fold(1)", "message:agent"]);
+  });
+
+  it("keeps the card at the first spawn while a turn runs", () => {
+    const rows = buildRows(
+      [prompt("go", { turnId: "live1" }), spawn({ turnId: "live1" }), tool({ turnId: "live1" })],
+      [turn("live1", { done: false })],
+      "turn",
+    );
+    expect(shape(rows)).toEqual(["message:user", "jobs(1)", "live(1)"]);
+    expect((rows[1] as { id: string }).id).toBe(`jobs:${rows[1].kind === "jobs" ? rows[1].items[0].id : ""}`);
+  });
+
+  it("counts spawns in summaries", () => {
+    expect(summarise([spawn(), spawn(), tool()])).toBe("1 command · 2 agents");
   });
 });
 

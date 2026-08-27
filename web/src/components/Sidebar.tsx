@@ -57,6 +57,11 @@ function working(s: SessionMeta) {
 function needsInput(s: SessionMeta) {
   return s.attention === "needs_permission" || s.attention === "needs_answer";
 }
+// Nothing is waiting on the reader, but jobs are still running beside the
+// conversation. Steady, not pulsing: nothing to look at yet.
+function background(s: SessionMeta) {
+  return s.attention === "background";
+}
 function failed(s: SessionMeta) {
   return s.attention ? s.attention === "failed" : FAILED_PHASES.includes(s.phase);
 }
@@ -412,6 +417,13 @@ function SessionList({
                       role="status"
                       aria-label="Working"
                       className="bg-primary size-1.5 shrink-0 animate-pulse rounded-full motion-reduce:animate-none"
+                    />
+                  )}
+                  {background(s) && !failed(s) && (
+                    <span
+                      role="status"
+                      aria-label="Jobs running"
+                      className="bg-primary/60 size-1.5 shrink-0 rounded-full"
                     />
                   )}
                   {needsInput(s) && (

@@ -153,6 +153,19 @@ type readFileArgs struct {
 	Path      string `json:"path"`
 }
 
+type jobArgs struct {
+	SessionID string `json:"sessionId"`
+	JobID     string `json:"jobId"`
+}
+
+// jobOutputArgs reads a job's output file from Offset; the reply's offset is
+// where to read from next, so a client polls a growing file in small chunks.
+type jobOutputArgs struct {
+	SessionID string `json:"sessionId"`
+	JobID     string `json:"jobId"`
+	Offset    int64  `json:"offset"`
+}
+
 type setModeArgs struct {
 	SessionID string `json:"sessionId"`
 	Mode      string `json:"mode"`

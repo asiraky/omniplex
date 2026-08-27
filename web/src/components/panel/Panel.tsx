@@ -11,9 +11,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { IconButton } from "~/components/IconButton";
-import { AgentsSurface } from "~/components/panel/AgentsSurface";
+
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
+import { JobsSurface } from "~/components/panel/JobsSurface";
 import { TerminalSurface } from "~/components/panel/TerminalSurface";
 import {
   DropdownMenu,
@@ -23,7 +24,7 @@ import {
 } from "~/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { fileIconFor } from "~/lib/fileIcons";
-import { liveAgentCount } from "~/lib/agents";
+import { liveJobCount } from "~/lib/jobs";
 import {
   closeSurface,
   fileSurface,
@@ -36,7 +37,7 @@ import {
 } from "~/lib/panel";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
-import type { FileContent, FileDiff, FileTree, Item, SessionChanges } from "~/protocol";
+import type { FileContent, FileDiff, FileTree, SessionChanges, SessionState } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
 const WIDTH_KEY = "omniplex.changesWidth";
@@ -45,7 +46,7 @@ const DEFAULT_WIDTH = 460;
 
 /** An imperative ask from outside: put this on screen. */
 export interface PanelRequest {
-  kind: "diff" | "path";
+  kind: "diff" | "path" | "jobs";
   path?: string;
   line?: number;
   nonce: number;
@@ -53,8 +54,10 @@ export interface PanelRequest {
 
 export interface PanelProps {
   sessionId: string;
-  /** The transcript's items, for the subagents surface and its badge. */
-  items: Item[];
+  /** The session, for the jobs surface (jobs + items) and its badge. */
+  state: SessionState;
+  /** A ws command, for stopping a job and tailing a shell's output. */
+  command: (command: string, args: unknown) => Promise<any>;
   open: boolean;
   onClose: () => void;
   /** One click to the full content width, one click back. No in-between. */
@@ -75,8 +78,8 @@ function surfaceLabel(s: Surface): string {
       return "Diff";
     case "files":
       return "Files";
-    case "agents":
-      return "Agents";
+    case "jobs":
+      return "Jobs";
     case "terminal":
       return `Term ${s.id.slice("terminal:".length)}`;
     case "file":
@@ -90,7 +93,7 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
       return <FileDiffIcon className={className} />;
     case "files":
       return <FolderTreeIcon className={className} />;
-    case "agents":
+    case "jobs":
       return <BotIcon className={className} />;
     case "terminal":
       return <TerminalIcon className={className} />;
@@ -103,7 +106,8 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
 
 function PanelBody({
   sessionId,
-  items,
+  state,
+  command,
   open,
   onClose,
   expanded: panelExpanded,
@@ -218,6 +222,11 @@ function PanelBody({
       if (request.path) setReveal({ path: request.path, nonce: request.nonce });
       return;
     }
+    if (request.kind === "jobs") {
+      routedNonce.current = request.nonce;
+      setPanel((p) => openSurface(p, { id: "jobs", kind: "jobs" }));
+      return;
+    }
     if (!request.path) {
       routedNonce.current = request.nonce;
       return;
@@ -248,7 +257,7 @@ function PanelBody({
     setPanel((p) => openSurface(p, fileSurface(path)));
   }, []);
 
-  const agentCount = liveAgentCount(items);
+  const jobCount = liveJobCount(state.jobs);
 
   const addSurface = useCallback((s: Surface) => setPanel((p) => openSurface(p, s)), []);
 
@@ -276,9 +285,9 @@ function PanelBody({
                 >
                   <SurfaceIcon s={s} className="size-3.5 shrink-0" />
                   <span className="max-w-32 truncate">{surfaceLabel(s)}</span>
-                  {s.kind === "agents" && agentCount > 0 && (
+                  {s.kind === "jobs" && jobCount > 0 && (
                     <span className="bg-primary/15 text-primary rounded-full px-1.5 text-[10px] tabular-nums">
-                      {agentCount}
+                      {jobCount}
                     </span>
                   )}
                 </button>
@@ -311,8 +320,8 @@ function PanelBody({
               <DropdownMenuItem onSelect={() => addSurface({ id: "files", kind: "files" })}>
                 <FolderTreeIcon className="size-3.5" /> Files
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => addSurface({ id: "agents", kind: "agents" })}>
-                <BotIcon className="size-3.5" /> Subagents
+              <DropdownMenuItem onSelect={() => addSurface({ id: "jobs", kind: "jobs" })}>
+                <BotIcon className="size-3.5" /> Jobs
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setPanel((p) => openSurface(p, newTerminalSurface(p)))}>
                 <TerminalIcon className="size-3.5" /> Terminal
@@ -366,7 +375,7 @@ function PanelBody({
             loadFile={loadFile}
           />
         )}
-        {active?.kind === "agents" && <AgentsSurface items={items} />}
+        {active?.kind === "jobs" && <JobsSurface sessionId={sessionId} state={state} command={command} />}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces
@@ -382,7 +391,7 @@ function PanelBody({
 }
 
 /**
- * The right-hand panel: a tabbed surface — diff, files, subagents, terminal —
+ * The right-hand panel: a tabbed surface — diff, files, jobs, terminal —
  * docked to the right on a desktop and a full-screen sheet on a phone, where a
  * squeezed side panel would leave neither the transcript nor the panel
  * readable.

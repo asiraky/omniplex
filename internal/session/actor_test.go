@@ -1568,3 +1568,85 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 		t.Fatalf("failure kind = %q, want %q (error %q)", last.Failure, proto.FailureAuth, last.Error)
 	}
 }
+
+// A job the harness was running dies with the harness. Leaving it live would
+// keep the session in "background" attention forever, with nothing left to
+// finish it.
+func TestHarnessDeathInterruptsLiveJobs(t *testing.T) {
+	actor, fa, st := newTestActor(t)
+	ctx := context.Background()
+
+	fa.session().emit(proto.Emit(proto.JobStarted, proto.JobPayload{
+		JobID: "j1", ToolCallID: "tu1", Kind: proto.JobAgent, Name: "explore", Status: proto.JobRunning,
+	}))
+	fa.session().emit(proto.Emit(proto.JobFinished, proto.JobPayload{JobID: "j0", Status: proto.JobCompleted}))
+	waitFor(t, func() bool {
+		state, err := actor.State(ctx)
+		return err == nil && len(state.Jobs) == 2
+	})
+	if actor.Attention() != projection.AttentionBackground {
+		t.Fatalf("attention with a live job = %q, want background", actor.Attention())
+	}
+
+	_ = fa.session().Close()
+
+	waitFor(t, func() bool {
+		state, err := loadState(ctx, st, actor.ID)
+		return err == nil && !state.LiveJobs().Any()
+	})
+	state, err := loadState(ctx, st, actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range state.Jobs {
+		switch j.ID {
+		case "j1":
+			if j.Status != proto.JobInterrupted || j.ToolCallID != "tu1" {
+				t.Fatalf("live job after harness death = %+v", j)
+			}
+		case "j0":
+			if j.Status != proto.JobCompleted {
+				t.Fatalf("finished job was rewritten: %+v", j)
+			}
+		}
+	}
+}
+
+// JobOutput reads the file the harness named, in bounded chunks, and reports
+// done only once the job has finished and the read reached the end.
+func TestJobOutputReadsInChunks(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+
+	out := filepath.Join(t.TempDir(), "job.out")
+	if err := os.WriteFile(out, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fa.session().emit(proto.Emit(proto.JobStarted, proto.JobPayload{JobID: "sh", Kind: proto.JobShell, OutputFile: out}))
+	fa.session().emit(proto.Emit(proto.JobStarted, proto.JobPayload{JobID: "nofile", Kind: proto.JobShell}))
+	waitFor(t, func() bool {
+		state, err := actor.State(ctx)
+		return err == nil && len(state.Jobs) == 2
+	})
+
+	text, next, done, err := actor.JobOutput(ctx, "sh", 0)
+	if err != nil || text != "hello world" || next != 11 || done {
+		t.Fatalf("running read = %q %d %v %v", text, next, done, err)
+	}
+	if _, _, _, err := actor.JobOutput(ctx, "nofile", 0); err == nil {
+		t.Fatal("a job with no output file was readable")
+	}
+	if _, _, _, err := actor.JobOutput(ctx, "missing", 0); err == nil {
+		t.Fatal("an unknown job was readable")
+	}
+
+	fa.session().emit(proto.Emit(proto.JobFinished, proto.JobPayload{JobID: "sh", Status: proto.JobCompleted}))
+	waitFor(t, func() bool {
+		state, err := actor.State(ctx)
+		return err == nil && proto.JobDone(state.Jobs[0].Status)
+	})
+	text, next, done, err = actor.JobOutput(ctx, "sh", next)
+	if err != nil || text != "" || next != 11 || !done {
+		t.Fatalf("finished read = %q %d %v %v", text, next, done, err)
+	}
+}
