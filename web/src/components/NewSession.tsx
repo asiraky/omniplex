@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import { initialProject, saveLastProject } from "~/lib/lastProject";
 import { defaultModel, pickerInstances, resolveInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Issue, Project, UserConfig, Workspace } from "~/protocol";
@@ -104,7 +105,11 @@ export function NewSession({
   onClose: () => void;
   status: ConnectionStatus;
 }) {
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
+  // Opens on the project this browser last started a session from. Everything
+  // else in this form stays project-derived: the harness, model and workspace
+  // defaults are the project's own settings, and remembering a second layer of
+  // preference over them would just be a settings page nobody edited.
+  const [projectId, setProjectId] = useState(() => initialProject(projects));
   // One selection covers both: picking a model picks the account it lives
   // under, so there is nothing to keep in step.
   const [chosen, setChosen] = useState<ModelSelection | null>(null);
@@ -219,11 +224,21 @@ export function NewSession({
         workspacePath,
         baseRef: sentBase,
       });
+      // Remembered on a session that actually started, not on every pick:
+      // opening the dropdown, looking, and closing is not a choice worth
+      // moving the default for, and neither is a start that errored.
+      saveLastProject(project.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
+
+  // The dialog can mount before the project list has landed, in which case
+  // the remembered id had nothing to match and the first project stood in.
+  useEffect(() => {
+    if (!projectId && projects.length > 0) setProjectId(initialProject(projects));
+  }, [projectId, projects]);
 
   // Worktrees and issues are read per project and re-read whenever the project
   // changes, so a stale list cannot offer a checkout that has since gone.
