@@ -159,6 +159,84 @@ describe("NewSession", () => {
     );
   });
 
+  it("does not send another harness's project mode after the model changes", async () => {
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const ready = { state: "ready" } as const;
+    const claude = {
+      ...harness,
+      permissionModes: [
+        { id: "default", label: "Manual", default: true },
+        { id: "bypassPermissions", label: "Bypass" },
+      ],
+      instances: [
+        {
+          id: "claude",
+          driver: "claude",
+          displayName: "Claude Code",
+          enabled: true,
+          availability: ready,
+          models: [{ id: "opus", label: "Opus", default: true }],
+        },
+      ],
+    } as unknown as HarnessMeta;
+    const codex = {
+      id: "codex",
+      name: "Codex",
+      availability: ready,
+      models: [],
+      permissionModes: [
+        { id: "on-request", label: "Ask when needed", default: true },
+        { id: "full-access", label: "Bypass" },
+      ],
+      instances: [
+        {
+          id: "codex",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          availability: ready,
+          models: [{ id: "gpt-5.6-sol", label: "GPT-5.6-Sol", default: true }],
+        },
+      ],
+    } as unknown as HarnessMeta;
+    open({
+      projects: [
+        {
+          ...project,
+          config: {
+            ...project.config,
+            defaults: {
+              ...project.config.defaults,
+              harness: "claude",
+              mode: "bypassPermissions",
+              workspace: "local",
+            },
+          },
+        } as unknown as Project,
+      ],
+      harnesses: [claude, codex],
+      onCreate,
+    });
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.change(screen.getByPlaceholderText(/Search models and accounts/), {
+      target: { value: "gpt" },
+    });
+    const model = await waitFor(() => screen.getByText("GPT-5.6-Sol"));
+    fireEvent.click(model.closest("[data-slot='command-item']")!);
+
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe(
+      "Ask when needed",
+    );
+    const start = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "codex", mode: "" }),
+    );
+  });
+
   it("gives the bypass mode the same plain treatment as every other mode", () => {
     const withModes = {
       ...harness,

@@ -235,7 +235,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       pushPrompt({ text: frame.params.text ?? "", images: frame.params.images ?? [] });
       break;
     case "interrupt":
-      session.interrupt().catch((e) => notify("fatal", { message: `interrupt failed: ${e?.message ?? e}` }));
+      // Interrupt is a request: writing it to the SDK is not the same as the
+      // SDK accepting it. The host closes its canonical turn from this reply,
+      // because an interrupted streaming query does not reliably yield a
+      // terminal result message of its own.
+      session
+        .interrupt()
+        .then(() => {
+          if (frame.id !== undefined) respond(frame.id, {});
+        })
+        .catch((e) => {
+          if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
+          else notify("fatal", { message: `interrupt failed: ${e?.message ?? e}` });
+        });
       break;
     case "setModel":
       // A request, not a notification: a model the harness will not accept

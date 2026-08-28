@@ -379,6 +379,11 @@ type session struct {
 	events chan proto.Emission
 	done   chan struct{}
 	closed sync.Once
+	// The bridge read loop closes events when stdout ends. Cancel can emit a
+	// synthetic finish immediately after its interrupt RPC returns, at the same
+	// moment the bridge exits, so send and close share this lock.
+	eventsMu     sync.Mutex
+	eventsClosed bool
 
 	mu        sync.Mutex
 	turnID    string
@@ -464,7 +469,32 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 }
 
 func (s *session) Cancel(ctx context.Context) error {
-	return s.conn.Notify("interrupt", map[string]any{})
+	s.mu.Lock()
+	turn := s.turnID
+	s.mu.Unlock()
+	if turn == "" {
+		return nil
+	}
+
+	// An interrupted streaming query does not reliably emit a result. Wait for
+	// the bridge to confirm the SDK accepted the interrupt, then close the
+	// canonical turn ourselves. If a result won the race it already cleared the
+	// same id and emitted the finish, so the identity guard prevents a duplicate.
+	if err := s.conn.Call(ctx, "interrupt", map[string]any{}, nil); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.turnID != turn {
+		s.mu.Unlock()
+		return nil
+	}
+	s.turnID = ""
+	s.sawResult = true
+	s.mu.Unlock()
+	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: turn, StopReason: proto.StopCancelled,
+	}))
+	return nil
 }
 
 // SetMode switches the permission mode mid-session via the SDK's
@@ -549,7 +579,7 @@ func (s *session) watchExit() {
 			TurnID: turn, StopReason: proto.StopError, Error: reason, Failure: kind,
 		}))
 	}
-	close(s.events)
+	s.closeEvents()
 }
 
 // exitReason explains a bridge that is no longer there, in the terms the
@@ -613,10 +643,25 @@ func (s *session) drainStderr(r io.ReadCloser) {
 }
 
 func (s *session) emit(e proto.Emission) {
+	s.eventsMu.Lock()
+	defer s.eventsMu.Unlock()
+	if s.eventsClosed {
+		return
+	}
 	select {
 	case s.events <- e:
 	case <-s.done:
 	}
+}
+
+func (s *session) closeEvents() {
+	s.eventsMu.Lock()
+	defer s.eventsMu.Unlock()
+	if s.eventsClosed {
+		return
+	}
+	s.eventsClosed = true
+	close(s.events)
 }
 
 func (s *session) currentTurn() string {

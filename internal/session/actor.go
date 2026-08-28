@@ -1074,7 +1074,12 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{value: "idle"}
 			return false
 		}
-		err := a.sess.Cancel(ctx)
+		// Bounded for the same reason as the settings RPCs above: Cancel runs on
+		// the actor goroutine, so an interrupt promise the harness never settles
+		// must not wedge every later command for this session.
+		cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := a.sess.Cancel(cancelCtx)
+		cancel()
 		c.reply <- cmdResult{value: "cancelling", err: err}
 
 	case cmdAskPerm:
