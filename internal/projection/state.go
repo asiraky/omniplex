@@ -205,6 +205,15 @@ type Turn struct {
 	FinishedAt int64 `json:"finishedAt,omitempty"`
 }
 
+// QueuedPrompt is a prompt waiting for the running turn to finish. It lives in
+// the log so it survives a restart and every presenter can see and remove it.
+type QueuedPrompt struct {
+	QueueID  string              `json:"queueId"`
+	Prompt   string              `json:"prompt"`
+	Images   []proto.PromptImage `json:"images,omitempty"`
+	QueuedAt int64               `json:"queuedAt,omitempty"`
+}
+
 // PendingPermission is a permission request awaiting a human. It lives in the
 // log, not in a connection, so any attached presenter can answer it.
 type PendingPermission struct {
@@ -263,6 +272,7 @@ type State struct {
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
+	Queued       []QueuedPrompt            `json:"queuedPrompts"`
 
 	itemIndex map[string]int `json:"-"`
 }
@@ -277,6 +287,7 @@ func New(sessionID string) *State {
 		Plan:         []proto.PlanEntry{},
 		Pending:      []PendingPermission{},
 		Elicitations: []PendingElicitation{},
+		Queued:       []QueuedPrompt{},
 		itemIndex:    map[string]int{},
 	}
 }
@@ -531,6 +542,9 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		s.Phase = "turn"
 		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Images: p.Images, Recovery: p.Recovery, StartedAt: ev.Timestamp})
+		if p.QueueID != "" {
+			s.removeQueued(p.QueueID)
+		}
 		if s.Title == "" {
 			s.Title = truncate(p.Prompt, 60)
 			if s.Title == "" && len(p.Images) > 0 {
@@ -553,6 +567,16 @@ func (s *State) Apply(ev proto.Event) {
 				it.TurnID = p.TurnID
 			})
 		}
+
+	case proto.PromptQueued:
+		var p proto.PromptQueuedPayload
+		decode(ev.Payload, &p)
+		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp})
+
+	case proto.PromptDequeued:
+		var p proto.PromptDequeuedPayload
+		decode(ev.Payload, &p)
+		s.removeQueued(p.QueueID)
 
 	case proto.TurnDiff:
 		var p proto.TurnDiffPayload
@@ -771,6 +795,16 @@ func (s *State) Apply(ev proto.Event) {
 	}
 }
 
+func (s *State) removeQueued(queueID string) {
+	kept := s.Queued[:0]
+	for _, q := range s.Queued {
+		if q.QueueID != queueID {
+			kept = append(kept, q)
+		}
+	}
+	s.Queued = kept
+}
+
 func decode(raw json.RawMessage, v any) {
 	if len(raw) == 0 {
 		return
@@ -826,6 +860,9 @@ func (s *State) Clone() *State {
 		out.Elicitations[i] = pending
 		out.Elicitations[i].Schema = append(json.RawMessage(nil), pending.Schema...)
 	}
+
+	out.Queued = make([]QueuedPrompt, len(s.Queued))
+	copy(out.Queued, s.Queued)
 
 	return &out
 }

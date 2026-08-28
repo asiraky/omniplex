@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/adapter"
@@ -148,4 +149,25 @@ func stringsContains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// Signed out, the SDK's "default" alias describes itself — "Use the default
+// model (currently Opus 5)" — rather than the model. The named alias for the
+// same model is the row to keep; the only thing the default alias adds is the
+// recommended flag.
+func TestDefaultAliasDoesNotDescribeItself(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "default", ResolvedModel: "claude-opus-5", DisplayName: "Default (recommended)", Description: "Use the default model (currently Opus 5) · $5/$25 per Mtok"},
+		{Value: "opus", ResolvedModel: "claude-opus-5", DisplayName: "Opus", Description: "Opus 5 · Best for everyday, complex tasks · $5/$25 per Mtok"},
+	})
+	opus := findModel(t, got, "claude-opus-5")
+	if !opus.Default {
+		t.Error("the recommended flag was lost")
+	}
+	if opus.Label != "Opus 5" {
+		t.Errorf("label = %q, want Opus 5", opus.Label)
+	}
+	if strings.Contains(opus.Description, "default model") {
+		t.Errorf("description = %q, still describes the alias", opus.Description)
+	}
 }

@@ -268,6 +268,16 @@ export interface SessionState {
   usage: Usage;
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];
+  /** Prompts sent while a turn was running, oldest first. Each starts its own
+      turn once the session is idle; until then it can be taken back. */
+  queuedPrompts: QueuedPrompt[];
+}
+
+export interface QueuedPrompt {
+  queueId: string;
+  prompt: string;
+  images?: PromptImage[];
+  queuedAt?: number;
 }
 
 export type JobKind = "agent" | "shell" | "monitor" | "inert";
@@ -522,6 +532,8 @@ export interface Remedy {
   text: string;
   url?: string;
   command?: string;
+  /** Something the server can do itself: "login" runs the harness's sign-in in a terminal. */
+  action?: "login";
 }
 
 export interface Availability {

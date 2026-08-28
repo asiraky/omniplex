@@ -60,6 +60,7 @@ type Manager struct {
 	// session takes its pictures with it. Nil in tests and in a server built
 	// without the feature.
 	attachments AttachmentPurger
+	imagePath   func(sessionID, id string) (string, error)
 
 	probeMu sync.Mutex
 	probes  map[string]probeResult
@@ -148,9 +149,24 @@ type AttachmentPurger interface {
 	PurgeSession(sessionID string) error
 }
 
+// AttachmentResolver finds a stored image again by session and id. A queued
+// prompt's images come back out of the log without their host path, and the
+// harness needs it when the prompt finally runs.
+type AttachmentResolver interface {
+	Path(sessionID, id string) (path, mediaType string, err error)
+}
+
 // SetAttachments tells the manager where prompt images live. A session that is
 // deleted takes them with it; without this they would outlive it on disk.
-func (m *Manager) SetAttachments(p AttachmentPurger) { m.attachments = p }
+func (m *Manager) SetAttachments(p AttachmentPurger) {
+	m.attachments = p
+	if r, ok := p.(AttachmentResolver); ok {
+		m.imagePath = func(sessionID, id string) (string, error) {
+			path, _, err := r.Path(sessionID, id)
+			return path, err
+		}
+	}
+}
 
 // purgeAttachments is best effort: a picture left behind must never be the
 // reason a session cannot be deleted.
@@ -393,7 +409,60 @@ func (m *Manager) availability(ctx context.Context, reg registered) adapter.Avai
 	m.probeMu.Lock()
 	m.probes[reg.inst.ID] = probeResult{result: result, at: time.Now()}
 	m.probeMu.Unlock()
+	// A harness answering as a different account — or as one at all, after
+	// being signed out — offers a different catalogue: a signed-out Claude
+	// lists API pricing and no Fable. The listing cached under the old
+	// identity is wrong now, not stale, so it goes at once rather than at the
+	// TTL.
+	if ok && accountOf(cached.result) != accountOf(result) {
+		m.forgetModels(reg.inst.ID)
+	}
 	return result
+}
+
+// accountOf is the identity a probe answered under: its readiness plus
+// whatever the adapter reported about who is signed in and how. The plan
+// and the auth method count too: an API key and a subscription see
+// different catalogues even with no email to tell them apart.
+func accountOf(a adapter.Availability) string {
+	return strings.Join([]string{a.State, a.Facts["account"], a.Facts["auth"], a.Facts["plan"]}, "|")
+}
+
+// forgetModels drops one instance's cached listing so the next call asks
+// again, and tells clients the catalogue they hold is out of date.
+func (m *Manager) forgetModels(instanceID string) {
+	m.modelsMu.Lock()
+	delete(m.models, instanceID)
+	m.modelGen++
+	m.modelsMu.Unlock()
+	m.notifyHarnesses()
+}
+
+// LoginCommand is what a terminal runs to sign one instance's harness in:
+// the adapter's own flow, under the instance's environment.
+func (m *Manager) LoginCommand(ctx context.Context, instanceID string) (argv []string, env []string, err error) {
+	reg, ok := m.instances[instanceID]
+	if !ok || reg.ad == nil {
+		return nil, nil, fmt.Errorf("unknown provider instance %q", instanceID)
+	}
+	auth, ok := reg.ad.(adapter.Authenticator)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s has no interactive sign-in", reg.inst.DisplayName)
+	}
+	overlay, err := m.envFor(reg.inst)
+	if err != nil {
+		return nil, nil, err
+	}
+	argv, err = auth.LoginCommand(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The next listing must re-ask rather than serve the signed-out answer
+	// for another TTL.
+	m.probeMu.Lock()
+	delete(m.probes, instanceID)
+	m.probeMu.Unlock()
+	return argv, adapter.MergeEnv(os.Environ(), overlay), nil
 }
 
 // RecheckHarnesses drops cached probes so the next listing re-examines the
@@ -409,6 +478,16 @@ func (m *Manager) RecheckHarnesses() {
 	m.modelGen++
 	m.modelsMu.Unlock()
 	m.notifyList()
+}
+
+// expireProbesForTest ages every cached probe past its TTL.
+func (m *Manager) expireProbesForTest() {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	for id, p := range m.probes {
+		p.at = time.Now().Add(-2 * probeTTL)
+		m.probes[id] = p
+	}
 }
 
 // expireModelsForTest ages every cached listing past its TTL. Tests use it to
@@ -990,6 +1069,7 @@ func (m *Manager) adopt(a *Actor) {
 	a.mu.Lock()
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
+	a.imagePath = m.imagePath
 	a.mu.Unlock()
 	select {
 	case <-a.quit:

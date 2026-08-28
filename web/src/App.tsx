@@ -65,6 +65,8 @@ const LAST_SESSION = "omniplex.lastSession";
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
+// The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
+const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
 
 // The permission-mode switcher is parked, not removed: changing modes mid-chat
@@ -637,8 +639,34 @@ export function App() {
   );
 
   const cancel = useCallback(() => {
-    if (activeId) clientRef.current?.command("cancel", { sessionId: activeId });
-  }, [activeId]);
+    if (!activeId) return;
+    // Stop drops whatever was queued behind the turn; the text comes back to
+    // the composer rather than vanishing, in front of anything already typed.
+    const queued = state?.queuedPrompts ?? [];
+    if (queued.length > 0) {
+      const restored = queued.map((q) => q.prompt).filter(Boolean);
+      const current = drafts[activeId] ?? "";
+      setDraft(activeId, [...restored, current].filter(Boolean).join("\n\n"));
+    }
+    clientRef.current?.command("cancel", { sessionId: activeId });
+  }, [activeId, drafts, setDraft, state]);
+
+  const dequeue = useCallback(
+    (queueId: string) => {
+      if (!activeId) return;
+      const text = state?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
+      clientRef.current?.command("dequeue_prompt", { sessionId: activeId, queueId }).then(
+        () => {
+          if (!text) return;
+          // Against the draft as it is when the reply lands, not as it was
+          // when the request left: on a slow link that is seconds apart.
+          setDrafts((d) => ({ ...d, [activeId]: [text, d[activeId] ?? ""].filter(Boolean).join("\n\n") }));
+        },
+        (e) => toast.error("Could not remove that prompt", { description: e.message }),
+      );
+    },
+    [activeId, state],
+  );
 
   const resolvePermission = useCallback(
     (requestId: string, outcome: string, optionId: string) => {
@@ -703,6 +731,10 @@ export function App() {
   }, [sessions]);
 
   // Ask the server to re-probe, for when the user has just installed something.
+  // The instance whose sign-in is open, if any. Closing it rechecks, so the
+  // login shows up as "ready" by itself.
+  const [loginInstance, setLoginInstance] = useState<string | null>(null);
+
   const recheck = useCallback(() => {
     clientRef.current?.command("recheck_harnesses", {}).then((res) => {
       if (res?.harnesses) setHarnesses(res.harnesses);
@@ -1210,7 +1242,7 @@ export function App() {
             <div className="from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b to-transparent" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} />
+              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1358,9 +1390,26 @@ export function App() {
           onAddProject={()=>setProjectSettings("add")}
           onSettings={setProjectSettings}
           onRecheck={recheck}
+          onLogin={(id) => setLoginInstance(id)}
           status={status}
           onClose={() => setCreating(false)}
         />
+      )}
+      {loginInstance && (
+        <Suspense fallback={null}>
+          <LoginDialog
+            instanceId={loginInstance}
+            name={
+              harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === loginInstance)?.displayName ??
+              loginInstance
+            }
+            onEnded={recheck}
+            onClose={() => {
+              setLoginInstance(null);
+              recheck();
+            }}
+          />
+        </Suspense>
       )}
       {projectSettings && (
         <Suspense fallback={null}>

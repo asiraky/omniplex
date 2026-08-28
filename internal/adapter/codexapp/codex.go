@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +134,30 @@ func settingsFor(mode string) (modeSettings, error) {
 	}
 }
 
+// trustArgs marks the session's own directory trusted for this app-server run.
+//
+// Codex disables a repository's project-local `.codex` — its agent
+// definitions, hooks and exec policies — until the folder is trusted, and
+// answers with nothing but a line on stderr. The CLI can prompt a human and
+// write the answer to config.toml; app-server cannot, so an untrusted
+// directory silently loses everything the repo configured and the model runs
+// with a stripped-down toolkit it was never told about. A managed worktree is
+// a brand-new path every session, which is exactly the case the CLI's
+// remembered answer does not cover.
+//
+// Adding a directory to omniplex and starting a session in it is the consent
+// codex is asking for, so the grant is made here — per run, via -c, never
+// written to the user's config.toml. Trust is inherited by subpaths, so
+// naming the cwd covers a worktree beneath it without enumerating them.
+func trustArgs(cwd string) []string {
+	if cwd == "" {
+		return nil
+	}
+	// The path is quoted as a TOML basic string: a repo path may contain
+	// characters that a bare dotted key cannot carry.
+	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
+}
+
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	// Resolve the mode before spawning anything: an unknown id should fail
 	// legibly, not leave an orphaned app-server.
@@ -141,7 +166,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	cmd := exec.Command(a.Bin, "app-server")
+	cmd := exec.Command(a.Bin, append([]string{"app-server"}, trustArgs(o.Cwd)...)...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account CODEX_HOME isolates config and login.
@@ -164,13 +189,14 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 
 	s := &session{
-		host:     host,
-		cmd:      cmd,
-		cwd:      o.Cwd,
-		events:   make(chan proto.Emission, 256),
-		streamed: map[string]bool{},
-		done:     make(chan struct{}),
-		effort:   o.Effort,
+		host:      host,
+		cmd:       cmd,
+		cwd:       o.Cwd,
+		events:    make(chan proto.Emission, 256),
+		streamed:  map[string]bool{},
+		subagents: map[string]string{},
+		done:      make(chan struct{}),
+		effort:    o.Effort,
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
 
@@ -262,6 +288,10 @@ type session struct {
 	serverTurnID string
 	interrupting bool            // an interrupt for serverTurnID is already in flight
 	streamed     map[string]bool // item ids that arrived as deltas
+	// subagents maps a spawned thread's id to the turn of ours that was
+	// running when it first spoke — the turn that spawned it. Lazily filled;
+	// a session runs few enough subagents that it is never worth pruning.
+	subagents map[string]string
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
 	manualCompact  bool
@@ -361,10 +391,22 @@ func (s *session) Cancel(ctx context.Context) error {
 	if turnID == "" || inFlight {
 		return nil
 	}
-	return s.conn.Call(ctx, "turn/interrupt", map[string]any{
+	err := s.conn.Call(ctx, "turn/interrupt", map[string]any{
 		"threadId": s.threadID,
 		"turnId":   turnID,
 	}, nil)
+	if err != nil {
+		// An interrupt codex refused will never be answered by a
+		// turn/completed, so nothing else clears the flag. Leaving it set
+		// would coalesce — and so silently swallow — every later press of the
+		// stop button for the life of the session.
+		s.mu.Lock()
+		if s.serverTurnID == turnID {
+			s.interrupting = false
+		}
+		s.mu.Unlock()
+	}
+	return err
 }
 
 // SetMode switches the permission preset mid-thread. thread/settings/update
@@ -674,8 +716,124 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 
 // ---- server → client notifications ----
 
+// delta is the shape every streaming notification shares.
+type delta struct {
+	ItemID string `json:"itemId"`
+	TurnID string `json:"turnId"`
+	Delta  string `json:"delta"`
+}
+
+func parseDelta(params json.RawMessage) delta {
+	var p delta
+	_ = json.Unmarshal(params, &p)
+	return p
+}
+
+func (s *session) emitMessageDelta(turn string, p delta) {
+	s.mu.Lock()
+	s.streamed[p.ItemID] = true
+	s.mu.Unlock()
+	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
+		TurnID: turn, Role: "agent", Kind: "text", BlockID: p.ItemID, Delta: p.Delta,
+	}))
+}
+
+func (s *session) emitReasoningDelta(turn string, p delta) {
+	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
+		TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
+	}))
+}
+
+// foreignThread reports whether a notification is about a codex thread other
+// than this session's. Codex runs a spawned subagent (the collaboration
+// spawn_agent tool) as its own thread and multiplexes that thread's
+// notifications over this same connection, tagged with its own threadId.
+//
+// A notification carrying no threadId is connection-scoped, so it is ours.
+func (s *session) foreignThread(params json.RawMessage) string {
+	if s.threadID == "" {
+		return ""
+	}
+	var p struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(params, &p)
+	if p.ThreadID == s.threadID {
+		return ""
+	}
+	return p.ThreadID
+}
+
+// spawningTurn returns the turn a subagent thread's output belongs in: the one
+// that was running the first time that thread spoke. Empty means nowhere —
+// either nothing of ours was running when it first appeared, or the turn that
+// spawned it has since ended and a subagent that outlives its turn must not
+// spill into whatever turn is running now.
+func (s *session) spawningTurn(thread, turn string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if owner, ok := s.subagents[thread]; ok {
+		if owner == turn {
+			return turn
+		}
+		return ""
+	}
+	if turn == "" {
+		return ""
+	}
+	if s.subagents == nil {
+		s.subagents = map[string]string{}
+	}
+	s.subagents[thread] = turn
+	return turn
+}
+
+// handleSubagentNotification renders a spawned subagent's work inside the turn
+// that spawned it. Text, reasoning and tool calls are the whole of it:
+// everything else a thread reports — turn lifecycle, token usage, plan,
+// compaction — is about that thread, and applying it here would relabel this
+// session's turn, meter or plan with another thread's state.
+//
+// With no turn of ours to attach it to the output is dropped rather than
+// allowed to open one. That case is exactly the stop button: interrupting this
+// thread does not stop a subagent it spawned, so the subagent keeps talking
+// after the turn is cancelled. Opening a turn for it made the session look like
+// it had started the work over, and left a stop button that addressed another
+// thread's turn — which codex ignores, so the phantom turn could not be stopped
+// at all.
+func (s *session) handleSubagentNotification(method, thread, turn string, params json.RawMessage) {
+	turn = s.spawningTurn(thread, turn)
+	if turn == "" {
+		return
+	}
+	switch method {
+	case "item/started", "item/completed":
+		// A subagent compacting its own context says nothing about this
+		// session's, and the notice names this session's turn — drop it.
+		var p struct {
+			Item struct {
+				Type string `json:"type"`
+			} `json:"item"`
+		}
+		_ = json.Unmarshal(params, &p)
+		if p.Item.Type == "contextCompaction" {
+			return
+		}
+		s.handleItem(method == "item/completed", turn, params)
+	case "item/agentMessage/delta":
+		s.emitMessageDelta(turn, parseDelta(params))
+	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
+		s.emitReasoningDelta(turn, parseDelta(params))
+	}
+}
+
 func (s *session) handleNotification(method string, params json.RawMessage) {
 	turn := s.currentTurn()
+
+	if thread := s.foreignThread(params); thread != "" {
+		s.handleSubagentNotification(method, thread, turn, params)
+		return
+	}
 
 	switch method {
 	case "skills/changed":
@@ -704,37 +862,20 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		s.handleItem(method == "item/completed", turn, params)
 
 	case "item/agentMessage/delta":
-		var p struct {
-			ItemID string `json:"itemId"`
-			TurnID string `json:"turnId"`
-			Delta  string `json:"delta"`
-		}
-		_ = json.Unmarshal(params, &p)
+		p := parseDelta(params)
 		// Streaming while idle is a harness-initiated turn; see ensureTurn.
 		if turn == "" {
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.mu.Lock()
-		s.streamed[p.ItemID] = true
-		s.mu.Unlock()
-		s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			TurnID: turn, Role: "agent", Kind: "text", BlockID: p.ItemID, Delta: p.Delta,
-		}))
+		s.emitMessageDelta(turn, p)
 
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
-		var p struct {
-			ItemID string `json:"itemId"`
-			TurnID string `json:"turnId"`
-			Delta  string `json:"delta"`
-		}
-		_ = json.Unmarshal(params, &p)
+		p := parseDelta(params)
 		// Streaming while idle is a harness-initiated turn; see ensureTurn.
 		if turn == "" {
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
-		}))
+		s.emitReasoningDelta(turn, p)
 
 	case "item/commandExecution/outputDelta", "command/exec/outputDelta":
 		// Streamed output is dropped; the completed item carries the
@@ -752,25 +893,19 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 					CachedInputTokens     int64 `json:"cachedInputTokens"`
 					CacheWriteInputTokens int64 `json:"cacheWriteInputTokens"`
 				} `json:"total"`
-				// Last is the most recent request, whose prompt is the
-				// conversation so far — which is what "context used" means.
+				// Last is the most recent request. Its total is the current
+				// active context; cached input is already included in input.
 				Last struct {
-					InputTokens       int64 `json:"inputTokens"`
-					OutputTokens      int64 `json:"outputTokens"`
-					CachedInputTokens int64 `json:"cachedInputTokens"`
+					TotalTokens int64 `json:"totalTokens"`
 				} `json:"last"`
-				ContextWindow int64 `json:"contextWindow"`
+				ModelContextWindow int64 `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
-			ContextWindow int64 `json:"contextWindow"`
 		}
 		_ = json.Unmarshal(params, &p)
 		t := p.TokenUsage.Total
 		var pct float64
-		window := p.TokenUsage.ContextWindow
-		if window == 0 {
-			window = p.ContextWindow
-		}
-		used := p.TokenUsage.Last.InputTokens + p.TokenUsage.Last.CachedInputTokens + p.TokenUsage.Last.OutputTokens
+		window := p.TokenUsage.ModelContextWindow
+		used := p.TokenUsage.Last.TotalTokens
 		if used > 0 && window > 0 {
 			// Unclamped, matching the claude path: an over-limit reading is a
 			// real signal, and the meter renders the raw ratio rather than a

@@ -25,6 +25,7 @@ export function emptyState(sessionId: string): SessionState {
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     pendingPermissions: [],
     pendingElicitations: [],
+    queuedPrompts: [],
   };
 }
 
@@ -168,6 +169,8 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         // names the session.
         title: s.title || (p.recovery ? "" : p.prompt?.slice(0, 60) || imageTitle(p.images?.length ?? 0)),
         turns: [...s.turns, { id: p.turnId, prompt: p.prompt, images: p.images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
+        // Starting is what takes a prompt out of the queue.
+        queuedPrompts: p.queueId ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : s.queuedPrompts,
         // A harness-initiated turn has no prompt — nobody asked anything —
         // so there is no prompt item to add. A prompt that is nothing but
         // pictures still has one.
@@ -183,6 +186,15 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
             })
           : s.items,
       };
+
+    case "prompt.queued":
+      return {
+        ...s,
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+      };
+
+    case "prompt.dequeued":
+      return { ...s, queuedPrompts: (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) };
 
     case "turn.finished": {
       // Only the finish of the turn that is actually open may take the

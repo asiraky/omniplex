@@ -24,6 +24,7 @@ const state = (text: string): any => ({
   usage: {},
   pendingPermissions: [],
   pendingElicitations: [],
+  queuedPrompts: [],
 });
 
 function transcript(text: string) {
@@ -130,7 +131,7 @@ function reserve(container: HTMLElement) {
 
 // Give the transcript a body: a scroller that clamps its position the way a
 // real one does, whose height includes the room the anchor reserves, and a
-// prompt whose box moves with the scroll.
+// prompt that sits a fixed way down that content.
 function measured(container: HTMLElement) {
   const el = container.querySelector<HTMLElement>(".overflow-y-auto")!;
   const height = () => HEIGHT + parseInt(reserve(container) || "0", 10);
@@ -144,9 +145,14 @@ function measured(container: HTMLElement) {
     },
     configurable: true,
   });
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    return { top: this.hasAttribute("data-msg-id") ? PROMPT_TOP - top : 0 } as DOMRect;
+  // Layout positions, not painted ones: the hook measures the anchor with
+  // `offsetTop` so a prompt that is still fading in cannot be measured 3px
+  // below where it will settle. So the prompt sits `PROMPT_TOP` down the
+  // content no matter where the view is.
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return this.hasAttribute("data-msg-id") ? PROMPT_TOP : 0;
   });
+  vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockReturnValue(null);
   return el;
 }
 
@@ -244,8 +250,8 @@ describe("the merged-pull-request prompt", () => {
 // for the affordance the user actually needs.
 const empty = (over: any = {}): any => ({ ...state(""), items: [], ...over });
 
-function provisioner(s: any) {
-  return render(
+function element(s: any) {
+  return (
     <Transcript
       state={s}
       onRetryProvision={() => {}}
@@ -254,8 +260,17 @@ function provisioner(s: any) {
       onContinue={() => {}}
       onOpenDiff={() => {}}
       onFinish={() => {}}
-    />,
+    />
   );
+}
+
+// Mounts while the provisioner is still working, then lands on `s`: the card
+// is a receipt for work the reader watched, so the tests that expect to see
+// one have to have watched it.
+function provisioner(s: any) {
+  const r = render(element(empty({ phase: "provisioning", workspace: { phase: "provisioning" } })));
+  act(() => r.rerender(wrap(element(s))));
+  return r;
 }
 
 describe("the workspace card leaving on its own", () => {
@@ -278,6 +293,15 @@ describe("the workspace card leaving on its own", () => {
     expect(screen.queryByText("Workspace ready")).toBeNull();
   });
 
+  it("never appears for a workspace that was ready before the transcript mounted", async () => {
+    render(element(empty()));
+    expect(screen.queryByText("Workspace ready")).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(screen.queryByText("Workspace ready")).toBeNull();
+  });
+
   it("keeps a failed workspace on screen — it is asking a question", async () => {
     provisioner(empty({ phase: "provision_failed", workspace: { phase: "provision_failed" } }));
 
@@ -296,19 +320,7 @@ describe("the workspace card leaving on its own", () => {
 
     // The collapse has started but not finished; cleanup begins.
     await act(async () => {
-      rerender(
-        wrap(
-          <Transcript
-            state={empty({ phase: "cleaning", workspace: { phase: "cleaning" } })}
-            onRetryProvision={() => {}}
-            onCleanup={() => {}}
-            onForceDelete={() => {}}
-            onContinue={() => {}}
-            onOpenDiff={() => {}}
-            onFinish={() => {}}
-          />,
-        ),
-      );
+      rerender(wrap(element(empty({ phase: "cleaning", workspace: { phase: "cleaning" } }))));
     });
 
     expect(screen.getByText("Cleaning up workspace")).toBeTruthy();
