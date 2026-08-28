@@ -296,6 +296,10 @@ export function App() {
   // under the checkout is relativised first; the server only serves the
   // workspace.
   // Opening the jobs surface from the strip or a spawn card in the transcript.
+  const panelCommand = useCallback(
+    (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
+    [],
+  );
   const openJobs = useCallback(() => {
     setShowChanges(true);
     setPanelRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
@@ -1285,7 +1289,7 @@ export function App() {
           key={activeId}
           sessionId={activeId}
           state={state}
-          command={(cmd, args) => clientRef.current!.command(cmd, args)}
+          command={panelCommand}
           open={showChanges}
           onClose={() => { setShowChanges(false); setChangesExpanded(false); }}
           expanded={changesExpanded}

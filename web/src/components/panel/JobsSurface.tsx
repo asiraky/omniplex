@@ -149,20 +149,36 @@ function ShellPane({
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
 
+  // The poll must survive re-renders: a restart would re-read from zero and
+  // append the file a second time. The command prop is read through a ref so
+  // its identity cannot retrigger the effect; the offset lives in a ref so a
+  // remount of the same job continues where it left off.
+  const commandRef = useRef(command);
+  commandRef.current = command;
+  const offsetRef = useRef(0);
+  useEffect(() => {
+    offsetRef.current = 0;
+    setText("");
+    setDone(false);
+    setError("");
+  }, [job.id]);
   useEffect(() => {
     if (!job.outputFile) return;
-    let offset = 0;
     let stopped = false;
     let timer = 0;
     const poll = async () => {
       try {
-        const res = (await command("session_job_output", { sessionId, jobId: job.id, offset })) as {
+        const res = (await commandRef.current("session_job_output", {
+          sessionId,
+          jobId: job.id,
+          offset: offsetRef.current,
+        })) as {
           text: string;
           offset: number;
           done: boolean;
         };
         if (stopped) return;
-        offset = res.offset;
+        offsetRef.current = res.offset;
         if (res.text) {
           setText((t) => {
             const next = t + res.text;
@@ -185,7 +201,7 @@ function ShellPane({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [sessionId, job.id, job.outputFile, command]);
+  }, [sessionId, job.id, job.outputFile]);
 
   useEffect(() => {
     const el = preRef.current;
