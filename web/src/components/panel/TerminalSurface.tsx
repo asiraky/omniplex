@@ -40,7 +40,11 @@ export function TerminalSurface({
 
     const term = new Terminal({
       fontSize: 12,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      // xterm takes a literal stack rather than the CSS variable, so this has
+      // to repeat --font-mono's Windows entries: ui-monospace is Apple-only,
+      // and the generic fallback lands on Courier New there.
+      fontFamily:
+        'ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, "Liberation Mono", monospace',
       cursorBlink: true,
       convertEol: false,
       theme: { background: "#00000000" },
