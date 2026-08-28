@@ -341,6 +341,50 @@ describe("NewSession", () => {
 // A signed-out harness is the commonest way a session refuses to start, and
 // the fix is the harness's own login. When the server can run that, the alert
 // offers it; when it cannot, only "Check again" remains.
+describe("the remembered project", () => {
+  const other = {
+    ...project,
+    id: "p2",
+    config: { ...project.config, name: "other" },
+  } as unknown as Project;
+
+  afterEach(() => localStorage.clear());
+
+  it("opens on the project the last session was started from", () => {
+    localStorage.setItem("omniplex.lastProject.v1", "p2");
+    open({ projects: [project, other] });
+    expect(screen.getByLabelText("Project").textContent).toBe("other");
+  });
+
+  it("opens on the first project when the remembered one is gone", () => {
+    localStorage.setItem("omniplex.lastProject.v1", "deleted");
+    open({ projects: [project, other] });
+    expect(screen.getByLabelText("Project").textContent).toBe("repo");
+  });
+
+  it("remembers only a session that actually started", async () => {
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {
+      throw new Error("no");
+    });
+    open({ projects: [project, other], onCreate });
+
+    const start = await waitFor(() => screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(screen.getByText("no")).toBeTruthy());
+    expect(localStorage.getItem("omniplex.lastProject.v1")).toBeNull();
+
+    cleanup();
+    const ok = vi.fn(async (_input: NewSessionInput) => {});
+    open({ projects: [project, other], onCreate: ok });
+    const go = await waitFor(() => screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect((go as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(go);
+    await waitFor(() => expect(ok).toHaveBeenCalled());
+    expect(localStorage.getItem("omniplex.lastProject.v1")).toBe("p1");
+  });
+});
+
 describe("a signed-out harness", () => {
   const signedOut = {
     ...harness,
