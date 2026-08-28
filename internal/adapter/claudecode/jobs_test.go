@@ -77,7 +77,7 @@ func TestTaskEdgesBecomeJobRows(t *testing.T) {
 	if start.Type != proto.JobStarted || start.Kind != proto.JobAgent || start.Role != "Explore" || start.Name != "Explore the repo" || start.Status != proto.JobRunning {
 		t.Fatalf("start row = %+v", start)
 	}
-	if p := rows[1]; p.Type != proto.JobUpdated || p.Activity != "Grep" || p.Usage == nil || p.Usage.TotalTokens != 1200 || p.Usage.ToolUses != 3 {
+	if p := rows[1]; p.Type != proto.JobUpdated || p.Activity != "Explore the repo" || p.Usage == nil || p.Usage.TotalTokens != 1200 || p.Usage.ToolUses != 3 {
 		t.Fatalf("progress row = %+v", p)
 	}
 	if u := rows[2]; u.Type != proto.JobUpdated || u.Backgrounded == nil || !*u.Backgrounded || u.Status != proto.JobRunning {
@@ -187,5 +187,27 @@ func TestAgentToolsAreAgentKind(t *testing.T) {
 		if toolKind(n) != proto.KindAgent {
 			t.Fatalf("%s kind = %s", n, toolKind(n))
 		}
+	}
+}
+
+// A background Bash reports its task id and output file only in its tool
+// result, while the shell is still running; that is what makes a live tail
+// possible.
+func TestBackgroundShellResultLinksOutputFile(t *testing.T) {
+	s := newTestSession()
+	s.handleSDKMessage(rawSDK(t, system(t, "task_started", map[string]any{
+		"task_id": "bg1", "task_type": "local_bash", "description": "sleep",
+	})))
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type": "user", "session_id": "conv",
+		"message": map[string]any{"content": []any{map[string]any{
+			"type": "tool_result", "tool_use_id": "tu9",
+			"content": "Command running in background with ID: bg1. Output is being written to: /tmp/x/bg1.output. You will be notified when it completes.",
+		}}},
+	}))
+	rows := drainJobs(t, s)
+	last := rows[len(rows)-1]
+	if last.Type != proto.JobUpdated || last.JobID != "bg1" || last.ToolCallID != "tu9" || last.OutputFile != "/tmp/x/bg1.output" || last.Kind != proto.JobShell {
+		t.Fatalf("shell link row = %+v", last)
 	}
 }

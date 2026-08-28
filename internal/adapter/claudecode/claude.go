@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -1124,13 +1125,15 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 			status = proto.StatusFailed
 		}
 		var content []proto.ToolContent
-		if text := flattenContent(c.Content); text != "" {
+		text := flattenContent(c.Content)
+		if text != "" {
 			content = []proto.ToolContent{{Type: "text", Text: text}}
 		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID: c.ToolUseID, Status: status, Content: content,
 			ParentToolCallID: str(msg["parent_tool_use_id"]),
 		}))
+		s.linkBackgroundShell(c.ToolUseID, text)
 	}
 }
 
@@ -1291,6 +1294,30 @@ func (s *session) jobRow(taskID string) proto.JobPayload {
 	return proto.JobPayload{JobID: taskID, ToolCallID: l.toolUseID, ParentJobID: l.parentJob}
 }
 
+// backgroundShellResult is what Bash returns when run_in_background is set.
+// It is the only place the SDK says which output file a shell writes to
+// while the shell is still running: task_notification carries the path too,
+// but only once the shell is done, which is too late to tail it.
+var backgroundShellResult = regexp.MustCompile(`background with ID: (\S+)\. Output is being written to: (\S+?)\.?(?:\s|$)`)
+
+func (s *session) linkBackgroundShell(toolUseID, text string) {
+	m := backgroundShellResult.FindStringSubmatch(text)
+	if m == nil {
+		return
+	}
+	s.mu.Lock()
+	l := s.link(m[1])
+	if l.toolUseID == "" {
+		l.toolUseID = toolUseID
+	}
+	s.toolJobs[toolUseID] = m[1]
+	row := s.jobRow(m[1])
+	s.mu.Unlock()
+	row.Kind = proto.JobShell
+	row.OutputFile = m[2]
+	s.emitJob(proto.JobUpdated, row)
+}
+
 // emitJob sends one job row. A finished row marks the job done so the
 // background set cannot reap it a second time; a later terminal row (a
 // task_notification after a killed task_updated) still goes out, because the
@@ -1384,11 +1411,16 @@ func (s *session) handleTask(msg map[string]json.RawMessage) {
 		s.emitJob(proto.JobStarted, row)
 
 	case "task_progress":
-		row.Name = m.Description
+		// Description here is the SDK's running commentary ("Running …"),
+		// not the task's name: it is activity, and must not overwrite the
+		// name task_started gave.
 		row.Role = m.SubagentType
-		row.Activity = m.LastToolName
+		row.Activity = m.Summary
 		if row.Activity == "" {
-			row.Activity = m.Summary
+			row.Activity = m.Description
+		}
+		if row.Activity == "" {
+			row.Activity = m.LastToolName
 		}
 		row.Usage = usage()
 		s.emitJob(proto.JobUpdated, row)
