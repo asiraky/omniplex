@@ -388,7 +388,10 @@ function SessionList({
                     // until then — but it has to yield when they arrive. The
                     // fading timestamp alone covers one control; a second one
                     // would sit on top of the title, so with labels in play the
-                    // hovered line reserves the pair's full width.
+                    // hovered line yields as well — but only as far as the
+                    // label dot's left edge (pr-12), not the pair's full 64px
+                    // box. The buttons are mostly hit area: reserving all of it
+                    // leaves a canyon between the truncated title and the X.
                     //
                     // The open label menu is the third case: Radix moves focus
                     // into a portal, so once the pointer leaves the row neither
@@ -403,15 +406,13 @@ function SessionList({
                     // hover-only reservation would leave the title running
                     // under a dot that is already there.
                     label
-                      ? "pr-16"
+                      ? "pr-16 md:pr-12"
                       : labels.length > 0
-                        ? "pr-16 md:pr-0 md:group-hover:pr-16 md:group-focus-within:pr-16 md:group-has-[[aria-expanded=true]]:pr-16"
+                        ? "pr-16 md:pr-0 md:group-hover:pr-12 md:group-focus-within:pr-12 md:group-has-[[aria-expanded=true]]:pr-12"
                         : "pr-8 md:pr-0",
                   )}
                 >
-                  <span className="min-w-0 flex-1 truncate text-[13px]">
-                    {s.title || "Untitled"}
-                  </span>
+                  <span className="min-w-0 truncate text-[13px]">{s.title || "Untitled"}</span>
                   {working(s) && (
                     <span
                       role="status"
@@ -439,7 +440,7 @@ function SessionList({
                       className="text-destructive size-3 shrink-0"
                     />
                   )}
-                  <span className="text-muted-foreground shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
+                  <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
                     {ago(s.updatedAt)}
                   </span>
                 </span>

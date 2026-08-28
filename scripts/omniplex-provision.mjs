@@ -26,7 +26,9 @@
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 // Offset from the defaults in scripts/dev, so a worktree's ports are visibly
 // not the main checkout's when both are running.
@@ -104,8 +106,10 @@ step(`ports: server ${serverPort}, vite ${vitePort}`);
 // whole schema on open, so an empty file is fully migrated; and the log holds
 // live sessions, so a copy would offer this worktree's own session for resume
 // and end up with two harnesses writing two divergent copies of one log.
+// Reference data is seeded into it below.
 const db = join(worktree, ".omniplex", "dev.db");
 mkdirSync(join(worktree, ".omniplex"), { recursive: true });
+
 
 writeFileSync(
   join(worktree, ".omniplex", "worktree.env"),
@@ -129,12 +133,70 @@ This is a worktree of \`${projectRoot}\`, on branch \`${branch}\`.
 Run the app with \`npm run dev\` as usual. It picks up \`.omniplex/worktree.env\` and
 starts on **http://127.0.0.1:${serverPort}** with its own database at
 \`.omniplex/dev.db\` — so it will not collide with the checkout this came from, and
-nothing you do here touches its sessions.
+nothing you do here touches its sessions. That database is seeded with the
+projects and labels of the one it came from; sessions are not copied.
 
 Both files are generated and ignored by Git. Delete the worktree with the
 session; do not \`git worktree remove\` it by hand while a session holds it.
 `,
 );
+
+// ---- 4. reference data ----
+
+/**
+ * Copies the projects and labels of the database this server runs on into the
+ * worktree's own, so the app there opens on something usable instead of an
+ * empty sidebar — the projects you can start a session in, and the labels the
+ * list is organised by.
+ *
+ * Only those two tables. Sessions, events and snapshots are deliberately left
+ * behind: a copied session is a live session whose harness process belongs to
+ * the other server, and resuming it from here would put two harnesses on one
+ * transcript. Devices are left behind too — a pairing token belongs to the
+ * origin it was issued for, and this worktree is a different port.
+ *
+ * The DDL is read out of the source database rather than written here, so this
+ * cannot drift from internal/store/store.go. Best-effort throughout: a
+ * worktree with an empty sidebar is a nuisance, a failed provision is not.
+ */
+const seedReferenceData = (source, target) => {
+  if (!existsSync(source)) {
+    step(`no database at ${source}; the worktree starts empty`);
+    return;
+  }
+  let dst;
+  try {
+    dst = new DatabaseSync(target);
+    dst.exec("PRAGMA busy_timeout=5000");
+    // The source is attached, not opened: it is very likely the live server's
+    // database, and this only ever reads from it.
+    dst.exec(`ATTACH DATABASE '${source.replaceAll("'", "''")}' AS src`);
+    const tables = dst
+      .prepare(
+        "SELECT name, sql FROM src.sqlite_master WHERE type = 'table' AND name IN ('projects', 'labels')",
+      )
+      .all();
+    for (const { name, sql } of tables) {
+      dst.exec(
+        sql.replace(
+          /^\s*CREATE TABLE\s+(IF NOT EXISTS\s+)?["`]?(\w+)["`]?/i,
+          (_, _ifNotExists, table) => `CREATE TABLE IF NOT EXISTS main.${table}`,
+        ),
+      );
+      const { changes } = dst.prepare(`INSERT INTO main.${name} SELECT * FROM src.${name}`).run();
+      step(`seeded ${changes} ${name} from ${source}`);
+    }
+    dst.exec("DETACH DATABASE src");
+  } catch (err) {
+    step(`could not seed from ${source}: ${err.message}`);
+  } finally {
+    dst?.close();
+  }
+};
+
+// Whatever database the server running this hook is on — its own, in a
+// worktree; the default one under $HOME when nothing set it.
+seedReferenceData(process.env.OMNIPLEX_DB || join(homedir(), ".omniplex", "omniplex.db"), db);
 
 writeFileSync(
   resultFile,

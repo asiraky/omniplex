@@ -1,0 +1,97 @@
+#!/bin/sh
+# Starts this worktree's dev server (if it is not already up) and prints the
+# address to hand to the person you are working for, with a pairing link.
+#
+# It exists because "the dev server is running" is not a useful report: the
+# operator is usually on a phone somewhere else on the tailnet, and 127.0.0.1
+# is not an address they have. What they need is the tailnet URL, a link that
+# carries the pairing code in its fragment, and the code itself as a fallback
+# for typing. All three are in the startup banner; this digs them out.
+#
+#   scripts/dev-link            start if needed, then print
+#   scripts/dev-link --restart  restart first (the only way to mint a new
+#                               pairing code — the server issues one at
+#                               startup and it is single-use, 10 minutes)
+#   scripts/dev-link --stop     stop the server this script started
+#
+# Only ever signals the process group recorded in .omniplex/dev.pid — the one
+# it started itself. It never matches on a name or a path, because the main
+# checkout is probably running the server that hosts the session you are in.
+set -e
+cd "$(dirname "$0")/.."
+
+ENV_FILE=.omniplex/worktree.env
+LOG=.omniplex/dev.log
+PIDFILE=.omniplex/dev.pid
+
+if [ ! -f "$ENV_FILE" ]; then
+  echo "dev-link: no $ENV_FILE — this is the main checkout, not a worktree." >&2
+  echo "dev-link: never start a second server here; work in a worktree." >&2
+  exit 2
+fi
+# shellcheck disable=SC1090
+. "./$ENV_FILE"
+PORT="${OMNIPLEX_PORT:?worktree.env has no OMNIPLEX_PORT}"
+
+running() { curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/api/health"; }
+
+stop() {
+  [ -f "$PIDFILE" ] || return 0
+  pgid=$(cat "$PIDFILE")
+  [ -n "$pgid" ] && kill -TERM "-$pgid" 2>/dev/null || true
+  rm -f "$PIDFILE"
+  # Give the port back before anyone tries to bind it again.
+  i=0
+  while running && [ "$i" -lt 20 ]; do i=$((i + 1)); sleep 0.5; done
+}
+
+start() {
+  : > "$LOG"
+  # setsid: the server outlives the shell that ran this, and lands in a process
+  # group of its own so --stop can take the whole tree (air, go, vite) and
+  # nothing else.
+  setsid sh -c 'npm run dev' >> "$LOG" 2>&1 &
+  echo $! > "$PIDFILE"
+  i=0
+  until running; do
+    i=$((i + 1))
+    if [ "$i" -gt 120 ]; then
+      echo "dev-link: server did not come up in 60s — see $LOG" >&2
+      exit 1
+    fi
+    sleep 0.5
+  done
+  # The banner is printed on the way up; the health check can win the race.
+  i=0
+  until grep -q "Pair a device" "$LOG" 2>/dev/null || [ "$i" -gt 20 ]; do
+    i=$((i + 1))
+    sleep 0.5
+  done
+}
+
+case "${1:-}" in
+  --stop) stop; echo "stopped"; exit 0 ;;
+  --restart) stop; start ;;
+  "") running || start ;;
+  *) echo "usage: dev-link [--restart|--stop]" >&2; exit 2 ;;
+esac
+
+# The banner is written with ANSI colour and CRs by air's pipe; strip both, and
+# read only the last banner in the log so a restart does not print a stale code.
+plain=$(sed -e 's/\x1b\[[0-9;]*m//g' -e 's/\r//g' "$LOG" | awk '/Omniplex — harness multiplexer/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}')
+
+url=$(printf '%s\n' "$plain" | grep -m1 "Tailscale" | awk '{print $NF}')
+[ -n "$url" ] || url="http://127.0.0.1:$PORT"
+code=$(printf '%s\n' "$plain" | grep -m1 "and enter" | awk '{print $NF}')
+
+echo
+echo "  open    $url"
+if [ -n "$code" ]; then
+  raw=$(printf '%s' "$code" | tr -d '-')
+  echo "  pair    $url/pair#c=$raw"
+  echo "  code    $code   (single use, 10 minutes; scripts/dev-link --restart mints another)"
+else
+  echo "  pair    already paired, or the server is loopback-only"
+fi
+echo "  log     $LOG"
+echo
