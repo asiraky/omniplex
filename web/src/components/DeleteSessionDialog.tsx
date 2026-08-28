@@ -90,6 +90,10 @@ export function useDeleteSession({
     !!confirming?.cwd &&
     confirming.cwd !== projectRoot(confirming.projectId);
   const removable = hasWorktree && sharers.length === 0;
+  // A turn open, or agents and shells running beside one that is over: the
+  // delete cuts them off, which is worth a line before the button.
+  const running =
+    confirming?.attention === "working" || confirming?.attention === "background";
 
   // The dialog is only "busy" for the session it is currently asking about: it
   // can be dismissed once the wait has gone long and reopened on another row,
@@ -172,6 +176,7 @@ export function useDeleteSession({
     sharers,
     hasWorktree,
     removable,
+    running,
     removeWorktree,
     setRemoveWorktree,
     deleting,
@@ -258,6 +263,12 @@ export function DeleteSessionDialog({ flow }: { flow: DeleteSession }) {
               </p>
             )}
           </div>
+        )}
+
+        {flow.confirming && flow.running && (
+          <p className="text-attention-foreground text-[11px]">
+            This session still has running jobs.
+          </p>
         )}
 
         {flow.stuck && (

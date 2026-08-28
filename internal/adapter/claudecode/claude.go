@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -385,6 +386,19 @@ type session struct {
 	sawResult bool
 	model     string
 	effort    string
+	// jobs is what the adapter knows about each task the harness has
+	// reported, keyed by task id: the linkage every job row must repeat, and
+	// whether a terminal row has already gone out. toolJobs maps the spawning
+	// tool_use id back to the job, which is how a subagent's own result — and
+	// anything else the SDK labels with parent_tool_use_id — finds its job.
+	jobs     map[string]*jobLink
+	toolJobs map[string]string
+	// background is the live set the harness last reported through
+	// background_tasks_changed. It is a level signal with replace semantics:
+	// an id that drops out without a terminal row of its own was reaped, and
+	// the job is finished here so it cannot spin forever.
+	background map[string]bool
+
 	// fatal is the last thing the bridge said before it died. The SDK reports
 	// a harness that refuses to start — an expired login above all — by
 	// throwing, and that throw is the only description of what went wrong
@@ -495,6 +509,15 @@ func (s *session) SetEffort(ctx context.Context, effort string) error {
 	s.effort = effort
 	s.mu.Unlock()
 	return nil
+}
+
+// StopJob asks the harness to stop one running task — a subagent or a
+// background shell — through the SDK's stopTask. A request rather than a
+// notification, like the other switches: an id the harness does not know must
+// come back as an error. The harness reports the outcome itself as a
+// task_notification, which is what finishes the job.
+func (s *session) StopJob(ctx context.Context, jobID string) error {
+	return s.conn.Call(ctx, "stopTask", map[string]any{"taskId": jobID}, nil)
 }
 
 // Close tears down the bridge. Closing stdin is the primary signal: the
@@ -831,8 +854,10 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 		// A result carrying a parent_tool_use_id is a subagent finishing, not
 		// the conversation. Letting it through would close the top-level turn
 		// — and report "user's turn" — while the main agent is still working.
-		if str(msg["parent_tool_use_id"]) == "" {
+		if parent := str(msg["parent_tool_use_id"]); parent == "" {
 			s.handleResult(msg)
+		} else {
+			s.handleSubagentResult(parent, msg)
 		}
 	case "context_usage":
 		s.handleContextUsage(msg)
@@ -905,6 +930,8 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
 			Model: init.Model, Mode: init.PermissionMode, HarnessSessionID: harnessID,
 		}))
+	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
+		s.handleTask(msg)
 	case "compact_boundary":
 		var b struct {
 			Meta struct {
@@ -1178,13 +1205,15 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 			status = proto.StatusFailed
 		}
 		var content []proto.ToolContent
-		if text := flattenContent(c.Content); text != "" {
+		text := flattenContent(c.Content)
+		if text != "" {
 			content = []proto.ToolContent{{Type: "text", Text: text}}
 		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID: c.ToolUseID, Status: status, Content: content,
 			ParentToolCallID: str(msg["parent_tool_use_id"]),
 		}))
+		s.linkBackgroundShell(c.ToolUseID, text)
 	}
 }
 
@@ -1307,6 +1336,309 @@ func resultFailure(result, diagnostics, terminalReason string) (message, failure
 	return "the turn failed and the harness did not say why", ""
 }
 
+// ---- jobs ----
+
+// jobLink is what every job row repeats so a consumer can rebuild the job
+// from any one of them, plus whether the job has already been finished here.
+type jobLink struct {
+	toolUseID string
+	parentJob string
+	done      bool
+}
+
+// link returns the linkage for a task, creating it on first sight. Caller
+// holds s.mu.
+func (s *session) link(taskID string) *jobLink {
+	s.ensureJobs()
+	l := s.jobs[taskID]
+	if l == nil {
+		l = &jobLink{}
+		s.jobs[taskID] = l
+	}
+	return l
+}
+
+// ensureJobs lazily creates the job maps. Caller holds s.mu.
+func (s *session) ensureJobs() {
+	if s.jobs == nil {
+		s.jobs = map[string]*jobLink{}
+		s.toolJobs = map[string]string{}
+		s.background = map[string]bool{}
+	}
+}
+
+// jobRow builds a payload carrying the task's linkage bundle. Caller holds
+// s.mu.
+func (s *session) jobRow(taskID string) proto.JobPayload {
+	l := s.link(taskID)
+	return proto.JobPayload{JobID: taskID, ToolCallID: l.toolUseID, ParentJobID: l.parentJob}
+}
+
+// backgroundShellResult is what Bash returns when run_in_background is set.
+// It is the only place the SDK says which output file a shell writes to
+// while the shell is still running: task_notification carries the path too,
+// but only once the shell is done, which is too late to tail it.
+var backgroundShellResult = regexp.MustCompile(`background with ID: (\S+)\. Output is being written to: (\S+?)\.?(?:\s|$)`)
+
+func (s *session) linkBackgroundShell(toolUseID, text string) {
+	m := backgroundShellResult.FindStringSubmatch(text)
+	if m == nil {
+		return
+	}
+	s.mu.Lock()
+	// Only a task the SDK itself announced may be linked: tool output is
+	// harness-controlled text, and a forged line must not turn an arbitrary
+	// path into something the output endpoint will read back.
+	s.ensureJobs()
+	l, known := s.jobs[m[1]]
+	if !known || l.done {
+		s.mu.Unlock()
+		return
+	}
+	if l.toolUseID == "" {
+		l.toolUseID = toolUseID
+	}
+	s.toolJobs[toolUseID] = m[1]
+	row := s.jobRow(m[1])
+	s.mu.Unlock()
+	row.Kind = proto.JobShell
+	row.OutputFile = m[2]
+	s.emitJob(proto.JobUpdated, row)
+}
+
+// emitJob sends one job row. A finished row marks the job done so the
+// background set cannot reap it a second time; a later terminal row (a
+// task_notification after a killed task_updated) still goes out, because the
+// projection merges and the notification is what carries the output file.
+func (s *session) emitJob(typ string, p proto.JobPayload) {
+	if typ == proto.JobFinished {
+		s.mu.Lock()
+		s.link(p.JobID).done = true
+		delete(s.background, p.JobID)
+		s.mu.Unlock()
+	}
+	s.emit(proto.Emit(typ, p))
+}
+
+// handleTask maps the SDK's task_* system messages onto job events. The SDK
+// speaks in edges (started, progress, updated, notification) and one level
+// signal (background_tasks_changed); every row emitted here carries the whole
+// linkage so the projection never has to pair them.
+func (s *session) handleTask(msg map[string]json.RawMessage) {
+	var m struct {
+		Subtype      string `json:"subtype"`
+		TaskID       string `json:"task_id"`
+		ToolUseID    string `json:"tool_use_id"`
+		Description  string `json:"description"`
+		SubagentType string `json:"subagent_type"`
+		TaskType     string `json:"task_type"`
+		WorkflowName string `json:"workflow_name"`
+		SkipTranscr  bool   `json:"skip_transcript"`
+		LastToolName string `json:"last_tool_name"`
+		Summary      string `json:"summary"`
+		Status       string `json:"status"`
+		OutputFile   string `json:"output_file"`
+		Usage        *struct {
+			TotalTokens int64 `json:"total_tokens"`
+			ToolUses    int64 `json:"tool_uses"`
+			DurationMs  int64 `json:"duration_ms"`
+		} `json:"usage"`
+		Patch struct {
+			Status       string `json:"status"`
+			Description  string `json:"description"`
+			Error        string `json:"error"`
+			IsBackground *bool  `json:"is_backgrounded"`
+		} `json:"patch"`
+		Tasks []struct {
+			TaskID      string `json:"task_id"`
+			TaskType    string `json:"task_type"`
+			Description string `json:"description"`
+		} `json:"tasks"`
+	}
+	remarshal(msg, &m)
+
+	usage := func() *proto.JobUsage {
+		if m.Usage == nil {
+			return nil
+		}
+		return &proto.JobUsage{TotalTokens: m.Usage.TotalTokens, ToolUses: m.Usage.ToolUses, DurationMs: m.Usage.DurationMs}
+	}
+
+	if m.Subtype == "background_tasks_changed" {
+		s.handleBackgroundTasks(m.Tasks)
+		return
+	}
+	if m.TaskID == "" {
+		return
+	}
+
+	s.mu.Lock()
+	l := s.link(m.TaskID)
+	if m.ToolUseID != "" {
+		l.toolUseID = m.ToolUseID
+		s.toolJobs[m.ToolUseID] = m.TaskID
+	}
+	// The SDK's task_* messages are not typed with parent_tool_use_id, but if
+	// one ever carries it (as its assistant/user messages do), it names the
+	// Task call this job runs inside — which is a job we know.
+	if parent := str(msg["parent_tool_use_id"]); parent != "" && l.parentJob == "" {
+		l.parentJob = s.toolJobs[parent]
+	}
+	row := s.jobRow(m.TaskID)
+	s.mu.Unlock()
+
+	switch m.Subtype {
+	case "task_started":
+		row.Kind = proto.ClassifyJob(m.TaskType)
+		row.TaskType = m.TaskType
+		row.Name = m.Description
+		row.Role = m.SubagentType
+		row.WorkflowName = m.WorkflowName
+		row.Hidden = m.SkipTranscr
+		row.Status = proto.JobRunning
+		s.emitJob(proto.JobStarted, row)
+
+	case "task_progress":
+		// Description here is the SDK's running commentary ("Running …"),
+		// not the task's name: it is activity, and must not overwrite the
+		// name task_started gave.
+		row.Role = m.SubagentType
+		row.Activity = m.Summary
+		if row.Activity == "" {
+			row.Activity = m.Description
+		}
+		if row.Activity == "" {
+			row.Activity = m.LastToolName
+		}
+		row.Usage = usage()
+		s.emitJob(proto.JobUpdated, row)
+
+	case "task_updated":
+		row.Name = m.Patch.Description
+		row.Error = m.Patch.Error
+		row.Backgrounded = m.Patch.IsBackground
+		switch m.Patch.Status {
+		case "completed":
+			row.Status = proto.JobCompleted
+			s.emitJob(proto.JobFinished, row)
+		case "failed":
+			row.Status = proto.JobFailed
+			s.emitJob(proto.JobFinished, row)
+		case "killed":
+			row.Status = proto.JobStopped
+			s.emitJob(proto.JobFinished, row)
+		case "paused":
+			row.Status = proto.JobPaused
+			s.emitJob(proto.JobUpdated, row)
+		case "running", "pending":
+			row.Status = proto.JobRunning
+			s.emitJob(proto.JobUpdated, row)
+		default:
+			s.emitJob(proto.JobUpdated, row)
+		}
+
+	case "task_notification":
+		switch m.Status {
+		case "failed":
+			row.Status = proto.JobFailed
+		case "stopped":
+			row.Status = proto.JobStopped
+		default:
+			row.Status = proto.JobCompleted
+		}
+		row.OutputFile = m.OutputFile
+		row.Activity = m.Summary
+		row.Usage = usage()
+		row.Hidden = m.SkipTranscr
+		// Sent even when the job already finished (a killed task_updated
+		// precedes it): the projection merges, and this row is the one that
+		// names the output file.
+		s.emitJob(proto.JobFinished, row)
+	}
+}
+
+// handleBackgroundTasks applies the harness's authoritative live set. A task
+// that was in the set and is not any more, with no terminal row seen for it,
+// was reaped by the harness — the turn ended, or the process shut it down —
+// and is finished here as stopped.
+func (s *session) handleBackgroundTasks(tasks []struct {
+	TaskID      string `json:"task_id"`
+	TaskType    string `json:"task_type"`
+	Description string `json:"description"`
+}) {
+	s.mu.Lock()
+	s.ensureJobs()
+	next := map[string]bool{}
+	for _, t := range tasks {
+		next[t.TaskID] = true
+	}
+	var reaped []proto.JobPayload
+	for id := range s.background {
+		if !next[id] && !s.link(id).done {
+			row := s.jobRow(id)
+			row.Status = proto.JobStopped
+			reaped = append(reaped, row)
+		}
+	}
+	s.background = next
+	// A task the level reports before its own start row has been seen: seed
+	// it now so a start that never arrives still leaves a job to reap.
+	var unseen []proto.JobPayload
+	for _, t := range tasks {
+		if _, known := s.jobs[t.TaskID]; !known {
+			s.link(t.TaskID)
+			row := s.jobRow(t.TaskID)
+			row.Kind = proto.ClassifyJob(t.TaskType)
+			row.TaskType = t.TaskType
+			row.Name = t.Description
+			row.Status = proto.JobRunning
+			backgrounded := true
+			row.Backgrounded = &backgrounded
+			unseen = append(unseen, row)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, row := range unseen {
+		s.emitJob(proto.JobStarted, row)
+	}
+	for _, row := range reaped {
+		s.emitJob(proto.JobFinished, row)
+	}
+}
+
+// handleSubagentResult folds a subagent's own result — the SDK's result
+// message with parent_tool_use_id set — into its job's usage. It never
+// touches the session's usage: that is the conversation's accounting, and a
+// subagent's spend is already inside the parent's total_cost_usd.
+func (s *session) handleSubagentResult(parentToolUseID string, msg map[string]json.RawMessage) {
+	var r struct {
+		TotalCostUSD float64 `json:"total_cost_usd"`
+		Usage        struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	remarshal(msg, &r)
+
+	s.mu.Lock()
+	s.ensureJobs()
+	jobID := s.toolJobs[parentToolUseID]
+	var row proto.JobPayload
+	if jobID != "" {
+		row = s.jobRow(jobID)
+	}
+	s.mu.Unlock()
+	if jobID == "" {
+		return
+	}
+	row.Usage = &proto.JobUsage{
+		TotalTokens: r.Usage.InputTokens + r.Usage.OutputTokens,
+		Cost:        r.TotalCostUSD,
+	}
+	s.emitJob(proto.JobUpdated, row)
+}
+
 // ---- helpers ----
 
 func str(raw json.RawMessage) string {
@@ -1329,14 +1661,14 @@ func toolKind(name string) string {
 		return proto.KindRead
 	case "Edit", "Write", "NotebookEdit", "MultiEdit":
 		return proto.KindEdit
-	case "Bash", "BashOutput", "KillShell":
+	case "Bash", "BashOutput", "KillShell", "TaskOutput", "TaskStop":
 		return proto.KindExecute
 	case "Grep", "Glob", "Search":
 		return proto.KindSearch
 	case "WebFetch", "WebSearch":
 		return proto.KindFetch
 	case "Task", "Agent":
-		return proto.KindThink
+		return proto.KindAgent
 	default:
 		return proto.KindOther
 	}
@@ -1372,9 +1704,17 @@ func toolTitle(name string, input json.RawMessage) string {
 		if u := pick("url", "query"); u != "" {
 			return name + " " + u
 		}
-	case "Task":
+	case "Task", "Agent":
 		if d := pick("description"); d != "" {
 			return "Task: " + d
+		}
+	case "BashOutput", "TaskOutput":
+		if id := pick("bash_id", "task_id", "shell_id"); id != "" {
+			return name + " " + id
+		}
+	case "KillShell", "TaskStop":
+		if id := pick("shell_id", "task_id", "bash_id"); id != "" {
+			return name + " " + id
 		}
 	}
 	return name

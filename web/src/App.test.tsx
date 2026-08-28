@@ -97,6 +97,7 @@ const state = (id: string, mode: string): any => ({
   workspace: { phase: "ready", projectId: "p1", projectRoot: "/tmp/repo" },
   items: [],
   turns: [],
+  jobs: [],
   plan: [],
   usage: {},
   pendingPermissions: [],

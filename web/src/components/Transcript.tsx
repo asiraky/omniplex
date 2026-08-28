@@ -1,9 +1,12 @@
 import {
   ArchiveIcon,
   ArrowRightIcon,
+  BotIcon,
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
+  CircleSlashIcon,
   CircleIcon,
   CopyIcon,
   DownloadIcon,
@@ -36,8 +39,19 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip
 import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
+import { isLive, jobLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
-import type { ComposerItem, Item, PromptImage, PullRequest, QueuedPrompt, SessionState, ToolStatus, Turn } from "~/protocol";
+import type {
+  ComposerItem,
+  Item,
+  Job,
+  PromptImage,
+  PullRequest,
+  QueuedPrompt,
+  SessionState,
+  ToolStatus,
+  Turn,
+} from "~/protocol";
 import { saveResume } from "~/resume";
 import { buildRows, foldLabel, rowTurnID, summarise } from "~/rows";
 import { atBottom, useAutoScroll } from "~/useAutoScroll";
@@ -70,6 +84,7 @@ const TOOL_ICON: Record<string, ComponentType<{ className?: string }>> = {
   search: SearchIcon,
   execute: TerminalIcon,
   think: BrainIcon,
+  agent: BotIcon,
   fetch: DownloadIcon,
   other: CircleIcon,
 };
@@ -79,6 +94,9 @@ function StatusMark({ status }: { status?: ToolStatus }) {
     return <Spinner className="text-primary size-3.5" />;
   if (status === "failed")
     return <XIcon aria-label="Failed" className="text-destructive size-3.5" />;
+  // Stopped on purpose, not broken: muted, not red.
+  if (status === "cancelled")
+    return <CircleSlashIcon aria-label="Cancelled" className="text-muted-foreground size-3.5" />;
   return <CheckIcon aria-label="Done" className="text-success size-3.5" />;
 }
 
@@ -208,6 +226,68 @@ function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
 
       {open && <ExpandedItems items={items} />}
     </div>
+  );
+}
+
+// A batch of subagents, as one card that stays in the transcript: unlike a
+// tool call, a spawned agent keeps running after the turn that started it, so
+// the card reads from the live job rather than the tool item where it can.
+// Clicking anywhere on it opens the jobs panel.
+function JobsCard({
+  items,
+  jobs,
+  onOpen,
+}: {
+  items: Item[];
+  jobs: Job[];
+  onOpen?: () => void;
+}) {
+  const rows = items.map((item) => ({ item, job: jobs.find((j) => j.toolCallId === item.id) }));
+  const live = rows.some((r) => (r.job ? isLive(r.job) : r.item.status === "in_progress" || r.item.status === "pending"));
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="fade-in bg-card/60 hover:bg-accent/40 focus-visible:ring-ring w-full rounded-lg border text-left transition-colors outline-none focus-visible:ring-2"
+    >
+      <div className="text-muted-foreground flex items-center gap-2 px-3 pt-2 font-mono text-[10px] tracking-wide uppercase">
+        <BotIcon className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">
+          {items.length === 1 ? "1 agent" : `${items.length} agents`}
+        </span>
+        {live ? <Spinner className="text-primary size-3.5" /> : null}
+        <ChevronRightIcon className="size-3.5" />
+      </div>
+      <ul className="space-y-1 px-3 py-2">
+        {rows.map(({ item, job }) => {
+          const label = job ? jobLabel(job) : item.title || "agent";
+          const status: ToolStatus | undefined = job
+            ? isLive(job)
+              ? "in_progress"
+              : job.status === "completed"
+                ? "completed"
+                : job.status === "failed"
+                  ? "failed"
+                  : "cancelled"
+            : item.status;
+          const tokens = job?.usage.totalTokens;
+          return (
+            <li key={item.id} className="flex min-w-0 items-center gap-2 text-[13px]">
+              <span className="min-w-0 flex-1 truncate font-mono">{label}</span>
+              {job?.activity && isLive(job) && (
+                <span className="text-muted-foreground hidden min-w-0 max-w-[40%] truncate text-[11px] sm:inline">
+                  {job.activity}
+                </span>
+              )}
+              {tokens ? (
+                <span className="text-muted-foreground shrink-0 font-mono text-[10px]">{fmtTokens(tokens)}</span>
+              ) : null}
+              <StatusMark status={status} />
+            </li>
+          );
+        })}
+      </ul>
+    </button>
   );
 }
 
@@ -795,6 +875,8 @@ export function Transcript({
   onForceDelete,
   onContinue,
   onOpenDiff,
+  jobs = [],
+  onOpenJobs,
   pr,
   onFinish,
   recents = [],
@@ -816,6 +898,10 @@ export function Transcript({
   onForceDelete: () => void;
   onContinue: () => void;
   onOpenDiff: (path?: string) => void;
+  /** The session's jobs, for the spawn cards to read live status from. */
+  jobs?: Job[];
+  /** Opens the panel on the jobs surface. */
+  onOpenJobs?: () => void;
   /** The session branch's pull request, when omniplex could find one. */
   pr?: PullRequest | null;
   /** Opens the delete confirmation for this session. */
@@ -1069,6 +1155,8 @@ export function Transcript({
                   <TurnFold turn={row.turn} items={row.items} />
                 ) : row.kind === "run" ? (
                   <ToolRun items={row.items} live={row.live} />
+                ) : row.kind === "jobs" ? (
+                  <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />
                 ) : row.item.kind === "tool" ? (
                   <ToolCard item={row.item} />
                 ) : row.item.kind === "notice" ? (

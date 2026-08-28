@@ -40,7 +40,22 @@ export type Row =
   // trailing run — the one whose last call is the work happening now.
   | { kind: "run"; id: string; items: Item[]; live: boolean }
   // A finished turn's hidden middle: everything but its prompt and answer.
-  | { kind: "fold"; id: string; turn: Turn; items: Item[] };
+  | { kind: "fold"; id: string; turn: Turn; items: Item[] }
+  // A batch of subagent spawns, pinned where the first one happened. Never
+  // folded: the work is still running beside the conversation after the turn
+  // that started it is over, so the card has to stay where it can be seen.
+  | { kind: "jobs"; id: string; items: Item[] };
+
+function isSpawn(item: Item) {
+  return item.kind === "tool" && item.toolKind === "agent";
+}
+
+// Consecutive spawns starting at `i` become one card, anchored to the first.
+function spawnBatch(items: Item[], i: number): Item[] {
+  let j = i;
+  while (j < items.length && isSpawn(items[j])) j++;
+  return items.slice(i, j);
+}
 
 export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
   const turnById = new Map(turns.map((t) => [t.id, t]));
@@ -72,22 +87,34 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
         }
       }
 
-      const hidden: Item[] = [];
-      for (const it of segment) {
+      // Anchored to its first hidden item, not the turn id: a turn whose
+      // items are somehow split by another's folds twice, and two rows must
+      // not share a key.
+      let hidden: Item[] = [];
+      const flush = () => {
+        if (hidden.length > 0)
+          rows.push({ kind: "fold", id: `fold:${hidden[0].id}`, turn: turnById.get(turnId)!, items: hidden });
+        hidden = [];
+      };
+      for (let k = 0; k < segment.length; k++) {
+        const it = segment[k];
         if (it === answer) continue;
         // The prompt stays where the reader can see what was asked.
         if (it.kind === "message" && it.role === "user") {
           rows.push({ kind: "item", item: it });
           continue;
         }
+        // A spawn batch stays out of the fold, splitting it in two if it must.
+        if (isSpawn(it)) {
+          flush();
+          const batch = spawnBatch(segment, k);
+          rows.push({ kind: "jobs", id: `jobs:${batch[0].id}`, items: batch });
+          k += batch.length - 1;
+          continue;
+        }
         hidden.push(it);
       }
-      if (hidden.length > 0) {
-        // Anchored to its first hidden item, not the turn id: a turn whose
-        // items are somehow split by another's folds twice, and two rows must
-        // not share a key.
-        rows.push({ kind: "fold", id: `fold:${hidden[0].id}`, turn: turnById.get(turnId)!, items: hidden });
-      }
+      flush();
       if (answer) rows.push({ kind: "item", item: answer });
       i = j;
       continue;
@@ -95,9 +122,21 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
 
     // A turn still running, or items outside any known turn.
     const item = visible[i];
+    if (isSpawn(item)) {
+      const batch = spawnBatch(visible, i);
+      rows.push({ kind: "jobs", id: `jobs:${batch[0].id}`, items: batch });
+      i += batch.length;
+      continue;
+    }
     if (item.kind === "tool") {
       let j = i;
-      while (j < visible.length && visible[j].kind === "tool" && !doneTurn(visible[j].turnId)) j++;
+      while (
+        j < visible.length &&
+        visible[j].kind === "tool" &&
+        !isSpawn(visible[j]) &&
+        !doneTurn(visible[j].turnId)
+      )
+        j++;
       const run = visible.slice(i, j);
       // The run is live when nothing follows it and a turn is running: its
       // last call is the work happening now. The row's id is its first call,
@@ -134,6 +173,7 @@ const SUMMARY: { kind: string; one: string; many: (n: number) => string }[] = [
   { kind: "execute", one: "1 command", many: (n) => `${n} commands` },
   { kind: "fetch", one: "1 fetch", many: (n) => `${n} fetches` },
   { kind: "think", one: "1 thought", many: (n) => `${n} thoughts` },
+  { kind: "agent", one: "1 agent", many: (n) => `${n} agents` },
   { kind: "other", one: "1 other call", many: (n) => `${n} other calls` },
 ];
 

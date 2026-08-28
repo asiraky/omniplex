@@ -252,6 +252,14 @@ type EffortSwitcher interface {
 	SetEffort(ctx context.Context, effort string) error
 }
 
+// JobStopper is implemented by sessions whose harness can stop one running
+// job — a subagent, a background shell — by id, without interrupting the
+// turn. A harness that cannot simply does not implement this, and the host
+// reports that legibly instead of silently ignoring it.
+type JobStopper interface {
+	StopJob(ctx context.Context, jobID string) error
+}
+
 // ComposerItem is one provider-native token the composer can discover. The
 // core deliberately does not interpret Trigger, InsertText, or Action: they
 // are the adapter's normalized presentation and routing contract.

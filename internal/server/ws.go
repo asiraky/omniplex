@@ -490,6 +490,35 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"status": "cancelling"}, nil
 
+	case "stop_job":
+		var a jobArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, ok := c.srv.mgr.Peek(a.SessionID)
+		if !ok {
+			return nil, errors.New("this session's harness is not running")
+		}
+		if err := actor.StopJob(ctx, a.JobID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "stopping"}, nil
+
+	case "session_job_output":
+		var a jobOutputArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.View(ctx, a.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		text, next, done, err := actor.JobOutput(ctx, a.JobID, a.Offset)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"text": text, "offset": next, "done": done}, nil
+
 	case "set_mode":
 		var a setModeArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

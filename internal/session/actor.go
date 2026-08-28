@@ -7,6 +7,9 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -147,6 +150,7 @@ const (
 	cmdHarnessEvent  = "harness_event"
 	cmdHarnessExit   = "harness_exit"
 	cmdContinue      = "continue"
+	cmdStopJob       = "stop_job"
 	cmdDequeue       = "dequeue_prompt"
 )
 
@@ -293,6 +297,9 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 				Error: "server restarted during turn", Failure: proto.FailureRestart,
 			}))
 		}
+	}
+	for _, em := range interruptedJobs(state) {
+		a.enqueueEmission(em)
 	}
 	return a, nil
 }
@@ -568,6 +575,85 @@ func (a *Actor) Cancel(ctx context.Context) error {
 	return err
 }
 
+// StopJob asks the harness to stop one running job by id. The job's own
+// finish arrives through the harness's event stream.
+func (a *Actor) StopJob(ctx context.Context, jobID string) error {
+	_, err := a.call(ctx, command{kind: cmdStopJob, reqID: jobID})
+	return err
+}
+
+// jobOutputChunk caps one reply: output is polled in pieces so a phone on a
+// slow link never waits on a multi-megabyte shell log.
+const jobOutputChunk = 64 * 1024
+
+// JobOutput reads the job's output file from offset. next is where the next
+// read starts; done is true once the job has finished and the read reached
+// the end of the file. A job with no output file is refused.
+func (a *Actor) JobOutput(ctx context.Context, jobID string, offset int64) (text string, next int64, done bool, err error) {
+	state, err := a.State(ctx)
+	if err != nil {
+		return "", 0, false, err
+	}
+	var job *projection.Job
+	for i := range state.Jobs {
+		if state.Jobs[i].ID == jobID {
+			job = &state.Jobs[i]
+		}
+	}
+	if job == nil {
+		return "", 0, false, fmt.Errorf("no job %q in this session", jobID)
+	}
+	if job.OutputFile == "" {
+		return "", 0, false, fmt.Errorf("job %q has no output file", jobID)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	f, err := os.Open(job.OutputFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// The harness names the file before it writes it; an absent file
+			// is an empty one, not an error.
+			return "", offset, proto.JobDone(job.Status), nil
+		}
+		return "", 0, false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", 0, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, false, fmt.Errorf("job %q output is not a regular file", jobID)
+	}
+	if offset > info.Size() {
+		offset = info.Size()
+	}
+	buf := make([]byte, jobOutputChunk)
+	n, err := f.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		return "", 0, false, err
+	}
+	next = offset + int64(n)
+	done = proto.JobDone(job.Status) && next >= info.Size()
+	return string(buf[:n]), next, done, nil
+}
+
+// interruptedJobs finishes every job still live in a state whose process is
+// gone. Nobody chose this, so the status is interrupted rather than stopped.
+func interruptedJobs(state *projection.State) []proto.Emission {
+	var out []proto.Emission
+	for _, j := range state.Jobs {
+		if proto.JobDone(j.Status) {
+			continue
+		}
+		out = append(out, proto.Emit(proto.JobFinished, proto.JobPayload{
+			JobID: j.ID, ToolCallID: j.ToolCallID, ParentJobID: j.ParentJobID, Status: proto.JobInterrupted,
+		}))
+	}
+	return out
+}
+
 // ResolvePermission answers a pending request from any presenter.
 func (a *Actor) ResolvePermission(ctx context.Context, requestID string, outcome adapter.PermissionOutcome) error {
 	_, err := a.call(ctx, command{kind: cmdResolvePerm, reqID: requestID, outcome: outcome})
@@ -701,6 +787,10 @@ func (a *Actor) handle(c command) (stop bool) {
 				Error: "the harness process ended before the turn finished",
 			}))
 		}
+		// Any job the harness was running died with it.
+		for _, em := range interruptedJobs(a.state) {
+			a.append(em)
+		}
 		a.shutdown(false)
 		return true
 
@@ -750,8 +840,30 @@ func (a *Actor) handle(c command) (stop bool) {
 					a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn", Failure: proto.FailureRestart}))
 				}
 			}
+			for _, em := range interruptedJobs(a.state) {
+				a.append(em)
+			}
 		}
 		c.reply <- cmdResult{}
+
+	case cmdStopJob:
+		if a.state.Closed {
+			c.reply <- cmdResult{err: ErrClosed}
+			return false
+		}
+		if a.sess == nil {
+			c.reply <- cmdResult{err: ErrNotReady}
+			return false
+		}
+		stopper, ok := a.sess.(adapter.JobStopper)
+		if !ok {
+			c.reply <- cmdResult{err: errors.New("this harness cannot stop a job")}
+			return false
+		}
+		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := stopper.StopJob(stopCtx, c.reqID)
+		cancel()
+		c.reply <- cmdResult{err: err}
 
 	case cmdSetMode:
 		if a.state.Closed {

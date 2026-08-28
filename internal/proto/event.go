@@ -38,6 +38,14 @@ const (
 	// either side of the boundary so the transcript can show what happened.
 	ContextCompacted = "context.compacted"
 
+	// Jobs are work that runs beside the conversation rather than as part of
+	// it: a subagent, a background shell, a monitor. One entity, several kinds
+	// — see JobPayload. Every job event carries the whole linkage bundle, so a
+	// consumer that missed the start can still reconstruct the job.
+	JobStarted  = "job.started"
+	JobUpdated  = "job.updated"
+	JobFinished = "job.finished"
+
 	PermissionRequested  = "permission.requested"
 	PermissionResolved   = "permission.resolved"
 	ElicitationRequested = "elicitation.requested"
@@ -73,14 +81,84 @@ const (
 	KindSearch  = "search"
 	KindExecute = "execute"
 	KindThink   = "think"
-	KindFetch   = "fetch"
-	KindOther   = "other"
+	// KindAgent is a call that spawns a subagent (Task, Agent). Its own kind
+	// rather than a thought: the work it stands for is a job, not reasoning.
+	KindAgent = "agent"
+	KindFetch = "fetch"
+	KindOther = "other"
 
 	StatusPending    = "pending"
 	StatusInProgress = "in_progress"
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
+	// StatusCancelled marks a call that was still in flight when its turn
+	// ended — interrupted, not broken. It is deliberately not "failed": a
+	// stopped agent did not fail, and painting it red was a lie the UI told.
+	StatusCancelled = "cancelled"
 )
+
+// Job kinds. Classified once, at ingestion, by ClassifyJob; every consumer
+// reads the stamp rather than re-deriving it.
+const (
+	// JobAgent: a subagent — an LLM working on its own thread.
+	JobAgent = "agent"
+	// JobShell: a background shell command.
+	JobShell = "shell"
+	// JobMonitor: something watching for a condition (a Monitor tool, an MCP
+	// subscription). Long-lived and calm: it is not "working".
+	JobMonitor = "monitor"
+	// JobInert: housekeeping the harness runs for itself (a plan, a dream).
+	// Listed, never counted as live work.
+	JobInert = "inert"
+)
+
+// Job statuses. Terminal ones are completed, failed, stopped, interrupted.
+const (
+	JobRunning   = "running"
+	JobPaused    = "paused"
+	JobCompleted = "completed"
+	JobFailed    = "failed"
+	// JobStopped: killed on purpose — a per-job stop, or the harness reaping
+	// it when the turn ended.
+	JobStopped = "stopped"
+	// JobInterrupted: the process that ran it went away (a server restart, a
+	// harness crash) before it finished. Nobody chose this.
+	JobInterrupted = "interrupted"
+)
+
+// monitorTaskTypes and inertTaskTypes are the denylists ClassifyJob reads.
+// Copied from t3code, which learned them the hard way: the SDK's names for
+// agent-flavoured tasks drift (subagent, local_agent, local_workflow, …), and
+// an allowlist silently dropped real subagents when local_agent appeared.
+// Unknown or absent types are agents. Mirrored in web/src/lib/jobs.ts.
+var (
+	shellTaskTypes   = map[string]bool{"local_bash": true, "shell": true}
+	monitorTaskTypes = map[string]bool{"monitor": true, "monitor_mcp": true}
+	inertTaskTypes   = map[string]bool{"plan": true, "dream": true}
+)
+
+// ClassifyJob maps a harness's task type onto a job kind.
+func ClassifyJob(taskType string) string {
+	switch {
+	case shellTaskTypes[taskType]:
+		return JobShell
+	case monitorTaskTypes[taskType]:
+		return JobMonitor
+	case inertTaskTypes[taskType]:
+		return JobInert
+	default:
+		return JobAgent
+	}
+}
+
+// JobDone reports whether a job status is terminal.
+func JobDone(status string) bool {
+	switch status {
+	case JobCompleted, JobFailed, JobStopped, JobInterrupted:
+		return true
+	}
+	return false
+}
 
 // Permission outcomes.
 const (
@@ -414,6 +492,59 @@ type ContextCompactedPayload struct {
 	Trigger    string `json:"trigger,omitempty"`
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
+}
+
+// JobUsage is what a job has cost so far.
+type JobUsage struct {
+	TotalTokens int64   `json:"totalTokens,omitempty"`
+	ToolUses    int64   `json:"toolUses,omitempty"`
+	DurationMs  int64   `json:"durationMs,omitempty"`
+	Cost        float64 `json:"cost,omitempty"`
+}
+
+// JobPayload is the body of every job event. The identity fields are repeated
+// on every row — started, updated, finished — on purpose: a client that folds
+// events can reconstruct the job even when the start row is out of reach, and
+// a late-arriving update never has to be paired with anything.
+//
+// Fields an update did not touch are left empty; the projection merges rather
+// than replaces, so a usage tick cannot blank the description.
+type JobPayload struct {
+	JobID string `json:"jobId"`
+	// ToolCallID is the tool call (Task, Bash) that spawned this job, when the
+	// harness says so. It is what links the job to its transcript item, and
+	// what a subagent's inner items point at through ParentToolCallID.
+	ToolCallID string `json:"toolCallId,omitempty"`
+	// ParentJobID is the job this one runs inside — a shell a subagent
+	// started, an agent an agent spawned. Empty at the top level.
+	ParentJobID string `json:"parentJobId,omitempty"`
+	// Kind is one of JobAgent, JobShell, JobMonitor, JobInert. Stamped once by
+	// the adapter (ClassifyJob); only set on the start row.
+	Kind string `json:"kind,omitempty"`
+	// TaskType is the harness's own type name, kept for the record.
+	TaskType string `json:"taskType,omitempty"`
+	// Name is what the job is doing, in the harness's words.
+	Name string `json:"name,omitempty"`
+	// Role is the agent flavour (general-purpose, Explore, …) for an agent.
+	Role string `json:"role,omitempty"`
+	// WorkflowName names the workflow script for a workflow run.
+	WorkflowName string `json:"workflowName,omitempty"`
+	Status       string `json:"status,omitempty"`
+	// Activity is the latest thing the job was seen doing: the last tool
+	// name, or the harness's own one-line summary.
+	Activity string    `json:"activity,omitempty"`
+	Usage    *JobUsage `json:"usage,omitempty"`
+	// Error explains a failed job, when the harness said why.
+	Error string `json:"error,omitempty"`
+	// OutputFile is where a shell's output is written on the host, verbatim
+	// from the harness. Reachable through the server, never a client path.
+	OutputFile string `json:"outputFile,omitempty"`
+	// Backgrounded is true once the harness reports this job as running in
+	// the background — that is, the turn no longer blocks on it.
+	Backgrounded *bool `json:"backgrounded,omitempty"`
+	// Hidden marks a job the harness says to keep out of the transcript; it
+	// still appears in the jobs surface.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 type PermissionOption struct {
