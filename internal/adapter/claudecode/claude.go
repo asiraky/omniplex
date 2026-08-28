@@ -1306,7 +1306,15 @@ func (s *session) linkBackgroundShell(toolUseID, text string) {
 		return
 	}
 	s.mu.Lock()
-	l := s.link(m[1])
+	// Only a task the SDK itself announced may be linked: tool output is
+	// harness-controlled text, and a forged line must not turn an arbitrary
+	// path into something the output endpoint will read back.
+	s.ensureJobs()
+	l, known := s.jobs[m[1]]
+	if !known || l.done {
+		s.mu.Unlock()
+		return
+	}
 	if l.toolUseID == "" {
 		l.toolUseID = toolUseID
 	}

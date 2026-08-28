@@ -233,11 +233,13 @@ function AgentPane({
   jobs,
   items,
   onOpen,
+  onStop,
 }: {
   job: Job;
   jobs: Job[];
   items: Item[];
   onOpen: (j: Job) => void;
+  onStop: (j: Job) => void;
 }) {
   const mine = useMemo(
     () => (job.toolCallId ? items.filter((it) => it.parentId === job.toolCallId) : []),
@@ -272,7 +274,7 @@ function AgentPane({
         <>
           <p className="text-muted-foreground px-1 pt-2 text-[10px] font-semibold tracking-wide uppercase">Subagents</p>
           {children.map((c) => (
-            <JobRow key={c.id} job={{ ...c, depth: 0 }} onOpen={onOpen} onStop={() => {}} />
+            <JobRow key={c.id} job={{ ...c, depth: 0 }} onOpen={onOpen} onStop={onStop} />
           ))}
         </>
       )}
@@ -320,7 +322,7 @@ export function JobsSurface({ sessionId, state, command }: JobsSurfaceProps) {
           {open.kind === "shell" ? (
             <ShellPane key={open.id} sessionId={sessionId} job={open} command={command} />
           ) : (
-            <AgentPane job={open} jobs={state.jobs} items={state.items} onOpen={(j) => setOpenId(j.id)} />
+            <AgentPane job={open} jobs={state.jobs} items={state.items} onOpen={(j) => setOpenId(j.id)} onStop={stop} />
           )}
         </div>
       </div>
