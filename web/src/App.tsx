@@ -648,7 +648,10 @@ export function App() {
       const current = drafts[activeId] ?? "";
       setDraft(activeId, [...restored, current].filter(Boolean).join("\n\n"));
     }
-    clientRef.current?.command("cancel", { sessionId: activeId });
+    clientRef.current?.command("cancel", { sessionId: activeId }).catch((e) => {
+      const message = e instanceof Error ? e.message : String(e);
+      toast.error("Could not stop the turn", { description: message });
+    });
   }, [activeId, drafts, setDraft, state]);
 
   const dequeue = useCallback(

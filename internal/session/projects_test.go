@@ -85,6 +85,49 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
+type harnessNamedAdapter struct {
+	fakeAdapter
+	id string
+}
+
+func (a *harnessNamedAdapter) ID() string { return a.id }
+
+func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	p.Config.Defaults.Harness = "claude"
+	p.Config.Defaults.Model = "opus"
+	p.Config.Defaults.Mode = "bypassPermissions"
+	p.Config.Defaults.Effort = "high"
+	p.Config.Defaults.Workspace = "local"
+	if err := st.PutProject(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(st, func(string, ...any) {},
+		&harnessNamedAdapter{id: "claude"},
+		&harnessNamedAdapter{id: "codex"},
+	)
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID,
+		Harness:   "codex",
+		Model:     "gpt-5.6-sol",
+		Workspace: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Dispose("test done")
+	meta, err := st.Session(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Mode != "" || meta.Effort != "" {
+		t.Fatalf("Claude defaults crossed into Codex: mode=%q effort=%q", meta.Mode, meta.Effort)
+	}
+}
+
 // The whole point of the feature: a project added with the wrong path is a
 // mistake with nothing behind it, and the user must be able to take it back.
 func TestDeleteProjectRemovesItFromTheRegistry(t *testing.T) {

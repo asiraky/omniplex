@@ -371,6 +371,24 @@ describe("composer drafts", () => {
     );
   };
 
+  it("reports a stop request the server could not deliver", async () => {
+    command.mockImplementation(async (name: string) => {
+      if (name === "cancel") throw new Error("bridge unavailable");
+      return {} as any;
+    });
+    await boot();
+    await open("a");
+    await act(async () => events.onState("a", { ...state("a", "default"), phase: "turn" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt the running turn" }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Could not stop the turn", {
+        description: "bridge unavailable",
+      }),
+    );
+  });
+
   it("keeps a half-typed message when you switch away and come back", async () => {
     await boot();
     await open("a");

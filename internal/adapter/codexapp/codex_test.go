@@ -125,6 +125,21 @@ func TestDoubleCancelIsCoalesced(t *testing.T) {
 	}
 }
 
+func TestFailedCancelCanBeRetried(t *testing.T) {
+	conn, rec := pairedConn(t, map[string]any{
+		"turn/interrupt": errors.New("temporary interrupt failure"),
+	})
+	s := &session{conn: conn, threadID: "thread-1", serverTurnID: "codex-turn-42"}
+	for i := 0; i < 2; i++ {
+		if err := s.Cancel(context.Background()); err == nil {
+			t.Fatalf("Cancel #%d succeeded, want the RPC failure", i)
+		}
+	}
+	if n := rec.count("turn/interrupt"); n != 2 {
+		t.Fatalf("turn/interrupt sent %d times, want the failed request retried", n)
+	}
+}
+
 type elicitHost struct {
 	request adapter.ElicitationRequest
 	result  adapter.ElicitationResult
