@@ -133,6 +133,167 @@ weakened.
 | `-dev` | off | Serve the UI from the Vite dev server instead of the embedded bundle |
 | `-vite-port` | 5199 | Where the Vite dev server listens (with `-dev`) |
 
+## Running it on a server over Tailscale
+
+The setup Omniplex is built for is one always-on Linux box running the server,
+and a phone or laptop attaching to it from anywhere. Tailscale is what makes
+that safe: the box is never exposed to the internet, and every device that can
+reach it is already on your tailnet. Pairing is still enforced on top of that.
+
+### 1. Put the box and your devices on a tailnet
+
+Install Tailscale on the server and on every device you want to drive it from,
+and log them all into the same tailnet.
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+In the Tailscale admin console, turn on MagicDNS and HTTPS certificates for the
+tailnet. Both live under DNS. Without them you get an IP address and no
+certificate, which works but means typing `100.x.y.z:8787` on a phone forever.
+
+Your tailnet has a generated suffix like `tailXXXXXX.ts.net`, so the box is
+reachable at `https://<host>.<tailnet>.ts.net`. Once you have issued a
+certificate for that name you are stuck with it, so pick the machine name you
+want before you start.
+
+### 2. Build and install a release
+
+Build on the box itself. Cross-compiling works, but building where it runs is
+one less thing to get wrong.
+
+```bash
+git clone https://github.com/asiraky/omniplex.git
+cd omniplex
+npm ci
+npm run build          # or build:bundled if the box has no Node for the Claude bridge
+```
+
+Install the binary under a versioned directory and point a symlink at it:
+
+```bash
+sudo mkdir -p /opt/omniplex/releases/$(git rev-parse HEAD)
+sudo install -m 0755 omniplex /opt/omniplex/releases/$(git rev-parse HEAD)/omniplex
+sudo ln -sfn /opt/omniplex/releases/$(git rev-parse HEAD) /opt/omniplex/current
+sudo chown -R $USER /opt/omniplex
+```
+
+The indirection is worth it. Deploying is writing a new release beside the old
+one and moving the symlink, and rolling back is moving it back. Neither
+involves a rebuild.
+
+### 3. Run it as a user service
+
+Run Omniplex as your own user, not root. It drives `claude` and `codex` using
+the login state in your home directory, and a root service will not find it.
+
+`~/.config/systemd/user/omniplex.service`:
+
+```ini
+[Unit]
+Description=Omniplex
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/omniplex/current/omniplex
+WorkingDirectory=/home/YOU
+Environment=PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+Environment=HOME=/home/YOU
+Restart=on-failure
+RestartSec=2
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+sudo loginctl enable-linger $USER      # keeps the service alive with nobody logged in
+systemctl --user enable --now omniplex.service
+```
+
+Two things bite people here.
+
+Set `PATH` explicitly. systemd inherits nothing from your shell, so the Go,
+Node and harness installs configured in `~/.bashrc` are invisible to it.
+Symlink `go`, `node`, `npm`, `claude` and `codex` into `/usr/local/bin` and name
+that directory in the unit. Skip this and the server starts fine and reports
+every harness unavailable.
+
+Anything calling `systemctl --user` from a non-login context, such as a CI
+runner or a cron job, must set `XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
+Without it there is no user D-Bus and the call fails.
+
+### 4. Front it with a real certificate
+
+Omniplex binds `127.0.0.1:8787` plus the private and overlay addresses it can
+identify, so it is already reachable at `http://<tailnet-ip>:8787`. To get HTTPS
+and a name instead:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:8787
+tailscale serve status
+```
+
+That issues a genuine Let's Encrypt certificate for the machine's tailnet name.
+It stays tailnet-only. `tailscale serve` is the local one. `tailscale funnel`
+is the one that publishes to the internet, and you almost certainly do not want
+it for an agent server.
+
+Do not add `-bind-public`. Tailscale is already handling reachability, and
+pairing is an access check rather than a reason to put an agent on the open
+internet.
+
+### 5. Pair your phone
+
+Omniplex mints a pairing code only at startup and writes it to the log. There
+is no command to generate one later, so pairing means restarting:
+
+```bash
+systemctl --user restart omniplex.service
+journalctl --user -u omniplex.service -n 60 --no-pager -o cat
+```
+
+The code is good for 10 minutes and works once. Open `https://<host>.<tailnet>.ts.net` on the
+phone and enter it.
+
+Device tokens are scoped to one origin. If you pair over
+`http://100.x.y.z:8787` and later switch to the HTTPS name, that is a different
+origin and you pair again. Save yourself the second round and pair on the URL
+you intend to keep. Loopback needs no token, which is how a deploy script on the
+box reads `/api/health` without a pairing dance.
+
+### 6. Deploy new versions
+
+Repeat step 2 against a fresh checkout and restart the service. The only part
+worth automating carefully is the check afterwards. Do not check that the
+server answers, because a binary that fails to start leaves the previous one
+running and answering perfectly. Check the commit:
+
+```bash
+curl -fsS http://127.0.0.1:8787/api/health
+```
+
+Poll that until `commit` matches what you just built, and if it does not turn up
+within about 30 seconds, move the symlink back and restart. This repo's
+`.github/workflows/deploy.yml` does exactly that against a self-hosted runner on
+the box, including the rollback and pruning old releases. It is
+`workflow_dispatch` only, and that matters if you copy it: a self-hosted runner
+on the machine holding your harness credentials and Tailscale identity must
+never be triggerable by a pull request from a fork.
+
+### Restarts and sessions
+
+Restarting the server does not destroy a session. The event log is authoritative,
+so sessions come back and an in-flight turn is recorded as interrupted, then
+resumed on the next prompt. Worth knowing if you deploy from inside Omniplex
+itself, which drops the session you are sitting in. It restores itself and nudges
+the agent. Do not deploy a second time while that is happening.
+
 ## Relocating a project
 
 If a configured project directory has been moved or renamed, stop Omniplex and run:
