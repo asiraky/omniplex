@@ -1012,4 +1012,56 @@ describe("recent skills on an empty transcript", () => {
     expect(JSON.parse(localStorage.getItem("hy.recentSkills.v1:p1")!)).toEqual(["/beta"]);
     expect(localStorage.getItem("hy.recentSkills.v1:other")).toBeNull();
   });
+
+  it("waits for a newly provisioned session to be ready before loading skills", async () => {
+    viewport("desktop");
+    let catalogueRequests = 0;
+    command.mockImplementation(async (name: string) => {
+      if (name !== "list_composer_items") return {} as any;
+      catalogueRequests += 1;
+      return { items: catalogueRequests === 1 ? [] : catalogue };
+    });
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness], "/tmp/repo");
+      events.onSessions([session("fresh")]);
+    });
+    fireEvent.click(screen.getByText("Session fresh"));
+
+    await act(async () =>
+      events.onState("fresh", {
+        ...state("fresh", "default"),
+        phase: "provisioning",
+        workspace: { phase: "provisioning", projectId: "p1", projectRoot: "/tmp/repo" },
+      }),
+    );
+    expect(screen.queryByText("/alpha")).toBeNull();
+    expect(catalogueRequests).toBe(1);
+
+    await act(async () => events.onState("fresh", state("fresh", "default")));
+    expect(await screen.findByText("/alpha")).toBeTruthy();
+    expect(catalogueRequests).toBeGreaterThan(1);
+    expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "fresh" });
+  });
+});
+
+describe("attaching to a session", () => {
+  it("shows a centered loading state instead of the empty-session action", async () => {
+    viewport("desktop");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness], "/tmp/repo");
+      events.onSessions([session("a")]);
+    });
+
+    fireEvent.click(screen.getByText("Session a"));
+
+    expect(screen.getByText("Attaching to session…")).toBeTruthy();
+    expect(within(document.querySelector("main")!).queryByRole("button", { name: "New session" })).toBeNull();
+    expect(screen.getByText("Attaching to session…").parentElement?.getAttribute("aria-busy")).toBe(
+      "true",
+    );
+  });
 });

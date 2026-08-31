@@ -758,9 +758,12 @@ export function App() {
   });
   const projectId = meta?.projectId;
   // Only an empty transcript asks for this, so only an empty transcript pays
-  // for the catalogue fetch — and the moment anything arrives in the session
-  // the list is dropped rather than lingering behind the conversation.
-  const transcriptEmpty = !!state && state.items.length === 0;
+  // for the catalogue fetch. A newly provisioned session publishes empty
+  // snapshots before its harness is ready; asking during those snapshots can
+  // produce an empty catalogue that would otherwise stick until a session
+  // switch. Wait for the harness-backed idle/turn phase instead.
+  const transcriptEmpty =
+    !!state && state.items.length === 0 && (state.phase === "idle" || state.phase === "turn");
   useEffect(() => {
     if (!activeId || !transcriptEmpty) {
       setRecents((prev) => (prev.items.length === 0 ? prev : { items: [], seeded: false }));
@@ -1311,6 +1314,7 @@ export function App() {
         ) : (
           <EmptyState
             restoring={restoring}
+            attaching={!!activeId}
             hasSessions={sessions.length > 0}
             onNew={startNew}
           />
@@ -1449,10 +1453,12 @@ export function App() {
  */
 function EmptyState({
   restoring,
+  attaching,
   hasSessions,
   onNew,
 }: {
   restoring: boolean;
+  attaching: boolean;
   hasSessions: boolean;
   onNew: () => void;
 }) {
@@ -1463,6 +1469,17 @@ function EmptyState({
       <div className="flex flex-1 items-center justify-center" aria-busy="true">
         <span className="sr-only">Reopening your last session…</span>
         <Spinner className="text-muted-foreground/60 size-5" />
+      </div>
+    );
+  }
+
+  // Selecting clears the old snapshot before attaching to the new session.
+  // That gap is loading, not an invitation to create another session.
+  if (attaching) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 pb-16" aria-busy="true">
+        <Spinner className="text-muted-foreground/60 size-6" />
+        <p className="text-muted-foreground text-[13px]">Attaching to session…</p>
       </div>
     );
   }
