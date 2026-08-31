@@ -375,7 +375,21 @@ export function NewSession({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="new-session-model">Model</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="new-session-model">Model</Label>
+                {onLogin && instance?.canLogin && instance.availability.state === "ready" && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => onLogin(instance.id)}
+                  >
+                    <LogInIcon />
+                    Sign in again
+                  </Button>
+                )}
+              </div>
               {/* Harness and model in one control: choosing a model already
                   chooses the account it runs under, and a session cannot have
                   one without the other. */}

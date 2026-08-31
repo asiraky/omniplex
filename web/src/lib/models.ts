@@ -15,6 +15,7 @@ export interface PickerInstance {
   name: string;
   accent?: string;
   enabled: boolean;
+  canLogin: boolean;
   availability: Availability;
   models: ModelMeta[];
 }
@@ -47,6 +48,7 @@ export function pickerInstances(harnesses: HarnessMeta[]): PickerInstance[] {
         name: inst.displayName || h.name,
         accent: h.accent,
         enabled: inst.enabled !== false,
+        canLogin: inst.canLogin === true,
         availability: inst.availability ?? h.availability,
         // An instance that has not reported its own catalogue yet shows the
         // harness's, which is the same list in the one-account case.

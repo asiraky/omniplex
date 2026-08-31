@@ -12,6 +12,7 @@ import {
   DownloadIcon,
   FileTextIcon,
   GitMergeIcon,
+  LogInIcon,
   PencilIcon,
   SearchIcon,
   TerminalIcon,
@@ -780,7 +781,17 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
 // work is unfinished and nobody is coming back for it. The server retries by
 // itself after a restart, so this appears when that did not happen or did not
 // work — which is precisely when a human has to decide.
-function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => void }) {
+function InterruptedCard({
+  turn,
+  onContinue,
+  onLogin,
+  providerName,
+}: {
+  turn: Turn;
+  onContinue: () => void;
+  onLogin?: () => void;
+  providerName?: string;
+}) {
   const [sending, setSending] = useState(false);
   const error = turn.error ?? "";
   // The server says what kind of failure this was; reading the message for it
@@ -795,14 +806,19 @@ function InterruptedCard({ turn, onContinue }: { turn: Turn; onContinue: () => v
   if (needsLogin) {
     return (
       <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
-        <p className="text-[13px]">Claude is not signed in, so this turn could not run.</p>
-        <p className="text-muted-foreground mt-1.5 text-[12px]">
-          Use <span className="font-medium">Sign in</span> from the new-session dialog, run{" "}
-          <span className="font-mono">claude</span> in a terminal and use{" "}
-          <span className="font-mono">/login</span>, or give this provider instance a valid{" "}
-          <span className="font-mono">CLAUDE_CODE_OAUTH_TOKEN</span> or{" "}
-          <span className="font-mono">ANTHROPIC_API_KEY</span>. Then send the prompt again.
+        <p className="text-[13px]">
+          {providerName ?? "The provider"} is not signed in, so this turn could not run.
         </p>
+        <p className="text-muted-foreground mt-1.5 text-[12px]">
+          Sign in again, then send the prompt again. If this instance uses a configured credential,
+          replace that credential instead.
+        </p>
+        {onLogin && (
+          <Button size="sm" className="mt-2.5" onClick={onLogin}>
+            <LogInIcon />
+            Sign in again
+          </Button>
+        )}
       </div>
     );
   }
@@ -876,6 +892,8 @@ export function Transcript({
   onCleanup,
   onForceDelete,
   onContinue,
+  onLogin,
+  providerName,
   onOpenDiff,
   jobs = [],
   onOpenJobs,
@@ -904,6 +922,10 @@ export function Transcript({
   onCleanup: () => void;
   onForceDelete: () => void;
   onContinue: () => void;
+  /** Opens this session provider's interactive sign-in flow, when it has one. */
+  onLogin?: () => void;
+  /** The provider instance named in authentication failures. */
+  providerName?: string;
   onOpenDiff: (path?: string) => void;
   /** The session's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
@@ -1286,7 +1308,14 @@ export function Transcript({
               </div>
             )}
 
-          {interrupted && <InterruptedCard turn={interrupted} onContinue={onContinue} />}
+          {interrupted && (
+            <InterruptedCard
+              turn={interrupted}
+              onContinue={onContinue}
+              onLogin={onLogin}
+              providerName={providerName}
+            />
+          )}
 
           {(state.queuedPrompts ?? []).map((q) => (
             <QueuedCard key={q.queueId} queued={q} sessionId={state.sessionId} onDequeue={(id) => onDequeue?.(id)} />

@@ -570,6 +570,8 @@ export interface ProviderInstanceMeta {
   driver: string;
   displayName: string;
   enabled: boolean;
+  /** The server can run this provider's interactive sign-in flow. */
+  canLogin?: boolean;
   availability: Availability;
   models?: ModelMeta[];
 }

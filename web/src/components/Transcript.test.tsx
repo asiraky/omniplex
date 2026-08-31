@@ -404,11 +404,25 @@ describe("a turn that failed", () => {
     return s;
   };
 
-  it("tells a signed-out user how to fix it, and does not offer to continue", () => {
-    render(view(failed({ failure: "auth", error: "claude needs you to sign in again: …" })));
+  it("lets a signed-out user sign in from the failed session", () => {
+    const onLogin = vi.fn();
+    render(
+      <Transcript
+        state={failed({ failure: "auth", error: "claude needs you to sign in again: …" })}
+        onFinish={() => {}}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onLogin={onLogin}
+        providerName="Claude Code"
+        onOpenDiff={() => {}}
+      />,
+    );
 
-    expect(screen.getByText(/not signed in/i)).toBeTruthy();
-    expect(screen.getByText(/\/login/)).toBeTruthy();
+    expect(screen.getByText(/Claude Code is not signed in/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /sign in again/i }));
+    expect(onLogin).toHaveBeenCalledOnce();
     expect(screen.queryByText(/Continue where it left off/)).toBeNull();
     expect(screen.queryByText(/restart/i)).toBeNull();
   });
