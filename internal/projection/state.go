@@ -265,7 +265,13 @@ type State struct {
 	Closed           bool           `json:"closed"`
 	Workspace        WorkspaceState `json:"workspace"`
 
-	Items        []Item                    `json:"items"`
+	Items []Item `json:"items"`
+	// ItemsBefore is how many items were trimmed from the front of Items when
+	// this state was windowed for the wire (see Window). Zero on the actor's
+	// own state and on stored snapshots: only copies sent to a client carry a
+	// window, and the count doubles as the client's cursor for paging older
+	// items back in.
+	ItemsBefore  int                       `json:"itemsBefore,omitempty"`
 	Turns        []Turn                    `json:"turns"`
 	Jobs         []Job                     `json:"jobs"`
 	Plan         []proto.PlanEntry         `json:"plan"`

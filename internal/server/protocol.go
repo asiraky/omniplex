@@ -17,6 +17,16 @@ import (
 // ProtocolVersion is bumped when the wire format changes incompatibly.
 const ProtocolVersion = 1
 
+// How much of the timeline travels at once. A snapshot carries the newest
+// SnapshotItems top-level items — a few screenfuls past the fold — and each
+// scroll-up fetch adds PageItems more. Sized for a phone on flaky 4G: big
+// enough that paging is rare, small enough that opening a monster session is
+// not a multi-second download.
+const (
+	SnapshotItems = 100
+	PageItems     = 100
+)
+
 // Client → server frames.
 type clientFrame struct {
 	Type string `json:"type"`

@@ -469,6 +469,33 @@ export function App() {
     }
   }, []);
 
+  // The transcript asking for the page above its window. Fire-and-forget: the
+  // client dedups concurrent asks and publishes the merged state through the
+  // same onState path every other update takes.
+  const loadOlderItems = useCallback(() => {
+    void clientRef.current?.loadOlder();
+  }, []);
+
+  // Copying wants the whole timeline, and a windowed state only holds the
+  // tail — so pull the rest in first. What arrives stays loaded, which is
+  // exactly what a reader who just copied everything would expect. A failed
+  // fetch aborts the copy loudly: a truncated transcript that says "Copied"
+  // is a lie pasted somewhere the truncation won't be noticed.
+  const copyFullTranscript = useCallback(async () => {
+    let s = stateRef.current;
+    if (!s) return;
+    if ((s.itemsBefore ?? 0) > 0) {
+      const full = await clientRef.current?.loadAll();
+      if (!full) {
+        toast.error("Could not load the full transcript to copy");
+        return;
+      }
+      s = full;
+    }
+    await copyTranscript(transcriptMarkdown(s.items, s.turns));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [copyTranscript]);
+
   // Opening the panel summarises only if there is nothing to show yet. Asking
   // again is a button, not a side effect of looking.
   const openSummary = useCallback(() => {
@@ -1132,7 +1159,7 @@ export function App() {
 
                   <IconButton
                     label={transcriptCopied ? "Transcript copied" : "Copy transcript"}
-                    onClick={() => void copyTranscript(transcriptMarkdown(state.items, state.turns))}
+                    onClick={() => void copyFullTranscript()}
                   >
                     {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                   </IconButton>
@@ -1186,7 +1213,7 @@ export function App() {
                       <SparklesIcon /> Summarise session
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onSelect={() => void copyTranscript(transcriptMarkdown(state.items, state.turns))}
+                      onSelect={() => void copyFullTranscript()}
                     >
                       {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                       {transcriptCopied ? "Transcript copied" : "Copy transcript"}
@@ -1248,7 +1275,7 @@ export function App() {
             <div className="from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b to-transparent" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
+              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the

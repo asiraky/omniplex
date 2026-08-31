@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/overlay"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
 )
@@ -193,6 +195,12 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// The tail is what a presenter needs on screen; the rest arrives via
+		// /items as the reader scrolls up. ?items=all is the escape hatch for
+		// a caller that really wants the whole timeline in one response.
+		if r.URL.Query().Get("items") != "all" {
+			state.Window(SnapshotItems)
+		}
 		payload, err := json.Marshal(state)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -200,8 +208,38 @@ func (s *Server) Handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(payload)
-		s.logf("session_snapshot session=%s duration_ms=%d payload_bytes=%d turns=%d",
-			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns))
+		s.logf("session_snapshot session=%s duration_ms=%d payload_bytes=%d turns=%d items=%d items_before=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns), len(state.Items), state.ItemsBefore)
+	})
+
+	// The page of timeline items older than the client's window. `before` is
+	// the cursor the last response handed back (ItemsBefore); the reply's
+	// itemsBefore is the next one, zero meaning the top has been reached.
+	mux.HandleFunc("GET /api/sessions/{id}/items", func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		before, err := strconv.Atoi(r.URL.Query().Get("before"))
+		if err != nil || before < 0 {
+			http.Error(w, "before must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		state, err := actor.State(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		count := PageItems
+		if r.URL.Query().Get("count") == "all" {
+			count = len(state.Items)
+		}
+		page, start := projection.WindowBefore(state.Items, before, count)
+		writeJSON(w, map[string]any{"items": page, "itemsBefore": start})
+		s.logf("session_items session=%s duration_ms=%d before=%d items=%d items_before=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), before, len(page), start)
 	})
 
 	// Directory browsing, so the UI can pick a working directory.

@@ -237,7 +237,7 @@ Testable, each mapped to a real failure.
 3. **Single writer.** At most one process holds a session's lease; fenced-out writers abort before appending.
 4. **At-least-once, idempotent apply.** Applying an event twice is a no-op; clients discard `seq <= lastApplied`.
 5. **Command idempotency.** The same `commandId` executes at most once.
-6. **Attach completeness.** After `synchronized`, client state equals server state as of that seq — no event skipped or duplicated across the snapshot/replay/live seam.
+6. **Attach completeness.** After `synchronized`, client state equals server state as of that seq — no event skipped or duplicated across the snapshot/replay/live seam. One carve-out: a snapshot's timeline items are windowed to the newest page for the wire, with `itemsBefore` counting what was trimmed; the trimmed items are display history, reachable via `GET /api/sessions/{id}/items`, and every other field is complete as of that seq.
 7. **Nothing lives in a connection.** Every piece of state a UI needs is reconstructible from the log, pending permissions and elicitations included.
 8. **Disconnect is not cancel.** Losing every client does not interrupt a turn. Only an explicit cancel does.
 9. **Permission fungibility.** Any attached presenter may resolve any pending request. First resolution wins; losers get an `already_resolved` ack, not an error.

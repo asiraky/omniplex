@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, HarnessMeta, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
+import type { Access, HarnessMeta, Item, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -147,6 +147,74 @@ export class Client {
         if (this.snapshotRequest === request) this.snapshotRequest = null;
       });
   }
+
+  /**
+   * Fetch the page of items above the loaded window and prepend it, publishing
+   * the merged state. `count: "all"` pulls everything left — the copy-transcript
+   * path, which needs the whole timeline at once. Resolves with the merged
+   * state, or null when there was nothing to do or the page went stale.
+   *
+   * Staleness is judged by the cursor: the window is a contiguous suffix, live
+   * events only ever append to it, so the cursor moves only when a snapshot
+   * replaces the state (resync, reattach) — and a page fetched against the old
+   * cursor must then be dropped rather than spliced into the wrong place.
+   */
+  loadOlder(count?: "all"): Promise<SessionState | null> {
+    if (this.olderInFlight) return count === "all" ? this.olderInFlight : Promise.resolve(null);
+    const request = this.fetchOlder(count).finally(() => (this.olderInFlight = null));
+    this.olderInFlight = request;
+    return request;
+  }
+
+  /**
+   * Pull every remaining older page in, for the paths that need the whole
+   * timeline at once (copying it out). Resolves null on failure — the caller
+   * must not pretend a truncated timeline is the whole thing.
+   */
+  async loadAll(): Promise<SessionState | null> {
+    // Loop rather than trusting one round trip: an ordinary scroll page may be
+    // in flight when this starts, and loadOlder then resolves with *that*
+    // page's merge, which is not yet everything.
+    while (this.state && (this.state.itemsBefore ?? 0) > 0) {
+      if ((await this.loadOlder("all")) === null) return null;
+    }
+    return this.state;
+  }
+
+  private async fetchOlder(count?: "all"): Promise<SessionState | null> {
+    const s = this.state;
+    const before = s?.itemsBefore ?? 0;
+    if (!s || before === 0) return null;
+    try {
+      const query = count === "all" ? `before=${before}&count=all` : `before=${before}`;
+      const response = await fetch(
+        `/api/sessions/${encodeURIComponent(s.sessionId)}/items?${query}`,
+      );
+      if (!response.ok) throw new Error(`items page failed (${response.status})`);
+      const page = (await response.json()) as { items: Item[]; itemsBefore: number };
+      const cur = this.state;
+      // The cursor is the contiguity check: live events only append, so it
+      // moves only when a snapshot replaced the state (resync, reattach) — and
+      // a page fetched against the old cursor would splice in the wrong place.
+      if (!cur || cur.sessionId !== s.sessionId || (cur.itemsBefore ?? 0) !== before) return null;
+      // A straggling event for a trimmed item is dropped rather than applied
+      // (see apply.ts), but belt and braces: never prepend an id the window
+      // already holds — duplicate ids break rendering outright.
+      const have = new Set(cur.items.map((it) => it.id));
+      const next: SessionState = {
+        ...cur,
+        items: [...(page.items ?? []).filter((it) => !have.has(it.id)), ...cur.items],
+        itemsBefore: page.itemsBefore,
+      };
+      this.state = next;
+      this.events.onState(next.sessionId, next);
+      return next;
+    } catch (error) {
+      console.warn("loading older items failed", error);
+      return null;
+    }
+  }
+  private olderInFlight: Promise<SessionState | null> | null = null;
 
   detach() {
     this.snapshotRequest?.abort();
