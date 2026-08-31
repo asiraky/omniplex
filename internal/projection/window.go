@@ -54,8 +54,23 @@ func windowStart(items []Item, end, maxTop int) int {
 		}
 		start--
 	}
-	for start > 0 && items[start].TurnID != "" && items[start-1].TurnID == items[start].TurnID {
-		start--
+	if start == 0 || start >= len(items) {
+		return start
+	}
+	// A compaction notice has no turn and can land mid-turn, so the walk hops
+	// over turnless runs: if what lies beyond one is the same turn, the notice
+	// and everything back to the turn's start come along. If it is a different
+	// turn — the notice sat between turns — the walk stops and leaves it out.
+	t := items[start].TurnID
+	for start > 0 && t != "" {
+		j := start - 1
+		for j >= 0 && items[j].TurnID == "" {
+			j--
+		}
+		if j < 0 || items[j].TurnID != t {
+			break
+		}
+		start = j
 	}
 	return start
 }

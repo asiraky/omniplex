@@ -280,6 +280,15 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
       };
 
     case "tool_call.updated":
+      // A straggler for a call that was windowed out of the transcript — a
+      // background tool finishing long after its turn scrolled away. Upserting
+      // would append an orphan at the tail, and paging that history back in
+      // would then prepend the original under the same id. The server has
+      // already folded this event, so the page fetch delivers the updated
+      // item; here only the cursor moves.
+      if ((s.itemsBefore ?? 0) > 0 && !s.items.some((it) => it.id === p.toolCallId)) {
+        return s;
+      }
       return {
         ...s,
         // Same defence as message.chunk, but only for a tool going active: a

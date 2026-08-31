@@ -48,6 +48,37 @@ func TestWindowDoesNotCountChildren(t *testing.T) {
 	}
 }
 
+func TestWindowHopsMidTurnNotices(t *testing.T) {
+	s := New("s")
+	s.Items = []Item{
+		item("a", "t1", ""),
+		item("b", "t2", ""),
+		item("compact", "", ""), // mid-turn compaction notice, no turn id
+		item("c", "t2", ""),
+		item("d", "t2", ""),
+	}
+	s.Window(2)
+	// c and d are the two top-level items; the boundary walk hops the notice
+	// and pulls the whole of t2 in rather than splitting it there.
+	if s.ItemsBefore != 1 || s.Items[0].ID != "b" {
+		t.Fatalf("before=%d window=%v", s.ItemsBefore, ids(s.Items))
+	}
+}
+
+func TestWindowLeavesBetweenTurnNoticesOut(t *testing.T) {
+	s := New("s")
+	s.Items = []Item{
+		item("a", "t1", ""),
+		item("compact", "", ""), // between turns
+		item("b", "t2", ""),
+		item("c", "t2", ""),
+	}
+	s.Window(2)
+	if s.ItemsBefore != 2 || s.Items[0].ID != "b" {
+		t.Fatalf("before=%d window=%v", s.ItemsBefore, ids(s.Items))
+	}
+}
+
 func TestWindowBeforePages(t *testing.T) {
 	items := []Item{
 		item("a", "t1", ""), item("b", "t1", ""),

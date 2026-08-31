@@ -1009,14 +1009,27 @@ export function Transcript({
     const sentinel = sentinelRef.current;
     const root = scrollerRef.current;
     if (!hasOlder || !sentinel || !root || typeof IntersectionObserver === "undefined") return;
+    let visible = false;
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) onLoadOlderRef.current?.();
+        visible = entries.some((e) => e.isIntersecting);
+        if (visible) onLoadOlderRef.current?.();
       },
       { root, rootMargin: "800px 0px 0px 0px" },
     );
     io.observe(sentinel);
-    return () => io.disconnect();
+    // An observer reports crossings, and a failed page is not one: the fetch
+    // dies, itemsBefore never changes, the sentinel just sits there inside the
+    // margin and the spinner spins forever. While it is visible, keep asking —
+    // the client dedups in-flight requests, so on the happy path this is a
+    // handful of no-ops and on the sad path it is the retry.
+    const retry = window.setInterval(() => {
+      if (visible) onLoadOlderRef.current?.();
+    }, 3000);
+    return () => {
+      io.disconnect();
+      window.clearInterval(retry);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasOlder, state.itemsBefore]);
 

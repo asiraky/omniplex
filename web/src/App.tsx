@@ -478,12 +478,19 @@ export function App() {
 
   // Copying wants the whole timeline, and a windowed state only holds the
   // tail — so pull the rest in first. What arrives stays loaded, which is
-  // exactly what a reader who just copied everything would expect.
+  // exactly what a reader who just copied everything would expect. A failed
+  // fetch aborts the copy loudly: a truncated transcript that says "Copied"
+  // is a lie pasted somewhere the truncation won't be noticed.
   const copyFullTranscript = useCallback(async () => {
     let s = stateRef.current;
     if (!s) return;
     if ((s.itemsBefore ?? 0) > 0) {
-      s = (await clientRef.current?.loadOlder("all")) ?? s;
+      const full = await clientRef.current?.loadAll();
+      if (!full) {
+        toast.error("Could not load the full transcript to copy");
+        return;
+      }
+      s = full;
     }
     await copyTranscript(transcriptMarkdown(s.items, s.turns));
     // eslint-disable-next-line react-hooks/exhaustive-deps
