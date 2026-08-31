@@ -868,6 +868,8 @@ function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; se
 
 export function Transcript({
   state,
+  hasOlder = false,
+  onLoadOlder,
   initialScroll,
   onScrollChange,
   onRetryProvision,
@@ -885,6 +887,11 @@ export function Transcript({
   onDequeue,
 }: {
   state: SessionState;
+  /** True when the server holds items older than the loaded window. */
+  hasOlder?: boolean;
+  /** Asks for the page above the window; called as the reader nears the top.
+      Idempotent and fire-and-forget — the caller dedups in-flight asks. */
+  onLoadOlder?: () => void;
   /** Where this session was last scrolled — the position the parent kept from
       the previous time this session was open, or the one a resumed page saved
       as it went to background (resume.ts). Applied once, on mount. */
@@ -947,6 +954,71 @@ export function Transcript({
   }, []);
 
   useLayoutEffect(stick, [stick, state.items, state.seq]);
+
+  // Older pages prepend above the reader, and without correction the view
+  // would stay at the same scrollTop — which is now a page higher in the
+  // conversation than where they were reading. The correction needs the
+  // scroller's height from *before* the prepend, and the tail can grow between
+  // React commits (text streams outside React's knowledge), so the height is
+  // tracked continuously by a ResizeObserver rather than sampled per render.
+  // Observer callbacks fire after layout effects, so at the moment the prepend
+  // effect below runs, lastHeight still holds the pre-prepend height.
+  const lastHeight = useRef(0);
+  useEffect(() => {
+    const el = scrollerRef.current;
+    const content = contentRef.current;
+    if (!el || !content || typeof ResizeObserver === "undefined") return;
+    lastHeight.current = el.scrollHeight;
+    const ro = new ResizeObserver(() => {
+      lastHeight.current = el.scrollHeight;
+    });
+    ro.observe(content, { box: "border-box" });
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // A prepend is a drop in itemsBefore together with a new first item; a
+  // snapshot replacing the state wholesale changes seq too and is left to the
+  // pin/restore logic, not treated as reading history.
+  const prevItemsBefore = useRef(state.itemsBefore ?? 0);
+  const prevFirstItem = useRef(state.items[0]?.id);
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    const before = state.itemsBefore ?? 0;
+    const prepended = before < prevItemsBefore.current && state.items[0]?.id !== prevFirstItem.current;
+    prevItemsBefore.current = before;
+    prevFirstItem.current = state.items[0]?.id;
+    if (!el || !prepended) return;
+    const delta = el.scrollHeight - lastHeight.current;
+    if (delta > 0) el.scrollTop += delta;
+    lastHeight.current = el.scrollHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.items, state.itemsBefore]);
+
+  // The trigger: a sentinel at the top of the content, watched against the
+  // scroller with a margin so the fetch starts before the reader hits the
+  // edge. Reconnected each time a page lands (itemsBefore changes), because an
+  // observer only reports crossings — after a short page the sentinel can
+  // still be inside the margin, and re-observing is what re-fires it.
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const onLoadOlderRef = useRef(onLoadOlder);
+  useEffect(() => {
+    onLoadOlderRef.current = onLoadOlder;
+  }, [onLoadOlder]);
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const root = scrollerRef.current;
+    if (!hasOlder || !sentinel || !root || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onLoadOlderRef.current?.();
+      },
+      { root, rootMargin: "800px 0px 0px 0px" },
+    );
+    io.observe(sentinel);
+    return () => io.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasOlder, state.itemsBefore]);
 
   // The other half of resume.ts: as the page goes to background — the moment
   // a mobile browser may discard the tab — save the state and where it was
@@ -1097,7 +1169,11 @@ export function Transcript({
         className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
         // So a programmatic scrollIntoView lands the target above the floating
         // composer rather than behind it, matching the padding below.
-        style={{ scrollPaddingBottom: TAIL_RESERVE }}
+        // overflow-anchor is off because prepending older pages is corrected
+        // by hand above — Chrome's native anchoring would correct it too and
+        // the view would jump a page down, while Safari has no native
+        // anchoring at all. One mechanism, ours, on every browser.
+        style={{ scrollPaddingBottom: TAIL_RESERVE, overflowAnchor: "none" }}
       >
         {/* The floating composer overlays the tail, so the content reserves
             real room below it — its measured height plus headroom — and grows
@@ -1114,6 +1190,17 @@ export function Transcript({
             onCleanup={onCleanup}
             onForceDelete={onForceDelete}
           />
+          {/* The top of the loaded window, not of the conversation: scrolling
+              up to here fetches the page above (the observer's margin means
+              the fetch usually starts before this row is even seen). */}
+          {hasOlder && (
+            <div
+              ref={sentinelRef}
+              className="text-muted-foreground flex items-center justify-center gap-2 py-3 text-[13px]"
+            >
+              <Spinner className="size-3.5" /> Loading earlier…
+            </div>
+          )}
           {/* The empty state used to hide behind any workspace phase at all,
               which left a dismissed-but-ready workspace showing nothing
               whatever. It only needs to stand aside while the provisioner is

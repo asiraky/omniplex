@@ -209,6 +209,11 @@ func (c *conn) attach(f clientFrame) {
 	switch res.Kind {
 	case session.AttachSnapshot:
 		state := res.Snapshot
+		// Same window as the HTTP snapshot: this branch is the fallback for
+		// exactly the sessions too big to replay, so sending the whole
+		// timeline here would undo the trim where it matters most. The
+		// snapshot is a clone; windowing it touches nobody else's state.
+		state.Window(SnapshotItems)
 		payloadBytes += c.send(serverFrame{Type: "snapshot", SessionID: f.SessionID, Seq: res.Seq, State: state})
 	default:
 		for i := range res.Events {

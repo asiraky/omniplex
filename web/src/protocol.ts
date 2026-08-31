@@ -262,6 +262,11 @@ export interface SessionState {
   closed: boolean;
   workspace: WorkspaceState;
   items: Item[];
+  /** How many items sit above `items` on the server: snapshots carry only the
+      tail of a long timeline, and this doubles as the cursor for fetching the
+      page above (GET /api/sessions/{id}/items?before=N). Zero or absent means
+      the timeline is complete. */
+  itemsBefore?: number;
   turns: Turn[];
   jobs: Job[];
   plan: PlanEntry[];

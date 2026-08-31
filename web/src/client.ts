@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, HarnessMeta, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
+import type { Access, HarnessMeta, Item, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -147,6 +147,48 @@ export class Client {
         if (this.snapshotRequest === request) this.snapshotRequest = null;
       });
   }
+
+  /**
+   * Fetch the page of items above the loaded window and prepend it, publishing
+   * the merged state. `count: "all"` pulls everything left — the copy-transcript
+   * path, which needs the whole timeline at once. Resolves with the merged
+   * state, or null when there was nothing to do or the page went stale.
+   *
+   * Staleness is judged by the cursor: the window is a contiguous suffix, live
+   * events only ever append to it, so the cursor moves only when a snapshot
+   * replaces the state (resync, reattach) — and a page fetched against the old
+   * cursor must then be dropped rather than spliced into the wrong place.
+   */
+  async loadOlder(count?: "all"): Promise<SessionState | null> {
+    const s = this.state;
+    const before = s?.itemsBefore ?? 0;
+    if (!s || before === 0 || this.loadingOlder) return null;
+    this.loadingOlder = true;
+    try {
+      const query = count === "all" ? `before=${before}&count=all` : `before=${before}`;
+      const response = await fetch(
+        `/api/sessions/${encodeURIComponent(s.sessionId)}/items?${query}`,
+      );
+      if (!response.ok) throw new Error(`items page failed (${response.status})`);
+      const page = (await response.json()) as { items: Item[]; itemsBefore: number };
+      const cur = this.state;
+      if (!cur || cur.sessionId !== s.sessionId || (cur.itemsBefore ?? 0) !== before) return null;
+      const next: SessionState = {
+        ...cur,
+        items: [...(page.items ?? []), ...cur.items],
+        itemsBefore: page.itemsBefore,
+      };
+      this.state = next;
+      this.events.onState(next.sessionId, next);
+      return next;
+    } catch (error) {
+      console.warn("loading older items failed", error);
+      return null;
+    } finally {
+      this.loadingOlder = false;
+    }
+  }
+  private loadingOlder = false;
 
   detach() {
     this.snapshotRequest?.abort();
