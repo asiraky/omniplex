@@ -53,6 +53,17 @@ const harness = {
   models: [],
   permissionModes: [],
   availability: { state: "ready" },
+  instances: [
+    {
+      id: "claude",
+      driver: "claude",
+      displayName: "Claude Code",
+      enabled: true,
+      canLogin: true,
+      availability: { state: "ready" },
+      models: [],
+    },
+  ],
 } as any;
 
 const session = (id: string): SessionMeta =>
@@ -171,9 +182,25 @@ describe("session actions on a phone", () => {
     expect(screen.getByRole("menuitem", { name: "Open panel" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Summarise session" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy transcript" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Sign in again to Claude Code" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "repo settings" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Label session" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: /diff/i })).toBeNull();
+  });
+
+  it("keeps provider sign-in available while the session is attaching", async () => {
+    viewport("phone");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness], "/tmp/repo");
+      events.onSessions([session("a")]);
+    });
+
+    fireEvent.click(screen.getByText("Session a"));
+
+    expect(screen.getByText("Attaching…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in again to Claude Code" })).toBeTruthy();
   });
 
   it("opens the whole panel directly, with terminal available from its surface menu", async () => {

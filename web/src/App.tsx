@@ -50,6 +50,7 @@ import {
   CoffeeIcon,
   CopyIcon,
   EllipsisIcon,
+  LogInIcon,
   MessagesSquareIcon,
   PanelLeftIcon,
   PanelRightIcon,
@@ -1167,6 +1168,15 @@ export function App() {
                     {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                   </IconButton>
 
+                  {activeProviderInstance?.canLogin && (
+                    <IconButton
+                      label={`Sign in again to ${activeProviderInstance.displayName}`}
+                      onClick={() => setLoginInstance(activeProviderInstance.id)}
+                    >
+                      <LogInIcon />
+                    </IconButton>
+                  )}
+
                   {activeProject && (
                     <IconButton
                       label={`${activeProject.config.name} settings`}
@@ -1221,6 +1231,11 @@ export function App() {
                       {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                       {transcriptCopied ? "Transcript copied" : "Copy transcript"}
                     </DropdownMenuItem>
+                    {activeProviderInstance?.canLogin && (
+                      <DropdownMenuItem onSelect={() => setLoginInstance(activeProviderInstance.id)}>
+                        <LogInIcon /> Sign in again to {activeProviderInstance.displayName}
+                      </DropdownMenuItem>
+                    )}
                     {activeProject && (
                       <>
                         <DropdownMenuSeparator />
@@ -1265,9 +1280,19 @@ export function App() {
 
             </>
           ) : (
-            <span className="text-muted-foreground flex-1 text-[13px]">
-              {meta ? "Attaching…" : ""}
-            </span>
+            <>
+              <span className="text-muted-foreground flex-1 text-[13px]">
+                {meta ? "Attaching…" : ""}
+              </span>
+              {activeProviderInstance?.canLogin && (
+                <IconButton
+                  label={`Sign in again to ${activeProviderInstance.displayName}`}
+                  onClick={() => setLoginInstance(activeProviderInstance.id)}
+                >
+                  <LogInIcon />
+                </IconButton>
+              )}
+            </>
           )}
         </header>
 
