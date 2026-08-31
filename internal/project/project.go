@@ -12,12 +12,21 @@ import (
 const ConfigPath = ".omniplex/project.json"
 
 type Defaults struct {
-	Harness    string `json:"harness,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Effort     string `json:"effort,omitempty"`
-	Mode       string `json:"mode,omitempty"`
-	Workspace  string `json:"workspace,omitempty"`
-	BaseBranch string `json:"baseBranch,omitempty"`
+	Harness    string                     `json:"harness,omitempty"`
+	Harnesses  map[string]HarnessDefaults `json:"harnesses,omitempty"`
+	Workspace  string                     `json:"workspace,omitempty"`
+	BaseBranch string                     `json:"baseBranch,omitempty"`
+	// Legacy scalar agent defaults are read only long enough to move existing
+	// version-1 project files into the selected harness's profile.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+}
+
+type HarnessDefaults struct {
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	Mode   string `json:"mode,omitempty"`
 }
 
 type Workspace struct {
@@ -76,6 +85,17 @@ func Normalize(root string, cfg Config) (Config, error) {
 	}
 	if cfg.Defaults.Workspace == "" {
 		cfg.Defaults.Workspace = "local"
+	}
+	if cfg.Defaults.Harnesses == nil {
+		cfg.Defaults.Harnesses = make(map[string]HarnessDefaults)
+	}
+	if cfg.Defaults.Harness != "" && (cfg.Defaults.Model != "" || cfg.Defaults.Effort != "" || cfg.Defaults.Mode != "") {
+		if _, exists := cfg.Defaults.Harnesses[cfg.Defaults.Harness]; !exists {
+			cfg.Defaults.Harnesses[cfg.Defaults.Harness] = HarnessDefaults{
+				Model: cfg.Defaults.Model, Effort: cfg.Defaults.Effort, Mode: cfg.Defaults.Mode,
+			}
+		}
+		cfg.Defaults.Model, cfg.Defaults.Effort, cfg.Defaults.Mode = "", "", ""
 	}
 	if cfg.Workspace.SuggestedRoot == "" {
 		cfg.Workspace.SuggestedRoot = ".worktrees"

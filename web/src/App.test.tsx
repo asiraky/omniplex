@@ -42,7 +42,7 @@ const project = {
   root: "/tmp/repo",
   config: {
     name: "repo",
-    defaults: { harness: "claude", model: "", mode: "", workspace: "local" },
+    defaults: { harness: "claude", harnesses: {}, workspace: "local" },
     workspace: {},
   },
 } as any;

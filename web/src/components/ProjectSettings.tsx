@@ -336,13 +336,16 @@ export function ProjectSettings({
     project?.config ?? {
       version: 1,
       name: "",
-      defaults: { harness: "codex", workspace: "local" },
+      defaults: { harness: "codex", harnesses: {}, workspace: "local" },
       workspace: {
         suggestedRoot: ".worktrees",
         provisionTimeoutSeconds: 1800,
         deprovisionTimeoutSeconds: 600,
       },
     },
+  );
+  const [settingsHarness, setSettingsHarness] = useState(
+    project?.config.defaults.harness ?? "codex",
   );
   const [user, setUser] = useState<UserConfig>(userConfig ?? { version: 1 });
   const [busy, setBusy] = useState(false);
@@ -366,6 +369,13 @@ export function ProjectSettings({
 
   const defaults = (patch: Partial<ProjectConfig["defaults"]>) =>
     setCfg({ ...cfg, defaults: { ...cfg.defaults, ...patch } });
+  const agentDefaults = (patch: Partial<NonNullable<ProjectConfig["defaults"]["harnesses"]>[string]>) =>
+    defaults({
+      harnesses: {
+        ...cfg.defaults.harnesses,
+        [settingsHarness]: { ...cfg.defaults.harnesses?.[settingsHarness], ...patch },
+      },
+    });
   const workspace = (patch: Partial<ProjectConfig["workspace"]>) =>
     setCfg({ ...cfg, workspace: { ...cfg.workspace, ...patch } });
 
@@ -431,9 +441,22 @@ export function ProjectSettings({
                     </SelectContent>
                   </Select>
 
+                  <Select value={settingsHarness} onValueChange={setSettingsHarness}>
+                    <SelectTrigger aria-label="Harness settings" className="w-full">
+                      <SelectValue placeholder="Settings for harness" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {harnesses.map((h) => (
+                        <SelectItem key={h.id} value={h.id}>
+                          {h.name} settings
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
                   <Select
-                    value={cfg.defaults.model || UNSET}
-                    onValueChange={(v) => defaults({ model: v === UNSET ? "" : v })}
+                    value={cfg.defaults.harnesses?.[settingsHarness]?.model || UNSET}
+                    onValueChange={(v) => agentDefaults({ model: v === UNSET ? "" : v })}
                   >
                     <SelectTrigger aria-label="Default model" className="w-full">
                       <SelectValue />
@@ -442,7 +465,7 @@ export function ProjectSettings({
                       <SelectItem value={UNSET}>Default model</SelectItem>
                       {(() => {
                         const models =
-                          harnesses.find((h) => h.id === (cfg.defaults.harness ?? ""))?.models ??
+                          harnesses.find((h) => h.id === settingsHarness)?.models ??
                           [];
                         const items = models.map((m) => (
                           <SelectItem key={m.id} value={m.id}>
@@ -454,10 +477,11 @@ export function ProjectSettings({
                         ));
                         // A saved model the current harness list does not know
                         // still renders, verbatim, rather than vanishing.
-                        if (cfg.defaults.model && !models.some((m) => m.id === cfg.defaults.model)) {
+                        const saved = cfg.defaults.harnesses?.[settingsHarness]?.model;
+                        if (saved && !models.some((m) => m.id === saved)) {
                           items.push(
-                            <SelectItem key={cfg.defaults.model} value={cfg.defaults.model}>
-                              {cfg.defaults.model}
+                            <SelectItem key={saved} value={saved}>
+                              {saved}
                             </SelectItem>,
                           );
                         }
@@ -467,8 +491,8 @@ export function ProjectSettings({
                   </Select>
 
                   <Select
-                    value={cfg.defaults.effort || UNSET}
-                    onValueChange={(v) => defaults({ effort: v === UNSET ? "" : v })}
+                    value={cfg.defaults.harnesses?.[settingsHarness]?.effort || UNSET}
+                    onValueChange={(v) => agentDefaults({ effort: v === UNSET ? "" : v })}
                   >
                     <SelectTrigger aria-label="Default effort" className="w-full">
                       <SelectValue />
@@ -477,7 +501,7 @@ export function ProjectSettings({
                       <SelectItem value={UNSET}>Default effort</SelectItem>
                       {/* Efforts are per model, so the list is what the default
                           harness's models actually accept. */}
-                      {effortsOf(harnesses, cfg.defaults.harness ?? "").map((e) => (
+                      {effortsOf(harnesses, settingsHarness).map((e) => (
                         <SelectItem key={e} value={e}>
                           {formatEffort(e)}
                         </SelectItem>
@@ -487,8 +511,8 @@ export function ProjectSettings({
 
                   {/* Modes belong to the default harness; the list follows it. */}
                   <Select
-                    value={cfg.defaults.mode || UNSET}
-                    onValueChange={(v) => defaults({ mode: v === UNSET ? "" : v })}
+                    value={cfg.defaults.harnesses?.[settingsHarness]?.mode || UNSET}
+                    onValueChange={(v) => agentDefaults({ mode: v === UNSET ? "" : v })}
                   >
                     <SelectTrigger aria-label="Default permission mode" className="w-full">
                       <SelectValue />
@@ -497,7 +521,7 @@ export function ProjectSettings({
                       <SelectItem value={UNSET}>Default permissions</SelectItem>
                       {(() => {
                         const modes =
-                          harnesses.find((h) => h.id === (cfg.defaults.harness ?? ""))
+                          harnesses.find((h) => h.id === settingsHarness)
                             ?.permissionModes ?? [];
                         const items = modes.map((m) => (
                           <SelectItem key={m.id} value={m.id}>
@@ -506,10 +530,11 @@ export function ProjectSettings({
                         ));
                         // A saved mode the current harness list does not know
                         // still renders, verbatim, rather than vanishing.
-                        if (cfg.defaults.mode && !modes.some((m) => m.id === cfg.defaults.mode)) {
+                        const saved = cfg.defaults.harnesses?.[settingsHarness]?.mode;
+                        if (saved && !modes.some((m) => m.id === saved)) {
                           items.push(
-                            <SelectItem key={cfg.defaults.mode} value={cfg.defaults.mode}>
-                              {cfg.defaults.mode}
+                            <SelectItem key={saved} value={saved}>
+                              {saved}
                             </SelectItem>,
                           );
                         }
@@ -532,8 +557,8 @@ export function ProjectSettings({
                   </Select>
                 </div>
                 <p className="text-muted-foreground text-[11px]">
-                  Defaults only preselect the new-session dialog. Every session can still be started
-                  any other way.
+                  The default harness opens first. Switching harness restores this project's model,
+                  effort and permissions for that harness.
                 </p>
               </div>
 

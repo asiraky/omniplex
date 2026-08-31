@@ -11,7 +11,7 @@ const project = {
   root: "/tmp/repo",
   config: {
     name: "repo",
-    defaults: { harness: "claude", model: "", mode: "", workspace: "managed" },
+    defaults: { harness: "claude", harnesses: {}, workspace: "managed" },
     workspace: {},
   },
 } as unknown as Project;
@@ -128,7 +128,7 @@ describe("NewSession", () => {
             // that needs nothing else named before Start is live.
             defaults: {
               ...project.config.defaults,
-              mode: "bypassPermissions",
+              harnesses: { claude: { mode: "bypassPermissions" } },
               workspace: "local",
             },
           },
@@ -159,7 +159,7 @@ describe("NewSession", () => {
     );
   });
 
-  it("does not send another harness's project mode after the model changes", async () => {
+  it("restores this project's settings for the harness selected", async () => {
     const onCreate = vi.fn(async (_input: NewSessionInput) => {});
     const ready = { state: "ready" } as const;
     const claude = {
@@ -195,7 +195,14 @@ describe("NewSession", () => {
           displayName: "Codex",
           enabled: true,
           availability: ready,
-          models: [{ id: "gpt-5.6-sol", label: "GPT-5.6-Sol", default: true }],
+          models: [
+            {
+              id: "gpt-5.6-sol",
+              label: "GPT-5.6-Sol",
+              default: true,
+              efforts: ["high", "xhigh"],
+            },
+          ],
         },
       ],
     } as unknown as HarnessMeta;
@@ -208,7 +215,10 @@ describe("NewSession", () => {
             defaults: {
               ...project.config.defaults,
               harness: "claude",
-              mode: "bypassPermissions",
+              harnesses: {
+                claude: { mode: "bypassPermissions" },
+                codex: { model: "gpt-5.6-sol", mode: "full-access", effort: "xhigh" },
+              },
               workspace: "local",
             },
           },
@@ -225,15 +235,13 @@ describe("NewSession", () => {
     const model = await waitFor(() => screen.getByText("GPT-5.6-Sol"));
     fireEvent.click(model.closest("[data-slot='command-item']")!);
 
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe(
-      "Ask when needed",
-    );
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
     const start = screen.getByRole("button", { name: "Start" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ harness: "codex", mode: "" }),
+      expect.objectContaining({ harness: "codex", mode: "full-access", effort: "xhigh" }),
     );
   });
 
@@ -248,7 +256,13 @@ describe("NewSession", () => {
     const withDefault = (mode: string) =>
       ({
         ...project,
-        config: { ...project.config, defaults: { ...project.config.defaults, mode } },
+        config: {
+          ...project.config,
+          defaults: {
+            ...project.config.defaults,
+            harnesses: { claude: { mode } },
+          },
+        },
       }) as unknown as Project;
 
     open({ projects: [withDefault("default")], harnesses: [withModes] });

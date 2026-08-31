@@ -34,6 +34,9 @@ export interface NewSessionInput {
   instance: string;
   model: string;
   mode: string;
+  effort: string;
+  /** Empty agent fields are deliberate harness defaults, not omitted values. */
+  agentSettingsExplicit: boolean;
   branch: string;
   workspace: string;
   workspacePath: string;
@@ -114,6 +117,7 @@ export function NewSession({
   // under, so there is nothing to keep in step.
   const [chosen, setChosen] = useState<ModelSelection | null>(null);
   const [chosenMode, setChosenMode] = useState("");
+  const [chosenEffort, setChosenEffort] = useState<string | null>(null);
   // The 1M context window is a start-time choice (the harness fixes it when the
   // process boots), so it belongs here rather than in the running session.
   // Off by default: 1M is expensive and rarely needed.
@@ -146,9 +150,10 @@ export function NewSession({
     resolveInstance(instances, "", fallbackHarness);
   const harnessId = instance?.driver ?? fallbackHarness;
   const selected = harnesses.find((h) => h.id === harnessId);
+  const harnessDefaults = project?.config.defaults.harnesses?.[harnessId];
   // A model the account no longer offers is not sent: the harness's own
   // default is a better answer than a name it has stopped serving.
-  const preferred = chosen?.model || (chosen ? "" : (project?.config.defaults.model ?? ""));
+  const preferred = chosen?.model || (chosen ? "" : (harnessDefaults?.model ?? ""));
   const model = instance?.models.some((m) => m.id === preferred)
     ? preferred
     : (defaultModel(instance)?.id ?? "");
@@ -162,6 +167,10 @@ export function NewSession({
   // turns into the context-window setting at start.
   const supports1m = harnessId === "claude" && model.includes("opus");
   const effectiveModel = supports1m && want1m ? `${model}[1m]` : model;
+  const modelMeta = instance?.models.find((m) => m.id === model);
+  const efforts = modelMeta?.efforts ?? [];
+  const preferredEffort = chosenEffort ?? harnessDefaults?.effort ?? "";
+  const effort = efforts.includes(preferredEffort) ? preferredEffort : "";
   // Modes are the selected harness's own presets, repopulated when the harness
   // changes — the same shape as the model picker. Only an expressed preference
   // (picked here, or a project default) is sent; otherwise the mode stays ""
@@ -170,8 +179,8 @@ export function NewSession({
   const modes = selected?.permissionModes ?? [];
   const mode = modes.some((m) => m.id === chosenMode)
     ? chosenMode
-    : modes.some((m) => m.id === project?.config.defaults.mode)
-      ? (project?.config.defaults.mode ?? "")
+    : modes.some((m) => m.id === harnessDefaults?.mode)
+      ? (harnessDefaults?.mode ?? "")
       : "";
   const displayModeId = mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
   const modeMeta = modes.find((m) => m.id === displayModeId);
@@ -219,6 +228,8 @@ export function NewSession({
         instance: instance?.id ?? "",
         model: effectiveModel,
         mode,
+        effort,
+        agentSettingsExplicit: true,
         branch,
         workspace,
         workspacePath,
@@ -328,6 +339,7 @@ export function NewSession({
                     setProjectId(v);
                     setChosen(null);
                     setChosenMode("");
+                    setChosenEffort(null);
                   }}
                 >
                   <SelectTrigger id="new-session-project" className="min-w-0 flex-1">
@@ -371,7 +383,16 @@ export function NewSession({
                 id="new-session-model"
                 harnesses={harnesses}
                 value={selection}
-                onChange={setChosen}
+                onChange={(next) => {
+                  if (next.harness !== harnessId) {
+                    setChosenMode("");
+                    setChosenEffort(null);
+                  }
+                  setChosen(next);
+                }}
+                efforts={efforts}
+                effort={effort}
+                onEffortChange={setChosenEffort}
               />
               {supports1m && (
                 <div className="flex items-center gap-1 pt-1">
