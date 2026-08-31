@@ -666,20 +666,18 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 	if o.Harness == "" {
 		o.Harness = p.Config.Defaults.Harness
 	}
-	// Model, mode, and effort are harness-owned values. An empty per-session
-	// choice may inherit them only while the session is still using the
-	// project's default harness; otherwise a Claude mode such as
-	// bypassPermissions can be handed to Codex just because both fields were
-	// independently empty in the request.
-	useHarnessDefaults := o.Harness == p.Config.Defaults.Harness
-	if o.Model == "" && useHarnessDefaults {
-		o.Model = p.Config.Defaults.Model
+	// Agent settings belong to the selected harness, not only to the project's
+	// default harness. Switching from Claude to Codex therefore restores this
+	// project's Codex profile without leaking Claude values across.
+	harnessDefaults := p.Config.Defaults.Harnesses[o.Harness]
+	if o.Model == "" {
+		o.Model = harnessDefaults.Model
 	}
-	if o.Mode == "" && useHarnessDefaults {
-		o.Mode = p.Config.Defaults.Mode
+	if o.Mode == "" {
+		o.Mode = harnessDefaults.Mode
 	}
-	if o.Effort == "" && useHarnessDefaults {
-		o.Effort = p.Config.Defaults.Effort
+	if o.Effort == "" {
+		o.Effort = harnessDefaults.Effort
 	}
 	if o.Workspace == "" {
 		o.Workspace = p.Config.Defaults.Workspace

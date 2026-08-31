@@ -83,6 +83,7 @@ type createArgs struct {
 	BaseRef string `json:"baseRef"`
 	Model   string `json:"model"`
 	Mode    string `json:"mode"`
+	Effort  string `json:"effort"`
 }
 
 // deleteSessionArgs carries the user's answer to the confirmation dialog's

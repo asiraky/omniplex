@@ -96,9 +96,10 @@ func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	p.Config.Defaults.Harness = "claude"
-	p.Config.Defaults.Model = "opus"
-	p.Config.Defaults.Mode = "bypassPermissions"
-	p.Config.Defaults.Effort = "high"
+	p.Config.Defaults.Harnesses = map[string]project.HarnessDefaults{
+		"claude": {Model: "opus", Mode: "bypassPermissions", Effort: "high"},
+		"codex":  {Model: "gpt-5.6-sol", Mode: "full-access", Effort: "xhigh"},
+	}
 	p.Config.Defaults.Workspace = "local"
 	if err := st.PutProject(context.Background(), p); err != nil {
 		t.Fatal(err)
@@ -112,7 +113,6 @@ func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
 		ProjectID: p.ID,
 		Harness:   "codex",
-		Model:     "gpt-5.6-sol",
 		Workspace: "local",
 	})
 	if err != nil {
@@ -123,8 +123,8 @@ func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Mode != "" || meta.Effort != "" {
-		t.Fatalf("Claude defaults crossed into Codex: mode=%q effort=%q", meta.Mode, meta.Effort)
+	if meta.Model != "gpt-5.6-sol" || meta.Mode != "full-access" || meta.Effort != "xhigh" {
+		t.Fatalf("Codex defaults not restored: model=%q mode=%q effort=%q", meta.Model, meta.Mode, meta.Effort)
 	}
 }
 

@@ -356,7 +356,12 @@ export interface WorkspaceState {
 export interface ProjectConfig {
   version: number;
   name: string;
-  defaults: { harness?: string; model?: string; effort?: string; mode?: string; workspace?: string; baseBranch?: string };
+  defaults: {
+    harness?: string;
+    harnesses?: Record<string, { model?: string; effort?: string; mode?: string }>;
+    workspace?: string;
+    baseBranch?: string;
+  };
   workspace: { suggestedRoot?: string; provision?: string; deprovision?: string; provisionTimeoutSeconds?: number; deprovisionTimeoutSeconds?: number };
 }
 
