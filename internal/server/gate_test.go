@@ -32,7 +32,7 @@ func testServer(t *testing.T) (http.Handler, *auth.Guard) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	guard := auth.New(st, true)
+	guard := auth.New(st, true, auth.DefaultPort)
 	mgr := session.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
@@ -302,7 +302,7 @@ func TestHealthWithholdsCommitFromUnpairedDevices(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	guard := auth.New(st, true)
+	guard := auth.New(st, true, auth.DefaultPort)
 	mgr := session.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
