@@ -293,6 +293,7 @@ type InstanceMeta struct {
 	Driver       string               `json:"driver"`
 	DisplayName  string               `json:"displayName"`
 	Enabled      bool                 `json:"enabled"`
+	CanLogin     bool                 `json:"canLogin,omitempty"`
 	Availability adapter.Availability `json:"availability"`
 	Models       []adapter.ModelMeta  `json:"models"`
 }
@@ -372,12 +373,18 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 			Driver:       reg.inst.Driver,
 			DisplayName:  reg.inst.DisplayName,
 			Enabled:      reg.inst.Enabled,
+			CanLogin:     supportsLogin(reg.ad),
 			Availability: m.availability(ctx, reg),
 		}
 		im.Models = m.modelsFor(reg, im.Availability)
 		out = append(out, im)
 	}
 	return out
+}
+
+func supportsLogin(ad adapter.Adapter) bool {
+	_, ok := ad.(adapter.Authenticator)
+	return ok
 }
 
 // availability caches a probe result briefly, per instance, so that listing

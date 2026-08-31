@@ -515,3 +515,27 @@ describe("a signed-out harness", () => {
     expect(screen.getByRole("button", { name: /check again/i })).toBeTruthy();
   });
 });
+
+describe("an interactive-login harness", () => {
+  it("offers sign-in again even when the health check says ready", () => {
+    const onLogin = vi.fn();
+    const ready = {
+      ...harness,
+      instances: [
+        {
+          id: "claude",
+          driver: "claude",
+          displayName: "Claude Code",
+          enabled: true,
+          canLogin: true,
+          availability: { state: "ready" },
+          models: [],
+        },
+      ],
+    } as HarnessMeta;
+
+    open({ harnesses: [ready], onLogin });
+    fireEvent.click(screen.getByRole("button", { name: /sign in again/i }));
+    expect(onLogin).toHaveBeenCalledWith("claude");
+  });
+});
