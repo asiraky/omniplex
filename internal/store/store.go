@@ -353,6 +353,9 @@ func (s *Store) Project(ctx context.Context, id string) (project.Project, error)
 	if err == nil {
 		err = json.Unmarshal(b, &p.Config)
 	}
+	if err == nil {
+		p.Config, err = project.Normalize(p.Root, p.Config)
+	}
 	return p, err
 }
 
@@ -370,6 +373,10 @@ func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
 			return nil, err
 		}
 		if err := json.Unmarshal(b, &p.Config); err != nil {
+			return nil, err
+		}
+		p.Config, err = project.Normalize(p.Root, p.Config)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, p)

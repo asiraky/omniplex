@@ -35,6 +35,8 @@ export interface NewSessionInput {
   model: string;
   mode: string;
   effort: string;
+  /** Empty agent fields are deliberate harness defaults, not omitted values. */
+  agentSettingsExplicit: boolean;
   branch: string;
   workspace: string;
   workspacePath: string;
@@ -227,6 +229,7 @@ export function NewSession({
         model: effectiveModel,
         mode,
         effort,
+        agentSettingsExplicit: true,
         branch,
         workspace,
         workspacePath,

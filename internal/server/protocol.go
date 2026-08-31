@@ -84,6 +84,10 @@ type createArgs struct {
 	Model   string `json:"model"`
 	Mode    string `json:"mode"`
 	Effort  string `json:"effort"`
+	// AgentSettingsExplicit distinguishes a current UI sending "use the
+	// harness default" as an empty value from an older client omitting agent
+	// fields and asking the server to inherit the project profile.
+	AgentSettingsExplicit bool `json:"agentSettingsExplicit"`
 }
 
 // deleteSessionArgs carries the user's answer to the confirmation dialog's

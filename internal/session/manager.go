@@ -641,12 +641,16 @@ type CreateProjectOptions struct {
 	ProjectID string
 	Harness   string
 	// Instance names the provider instance; empty means the harness's default.
-	Instance  string
-	Model     string
-	Mode      string
-	Effort    string
-	Branch    string
-	Workspace string
+	Instance string
+	Model    string
+	Mode     string
+	Effort   string
+	// AgentSettingsExplicit means empty model/mode/effort values deliberately
+	// select the harness's own defaults. False preserves inheritance for older
+	// clients and direct callers that omit the fields.
+	AgentSettingsExplicit bool
+	Branch                string
+	Workspace             string
 	// BaseRef is the ref a new worktree is branched from, chosen per session.
 	// Empty defers to the project's default base branch.
 	BaseRef string
@@ -669,15 +673,17 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 	// Agent settings belong to the selected harness, not only to the project's
 	// default harness. Switching from Claude to Codex therefore restores this
 	// project's Codex profile without leaking Claude values across.
-	harnessDefaults := p.Config.Defaults.Harnesses[o.Harness]
-	if o.Model == "" {
-		o.Model = harnessDefaults.Model
-	}
-	if o.Mode == "" {
-		o.Mode = harnessDefaults.Mode
-	}
-	if o.Effort == "" {
-		o.Effort = harnessDefaults.Effort
+	if !o.AgentSettingsExplicit {
+		harnessDefaults := p.Config.Defaults.Harnesses[o.Harness]
+		if o.Model == "" {
+			o.Model = harnessDefaults.Model
+		}
+		if o.Mode == "" {
+			o.Mode = harnessDefaults.Mode
+		}
+		if o.Effort == "" {
+			o.Effort = harnessDefaults.Effort
+		}
 	}
 	if o.Workspace == "" {
 		o.Workspace = p.Config.Defaults.Workspace
