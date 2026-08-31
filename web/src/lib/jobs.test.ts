@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Job } from "../protocol";
-import { classifyJob, jobTree, liveJobCount, liveJobCounts, liveJobsLabel } from "./jobs";
+import { childJobs, classifyJob, jobTree, jobVisible, liveJobCount, liveJobCounts, liveJobsLabel } from "./jobs";
 
 function job(over: Partial<Job> & { id: string }): Job {
   return { depth: 0, kind: "agent", status: "running", usage: {}, ...over };
@@ -40,6 +40,36 @@ describe("liveJobCounts", () => {
   });
 });
 
+describe("jobVisible", () => {
+  it("keeps live jobs, drops hidden and inert", () => {
+    expect(jobVisible(job({ id: "a" }))).toBe(true);
+    expect(jobVisible(job({ id: "h", hidden: true }))).toBe(false);
+    expect(jobVisible(job({ id: "i", kind: "inert" }))).toBe(false);
+  });
+  it("drops a finished shell but keeps a finished agent or monitor", () => {
+    expect(jobVisible(job({ id: "s", kind: "shell" }))).toBe(true);
+    expect(jobVisible(job({ id: "s2", kind: "shell", status: "paused" }))).toBe(true);
+    expect(jobVisible(job({ id: "s3", kind: "shell", status: "completed" }))).toBe(false);
+    expect(jobVisible(job({ id: "s4", kind: "shell", status: "failed" }))).toBe(false);
+    expect(jobVisible(job({ id: "s5", kind: "shell", status: "stopped" }))).toBe(false);
+    expect(jobVisible(job({ id: "a", status: "completed" }))).toBe(true);
+    expect(jobVisible(job({ id: "m", kind: "monitor", status: "completed" }))).toBe(true);
+  });
+});
+
+describe("childJobs", () => {
+  it("lists direct children, minus hidden and finished shells", () => {
+    const jobs = [
+      job({ id: "p" }),
+      job({ id: "a", parentJobId: "p" }),
+      job({ id: "sh-live", kind: "shell", parentJobId: "p" }),
+      job({ id: "sh-done", kind: "shell", status: "completed", parentJobId: "p" }),
+      job({ id: "h", hidden: true, parentJobId: "p" }),
+    ];
+    expect(childJobs(jobs, "p").map((j) => j.id)).toEqual(["a", "sh-live"]);
+  });
+});
+
 describe("jobTree", () => {
   it("orders parents before children and drops hidden/inert", () => {
     const jobs = [
@@ -54,6 +84,14 @@ describe("jobTree", () => {
     const tree = jobTree(jobs);
     expect(tree.map((j) => j.id)).toEqual(["p", "c1", "c2", "gc", "q"]);
     expect(tree.map((j) => j.depth)).toEqual([0, 1, 1, 2, 0]);
+  });
+  it("drops finished shells and keeps their children as roots", () => {
+    const jobs = [
+      job({ id: "sh", kind: "shell", status: "completed" }),
+      job({ id: "sh2", kind: "shell" }),
+      job({ id: "c", parentJobId: "sh", depth: 1 }),
+    ];
+    expect(jobTree(jobs).map((j) => j.id)).toEqual(["sh2", "c"]);
   });
   it("treats an orphan as a root", () => {
     expect(jobTree([job({ id: "o", parentJobId: "gone", depth: 1 })]).map((j) => j.id)).toEqual(["o"]);

@@ -30,6 +30,15 @@ export function isLive(j: Job): boolean {
   return !jobDone(j.status) && j.kind !== "inert";
 }
 
+/** Whether a job belongs in the roster. A finished shell does not: its output
+    already lives in the transcript, and a session's worth of them buries the
+    handful of things actually running. Finished agents and monitors stay —
+    their drill-down is the only record of what they did. */
+export function jobVisible(j: Job): boolean {
+  if (j.hidden || j.kind === "inert") return false;
+  return !(j.kind === "shell" && jobDone(j.status));
+}
+
 export interface JobCounts {
   agents: number;
   shells: number;
@@ -57,9 +66,9 @@ export function liveJobCount(jobs: Job[]): number {
 export function jobTree(jobs: Job[]): Job[] {
   const out: Job[] = [];
   const byParent = new Map<string | undefined, Job[]>();
-  for (const j of jobs) {
-    if (j.hidden || j.kind === "inert") continue;
-    const k = j.parentJobId && jobs.some((x) => x.id === j.parentJobId) ? j.parentJobId : undefined;
+  const visible = jobs.filter(jobVisible);
+  for (const j of visible) {
+    const k = j.parentJobId && visible.some((x) => x.id === j.parentJobId) ? j.parentJobId : undefined;
     byParent.set(k, [...(byParent.get(k) ?? []), j]);
   }
   const walk = (parent: string | undefined) => {
@@ -74,7 +83,7 @@ export function jobTree(jobs: Job[]): Job[] {
 
 /** Children of a job, direct only. */
 export function childJobs(jobs: Job[], id: string): Job[] {
-  return jobs.filter((j) => j.parentJobId === id && !j.hidden);
+  return jobs.filter((j) => j.parentJobId === id && jobVisible(j));
 }
 
 /** "2 agents, 1 shell" — the strip label. Empty when nothing is live. */
