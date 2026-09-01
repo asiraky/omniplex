@@ -57,6 +57,29 @@ func New(claudePath string) *Adapter {
 
 func (a *Adapter) ID() string { return "claude" }
 
+// ConfigFields declares how an instance of Claude Code is configured.
+// CLAUDE_CONFIG_DIR holds the login, so it is the isolating field; an API key
+// is the alternative credential for accounts without a subscription.
+func (a *Adapter) ConfigFields() []adapter.ConfigField {
+	return []adapter.ConfigField{
+		{
+			Env:         "CLAUDE_CONFIG_DIR",
+			Label:       "Config directory",
+			Description: "Directory holding this account's Claude Code login and settings. Leave empty on the default instance to use the machine's own login.",
+			Placeholder: "~/.claude",
+			Kind:        adapter.FieldPath,
+			Isolates:    true,
+		},
+		{
+			Env:         "ANTHROPIC_API_KEY",
+			Label:       "Anthropic API key",
+			Description: "Optional. Bills to the Anthropic API instead of a subscription sign-in.",
+			Placeholder: "sk-ant-…",
+			Kind:        adapter.FieldSecret,
+		},
+	}
+}
+
 func (a *Adapter) Meta() adapter.HarnessMeta {
 	return adapter.HarnessMeta{
 		ID:      "claude",

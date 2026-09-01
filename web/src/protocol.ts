@@ -580,6 +580,108 @@ export interface ProviderInstanceMeta {
   canLogin?: boolean;
   availability: Availability;
   models?: ModelMeta[];
+  /**
+   * The sign-in surface this instance offers: "flows" for structured
+   * connect/device-code/secret flows, "terminal" when its only sign-in is a
+   * CLI in an embedded terminal, absent when it has none.
+   */
+  auth?: "flows" | "terminal";
+  /** Exists in the user config, so it can be edited or removed. */
+  configured?: boolean;
+  /**
+   * The instance's configured environment, sensitive values redacted to bare
+   * names. Prefill edit forms from this — save replaces env wholesale.
+   */
+  env?: ProviderEnvVar[];
+}
+
+/**
+ * One field of a driver's instance-configuration schema. The add/edit forms
+ * render these; nothing driver-specific is hardcoded client-side.
+ */
+export interface ProviderConfigField {
+  env: string;
+  label: string;
+  description?: string;
+  placeholder?: string;
+  kind: "text" | "path" | "secret";
+  /** Setting this field gives the instance its own credential home. */
+  isolates?: boolean;
+}
+
+/** One environment value in a provider-instance spec. */
+export interface ProviderEnvVar {
+  name: string;
+  /**
+   * Absent on a sensitive var means "keep the stored secret"; the server never
+   * echoes secret values back.
+   */
+  value?: string;
+  sensitive?: boolean;
+}
+
+/** The write shape for add/save_provider_instance. */
+export interface ProviderInstanceSpec {
+  id: string;
+  driver: string;
+  displayName: string;
+  env: ProviderEnvVar[];
+  enabled: boolean;
+}
+
+/** How one instance could sign in. */
+export interface AuthMethod {
+  id: string;
+  label: string;
+  description?: string;
+  kind: "oauth" | "secret" | "terminal";
+  hint?: string;
+  /** Signing in uses a subscription rather than metered API billing. */
+  subscription?: boolean;
+}
+
+/** Where one method's credential stands. */
+export interface AuthStatus {
+  methodId: string;
+  state: "connected" | "disconnected";
+  account?: string;
+  /** "native" = the harness's own store; "environment" = ambient env var. */
+  source?: "native" | "environment";
+  detail?: string;
+}
+
+export interface InstanceAuth {
+  methods: AuthMethod[];
+  statuses?: AuthStatus[];
+}
+
+/** Display-only narration of a running auth flow. */
+export interface AuthFlowNotice {
+  type: "info" | "auth_url" | "device_code" | "progress";
+  message?: string;
+  url?: string;
+  instructions?: string;
+  userCode?: string;
+  verificationUri?: string;
+}
+
+export interface AuthFlowPrompt {
+  id: string;
+  message: string;
+  placeholder?: string;
+  /** The answer is a secret: mask the input, and never log or echo it. */
+  secret?: boolean;
+  /** Non-empty turns the prompt into a choice; the answer is the option's id. */
+  options?: { id: string; label: string }[];
+}
+
+/** One frame of auth-flow narration, sent only to the initiating connection. */
+export interface AuthFlowEvent {
+  flowId: string;
+  event?: AuthFlowNotice;
+  prompt?: AuthFlowPrompt;
+  done?: boolean;
+  error?: string;
 }
 
 export interface HarnessMeta {
@@ -596,6 +698,8 @@ export interface HarnessMeta {
    * the one-account case renders exactly as before.
    */
   instances: ProviderInstanceMeta[];
+  /** The driver's instance-configuration schema; absent means no settings. */
+  configFields?: ProviderConfigField[];
 }
 
 export type Reachability = "loopback" | "lan" | "overlay" | "public";
@@ -650,6 +754,7 @@ export interface ServerFrame {
     | "synchronized"
     | "resync"
     | "ack"
+    | "auth_event"
     | "error"
     | "pong";
   serverId?: string;
@@ -669,4 +774,6 @@ export interface ServerFrame {
   commandId?: string;
   result?: any;
   error?: string;
+  /** Narration of a running auth flow; sent only to the initiating connection. */
+  authFlow?: AuthFlowEvent;
 }

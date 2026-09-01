@@ -1,5 +1,5 @@
-// Command omniplex runs the harness multiplexer: one server driving Claude Code and
-// Codex behind a single canonical protocol, with any number of UIs attached.
+// Command omniplex runs the harness multiplexer: one server driving Claude Code,
+// Codex and Pi behind a single canonical protocol, with any number of UIs attached.
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/adapter/codexapp"
+	"github.com/asiraky/omniplex/internal/adapter/piapp"
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
@@ -55,6 +56,7 @@ func main() {
 		cwd        = flag.String("cwd", mustCwd(), "default working directory for new sessions")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
 		codexBin   = flag.String("codex", "codex", "path to the codex CLI")
+		piBin      = flag.String("pi", "pi", "path to the pi CLI")
 		dev        = flag.Bool("dev", false, "development mode: serve the UI from the Vite dev server instead of the embedded bundle")
 		vitePort   = flag.Int("vite-port", envInt("OMNIPLEX_VITE_PORT", 5199), "port the Vite dev server listens on (with -dev)")
 	)
@@ -89,6 +91,7 @@ func main() {
 	mgr := session.NewManager(st, logf,
 		claudecode.New(*claudePath),
 		codexapp.New(*codexBin),
+		piapp.New(*piBin),
 	)
 
 	// Images attached to prompts live beside the event log, not inside it, and

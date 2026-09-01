@@ -38,11 +38,19 @@ type Manager struct {
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
 	// instances is keyed by instance id, never by driver: sessions and the
-	// wire protocol route on instance ids.
+	// wire protocol route on instance ids. instMu guards the three fields
+	// below it: the registry mutates live now that instances are managed
+	// from the UI, not only at startup.
+	instMu        sync.RWMutex
 	instances     map[string]registered
 	instanceOrder []string
 	secrets       *provider.SecretStore
 	logf          func(string, ...any)
+
+	// authFlows are running structured sign-in flows, keyed by flow id.
+	// Ephemeral on purpose: see authflow.go.
+	authMu    sync.Mutex
+	authFlows map[string]*authFlow
 
 	mu     sync.RWMutex
 	actors map[string]*Actor
@@ -128,6 +136,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		probes:     map[string]probeResult{},
 		models:     map[string]modelResult{},
 		refreshing: map[string]bool{},
+		authFlows:  map[string]*authFlow{},
 		listSub:    map[string]chan struct{}{},
 		harnessSub: map[string]chan struct{}{},
 		labelSub:   map[string]chan struct{}{},
@@ -181,6 +190,7 @@ func (m *Manager) purgeAttachments(id string) {
 
 // register adds or replaces one instance, preserving order on replacement so a
 // configured entry that overrides a default keeps the default's position.
+// Callers hold instMu (or are still single-threaded in NewManager).
 func (m *Manager) register(reg registered) {
 	if _, exists := m.instances[reg.inst.ID]; !exists {
 		m.instanceOrder = append(m.instanceOrder, reg.inst.ID)
@@ -191,10 +201,17 @@ func (m *Manager) register(reg registered) {
 // ConfigureInstances installs the operator's configured provider instances,
 // on top of the defaults synthesised per adapter. An instance naming a driver
 // this build does not have is registered anyway and presents as unavailable —
-// a config written on another branch must never brick startup. Call this
-// before serving; it is not synchronised against concurrent reads.
+// a config written on another branch must never brick startup.
 func (m *Manager) ConfigureInstances(instances []provider.Instance, secrets *provider.SecretStore) {
+	m.instMu.Lock()
+	defer m.instMu.Unlock()
 	m.secrets = secrets
+	m.configureLocked(instances)
+}
+
+// configureLocked layers configured instances over whatever is already
+// registered. Caller holds instMu.
+func (m *Manager) configureLocked(instances []provider.Instance) {
 	seen := map[string]bool{}
 	for _, inst := range instances {
 		// A configured entry may override the same driver's default instance,
@@ -220,7 +237,7 @@ func (m *Manager) ConfigureInstances(instances []provider.Instance, secrets *pro
 // A missing secret is an error, never a silent fall-through to the ambient
 // account.
 func (m *Manager) envFor(inst provider.Instance) (map[string]string, error) {
-	return inst.EnvOverlay(m.secrets)
+	return inst.EnvOverlay(m.secretStore())
 }
 
 // instanceFor resolves the instance a session runs under. A session created
@@ -234,7 +251,7 @@ func (m *Manager) instanceFor(meta store.SessionMeta) (registered, error) {
 	if id == "" {
 		id = meta.Harness
 	}
-	reg, ok := m.instances[id]
+	reg, ok := m.lookup(id)
 	if !ok {
 		return registered{}, fmt.Errorf("unknown provider instance %q", id)
 	}
@@ -268,7 +285,7 @@ func (m *Manager) resolveInstance(instanceID, harness string) (registered, error
 	if id == "" {
 		id = harness
 	}
-	reg, ok := m.instances[id]
+	reg, ok := m.lookup(id)
 	if !ok {
 		return registered{}, fmt.Errorf("unknown harness %q", id)
 	}
@@ -296,7 +313,27 @@ type InstanceMeta struct {
 	CanLogin     bool                 `json:"canLogin,omitempty"`
 	Availability adapter.Availability `json:"availability"`
 	Models       []adapter.ModelMeta  `json:"models"`
+	// Auth names the sign-in surface this instance offers: "flows" when the
+	// adapter runs structured flows, "terminal" when its only sign-in is a
+	// CLI in a terminal, "" when it has none. The methods themselves are
+	// fetched on demand — answering may spawn the harness.
+	Auth string `json:"auth,omitempty"`
+	// Configured marks an instance that exists in the user config, as
+	// opposed to a driver's synthesised ambient default. Only configured
+	// instances can be edited or removed.
+	Configured bool `json:"configured,omitempty"`
+	// Env is the instance's configured environment with every sensitive
+	// value redacted to its name. Saving replaces env wholesale, so an edit
+	// form needs the current values to prefill — without this, a blank field
+	// would silently drop a stored path. Secret values never travel.
+	Env []provider.EnvVar `json:"env,omitempty"`
 }
+
+// Auth surface names for InstanceMeta.Auth.
+const (
+	AuthSurfaceFlows    = "flows"
+	AuthSurfaceTerminal = "terminal"
+)
 
 // Harness is one registered harness plus its current readiness, as presented
 // to a UI. Everything here comes from the adapter; the core adds nothing and
@@ -308,6 +345,9 @@ type Harness struct {
 	PermissionModes []adapter.PermissionModeMeta `json:"permissionModes"`
 	Availability    adapter.Availability         `json:"availability"`
 	Instances       []InstanceMeta               `json:"instances"`
+	// ConfigFields is the driver's schema for configuring an instance — what
+	// the add/edit forms render. Absent when the driver takes no configuration.
+	ConfigFields []adapter.ConfigField `json:"configFields,omitempty"`
 }
 
 // Harnesses lists every registered harness, available or not, each with its
@@ -326,6 +366,9 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 			PermissionModes: ad.PermissionModes(),
 			Instances:       m.instancesOf(ctx, id),
 		}
+		if cfg, ok := ad.(adapter.Configurer); ok {
+			h.ConfigFields = cfg.ConfigFields()
+		}
 		// The driver-level availability and models mirror the default
 		// instance, which is what today's UI renders; one instance being
 		// unhealthy (or offering different models) must not speak for the
@@ -342,8 +385,7 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 	}
 	// Instances whose driver is unknown to this build still have to be
 	// visible: they load, present as unavailable, and lose nothing.
-	for _, id := range m.instanceOrder {
-		reg := m.instances[id]
+	for _, reg := range m.orderedInstances() {
 		if seenDrivers[reg.inst.Driver] {
 			continue
 		}
@@ -363,8 +405,7 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 // independent availability and models.
 func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta {
 	var out []InstanceMeta
-	for _, id := range m.instanceOrder {
-		reg := m.instances[id]
+	for _, reg := range m.orderedInstances() {
 		if reg.inst.Driver != driver {
 			continue
 		}
@@ -374,6 +415,9 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 			DisplayName:  reg.inst.DisplayName,
 			Enabled:      reg.inst.Enabled,
 			CanLogin:     supportsLogin(reg.ad),
+			Auth:         authSurface(reg.ad),
+			Configured:   reg.inst.Raw != nil,
+			Env:          redactedEnv(reg.inst.Env),
 			Availability: m.availability(ctx, reg),
 		}
 		im.Models = m.modelsFor(reg, im.Availability)
@@ -385,6 +429,35 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 func supportsLogin(ad adapter.Adapter) bool {
 	_, ok := ad.(adapter.Authenticator)
 	return ok
+}
+
+// redactedEnv is an instance's env as a client may see it: plain values
+// verbatim, sensitive ones as bare names — enough to know a secret exists and
+// send the keep-marker back, never the value itself.
+func redactedEnv(env []provider.EnvVar) []provider.EnvVar {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]provider.EnvVar, 0, len(env))
+	for _, v := range env {
+		if v.Sensitive {
+			v.Value = ""
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// authSurface names the sign-in surface an adapter offers, for
+// InstanceMeta.Auth.
+func authSurface(ad adapter.Adapter) string {
+	if _, ok := ad.(adapter.AuthFlows); ok {
+		return AuthSurfaceFlows
+	}
+	if _, ok := ad.(adapter.Authenticator); ok {
+		return AuthSurfaceTerminal
+	}
+	return ""
 }
 
 // availability caches a probe result briefly, per instance, so that listing
@@ -448,7 +521,7 @@ func (m *Manager) forgetModels(instanceID string) {
 // LoginCommand is what a terminal runs to sign one instance's harness in:
 // the adapter's own flow, under the instance's environment.
 func (m *Manager) LoginCommand(ctx context.Context, instanceID string) (argv []string, env []string, err error) {
-	reg, ok := m.instances[instanceID]
+	reg, ok := m.lookup(instanceID)
 	if !ok || reg.ad == nil {
 		return nil, nil, fmt.Errorf("unknown provider instance %q", instanceID)
 	}

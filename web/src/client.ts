@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, HarnessMeta, Item, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
+import type { Access, AuthFlowEvent, HarnessMeta, Item, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -36,6 +36,14 @@ export class Client {
   private stableTimer: number | null = null;
 
   private pending = new Map<string, Pending>();
+
+  // Auth flows are ephemeral narration bound to this one connection, so they
+  // deliberately bypass the session reducer and any persisted state: a dialog
+  // subscribes by flowId and the frames go straight to it. Events can start
+  // arriving before the auth_begin ack resolves (and thus before the dialog
+  // knows its flowId), so unclaimed frames wait in a small backlog.
+  private authFlowListeners = new Map<string, (ev: AuthFlowEvent) => void>();
+  private authFlowBacklog = new Map<string, AuthFlowEvent[]>();
 
   // The attached session and its applied cursor. Reconnecting to a different
   // address is the same operation as reconnecting to the same one: attach with
@@ -84,6 +92,7 @@ export class Client {
       if (this.stableTimer) window.clearTimeout(this.stableTimer);
       this.ws = null;
       if (this.closedByUs) return;
+      this.dropAuthFlows();
       this.events.onStatus("offline");
       const delay = BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)];
       window.setTimeout(() => this.connect(), delay);
@@ -235,6 +244,37 @@ export class Client {
     });
   }
 
+  /**
+   * Subscribe to a sign-in flow's events. Frames that arrived before the
+   * subscriber (the auth_begin ack races the first events) are replayed on
+   * subscribe. Returns the unsubscribe.
+   */
+  onAuthFlow(flowId: string, listener: (ev: AuthFlowEvent) => void): () => void {
+    this.authFlowListeners.set(flowId, listener);
+    const backlog = this.authFlowBacklog.get(flowId);
+    this.authFlowBacklog.delete(flowId);
+    for (const ev of backlog ?? []) listener(ev);
+    return () => {
+      if (this.authFlowListeners.get(flowId) === listener) {
+        this.authFlowListeners.delete(flowId);
+      }
+    };
+  }
+
+  /**
+   * Flows die with the socket — the server cancels them when the connection
+   * drops, and their events go only to the connection that began them. Tell
+   * any watching dialog honestly rather than leaving it spinning forever.
+   */
+  private dropAuthFlows() {
+    const listeners = [...this.authFlowListeners];
+    this.authFlowListeners.clear();
+    this.authFlowBacklog.clear();
+    for (const [flowId, listener] of listeners) {
+      listener({ flowId, error: "Connection lost — start the sign-in again." });
+    }
+  }
+
   private raw(frame: Record<string, unknown>) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
@@ -322,6 +362,24 @@ export class Client {
         this.pending.delete(f.commandId!);
         if (f.error) p.reject(new Error(f.error));
         else p.resolve(f.result);
+        break;
+      }
+
+      // A sign-in flow narrating. Routed straight to the dialog that began it,
+      // never through the reducer: nothing about a flow belongs in session
+      // state, and secrets must never end up anywhere persistable.
+      case "auth_event": {
+        const ev = f.authFlow;
+        if (!ev?.flowId) return;
+        const listener = this.authFlowListeners.get(ev.flowId);
+        if (listener) {
+          listener(ev);
+        } else {
+          const backlog = this.authFlowBacklog.get(ev.flowId) ?? [];
+          // A flow nobody ever claims must not accumulate forever.
+          if (backlog.length < 100) backlog.push(ev);
+          this.authFlowBacklog.set(ev.flowId, backlog);
+        }
         break;
       }
 

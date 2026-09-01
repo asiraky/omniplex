@@ -35,6 +35,12 @@ type conn struct {
 
 	amu      sync.Mutex
 	attached map[string]context.CancelFunc
+
+	// flows are the authentication flows this connection began. Flow narration
+	// goes only to this socket, so when the socket dies the flows die with it —
+	// nobody else could ever answer their prompts.
+	flowMu sync.Mutex
+	flows  map[string]bool
 }
 
 func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID string) {
@@ -45,8 +51,10 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 		ctx:      ctx,
 		deviceID: deviceID,
 		attached: map[string]context.CancelFunc{},
+		flows:    map[string]bool{},
 	}
 	defer c.detachAll()
+	defer c.cancelFlows()
 
 	// Authorisation is checked once, at upgrade. A socket therefore outlives
 	// the credential that opened it unless something closes it, which is what
@@ -269,6 +277,18 @@ func (c *conn) detach(sessionID string) {
 	}
 }
 
+func (c *conn) cancelFlows() {
+	c.flowMu.Lock()
+	ids := make([]string, 0, len(c.flows))
+	for id := range c.flows {
+		ids = append(ids, id)
+	}
+	c.flowMu.Unlock()
+	for _, id := range ids {
+		c.srv.mgr.CancelAuthFlow(id)
+	}
+}
+
 func (c *conn) detachAll() {
 	c.amu.Lock()
 	all := c.attached
@@ -330,7 +350,7 @@ func (c *conn) command(f clientFrame) {
 	// nothing is mutated, replaying it would return a stale answer rather
 	// than protect anything, and a row per poll would grow the table for as
 	// long as the tab stayed open. So a poll executes without a ledger entry.
-	if pollingCommand(f.Command) {
+	if pollingCommand(f.Command) || ephemeralCommand(f.Command) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		result, err := c.execute(ctx, f)
@@ -387,6 +407,20 @@ claimed:
 // are polled: everything else, including every read a user's own click causes,
 // keeps the replay guarantee it has always had.
 func pollingCommand(name string) bool { return name == "session_pr" }
+
+// ephemeralCommand reports whether a command must bypass the command ledger.
+// The auth-flow commands qualify twice over: an auth_respond may carry a
+// secret, which must never touch a durable table even as a claimed row, and a
+// flow is connection-scoped, so replaying any of these against a dead flow is
+// meaningless. The overview is a live read whose stored answer would only ever
+// be stale.
+func ephemeralCommand(name string) bool {
+	switch name {
+	case "auth_begin", "auth_respond", "auth_cancel", "provider_auth_overview":
+		return true
+	}
+	return false
+}
 
 func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 	switch f.Command {
@@ -816,17 +850,116 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		// Clients never see the providers, so a client echoing config back must
 		// not be able to erase (or author) them; the on-disk entries win.
-		current, err := userconfig.Load()
-		if err != nil {
-			return nil, err
-		}
-		a.Config.Providers = current.Providers
-		cfg, err := userconfig.Save(a.Config)
+		// Update, not Load-then-Save: provider management writes the same file,
+		// and interleaving would silently drop whichever half wrote first.
+		cfg, err := userconfig.Update(func(cur *userconfig.Config) error {
+			a.Config.Providers = cur.Providers
+			*cur = a.Config
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
 		cfg.Providers = nil
 		return map[string]any{"userConfig": cfg}, nil
+
+	case "add_provider_instance":
+		var a saveProviderInstanceArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.AddProviderInstance(a.Spec); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "added"}, nil
+
+	case "save_provider_instance":
+		var a saveProviderInstanceArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.SaveProviderInstance(a.Spec); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "saved"}, nil
+
+	case "delete_provider_instance":
+		var a instanceArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.DeleteProviderInstance(a.InstanceID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "deleted"}, nil
+
+	case "provider_auth_overview":
+		var a instanceArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		auth, err := c.srv.mgr.AuthOverview(ctx, a.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"auth": auth}, nil
+
+	case "auth_begin":
+		var a authBeginArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		flowID, events, err := c.srv.mgr.BeginAuthFlow(a.InstanceID, a.MethodID)
+		if err != nil {
+			return nil, err
+		}
+		c.flowMu.Lock()
+		c.flows[flowID] = true
+		c.flowMu.Unlock()
+		// The pump sends narration only to this connection and never persists
+		// it. The channel closes after the flow's final Done event; a dead
+		// socket's flows are cancelled by cancelFlows, which is what unblocks
+		// this goroutine.
+		go func() {
+			defer func() {
+				c.flowMu.Lock()
+				delete(c.flows, flowID)
+				c.flowMu.Unlock()
+			}()
+			for ev := range events {
+				e := ev
+				c.send(serverFrame{Type: "auth_event", AuthFlow: &e})
+			}
+		}()
+		return map[string]any{"flowId": flowID}, nil
+
+	case "auth_respond":
+		var a authRespondArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.RespondAuthFlow(a.FlowID, a.PromptID, a.Value); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "ok"}, nil
+
+	case "auth_cancel":
+		var a authCancelArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		c.srv.mgr.CancelAuthFlow(a.FlowID)
+		return map[string]any{"status": "cancelled"}, nil
+
+	case "logout_provider":
+		var a logoutArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.LogoutInstance(ctx, a.InstanceID, a.MethodID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "disconnected"}, nil
 
 	case "add_project":
 		var a addProjectArgs
