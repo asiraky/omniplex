@@ -203,7 +203,7 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			// SDK names the variant in both ("opus[1m]" resolving to
 			// "claude-opus-5[1m]"), but the generic "default" alias carries it
 			// only on the resolved id.
-			Supports1M: hasContextTag(m.Value) || hasContextTag(m.ResolvedModel),
+			Supports1M: has1MTag(m.Value) || has1MTag(m.ResolvedModel),
 		}
 		if i, seen := byModel[bare]; seen {
 			// Same concrete model under another alias: keep one row, preserving
@@ -274,12 +274,17 @@ func stripContextTag(id string) string {
 	return id
 }
 
-// hasContextTag reports whether a model id names a context-window variant,
-// like the "[1m]" in "claude-opus-5[1m]" — which is how the harness says a 1M
-// window is available for that model.
-func hasContextTag(id string) bool {
-	return stripContextTag(id) != id
+// has1MTag reports whether a model id names the 1M-context variant, like
+// "claude-opus-5[1m]" — which is how the harness says a 1M window is available
+// for that model. It matches that tag alone, not any bracketed suffix: a
+// future "[beta]" or "[512k]" alias says nothing about a 1M window, and
+// claiming one would have the UI submit a "[1m]" id the harness never offered.
+func has1MTag(id string) bool {
+	return strings.HasSuffix(strings.ToLower(id), tag1M)
 }
+
+// tag1M is the context-window tag that turns a model id into its 1M variant.
+const tag1M = "[1m]"
 
 // sortByStrength orders the current models Fable, then Opus, then Sonnet, then
 // anything unrecognised — the frontier order the picker shows top to bottom.

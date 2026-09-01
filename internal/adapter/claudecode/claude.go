@@ -526,7 +526,7 @@ func (s *session) SetModel(ctx context.Context, model string) error {
 		return err
 	}
 	s.mu.Lock()
-	s.model = model
+	s.model = s.tagged(model)
 	// The cached window was the old model's, as the harness reported it.
 	// Clearing it stops a stale value persisting across the switch: the next
 	// result falls back to the window this process was started with, and the
@@ -953,6 +953,19 @@ func (s *session) trackSessionID(msg map[string]json.RawMessage) {
 	}
 }
 
+// tagged keeps the "[1m]" tag on the id this session reports as its model,
+// because that id is what a resume starts the next process from: the harness
+// reports the bare "claude-opus-5" once it is running, and recording that
+// would silently drop the session back to 200k the next time it is resumed.
+// The tag is truthful for as long as the process lives — the window was fixed
+// at boot and no model switch moves it.
+func (s *session) tagged(model string) string {
+	if !s.oneM || model == "" || has1MTag(model) {
+		return model
+	}
+	return model + tag1M
+}
+
 // contextWindowFor is the fallback window used only when the harness cannot
 // report context usage directly (an older CLI without the control method).
 // It reads the choice made at process start rather than the model's name: the
@@ -981,11 +994,12 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		}
 		remarshal(msg, &init)
 		s.mu.Lock()
-		s.model = init.Model
+		s.model = s.tagged(init.Model)
+		model := s.model
 		harnessID := s.harnessSessionID
 		s.mu.Unlock()
 		s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
-			Model: init.Model, Mode: init.PermissionMode, HarnessSessionID: harnessID,
+			Model: model, Mode: init.PermissionMode, HarnessSessionID: harnessID,
 		}))
 	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
 		s.handleTask(msg)

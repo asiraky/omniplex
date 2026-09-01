@@ -212,3 +212,18 @@ func TestMapClaudeModels1MSurvivesDefaultAliasMerge(t *testing.T) {
 		t.Error("the recommended flag was dropped in the same merge")
 	}
 }
+
+// Only the 1M tag says a 1M window is on offer. Another bracketed variant is
+// still collapsed onto the bare model — that is what keeps a running session
+// resolving to its row — but it must not be advertised as 1M, or the UI would
+// submit a "[1m]" id the harness never offered.
+func TestMapClaudeModelsIgnoresOtherContextTags(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "sonnet[beta]", ResolvedModel: "claude-sonnet-5[beta]", DisplayName: "Sonnet (beta)", Description: "Sonnet 5 · Efficient for routine tasks"},
+	})
+
+	m := findModel(t, got, "claude-sonnet-5")
+	if m.Supports1M {
+		t.Error("a [beta] alias was read as a 1M one")
+	}
+}
