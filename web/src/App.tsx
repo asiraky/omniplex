@@ -515,6 +515,44 @@ export function App() {
     setSummaries({});
   }, [userConfig, saveUserConfig]);
 
+  // Read-on-open, reported to the server so paired devices agree. The report
+  // carries the seq this page has actually rendered, not the server's head —
+  // events landing mid-report stay unread. Gated on the phase: while a turn
+  // streams, every event bumps seq, and re-reporting each one would chatter
+  // on exactly the connections we care about. The turn finishing flips the
+  // phase and sends one report for the whole turn.
+  const viewedReported = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!state || state.sessionId !== activeId) return;
+    if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning") return;
+    if (state.seq <= (viewedReported.current[state.sessionId] ?? 0)) return;
+    viewedReported.current[state.sessionId] = state.seq;
+    clientRef.current
+      ?.command("mark_session_viewed", { sessionId: state.sessionId, seq: state.seq })
+      .catch(() => {
+        // Nothing to tell the user: the dot clears next time this succeeds.
+      });
+  }, [activeId, state]);
+
+  // The explicit flag back the other way, from the row's context menu.
+  // Fire-and-forget like the label mutations: the sessions broadcast is the
+  // authoritative answer.
+  const setSessionUnread = useCallback((sessionId: string, unread: boolean) => {
+    if (unread) {
+      // Forget what this page reported, or the effect above would treat the
+      // current head as already-sent and never re-mark it read.
+      delete viewedReported.current[sessionId];
+      clientRef.current?.command("mark_session_unread", { sessionId }).catch((e) => {
+        toast.error("Could not mark that session unread", { description: e.message });
+      });
+      return;
+    }
+    const head = sessions.find((s) => s.id === sessionId)?.headSeq ?? 0;
+    clientRef.current?.command("mark_session_viewed", { sessionId, seq: head }).catch((e) => {
+      toast.error("Could not mark that session read", { description: e.message });
+    });
+  }, [sessions]);
+
   // Label mutations fire and forget: the authoritative answer arrives as a
   // labels (or sessions) broadcast, the same way it does for a paired device,
   // so there is no local state to reconcile — only failures to report.
@@ -1066,6 +1104,7 @@ export function App() {
         labels={labels}
         onSetLabel={setSessionLabel}
         onManageLabels={openLabelManager}
+        onSetUnread={setSessionUnread}
       />
 
       <DeleteSessionDialog flow={deleteFlow} />

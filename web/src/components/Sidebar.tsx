@@ -27,6 +27,12 @@ import { LabelFilter } from "~/components/LabelFilter";
 import { LabelDot, LabelMenu } from "~/components/LabelMenu";
 import { ProjectFilter } from "~/components/ProjectFilter";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "~/components/ui/context-menu";
+import {
   DropdownMenu,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
@@ -64,6 +70,18 @@ function background(s: SessionMeta) {
 }
 function failed(s: SessionMeta) {
   return s.attention ? s.attention === "failed" : FAILED_PHASES.includes(s.phase);
+}
+// The log has moved past what anyone has read, on any paired device: "the
+// agent finished while I was away", which nothing else in the row can say.
+// lastViewedSeq is absent on a server that predates it; treating that as
+// seq 0 would light every row, so an absent cursor reads as all-read.
+function unread(s: SessionMeta) {
+  return s.lastViewedSeq !== undefined && s.headSeq > s.lastViewedSeq;
+}
+// The row is asking for someone's attention right now, one way or another.
+// Quiet rows — read, idle, nobody waiting — visually recede below these.
+function loud(s: SessionMeta) {
+  return working(s) || needsInput(s) || failed(s) || background(s);
 }
 
 function ago(ms: number) {
@@ -162,6 +180,8 @@ interface SidebarProps {
   onSetLabel: (sessionId: string, labelId: string) => void;
   /** Opens the label manager, which App owns — the header can open it too. */
   onManageLabels: () => void;
+  /** Flips the unread flag by hand — the row's "come back to this" action. */
+  onSetUnread: (sessionId: string, unread: boolean) => void;
 }
 
 /**
@@ -183,10 +203,11 @@ function useDeleteFlow({
   // guards and the wait all live in useDeleteSession, which the transcript's
   // "this landed" prompt opens too.
   //
-  // `frozen` pins the list to the order it had when Delete was pressed: the
-  //   server stamps the session as it enters "cleaning" and the list is
-  //   ordered by that stamp, so without this the row shoots to the top and
-  //   sits there until it vanishes.
+  // `frozen` pins the list to the order it had when Delete was pressed. The
+  //   sort is a stable created-at anchor now, so activity can no longer move
+  //   the row — but the list can still change shape mid-delete (a session
+  //   created from a paired device), and the departing row's neighbours must
+  //   hold still under the animation.
   // `exiting` keeps the row on screen, in its own place, for one last
   //   animation after it has already left the list.
   const [frozen, setFrozen] = useState<string[] | null>(null);
@@ -227,7 +248,7 @@ function useDeleteFlow({
     if (!frozen) return sessions;
     const rank = new Map(frozen.map((id, i) => [id, i]));
     // Anything the server has added since sorts ahead, which is where a new
-    // session belongs in a most-recent-first list anyway.
+    // session belongs in a newest-created-first list anyway.
     const list = [...sessions].sort((a, b) => (rank.get(a.id) ?? -1) - (rank.get(b.id) ?? -1));
     if (exiting && !sessions.some((s) => s.id === exiting.id)) {
       const at = frozen.indexOf(exiting.id);
@@ -252,6 +273,7 @@ function SessionList({
   labels,
   onSetLabel,
   onManageLabels,
+  onSetUnread,
   hidden,
   onShowAll,
 }: Pick<
@@ -264,6 +286,7 @@ function SessionList({
   | "labels"
   | "onSetLabel"
   | "onManageLabels"
+  | "onSetUnread"
 > & {
   flow: DeleteFlow;
   /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
@@ -335,6 +358,14 @@ function SessionList({
     const active = s.id === activeId;
     const leaving = exiting?.id === s.id;
     const going = deleting?.id === s.id;
+    // The unread dot yields to every live indicator — a row that is working,
+    // waiting or failed already says something stronger — and to the active
+    // row, which is by definition being looked at.
+    const showUnread = unread(s) && !active && !loud(s);
+    // A row that is read, idle and not selected is waiting on nobody: it
+    // recedes, so the rows that need eyes stand out by contrast instead of
+    // by yet more chrome.
+    const recede = !active && !loud(s) && !unread(s);
     // Undefined for unlabelled, and for a label another device has just
     // deleted — the assignment broadcast can land after the deletion one.
     const label = labels.find((l) => l.id === s.labelId);
@@ -354,6 +385,11 @@ function SessionList({
                 : "mb-0.5 grid-rows-[1fr]",
             )}
           >
+            {/* Right-click (long-press, on touch) for the row's quiet
+                actions. Only read-state today: everything else the row does
+                already has a control of its own. */}
+            <ContextMenu>
+            <ContextMenuTrigger asChild>
             <div
               className={cn(
                 // min-w-0: a grid item's automatic minimum size is its
@@ -366,6 +402,10 @@ function SessionList({
                 active
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
                   : "hover:bg-sidebar-accent/60",
+                // Receded rows come back to full strength under the pointer
+                // (or focus), so dimming never costs legibility at the moment
+                // of use.
+                recede && "opacity-60 hover:opacity-100 focus-within:opacity-100",
                 // Already on its way out: it shows what it is doing (the busy
                 // dot below) but no longer takes clicks.
                 going && "pointer-events-none opacity-60",
@@ -438,6 +478,16 @@ function SessionList({
                     <CircleAlertIcon
                       aria-label="Needs attention"
                       className="text-destructive size-3 shrink-0"
+                    />
+                  )}
+                  {/* Completed-and-unseen, in its own colour: not "in motion"
+                      (primary), not "act now" (attention) — done, waiting to
+                      be read. Steady on purpose; nothing is happening. */}
+                  {showUnread && (
+                    <span
+                      role="status"
+                      aria-label="Finished since you last looked"
+                      className="bg-success size-1.5 shrink-0 rounded-full"
                     />
                   )}
                   <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
@@ -575,6 +625,23 @@ function SessionList({
                 <TooltipContent>Delete session</TooltipContent>
               </Tooltip>
             </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              {unread(s) ? (
+                <ContextMenuItem onSelect={() => onSetUnread(s.id, false)}>
+                  Mark read
+                </ContextMenuItem>
+              ) : (
+                // A session whose log is empty has nothing to be unread about.
+                <ContextMenuItem
+                  disabled={s.headSeq === 0}
+                  onSelect={() => onSetUnread(s.id, true)}
+                >
+                  Mark unread
+                </ContextMenuItem>
+              )}
+            </ContextMenuContent>
+            </ContextMenu>
           </div>
         );
   };
@@ -714,6 +781,7 @@ function SidebarPanel({
           labels={props.labels}
           onSetLabel={props.onSetLabel}
           onManageLabels={props.onManageLabels}
+          onSetUnread={props.onSetUnread}
           hidden={hidden}
           onShowAll={onShowAll}
         />

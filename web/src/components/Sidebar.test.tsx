@@ -42,6 +42,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
+    onSetUnread: vi.fn(),
     ...over,
   };
   render(<Sidebar {...props} />);
@@ -71,6 +72,7 @@ function renderLive(sessions: SessionMeta[], over: Partial<React.ComponentProps<
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
+    onSetUnread: vi.fn(),
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};

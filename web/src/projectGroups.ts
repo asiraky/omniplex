@@ -11,8 +11,11 @@
  * - The filter names what is *hidden*, not what is shown, so a project added
  *   on another device arrives visible rather than pre-hidden.
  * - Group order is the order the projects first appear in the list. The server
- *   sends sessions most-recently-updated first, so that is "last used" for
- *   free, with no second sort to disagree with the first.
+ *   sends sessions newest-created first — a deliberately stable anchor, so
+ *   activity never reorders the list (#157) — which makes first-appearance a
+ *   stable per-project anchor for free: the project holding the youngest
+ *   session leads, and groups only move when a session is created or deleted.
+ *   No second sort to disagree with the first.
  * - A group with no sessions does not exist. Nothing else has to remember to
  *   suppress its header, because there is no group to have one.
  * - One group is not a grouping. Whether that is because one project was
@@ -57,7 +60,7 @@ export function visibleByProject(
 }
 
 /**
- * The sessions, carved by project, in order of last use.
+ * The sessions, carved by project, in the list's own stable order.
  *
  * Returns one group per project that actually has sessions here. A caller with
  * a single group in hand has nothing to group and should render the sessions
@@ -78,8 +81,9 @@ export function groupSessions(sessions: SessionMeta[], projects: Project[]): Pro
       existing.sessions.push(s);
       continue;
     }
-    // First appearance sets the order, and the list arrives most-recently-
-    // updated first, so the project holding the newest session leads.
+    // First appearance sets the order, and the list arrives newest-created
+    // first, so the project holding the youngest session leads — and holds
+    // that position: activity reorders neither the list nor the groups.
     groups.set(key, { key, name: project ? project.config.name : cwdName(s), sessions: [s] });
   }
 
