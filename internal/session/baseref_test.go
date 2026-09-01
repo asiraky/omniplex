@@ -160,11 +160,20 @@ func TestResolveBaseRefSurvivesAnUnreachableRemote(t *testing.T) {
 	}
 }
 
-// The guard that keeps a ref from being read as a flag by `git worktree add`.
-func TestResolveBaseRefRefusesAFlagLikeRef(t *testing.T) {
+// A ref that would be read as a flag by `git worktree add` never reaches git —
+// but it does not fail the session either. It falls back and says so, like
+// every other base that cannot be resolved.
+func TestResolveBaseRefFallsBackFromAFlagLikeRef(t *testing.T) {
 	root, _, _ := gitRepo(t)
-	if _, err := resolveBaseRef(context.Background(), root, "--upload-pack=touch /tmp/x"); err == nil {
-		t.Fatal("a base ref starting with - was accepted")
+	res, err := resolveBaseRef(context.Background(), root, "--upload-pack=touch /tmp/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(res.Ref, "-") {
+		t.Fatalf("resolution = %+v, want a ref git cannot read as an option", res)
+	}
+	if !res.FellBack || res.Note == "" {
+		t.Fatalf("resolution = %+v, want a fallback carrying a note", res)
 	}
 }
 

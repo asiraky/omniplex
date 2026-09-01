@@ -44,6 +44,14 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v !== "" ? v : undefined;
 }
 
+// Inside a harness's entry, "" is kept rather than dropped: it records that the
+// last session here was started on the harness's own default, which is a
+// different thing from never having expressed a preference at all. Only the
+// second lets the project's seed apply.
+function kept(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
 /**
  * Everything remembered, normalised. Anything that is not the shape written
  * here — a half-written key, a value from a future version, hand-edited
@@ -76,9 +84,9 @@ export function loadSessionPrefs(): SessionPrefs {
       for (const [harnessId, prefs] of Object.entries(value.byHarness)) {
         if (!isObject(prefs)) continue;
         byHarness[harnessId] = {
-          model: str(prefs.model),
-          effort: str(prefs.effort),
-          mode: str(prefs.mode),
+          model: kept(prefs.model),
+          effort: kept(prefs.effort),
+          mode: kept(prefs.mode),
         };
       }
     }
@@ -105,9 +113,9 @@ export function harnessPrefs(projectId: string, harnessId: string): HarnessPrefs
 /**
  * Record a session that actually started. Only the named harness's entry is
  * touched, so the other harnesses keep the settings they were last used with.
- * Empty values are recorded as absent: "" means "the harness's own default"
- * everywhere else in the dialog, and it has to keep meaning that on the way
- * back out.
+ * "" is recorded as "" — it means "the harness's own default" everywhere else
+ * in the dialog, and dropping it would let the project's seed reassert itself
+ * the next time the dialog opened.
  */
 export function saveSessionPrefs(
   projectId: string,
@@ -125,9 +133,9 @@ export function saveSessionPrefs(
     byHarness: {
       ...project.byHarness,
       [used.harness]: {
-        model: str(used.model),
-        effort: str(used.effort),
-        mode: str(used.mode),
+        model: kept(used.model),
+        effort: kept(used.effort),
+        mode: kept(used.mode),
       },
     },
   };

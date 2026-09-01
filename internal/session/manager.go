@@ -76,6 +76,11 @@ type Manager struct {
 	// the user installed whatever they were rechecking for.
 	modelGen int
 
+	// One project is added at a time. Two requests naming the same destination
+	// would otherwise both find it absent, both clone into it, and the loser
+	// would delete the winner's checkout on its way out.
+	addMu sync.Mutex
+
 	// Broadcast of session-list changes, so presenters can refresh the sidebar.
 	listMu  sync.Mutex
 	listSub map[string]chan struct{}
@@ -801,6 +806,8 @@ func relHook(root, path string) string {
 // UI knows what the operator picked. Every error here is shown to the operator
 // verbatim, so each one says what to do rather than what went wrong internally.
 func (m *Manager) AddProject(ctx context.Context, root, url string) (project.Project, error) {
+	m.addMu.Lock()
+	defer m.addMu.Unlock()
 	root, url = strings.TrimSpace(root), strings.TrimSpace(url)
 	if root == "" {
 		return project.Project{}, errors.New("choose a directory for the project")

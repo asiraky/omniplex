@@ -189,9 +189,15 @@ export function NewSession({
   const efforts = modelMeta?.efforts ?? [];
   // Efforts are per model, so a remembered level the current model does not
   // take falls through to the seed and then to none at all.
+  // A remembered "" is a choice, not an absence: the last session here was
+  // started on the harness's own default, and reopening must not put the
+  // project's seed back on top of it.
   const preferredEffort =
     chosenEffort ??
-    ([harnessMemory?.effort, harnessSeed?.effort].find((e) => !!e && efforts.includes(e)) ?? "");
+    (harnessMemory?.effort === ""
+      ? ""
+      : ([harnessMemory?.effort, harnessSeed?.effort].find((e) => !!e && efforts.includes(e)) ??
+        ""));
   const effort = efforts.includes(preferredEffort) ? preferredEffort : "";
   // Modes are the selected harness's own presets, repopulated when the harness
   // changes — the same shape as the model picker. Only an expressed preference
@@ -202,7 +208,9 @@ export function NewSession({
   const knownMode = (id: string | undefined) => !!id && modes.some((m) => m.id === id);
   const mode = knownMode(chosenMode)
     ? chosenMode
-    : ([harnessMemory?.mode, harnessSeed?.mode].find(knownMode) ?? "");
+    : harnessMemory?.mode === ""
+      ? ""
+      : ([harnessMemory?.mode, harnessSeed?.mode].find(knownMode) ?? "");
   const displayModeId = mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
   const modeMeta = modes.find((m) => m.id === displayModeId);
   // The project root is its own choice in the list, so listing it again inside

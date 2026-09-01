@@ -329,8 +329,14 @@ export function ProjectSettings({
   // directory the server's own checkout sits in rather than the checkout
   // itself: the server is started inside a project, and cloning a repository
   // into another repository is never what was meant.
+  // The live prop wins over the copy held for editing: this dialog can open
+  // before the user config has arrived, and the copy would then be an empty
+  // object forever.
   const cloneParent =
-    user.projectsDirectory || parentDirectory(defaultRoot) || defaultRoot;
+    userConfig?.projectsDirectory ||
+    user.projectsDirectory ||
+    parentDirectory(defaultRoot) ||
+    defaultRoot;
   const destination = typedDest ?? cloneDestination(cloneParent, url);
   const cloning = !project && source === "clone";
 
@@ -346,10 +352,20 @@ export function ProjectSettings({
         // failure message is the server's own words about why git refused.
         await onAdd(destination.trim(), url.trim());
         // Where it landed is where the next one should be offered. Saved only
-        // after the clone worked — a path git rejected is not a habit.
+        // after the clone worked — a path git rejected is not a habit — and
+        // written over the config as it stands on the server rather than the
+        // copy this dialog opened with, which may predate it.
+        const latest = userConfig ?? user;
         const parent = parentDirectory(destination);
-        if (parent && parent !== user.projectsDirectory) {
-          await onSaveUserConfig({ ...user, projectsDirectory: parent });
+        if (parent && parent !== latest.projectsDirectory) {
+          // The project is already registered. Failing the dialog now would
+          // ask the operator to repeat a clone that worked, and the repeat
+          // would be refused for a destination that now exists.
+          try {
+            await onSaveUserConfig({ ...latest, projectsDirectory: parent });
+          } catch {
+            // Forgetting where the last clone went costs the next prefill.
+          }
         }
       } else await onAdd(root);
       onClose();

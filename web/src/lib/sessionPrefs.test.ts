@@ -57,15 +57,19 @@ describe("session prefs", () => {
     expect(projectPrefs("p3")).toEqual({ byHarness: {} });
   });
 
-  // "" means "the harness's own default" in the dialog, so it must not come
-  // back out as a value that overrides one.
-  it("records an empty setting as no setting", () => {
+  // "" means "the harness's own default" in the dialog, and it survives the
+  // round trip as "": a session started on the default is a choice, and the
+  // project's seed must not be able to overrule it next time.
+  it("records an empty setting as a choice of the default", () => {
     saveSessionPrefs("p1", { harness: "claude", model: "", effort: "", mode: "" });
-    expect(harnessPrefs("p1", "claude")).toEqual({
-      model: undefined,
-      effort: undefined,
-      mode: undefined,
-    });
+    expect(harnessPrefs("p1", "claude")).toEqual({ model: "", effort: "", mode: "" });
+  });
+
+  // Never-set is still never-set: a harness with no entry has expressed
+  // nothing, which is what lets a project.json seed apply at all.
+  it("keeps a harness that was never started absent", () => {
+    saveSessionPrefs("p1", { harness: "claude", model: "opus" });
+    expect(harnessPrefs("p1", "codex")).toEqual({});
   });
 
   // An attach names one checkout; that is not a standing preference, so the

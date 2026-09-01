@@ -353,7 +353,14 @@ func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.SessionMeta
 				return provisionResult{}, err
 			}
 		}
-		args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+		// Resolving can itself create the branch: asking for base "staging" on
+		// a session branch also called "staging" tracks the remote one, and by
+		// now it exists. Creating it a second time is an error, so ask again.
+		recheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		recheck.Dir = p.Root
+		if recheck.Run() != nil {
+			args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+		}
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = p.Root

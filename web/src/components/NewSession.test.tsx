@@ -685,6 +685,26 @@ describe("the remembered session settings", () => {
     );
   });
 
+  // The seed is a starting point, not a setting. Having once started on the
+  // harness's own effort and mode, that is what reopening offers — the project
+  // default does not climb back over a choice already made.
+  it("keeps a remembered default over the project.json seed", async () => {
+    remember({
+      harness: "claude",
+      workspace: "local",
+      byHarness: { claude: { model: "opus", effort: "", mode: "" } },
+    });
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({
+      projects: [local({ harnesses: { claude: { effort: "xhigh", mode: "bypassPermissions" } } })],
+      harnesses: [claude],
+      onCreate,
+    });
+
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ effort: "", mode: "" }));
+  });
+
   // Accounts drop models. A remembered name the instance has stopped serving
   // is not sent — it falls through to the seed, then to the harness default.
   it("ignores a remembered model the instance no longer lists", async () => {

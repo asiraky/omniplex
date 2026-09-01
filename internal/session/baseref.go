@@ -131,10 +131,13 @@ func resolveBaseRef(ctx context.Context, root, base string) (baseResolution, err
 		res.Ref = "HEAD"
 		return res, nil
 	}
-	// A ref that looks like a flag would be read as one by `git worktree add`.
-	// This guard is deliberate and predates the rest of this function.
+	// A ref that looks like a flag would be read as one by `git worktree add`,
+	// so it never reaches git. It is still not worth failing a session over:
+	// the default branch and a note say more than a refusal does.
 	if strings.HasPrefix(base, "-") {
-		return res, fmt.Errorf("base ref %q is not a valid ref", base)
+		res.Ref, res.FellBack = defaultBranch(ctx, root), true
+		res.Note = fmt.Sprintf("base %q cannot be a ref — it reads as a git option; branched from %q instead", base, res.Ref)
+		return res, nil
 	}
 
 	if hasLocalBranch(ctx, root, base) {
@@ -208,9 +211,16 @@ func fallbackBase(ctx context.Context, root string, res baseResolution) (baseRes
 }
 
 func defaultBranch(ctx context.Context, root string) string {
-	if head, ok := gitCapture(ctx, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); ok && head != "" {
+	// Every remote is asked, origin first, because a checkout whose only remote
+	// is called "upstream" still has a default branch and it is still a better
+	// answer than main-or-whatever-is-checked-out.
+	for _, remote := range originFirst(remotes(ctx, root)) {
+		head, ok := gitCapture(ctx, root, "symbolic-ref", "--quiet", "refs/remotes/"+remote+"/HEAD")
+		if !ok || head == "" {
+			continue
+		}
 		short := strings.TrimPrefix(head, "refs/remotes/")
-		if name := strings.TrimPrefix(short, "origin/"); name != "" && hasLocalBranch(ctx, root, name) {
+		if name := strings.TrimPrefix(short, remote+"/"); name != "" && hasLocalBranch(ctx, root, name) {
 			return name
 		}
 		if short != "" {
