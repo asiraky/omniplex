@@ -1331,11 +1331,15 @@ export function Transcript({
           rides just above the composer, tracking its measured height so the two
           never overlap however tall the composer grows. The wrapper is inert to
           the pointer: only the button itself may take a click, or a strip of
-          dead space would run across the transcript. */}
+          dead space would run across the transcript.
+
+          It clears the 2rem fade band that sits on top of the composer and
+          stacks above it, so the gradient washes over scrolling content but
+          never across the button's face. */}
       {!pinned && (
         <div
-          className="pointer-events-none absolute inset-x-0 flex justify-center"
-          style={{ bottom: "calc(var(--composer-h, 9rem) + 0.75rem)" }}
+          className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
+          style={{ bottom: "calc(var(--composer-h, 9rem) + 2rem)" }}
         >
           <IconButton
             label="Scroll to bottom"
