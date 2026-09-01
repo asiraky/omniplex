@@ -2,6 +2,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   FolderIcon,
+  KeyRoundIcon,
   GitBranchIcon,
   PanelLeftIcon,
   PlusIcon,
@@ -161,6 +162,8 @@ interface SidebarProps {
   onDelete: (id: string, removeWorktree: boolean) => void | Promise<unknown>;
   /** Opens the "how to reach this server" panel. */
   onShowAccess: () => void;
+  /** Opens the providers screen — agents, accounts and their sign-ins. */
+  onShowProviders: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
   /**
@@ -812,6 +815,9 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
+        <IconButton label="Providers" onClick={props.onShowProviders}>
+          <KeyRoundIcon />
+        </IconButton>
         <ThemeToggle />
       </div>
     </div>

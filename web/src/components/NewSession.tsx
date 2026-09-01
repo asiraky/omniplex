@@ -90,6 +90,7 @@ export function NewSession({
   onSettings,
   onRecheck,
   onLogin,
+  onManageProviders,
   onClose,
   status,
 }: {
@@ -105,6 +106,8 @@ export function NewSession({
   onRecheck: () => void;
   /** Open the harness's own sign-in for one instance; absent when the server cannot run one. */
   onLogin?: (instanceId: string) => void;
+  /** Open the providers screen, for when signing in is not the fix. */
+  onManageProviders?: () => void;
   onClose: () => void;
   status: ConnectionStatus;
 }) {
@@ -464,6 +467,13 @@ export function NewSession({
                         <RefreshCwIcon />
                         Check again
                       </Button>
+                      {/* The account screen, for when the fix is a setting or
+                          a different credential rather than a fresh login. */}
+                      {onManageProviders && (
+                        <Button variant="outline" size="sm" onClick={onManageProviders}>
+                          Providers…
+                        </Button>
+                      )}
                     </div>
                   </AlertDescription>
                 </Alert>

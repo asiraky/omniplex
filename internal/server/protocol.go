@@ -9,6 +9,7 @@ import (
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
+	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/userconfig"
@@ -73,6 +74,11 @@ type serverFrame struct {
 	CommandID string          `json:"commandId,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`
 	Error     string          `json:"error,omitempty"`
+
+	// AuthFlow narrates a running authentication flow ("auth_event" frames).
+	// These travel only to the connection that began the flow and are never
+	// persisted: their traffic sits next to secrets.
+	AuthFlow *session.AuthFlowEvent `json:"authFlow,omitempty"`
 }
 
 // Command argument shapes.
@@ -249,4 +255,48 @@ type resolveElicitationArgs struct {
 	RequestID string          `json:"requestId"`
 	Action    string          `json:"action"`
 	Value     json.RawMessage `json:"value"`
+}
+
+// saveProviderInstanceArgs carries a full instance spec. A sensitive env value
+// travels here exactly once, on its way to the secret store; it is never
+// echoed back, and the command's args are not persisted anywhere.
+type saveProviderInstanceArgs struct {
+	Spec provider.Spec `json:"spec"`
+}
+
+type instanceArgs struct {
+	InstanceID string `json:"instanceId"`
+}
+
+type authBeginArgs struct {
+	InstanceID string `json:"instanceId"`
+	MethodID   string `json:"methodId"`
+}
+
+// authRespondArgs answers one prompt of a running flow. Value may be a secret;
+// this command bypasses the command ledger entirely so it is never written to
+// disk, and its ack carries no payload.
+type authRespondArgs struct {
+	FlowID   string `json:"flowId"`
+	PromptID string `json:"promptId"`
+	Value    string `json:"value"`
+}
+
+type authCancelArgs struct {
+	FlowID string `json:"flowId"`
+}
+
+// modelSettingArgs stores one model's harness-level setting for an instance.
+// The value is the harness's own config JSON, not a credential — it is
+// deliberately readable back, so the box a user pasted into shows what is
+// actually in effect.
+type modelSettingArgs struct {
+	InstanceID string `json:"instanceId"`
+	ModelID    string `json:"modelId"`
+	Value      string `json:"value"`
+}
+
+type logoutArgs struct {
+	InstanceID string `json:"instanceId"`
+	MethodID   string `json:"methodId"`
 }

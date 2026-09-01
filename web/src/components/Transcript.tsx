@@ -786,11 +786,18 @@ function InterruptedCard({
   onContinue,
   onLogin,
   providerName,
+  providerReady,
+  onRetryTurn,
 }: {
   turn: Turn;
   onContinue: () => void;
   onLogin?: () => void;
   providerName?: string;
+  /** Live: true once the instance reports ready again after a sign-in. */
+  providerReady?: boolean;
+  /** Re-sends this turn's prompt. Only ever called by the Retry button —
+      finishing a sign-in must never resend a prompt by itself. */
+  onRetryTurn?: (turn: Turn) => void;
 }) {
   const [sending, setSending] = useState(false);
   const error = turn.error ?? "";
@@ -807,18 +814,35 @@ function InterruptedCard({
     return (
       <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
         <p className="text-[13px]">
-          {providerName ?? "The provider"} is not signed in, so this turn could not run.
+          {providerName ?? "The provider"} needs to sign in again, so this turn could not run.
         </p>
         <p className="text-muted-foreground mt-1.5 text-[12px]">
-          Sign in again, then send the prompt again. If this instance uses a configured credential,
-          replace that credential instead.
+          The session and its prompt are safe. Sign in, then retry — the prompt is only ever
+          re-sent when you press it.
         </p>
-        {onLogin && (
-          <Button size="sm" className="mt-2.5" onClick={onLogin}>
-            <LogInIcon />
-            Sign in again
-          </Button>
-        )}
+        <div className="mt-2.5 flex flex-wrap gap-2">
+          {onLogin && (
+            <Button size="sm" variant={providerReady ? "outline" : "default"} onClick={onLogin}>
+              <LogInIcon />
+              Sign in
+            </Button>
+          )}
+          {/* Appears once the instance reports ready again — the pushed
+              harnesses frame after a sign-in is what flips it. Explicit by
+              design: a finished flow never resends the prompt itself. */}
+          {onRetryTurn && providerReady && (
+            <Button
+              size="sm"
+              disabled={sending}
+              onClick={() => {
+                setSending(true);
+                onRetryTurn(turn);
+              }}
+            >
+              {sending ? "Sending…" : "Retry this prompt"}
+            </Button>
+          )}
+        </div>
       </div>
     );
   }
@@ -894,6 +918,8 @@ export function Transcript({
   onContinue,
   onLogin,
   providerName,
+  providerReady,
+  onRetryTurn,
   onOpenDiff,
   jobs = [],
   onOpenJobs,
@@ -926,6 +952,10 @@ export function Transcript({
   onLogin?: () => void;
   /** The provider instance named in authentication failures. */
   providerName?: string;
+  /** True while that instance reports ready; gates the auth card's Retry. */
+  providerReady?: boolean;
+  /** Re-sends a failed turn's prompt, on explicit request only. */
+  onRetryTurn?: (turn: Turn) => void;
   onOpenDiff: (path?: string) => void;
   /** The session's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
@@ -1314,6 +1344,8 @@ export function Transcript({
               onContinue={onContinue}
               onLogin={onLogin}
               providerName={providerName}
+              providerReady={providerReady}
+              onRetryTurn={onRetryTurn}
             />
           )}
 

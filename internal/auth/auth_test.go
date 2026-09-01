@@ -21,7 +21,7 @@ func testGuard(t *testing.T, reachable bool) (*Guard, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return New(st, reachable), st
+	return New(st, reachable, DefaultPort), st
 }
 
 func TestPolicyFollowsReachability(t *testing.T) {
@@ -112,7 +112,7 @@ func TestRedeemIssuesAWorkingToken(t *testing.T) {
 	}
 
 	r := remoteRequest("/api/sessions")
-	r.AddCookie(&http.Cookie{Name: CookieName, Value: token})
+	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: token})
 	got, ok := g.Authorize(r)
 	if !ok {
 		t.Fatal("a freshly issued token was refused")
@@ -167,7 +167,7 @@ func TestPairingCodeIsSingleUseUnderConcurrency(t *testing.T) {
 
 	// And the winner's token really works.
 	r := remoteRequest("/api/sessions")
-	r.AddCookie(&http.Cookie{Name: CookieName, Value: tokens[0]})
+	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: tokens[0]})
 	if _, ok := g.Authorize(r); !ok {
 		t.Fatal("the winning token was refused")
 	}
@@ -204,7 +204,7 @@ func TestRevokedDeviceLosesAccess(t *testing.T) {
 	}
 
 	r := remoteRequest("/api/sessions")
-	r.AddCookie(&http.Cookie{Name: CookieName, Value: token})
+	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: token})
 	if _, ok := g.Authorize(r); ok {
 		t.Fatal("a revoked device still authorised")
 	}
@@ -239,7 +239,7 @@ func TestUnauthorisedRemoteIsRefused(t *testing.T) {
 
 	// A wrong token is refused just as a missing one is.
 	r := remoteRequest("/api/sessions")
-	r.AddCookie(&http.Cookie{Name: CookieName, Value: "not-a-real-token"})
+	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: "not-a-real-token"})
 	if _, ok := g.Authorize(r); ok {
 		t.Fatal("an invented token authorised")
 	}
@@ -318,7 +318,7 @@ func TestCookieIsNotSecureOverPlainHTTP(t *testing.T) {
 	// be sent back, locking the device out of the session it just created.
 	w := httptest.NewRecorder()
 	r := remoteRequest("/api/pair")
-	SetCookie(w, r, "token-value")
+	New(nil, true, DefaultPort).SetCookie(w, r, "token-value")
 
 	cookie := w.Result().Cookies()[0]
 	if cookie.Secure {
@@ -442,4 +442,52 @@ func TestLimiterIsBounded(t *testing.T) {
 	if n > maxBuckets {
 		t.Fatalf("limiter holds %d buckets, want at most %d", n, maxBuckets)
 	}
+}
+
+// Cookies are scoped by host and never by port, so two instances on one
+// machine share a jar. Before this, pairing with a worktree on :8800 overwrote
+// the token the instance on :8787 had issued, that instance saw a token it
+// never minted and sent the browser to /pair, and pairing there overwrote the
+// first one straight back — pairing appearing to fall out at random on a
+// machine that runs a dev instance beside a real one.
+func TestInstancesOnDifferentPortsDoNotShareACookie(t *testing.T) {
+	if got, want := CookieName(DefaultPort), "omniplex_device"; got != want {
+		t.Errorf("CookieName(%d) = %q, want %q — the primary instance keeps the "+
+			"bare name so nothing has to pair again", DefaultPort, got, want)
+	}
+	if CookieName(8800) == CookieName(DefaultPort) {
+		t.Fatalf("a worktree on :8800 shares %q with the primary instance",
+			CookieName(8800))
+	}
+	if got, want := CookieName(8800), "omniplex_device_8800"; got != want {
+		t.Errorf("CookieName(8800) = %q, want %q", got, want)
+	}
+
+	// The end of it that actually bites: a guard must ignore another
+	// instance's cookie rather than treat it as a token it failed to find.
+	primary, st := testGuard(t, true)
+	token, _, err := primary.Redeem(context.Background(), "peer", mustCode(t, primary), "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := New(st, true, 8800)
+
+	r := httptest.NewRequest("GET", "/api/sessions", nil)
+	r.RemoteAddr = "10.0.0.9:1234"
+	r.AddCookie(&http.Cookie{Name: primary.CookieName(), Value: token})
+	if _, ok := worktree.Authorize(r); ok {
+		t.Error("the :8800 instance accepted the primary instance's cookie")
+	}
+	if _, ok := primary.Authorize(r); !ok {
+		t.Error("the primary instance rejected its own cookie")
+	}
+}
+
+func mustCode(t *testing.T, g *Guard) string {
+	t.Helper()
+	code, err := g.NewPairingCode(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
 }
