@@ -329,10 +329,15 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
 		harnessSessionID: sessionID,
 		model:            o.Model,
-		effort:           o.Effort,
-		events:           make(chan proto.Emission, 256),
-		streams:          map[string]*stream{},
-		done:             make(chan struct{}),
+		// The window was fixed above, from this id, when the process booted.
+		// Remembering the answer is what lets the fallback meter stay right
+		// after init overwrites the model with the bare id the harness reports
+		// — and after a mid-session model switch, which cannot move it.
+		oneM:    strings.Contains(o.Model, "[1m]"),
+		effort:  o.Effort,
+		events:  make(chan proto.Emission, 256),
+		streams: map[string]*stream{},
+		done:    make(chan struct{}),
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
 
@@ -391,6 +396,11 @@ type session struct {
 	sawResult bool
 	model     string
 	effort    string
+	// oneM records whether this process was started with the 1M window
+	// enabled. It is start-time and immutable: the CLI reads
+	// CLAUDE_CODE_DISABLE_1M_CONTEXT once at boot, so no model switch or
+	// harness report changes it.
+	oneM bool
 	// jobs is what the adapter knows about each task the harness has
 	// reported, keyed by task id: the linkage every job row must repeat, and
 	// whether a terminal row has already gone out. toolJobs maps the spawning
@@ -517,10 +527,11 @@ func (s *session) SetModel(ctx context.Context, model string) error {
 	}
 	s.mu.Lock()
 	s.model = model
-	// The cached window belonged to the old model. Clearing it stops a stale
-	// value (a 1M Opus window shown for a 200k Sonnet) from persisting: the
-	// next result recomputes from the new model, and the next context_usage
-	// report replaces it with the harness's authoritative figure.
+	// The cached window was the old model's, as the harness reported it.
+	// Clearing it stops a stale value persisting across the switch: the next
+	// result falls back to the window this process was started with, and the
+	// next context_usage report replaces it with the harness's authoritative
+	// figure for the new model.
 	s.usage.ContextWindow = 0
 	s.usage.ContextLimit = 0
 	s.mu.Unlock()
@@ -943,14 +954,15 @@ func (s *session) trackSessionID(msg map[string]json.RawMessage) {
 }
 
 // contextWindowFor is the fallback window used only when the harness cannot
-// report context usage directly (an older CLI without the control method): the
-// standard 200k unless the model is one of the 1M ones. The Opus 5 generation
-// is 1M whether or not its id carries the "[1m]" tag (the harness reports the
-// bare "claude-opus-5" mid-session), and older Opus ids run at 1M too, so the
-// family name is recognised as well as the tag. When getContextUsage is
-// available it supplies the real window and this is unused.
-func contextWindowFor(model string) int64 {
-	if strings.Contains(model, "[1m]") || strings.Contains(model, "opus") {
+// report context usage directly (an older CLI without the control method).
+// It reads the choice made at process start rather than the model's name: the
+// window is whatever CLAUDE_CODE_DISABLE_1M_CONTEXT said when the CLI booted,
+// which is 1M exactly when the starting model id carried the "[1m]" tag. A
+// family name says nothing about it — a 1M-capable model started without the
+// tag runs at 200k. When getContextUsage is available it supplies the real
+// window and this is unused.
+func contextWindowFor(oneM bool) int64 {
+	if oneM {
 		return 1_000_000
 	}
 	return 200_000
@@ -1027,7 +1039,7 @@ func (s *session) handleContextUsage(msg map[string]json.RawMessage) {
 	}
 	if window == 0 {
 		s.mu.Lock()
-		window = contextWindowFor(s.model)
+		window = contextWindowFor(s.oneM)
 		s.mu.Unlock()
 	}
 
@@ -1311,7 +1323,7 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	used := s.lastPromptTokens
 	window := s.usage.ContextWindow
 	if window == 0 {
-		window = contextWindowFor(s.model)
+		window = contextWindowFor(s.oneM)
 	}
 	s.usage.ContextUsed = used
 	s.usage.ContextWindow = window
