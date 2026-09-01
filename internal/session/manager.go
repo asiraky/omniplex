@@ -348,6 +348,10 @@ type Harness struct {
 	// ConfigFields is the driver's schema for configuring an instance — what
 	// the add/edit forms render. Absent when the driver takes no configuration.
 	ConfigFields []adapter.ConfigField `json:"configFields,omitempty"`
+	// ModelSettings describes a per-model setting the harness itself reads,
+	// so the UI can offer it beside the account instead of sending the user
+	// to a config file. Absent when the driver has none.
+	ModelSettings *adapter.ModelSettingsSchema `json:"modelSettings,omitempty"`
 }
 
 // Harnesses lists every registered harness, available or not, each with its
@@ -368,6 +372,10 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 		}
 		if cfg, ok := ad.(adapter.Configurer); ok {
 			h.ConfigFields = cfg.ConfigFields()
+		}
+		if ms, ok := ad.(adapter.ModelSettings); ok {
+			schema := ms.ModelSettingsSchema()
+			h.ModelSettings = &schema
 		}
 		// The driver-level availability and models mirror the default
 		// instance, which is what today's UI renders; one instance being

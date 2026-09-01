@@ -286,6 +286,16 @@ type authCancelArgs struct {
 	FlowID string `json:"flowId"`
 }
 
+// modelSettingArgs stores one model's harness-level setting for an instance.
+// The value is the harness's own config JSON, not a credential — it is
+// deliberately readable back, so the box a user pasted into shows what is
+// actually in effect.
+type modelSettingArgs struct {
+	InstanceID string `json:"instanceId"`
+	ModelID    string `json:"modelId"`
+	Value      string `json:"value"`
+}
+
 type logoutArgs struct {
 	InstanceID string `json:"instanceId"`
 	MethodID   string `json:"methodId"`

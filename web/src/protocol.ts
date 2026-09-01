@@ -700,6 +700,25 @@ export interface HarnessMeta {
   instances: ProviderInstanceMeta[];
   /** The driver's instance-configuration schema; absent means no settings. */
   configFields?: ProviderConfigField[];
+  /**
+   * A per-model setting the harness itself reads, offered beside the account
+   * so it does not have to be hand-edited into a config file. Absent means the
+   * driver has none.
+   */
+  modelSettings?: ModelSettingsSchema;
+}
+
+/**
+ * Describes the per-model box a harness wants a value in. The value is opaque
+ * to Omniplex — it is the harness's schema and the harness's file.
+ */
+export interface ModelSettingsSchema {
+  label: string;
+  description?: string;
+  placeholder?: string;
+  docsUrl?: string;
+  /** Restricts the setting to model ids starting with this. */
+  prefix?: string;
 }
 
 export type Reachability = "loopback" | "lan" | "overlay" | "public";

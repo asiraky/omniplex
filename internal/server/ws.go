@@ -422,11 +422,11 @@ func pollingCommand(name string) bool { return name == "session_pr" }
 // The auth-flow commands qualify twice over: an auth_respond may carry a
 // secret, which must never touch a durable table even as a claimed row, and a
 // flow is connection-scoped, so replaying any of these against a dead flow is
-// meaningless. The overview is a live read whose stored answer would only ever
-// be stale.
+// meaningless. The overview and the model-settings read are live reads whose
+// stored answers would only ever be stale.
 func ephemeralCommand(name string) bool {
 	switch name {
-	case "auth_begin", "auth_respond", "auth_cancel", "provider_auth_overview":
+	case "auth_begin", "auth_respond", "auth_cancel", "provider_auth_overview", "provider_model_settings":
 		return true
 	}
 	return false
@@ -902,6 +902,31 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"status": "deleted"}, nil
+
+	case "provider_model_settings":
+		var a instanceArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		values, err := c.srv.mgr.ModelSettings(a.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"modelSettings": values}, nil
+
+	case "set_model_setting":
+		var a modelSettingArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.SetModelSetting(a.InstanceID, a.ModelID, a.Value); err != nil {
+			return nil, err
+		}
+		values, err := c.srv.mgr.ModelSettings(a.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"modelSettings": values}, nil
 
 	case "provider_auth_overview":
 		var a instanceArgs

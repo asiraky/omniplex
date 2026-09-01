@@ -23,6 +23,13 @@ func (c *cfgAdapter) ConfigFields() []adapter.ConfigField {
 
 func adminTestManager(t *testing.T) *Manager {
 	t.Helper()
+	return adminTestManagerWith(t, &cfgAdapter{})
+}
+
+// adminTestManagerWith builds the same manager around a specific driver, for
+// tests about an optional capability the plain fake does not implement.
+func adminTestManagerWith(t *testing.T, ad adapter.Adapter) *Manager {
+	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("OMNIPLEX_CONFIG", filepath.Join(dir, "config.json"))
 	st, err := store.Open(filepath.Join(dir, "test.db"))
@@ -34,7 +41,7 @@ func adminTestManager(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &cfgAdapter{})
+	mgr := NewManager(st, func(string, ...any) {}, ad)
 	mgr.ConfigureInstances(nil, secrets)
 	return mgr
 }

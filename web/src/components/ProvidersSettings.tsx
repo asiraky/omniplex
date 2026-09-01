@@ -4,6 +4,7 @@ import { useId, useMemo, useState } from "react";
 import { AuthMethods } from "~/components/AuthFlowDialog";
 import type { AuthWires } from "~/components/AuthFlowDialog";
 import { HarnessBadge } from "~/components/HarnessBadge";
+import { ModelSettingsSection } from "~/components/ModelSettingsSection";
 import { IconButton } from "~/components/IconButton";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -425,6 +426,17 @@ function InstanceView({
           </Button>
         </div>
       </div>
+
+      {harness.modelSettings && (
+        <>
+          <Separator />
+          <ModelSettingsSection
+            wires={wires}
+            instance={instance}
+            schema={harness.modelSettings}
+          />
+        </>
+      )}
 
       <Separator />
 

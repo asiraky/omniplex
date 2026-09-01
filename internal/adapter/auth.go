@@ -185,3 +185,40 @@ const (
 type Configurer interface {
 	ConfigFields() []ConfigField
 }
+
+// ModelSettings is implemented by adapters that hold per-model configuration
+// the harness itself reads — routing preferences, per-model overrides — and
+// that a user would otherwise have to hand-edit a config file to change.
+//
+// The values are opaque JSON to Omniplex: it is the harness's schema, the
+// harness's file, and the harness's business what the keys mean. Omniplex
+// only offers a place to put them, so the setting lives beside the account it
+// applies to instead of in a text editor.
+type ModelSettings interface {
+	// ModelSettingsSchema describes the box a UI should draw. A zero Prefix
+	// means every model takes the setting.
+	ModelSettingsSchema() ModelSettingsSchema
+	// ModelSettings reads the values currently stored, keyed by the model id
+	// as it appears in a listing. Models with nothing set are absent.
+	ModelSettings(env map[string]string) (map[string]string, error)
+	// SetModelSetting stores one model's value, or clears it when value is
+	// empty. It must leave every other key in the harness's config verbatim:
+	// a user's hand-written settings are not ours to rewrite.
+	SetModelSetting(env map[string]string, modelID, value string) error
+}
+
+// ModelSettingsSchema tells a UI what the per-model setting is and which
+// models it applies to.
+type ModelSettingsSchema struct {
+	// Label names the setting, e.g. "Provider routing".
+	Label string `json:"label"`
+	// Description says what it does, in one or two sentences.
+	Description string `json:"description,omitempty"`
+	// Placeholder is an example value.
+	Placeholder string `json:"placeholder,omitempty"`
+	// DocsURL points at whoever defines the schema.
+	DocsURL string `json:"docsUrl,omitempty"`
+	// Prefix restricts the setting to model ids starting with it, because a
+	// setting can be specific to one of a harness's providers.
+	Prefix string `json:"prefix,omitempty"`
+}
