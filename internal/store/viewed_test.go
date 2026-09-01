@@ -12,6 +12,12 @@ func TestMarkSessionViewed(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	mustCreateSession(t, s, "s1")
+	// A log to be read: head_seq = 5.
+	for range 5 {
+		if _, err := s.Append(ctx, "s1", proto.Emit("message.chunk", map[string]any{"delta": "hi"})); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
 
 	if err := s.MarkSessionViewed(ctx, "ghost", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("viewing an unknown session: got %v, want ErrNotFound", err)
@@ -39,6 +45,17 @@ func TestMarkSessionViewed(t *testing.T) {
 		t.Fatalf("stale report moved the cursor backwards: %+v", got)
 	}
 
+	// Capped at the head: nobody has seen events that do not exist, and a
+	// cursor past the head would keep future completions read until the log
+	// caught up to a number a buggy client invented.
+	if err := s.MarkSessionViewed(ctx, "s1", 99); err != nil {
+		t.Fatalf("overshooting mark viewed: %v", err)
+	}
+	got, _ = s.Session(ctx, "s1")
+	if got.LastViewedSeq != 5 {
+		t.Fatalf("cursor ran past the head: %+v", got)
+	}
+
 	// Mark unread is the one legal way backwards.
 	if err := s.MarkSessionUnread(ctx, "s1"); err != nil {
 		t.Fatalf("mark unread: %v", err)
@@ -52,11 +69,11 @@ func TestMarkSessionViewed(t *testing.T) {
 	}
 
 	// The list carries the cursor, so the sidebar can compare it to headSeq.
-	if err := s.MarkSessionViewed(ctx, "s1", 7); err != nil {
+	if err := s.MarkSessionViewed(ctx, "s1", 4); err != nil {
 		t.Fatal(err)
 	}
 	list, _ := s.ListSessions(ctx)
-	if len(list) != 1 || list[0].LastViewedSeq != 7 {
+	if len(list) != 1 || list[0].LastViewedSeq != 4 {
 		t.Fatalf("list does not carry the viewed cursor: %+v", list)
 	}
 }

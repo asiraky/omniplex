@@ -522,17 +522,33 @@ export function App() {
   // on exactly the connections we care about. The turn finishing flips the
   // phase and sends one report for the whole turn.
   const viewedReported = useRef<Record<string, number>>({});
+  // One chain of read-state commands per session. The server runs each
+  // connection's commands in independent goroutines, so two frames sent
+  // back-to-back can execute in either order — and "mark unread" losing to an
+  // in-flight read-on-open report would silently undo the user's click.
+  // Sending each command only after the previous one's ack pins the order.
+  const readStateQueue = useRef<Record<string, Promise<unknown>>>({});
+  const sendReadState = useCallback((sessionId: string, command: string, args: object) => {
+    const next = (readStateQueue.current[sessionId] ?? Promise.resolve()).then(
+      () => clientRef.current?.command(command, args),
+    );
+    // Swallowed here so the chain survives a failure; callers hang their own
+    // error handling off the returned promise.
+    readStateQueue.current[sessionId] = next.catch(() => {});
+    return next;
+  }, []);
   useEffect(() => {
     if (!state || state.sessionId !== activeId) return;
     if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning") return;
     if (state.seq <= (viewedReported.current[state.sessionId] ?? 0)) return;
     viewedReported.current[state.sessionId] = state.seq;
-    clientRef.current
-      ?.command("mark_session_viewed", { sessionId: state.sessionId, seq: state.seq })
-      .catch(() => {
-        // Nothing to tell the user: the dot clears next time this succeeds.
-      });
-  }, [activeId, state]);
+    sendReadState(state.sessionId, "mark_session_viewed", {
+      sessionId: state.sessionId,
+      seq: state.seq,
+    }).catch(() => {
+      // Nothing to tell the user: the dot clears next time this succeeds.
+    });
+  }, [activeId, state, sendReadState]);
 
   // The explicit flag back the other way, from the row's context menu.
   // Fire-and-forget like the label mutations: the sessions broadcast is the
@@ -542,16 +558,16 @@ export function App() {
       // Forget what this page reported, or the effect above would treat the
       // current head as already-sent and never re-mark it read.
       delete viewedReported.current[sessionId];
-      clientRef.current?.command("mark_session_unread", { sessionId }).catch((e) => {
+      sendReadState(sessionId, "mark_session_unread", { sessionId }).catch((e) => {
         toast.error("Could not mark that session unread", { description: e.message });
       });
       return;
     }
     const head = sessions.find((s) => s.id === sessionId)?.headSeq ?? 0;
-    clientRef.current?.command("mark_session_viewed", { sessionId, seq: head }).catch((e) => {
+    sendReadState(sessionId, "mark_session_viewed", { sessionId, seq: head }).catch((e) => {
       toast.error("Could not mark that session read", { description: e.message });
     });
-  }, [sessions]);
+  }, [sessions, sendReadState]);
 
   // Label mutations fire and forget: the authoritative answer arrives as a
   // labels (or sessions) broadcast, the same way it does for a paired device,

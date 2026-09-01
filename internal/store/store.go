@@ -156,14 +156,22 @@ func Open(path string) (*Store, error) {
 	}
 	// last_viewed_seq gets its backfill in the same breath as the column: a
 	// database upgraded today has been looked at for months, and defaulting to
-	// zero would greet the user with a wall of unread dots. The backfill runs
-	// only when the ALTER actually added the column, so a genuinely-unread
-	// session on an already-migrated database is never wiped read.
-	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN last_viewed_seq INTEGER NOT NULL DEFAULT 0`); err == nil {
-		if _, err := db.Exec(`UPDATE sessions SET last_viewed_seq = head_seq`); err != nil {
-			return nil, fmt.Errorf("backfill last_viewed_seq: %w", err)
+	// zero would greet the user with a wall of unread dots. One transaction,
+	// because the duplicate-column error is the only "already migrated"
+	// signal: a crash between ALTER and UPDATE would otherwise leave the
+	// column added but unbackfilled, and every later start would see the
+	// duplicate and skip the backfill forever.
+	if tx, err := db.Begin(); err != nil {
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	} else if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN last_viewed_seq INTEGER NOT NULL DEFAULT 0`); err != nil {
+		tx.Rollback()
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return nil, fmt.Errorf("migrate schema: %w", err)
 		}
-	} else if !strings.Contains(err.Error(), "duplicate column name") {
+	} else if _, err := tx.Exec(`UPDATE sessions SET last_viewed_seq = head_seq`); err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("backfill last_viewed_seq: %w", err)
+	} else if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 	s := &Store{db: db}
@@ -599,13 +607,16 @@ func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) 
 // MarkSessionViewed records that the user has seen the session up to seq, on
 // whatever device they were looking from. MAX keeps it monotonic: a stale
 // client reporting an old head must not un-read events a fresher device has
-// already seen. updated_at is left alone — looking is not activity, and the
-// stamp no longer orders the list anyway.
+// already seen. MIN caps it at the head: nobody has seen events that do not
+// exist, and a cursor past the head would keep future completions read until
+// the log caught up to a number a buggy client invented. updated_at is left
+// alone — looking is not activity, and the stamp no longer orders the list
+// anyway.
 func (s *Store) MarkSessionViewed(ctx context.Context, sessionID string, seq int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_viewed_seq = MAX(last_viewed_seq, ?) WHERE id = ?`, seq, sessionID)
+		`UPDATE sessions SET last_viewed_seq = MAX(last_viewed_seq, MIN(?, head_seq)) WHERE id = ?`, seq, sessionID)
 	if err != nil {
 		return err
 	}
