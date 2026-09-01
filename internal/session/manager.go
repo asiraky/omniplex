@@ -76,6 +76,11 @@ type Manager struct {
 	// the user installed whatever they were rechecking for.
 	modelGen int
 
+	// One project is added at a time. Two requests naming the same destination
+	// would otherwise both find it absent, both clone into it, and the loser
+	// would delete the winner's checkout on its way out.
+	addMu sync.Mutex
+
 	// Broadcast of session-list changes, so presenters can refresh the sidebar.
 	listMu  sync.Mutex
 	listSub map[string]chan struct{}
@@ -796,10 +801,55 @@ func relHook(root, path string) string {
 	return rel
 }
 
-func (m *Manager) AddProject(ctx context.Context, root string) (project.Project, error) {
-	abs, err := filepath.Abs(root)
+// AddProject registers a directory as a project. With url set the directory is
+// cloned first: the caller chooses the full destination path, because only the
+// UI knows what the operator picked. Every error here is shown to the operator
+// verbatim, so each one says what to do rather than what went wrong internally.
+func (m *Manager) AddProject(ctx context.Context, root, url string) (project.Project, error) {
+	m.addMu.Lock()
+	defer m.addMu.Unlock()
+	root, url = strings.TrimSpace(root), strings.TrimSpace(url)
+	if root == "" {
+		return project.Project{}, errors.New("choose a directory for the project")
+	}
+	abs, err := project.ResolveDest(root)
 	if err != nil {
 		return project.Project{}, err
+	}
+	// Check for a duplicate before cloning: pulling down a repo only to refuse
+	// to register it would leave the operator with a stray checkout.
+	existing, err := m.store.ListProjects(ctx)
+	if err != nil {
+		return project.Project{}, err
+	}
+	for _, p := range existing {
+		if filepath.Clean(p.Root) == filepath.Clean(abs) {
+			return project.Project{}, fmt.Errorf("that directory is already a project: %s", p.Root)
+		}
+	}
+	if url != "" {
+		remote, err := project.NormalizeRemote(url)
+		if err != nil {
+			return project.Project{}, err
+		}
+		if err := project.CloneWithLog(ctx, remote, abs, m.logf); err != nil {
+			return project.Project{}, err
+		}
+	}
+	// Either the clone just made this or the operator typed it; either way the
+	// registry must not end up pointing at something we cannot read.
+	st, err := os.Stat(abs)
+	if os.IsNotExist(err) {
+		return project.Project{}, fmt.Errorf("no such directory: %s", abs)
+	}
+	if err != nil {
+		return project.Project{}, fmt.Errorf("cannot open %s", abs)
+	}
+	if !st.IsDir() {
+		return project.Project{}, fmt.Errorf("not a directory: %s", abs)
+	}
+	if _, err := os.ReadDir(abs); err != nil {
+		return project.Project{}, fmt.Errorf("cannot read %s — check its permissions", abs)
 	}
 	cfg, err := project.Load(abs)
 	if err != nil {

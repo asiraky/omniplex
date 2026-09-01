@@ -23,9 +23,9 @@ import {
 import { Separator } from "~/components/ui/separator";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { formatEffort } from "~/lib/efforts";
+import { cloneDestination, parentDirectory } from "~/lib/cloneTarget";
 import { cn } from "~/lib/utils";
-import type { HarnessMeta, Issue, Project, ProjectConfig, UserConfig } from "~/protocol";
+import type { Issue, Project, ProjectConfig, UserConfig } from "~/protocol";
 import { makeFormatter } from "./WorkspacePicker";
 
 // A stand-in issue, so the preview shows a real answer rather than describing one.
@@ -35,37 +35,6 @@ const sampleIssue: Issue = {
   url: "",
   labels: [{ name: "bug" }],
 };
-
-/**
- * The effort levels to offer when no model says. Harnesses report their own —
- * and they differ, Codex's newest models adding "ultra" — so this is only the
- * floor for a harness that has not been asked yet.
- */
-const FALLBACK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-
-/**
- * Radix rejects "" as a value, so "no preference" needs a sentinel — and it
- * cannot be a plausible id. "default" was one: Claude ships a model *and* a
- * permission mode called exactly that, so choosing either silently saved "no
- * preference" instead.
- */
-const UNSET = "__omniplex_unset__";
-
-/**
- * Every effort level the harness's models accept, in the order they report
- * them. A fixed low…max list would drop levels a harness has and offer ones it
- * has not — Codex advertises "ultra" on its newest models only.
- */
-function effortsOf(harnesses: HarnessMeta[], harnessId: string): string[] {
-  const models = harnesses.find((h) => h.id === harnessId)?.models ?? [];
-  const seen: string[] = [];
-  for (const model of models) {
-    for (const effort of model.efforts ?? []) {
-      if (!seen.includes(effort)) seen.push(effort);
-    }
-  }
-  return seen.length > 0 ? seen : FALLBACK_EFFORTS;
-}
 
 /** A section heading, so every group on this screen has the same weight. */
 function SectionHeading({ children, note }: { children: React.ReactNode; note?: string }) {
@@ -306,10 +275,12 @@ function DeleteProjectSection({
   );
 }
 
+/** Where a project comes from: a checkout that is already on disk, or one to clone. */
+type Source = "existing" | "clone";
+
 export function ProjectSettings({
   project,
   defaultRoot,
-  harnesses,
   userConfig,
   onAdd,
   onSave,
@@ -320,9 +291,9 @@ export function ProjectSettings({
 }: {
   project: Project | null;
   defaultRoot: string;
-  harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
-  onAdd: (root: string) => Promise<void>;
+  /** With a url, the server clones into `root` first — which can take a while. */
+  onAdd: (root: string, url?: string) => Promise<void>;
   onSave: (id: string, cfg: ProjectConfig) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   /** How many sessions still belong to this project; a project with any is
@@ -344,13 +315,30 @@ export function ProjectSettings({
       },
     },
   );
-  const [settingsHarness, setSettingsHarness] = useState(
-    project?.config.defaults.harness ?? "codex",
-  );
   const [user, setUser] = useState<UserConfig>(userConfig ?? { version: 1 });
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState<Source>("existing");
+  const [url, setUrl] = useState("");
+  // The destination tracks the URL until it is edited by hand: typing the repo
+  // fills the path in, and touching the path stops it moving under you.
+  const [typedDest, setTypedDest] = useState<string | null>(null);
+
+  // Clones go next to the last one. Before there has been one, guess the
+  // directory the server's own checkout sits in rather than the checkout
+  // itself: the server is started inside a project, and cloning a repository
+  // into another repository is never what was meant.
+  // The live prop wins over the copy held for editing: this dialog can open
+  // before the user config has arrived, and the copy would then be an empty
+  // object forever.
+  const cloneParent =
+    userConfig?.projectsDirectory ||
+    user.projectsDirectory ||
+    parentDirectory(defaultRoot) ||
+    defaultRoot;
+  const destination = typedDest ?? cloneDestination(cloneParent, url);
+  const cloning = !project && source === "clone";
 
   const save = async () => {
     setBusy(true);
@@ -359,6 +347,26 @@ export function ProjectSettings({
       if (project) {
         await onSave(project.id, cfg);
         await onSaveUserConfig(user);
+      } else if (cloning) {
+        // A real clone over a real network: this is the slow one, and its
+        // failure message is the server's own words about why git refused.
+        await onAdd(destination.trim(), url.trim());
+        // Where it landed is where the next one should be offered. Saved only
+        // after the clone worked — a path git rejected is not a habit — and
+        // written over the config as it stands on the server rather than the
+        // copy this dialog opened with, which may predate it.
+        const latest = userConfig ?? user;
+        const parent = parentDirectory(destination);
+        if (parent && parent !== latest.projectsDirectory) {
+          // The project is already registered. Failing the dialog now would
+          // ask the operator to repeat a clone that worked, and the repeat
+          // would be refused for a destination that now exists.
+          try {
+            await onSaveUserConfig({ ...latest, projectsDirectory: parent });
+          } catch {
+            // Forgetting where the last clone went costs the next prefill.
+          }
+        }
       } else await onAdd(root);
       onClose();
     } catch (e) {
@@ -369,15 +377,12 @@ export function ProjectSettings({
 
   const defaults = (patch: Partial<ProjectConfig["defaults"]>) =>
     setCfg({ ...cfg, defaults: { ...cfg.defaults, ...patch } });
-  const agentDefaults = (patch: Partial<NonNullable<ProjectConfig["defaults"]["harnesses"]>[string]>) =>
-    defaults({
-      harnesses: {
-        ...cfg.defaults.harnesses,
-        [settingsHarness]: { ...cfg.defaults.harnesses?.[settingsHarness], ...patch },
-      },
-    });
   const workspace = (patch: Partial<ProjectConfig["workspace"]>) =>
     setCfg({ ...cfg, workspace: { ...cfg.workspace, ...patch } });
+
+  // Nothing to add until the form names something to add: a directory, or a
+  // repository and somewhere to put it.
+  const addable = cloning ? !!url.trim() && !!destination.trim() : !!root;
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -390,21 +395,84 @@ export function ProjectSettings({
           <DialogTitle>{project ? `${cfg.name} settings` : "Add project"}</DialogTitle>
           <DialogDescription>
             {project
-              ? "Defaults every new session in this project starts from."
-              : "Point Omniplex at a Git checkout to start creating sessions in it."}
+              ? "How this project's workspaces are made, and what to do with it."
+              : "Point Omniplex at a Git checkout, or clone one, to start creating sessions in it."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="scroll-thin min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
           {!project ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="project-root">Project directory</Label>
-              <Input
-                id="project-root"
-                value={root}
-                onChange={(e) => setRoot(e.target.value)}
-                className="font-mono md:text-[12px]"
-              />
+            <div className="space-y-4">
+              {/* Two ways in, both first-class. Full-width rows rather than a
+                  segmented control: at 375px a two-up toggle with these
+                  labels wraps into something you cannot aim at. */}
+              <div role="radiogroup" aria-label="Project source" className="grid gap-2 sm:grid-cols-2">
+                {(
+                  [
+                    ["existing", "Existing folder", "A checkout already on this machine."],
+                    ["clone", "Clone from Git", "Omniplex clones it, then adds it."],
+                  ] as [Source, string, string][]
+                ).map(([id, label, hint]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={source === id}
+                    onClick={() => setSource(id)}
+                    className={cn(
+                      "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
+                      source === id ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
+                    )}
+                  >
+                    <span className="text-[13px] leading-tight">{label}</span>
+                    <span className="text-muted-foreground text-[11px] leading-tight">{hint}</span>
+                  </button>
+                ))}
+              </div>
+
+              {source === "existing" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="project-root">Project directory</Label>
+                  <Input
+                    id="project-root"
+                    value={root}
+                    onChange={(e) => setRoot(e.target.value)}
+                    className="font-mono md:text-[12px]"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="project-url">Repository</Label>
+                    <Input
+                      id="project-url"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder="asiraky/omniplex"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="font-mono md:text-[12px]"
+                    />
+                    <p className="text-muted-foreground text-[11px]">
+                      A clone URL, or just owner/repo.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="project-destination">Clone into</Label>
+                    <Input
+                      id="project-destination"
+                      value={destination}
+                      onChange={(e) => setTypedDest(e.target.value)}
+                      placeholder={`${cloneParent}/repo`}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="font-mono md:text-[12px]"
+                    />
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="space-y-5">
@@ -422,132 +490,15 @@ export function ProjectSettings({
 
               <Separator />
 
-              <div className="space-y-2">
-                <SectionHeading>Agent defaults</SectionHeading>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Select
-                    value={cfg.defaults.harness ?? ""}
-                    onValueChange={(v) => defaults({ harness: v })}
-                  >
-                    <SelectTrigger aria-label="Default harness" className="w-full">
-                      <SelectValue placeholder="Harness" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {harnesses.map((h) => (
-                        <SelectItem key={h.id} value={h.id}>
-                          {h.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Select value={settingsHarness} onValueChange={setSettingsHarness}>
-                    <SelectTrigger aria-label="Harness settings" className="w-full">
-                      <SelectValue placeholder="Settings for harness" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {harnesses.map((h) => (
-                        <SelectItem key={h.id} value={h.id}>
-                          {h.name} settings
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Select
-                    value={cfg.defaults.harnesses?.[settingsHarness]?.model || UNSET}
-                    onValueChange={(v) => agentDefaults({ model: v === UNSET ? "" : v })}
-                  >
-                    <SelectTrigger aria-label="Default model" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={UNSET}>Default model</SelectItem>
-                      {(() => {
-                        const models =
-                          harnesses.find((h) => h.id === settingsHarness)?.models ??
-                          [];
-                        const items = models.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.label}
-                            {m.version && (
-                              <span className="text-muted-foreground text-[11px]">{m.version}</span>
-                            )}
-                          </SelectItem>
-                        ));
-                        // A saved model the current harness list does not know
-                        // still renders, verbatim, rather than vanishing.
-                        const saved = cfg.defaults.harnesses?.[settingsHarness]?.model;
-                        if (saved && !models.some((m) => m.id === saved)) {
-                          items.push(
-                            <SelectItem key={saved} value={saved}>
-                              {saved}
-                            </SelectItem>,
-                          );
-                        }
-                        return items;
-                      })()}
-                    </SelectContent>
-                  </Select>
-
-                  <Select
-                    value={cfg.defaults.harnesses?.[settingsHarness]?.effort || UNSET}
-                    onValueChange={(v) => agentDefaults({ effort: v === UNSET ? "" : v })}
-                  >
-                    <SelectTrigger aria-label="Default effort" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={UNSET}>Default effort</SelectItem>
-                      {/* Efforts are per model, so the list is what the default
-                          harness's models actually accept. */}
-                      {effortsOf(harnesses, settingsHarness).map((e) => (
-                        <SelectItem key={e} value={e}>
-                          {formatEffort(e)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  {/* Modes belong to the default harness; the list follows it. */}
-                  <Select
-                    value={cfg.defaults.harnesses?.[settingsHarness]?.mode || UNSET}
-                    onValueChange={(v) => agentDefaults({ mode: v === UNSET ? "" : v })}
-                  >
-                    <SelectTrigger aria-label="Default permission mode" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={UNSET}>Default permissions</SelectItem>
-                      {(() => {
-                        const modes =
-                          harnesses.find((h) => h.id === settingsHarness)
-                            ?.permissionModes ?? [];
-                        const items = modes.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.label}
-                          </SelectItem>
-                        ));
-                        // A saved mode the current harness list does not know
-                        // still renders, verbatim, rather than vanishing.
-                        const saved = cfg.defaults.harnesses?.[settingsHarness]?.mode;
-                        if (saved && !modes.some((m) => m.id === saved)) {
-                          items.push(
-                            <SelectItem key={saved} value={saved}>
-                              {saved}
-                            </SelectItem>,
-                          );
-                        }
-                        return items;
-                      })()}
-                    </SelectContent>
-                  </Select>
-
+              <div className="space-y-3">
+                <SectionHeading>Workspace</SectionHeading>
+                <div className="space-y-1.5">
+                  <Label htmlFor="default-workspace">Default workspace</Label>
                   <Select
                     value={cfg.defaults.workspace ?? "local"}
                     onValueChange={(v) => defaults({ workspace: v })}
                   >
-                    <SelectTrigger aria-label="Default workspace" className="w-full">
+                    <SelectTrigger id="default-workspace" aria-label="Default workspace" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -555,17 +506,12 @@ export function ProjectSettings({
                       <SelectItem value="managed">Worktree</SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-muted-foreground text-[11px]">
+                    Which checkout a new session opens on before you change it. The harness, model,
+                    effort and permissions are not set here: the new-session dialog opens on
+                    whatever you last started this project with, per harness.
+                  </p>
                 </div>
-                <p className="text-muted-foreground text-[11px]">
-                  The default harness opens first. Switching harness restores this project's model,
-                  effort and permissions for that harness.
-                </p>
-              </div>
-
-              <Separator />
-
-              <div className="space-y-3">
-                <SectionHeading>Workspace</SectionHeading>
                 <div className="space-y-1.5">
                   <Label htmlFor="base-branch">Base branch</Label>
                   <Input
@@ -628,8 +574,22 @@ export function ProjectSettings({
           </Button>
           {/* Dead while a delete is in flight: a save landing after the
               delete commits would write the project straight back. */}
-          <Button disabled={busy || deleting || (!project && !root)} onClick={save}>
-            {busy ? "Saving…" : project ? "Save" : "Add project"}
+          {/* A clone is a network operation on someone else's server: it can
+              run for minutes, so it says what it is doing rather than looking
+              like a save that hung. */}
+          <Button disabled={busy || deleting || (!project && !addable)} onClick={save}>
+            {busy ? (
+              <>
+                {cloning && <Spinner aria-hidden className="size-4" />}
+                {project ? "Saving…" : cloning ? "Cloning…" : "Adding…"}
+              </>
+            ) : project ? (
+              "Save"
+            ) : cloning ? (
+              "Clone and add"
+            ) : (
+              "Add project"
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

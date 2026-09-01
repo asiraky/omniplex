@@ -13,6 +13,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/attachment"
+	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
@@ -288,9 +289,16 @@ func (c *conn) detachAll() {
 // transcript is minutes rather than seconds — and the session-level timeout it
 // runs under is shorter than this, so the harness still gets the last word on
 // giving up.
+// Adding a project is the other exception: with a url it clones over the
+// network, which for a large repository on a slow line is minutes. The bound
+// here sits above the clone's own timeout so the message the operator gets is
+// the clone's ("timed out after 10m") rather than a bare command timeout.
 func commandTimeout(command string) time.Duration {
-	if command == "summarize_session" {
+	switch command {
+	case "summarize_session":
 		return 5 * time.Minute
+	case "add_project":
+		return project.CloneTimeout + time.Minute
 	}
 	return 60 * time.Second
 }
@@ -833,7 +841,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		p, err := c.srv.mgr.AddProject(ctx, a.Root)
+		p, err := c.srv.mgr.AddProject(ctx, a.Root, a.URL)
 		if err != nil {
 			return nil, err
 		}

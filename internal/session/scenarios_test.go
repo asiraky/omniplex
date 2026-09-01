@@ -73,13 +73,15 @@ func TestManagedWorktreeBranchesFromTheSessionsOwnBase(t *testing.T) {
 	}
 }
 
-// A base that does not exist is a typo, and saying so beats silently branching
-// from HEAD and leaving the user to notice much later.
-func TestUnknownBaseRefFailsProvisioning(t *testing.T) {
+// A base nobody can find is no longer fatal. Refusing to start the session
+// punishes the user for a stale project default they may not have written, so
+// the worktree branches from the repository's default branch and says so.
+func TestUnknownBaseRefFallsBackToTheDefaultBranch(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
+	wantMain := git(t, root, "rev-parse", "main")
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
 		ProjectID: p.ID, Workspace: "managed", Branch: "issue/8-nowhere", BaseRef: "no/such/ref",
@@ -87,10 +89,44 @@ func TestUnknownBaseRefFailsProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), a.ID)
-		return e == nil && m.Phase == "provision_failed"
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "rev-parse", "HEAD"); got != wantMain {
+		t.Fatalf("worktree HEAD %s, want the default branch %s", got, wantMain)
+	}
+	state, err := a.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Workspace.Output, "no/such/ref") || !strings.Contains(state.Workspace.Output, "note:") {
+		t.Fatalf("the fallback was swallowed instead of shown: %q", state.Workspace.Output)
+	}
+}
+
+// The bug in the field: a project default of baseBranch "staging" in a clone
+// that only has origin/staging used to hard-fail every session it touched.
+func TestManagedWorktreeBranchesFromARemoteOnlyBaseBranch(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	_, want := remoteOnlyBase(t, root)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/9-on-staging", BaseRef: "staging",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "merge-base", "HEAD", want); got != want {
+		t.Fatalf("merge-base with the remote branch is %s, want %s", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Cwd, "STAGING")); err != nil {
+		t.Fatalf("the remote base's content is missing from the worktree: %v", err)
+	}
+	if git(t, root, "rev-parse", "refs/heads/staging") != want {
+		t.Fatal("no local tracking branch was created for the remote base")
+	}
 }
 
 // Deleting a session is deleting a session. Removing the checkout it ran in is

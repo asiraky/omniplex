@@ -117,11 +117,18 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.SessionMeta, 
 	}
 	branch, suggested := workspaceTarget(meta, p)
 	meta.Branch = branch
+	// The base is resolved once, here, and the answer is what every hook sees:
+	// a ref that exists in this clone. Resolving it per-hook would fetch twice
+	// and could hand the hook a name Git cannot look up.
+	res, err := m.resolveBase(ctx, meta, p, a)
+	if err != nil {
+		return provisionResult{}, err
+	}
 	compatibility := isCompatibilityHook(hook, "setup")
 	var hookArgs []string
 	var compatibleResult provisionResult
 	if compatibility {
-		compatibleResult, err = m.createWorktree(ctx, meta, p, a)
+		compatibleResult, err = m.createWorktreeFrom(ctx, meta, p, a, &res)
 		if err != nil {
 			return provisionResult{}, err
 		}
@@ -129,18 +136,18 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.SessionMeta, 
 		if err := m.store.UpdateWorkspace(ctx, meta.ID, compatibleResult.Cwd, compatibleResult.Branch, "provisioning", raw); err != nil {
 			return provisionResult{}, err
 		}
+		// A compatibility hook predates every flag omniplex has ever passed, so
+		// it gets the branch and nothing else. The base reaches it as
+		// OMNIPLEX_BASE_REF, where an old script simply ignores it.
 		hookArgs = []string{compatibleResult.Branch}
-		if base := baseRefFor(meta, p); base != "" {
-			hookArgs = []string{"--base", base, compatibleResult.Branch}
-		}
 	}
-	input := provisionContext{Version: 1, SessionID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), SuggestedWorktreePath: suggested}
+	input := provisionContext{Version: 1, SessionID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: res.Ref, SuggestedWorktreePath: suggested}
 	contextPath, resultPath := filepath.Join(stateDir, "context.json"), filepath.Join(stateDir, "result.json")
 	if err := writeJSON(contextPath, input); err != nil {
 		return provisionResult{}, err
 	}
 	_ = os.Remove(resultPath)
-	if err := m.runHook(ctx, a, meta, p.Root, hook, hookArgs, "provision", contextPath, resultPath, stateDir, p.Config.Workspace.ProvisionTimeoutSeconds); err != nil {
+	if err := m.runHook(ctx, a, meta, p.Root, hook, hookArgs, res.Ref, "provision", contextPath, resultPath, stateDir, p.Config.Workspace.ProvisionTimeoutSeconds); err != nil {
 		return provisionResult{}, err
 	}
 	b, err := os.ReadFile(resultPath)
@@ -163,7 +170,7 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.SessionMeta, 
 	return result, nil
 }
 
-func (m *Manager) runHook(parent context.Context, a *Actor, meta store.SessionMeta, cwd, hook string, hookArgs []string, kind, contextPath, resultPath, stateDir string, seconds int) error {
+func (m *Manager) runHook(parent context.Context, a *Actor, meta store.SessionMeta, cwd, hook string, hookArgs []string, baseRef, kind, contextPath, resultPath, stateDir string, seconds int) error {
 	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds)*time.Second)
 	defer cancel()
 	runID, started := uuid.NewString(), time.Now()
@@ -177,7 +184,7 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.SessionMe
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "OMNIPLEX_LIFECYCLE_VERSION=2", "OMNIPLEX_HOOK="+kind, "OMNIPLEX_SESSION_ID="+meta.ID, "OMNIPLEX_PROJECT_ROOT="+cwd, "OMNIPLEX_CONTEXT_FILE="+contextPath, "OMNIPLEX_RESULT_FILE="+resultPath, "OMNIPLEX_STATE_DIR="+stateDir)
+	cmd.Env = append(os.Environ(), "OMNIPLEX_LIFECYCLE_VERSION=2", "OMNIPLEX_HOOK="+kind, "OMNIPLEX_SESSION_ID="+meta.ID, "OMNIPLEX_PROJECT_ROOT="+cwd, "OMNIPLEX_CONTEXT_FILE="+contextPath, "OMNIPLEX_RESULT_FILE="+resultPath, "OMNIPLEX_STATE_DIR="+stateDir, "OMNIPLEX_BASE_REF="+baseRef)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -276,20 +283,24 @@ func baseRefFor(meta store.SessionMeta, p project.Project) string {
 	return strings.TrimSpace(p.Config.Defaults.BaseBranch)
 }
 
-// checkBaseRef refuses a base that Git cannot resolve to a commit, so a typo
-// surfaces as "no such base" rather than as a worktree branched from somewhere
-// unexpected. It also keeps a ref that looks like a flag out of the argv of
-// `git worktree add`, where it would be read as one.
-func checkBaseRef(ctx context.Context, root, base string) error {
-	if strings.HasPrefix(base, "-") {
-		return fmt.Errorf("base ref %q is not a valid ref", base)
+// resolveBase resolves the session's base and tells the user whatever the
+// resolver had to do to get there. The note goes out as provision hook output
+// so it lands on the workspace card: branching from somewhere other than what
+// was asked for is not an error, but it is never allowed to be silent.
+func (m *Manager) resolveBase(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) (baseResolution, error) {
+	res, err := resolveBaseRef(ctx, p.Root, baseRefFor(meta, p))
+	if err != nil {
+		return res, err
 	}
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", base+"^{commit}")
-	cmd.Dir = root
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("base ref %q does not resolve to a commit", base)
+	emitBaseNote(ctx, a, res)
+	return res, nil
+}
+
+func emitBaseNote(ctx context.Context, a *Actor, res baseResolution) {
+	if a == nil || res.Note == "" {
+		return
 	}
-	return nil
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stdout", Chunk: "note: " + res.Note + "\n"}))
 }
 
 func workspaceTarget(meta store.SessionMeta, p project.Project) (string, string) {
@@ -314,13 +325,16 @@ func redactHookOutput(value string) string {
 }
 
 func (m *Manager) createWorktree(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) (provisionResult, error) {
+	return m.createWorktreeFrom(ctx, meta, p, a, nil)
+}
+
+// createWorktreeFrom takes an already-resolved base when the caller has one, so
+// a provision that resolves the base for its hooks does not resolve it a second
+// time here — and cannot reach a different answer than the one the hook saw.
+func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor, resolved *baseResolution) (provisionResult, error) {
 	branch, path := workspaceTarget(meta, p)
 	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 		return provisionResult{Cwd: path, Branch: branch}, nil
-	}
-	base := baseRefFor(meta, p)
-	if base == "" {
-		base = "HEAD"
 	}
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
 	// An existing branch is checked out where it stands: the base names where a
@@ -330,10 +344,23 @@ func (m *Manager) createWorktree(ctx context.Context, meta store.SessionMeta, p 
 	branchCheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	branchCheck.Dir = p.Root
 	if branchCheck.Run() != nil {
-		if err := checkBaseRef(ctx, p.Root, base); err != nil {
-			return provisionResult{}, err
+		res := baseResolution{}
+		if resolved != nil {
+			res = *resolved
+		} else {
+			var err error
+			if res, err = m.resolveBase(ctx, meta, p, a); err != nil {
+				return provisionResult{}, err
+			}
 		}
-		args = []string{"worktree", "add", path, "-b", branch, base}
+		// Resolving can itself create the branch: asking for base "staging" on
+		// a session branch also called "staging" tracks the remote one, and by
+		// now it exists. Creating it a second time is an error, so ask again.
+		recheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		recheck.Dir = p.Root
+		if recheck.Run() != nil {
+			args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+		}
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = p.Root
@@ -446,7 +473,7 @@ func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.SessionMeta
 		}
 		hookArgs = []string{identity}
 	}
-	return m.runHook(ctx, a, meta, p.Root, hook, hookArgs, "deprovision", contextPath, resultPath, stateDir, p.Config.Workspace.DeprovisionTimeoutSeconds)
+	return m.runHook(ctx, a, meta, p.Root, hook, hookArgs, baseRefFor(meta, p), "deprovision", contextPath, resultPath, stateDir, p.Config.Workspace.DeprovisionTimeoutSeconds)
 }
 
 func (m *Manager) removeWorktree(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) error {
