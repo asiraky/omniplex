@@ -610,6 +610,26 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"labelId": a.LabelID}, nil
 
+	case "mark_session_viewed":
+		var a markViewedArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.MarkSessionViewed(ctx, a.SessionID, a.Seq); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "viewed"}, nil
+
+	case "mark_session_unread":
+		var a sessionArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.MarkSessionUnread(ctx, a.SessionID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "unread"}, nil
+
 	case "list_composer_items":
 		var a sessionArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

@@ -472,6 +472,12 @@ export interface SessionMeta {
     | "failed"
     | "background"
     | "closed";
+  /**
+   * How far the user has read, as a head seq, synced across paired devices.
+   * headSeq beyond it means something happened that nobody has looked at —
+   * the sidebar's unread signal. Absent (or 0) means never viewed.
+   */
+  lastViewedSeq?: number;
   projectId?: string;
   branch?: string;
   model?: string;

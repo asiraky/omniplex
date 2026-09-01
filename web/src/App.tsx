@@ -515,6 +515,60 @@ export function App() {
     setSummaries({});
   }, [userConfig, saveUserConfig]);
 
+  // Read-on-open, reported to the server so paired devices agree. The report
+  // carries the seq this page has actually rendered, not the server's head —
+  // events landing mid-report stay unread. Gated on the phase: while a turn
+  // streams, every event bumps seq, and re-reporting each one would chatter
+  // on exactly the connections we care about. The turn finishing flips the
+  // phase and sends one report for the whole turn.
+  const viewedReported = useRef<Record<string, number>>({});
+  // One chain of read-state commands per session. The server runs each
+  // connection's commands in independent goroutines, so two frames sent
+  // back-to-back can execute in either order — and "mark unread" losing to an
+  // in-flight read-on-open report would silently undo the user's click.
+  // Sending each command only after the previous one's ack pins the order.
+  const readStateQueue = useRef<Record<string, Promise<unknown>>>({});
+  const sendReadState = useCallback((sessionId: string, command: string, args: object) => {
+    const next = (readStateQueue.current[sessionId] ?? Promise.resolve()).then(
+      () => clientRef.current?.command(command, args),
+    );
+    // Swallowed here so the chain survives a failure; callers hang their own
+    // error handling off the returned promise.
+    readStateQueue.current[sessionId] = next.catch(() => {});
+    return next;
+  }, []);
+  useEffect(() => {
+    if (!state || state.sessionId !== activeId) return;
+    if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning") return;
+    if (state.seq <= (viewedReported.current[state.sessionId] ?? 0)) return;
+    viewedReported.current[state.sessionId] = state.seq;
+    sendReadState(state.sessionId, "mark_session_viewed", {
+      sessionId: state.sessionId,
+      seq: state.seq,
+    }).catch(() => {
+      // Nothing to tell the user: the dot clears next time this succeeds.
+    });
+  }, [activeId, state, sendReadState]);
+
+  // The explicit flag back the other way, from the row's context menu.
+  // Fire-and-forget like the label mutations: the sessions broadcast is the
+  // authoritative answer.
+  const setSessionUnread = useCallback((sessionId: string, unread: boolean) => {
+    if (unread) {
+      // Forget what this page reported, or the effect above would treat the
+      // current head as already-sent and never re-mark it read.
+      delete viewedReported.current[sessionId];
+      sendReadState(sessionId, "mark_session_unread", { sessionId }).catch((e) => {
+        toast.error("Could not mark that session unread", { description: e.message });
+      });
+      return;
+    }
+    const head = sessions.find((s) => s.id === sessionId)?.headSeq ?? 0;
+    sendReadState(sessionId, "mark_session_viewed", { sessionId, seq: head }).catch((e) => {
+      toast.error("Could not mark that session read", { description: e.message });
+    });
+  }, [sessions, sendReadState]);
+
   // Label mutations fire and forget: the authoritative answer arrives as a
   // labels (or sessions) broadcast, the same way it does for a paired device,
   // so there is no local state to reconcile — only failures to report.
@@ -1066,6 +1120,7 @@ export function App() {
         labels={labels}
         onSetLabel={setSessionLabel}
         onManageLabels={openLabelManager}
+        onSetUnread={setSessionUnread}
       />
 
       <DeleteSessionDialog flow={deleteFlow} />

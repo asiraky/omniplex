@@ -222,6 +222,14 @@ type setSessionLabelArgs struct {
 	LabelID   string `json:"labelId"`
 }
 
+// markViewedArgs records how far the user has actually read: seq is the head
+// the client had rendered when it reported, not the server's — events landing
+// mid-report stay unread.
+type markViewedArgs struct {
+	SessionID string `json:"sessionId"`
+	Seq       int64  `json:"seq"`
+}
+
 type runComposerActionArgs struct {
 	SessionID  string `json:"sessionId"`
 	Action     string `json:"action"`

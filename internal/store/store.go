@@ -107,7 +107,14 @@ type SessionMeta struct {
 	// LabelID is the user-defined label this session sits under, or "" for
 	// unlabelled. It is the user's own workflow marker, not lifecycle: nothing
 	// in the server reads it, and the sidebar groups by it.
-	LabelID           string          `json:"labelId,omitempty"`
+	LabelID string `json:"labelId,omitempty"`
+	// LastViewedSeq is the head the user had seen when they last looked at the
+	// session, on any paired device. HeadSeq beyond it means something happened
+	// that nobody has read — the sidebar's unread signal. Stored, unlike
+	// attention, because "seen" is a fact about the user, not derivable from
+	// the log. Never omitted: zero is a meaning ("nothing read" — a fresh
+	// session, or an explicit mark-unread), not an absence.
+	LastViewedSeq     int64           `json:"lastViewedSeq"`
 	ProvisionScript   string          `json:"-"`
 	DeprovisionScript string          `json:"-"`
 	ProvisionResult   json.RawMessage `json:"-"`
@@ -146,6 +153,26 @@ func Open(path string) (*Store, error) {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate schema: %w", err)
 		}
+	}
+	// last_viewed_seq gets its backfill in the same breath as the column: a
+	// database upgraded today has been looked at for months, and defaulting to
+	// zero would greet the user with a wall of unread dots. One transaction,
+	// because the duplicate-column error is the only "already migrated"
+	// signal: a crash between ALTER and UPDATE would otherwise leave the
+	// column added but unbackfilled, and every later start would see the
+	// duplicate and skip the backfill forever.
+	if tx, err := db.Begin(); err != nil {
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	} else if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN last_viewed_seq INTEGER NOT NULL DEFAULT 0`); err != nil {
+		tx.Rollback()
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return nil, fmt.Errorf("migrate schema: %w", err)
+		}
+	} else if _, err := tx.Exec(`UPDATE sessions SET last_viewed_seq = head_seq`); err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("backfill last_viewed_seq: %w", err)
+	} else if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.initAuth(); err != nil {
@@ -275,8 +302,8 @@ func (s *Store) Session(ctx context.Context, id string) (SessionMeta, error) {
 	var m SessionMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, provision_script, deprovision_script, provision_result FROM sessions WHERE id = ?`, id).
-		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, provision_script, deprovision_script, provision_result FROM sessions WHERE id = ?`, id).
+		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
@@ -284,10 +311,16 @@ func (s *Store) Session(ctx context.Context, id string) (SessionMeta, error) {
 	return m, err
 }
 
+// ListSessions returns every session, newest anchor first. The anchor is
+// created_at on purpose (T3 Code's rule): activity must never reorder the
+// list. A session emitting an event bumps updated_at but holds its position,
+// so the sidebar only moves when a session enters or leaves the list — the
+// sort a user can keep a mental map of. The id tie-break keeps two sessions
+// created in the same millisecond in one stable order.
 func (s *Store) ListSessions(ctx context.Context) ([]SessionMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id
-		 FROM sessions ORDER BY updated_at DESC`)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq
+		 FROM sessions ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +329,7 @@ func (s *Store) ListSessions(ctx context.Context) ([]SessionMeta, error) {
 	out := []SessionMeta{}
 	for rows.Next() {
 		var m SessionMeta
-		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID); err != nil {
+		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -558,6 +591,52 @@ func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) 
 		}
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET label_id=? WHERE id=?`, labelID, sessionID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkSessionViewed records that the user has seen the session up to seq, on
+// whatever device they were looking from. MAX keeps it monotonic: a stale
+// client reporting an old head must not un-read events a fresher device has
+// already seen. MIN caps it at the head: nobody has seen events that do not
+// exist, and a cursor past the head would keep future completions read until
+// the log caught up to a number a buggy client invented. updated_at is left
+// alone — looking is not activity, and the stamp no longer orders the list
+// anyway.
+func (s *Store) MarkSessionViewed(ctx context.Context, sessionID string, seq int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET last_viewed_seq = MAX(last_viewed_seq, MIN(?, head_seq)) WHERE id = ?`, seq, sessionID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkSessionUnread drops the viewed cursor to zero — the explicit "come back
+// to this" action, the one legal way the cursor moves backwards.
+func (s *Store) MarkSessionUnread(ctx context.Context, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET last_viewed_seq = 0 WHERE id = ?`, sessionID)
 	if err != nil {
 		return err
 	}
