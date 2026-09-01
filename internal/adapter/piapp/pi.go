@@ -92,8 +92,8 @@ func (a *Adapter) PermissionModes() []adapter.PermissionModeMeta {
 // settings-page concern, not a can-a-session-start one, so its absence is not
 // reported here.
 func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Availability {
-	path, err := exec.LookPath(a.Bin)
-	if err != nil {
+	path, ok := a.findPi()
+	if !ok {
 		return adapter.Unavailable(
 			"The Pi CLI was not found on this machine.",
 			adapter.Remedy{Text: "Install Pi", URL: "https://github.com/earendil-works/pi"},
@@ -104,7 +104,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, path, "--version")
-	probe.Env = adapter.MergeEnv(os.Environ(), env)
+	probe.Env = withBinDir(path, adapter.MergeEnv(os.Environ(), env))
 	out, err := probe.Output()
 	if err != nil {
 		return adapter.Unavailable(
@@ -184,12 +184,16 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		args = append(args, "--thinking", o.Effort)
 	}
 
-	cmd := exec.Command(a.Bin, args...)
+	bin, ok := a.findPi()
+	if !ok {
+		return nil, fmt.Errorf("the Pi CLI (%s) was not found on this machine", a.Bin)
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account PI_CODING_AGENT_DIR isolates
 	// auth.json and settings.
-	cmd.Env = adapter.MergeEnv(os.Environ(), o.Env)
+	cmd.Env = withBinDir(bin, adapter.MergeEnv(os.Environ(), o.Env))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

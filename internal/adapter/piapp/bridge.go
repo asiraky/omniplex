@@ -81,9 +81,9 @@ const packageRootMarker = "node_modules/@earendil-works/pi-coding-agent"
 // root falls out of the binary's real location, and the node that installed
 // pi lives beside the symlink. No configuration, no second install.
 func (a *Adapter) resolveBridge() (node, pkgRoot string, err error) {
-	piPath, err := exec.LookPath(a.Bin)
-	if err != nil {
-		return "", "", fmt.Errorf("the pi CLI was not found: %w", err)
+	piPath, found := a.findPi()
+	if !found {
+		return "", "", errors.New("the Pi CLI was not found on this machine")
 	}
 	real, err := filepath.EvalSymlinks(piPath)
 	if err != nil {

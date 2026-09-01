@@ -50,8 +50,12 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 
 	// --no-session keeps the probe out of pi's session store: a catalogue
 	// refresh must not litter the user's session list.
-	cmd := exec.CommandContext(ctx, a.Bin, "--mode", "rpc", "--no-session")
-	cmd.Env = adapter.MergeEnv(os.Environ(), env)
+	bin, ok := a.findPi()
+	if !ok {
+		return nil, fmt.Errorf("the Pi CLI (%s) was not found on this machine", a.Bin)
+	}
+	cmd := exec.CommandContext(ctx, bin, "--mode", "rpc", "--no-session")
+	cmd.Env = withBinDir(bin, adapter.MergeEnv(os.Environ(), env))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
