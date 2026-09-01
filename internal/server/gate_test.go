@@ -352,7 +352,7 @@ func TestHealthGivesCommitToTheBoxEvenBehindAProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	guard := auth.New(st, true)
+	guard := auth.New(st, true, auth.DefaultPort)
 	// What `tailscale serve --https=443` does to a running server.
 	guard.SetProxied(true)
 	mgr := session.NewManager(st, func(string, ...any) {})
