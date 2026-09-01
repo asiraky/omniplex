@@ -55,6 +55,12 @@ describe("cloneDestination", () => {
   it("is empty while the URL still names nothing", () => {
     expect(cloneDestination("/home/aaron/code", "https://github.com/")).toBe("");
   });
+
+  // A bare name would be resolved by the server against its own working
+  // directory, putting the checkout inside omniplex. Better to ask.
+  it("suggests nothing when there is no directory to put it in", () => {
+    expect(cloneDestination("", "asiraky/omniplex")).toBe("");
+  });
 });
 
 describe("parentDirectory", () => {

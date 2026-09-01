@@ -98,6 +98,31 @@ func TestCloneRefusesAnEmptyDestination(t *testing.T) {
 	}
 }
 
+// A relative destination would land against the server's own working
+// directory — inside omniplex's checkout — so it is refused rather than
+// quietly resolved.
+func TestCloneRefusesARelativeDestination(t *testing.T) {
+	err := Clone(context.Background(), fixtureRepo(t), "checkouts/omniplex")
+	if err == nil || !strings.Contains(err.Error(), "full path") {
+		t.Fatalf("error is %v, want one asking for a full path", err)
+	}
+}
+
+// ~ is how an operator writes an absolute path, so it stays acceptable.
+func TestResolveDestExpandsHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory here")
+	}
+	got, err := ResolveDest("~/code/omniplex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "code", "omniplex"); got != want {
+		t.Fatalf("destination is %q, want %q", got, want)
+	}
+}
+
 // A clone that fails leaves nothing behind, and says something the operator
 // can act on rather than echoing git — whose output can carry a token.
 func TestCloneOnABadURLCleansUpAndExplains(t *testing.T) {

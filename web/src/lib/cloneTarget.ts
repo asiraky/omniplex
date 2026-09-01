@@ -52,7 +52,10 @@ export function cloneDestination(parent: string, source: string): string {
   const name = repoName(source);
   if (!name) return "";
   const base = trimEnd(parent.trim());
-  return base ? `${base}/${name}` : name;
+  // With nowhere to put it there is nothing to suggest. A bare "omniplex"
+  // would be read by the server against its own working directory, which is
+  // the one place a checkout must not land.
+  return base ? `${base}/${name}` : "";
 }
 
 /**

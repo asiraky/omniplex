@@ -109,7 +109,13 @@ func ResolveDest(dest string) (string, error) {
 		}
 		s = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(s, "~"), "/"))
 	}
-	return filepath.Abs(s)
+	// A relative path would resolve against whatever directory the server was
+	// started in — its own checkout — so a clone would land inside omniplex
+	// itself. The operator names the place in full or not at all.
+	if !filepath.IsAbs(s) {
+		return "", fmt.Errorf("give the full path to the directory, starting with / or ~: %s", s)
+	}
+	return filepath.Clean(s), nil
 }
 
 // Clone runs `git clone url dest` non-interactively. See CloneWithLog.
