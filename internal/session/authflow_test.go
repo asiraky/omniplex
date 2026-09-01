@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,5 +290,44 @@ func TestAuthSurfaceInListing(t *testing.T) {
 	hs2 := mgr2.Harnesses(context.Background())
 	if got := hs2[0].Instances[0].Auth; got != AuthSurfaceTerminal {
 		t.Errorf("terminal adapter lists auth=%q", got)
+	}
+}
+
+// A provider that rejects a key sometimes echoes it back in its error or a
+// follow-up notification. Everything leaving the flow after a secret answer
+// must have that value scrubbed.
+func TestAuthFlowScrubsSecretFromEvents(t *testing.T) {
+	mgr, fa := flowTestManager(t)
+	fa.begin = func(ctx context.Context, env map[string]string, methodID string, ia adapter.AuthInteraction) error {
+		v, err := ia.Prompt(ctx, adapter.AuthPrompt{Message: "API key", Secret: true})
+		if err != nil {
+			return err
+		}
+		ia.Notify(adapter.AuthEvent{Type: adapter.AuthEventInfo, Message: "checking " + v})
+		return errors.New("provider rejected key " + v)
+	}
+	id, ch, err := mgr.BeginAuthFlow("fake", "api_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := <-ch
+	if ev.Prompt == nil {
+		t.Fatalf("first event should be the prompt: %+v", ev)
+	}
+	if err := mgr.RespondAuthFlow(id, ev.Prompt.ID, "sk-super-secret"); err != nil {
+		t.Fatal(err)
+	}
+	evs := collect(t, ch)
+	for _, ev := range evs {
+		if ev.Event != nil && strings.Contains(ev.Event.Message, "sk-super-secret") {
+			t.Errorf("secret leaked in notify: %+v", ev.Event)
+		}
+		if strings.Contains(ev.Err, "sk-super-secret") {
+			t.Errorf("secret leaked in flow error: %q", ev.Err)
+		}
+	}
+	last := evs[len(evs)-1]
+	if !last.Done || !strings.Contains(last.Err, "[secret]") {
+		t.Errorf("final event should carry the redacted error: %+v", last)
 	}
 }

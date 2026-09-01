@@ -15,7 +15,10 @@ import (
 type cfgAdapter struct{ fakeAdapter }
 
 func (c *cfgAdapter) ConfigFields() []adapter.ConfigField {
-	return []adapter.ConfigField{{Env: "FAKE_HOME", Label: "Home", Kind: adapter.FieldPath, Isolates: true}}
+	return []adapter.ConfigField{
+		{Env: "FAKE_HOME", Label: "Home", Kind: adapter.FieldPath, Isolates: true},
+		{Env: "FAKE_KEY", Label: "API key", Kind: adapter.FieldSecret},
+	}
 }
 
 func adminTestManager(t *testing.T) *Manager {
@@ -165,5 +168,32 @@ func TestSaveAndDeleteProviderInstanceLive(t *testing.T) {
 	// The synthesised default survives every rebuild.
 	if _, ok := mgr.lookup("fake"); !ok {
 		t.Fatal("default instance vanished after delete")
+	}
+}
+
+// The server, not the client, decides what is secret: a variable matching a
+// secret-kind config field is stored as a secret even when the client claims
+// it is not sensitive.
+func TestSensitiveEnforcedFromConfigFields(t *testing.T) {
+	mgr := adminTestManager(t)
+	secrets := mgr.secretStore()
+	err := mgr.AddProviderInstance(provider.Spec{
+		ID: "fake-key", Driver: "fake", DisplayName: "Forged", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_KEY", Value: "sk-forged", Sensitive: false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := secrets.Get("fake-key", "FAKE_KEY"); !ok || v != "sk-forged" {
+		t.Fatalf("secret store should hold the value: %q %v", v, ok)
+	}
+	for _, h := range mgr.Harnesses(context.Background()) {
+		for _, inst := range h.Instances {
+			for _, v := range inst.Env {
+				if v.Value == "sk-forged" {
+					t.Errorf("plaintext secret echoed in listing: %+v", inst.Env)
+				}
+			}
+		}
 	}
 }

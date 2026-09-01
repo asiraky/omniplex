@@ -70,6 +70,7 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 		return fmt.Errorf("instance id %q already belongs to driver %q", spec.ID, reg.inst.Driver)
 	}
 	spec = defaultIsolation(spec, ad)
+	spec = enforceSensitive(spec, ad)
 	instances, err := provider.AddInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
 		return err
@@ -82,6 +83,9 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 // implicit default instance works by creating a config entry with the
 // driver's id, which Add covers; Save requires the entry to exist.
 func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
+	if ad, ok := m.drivers[spec.Driver]; ok {
+		spec = enforceSensitive(spec, ad)
+	}
 	instances, err := provider.SaveInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
 		return err
@@ -132,6 +136,29 @@ func defaultIsolation(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 			Value: filepath.Join(home, ".omniplex", "instances", spec.ID),
 		})
 		return spec
+	}
+	return spec
+}
+
+// enforceSensitive marks every variable the adapter declares as a secret
+// field sensitive, whatever the client said. The secrecy boundary is the
+// server's: a forged or stale client must not be able to talk a key into the
+// plaintext config, where redactedEnv would then echo it to every client.
+func enforceSensitive(spec provider.Spec, ad adapter.Adapter) provider.Spec {
+	cfg, ok := ad.(adapter.Configurer)
+	if !ok {
+		return spec
+	}
+	secret := map[string]bool{}
+	for _, field := range cfg.ConfigFields() {
+		if field.Kind == adapter.FieldSecret {
+			secret[field.Env] = true
+		}
+	}
+	for i := range spec.Env {
+		if secret[spec.Env[i].Name] {
+			spec.Env[i].Sensitive = true
+		}
 	}
 	return spec
 }

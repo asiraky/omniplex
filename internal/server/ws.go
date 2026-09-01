@@ -277,6 +277,16 @@ func (c *conn) detach(sessionID string) {
 	}
 }
 
+// ownsFlow reports whether this connection began the flow. Prompt answers may
+// carry secrets and cancellation kills the flow, so both are refused for a
+// flow some other connection is running — flows are connection-scoped by
+// contract, not just by delivery.
+func (c *conn) ownsFlow(id string) bool {
+	c.flowMu.Lock()
+	defer c.flowMu.Unlock()
+	return c.flows[id]
+}
+
 func (c *conn) cancelFlows() {
 	c.flowMu.Lock()
 	ids := make([]string, 0, len(c.flows))
@@ -938,6 +948,9 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
+		if !c.ownsFlow(a.FlowID) {
+			return nil, fmt.Errorf("no running authentication flow %q on this connection", a.FlowID)
+		}
 		if err := c.srv.mgr.RespondAuthFlow(a.FlowID, a.PromptID, a.Value); err != nil {
 			return nil, err
 		}
@@ -947,6 +960,9 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		var a authCancelArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
+		}
+		if !c.ownsFlow(a.FlowID) {
+			return nil, fmt.Errorf("no running authentication flow %q on this connection", a.FlowID)
 		}
 		c.srv.mgr.CancelAuthFlow(a.FlowID)
 		return map[string]any{"status": "cancelled"}, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +62,34 @@ type authFlow struct {
 	mu      sync.Mutex
 	pending map[string]chan string
 	seq     int
+	// secrets are the values answered to secret prompts in this flow. A
+	// provider that rejects a key sometimes echoes it back in its error
+	// message; every string leaving the flow is scrubbed against this list so
+	// a submitted secret can never ride out inside an event.
+	secrets []string
+}
+
+// noteSecret remembers a secret answer so scrub can redact it later.
+func (f *authFlow) noteSecret(v string) {
+	if v == "" {
+		return
+	}
+	f.mu.Lock()
+	f.secrets = append(f.secrets, v)
+	f.mu.Unlock()
+}
+
+// scrub redacts every secret this flow has seen from an outgoing string.
+func (f *authFlow) scrub(s string) string {
+	if s == "" {
+		return s
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, sec := range f.secrets {
+		s = strings.ReplaceAll(s, sec, "[secret]")
+	}
+	return s
 }
 
 // interaction adapts one flow to adapter.AuthInteraction.
@@ -68,6 +97,8 @@ type interaction struct{ f *authFlow }
 
 func (ia interaction) Notify(ev adapter.AuthEvent) {
 	e := ev
+	e.Message = ia.f.scrub(e.Message)
+	e.Instructions = ia.f.scrub(e.Instructions)
 	ia.f.events <- AuthFlowEvent{FlowID: ia.f.id, Event: &e}
 }
 
@@ -87,6 +118,9 @@ func (ia interaction) Prompt(ctx context.Context, p adapter.AuthPrompt) (string,
 	ia.f.events <- AuthFlowEvent{FlowID: ia.f.id, Prompt: &AuthFlowPrompt{ID: id, AuthPrompt: p}}
 	select {
 	case v := <-answer:
+		if p.Secret {
+			ia.f.noteSecret(v)
+		}
 		return v, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -144,7 +178,7 @@ func (m *Manager) BeginAuthFlow(instanceID, methodID string) (string, <-chan Aut
 		}
 		done := AuthFlowEvent{FlowID: f.id, Done: true}
 		if err != nil {
-			done.Err = err.Error()
+			done.Err = f.scrub(err.Error())
 		}
 		// The final event must not block forever if the client is gone; the
 		// deferred close is what actually ends the pump.
