@@ -1355,7 +1355,7 @@ export function App() {
           <div ref={chatLayoutRef} className="relative flex min-h-0 flex-1 flex-col">
             {/* Content scrolling up dissolves into the header rather than
                 being cut by a border. */}
-            <div className="from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b to-transparent" />
+            <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
               <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>setLoginInstance(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
@@ -1366,7 +1366,7 @@ export function App() {
                 seam where text scrolls past the composer's transparent gutters.
                 It sits just above the overlay, tracking its measured height. */}
             <div
-              className="from-background pointer-events-none absolute inset-x-0 z-10 h-8 bg-gradient-to-t to-transparent"
+              className="from-background to-background/0 pointer-events-none absolute inset-x-0 z-10 h-8 bg-gradient-to-t"
               style={{ bottom: "var(--composer-h, 9rem)" }}
             />
 
