@@ -46,6 +46,10 @@ function open(over: Partial<React.ComponentProps<typeof NewSession>> = {}) {
 const surface = () => document.querySelector("[data-slot=dialog-content]")!;
 
 afterEach(() => vi.unstubAllGlobals());
+// The dialog now remembers what a session started with, so a test that starts
+// one leaves that behind for the next. Every test gets a browser that has
+// never opened this dialog before unless it says otherwise.
+afterEach(() => localStorage.clear());
 
 // Radix Select drives its trigger with pointer capture and scrolls the chosen
 // item into view — neither of which jsdom implements. No-ops are enough for the
@@ -537,5 +541,230 @@ describe("an interactive-login harness", () => {
     open({ harnesses: [ready], onLogin });
     fireEvent.click(screen.getByRole("button", { name: /sign in again/i }));
     expect(onLogin).toHaveBeenCalledWith("claude");
+  });
+});
+
+// The settings a session starts with are remembered from the last one rather
+// than configured on the project screen — per project, and per harness, so
+// switching harness restores that harness's own names instead of resetting.
+describe("the remembered session settings", () => {
+  const ready = { state: "ready" } as const;
+  const claude = {
+    ...harness,
+    permissionModes: [
+      { id: "default", label: "Manual", default: true },
+      { id: "bypassPermissions", label: "Bypass" },
+    ],
+    instances: [
+      {
+        id: "claude",
+        driver: "claude",
+        displayName: "Claude Code",
+        enabled: true,
+        availability: ready,
+        models: [
+          { id: "opus", label: "Opus", default: true },
+          { id: "sonnet", label: "Sonnet" },
+        ],
+      },
+    ],
+  } as unknown as HarnessMeta;
+  const codex = {
+    id: "codex",
+    name: "Codex",
+    availability: ready,
+    models: [],
+    permissionModes: [
+      { id: "on-request", label: "Ask when needed", default: true },
+      { id: "full-access", label: "Bypass" },
+    ],
+    instances: [
+      {
+        id: "codex",
+        driver: "codex",
+        displayName: "Codex",
+        enabled: true,
+        availability: ready,
+        models: [
+          { id: "gpt-5.6-sol", label: "GPT-5.6-Sol", default: true, efforts: ["high", "xhigh"] },
+        ],
+      },
+    ],
+  } as unknown as HarnessMeta;
+
+  // "local" keeps the workspace out of it: the main checkout is the one choice
+  // that needs nothing else named before Start goes live.
+  const local = (over: Record<string, unknown> = {}) =>
+    ({
+      ...project,
+      config: {
+        ...project.config,
+        defaults: { ...project.config.defaults, workspace: "local", harnesses: {}, ...over },
+      },
+    }) as unknown as Project;
+
+  const remember = (prefs: unknown) =>
+    localStorage.setItem("omniplex.sessionPrefs.v1", JSON.stringify({ p1: prefs }));
+
+  const start = async () => {
+    const button = await waitFor(() => screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => {
+      fireEvent.click(button);
+    });
+  };
+
+  const pickCodex = async () => {
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.change(screen.getByPlaceholderText(/Search models and accounts/), {
+      target: { value: "gpt" },
+    });
+    const model = await waitFor(() => screen.getByText("GPT-5.6-Sol"));
+    fireEvent.click(model.closest("[data-slot='command-item']")!);
+  };
+
+  afterEach(() => localStorage.clear());
+
+  it("opens on the harness, model and mode the last session used", async () => {
+    remember({
+      harness: "claude",
+      workspace: "local",
+      byHarness: { claude: { model: "sonnet", mode: "bypassPermissions" } },
+    });
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({ projects: [local()], harnesses: [claude, codex], onCreate });
+
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "claude", model: "sonnet", mode: "bypassPermissions" }),
+    );
+  });
+
+  // The point of keying by harness: Claude's bypass must not follow you to
+  // Codex, and Codex's own memory must come back instead.
+  it("restores the other harness's own settings when the harness is switched", async () => {
+    remember({
+      harness: "claude",
+      workspace: "local",
+      byHarness: {
+        claude: { model: "sonnet", mode: "bypassPermissions" },
+        codex: { model: "gpt-5.6-sol", mode: "on-request", effort: "xhigh" },
+      },
+    });
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({ projects: [local()], harnesses: [claude, codex], onCreate });
+
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    await pickCodex();
+
+    // Codex's remembered mode, not Claude's — and not Codex's own "Bypass"
+    // either, which is a different id that happens to share the label.
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe(
+      "Ask when needed",
+    );
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: "codex", mode: "on-request", effort: "xhigh" }),
+    );
+  });
+
+  it("falls back to the project.json seed when nothing has been started here", async () => {
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({
+      projects: [
+        local({ harness: "claude", harnesses: { claude: { model: "sonnet", mode: "bypassPermissions" } } }),
+      ],
+      harnesses: [claude, codex],
+      onCreate,
+    });
+
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "sonnet", mode: "bypassPermissions" }),
+    );
+  });
+
+  // Accounts drop models. A remembered name the instance has stopped serving
+  // is not sent — it falls through to the seed, then to the harness default.
+  it("ignores a remembered model the instance no longer lists", async () => {
+    remember({ harness: "claude", workspace: "local", byHarness: { claude: { model: "opus-3" } } });
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({
+      projects: [local({ harnesses: { claude: { model: "sonnet" } } })],
+      harnesses: [claude],
+      onCreate,
+    });
+
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "sonnet" }));
+  });
+
+  it("ignores a remembered mode the harness no longer has", async () => {
+    remember({ harness: "claude", workspace: "local", byHarness: { claude: { mode: "gone" } } });
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({ projects: [local()], harnesses: [claude], onCreate });
+
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ mode: "" }));
+  });
+
+  it("ignores a remembered harness that is no longer installed", async () => {
+    remember({ harness: "gemini", workspace: "local", byHarness: {} });
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({ projects: [local({ harness: "claude" })], harnesses: [claude, codex], onCreate });
+
+    await start();
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ harness: "claude" }));
+  });
+
+  it("remembers the workspace kind the last session used", async () => {
+    // The project seeds "local"; the memory says a worktree, and wins.
+    remember({ harness: "claude", workspace: "managed", byHarness: {} });
+    open({ projects: [local()], harnesses: [claude] });
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("radio", { name: /New worktree from issue or branch name/ })
+          .getAttribute("aria-checked"),
+      ).toBe("true"),
+    );
+  });
+
+  it("writes back what the session actually started with, per harness", async () => {
+    remember({
+      harness: "claude",
+      workspace: "local",
+      byHarness: { claude: { model: "sonnet", mode: "bypassPermissions" } },
+    });
+    open({
+      projects: [local()],
+      harnesses: [claude, codex],
+      onCreate: vi.fn(async (_input: NewSessionInput) => {}),
+    });
+
+    await pickCodex();
+    await start();
+
+    const stored = JSON.parse(localStorage.getItem("omniplex.sessionPrefs.v1")!);
+    expect(stored.p1.harness).toBe("codex");
+    expect(stored.p1.workspace).toBe("local");
+    expect(stored.p1.byHarness.codex.model).toBe("gpt-5.6-sol");
+    // Claude's entry is untouched by a session started on Codex.
+    expect(stored.p1.byHarness.claude).toEqual({ model: "sonnet", mode: "bypassPermissions" });
+  });
+
+  it("remembers nothing from a start that errored", async () => {
+    open({
+      projects: [local()],
+      harnesses: [claude],
+      onCreate: vi.fn(async (_input: NewSessionInput) => {
+        throw new Error("no");
+      }),
+    });
+    await start();
+    await waitFor(() => expect(screen.getByText("no")).toBeTruthy());
+    expect(localStorage.getItem("omniplex.sessionPrefs.v1")).toBeNull();
   });
 });

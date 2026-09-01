@@ -813,7 +813,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		p, err := c.srv.mgr.AddProject(ctx, a.Root)
+		p, err := c.srv.mgr.AddProject(ctx, a.Root, a.URL)
 		if err != nil {
 			return nil, err
 		}

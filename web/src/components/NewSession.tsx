@@ -1,5 +1,5 @@
 import { LogInIcon, PlusIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { ConnectionStatus } from "~/client";
 import { ModelPicker, type ModelSelection } from "~/components/ModelPicker";
@@ -23,6 +23,7 @@ import {
 } from "~/components/ui/select";
 import { initialProject, saveLastProject } from "~/lib/lastProject";
 import { defaultModel, pickerInstances, resolveInstance } from "~/lib/models";
+import { projectPrefs, saveSessionPrefs } from "~/lib/sessionPrefs";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Issue, Project, UserConfig, Workspace } from "~/protocol";
 import { WorkspacePicker, type WorkspaceChoice } from "./WorkspacePicker";
@@ -108,10 +109,12 @@ export function NewSession({
   onClose: () => void;
   status: ConnectionStatus;
 }) {
-  // Opens on the project this browser last started a session from. Everything
-  // else in this form stays project-derived: the harness, model and workspace
-  // defaults are the project's own settings, and remembering a second layer of
-  // preference over them would just be a settings page nobody edited.
+  // Opens on the project this browser last started a session from, with the
+  // settings that session used. The rest of this form is remembered the same
+  // way, per project and per harness: what you start sessions with is a habit,
+  // and a settings page for it was a page nobody edited twice. The project's
+  // own project.json defaults are still the seed for a project this browser
+  // has never started anything in.
   const [projectId, setProjectId] = useState(() => initialProject(projects));
   // One selection covers both: picking a model picks the account it lives
   // under, so there is nothing to keep in step.
@@ -138,9 +141,16 @@ export function NewSession({
 
   const project = projects.find((p) => p.id === projectId) ?? projects[0];
   const instances = pickerInstances(harnesses);
-  // Until the user picks, the project's defaults decide — and where it has
-  // none, the first account that could actually start a session.
+  // Read once per project: this is what the last session in it started with.
+  // Every field below layers it over the project's project.json seed, which in
+  // turn sits over the harness's own default.
+  const remembered = useMemo(() => projectPrefs(project?.id ?? ""), [project?.id]);
+  // Until the user picks: what was used here last, then the project's own
+  // default, then the first account that could actually start a session. A
+  // remembered harness that is no longer installed is skipped rather than
+  // leaving the picker on a harness that is not there.
   const fallbackHarness =
+    (harnesses.some((h) => h.id === remembered.harness) ? remembered.harness : "") ||
     project?.config.defaults.harness ||
     harnesses.find((h) => h.availability.state === "ready")?.id ||
     harnesses[0]?.id ||
@@ -150,13 +160,21 @@ export function NewSession({
     resolveInstance(instances, "", fallbackHarness);
   const harnessId = instance?.driver ?? fallbackHarness;
   const selected = harnesses.find((h) => h.id === harnessId);
-  const harnessDefaults = project?.config.defaults.harnesses?.[harnessId];
+  // Both layers under an explicit pick, in order: what this harness was last
+  // started with here, then what project.json seeds it with. Keyed by harness
+  // on both sides, so switching harness cannot bring the other one's model,
+  // effort or mode across with it.
+  const harnessMemory = remembered.byHarness[harnessId];
+  const harnessSeed = project?.config.defaults.harnesses?.[harnessId];
   // A model the account no longer offers is not sent: the harness's own
-  // default is a better answer than a name it has stopped serving.
-  const preferred = chosen?.model || (chosen ? "" : (harnessDefaults?.model ?? ""));
-  const model = instance?.models.some((m) => m.id === preferred)
-    ? preferred
-    : (defaultModel(instance)?.id ?? "");
+  // default is a better answer than a name it has stopped serving. That covers
+  // a remembered model as well as a seeded one — an account can drop a model
+  // between sessions.
+  const offered = (id: string | undefined) => !!id && !!instance?.models.some((m) => m.id === id);
+  const preferred = chosen
+    ? chosen.model
+    : ([harnessMemory?.model, harnessSeed?.model].find(offered) ?? "");
+  const model = offered(preferred) ? preferred : (defaultModel(instance)?.id ?? "");
   const selection: ModelSelection = {
     harness: harnessId,
     instance: instance?.id ?? "",
@@ -169,26 +187,32 @@ export function NewSession({
   const effectiveModel = supports1m && want1m ? `${model}[1m]` : model;
   const modelMeta = instance?.models.find((m) => m.id === model);
   const efforts = modelMeta?.efforts ?? [];
-  const preferredEffort = chosenEffort ?? harnessDefaults?.effort ?? "";
+  // Efforts are per model, so a remembered level the current model does not
+  // take falls through to the seed and then to none at all.
+  const preferredEffort =
+    chosenEffort ??
+    ([harnessMemory?.effort, harnessSeed?.effort].find((e) => !!e && efforts.includes(e)) ?? "");
   const effort = efforts.includes(preferredEffort) ? preferredEffort : "";
   // Modes are the selected harness's own presets, repopulated when the harness
   // changes — the same shape as the model picker. Only an expressed preference
-  // (picked here, or a project default) is sent; otherwise the mode stays ""
-  // so the harness's own configured default wins rather than being overridden
-  // by an explicit id.
+  // (picked here, last used here, or a project default) is sent; otherwise the
+  // mode stays "" so the harness's own configured default wins rather than
+  // being overridden by an explicit id.
   const modes = selected?.permissionModes ?? [];
-  const mode = modes.some((m) => m.id === chosenMode)
+  const knownMode = (id: string | undefined) => !!id && modes.some((m) => m.id === id);
+  const mode = knownMode(chosenMode)
     ? chosenMode
-    : modes.some((m) => m.id === harnessDefaults?.mode)
-      ? (harnessDefaults?.mode ?? "")
-      : "";
+    : ([harnessMemory?.mode, harnessSeed?.mode].find(knownMode) ?? "");
   const displayModeId = mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
   const modeMeta = modes.find((m) => m.id === displayModeId);
   // The project root is its own choice in the list, so listing it again inside
   // the attach picker would be a second door to the same room.
   const attachable = workspaces.filter((w) => !w.isRoot);
-  const kind: WorkspaceKind =
-    chosenKind || (project?.config.defaults.workspace === "managed" ? "branch" : "main");
+  // Last used here, then the project's own default. Attaching is never
+  // remembered: it names one checkout, and re-opening on it would offer a
+  // worktree that may well be gone.
+  const fallbackWorkspace = remembered.workspace || project?.config.defaults.workspace;
+  const kind: WorkspaceKind = chosenKind || (fallbackWorkspace === "managed" ? "branch" : "main");
 
   // Each choice answers all three questions at once, which is the point of
   // making them separate choices: nothing is inferred from an empty field.
@@ -239,6 +263,11 @@ export function NewSession({
       // opening the dropdown, looking, and closing is not a choice worth
       // moving the default for, and neither is a start that errored.
       saveLastProject(project.id);
+      // What was actually used, not what was asked for: `model`, `effort` and
+      // `mode` are the resolved values, so a stale preference is not written
+      // back. The plain model id, without the [1m] tag — the tag is a context
+      // choice made on this screen, not a model to reopen on.
+      saveSessionPrefs(project.id, { harness: harnessId, workspace, model, effort, mode });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);

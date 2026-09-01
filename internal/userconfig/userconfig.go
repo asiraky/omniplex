@@ -46,6 +46,11 @@ type Config struct {
 	// settings still gets a usable summary — and clearing the box is how you
 	// go back to the default rather than a separate stored flag.
 	SummaryPrompt string `json:"summaryPrompt,omitempty"`
+	// ProjectsDirectory is the parent directory the UI prefills a clone
+	// destination from. It is a habit, not a setting anything reads: empty
+	// means the operator has no preference, and we do not invent one, because
+	// a made-up default would silently start creating directories.
+	ProjectsDirectory string `json:"projectsDirectory,omitempty"`
 	// Providers declares provider instances — configured accounts for the
 	// harness adapters. Entries are held raw and written back verbatim: an
 	// entry naming a driver this build has never heard of must survive a

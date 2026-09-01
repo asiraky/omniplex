@@ -116,8 +116,12 @@ type saveUserConfigArgs struct {
 	Config userconfig.Config `json:"config"`
 }
 
+// addProjectArgs names the destination and, optionally, a remote to clone into
+// it. Root is always the full path of the project directory; URL empty means
+// the directory is already there.
 type addProjectArgs struct {
 	Root string `json:"root"`
+	URL  string `json:"url,omitempty"`
 }
 type saveProjectArgs struct {
 	ProjectID string         `json:"projectId"`

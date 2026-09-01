@@ -427,6 +427,12 @@ export interface UserConfig {
    * server's default, so clearing the box is how you go back to it.
    */
   summaryPrompt?: string;
+  /**
+   * Where checkouts are kept, so cloning a project prefills its destination
+   * next to the last one rather than making the path be typed out. Written by
+   * the add-project screen from the clone it just did.
+   */
+  projectsDirectory?: string;
 }
 
 /**

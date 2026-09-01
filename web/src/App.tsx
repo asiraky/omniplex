@@ -556,7 +556,10 @@ export function App() {
   }, []);
   const openLabelManager = useCallback(() => setManageLabels(true), []);
 
-  const addProject = useCallback(async (root: string) => { const res=await clientRef.current!.command("add_project",{root}); setProjects(p=>[res.project,...p.filter(x=>x.id!==res.project.id)]); },[]);
+  // `url` turns this into a clone: the server clones into `root` and then
+  // registers it. It is the same reply either way, but a real clone can take
+  // a while, so the dialog holds its busy state until this resolves.
+  const addProject = useCallback(async (root: string, url?: string) => { const res=await clientRef.current!.command("add_project", url ? {root,url} : {root}); setProjects(p=>[res.project,...p.filter(x=>x.id!==res.project.id)]); },[]);
   const saveProject = useCallback(async (projectId:string,config:ProjectConfig) => { const res=await clientRef.current!.command("save_project",{projectId,config}); setProjects(p=>p.map(x=>x.id===projectId?res.project:x)); },[]);
   // Forgetting a project touches nothing on disk, so the only thing to undo
   // locally is the list. The server broadcasts the new one to every other
@@ -1478,7 +1481,6 @@ export function App() {
           <ProjectSettings
           project={projectSettings === "add" ? null : projectSettings}
           defaultRoot={defaultCwd}
-          harnesses={harnesses}
           userConfig={userConfig}
           onAdd={addProject}
           onSave={saveProject}
