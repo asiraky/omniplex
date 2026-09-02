@@ -118,6 +118,9 @@ type ModelMeta struct {
 	// They are per model — one harness offers "ultra" on its newest models
 	// only — so an effort control reads them rather than assuming a fixed set.
 	Efforts []string `json:"efforts,omitempty"`
+	// Supports1M marks a model the harness offers a 1M-context alias for, so a
+	// UI can offer the larger window rather than guessing from the name.
+	Supports1M bool `json:"supports1m,omitempty"`
 }
 
 // GroupLegacy marks a model kept for continuity rather than offered first.

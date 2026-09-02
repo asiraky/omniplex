@@ -30,11 +30,15 @@ const modelListTimeout = 60 * time.Second
 // means "whatever the harness picks", which is the only default that cannot be
 // wrong — and it says so, rather than being an unexplained "Default".
 func (a *Adapter) Models() []adapter.ModelMeta {
+	// The three family aliases all carry a "[1m]" twin in the installed CLI
+	// (verified against claude CLI 2.1.238), so the fallback offers the larger
+	// window too rather than hiding it until discovery lands. The unnamed
+	// default row does not: no id means no tag to hang the choice on.
 	base := []adapter.ModelMeta{
 		{ID: "", Label: "Default", Version: "chosen by Claude Code", Description: "No model is named, so the harness starts whatever it is set to use", Default: true},
-		{ID: "fable", Label: "Fable"},
-		{ID: "opus", Label: "Opus"},
-		{ID: "sonnet", Label: "Sonnet"},
+		{ID: "fable", Label: "Fable", Supports1M: true},
+		{ID: "opus", Label: "Opus", Supports1M: true},
+		{ID: "sonnet", Label: "Sonnet", Supports1M: true},
 	}
 	// The legacy models the harness still runs are offered even before (or
 	// without) a live answer: they were hardcoded precisely because they work,
@@ -53,11 +57,12 @@ func (a *Adapter) Models() []adapter.ModelMeta {
 // exactly what the harness reports back for these, so a session running one
 // resolves to its row instead of showing a raw id. Efforts are left empty — the
 // effort control simply does not appear for a legacy pick rather than offering
-// levels an old model might reject.
+// levels an old model might reject. Supports1M is set on the Opus rows only,
+// which is what the live check found: they run at 1M, the old Sonnet at 200k.
 var legacyModels = []adapter.ModelMeta{
-	{ID: "claude-opus-4-8", Label: "Opus 4.8", Resolves: "claude-opus-4-8", Description: "The previous Opus generation.", Group: adapter.GroupLegacy},
-	{ID: "claude-opus-4-7", Label: "Opus 4.7", Resolves: "claude-opus-4-7", Description: "An older Opus generation.", Group: adapter.GroupLegacy},
-	{ID: "claude-opus-4-6", Label: "Opus 4.6", Resolves: "claude-opus-4-6", Description: "An older Opus generation.", Group: adapter.GroupLegacy},
+	{ID: "claude-opus-4-8", Label: "Opus 4.8", Resolves: "claude-opus-4-8", Description: "The previous Opus generation.", Group: adapter.GroupLegacy, Supports1M: true},
+	{ID: "claude-opus-4-7", Label: "Opus 4.7", Resolves: "claude-opus-4-7", Description: "An older Opus generation.", Group: adapter.GroupLegacy, Supports1M: true},
+	{ID: "claude-opus-4-6", Label: "Opus 4.6", Resolves: "claude-opus-4-6", Description: "An older Opus generation.", Group: adapter.GroupLegacy, Supports1M: true},
 	{ID: "claude-sonnet-4-5", Label: "Sonnet 4.5", Resolves: "claude-sonnet-4-5", Description: "The previous Sonnet generation.", Group: adapter.GroupLegacy},
 }
 
@@ -160,6 +165,11 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 //     resolves to its row instead of a raw label.
 //   - Rows are ordered by strength (Fable, Opus, Sonnet) and the curated legacy
 //     group is appended, folded away.
+//
+// The one thing the collapse must not throw away is that a "[1m]" alias
+// existed at all: that is the difference between a model a UI may offer the
+// larger window for and one it may not, and it is knowable only here. Any
+// alias carrying the tag sets Supports1M on the row the aliases fold into.
 func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 	if len(in) == 0 {
 		return nil
@@ -174,7 +184,10 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 		}
 		bare := stripContextTag(m.ResolvedModel)
 		if bare == "" {
-			bare = m.Value
+			// A row the harness gave no resolved id for is known only by its
+			// alias — stripped the same way, so an untagged id is still what
+			// the row is keyed and started by.
+			bare = stripContextTag(m.Value)
 		}
 		version, description := splitDescription(m.Description)
 		row := adapter.ModelMeta{
@@ -186,6 +199,11 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			// the one Claude Code itself would pick.
 			Default: m.Value == "default",
 			Efforts: m.SupportedEffortLevels,
+			// The alias is a 1M one if either half of it carried the tag: the
+			// SDK names the variant in both ("opus[1m]" resolving to
+			// "claude-opus-5[1m]"), but the generic "default" alias carries it
+			// only on the resolved id.
+			Supports1M: has1MTag(m.Value) || has1MTag(m.ResolvedModel),
 		}
 		if i, seen := byModel[bare]; seen {
 			// Same concrete model under another alias: keep one row, preserving
@@ -198,11 +216,16 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			kept := current[i]
 			if in[byAlias[bare]].Value == "default" && m.Value != "default" {
 				row.Default = true
+				// Replacing the row wholesale must not drop what the discarded
+				// alias told us about the model itself: 1M is a property of
+				// the model, not of the alias it came in under.
+				row.Supports1M = row.Supports1M || kept.Supports1M
 				current[i] = row
 				byAlias[bare] = idx
 				continue
 			}
 			kept.Default = kept.Default || row.Default
+			kept.Supports1M = kept.Supports1M || row.Supports1M
 			if kept.Label == "" || strings.EqualFold(kept.Label, "default") {
 				kept.Label = row.Label
 			}
@@ -250,6 +273,18 @@ func stripContextTag(id string) string {
 	}
 	return id
 }
+
+// has1MTag reports whether a model id names the 1M-context variant, like
+// "claude-opus-5[1m]" — which is how the harness says a 1M window is available
+// for that model. It matches that tag alone, not any bracketed suffix: a
+// future "[beta]" or "[512k]" alias says nothing about a 1M window, and
+// claiming one would have the UI submit a "[1m]" id the harness never offered.
+func has1MTag(id string) bool {
+	return strings.HasSuffix(strings.ToLower(id), tag1M)
+}
+
+// tag1M is the context-window tag that turns a model id into its 1M variant.
+const tag1M = "[1m]"
 
 // sortByStrength orders the current models Fable, then Opus, then Sonnet, then
 // anything unrecognised — the frontier order the picker shows top to bottom.

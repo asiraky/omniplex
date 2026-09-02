@@ -15,6 +15,7 @@ func liveRows() []modelInfo {
 		{Value: "default", ResolvedModel: "claude-opus-5[1m]", DisplayName: "Default (recommended)", Description: "Opus 5 with 1M context · Best for everyday, complex tasks", SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
 		{Value: "opus[1m]", ResolvedModel: "claude-opus-5[1m]", DisplayName: "Opus (1M context)", Description: "Opus 5 with 1M context · Best for everyday, complex tasks", SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
 		{Value: "fable", ResolvedModel: "claude-fable-5", DisplayName: "Fable", Description: "Fable 5 · Most capable for your hardest and longest-running tasks", SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
+		{Value: "fable[1m]", ResolvedModel: "claude-fable-5[1m]", DisplayName: "Fable (1M context)", Description: "Fable 5 with 1M context · Most capable for your hardest and longest-running tasks", SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
 		{Value: "sonnet", ResolvedModel: "claude-sonnet-5", DisplayName: "Sonnet", Description: "Sonnet 5 · Efficient for routine tasks", SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
 		{Value: "haiku", ResolvedModel: "claude-haiku-4-5-20251001", DisplayName: "Haiku", Description: "Haiku 4.5 · Fastest for quick answers"},
 	}
@@ -169,5 +170,60 @@ func TestDefaultAliasDoesNotDescribeItself(t *testing.T) {
 	}
 	if strings.Contains(opus.Description, "default model") {
 		t.Errorf("description = %q, still describes the alias", opus.Description)
+	}
+}
+
+// The collapse of the "[1m]" aliases into the bare row must keep the one thing
+// only it knows: that the harness offers a 1M window for that model. Every
+// model with a tagged alias carries the flag, and only those — a UI reads it
+// instead of matching on the model's name.
+func TestMapClaudeModelsMarks1MFromAliases(t *testing.T) {
+	got := mapClaudeModels(liveRows())
+
+	// Opus learns it from the named "opus[1m]" alias, Fable from "fable[1m]",
+	// and Sonnet has none in this listing.
+	for id, want := range map[string]bool{
+		"claude-opus-5":   true,
+		"claude-fable-5":  true,
+		"claude-sonnet-5": false,
+	} {
+		if m := findModel(t, got, id); m.Supports1M != want {
+			t.Errorf("%s supports1m = %v, want %v", id, m.Supports1M, want)
+		}
+	}
+}
+
+// The generic "default" alias carries the tag only on its resolved id, and it
+// is the row that gets replaced wholesale when a named alias for the same
+// model turns up. Neither may lose the flag.
+func TestMapClaudeModels1MSurvivesDefaultAliasMerge(t *testing.T) {
+	// Only the "default" row is tagged here, and it is replaced by the plain
+	// "opus" alias, which is not.
+	got := mapClaudeModels([]modelInfo{
+		{Value: "default", ResolvedModel: "claude-opus-5[1m]", DisplayName: "Default (recommended)", Description: "Opus 5 with 1M context · Best for everyday, complex tasks"},
+		{Value: "opus", ResolvedModel: "claude-opus-5", DisplayName: "Opus", Description: "Opus 5 · Best for everyday, complex tasks"},
+	})
+
+	opus := findModel(t, got, "claude-opus-5")
+	if !opus.Supports1M {
+		t.Error("supports1m was dropped when the named alias replaced the default row")
+	}
+	if !opus.Default {
+		t.Error("the recommended flag was dropped in the same merge")
+	}
+}
+
+// Only the 1M tag says a 1M window is on offer. Another bracketed variant is
+// still collapsed onto the bare model — that is what keeps a running session
+// resolving to its row — but it must not be advertised as 1M, or the UI would
+// submit a "[1m]" id the harness never offered.
+func TestMapClaudeModelsIgnoresOtherContextTags(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "sonnet[beta]", ResolvedModel: "claude-sonnet-5[beta]", DisplayName: "Sonnet (beta)", Description: "Sonnet 5 · Efficient for routine tasks"},
+	})
+
+	m := findModel(t, got, "claude-sonnet-5")
+	if m.Supports1M {
+		t.Error("a [beta] alias was read as a 1M one")
 	}
 }
