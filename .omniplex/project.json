@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "omniplex",
+  "defaults": {
+    "harness": "claude",
+    "model": "claude-opus-5",
+    "effort": "medium",
+    "mode": "bypassPermissions",
+    "workspace": "managed",
+    "baseBranch": "main"
+  },
+  "workspace": {
+    "suggestedRoot": ".worktrees",
+    "provision": "scripts/omniplex-provision.mjs",
+    "provisionTimeoutSeconds": 600,
+    "deprovisionTimeoutSeconds": 600
+  }
+}

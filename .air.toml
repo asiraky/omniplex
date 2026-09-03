@@ -1,0 +1,26 @@
+# Rebuild and restart the Go server when Go source changes.
+#
+# The web app is not watched here: Vite owns those files and swaps them into
+# the running page without a restart. Watching them would rebuild the binary on
+# every keystroke in a component for no benefit.
+
+root = "."
+tmp_dir = ".air"
+
+[build]
+  cmd = "go build -o ./.air/omniplex ./cmd/omniplex"
+  bin = "./.air/omniplex -dev"
+  include_ext = ["go"]
+  # .worktrees holds the checkouts omniplex provisions for its own sessions. They are
+  # full copies of this repository, so watching them would restart the dev
+  # server on every edit an agent makes in one — the exact loop that running omniplex
+  # on its own source is meant to avoid.
+  exclude_dir = [".air", ".worktrees", "web", "node_modules", "cmd/omniplex/webdist", "internal/adapter/claudecode/sidecar"]
+  exclude_regex = ["_test\\.go"]
+  # Editors write in bursts; without this a single save can trigger several
+  # builds.
+  delay = 300
+  stop_on_error = true
+
+[misc]
+  clean_on_exit = true

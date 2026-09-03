@@ -1,0 +1,7 @@
+Adversarial review of the current branch (feature/omniplex-7026e2bf) against main. The change is committed — inspect it with 'git diff main...HEAD'.
+
+What the change is meant to do: in the web UI's session sidebar, deleting a session used to close the confirmation dialog immediately and — because the server restamps the session's updated_at when it enters the "cleaning" phase, and the list is ordered by that stamp — the row jumped to the top of the sidebar, sat there for the duration of the async teardown, then vanished. It should instead keep the confirmation dialog open with a progress indicator until the deletion actually finishes, keep the sidebar row in its original position throughout, and animate the row out in place once the session leaves the list.
+
+Two jobs: (1) does the diff actually do that, or does it miss or misread the requirement; (2) find real defects — logic errors, broken edge cases, race conditions, React state/lifecycle misuse (note this is React 19; setState during render of the same component is legal), stale closures, type unsoundness, dead or unreachable paths, and any way the UI can get stuck in a state it cannot leave (e.g. a spinner that never stops, a row that never disappears, a list order that never unfreezes).
+
+Do NOT comment on style, naming, file organisation, or anything subjective. For each finding give file:line, the concrete failure scenario, and why it is wrong. If you find nothing real, say so.

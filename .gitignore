@@ -1,0 +1,41 @@
+# Local binaries and development processes
+/omniplex
+/omni
+/.air/
+/internal/adapter/claudecode/sidecar/dist/
+
+# Dependencies and generated frontend output
+node_modules/
+/web/dist/
+# The build output, all of it. Only the placeholder that keeps the embed
+# directory present in a fresh clone is tracked.
+/cmd/omniplex/webdist/*
+!/cmd/omniplex/webdist/.gitkeep
+*.tsbuildinfo
+
+# Worktrees omniplex provisions for its own sessions, which live inside the checkout
+# by default and are complete repositories in their own right.
+/.worktrees/
+
+# Written into a worktree by scripts/omniplex-provision.mjs, and true only of that
+# one worktree. .omniplex/project.json is committed; everything else under .omniplex is not.
+/.omniplex/*
+!/.omniplex/project.json
+/WORKTREE.md
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Test and editor/OS output
+coverage/
+*.coverprofile
+.DS_Store
+*.swp
+.worktree-scratch/

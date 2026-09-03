@@ -1,0 +1,17 @@
+The branch broadly implements the requested feature, but it is not clean: I found 7 real defects.
+
+- **High — [internal/adapter/codexapp/summarize.go:72](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/internal/adapter/codexapp/summarize.go:72): Codex summaries can read local secrets.** `read-only` prevents writes but still permits shell/file reads. A transcript can include `TRANSCRIPT>>>` and instructions to read credentials; the delimiter and prose at line 123 are not a security boundary. File contents would then be sent to the model provider.
+
+- **High — [internal/adapter/claudecode/summarize.go:55](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/internal/adapter/claudecode/summarize.go:55): Claude’s tool isolation is incomplete.** The blocklist misses user-configured MCP/plugin tools and future built-ins, while user settings still load. Recorded prompt injection can invoke those tools or trigger configured hooks. The installed CLI supports disabling tools wholesale and disabling customizations.
+
+- **High — [internal/session/summary.go:231](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/internal/session/summary.go:231): file-change reporting can be absent or false.** Successful no-change turns intentionally receive no `TurnDiff`, so the summary transcript never says they changed no files. Conversely, a failed checkpoint produces an empty diff with `Error`, but line 238 reports “changed no files,” incorrectly converting “could not measure” into a definitive result.
+
+- **Medium — [web/src/App.tsx:303](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/web/src/App.tsx:303): concurrent session requests share loading and error state.** Start summary A, close the panel, switch to B, then start B before A finishes. When A completes it clears B’s spinner; if A fails, its error appears in B’s panel. Results are session-keyed, but loading and errors are not.
+
+- **Medium — [internal/server/ws.go:268](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/internal/server/ws.go:268): generated summaries persist indefinitely after session deletion.** Commands put `sessionId` inside `args`, while `ClaimCommand` uses the absent top-level `f.SessionID`, storing the result under `""`. Consequently, session deletion cannot remove the command row containing the model answer, contradicting the UI’s non-persistence claim.
+
+- **Medium — [internal/session/summary.go:175](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/internal/session/summary.go:175): every user prompt is rendered twice.** `TurnStarted` already creates a user-message item. The renderer emits the turn prompt, then emits that item again at line 193. This wastes the limited transcript budget and can push relevant agent work into the omitted middle. The tests use unrealistic fixtures without prompt items, hiding the defect.
+
+- **Medium — [web/src/App.tsx:327](/Users/aaron/code/omniplex/.worktrees/feature-omniplex-6f3fe35e/web/src/App.tsx:327): prompt editing can silently do nothing.** If `userConfig` has not loaded, `saveSummaryPrompt` returns successfully without saving. The editor then calls `onSaved` and regenerates using the old prompt, making the operator believe their prompt was persisted.
+
+No files were modified. I could not execute tests because the read-only environment prevented Go from creating its temporary build directory.
