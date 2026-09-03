@@ -38,7 +38,7 @@ func write(t *testing.T, dir, name, body string) {
 // untracked file — every status the file list has to name.
 func changesFixture(t *testing.T) (*Manager, string) {
 	t.Helper()
-	root, worktree, _ := gitRepo(t)
+	root, worktree, branch := gitRepo(t)
 	write(t, root, "keep.txt", "one\ntwo\nthree\n")
 	write(t, root, "gone.txt", "bye\n")
 	write(t, root, "old-name.txt", "same\n")
@@ -59,7 +59,7 @@ func changesFixture(t *testing.T) (*Manager, string) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
-	meta := store.SessionMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID}
+	meta := store.SessionMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID, Branch: branch, WorkspaceMode: "borrowed"}
 	if err := st.CreateSession(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func fileNamed(t *testing.T, files []ChangedFile, path string) ChangedFile {
 
 func TestSessionChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.SessionChanges(context.Background(), id)
+	changes, err := mgr.SessionChanges(context.Background(), id, DiffBranch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,19 +113,73 @@ func TestSessionChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 	}
 }
 
-func TestSessionFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
+func TestSessionChangesDefaultsToUncommittedWork(t *testing.T) {
 	mgr, id := changesFixture(t)
-	tracked, err := mgr.SessionFileDiff(context.Background(), id, "keep.txt")
+	changes, err := mgr.SessionChanges(context.Background(), id, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, file := range changes.Files {
+		if file.Path == "keep.txt" {
+			t.Fatalf("committed branch edit appeared in uncommitted changes: %+v", file)
+		}
+	}
+	fileNamed(t, changes.Files, "new.txt")
+	fileNamed(t, changes.Files, "untracked.txt")
+}
+
+func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
+	mgr, id := changesFixture(t)
+	meta, err := mgr.store.Session(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRaw, err := runGit(context.Background(), meta.Cwd, "merge-base", "main", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	headRaw, err := runGit(context.Background(), meta.Cwd, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, head := strings.TrimSpace(string(baseRaw)), strings.TrimSpace(string(headRaw))
+	fakeGh(t, prJSON(`{"number":7,"state":"OPEN","baseRefName":"main","baseRefOid":"`+base+`","headRefOid":"`+head+`"}`), "", 0)
+
+	changes, err := mgr.SessionChanges(context.Background(), id, DiffPullRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes.Files) != 1 || changes.Files[0].Path != "keep.txt" {
+		t.Fatalf("PR files include dirty worktree changes: %+v", changes.Files)
+	}
+	if _, err := mgr.SessionFileDiff(context.Background(), id, "keep.txt", DiffPullRequest, base, base); err == nil {
+		t.Fatal("a client-supplied range must not replace the attached PR range")
+	}
+	if diff := sessionFileDiff(t, mgr, id, "keep.txt", DiffPullRequest); !strings.Contains(diff.Patch, "+four") {
+		t.Fatalf("PR patch missing committed change: %q", diff.Patch)
+	}
+}
+
+func sessionFileDiff(t *testing.T, mgr *Manager, id, path, mode string) FileDiff {
+	t.Helper()
+	changes, err := mgr.SessionChanges(context.Background(), id, mode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := mgr.SessionFileDiff(context.Background(), id, path, mode, changes.Base, changes.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return diff
+}
+
+func TestSessionFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
+	mgr, id := changesFixture(t)
+	tracked := sessionFileDiff(t, mgr, id, "keep.txt", DiffBranch)
 	if !strings.Contains(tracked.Patch, "+four") {
 		t.Fatalf("tracked patch missing its edit: %q", tracked.Patch)
 	}
-	untracked, err := mgr.SessionFileDiff(context.Background(), id, "untracked.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
+	untracked := sessionFileDiff(t, mgr, id, "untracked.txt", DiffBranch)
 	if !strings.Contains(untracked.Patch, "+a") {
 		t.Fatalf("untracked patch missing its content: %q", untracked.Patch)
 	}
@@ -135,10 +189,14 @@ func TestSessionFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
 // be read back through the diff command.
 func TestSessionFileDiffRefusesPathsThatDidNotChange(t *testing.T) {
 	mgr, id := changesFixture(t)
-	if _, err := mgr.SessionFileDiff(context.Background(), id, "../../etc/passwd"); err == nil {
+	changes, err := mgr.SessionChanges(context.Background(), id, DiffUncommitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SessionFileDiff(context.Background(), id, "../../etc/passwd", DiffUncommitted, changes.Base, changes.Head); err == nil {
 		t.Fatal("an unrelated path must be refused")
 	}
-	if _, err := mgr.SessionFileDiff(context.Background(), id, "README"); err == nil {
+	if _, err := mgr.SessionFileDiff(context.Background(), id, "README", DiffUncommitted, changes.Base, changes.Head); err == nil {
 		t.Fatal("an unchanged path must be refused")
 	}
 }
@@ -181,7 +239,7 @@ func TestSessionChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
 	if err := st.CreateSession(context.Background(), store.SessionMeta{ID: "s2", Cwd: t.TempDir(), Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	changes, err := mgr.SessionChanges(context.Background(), "s2")
+	changes, err := mgr.SessionChanges(context.Background(), "s2", DiffUncommitted)
 	if err != nil {
 		t.Fatalf("a plain directory must not be an error: %v", err)
 	}

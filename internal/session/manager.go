@@ -71,6 +71,12 @@ type Manager struct {
 	modelsMu   sync.Mutex
 	models     map[string]modelResult
 	refreshing map[string]bool
+
+	// diffPR holds only ranges resolved by SessionChanges from an attached PR.
+	// Per-file reads reuse them without trusting client-supplied commit ids or
+	// repeating a network lookup for every expanded file.
+	diffMu sync.RWMutex
+	diffPR map[string]diffRange
 	// modelGen invalidates listings already in flight. A recheck that cleared
 	// the cache must not be overwritten seconds later by an answer read before
 	// the user installed whatever they were rechecking for.

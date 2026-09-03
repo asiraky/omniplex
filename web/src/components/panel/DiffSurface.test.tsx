@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DiffSurface } from "./DiffSurface";
 import { render } from "~/test/harness";
@@ -13,6 +13,7 @@ const TEXT = `const a = "${LONG}";`;
 const CHANGES: SessionChanges = {
   root: "/tmp/wt",
   branch: "feature/wrap",
+  mode: "branch",
   baseRef: "main",
   additions: 1,
   deletions: 0,
@@ -25,7 +26,7 @@ const DIFF: FileDiff = {
   patch: `@@ -1 +1 @@\n+${TEXT}\n`,
 };
 
-function renderSurface() {
+function renderSurface(onComparisonChange = () => {}) {
   return render(
     <DiffSurface
       changes={CHANGES}
@@ -33,6 +34,8 @@ function renderSurface() {
       error=""
       onRefresh={() => {}}
       loadDiff={() => Promise.resolve(DIFF)}
+      comparison="branch"
+      onComparisonChange={onComparisonChange}
     />,
   );
 }
@@ -71,5 +74,21 @@ describe("DiffSurface wrap toggle", () => {
     renderSurface();
     expect(checkbox().getAttribute("data-state")).toBe("checked");
     expect((await openDiffRow()).className).toContain("whitespace-pre-wrap");
+  });
+});
+
+describe("DiffSurface comparison", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("offers uncommitted and branch changes and reports the selection", async () => {
+    const change = vi.fn();
+    renderSurface(change);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Diff comparison" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Uncommitted changes" }));
+    expect(change).toHaveBeenCalledWith("uncommitted");
   });
 });

@@ -88,8 +88,10 @@ export interface ChangedFile {
 export interface SessionChanges {
   root: string;
   branch?: string;
+  mode: DiffComparison;
   baseRef?: string;
   base?: string;
+  head?: string;
   files: ChangedFile[];
   additions: number;
   deletions: number;
@@ -97,6 +99,8 @@ export interface SessionChanges {
   /** Why the list is empty, when the reason is not "nothing changed". */
   warning?: string;
 }
+
+export type DiffComparison = "uncommitted" | "branch" | "pull_request";
 
 /** Every path under a session's checkout, relative to its root. */
 export interface FileTree {
@@ -414,6 +418,8 @@ export interface PullRequest {
   /** The commit the branch pointed at when it merged; a branch that has moved
    *  past it has unmerged work, and is not reported as merged. */
   headRefOid?: string;
+  baseRefName?: string;
+  baseRefOid?: string;
 }
 
 /**

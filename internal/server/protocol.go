@@ -142,7 +142,8 @@ type promptArgs struct {
 }
 
 type sessionArgs struct {
-	SessionID string `json:"sessionId"`
+	SessionID  string `json:"sessionId"`
+	Comparison string `json:"comparison,omitempty"`
 }
 
 // summarizeArgs asks for a fresh summary of one session. There is no "use the
@@ -153,8 +154,11 @@ type summarizeArgs struct {
 }
 
 type fileDiffArgs struct {
-	SessionID string `json:"sessionId"`
-	Path      string `json:"path"`
+	SessionID  string `json:"sessionId"`
+	Path       string `json:"path"`
+	Comparison string `json:"comparison,omitempty"`
+	Base       string `json:"base,omitempty"`
+	Head       string `json:"head,omitempty"`
 }
 
 type fileTreeArgs struct {
