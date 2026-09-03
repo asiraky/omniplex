@@ -4,10 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Diff } from "~/components/Diff";
 import { IconButton } from "~/components/IconButton";
 import { Checkbox } from "~/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
 import { Spinner } from "~/components/ui/spinner";
 import { useDiffWrap } from "~/lib/diffWrap";
 import { cn } from "~/lib/utils";
-import type { ChangedFile, FileDiff, SessionChanges } from "~/protocol";
+import type { ChangedFile, DiffComparison, FileDiff, PullRequest, SessionChanges } from "~/protocol";
 
 const STATUS_LABEL: Record<string, string> = {
   added: "A",
@@ -135,13 +136,19 @@ export function DiffSurface({
   onRefresh,
   loadDiff,
   reveal,
+  comparison,
+  onComparisonChange,
+  pr,
 }: {
   changes: SessionChanges | null;
   loading: boolean;
   error: string;
   onRefresh: () => void;
-  loadDiff: (path: string) => Promise<FileDiff>;
+  loadDiff: (path: string, changes: SessionChanges) => Promise<FileDiff>;
   reveal?: { path: string; nonce: number } | null;
+  comparison: DiffComparison;
+  onComparisonChange: (comparison: DiffComparison) => void;
+  pr?: PullRequest | null;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [wrap, setWrap] = useDiffWrap();
@@ -172,7 +179,8 @@ export function DiffSurface({
     requested.current.add(path);
     const mine = generation.current;
     setDiffs((d) => ({ ...d, [path]: { loading: true } }));
-    void diffRef.current(path)
+    if (!changes) return;
+    void diffRef.current(path, changes)
       .then((diff) => {
         if (mine !== generation.current) return;
         setDiffs((d) => ({ ...d, [path]: { diff, loading: false } }));
@@ -185,7 +193,7 @@ export function DiffSurface({
           [path]: { loading: false, error: e instanceof Error ? e.message : String(e) },
         }));
       });
-  }, []);
+  }, [changes]);
 
   const toggleRef = useRef(toggle);
   toggleRef.current = toggle;
@@ -209,12 +217,27 @@ export function DiffSurface({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-1.5">
-        <span className="shrink-0 text-[12px] whitespace-nowrap">
-          {files.length} file{files.length === 1 ? "" : "s"} changed
-        </span>
-        <span className="text-muted-foreground min-w-0 truncate font-mono text-[10px]">
-          {changes?.branch ?? "…"}
-          {changes?.baseRef && ` vs ${changes.baseRef}`}
+        <Select value={comparison} onValueChange={(value) => onComparisonChange(value as DiffComparison)}>
+          <SelectTrigger aria-label="Diff comparison" className="h-8 min-w-0 max-w-52 text-[12px]">
+            <SelectValue>
+              {comparison === "uncommitted" && (
+                <>
+                  <span className="sm:hidden">Uncommitted</span>
+                  <span className="hidden sm:inline">Uncommitted changes</span>
+                </>
+              )}
+              {comparison === "branch" && "Branch changes"}
+              {comparison === "pull_request" && (pr ? `PR #${pr.number}` : "Attached PR")}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="uncommitted">Uncommitted changes</SelectItem>
+            <SelectItem value="branch">Branch changes</SelectItem>
+            {(pr || comparison === "pull_request") && <SelectItem value="pull_request">{pr ? `PR #${pr.number} vs ${pr.baseRefName || "base"}` : "Attached PR"}</SelectItem>}
+          </SelectContent>
+        </Select>
+        <span className="text-muted-foreground shrink-0 text-[11px] whitespace-nowrap">
+          {files.length} file{files.length === 1 ? "" : "s"}
         </span>
         <span className="flex-1" />
         {changes && <Counts additions={changes.additions} deletions={changes.deletions} />}

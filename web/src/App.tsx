@@ -622,14 +622,20 @@ export function App() {
 
   // Git is the source of truth for what a session changed: it catches the
   // formatter and the codemod as well as the edits we parsed out of tool calls.
-  const loadChanges = useCallback(async () => {
-    const res = await clientRef.current!.command("session_changes", { sessionId: activeId });
+  const loadChanges = useCallback(async (comparison: import("./protocol").DiffComparison) => {
+    const res = await clientRef.current!.command("session_changes", { sessionId: activeId, comparison });
     return res.changes as SessionChanges;
   }, [activeId]);
 
   const loadFileDiff = useCallback(
-    async (path: string) => {
-      const res = await clientRef.current!.command("session_file_diff", { sessionId: activeId, path });
+    async (path: string, changes: SessionChanges) => {
+      const res = await clientRef.current!.command("session_file_diff", {
+        sessionId: activeId,
+        path,
+        comparison: changes.mode,
+        base: changes.base,
+        head: changes.head,
+      });
       return res.diff as FileDiff;
     },
     [activeId],
@@ -1450,6 +1456,7 @@ export function App() {
           loadTree={loadFileTree}
           loadFile={loadFile}
           request={panelRequest}
+          pr={pr}
           />
         </Suspense>
       )}

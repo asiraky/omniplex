@@ -24,14 +24,16 @@ type PullRequest struct {
 	MergedAt string `json:"mergedAt,omitempty"`
 	// HeadRefOid is the commit the pull request's branch pointed at. It is what
 	// tells a finished branch from one that was merged and then worked on again.
-	HeadRefOid string `json:"headRefOid,omitempty"`
+	HeadRefOid  string `json:"headRefOid,omitempty"`
+	BaseRefName string `json:"baseRefName,omitempty"`
+	BaseRefOid  string `json:"baseRefOid,omitempty"`
 }
 
 const prLookupTimeout = 12 * time.Second
 
 // prFields is what `gh pr view` is asked for. Kept next to the struct that
 // receives it so the two cannot drift apart unnoticed.
-const prFields = "number,title,url,state,mergedAt,headRefOid"
+const prFields = "number,title,url,state,mergedAt,headRefOid,baseRefName,baseRefOid"
 
 // SessionPR reports the pull request for a session's branch, if there is one.
 //

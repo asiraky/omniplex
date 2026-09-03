@@ -28,6 +28,11 @@ const (
 	maxChangedFiles = 2000
 )
 
+type diffRange struct {
+	base string
+	head string
+}
+
 // ChangedFile is one path a change set touched, aggregated over the whole set
 // rather than per tool call: a file edited five times appears once. It is the
 // event schema's type, so a turn's file list and a session's are the same shape
@@ -38,10 +43,12 @@ type ChangedFile = proto.ChangedFile
 type SessionChanges struct {
 	Root    string `json:"root"`
 	Branch  string `json:"branch,omitempty"`
+	Mode    string `json:"mode"`
 	BaseRef string `json:"baseRef,omitempty"`
 	// Base is the resolved merge base the diff is taken against; empty means
 	// the comparison is against the working tree's own HEAD.
 	Base      string        `json:"base,omitempty"`
+	Head      string        `json:"head,omitempty"`
 	Files     []ChangedFile `json:"files"`
 	Additions int           `json:"additions"`
 	Deletions int           `json:"deletions"`
@@ -50,6 +57,12 @@ type SessionChanges struct {
 	// a checkout that is not a repository, most often.
 	Warning string `json:"warning,omitempty"`
 }
+
+const (
+	DiffUncommitted = "uncommitted"
+	DiffBranch      = "branch"
+	DiffPullRequest = "pull_request"
+)
 
 // FileDiff is one file's unified diff, for the panel that opens beside the list.
 type FileDiff struct {
@@ -63,12 +76,16 @@ type FileDiff struct {
 
 // SessionChanges lists every file the session's checkout differs by, measured
 // against the base branch it was cut from.
-func (m *Manager) SessionChanges(ctx context.Context, sessionID string) (SessionChanges, error) {
-	scope, err := m.diffScope(ctx, sessionID)
+func (m *Manager) SessionChanges(ctx context.Context, sessionID, mode string) (SessionChanges, error) {
+	scope, err := m.diffScope(ctx, sessionID, mode)
 	if err != nil {
 		return SessionChanges{}, err
 	}
-	out := SessionChanges{Root: scope.root, Branch: scope.branch, BaseRef: scope.baseRef, Base: scope.base, Files: []ChangedFile{}}
+	return changesForScope(ctx, scope)
+}
+
+func changesForScope(ctx context.Context, scope diffScope) (SessionChanges, error) {
+	out := SessionChanges{Root: scope.root, Branch: scope.branch, Mode: scope.mode, BaseRef: scope.baseRef, Base: scope.base, Head: scope.head, Files: []ChangedFile{}}
 	if scope.warning != "" {
 		out.Warning = scope.warning
 		return out, nil
@@ -78,11 +95,13 @@ func (m *Manager) SessionChanges(ctx context.Context, sessionID string) (Session
 	if err != nil {
 		return SessionChanges{}, err
 	}
-	untracked, err := untrackedChanges(ctx, scope.root)
-	if err != nil {
-		return SessionChanges{}, err
+	if scope.mode != DiffPullRequest {
+		untracked, err := untrackedChanges(ctx, scope.root)
+		if err != nil {
+			return SessionChanges{}, err
+		}
+		files = append(files, untracked...)
 	}
-	files = append(files, untracked...)
 
 	// Totals are counted over everything that changed, then the list is cut:
 	// a truncated list still has to report honest sums.
@@ -100,8 +119,34 @@ func (m *Manager) SessionChanges(ctx context.Context, sessionID string) (Session
 
 // SessionFileDiff renders one file's unified diff. The path must be one the
 // change list reported: a session's checkout is not a file server.
-func (m *Manager) SessionFileDiff(ctx context.Context, sessionID, path string) (FileDiff, error) {
-	changes, err := m.SessionChanges(ctx, sessionID)
+func (m *Manager) SessionFileDiff(ctx context.Context, sessionID, path, mode, base, head string) (FileDiff, error) {
+	var changes SessionChanges
+	var err error
+	if mode == DiffPullRequest && base != "" && head != "" {
+		// The list response already resolved the attached PR. Reuse that immutable
+		// commit range for its file reads instead of paying for another network
+		// lookup per expanded row.
+		scope, scopeErr := m.diffScope(ctx, sessionID, DiffUncommitted)
+		if scopeErr != nil {
+			return FileDiff{}, scopeErr
+		}
+		m.diffMu.RLock()
+		resolved, ok := m.diffPR[sessionID]
+		m.diffMu.RUnlock()
+		if !ok || resolved.base != base || resolved.head != head {
+			return FileDiff{}, errors.New("the pull request comparison changed; refresh the diff")
+		}
+		if _, verifyErr := runGit(ctx, scope.root, "rev-parse", "--verify", base+"^{commit}"); verifyErr != nil {
+			return FileDiff{}, errors.New("the pull request's base commit is not available locally")
+		}
+		if _, verifyErr := runGit(ctx, scope.root, "rev-parse", "--verify", head+"^{commit}"); verifyErr != nil {
+			return FileDiff{}, errors.New("the pull request's head commit is not available locally")
+		}
+		scope.mode, scope.base, scope.head = mode, base, head
+		changes, err = changesForScope(ctx, scope)
+	} else {
+		changes, err = m.SessionChanges(ctx, sessionID, mode)
+	}
 	if err != nil {
 		return FileDiff{}, err
 	}
@@ -115,6 +160,9 @@ func (m *Manager) SessionFileDiff(ctx context.Context, sessionID, path string) (
 	if target == nil {
 		return FileDiff{}, fmt.Errorf("%q is not one of this session's changed files", path)
 	}
+	if changes.Base != base || changes.Head != head {
+		return FileDiff{}, errors.New("the comparison changed; refresh the diff")
+	}
 
 	out := FileDiff{Path: target.Path, OldPath: target.OldPath, Status: target.Status, Binary: target.Binary}
 	if target.Binary {
@@ -125,7 +173,11 @@ func (m *Manager) SessionFileDiff(ctx context.Context, sessionID, path string) (
 	if target.Untracked {
 		args = []string{"diff", "--no-index", "--no-color", "--", devNull, "./" + target.Path}
 	} else {
-		args = []string{"diff", "-M", "--no-color", changes.Base, "--", target.Path}
+		args = []string{"diff", "-M", "--no-color", changes.Base}
+		if changes.Head != "" {
+			args = append(args, changes.Head)
+		}
+		args = append(args, "--", target.Path)
 		if target.OldPath != "" {
 			args = append(args, target.OldPath)
 		}
@@ -145,17 +197,19 @@ const devNull = "/dev/null"
 type diffScope struct {
 	root    string
 	branch  string
+	mode    string
 	baseRef string
 	// base is what the diff is actually taken against: the merge base with the
 	// base branch, or HEAD when there is no usable base branch.
 	base    string
+	head    string
 	warning string
 }
 
 // diffScope works out where to run Git and what to compare against. Failure to
 // find a base branch is not an error: comparing against HEAD still shows
 // everything uncommitted, which is most of what a live session has.
-func (m *Manager) diffScope(ctx context.Context, sessionID string) (diffScope, error) {
+func (m *Manager) diffScope(ctx context.Context, sessionID, mode string) (diffScope, error) {
 	meta, err := m.store.Session(ctx, sessionID)
 	if err != nil {
 		return diffScope{}, err
@@ -168,7 +222,13 @@ func (m *Manager) diffScope(ctx context.Context, sessionID string) (diffScope, e
 	if err != nil {
 		return diffScope{warning: "this session's directory is not a Git repository"}, nil
 	}
-	scope := diffScope{root: strings.TrimSpace(string(top))}
+	if mode == "" {
+		mode = DiffUncommitted
+	}
+	if mode != DiffUncommitted && mode != DiffBranch && mode != DiffPullRequest {
+		return diffScope{}, fmt.Errorf("unknown diff mode %q", mode)
+	}
+	scope := diffScope{root: strings.TrimSpace(string(top)), mode: mode}
 
 	if b, err := runGit(ctx, scope.root, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		scope.branch = strings.TrimSpace(string(b))
@@ -180,6 +240,37 @@ func (m *Manager) diffScope(ctx context.Context, sessionID string) (diffScope, e
 		return scope, nil
 	}
 	scope.base = "HEAD"
+	if mode == DiffUncommitted {
+		return scope, nil
+	}
+	if mode == DiffPullRequest {
+		m.diffMu.Lock()
+		delete(m.diffPR, sessionID)
+		m.diffMu.Unlock()
+		pr, reason := m.SessionPR(ctx, sessionID)
+		if pr == nil || pr.BaseRefOid == "" || pr.HeadRefOid == "" {
+			if reason == "" {
+				reason = "the attached pull request has no commit range"
+			}
+			scope.warning = reason
+			return scope, nil
+		}
+		merged, mergeErr := runGit(ctx, scope.root, "merge-base", pr.BaseRefOid, pr.HeadRefOid)
+		if mergeErr != nil {
+			scope.warning = "the attached pull request's commits are not available locally"
+			return scope, nil
+		}
+		scope.baseRef = pr.BaseRefName
+		scope.base = strings.TrimSpace(string(merged))
+		scope.head = pr.HeadRefOid
+		m.diffMu.Lock()
+		if m.diffPR == nil {
+			m.diffPR = make(map[string]diffRange)
+		}
+		m.diffPR[sessionID] = diffRange{base: scope.base, head: scope.head}
+		m.diffMu.Unlock()
+		return scope, nil
+	}
 
 	for _, candidate := range m.baseCandidates(ctx, meta) {
 		merged, err := runGit(ctx, scope.root, "merge-base", candidate, "HEAD")
@@ -226,11 +317,17 @@ func trackedChanges(ctx context.Context, scope diffScope) ([]ChangedFile, error)
 	if scope.base == "" {
 		return nil, nil
 	}
-	nameStatus, err := runGit(ctx, scope.root, "diff", "-M", "--name-status", "-z", scope.base)
+	comparison := []string{scope.base}
+	if scope.head != "" {
+		comparison = append(comparison, scope.head)
+	}
+	nameArgs := append([]string{"diff", "-M", "--name-status", "-z"}, comparison...)
+	nameStatus, err := runGit(ctx, scope.root, nameArgs...)
 	if err != nil {
 		return nil, err
 	}
-	numstat, err := runGit(ctx, scope.root, "diff", "-M", "--numstat", "-z", scope.base)
+	numArgs := append([]string{"diff", "-M", "--numstat", "-z"}, comparison...)
+	numstat, err := runGit(ctx, scope.root, numArgs...)
 	if err != nil {
 		return nil, err
 	}

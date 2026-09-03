@@ -37,7 +37,7 @@ import {
 } from "~/lib/panel";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
-import type { FileContent, FileDiff, FileTree, SessionChanges, SessionState } from "~/protocol";
+import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, SessionChanges, SessionState } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
 const WIDTH_KEY = "omniplex.changesWidth";
@@ -65,11 +65,12 @@ export interface PanelProps {
   onToggleExpanded?: () => void;
   /** Data is re-read when this changes — when a turn ends, in practice. */
   revision: string;
-  loadChanges: () => Promise<SessionChanges>;
-  loadDiff: (path: string) => Promise<FileDiff>;
+  loadChanges: (comparison: DiffComparison) => Promise<SessionChanges>;
+  loadDiff: (path: string, changes: SessionChanges) => Promise<FileDiff>;
   loadTree: (includeIgnored: boolean) => Promise<FileTree>;
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
+  pr?: PullRequest | null;
 }
 
 function surfaceLabel(s: Surface): string {
@@ -118,6 +119,7 @@ function PanelBody({
   loadTree,
   loadFile,
   request,
+  pr,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per session so the panel reopens as it was left.
@@ -126,6 +128,10 @@ function PanelBody({
 
   // ---- the change list, owned here because routing needs it too ----
   const [changes, setChanges] = useState<SessionChanges | null>(null);
+  const [comparison, setComparison] = useState<DiffComparison>(() => {
+    const stored = localStorage.getItem(`omniplex.diffComparison:${sessionId}`);
+    return stored === "branch" || stored === "pull_request" ? stored : "uncommitted";
+  });
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState("");
   const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
@@ -141,7 +147,7 @@ function PanelBody({
     setChangesLoading(true);
     setChangesError("");
     try {
-      const next = await loadChangesRef.current();
+      const next = await loadChangesRef.current(comparison);
       if (mine !== changesGen.current) return;
       setChanges(next);
     } catch (e) {
@@ -150,7 +156,14 @@ function PanelBody({
     } finally {
       if (mine === changesGen.current) setChangesLoading(false);
     }
-  }, []);
+  }, [comparison]);
+
+  const changeComparison = useCallback((next: DiffComparison) => {
+    localStorage.setItem(`omniplex.diffComparison:${sessionId}`, next);
+    setChanges(null);
+    setChangesError("");
+    setComparison(next);
+  }, [sessionId]);
 
   // Opening reads the worktree, and so does the end of a turn: the agent has
   // just stopped writing, which is exactly when the data is worth re-reading.
@@ -358,6 +371,9 @@ function PanelBody({
             onRefresh={() => void refreshChanges()}
             loadDiff={loadDiff}
             reveal={reveal}
+            comparison={comparison}
+            onComparisonChange={changeComparison}
+            pr={pr}
           />
         )}
         {(active?.kind === "files" || active?.kind === "file") && (
