@@ -22,11 +22,14 @@ import (
 // fakeAdapter emits scripted events, so the seam can be tested without a real
 // harness process.
 type fakeAdapter struct {
-	mu        sync.Mutex
-	last      *fakeSession
-	live      []adapter.ModelMeta
-	liveErr   error
-	listCalls int
+	// steer makes every session a Steerer; steerRefuse is what Steer returns.
+	steer       bool
+	steerRefuse error
+	mu          sync.Mutex
+	last        *fakeSession
+	live        []adapter.ModelMeta
+	liveErr     error
+	listCalls   int
 	// listGate, when set, holds the listing open so a test can prove the
 	// caller did not wait for it.
 	listGate      chan struct{}
@@ -266,11 +269,28 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	s := &fakeSession{
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
+		steerRefuse: f.steerRefuse,
 	}
 	f.mu.Lock()
 	f.last = s
 	f.mu.Unlock()
+	if f.steer {
+		return steerSession{s}, nil
+	}
 	return s, nil
+}
+
+// steerSession is a fakeSession that can take a prompt mid-turn. Steered
+// prompts land on the same channel as prompted ones, distinguished by
+// carrying a queue id and no turn id.
+type steerSession struct{ *fakeSession }
+
+func (s steerSession) Steer(ctx context.Context, in adapter.PromptInput) error {
+	if s.steerRefuse != nil {
+		return s.steerRefuse
+	}
+	s.prompts <- in
+	return nil
 }
 
 func (f *fakeAdapter) session() *fakeSession {
@@ -288,9 +308,10 @@ type fakeSession struct {
 	closeStarted chan struct{}
 	closeRelease <-chan struct{}
 
-	mu     sync.Mutex
-	mode   string
-	refuse error
+	mu          sync.Mutex
+	mode        string
+	refuse      error
+	steerRefuse error
 }
 
 func (s *fakeSession) Prompt(ctx context.Context, in adapter.PromptInput) error {
@@ -339,13 +360,19 @@ func (s *fakeSession) emit(e proto.Emission) { s.events <- e }
 
 func newTestActor(t *testing.T) (*Actor, *fakeAdapter, *store.Store) {
 	t.Helper()
+	return newTestActorWith(t, &fakeAdapter{})
+}
+
+// newTestActorWith starts an actor on a fake configured by the caller; the
+// session is created here, so the fake's settings must be in place first.
+func newTestActorWith(t *testing.T, fa *fakeAdapter) (*Actor, *fakeAdapter, *store.Store) {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
 
-	fa := &fakeAdapter{}
 	mgr := NewManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
@@ -1818,4 +1845,154 @@ func TestQueuedImagesGetTheirPathBack(t *testing.T) {
 	if len(in.Images) != 1 || in.Images[0].Path != "/stored/img.png" || in.Images[0].ID != "img" {
 		t.Fatalf("dispatched images = %+v, want the stored path restored", in.Images)
 	}
+}
+
+// TestPromptSteersIntoRunningTurn: with a harness that takes messages
+// mid-turn, a prompt sent while a turn runs is handed over at once, shown as
+// sent, and joins the running turn's transcript once the harness reads it.
+// It is never started again by the actor.
+func TestPromptSteersIntoRunningTurn(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	first, err := actor.Prompt(ctx, "first", nil)
+	if err != nil || first.Queued() {
+		t.Fatalf("first prompt = %+v, %v", first, err)
+	}
+	<-fa.session().prompts
+
+	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	if err != nil || !second.Queued() {
+		t.Fatalf("second prompt = %+v, %v; want queued", second, err)
+	}
+	in := <-fa.session().prompts
+	if in.QueueID != second.QueueID || in.TurnID != "" || in.Text != "second" || len(in.Images) != 1 {
+		t.Fatalf("steered prompt = %+v", in)
+	}
+	state, _ := actor.State(ctx)
+	if len(state.Queued) != 1 || !state.Queued[0].Sent {
+		t.Fatalf("queued state = %+v, want one sent entry", state.Queued)
+	}
+	if err := actor.DequeuePrompt(ctx, second.QueueID); !errors.Is(err, ErrAlreadySent) {
+		t.Fatalf("dequeue of a sent prompt err = %v, want ErrAlreadySent", err)
+	}
+
+	fa.session().emit(proto.Emit(proto.PromptInjected, proto.PromptInjectedPayload{QueueID: second.QueueID, TurnID: first.TurnID}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return len(next.Queued) == 0
+	})
+	state, _ = actor.State(ctx)
+	var found bool
+	for _, it := range state.Items {
+		if it.ID == "prompt:"+second.QueueID {
+			found = it.Role == "user" && it.Text == "second" && it.TurnID == first.TurnID && len(it.Images) == 1
+		}
+	}
+	if !found || len(state.Turns) != 1 {
+		t.Fatalf("injected prompt not in the turn: items=%+v turns=%d", state.Items, len(state.Turns))
+	}
+
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "idle"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("a prompt the harness already read was started again: %+v", in)
+	default:
+	}
+}
+
+// TestHarnessStartsTurnFromHeldPrompt: a sent prompt the turn ends before
+// reading is the harness's to run. The turn it starts names the queue entry,
+// which takes it out of the queue; the actor does not start it a second time.
+func TestHarnessStartsTurnFromHeldPrompt(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	<-fa.session().prompts
+	second, _ := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	<-fa.session().prompts
+
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "idle"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("held prompt was dispatched by the actor: %+v", in)
+	default:
+	}
+
+	fa.session().emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "harness-turn", Prompt: "second", QueueID: second.QueueID}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "turn" && len(next.Queued) == 0
+	})
+	state, _ := actor.State(ctx)
+	if len(state.Turns) != 2 || state.Turns[1].Prompt != "second" || len(state.Turns[1].Images) != 1 {
+		t.Fatalf("turn from held prompt = %+v", state.Turns)
+	}
+	if err := actor.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCancelDiscardsSentPrompts: stop means stop, for a prompt the harness
+// holds as much as for one waiting on the server.
+func TestCancelDiscardsSentPrompts(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	<-fa.session().prompts
+	if _, err := actor.Prompt(ctx, "later", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-fa.session().prompts
+	if err := actor.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "idle"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("cancelled prompt still ran: %+v", in)
+	default:
+	}
+	if state, _ := actor.State(ctx); len(state.Queued) != 0 {
+		t.Fatalf("queue survived cancel: %+v", state.Queued)
+	}
+}
+
+// TestSteerRefusedFallsBackToQueue: a harness that will not take the prompt
+// now still gets it the old way, once idle.
+func TestSteerRefusedFallsBackToQueue(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true, steerRefuse: errors.New("pipe closed")})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	<-fa.session().prompts
+	second, _ := actor.Prompt(ctx, "second", nil)
+	state, _ := actor.State(ctx)
+	if len(state.Queued) != 1 || state.Queued[0].Sent {
+		t.Fatalf("queued state = %+v, want one unsent entry", state.Queued)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.session().prompts
+	if in.Text != "second" || in.TurnID == "" || in.QueueID != "" {
+		t.Fatalf("dispatched prompt = %+v", in)
+	}
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return len(next.Queued) == 0 && len(next.Turns) == 2 && next.Turns[1].Prompt == "second"
+	})
+	_ = second
 }

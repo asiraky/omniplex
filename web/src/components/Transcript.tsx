@@ -855,9 +855,10 @@ function InterruptedCard({
   );
 }
 
-// QueuedCard is a prompt waiting for the running turn to end. It sits where
-// its turn will start and looks like the user bubble it is about to become,
-// dimmed, so the reader can see what is coming — and take it back.
+// QueuedCard is a prompt the running turn has not read yet. It sits where it
+// will land and looks like the user bubble it is about to become, dimmed, so
+// the reader can see what is coming. One the harness already holds is read at
+// its next step and cannot be taken back; one still waiting on the server can.
 function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; sessionId: string; onDequeue: (queueId: string) => void }) {
   return (
     <div data-queue-id={queued.queueId} className="fade-in flex flex-col items-end opacity-60">
@@ -868,15 +869,21 @@ function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; se
         </div>
       )}
       <div className="text-muted-foreground mt-1 flex items-center gap-1 text-[12px]">
-        <span>Queued</span>
-        <span aria-hidden>·</span>
-        <button
-          type="button"
-          onClick={() => onDequeue(queued.queueId)}
-          className="hover:text-foreground focus-visible:ring-ring rounded-sm px-1 transition-colors outline-none focus-visible:ring-2"
-        >
-          Remove
-        </button>
+        {queued.sent ? (
+          <span>Sent · read after the current step</span>
+        ) : (
+          <>
+            <span>Queued</span>
+            <span aria-hidden>·</span>
+            <button
+              type="button"
+              onClick={() => onDequeue(queued.queueId)}
+              className="hover:text-foreground focus-visible:ring-ring rounded-sm px-1 transition-colors outline-none focus-visible:ring-2"
+            >
+              Remove
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

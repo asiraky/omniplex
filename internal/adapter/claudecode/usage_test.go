@@ -27,6 +27,7 @@ func newTestSession() *session {
 		events:  make(chan proto.Emission, 256),
 		done:    make(chan struct{}),
 		streams: map[string]*stream{},
+		steers:  map[string]bool{},
 		model:   "claude-sonnet-test",
 	}
 }

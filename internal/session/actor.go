@@ -63,6 +63,12 @@ type Actor struct {
 	pendingPerm   map[string]chan adapter.PermissionOutcome
 	pendingElicit map[string]chan adapter.ElicitationResult
 	turnActive    string
+	// sent holds the queue ids the running harness process has been handed
+	// (adapter.Steerer) and not yet reported reading. Those are the harness's
+	// to run; dispatchQueued skips them. It is knowledge about this process,
+	// so it is not in the log: a restart starts a new harness that knows
+	// nothing, and the log's queue is dispatched afresh.
+	sent map[string]bool
 
 	mu   sync.Mutex // guards subs and headSeq for readers outside the loop
 	subs map[string]*Subscriber
@@ -157,6 +163,10 @@ const (
 // ErrBusy is returned when a composer action arrives while a turn is already
 // running. A plain prompt is never refused for this: it queues instead.
 var ErrBusy = errors.New("a turn is already in progress")
+
+// ErrAlreadySent is returned when asked to remove a queued prompt the harness
+// already holds: it reads it at its next step, and there is no taking it back.
+var ErrAlreadySent = errors.New("the harness already has that prompt")
 
 // ErrNotQueued is returned when asked to remove a queued prompt that is not
 // waiting — it already started, or was removed by someone else.
@@ -791,6 +801,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		for _, em := range interruptedJobs(a.state) {
 			a.append(em)
 		}
+		// So did anything it was holding: the queue in the log is what the
+		// next process gets.
+		a.sent = nil
 		a.shutdown(false)
 		return true
 
@@ -1023,10 +1036,22 @@ func (a *Actor) handle(c command) (stop bool) {
 				c.reply <- cmdResult{err: ErrBusy}
 				return false
 			}
-			// Not refused: the prompt waits in the log and starts its own
-			// turn when this one ends.
+			// Not refused: the prompt waits in the log. A harness that can
+			// take a message mid-turn gets it now and reads it at its next
+			// step, the way the terminal does; otherwise it starts its own
+			// turn when this one ends. A steer that fails on the way out is
+			// simply queued the old way.
 			queueID := uuid.NewString()
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			sent := false
+			if st, ok := a.sess.(adapter.Steerer); ok {
+				if err := st.Steer(ctx, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images}); err != nil {
+					a.logf("steer on %s: %v", a.ID, err)
+				} else {
+					sent = true
+					a.markSent(queueID)
+				}
+			}
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Sent: sent}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
@@ -1048,6 +1073,10 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		if !a.isQueued(c.reqID) {
 			c.reply <- cmdResult{err: ErrNotQueued}
+			return false
+		}
+		if a.sent[c.reqID] {
+			c.reply <- cmdResult{err: ErrAlreadySent}
 			return false
 		}
 		a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: c.reqID, Reason: proto.DequeueRemoved}))
@@ -1295,10 +1324,25 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	if recovering {
 		return
 	}
-	next := a.state.Queued[0]
-	if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
-		a.logf("queued prompt on %s: %v", a.ID, err)
+	// A prompt the harness already holds is its to run: it starts a turn
+	// with it itself, or reads it into one. Only what nobody has is started
+	// here.
+	for _, next := range a.state.Queued {
+		if a.sent[next.QueueID] {
+			continue
+		}
+		if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
+			a.logf("queued prompt on %s: %v", a.ID, err)
+		}
+		return
 	}
+}
+
+func (a *Actor) markSent(queueID string) {
+	if a.sent == nil {
+		a.sent = map[string]bool{}
+	}
+	a.sent[queueID] = true
 }
 
 // resolveImages puts the host path back on images that came out of the log,
@@ -1333,6 +1377,8 @@ func (a *Actor) dropQueue() {
 	for _, q := range append([]projection.QueuedPrompt(nil), a.state.Queued...) {
 		a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: q.QueueID, Reason: proto.DequeueCancelled}))
 	}
+	// Cancel discards what the harness was holding too (adapter.Steerer).
+	a.sent = nil
 }
 
 // append writes the event, folds it into the projection, and fans it out.
@@ -1361,6 +1407,17 @@ func (a *Actor) append(em proto.Emission) {
 		if p, ok := em.Payload.(proto.TurnStartedPayload); ok && a.turnActive == "" {
 			a.turnActive = p.TurnID
 		}
+		if p, ok := em.Payload.(proto.TurnStartedPayload); ok && p.QueueID != "" {
+			delete(a.sent, p.QueueID)
+		}
+	}
+	// The harness has read a prompt it was handed; it is no longer in
+	// flight.
+	if p, ok := em.Payload.(proto.PromptInjectedPayload); ok {
+		delete(a.sent, p.QueueID)
+	}
+	if p, ok := em.Payload.(proto.PromptDequeuedPayload); ok {
+		delete(a.sent, p.QueueID)
 	}
 	if em.Type == proto.TurnFinished {
 		// Only the finish of the turn that is actually active may clear it. A

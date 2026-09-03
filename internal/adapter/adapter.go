@@ -38,7 +38,11 @@ type CreateOptions struct {
 // PromptInput is one user turn.
 type PromptInput struct {
 	TurnID string
-	Text   string
+	// QueueID is set on a Steer instead of TurnID: the prompt's identity is
+	// the queue entry it came from, and the harness is expected to hand it
+	// back with that id when it reads it.
+	QueueID string
+	Text    string
 	// Images the human attached, already stored on this host. Each carries the
 	// path the harness reads the bytes from; a harness that cannot take images
 	// simply ignores them.
@@ -232,6 +236,16 @@ type Session interface {
 // mode mid-conversation. The mode is one of the adapter's own
 // PermissionModes ids. A harness that cannot switch simply does not implement
 // this, and the host reports that legibly instead of silently ignoring it.
+// Steerer is a Session that can take a prompt while a turn is running. The
+// harness owns the prompt from the moment Steer returns nil: it reads it at
+// its next model call and says so with prompt.injected naming the queue id,
+// or — when the turn ends before that — starts a turn with it and names the
+// queue id on turn.started. Either way the actor never sends it again. Cancel
+// discards any steer the harness has not read yet.
+type Steerer interface {
+	Steer(ctx context.Context, in PromptInput) error
+}
+
 type ModeSwitcher interface {
 	SetMode(ctx context.Context, mode string) error
 }

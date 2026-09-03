@@ -212,6 +212,9 @@ type QueuedPrompt struct {
 	Prompt   string              `json:"prompt"`
 	Images   []proto.PromptImage `json:"images,omitempty"`
 	QueuedAt int64               `json:"queuedAt,omitempty"`
+	// Sent means the harness holds it and reads it at its next step; it
+	// cannot be taken back.
+	Sent bool `json:"sent,omitempty"`
 }
 
 // PendingPermission is a permission request awaiting a human. It lives in the
@@ -547,10 +550,21 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.TurnStartedPayload
 		decode(ev.Payload, &p)
 		s.Phase = "turn"
-		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Images: p.Images, Recovery: p.Recovery, StartedAt: ev.Timestamp})
 		if p.QueueID != "" {
+			// A turn the harness started from a prompt it was holding names
+			// the queue entry but not what it carried: the echo it is built
+			// from has the text, never the images. The entry does.
+			if q := s.queued(p.QueueID); q != nil {
+				if p.Prompt == "" {
+					p.Prompt = q.Prompt
+				}
+				if len(p.Images) == 0 {
+					p.Images = q.Images
+				}
+			}
 			s.removeQueued(p.QueueID)
 		}
+		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Images: p.Images, Recovery: p.Recovery, StartedAt: ev.Timestamp})
 		if s.Title == "" {
 			s.Title = truncate(p.Prompt, 60)
 			if s.Title == "" && len(p.Images) > 0 {
@@ -577,7 +591,31 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PromptQueued:
 		var p proto.PromptQueuedPayload
 		decode(ev.Payload, &p)
-		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp})
+		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp, Sent: p.Sent})
+
+	case proto.PromptInjected:
+		// The harness read a prompt it was holding into the running turn.
+		// It leaves the queue and joins the transcript where it was read —
+		// after the work that was already done — as the user message it is.
+		var p proto.PromptInjectedPayload
+		decode(ev.Payload, &p)
+		q := s.queued(p.QueueID)
+		if q == nil {
+			return
+		}
+		prompt, images := q.Prompt, q.Images
+		s.removeQueued(p.QueueID)
+		s.upsert("prompt:"+p.QueueID, func(it *Item) {
+			it.Kind = ItemMessage
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.Role = "user"
+			it.ContentKind = "text"
+			it.Text = prompt
+			it.Images = images
+			it.TurnID = p.TurnID
+		})
 
 	case proto.PromptDequeued:
 		var p proto.PromptDequeuedPayload
@@ -799,6 +837,15 @@ func (s *State) Apply(ev proto.Event) {
 		}
 		s.Elicitations = out
 	}
+}
+
+func (s *State) queued(queueID string) *QueuedPrompt {
+	for i := range s.Queued {
+		if s.Queued[i].QueueID == queueID {
+			return &s.Queued[i]
+		}
+	}
+	return nil
 }
 
 func (s *State) removeQueued(queueID string) {
