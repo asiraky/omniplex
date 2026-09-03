@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -337,6 +338,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		effort:  o.Effort,
 		events:  make(chan proto.Emission, 256),
 		streams: map[string]*stream{},
+		steers:  map[string]bool{},
 		done:    make(chan struct{}),
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
@@ -394,8 +396,18 @@ type session struct {
 	turnID    string
 	streams   map[string]*stream
 	sawResult bool
-	model     string
-	effort    string
+	// steers are prompts handed to the harness mid-turn that it has not read
+	// yet, keyed by the uuid stamped on them; the value is whether Cancel
+	// has since discarded them. The harness echoes the uuid back when it
+	// reads a message, which is how each one is matched (handleUser).
+	steers map[string]bool
+	// suppress is set while the harness is running a steer that Cancel
+	// discarded: the CLI runs whatever it was holding as a fresh turn the
+	// moment an interrupt lands, so that turn is interrupted in its own
+	// right and its output kept out of the log until its result arrives.
+	suppress bool
+	model    string
+	effort   string
 	// oneM records whether this process was started with the 1M window
 	// enabled. It is start-time and immutable: the CLI reads
 	// CLAUDE_CODE_DISABLE_1M_CONTEXT once at boot, so no model switch or
@@ -464,23 +476,60 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.sawResult = false
 	s.mu.Unlock()
 
-	params := map[string]any{"text": in.Text}
-	// Paths, not bytes: the sidecar reads the files and base64s them into the
-	// SDK's image blocks, so a 10 MB screenshot never crosses this pipe as
-	// JSON.
-	if len(in.Images) > 0 {
-		images := make([]map[string]any, 0, len(in.Images))
-		for _, img := range in.Images {
-			images = append(images, map[string]any{"path": img.Path, "mediaType": img.MediaType})
+	return s.conn.Notify("prompt", promptParams(in.Text, in.Images, in.TurnID))
+}
+
+// promptParams is the sidecar's prompt frame. Paths, not bytes: the sidecar
+// reads the files and base64s them into the SDK's image blocks, so a 10 MB
+// screenshot never crosses this pipe as JSON. The uuid rides on the message
+// and comes back on the replay the CLI emits when it reads it.
+func promptParams(text string, images []proto.PromptImage, uuid string) map[string]any {
+	params := map[string]any{"text": text, "uuid": uuid}
+	if len(images) > 0 {
+		out := make([]map[string]any, 0, len(images))
+		for _, img := range images {
+			out = append(out, map[string]any{"path": img.Path, "mediaType": img.MediaType})
 		}
-		params["images"] = images
+		params["images"] = out
 	}
-	return s.conn.Notify("prompt", params)
+	return params
+}
+
+// Steer hands the harness a prompt while a turn is running. The CLI holds it
+// and folds it into the conversation at its next model call — after the tool
+// it is running finishes — the way the interactive terminal does. The replay
+// echo carrying the queue id is how handleUser learns it was read.
+func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
+	select {
+	case <-s.conn.Done():
+		reason, kind := s.exitReason()
+		return &adapter.FailureError{Kind: kind, Err: errors.New(reason)}
+	default:
+	}
+	if in.QueueID == "" {
+		return errors.New("a steered prompt needs a queue id")
+	}
+	s.mu.Lock()
+	s.steers[in.QueueID] = false
+	s.mu.Unlock()
+	if err := s.conn.Notify("prompt", promptParams(in.Text, in.Images, in.QueueID)); err != nil {
+		s.mu.Lock()
+		delete(s.steers, in.QueueID)
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *session) Cancel(ctx context.Context) error {
 	s.mu.Lock()
 	turn := s.turnID
+	// Stop means stop: a steer the harness has not read yet is discarded
+	// here. The CLI will still try to run it as a fresh turn once the
+	// interrupt lands; handleUser recognises the echo and interrupts that.
+	for id := range s.steers {
+		s.steers[id] = true
+	}
 	s.mu.Unlock()
 	if turn == "" {
 		return nil
@@ -897,6 +946,17 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 // the only mapping in the system, and it is the reason the sidecar stays dumb.
 func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 	s.trackSessionID(msg)
+	// Output of a turn the CLI started from a discarded steer stays out of
+	// the log; its result is what lifts the suppression (handleResult).
+	s.mu.Lock()
+	suppressed := s.suppress
+	s.mu.Unlock()
+	if suppressed {
+		switch str(msg["type"]) {
+		case "stream_event", "assistant":
+			return
+		}
+	}
 	switch str(msg["type"]) {
 	case "system":
 		s.handleSystem(msg)
@@ -1259,13 +1319,27 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		Message struct {
 			Content []struct {
 				Type      string          `json:"type"`
+				Text      string          `json:"text"`
 				ToolUseID string          `json:"tool_use_id"`
 				IsError   bool            `json:"is_error"`
 				Content   json.RawMessage `json:"content"`
 			} `json:"content"`
 		} `json:"message"`
+		IsReplay bool   `json:"isReplay"`
+		UUID     string `json:"uuid"`
 	}
 	remarshal(msg, &m)
+
+	if m.IsReplay {
+		var text []string
+		for _, c := range m.Message.Content {
+			if c.Type == "text" {
+				text = append(text, c.Text)
+			}
+		}
+		s.handleReplay(m.UUID, strings.Join(text, "\n"))
+		return
+	}
 
 	for _, c := range m.Message.Content {
 		if c.Type != "tool_result" {
@@ -1286,6 +1360,49 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		}))
 		s.linkBackgroundShell(c.ToolUseID, text)
 	}
+}
+
+// handleReplay is the CLI reading a user message: with --replay-user-messages
+// every one is echoed at the moment it enters the conversation, carrying the
+// uuid the sidecar stamped on it. The echo of a turn's own prompt says
+// nothing new. The echo of a steer is the event: read inside the running
+// turn it is prompt.injected; read once the turn had already ended — the CLI
+// starts a turn of its own with it — it is that turn's turn.started, naming
+// the queue entry so the projection can fill in the images it carried.
+func (s *session) handleReplay(id, text string) {
+	s.mu.Lock()
+	cancelled, ok := s.steers[id]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.steers, id)
+	if cancelled {
+		// Cancel discarded this one before it was read. The CLI is starting
+		// a turn with it regardless; interrupt that too, once, and keep its
+		// output out of the log until the result clears suppress.
+		start := !s.suppress
+		s.suppress = true
+		s.mu.Unlock()
+		if start {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = s.conn.Call(ctx, "interrupt", map[string]any{}, nil)
+			}()
+		}
+		return
+	}
+	if turn := s.turnID; turn != "" {
+		s.mu.Unlock()
+		s.emit(proto.Emit(proto.PromptInjected, proto.PromptInjectedPayload{QueueID: id, TurnID: turn}))
+		return
+	}
+	turn := uuid.NewString()
+	s.turnID = turn
+	s.sawResult = false
+	s.mu.Unlock()
+	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turn, Prompt: text, QueueID: id}))
 }
 
 func (s *session) handleResult(msg map[string]json.RawMessage) {
@@ -1373,6 +1490,8 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	turn := s.turnID
 	s.sawResult = true
 	s.turnID = ""
+	// The turn the CLI ran from a discarded steer has ended with this.
+	s.suppress = false
 	s.mu.Unlock()
 
 	// A result for a turn that was never started — no prompt, and no output

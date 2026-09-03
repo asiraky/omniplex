@@ -315,19 +315,9 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.turnID = in.TurnID
 	s.mu.Unlock()
 
-	// Images lead the input, the way every chat UI orders them: codex reads
-	// each path itself, so nothing is copied or re-encoded here. An
-	// image-only message is legal, and sends no empty text item.
-	input := make([]map[string]any, 0, len(in.Images)+1)
-	for _, img := range in.Images {
-		input = append(input, map[string]any{"type": "localImage", "path": img.Path})
-	}
-	if in.Text != "" || len(input) == 0 {
-		input = append(input, map[string]any{"type": "text", "text": in.Text})
-	}
 	params := map[string]any{
 		"threadId": s.threadID,
-		"input":    input,
+		"input":    promptInput(in.Text, in.Images),
 	}
 	// effort and model are both mutable mid-session (SetEffort/SetModel), so
 	// read them together under the lock.
@@ -370,6 +360,46 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+// Steer hands codex a prompt while a turn is running. turn/start on a busy
+// thread does not open a second turn: codex holds the input and folds it into
+// the running one after the current command — or, if the model had already
+// answered, extends the turn with it. The clientUserMessageId comes back as
+// the clientId on the userMessage item codex emits when it reads it, which is
+// how handleItem names the queue entry. An interrupt discards anything unread.
+func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
+	if in.QueueID == "" {
+		return errors.New("a steered prompt needs a queue id")
+	}
+	s.mu.Lock()
+	running := s.turnID != ""
+	s.mu.Unlock()
+	if !running {
+		return errors.New("no turn is running to steer")
+	}
+	params := map[string]any{
+		"threadId":            s.threadID,
+		"clientUserMessageId": in.QueueID,
+		"input":               promptInput(in.Text, in.Images),
+	}
+	var res json.RawMessage
+	return s.conn.Call(ctx, "turn/start", params, &res)
+}
+
+// promptInput is a turn's input items. Images lead, the way every chat UI
+// orders them: codex reads each path itself, so nothing is copied or
+// re-encoded here. An image-only message is legal, and sends no empty text
+// item.
+func promptInput(text string, images []proto.PromptImage) []map[string]any {
+	input := make([]map[string]any, 0, len(images)+1)
+	for _, img := range images {
+		input = append(input, map[string]any{"type": "localImage", "path": img.Path})
+	}
+	if text != "" || len(input) == 0 {
+		input = append(input, map[string]any{"type": "text", "text": text})
+	}
+	return input
 }
 
 // Cancel interrupts the in-flight turn. codex's turn/interrupt requires both the
@@ -989,6 +1019,10 @@ type codexItem struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 
+	// userMessage: the clientUserMessageId the turn/start that carried it
+	// was given — the queue id, for a prompt steered into a running turn.
+	ClientID string `json:"clientId"`
+
 	// agentMessage
 	Text  string `json:"text"`
 	Phase string `json:"phase"`
@@ -1046,7 +1080,12 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		s.emitContextCompacted(p.TurnID)
 
 	case "userMessage":
-		// Already in the log via turn.started.
+		// The turn's own prompt is already in the log via turn.started. A
+		// message carrying a client id is a steer codex has just read into
+		// the running turn (Steer); say so, named by its queue entry.
+		if completed && open && it.ClientID != "" {
+			s.emit(proto.Emit(proto.PromptInjected, proto.PromptInjectedPayload{QueueID: it.ClientID, TurnID: turn}))
+		}
 
 	case "agentMessage":
 		// Deltas normally carry the text. Backfill only when none arrived,

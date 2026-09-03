@@ -253,3 +253,52 @@ func TestJobOutlivesTurn(t *testing.T) {
 		t.Fatalf("after finish: job=%+v attention=%q", s.job("j1"), s.Attention())
 	}
 }
+
+// TestInjectedPromptJoinsTheTurn: a prompt the harness read into the running
+// turn leaves the queue and becomes a user message in that turn, placed after
+// the work already done, carrying the text and images the queue entry had.
+func TestInjectedPromptJoinsTheTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Title: "ls"}))
+	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "also this", Images: []proto.PromptImage{{ID: "img"}}, Sent: true}))
+	if len(s.Queued) != 1 || !s.Queued[0].Sent {
+		t.Fatalf("queued = %+v", s.Queued)
+	}
+	s.Apply(event(t, 4, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
+	if len(s.Queued) != 0 {
+		t.Fatalf("queue after injection = %+v", s.Queued)
+	}
+	last := s.Items[len(s.Items)-1]
+	if last.ID != "prompt:q1" || last.Role != "user" || last.Text != "also this" || last.TurnID != "t1" || len(last.Images) != 1 {
+		t.Fatalf("injected item = %+v", last)
+	}
+	if s.Phase != "turn" || len(s.Turns) != 1 {
+		t.Fatalf("phase=%s turns=%d", s.Phase, len(s.Turns))
+	}
+	// Injecting something not in the queue is not an event.
+	before := len(s.Items)
+	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "nope", TurnID: "t1"}))
+	if len(s.Items) != before {
+		t.Fatalf("unknown injection added an item")
+	}
+}
+
+// TestHeldPromptTurnFillsFromTheQueue: a turn the harness started from a
+// prompt it was holding carries only the text; the queue entry supplies the
+// images, and the title comes from the prompt as usual.
+func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "next", Images: []proto.PromptImage{{ID: "img"}}, Sent: true}))
+	s.Apply(event(t, 2, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", QueueID: "q1"}))
+	if len(s.Queued) != 0 || len(s.Turns) != 1 {
+		t.Fatalf("queued=%+v turns=%+v", s.Queued, s.Turns)
+	}
+	if s.Turns[0].Prompt != "next" || len(s.Turns[0].Images) != 1 || s.Title != "next" {
+		t.Fatalf("turn = %+v title=%q", s.Turns[0], s.Title)
+	}
+	it := s.Items[len(s.Items)-1]
+	if it.ID != "prompt:t2" || it.Text != "next" || len(it.Images) != 1 {
+		t.Fatalf("prompt item = %+v", it)
+	}
+}

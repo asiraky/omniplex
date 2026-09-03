@@ -161,37 +161,65 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
     case "workspace.released":
       return { ...s, workspace: { ...s.workspace, phase: "released" } };
 
-    case "turn.started":
+    case "turn.started": {
+      // A turn the harness started from a prompt it was holding names the
+      // queue entry but not what it carried: the entry has the text and
+      // the images, the event may have only the text.
+      const held = p.queueId ? (s.queuedPrompts ?? []).find((q) => q.queueId === p.queueId) : undefined;
+      const prompt: string = p.prompt || held?.prompt || "";
+      const images = p.images?.length ? p.images : held?.images;
       return {
         ...s,
         phase: "turn",
         // A recovery prompt is the server talking to itself, so it never
         // names the session.
-        title: s.title || (p.recovery ? "" : p.prompt?.slice(0, 60) || imageTitle(p.images?.length ?? 0)),
-        turns: [...s.turns, { id: p.turnId, prompt: p.prompt, images: p.images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
+        title: s.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
+        turns: [...s.turns, { id: p.turnId, prompt, images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
         // Starting is what takes a prompt out of the queue.
         queuedPrompts: p.queueId ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : s.queuedPrompts,
         // A harness-initiated turn has no prompt — nobody asked anything —
         // so there is no prompt item to add. A prompt that is nothing but
         // pictures still has one.
-        items: p.prompt || p.images?.length
+        items: prompt || images?.length
           ? upsert(s, `prompt:${p.turnId}`, (it) => {
               it.kind = "message";
               it.receivedAt ??= ev.timestamp;
               it.role = "user";
               it.contentKind = "text";
-              it.text = p.prompt;
-              it.images = p.images;
+              it.text = prompt;
+              it.images = images;
               it.turnId = p.turnId;
             })
           : s.items,
       };
+    }
 
     case "prompt.queued":
       return {
         ...s,
-        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp, sent: p.sent }],
       };
+
+    case "prompt.injected": {
+      // The harness read a prompt it was holding into the running turn: it
+      // leaves the queue and joins the transcript where it was read, as the
+      // user message it is. Mirrors internal/projection/state.go.
+      const held = (s.queuedPrompts ?? []).find((q) => q.queueId === p.queueId);
+      if (!held) return s;
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId),
+        items: upsert(s, `prompt:${p.queueId}`, (it) => {
+          it.kind = "message";
+          it.receivedAt ??= ev.timestamp;
+          it.role = "user";
+          it.contentKind = "text";
+          it.text = held.prompt;
+          it.images = held.images;
+          it.turnId = p.turnId;
+        }),
+      };
+    }
 
     case "prompt.dequeued":
       return { ...s, queuedPrompts: (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) };

@@ -93,16 +93,20 @@ async function imageBlocks(images) {
 
 async function* prompts() {
   while (!shuttingDown) {
-    const { text, images } = await nextPrompt();
+    const { text, images, uuid } = await nextPrompt();
     // Images lead: the model is being asked about them, and the question that
     // follows reads as a caption rather than a preamble. An image-only message
     // carries no empty text block, which the API rejects.
     const content = [...(await imageBlocks(images))];
     if (text || content.length === 0) content.push({ type: "text", text });
+    // The host's id rides on the message and comes back on the replay the
+    // CLI emits when it actually reads it (--replay-user-messages below).
+    // That is how a prompt sent mid-turn is matched to its queue entry.
     yield {
       type: "user",
       message: { role: "user", content },
       parent_tool_use_id: null,
+      ...(uuid ? { uuid } : {}),
     };
   }
 }
@@ -195,6 +199,11 @@ const session = query({
     // the host's UI confirms with the human before ever selecting bypass.
     ...(config.allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
     ...(config.effort ? { effort: config.effort } : {}),
+    // Echo each user message back on the stream at the moment the CLI reads
+    // it, with the uuid the host stamped on it. A prompt sent while a turn is
+    // running is held by the CLI until its next model call; the echo is the
+    // only signal of when that happened.
+    extraArgs: { "replay-user-messages": null },
     // Mutually exclusive by SDK contract: sessionId names a new conversation,
     // resume continues an existing one.
     ...(config.resume ? { resume: config.resume } : {}),
@@ -232,7 +241,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
   switch (frame.method) {
     case "prompt":
-      pushPrompt({ text: frame.params.text ?? "", images: frame.params.images ?? [] });
+      pushPrompt({ text: frame.params.text ?? "", images: frame.params.images ?? [], uuid: frame.params.uuid });
       break;
     case "interrupt":
       // Interrupt is a request: writing it to the SDK is not the same as the

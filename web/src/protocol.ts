@@ -283,6 +283,9 @@ export interface QueuedPrompt {
   prompt: string;
   images?: PromptImage[];
   queuedAt?: number;
+  // The harness holds it and reads it at its next step; it cannot be taken
+  // back.
+  sent?: boolean;
 }
 
 export type JobKind = "agent" | "shell" | "monitor" | "inert";

@@ -626,16 +626,17 @@ export function Composer({
               <SquareIcon className="size-3.5 fill-current" />
             </Button>
           )}
-          {/* Sending while a turn runs queues the message behind it. The
-              button only appears once there is something to queue, so an
-              idle-looking stop button is not crowded by a dead send. */}
+          {/* Sending while a turn runs hands the message to the harness,
+              which reads it at its next step. The button only appears once
+              there is something to send, so an idle-looking stop button is
+              not crowded by a dead send. */}
           {(!busy || draft.trim() || sendableImages > 0) && (
             <Button
               size="icon"
               disabled={disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0)}
               onClick={() => void send()}
-              aria-label={busy ? "Queue" : "Send"}
-              title={busy ? "Queue for after this turn" : undefined}
+              aria-label={busy ? "Send to the running turn" : "Send"}
+              title={busy ? "The model reads it after its current step" : undefined}
               className="ml-1.5 size-11 shrink-0 rounded-full md:ml-2 md:size-8"
             >
               <ArrowUpIcon />
