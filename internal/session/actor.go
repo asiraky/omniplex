@@ -1044,7 +1044,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			queueID := uuid.NewString()
 			sent := false
 			if st, ok := a.sess.(adapter.Steerer); ok {
-				if err := st.Steer(ctx, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images}); err != nil {
+				// Bounded like the other harness RPCs made from this goroutine.
+				steerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				err := st.Steer(steerCtx, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images})
+				cancel()
+				if err != nil {
 					a.logf("steer on %s: %v", a.ID, err)
 				} else {
 					sent = true
@@ -1086,8 +1090,8 @@ func (a *Actor) handle(c command) (stop bool) {
 		// Stop means stop: a prompt queued behind the interrupted turn would
 		// otherwise start the moment the interrupt landed. The web puts the
 		// text back in the composer before it asks.
-		a.dropQueue()
 		if a.turnActive == "" {
+			a.dropQueue()
 			c.reply <- cmdResult{value: "idle"}
 			return false
 		}
@@ -1097,6 +1101,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			a.mu.Lock()
 			a.recovery = nil
 			a.mu.Unlock()
+			a.dropQueue()
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: a.turnActive, StopReason: proto.StopCancelled,
 			}))
@@ -1109,6 +1114,11 @@ func (a *Actor) handle(c command) (stop bool) {
 		cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.sess.Cancel(cancelCtx)
 		cancel()
+		// The queue goes after the harness has been told, not before: a steer
+		// it read in the moment between would otherwise vanish from the log
+		// although the model saw it. Nothing from the harness is processed
+		// while Cancel runs, so nothing queued can start in between.
+		a.dropQueue()
 		c.reply <- cmdResult{value: "cancelling", err: err}
 
 	case cmdAskPerm:
