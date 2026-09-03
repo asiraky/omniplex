@@ -162,12 +162,14 @@ export function NewSession({
     instance: instance?.id ?? "",
     model,
   };
-  // Only Opus 5 offers the 1M window here, and only Claude Code takes the
-  // "[1m]" tag. When 1M is wanted, that tag on the model id is what the adapter
-  // turns into the context-window setting at start.
-  const supports1m = harnessId === "claude" && model.includes("opus");
-  const effectiveModel = supports1m && want1m ? `${model}[1m]` : model;
   const modelMeta = instance?.models.find((m) => m.id === model);
+  // Whether the larger window is on offer is the harness's answer, not a guess
+  // from the model's name: the adapter sets supports1m on the models it saw a
+  // "[1m]" alias for, so a new model shipping one gets the toggle with no
+  // change here. When 1M is wanted, that tag on the model id is what the
+  // adapter turns into the context-window setting at start.
+  const supports1m = modelMeta?.supports1m ?? false;
+  const effectiveModel = supports1m && want1m ? `${model}[1m]` : model;
   const efforts = modelMeta?.efforts ?? [];
   const preferredEffort = chosenEffort ?? harnessDefaults?.effort ?? "";
   const effort = efforts.includes(preferredEffort) ? preferredEffort : "";

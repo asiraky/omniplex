@@ -529,6 +529,11 @@ export interface ModelMeta {
   default?: boolean;
   /** The reasoning levels this model accepts, most modest first. */
   efforts?: string[];
+  /**
+   * The harness offers a 1M-context alias for this model, so a UI can offer
+   * the larger window rather than guessing from the model's name.
+   */
+  supports1m?: boolean;
 }
 
 /** The group id for models kept for continuity rather than offered first. */

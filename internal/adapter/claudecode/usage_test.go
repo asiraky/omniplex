@@ -259,3 +259,80 @@ func TestCompactBoundaryEmitsEvent(t *testing.T) {
 		t.Fatalf("payload = %+v, want auto 180000→42000", *got)
 	}
 }
+
+// The fallback window follows the choice made at process start, not the
+// model's name: an Opus session started without the "[1m]" tag was booted with
+// CLAUDE_CODE_DISABLE_1M_CONTEXT=1, so it really is a 200k session, and a
+// tagged Fable one really is 1M.
+func TestFallbackWindowFollowsStartTimeChoiceNotModelName(t *testing.T) {
+	turn := func(s *session) proto.UsageUpdatedPayload {
+		s.handleSDKMessage(rawSDK(t, map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"content": []any{map[string]any{"type": "text"}},
+				"usage":   map[string]any{"input_tokens": 1000, "output_tokens": 10},
+			},
+		}))
+		s.handleSDKMessage(rawSDK(t, map[string]any{
+			"type":        "result",
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": 1000},
+		}))
+		return lastUsage(t, s)
+	}
+
+	untaggedOpus := newTestSession()
+	untaggedOpus.model = "claude-opus-5"
+	if u := turn(untaggedOpus); u.ContextWindow != 200_000 {
+		t.Errorf("untagged Opus window = %d, want 200000: 1M was disabled at start", u.ContextWindow)
+	}
+
+	taggedFable := newTestSession()
+	taggedFable.model, taggedFable.oneM = "claude-fable-5", true
+	if u := turn(taggedFable); u.ContextWindow != 1_000_000 {
+		t.Errorf("tagged Fable window = %d, want 1000000", u.ContextWindow)
+	}
+}
+
+// The harness reports the bare model id once it is running, but that id is
+// what a resume starts the next process from — and a bare id means 1M is
+// disabled at boot. A session started at 1M must keep the tag on the model it
+// reports, or resuming silently drops it to 200k.
+func TestOneMTagSurvivesTheHarnessReportingTheBareModel(t *testing.T) {
+	s := newTestSession()
+	s.oneM = true
+
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type":    "system",
+		"subtype": "init",
+		"model":   "claude-fable-5",
+	}))
+
+	var got string
+	for {
+		select {
+		case e := <-s.events:
+			if p, ok := e.Payload.(proto.SessionConfigChangedPayload); ok && p.Model != "" {
+				got = p.Model
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if got != "claude-fable-5[1m]" {
+		t.Fatalf("reported model = %q, want claude-fable-5[1m]", got)
+	}
+	if s.model != "claude-fable-5[1m]" {
+		t.Fatalf("session model = %q, want the tag kept", s.model)
+	}
+
+	// A 200k session reports exactly what the harness said.
+	plain := newTestSession()
+	plain.handleSDKMessage(rawSDK(t, map[string]any{
+		"type": "system", "subtype": "init", "model": "claude-fable-5",
+	}))
+	if plain.model != "claude-fable-5" {
+		t.Fatalf("200k session model = %q, want no tag invented", plain.model)
+	}
+}

@@ -245,6 +245,55 @@ describe("NewSession", () => {
     );
   });
 
+  // The 1M toggle follows the harness's own answer, so a model that is not
+  // Opus gets it whenever the CLI offers a "[1m]" alias for it — and picking
+  // 1M is sent as that tag on the model id, which is the whole mechanism.
+  it("offers the 1M window for any model the harness flags, not just Opus", async () => {
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const claude = {
+      ...harness,
+      instances: [
+        {
+          id: "claude",
+          driver: "claude",
+          displayName: "Claude Code",
+          enabled: true,
+          availability: { state: "ready" } as const,
+          models: [{ id: "claude-sonnet-5", label: "Sonnet 5", default: true, supports1m: true }],
+        },
+      ],
+    } as unknown as HarnessMeta;
+    open({ harnesses: [claude], onCreate });
+
+    fireEvent.click(screen.getByRole("button", { name: "1M" }));
+    const start = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-sonnet-5[1m]" }));
+  });
+
+  // The flag is the only thing that decides it: an Opus row the harness did
+  // not flag gets no toggle, however Opus-shaped its name is.
+  it("hides the 1M window for a model the harness does not flag", () => {
+    const claude = {
+      ...harness,
+      instances: [
+        {
+          id: "claude",
+          driver: "claude",
+          displayName: "Claude Code",
+          enabled: true,
+          availability: { state: "ready" } as const,
+          models: [{ id: "claude-opus-5", label: "Opus 5", default: true }],
+        },
+      ],
+    } as unknown as HarnessMeta;
+    open({ harnesses: [claude] });
+
+    expect(screen.queryByRole("button", { name: "1M" })).toBeNull();
+  });
+
   it("gives the bypass mode the same plain treatment as every other mode", () => {
     const withModes = {
       ...harness,
