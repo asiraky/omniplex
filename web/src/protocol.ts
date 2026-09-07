@@ -280,6 +280,7 @@ export interface SessionState {
   /** Prompts sent while a turn was running, oldest first. Each starts its own
       turn once the session is idle; until then it can be taken back. */
   queuedPrompts: QueuedPrompt[];
+  scheduledPrompts?: ScheduledPrompt[];
 }
 
 export interface QueuedPrompt {
@@ -452,6 +453,7 @@ export interface SessionSummary {
 }
 
 export interface SessionMeta {
+  scheduledCount?: number;
   id: string;
   cwd: string;
   harness: string;
@@ -683,4 +685,19 @@ export interface ServerFrame {
   commandId?: string;
   result?: any;
   error?: string;
+}
+
+export interface ScheduledPrompt {
+ id: string;
+ revision: number;
+ prompt: string;
+ images?: PromptImage[];
+ dueAt: number;
+ timeZone: string;
+ model: string;
+ mode: string;
+ effort: string;
+ status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
+ error?: string;
+ turnId?: string;
 }

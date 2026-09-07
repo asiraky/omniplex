@@ -27,9 +27,11 @@
     "test": "npm run test:go && npm run test:web",
     "test:go": "go test -race ./...",
     "test:web": "./scripts/web tsc -b && ./scripts/web vitest run",
-    "clean": "rm -f omniplex omni && rm -rf cmd/omniplex/webdist && mkdir -p cmd/omniplex/webdist && touch cmd/omniplex/webdist/.gitkeep"
+    "clean": "rm -f omniplex omni && rm -rf cmd/omniplex/webdist && mkdir -p cmd/omniplex/webdist && touch cmd/omniplex/webdist/.gitkeep",
+    "test:e2e:schedules": "npm run build:web && OMNIPLEX_BROWSER_TEST=1 go test ./internal/server -run TestSchedulesBrowser -count=1 -timeout=4m -v"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "playwright": "^1.63.0"
   }
 }

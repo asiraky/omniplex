@@ -113,6 +113,7 @@ func main() {
 	// rather than when someone opens a browser. A restart should cost an agent
 	// a turn boundary, not its task.
 	mgr.ResumeInterrupted()
+	mgr.StartScheduler()
 
 	webFS, hasUI := embeddedUI()
 

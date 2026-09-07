@@ -41,9 +41,11 @@ type Subscriber struct {
 
 // Actor is one live session.
 type Actor struct {
-	ID      string
-	Harness string
-	Cwd     string
+	scheduleReady   map[string]bool
+	activationError error
+	ID              string
+	Harness         string
+	Cwd             string
 
 	store   *store.Store
 	adapter adapter.Adapter
@@ -106,6 +108,8 @@ type Actor struct {
 }
 
 type command struct {
+	schedule     *proto.ScheduledPrompt
+	now          int64
 	kind         string
 	prompt       string
 	images       []proto.PromptImage
@@ -771,6 +775,8 @@ func (a *Actor) handle(c command) (stop bool) {
 	}
 
 	switch c.kind {
+	case "schedule_prompt", "cancel_schedule", "send_schedule", "schedule_tick":
+		c.reply <- cmdResult{err: a.handleSchedule(c)}
 	case "state":
 		c.reply <- cmdResult{value: a.state.Clone()}
 
@@ -820,6 +826,10 @@ func (a *Actor) handle(c command) (stop bool) {
 		// adapter behind it. Cleanup never activates; anything that does gets
 		// a legible refusal instead of a nil dereference.
 		if a.adapter == nil {
+			if a.activationError != nil {
+				c.reply <- cmdResult{err: a.activationError}
+				return false
+			}
 			c.reply <- cmdResult{err: errors.New("this session's provider instance is no longer configured")}
 			return false
 		}
@@ -1280,7 +1290,10 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	cancelBase()
 
 	// append records the phase change; no SetPhase needed here.
-	a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: prompt, Images: images, Recovery: recovery, QueueID: queueID}))
+	if err := a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: prompt, Images: images, Recovery: recovery, QueueID: queueID})); err != nil {
+		a.turnActive = ""
+		return "", err
+	}
 	// A recovery prompt is the server talking to itself; naming a session
 	// after it would bury what the human actually asked for.
 	if recovery == nil {
@@ -1393,13 +1406,13 @@ func (a *Actor) dropQueue() {
 
 // append writes the event, folds it into the projection, and fans it out.
 // This is the only place any of those three happen.
-func (a *Actor) append(em proto.Emission) {
+func (a *Actor) append(em proto.Emission) error {
 	ctx := context.Background()
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {
 		a.logf("append %s on %s: %v", em.Type, a.ID, err)
-		return
+		return err
 	}
 
 	prevPhase := a.state.Phase
@@ -1479,6 +1492,14 @@ func (a *Actor) append(em proto.Emission) {
 		}
 	}
 
+	if em.Type == proto.PromptScheduled {
+		a.mu.Lock()
+		onPhase := a.onPhase
+		a.mu.Unlock()
+		if onPhase != nil {
+			onPhase()
+		}
+	}
 	a.fanout(ev)
 
 	if ev.Seq-a.lastSnapAt >= SnapshotEvery || em.Type == proto.TurnFinished {
@@ -1487,6 +1508,7 @@ func (a *Actor) append(em proto.Emission) {
 			a.logf("snapshot %s: %v", a.ID, err)
 		}
 	}
+	return nil
 }
 
 // fanout delivers to every subscriber without blocking. On a full queue the

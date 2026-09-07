@@ -453,6 +453,7 @@ function SessionList({
                   )}
                 >
                   <span className="min-w-0 truncate text-[13px]">{s.title || "Untitled"}</span>
+                  {!!s.scheduledCount && <span className="shrink-0 text-xs text-muted-foreground" title={`${s.scheduledCount} scheduled messages`} aria-label={`${s.scheduledCount} scheduled messages`}>◷ {s.scheduledCount}</span>}
                   {working(s) && (
                     <span
                       role="status"

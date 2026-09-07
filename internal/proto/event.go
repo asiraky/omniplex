@@ -11,6 +11,7 @@ import (
 
 // Event types. Lifecycle, content, and human interaction.
 const (
+	PromptScheduled      = "prompt.scheduled"
 	SessionCreated       = "session.created"
 	SessionConfigChanged = "session.config_changed"
 	SessionClosed        = "session.closed"
@@ -250,8 +251,9 @@ type WorkspaceFailedPayload struct {
 }
 
 type SessionConfigChangedPayload struct {
-	Model string `json:"model,omitempty"`
-	Mode  string `json:"mode,omitempty"`
+	ReplaceSettings bool   `json:"replaceSettings,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Mode            string `json:"mode,omitempty"`
 	// Effort is a pointer because "" is a value it can be set to, not just
 	// the absence of one: an empty effort hands the choice back to the
 	// harness, and a plain string with omitempty cannot say that — the field
@@ -605,4 +607,21 @@ func DefaultPermissionOptions() []PermissionOption {
 		{OptionID: "allow_always", Name: "Always allow this tool", Kind: OutcomeAllowAlways},
 		{OptionID: "reject_once", Name: "Reject", Kind: OutcomeRejectOnce},
 	}
+}
+
+// ScheduledPrompt is a durable one-shot instruction. Revision guards edits from
+// stale devices. The provider account remains the session's account.
+type ScheduledPrompt struct {
+	ID       string        `json:"id"`
+	Revision int           `json:"revision"`
+	Prompt   string        `json:"prompt"`
+	Images   []PromptImage `json:"images,omitempty"`
+	DueAt    int64         `json:"dueAt"`
+	TimeZone string        `json:"timeZone"`
+	Model    string        `json:"model"`
+	Mode     string        `json:"mode"`
+	Effort   string        `json:"effort"`
+	Status   string        `json:"status"`
+	Error    string        `json:"error,omitempty"`
+	TurnID   string        `json:"turnId,omitempty"`
 }

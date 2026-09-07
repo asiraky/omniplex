@@ -1,4 +1,4 @@
-import { ArrowUpIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ClockIcon, ArrowUpIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
 import { ContextMeter } from "~/components/ContextMeter";
@@ -34,6 +34,7 @@ export function Composer({
   sendDisabled = false,
   busy,
   onSend,
+  onSchedule,
   onCancel,
   attachments = [],
   onAttachImages,
@@ -67,6 +68,7 @@ export function Composer({
   sendDisabled?: boolean;
   busy: boolean;
   onSend: (text: string) => void;
+  onSchedule?: () => void;
   onCancel: () => void;
   /** Images staged for the next message. Owned by the parent for the same
       reason the draft is: a session switch unmounts this component. */
@@ -626,6 +628,7 @@ export function Composer({
               <SquareIcon className="size-3.5 fill-current" />
             </Button>
           )}
+          {onSchedule && <Button variant="ghost" size="icon" className="ml-1 size-11 shrink-0 md:size-8" aria-label="Schedule send" title="Schedule send" disabled={disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0)} onClick={onSchedule}><ClockIcon className="size-4" /></Button>}
           {/* Sending while a turn runs hands the message to the harness,
               which reads it at its next step. The button only appears once
               there is something to send, so an idle-looking stop button is
