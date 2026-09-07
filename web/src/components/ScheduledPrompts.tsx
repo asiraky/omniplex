@@ -112,147 +112,153 @@ export function ScheduleDialog({
             {schedule ? "Edit scheduled message" : "Schedule message"}
           </SheetTitle>
         </SheetHeader>
-        <label className="grid gap-1 text-sm">
-          Message
-          <textarea
-            aria-label="Scheduled message"
-            className="min-h-24 w-full rounded-md border bg-background p-3"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            disabled={saving}
-          />
-        </label>
-        {!!schedule?.images?.length && (
-          <p className="text-xs text-muted-foreground">
-            {schedule.images.length} attached image(s) retained
-          </p>
-        )}
-        <div className="flex gap-2">
-          <Button
-            variant={kind === "relative" ? "default" : "outline"}
-            onClick={() => setKind("relative")}
-          >
-            In…
-          </Button>
-          <Button
-            variant={kind === "absolute" ? "default" : "outline"}
-            onClick={() => setKind("absolute")}
-          >
-            At a time
-          </Button>
-        </div>
-        {kind === "relative" ? (
-          <>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1 text-sm">
-                Hours
-                <input
-                  className={field}
-                  type="number"
-                  min="0"
-                  max="24"
-                  value={hours}
-                  onChange={(e) => setHours(e.target.value)}
-                />
-              </label>
-              <label className="grid gap-1 text-sm">
-                Minutes
-                <input
-                  className={field}
-                  type="number"
-                  min="0"
-                  max="1440"
-                  value={minutes}
-                  onChange={(e) => setMinutes(e.target.value)}
-                />
-              </label>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {[30, 60, 120].map((n) => (
-                <Button
-                  key={n}
-                  variant="outline"
-                  onClick={() => {
-                    setHours(String(Math.floor(n / 60)));
-                    setMinutes(String(n % 60));
-                  }}
-                >
-                  {n < 60
-                    ? `${n} minutes`
-                    : `${n / 60} hour${n > 60 ? "s" : ""}`}
-                </Button>
-              ))}
-            </div>
-          </>
-        ) : (
-          <label className="grid min-w-0 gap-1 text-sm">
-            Date and time
-            <input
-              aria-label="Date and time"
-              className={field}
-              type="datetime-local"
-              value={wall}
-              onChange={(e) => {
-                setWall(e.target.value);
-                setFold("");
-              }}
+        <fieldset disabled={saving} className="contents">
+          <label className="grid gap-1 text-sm">
+            Message
+            <textarea
+              aria-label="Scheduled message"
+              className="min-h-24 w-full rounded-md border bg-background p-3"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              disabled={saving}
             />
           </label>
-        )}
-        <label className="grid gap-1 text-sm">
-          Timezone
-          <input
-            className={field}
-            value={zone}
-            onChange={(e) => {
-              setZone(e.target.value);
-              setFold("");
-            }}
-            placeholder="Australia/Brisbane"
-            autoCapitalize="none"
-            spellCheck={false}
-          />
-        </label>
-        {kind === "absolute" && candidates.length > 1 && (
-          <label className="grid gap-1 text-sm">
-            Which occurrence?
-            <select
-              className={field}
-              value={fold}
-              onChange={(e) => setFold(e.target.value)}
+          {!!imageCount && (
+            <p className="text-xs text-muted-foreground">
+              {imageCount} attached image(s) included
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant={kind === "relative" ? "default" : "outline"}
+              onClick={() => setKind("relative")}
             >
-              <option value="">Choose an occurrence</option>
-              {candidates.map((at) => (
-                <option key={at} value={at}>
-                  {scheduleLabel(at, zone)}
-                </option>
-              ))}
-            </select>
+              In…
+            </Button>
+            <Button
+              variant={kind === "absolute" ? "default" : "outline"}
+              onClick={() => setKind("absolute")}
+            >
+              At a time
+            </Button>
+          </div>
+          {kind === "relative" ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="grid gap-1 text-sm">
+                  Hours
+                  <input
+                    className={field}
+                    type="number"
+                    min="0"
+                    max="24"
+                    value={hours}
+                    onChange={(e) => setHours(e.target.value)}
+                  />
+                </label>
+                <label className="grid gap-1 text-sm">
+                  Minutes
+                  <input
+                    className={field}
+                    type="number"
+                    min="0"
+                    max="1440"
+                    value={minutes}
+                    onChange={(e) => setMinutes(e.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[30, 60, 120].map((n) => (
+                  <Button
+                    key={n}
+                    variant="outline"
+                    onClick={() => {
+                      setHours(String(Math.floor(n / 60)));
+                      setMinutes(String(n % 60));
+                    }}
+                  >
+                    {n < 60
+                      ? `${n} minutes`
+                      : `${n / 60} hour${n > 60 ? "s" : ""}`}
+                  </Button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <label className="grid min-w-0 gap-1 text-sm">
+              Date and time
+              <input
+                aria-label="Date and time"
+                className={field}
+                type="datetime-local"
+                value={wall}
+                onChange={(e) => {
+                  setWall(e.target.value);
+                  setFold("");
+                }}
+              />
+            </label>
+          )}
+          <label className="grid gap-1 text-sm">
+            Timezone
+            <input
+              className={field}
+              value={zone}
+              onChange={(e) => {
+                setZone(e.target.value);
+                setFold("");
+              }}
+              placeholder="Australia/Brisbane"
+              autoCapitalize="none"
+              spellCheck={false}
+            />
           </label>
-        )}
-        {!error && (
-          <p className="text-sm">
-            Sends {scheduleLabel(dueAt, zone)}
-            <br />
-            <span className="text-muted-foreground">{zone}</span>
+          {kind === "absolute" && candidates.length > 1 && (
+            <label className="grid gap-1 text-sm">
+              Which occurrence?
+              <select
+                className={field}
+                value={fold}
+                onChange={(e) => setFold(e.target.value)}
+              >
+                <option value="">Choose an occurrence</option>
+                {candidates.map((at) => (
+                  <option key={at} value={at}>
+                    {scheduleLabel(at, zone)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {!error && (
+            <p className="text-sm">
+              Sends {scheduleLabel(dueAt, zone)}
+              <br />
+              <span className="text-muted-foreground">{zone}</span>
+            </p>
+          )}
+          {(error || failure) && (
+            <p role="alert" className="text-sm text-destructive">
+              {failure || error}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Your phone can be closed. The host must be awake. If offline, it
+            catches up within one hour; later messages are marked missed. Busy
+            sessions wait until free.
           </p>
-        )}
-        {(error || failure) && (
-          <p role="alert" className="text-sm text-destructive">
-            {failure || error}
-          </p>
-        )}
-        <p className="text-xs text-muted-foreground">
-          Your phone can be closed. The host must be awake. If offline, it
-          catches up within one hour; later messages are marked missed. Busy
-          sessions wait until free.
-        </p>
-        <Button
-          disabled={saving || !!error || (!text.trim() && !imageCount)}
-          onClick={() => void save()}
-        >
-          {saving ? "Saving…" : schedule ? "Save changes" : "Schedule message"}
-        </Button>
+          <Button
+            disabled={saving || !!error || (!text.trim() && !imageCount)}
+            onClick={() => void save()}
+          >
+            {saving
+              ? "Saving…"
+              : schedule
+                ? "Save changes"
+                : "Schedule message"}
+          </Button>
+        </fieldset>
       </SheetContent>
     </Sheet>
   );

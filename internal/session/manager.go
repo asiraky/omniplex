@@ -35,6 +35,7 @@ type registered struct {
 type Manager struct {
 	schedulerCancel context.CancelFunc
 	schedulerWG     sync.WaitGroup
+	scheduleReady   sync.Map
 	store           *store.Store
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
@@ -1093,6 +1094,7 @@ func (m *Manager) Peek(id string) (*Actor, bool) {
 // adopt registers a live actor and arranges for it to be forgotten when its
 // harness exits, so the next attach resumes the session cleanly.
 func (m *Manager) adopt(a *Actor) {
+	a.scheduleReady = &m.scheduleReady
 	m.mu.Lock()
 	m.actors[a.ID] = a
 	m.mu.Unlock()

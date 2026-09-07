@@ -86,6 +86,7 @@ func (a *Actor) handleSchedule(c command) error {
 		p = *old
 		if c.kind == "cancel_schedule" {
 			p.Status = "cancelled"
+			p.TurnID = ""
 		} else {
 			p.Status = "ready"
 			p.DueAt = now
@@ -99,7 +100,7 @@ func (a *Actor) handleSchedule(c command) error {
 
 func (a *Actor) dispatchScheduled(now int64) error {
 	if a.scheduleReady == nil {
-		a.scheduleReady = map[string]bool{}
+		a.scheduleReady = &sync.Map{}
 	}
 	schedules := append([]proto.ScheduledPrompt(nil), a.state.Scheduled...)
 	sort.SliceStable(schedules, func(i, j int) bool { return schedules[i].DueAt < schedules[j].DueAt })
@@ -107,7 +108,8 @@ func (a *Actor) dispatchScheduled(now int64) error {
 		if (p.Status != "pending" && p.Status != "ready") || p.DueAt > now {
 			continue
 		}
-		if p.Status == "pending" || !a.scheduleReady[p.ID] {
+		_, pickedUp := a.scheduleReady.Load(a.ID + ":" + p.ID)
+		if p.Status == "pending" || !pickedUp {
 			p.Revision++
 			if now-p.DueAt > scheduleGrace {
 				p.Status = "missed"
@@ -121,11 +123,9 @@ func (a *Actor) dispatchScheduled(now int64) error {
 			if p.Status == "missed" {
 				continue
 			}
-			a.scheduleReady[p.ID] = true
+			a.scheduleReady.Store(a.ID+":"+p.ID, true)
 		}
-		if a.turnActive != "" || len(a.state.Pending) > 0 || len(a.state.Elicitations) > 0 || len(a.state.Queued) > 0 {
-			continue
-		}
+
 		// Resume in the actor, without racing another activation or human command.
 		if a.sess == nil {
 			reply := make(chan cmdResult, 1)
@@ -133,6 +133,9 @@ func (a *Actor) dispatchScheduled(now int64) error {
 			if result := <-reply; result.err != nil {
 				return a.failSchedule(p, result.err)
 			}
+		}
+		if a.turnActive != "" || len(a.state.Pending) > 0 || len(a.state.Elicitations) > 0 || len(a.state.Queued) > 0 {
+			continue
 		}
 		a.mu.Lock()
 		recovering := a.recovery != nil

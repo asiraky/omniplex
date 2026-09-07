@@ -222,3 +222,168 @@ func TestScheduledFailureDoesNotRetry(t *testing.T) {
 		t.Fatal("explicit retry did not send")
 	}
 }
+
+func TestScheduledBusyWaitSurvivesHarnessExit(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "harness-exit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fa := &fakeAdapter{}
+	m := NewManager(st, t.Logf, fa)
+	defer m.Shutdown()
+	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := scheduleInput("busy-exit")
+	if err := a.Schedule(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Prompt(ctx, "busy", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-fa.session().prompts
+	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+		t.Fatal(err)
+	}
+	if scheduled(t, a, p.ID).Status != "ready" {
+		t.Fatal("not picked up")
+	}
+	if err := fa.session().Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { _, ok := m.Peek(a.ID); return !ok })
+	a, err = m.View(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.scheduleTick(ctx, p.DueAt+2*scheduleGrace); err != nil {
+		t.Fatal(err)
+	}
+	if got := scheduled(t, a, p.ID); got.Status != "sent" {
+		t.Fatalf("host stayed up but lost busy wait: %+v", got)
+	}
+	select {
+	case got := <-fa.session().prompts:
+		if got.Text != p.Prompt {
+			t.Fatal(got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no scheduled delivery")
+	}
+}
+
+func TestScheduledRestoreClearsStaleRequestsAndDrainsQueue(t *testing.T) {
+	for _, kind := range []string{"permission", "elicitation", "queue"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.Open(filepath.Join(t.TempDir(), "stale.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			m := NewManager(st, t.Logf, &fakeAdapter{})
+			a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := scheduleInput("stale")
+			if err := a.Schedule(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+			id := a.ID
+			m.Shutdown()
+			var em proto.Emission
+			switch kind {
+			case "permission":
+				em = proto.Emit(proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "stale-permission"})
+			case "elicitation":
+				em = proto.Emit(proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "stale-question"})
+			case "queue":
+				em = proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "queued", Prompt: "ordinary queued work"})
+			}
+			if _, err := st.Append(ctx, id, em); err != nil {
+				t.Fatal(err)
+			}
+			fa := &fakeAdapter{}
+			m = NewManager(st, t.Logf, fa)
+			defer m.Shutdown()
+			a, err = m.View(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+				t.Fatal(err)
+			}
+			if fa.session() == nil {
+				t.Fatal("stale request prevented activation")
+			}
+			if kind == "queue" {
+				select {
+				case got := <-fa.session().prompts:
+					if got.Text != "ordinary queued work" {
+						t.Fatal(got)
+					}
+					fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: got.TurnID, StopReason: proto.StopEndTurn}))
+				case <-time.After(time.Second):
+					t.Fatal("queue never drained")
+				}
+				waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
+				if err := a.scheduleTick(ctx, p.DueAt+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case got := <-fa.session().prompts:
+				if got.Text != p.Prompt {
+					t.Fatal(got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("stale request blocked delivery")
+			}
+		})
+	}
+}
+
+func TestScheduledReadyExpiresAcrossHostRestart(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "ready-restart.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := NewManager(st, t.Logf, &fakeAdapter{})
+	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := scheduleInput("ready-restart")
+	if err := a.Schedule(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	id := a.ID
+	m.Shutdown()
+	p.Revision = 2
+	p.Status = "ready"
+	if _, err := st.Append(ctx, id, proto.Emit(proto.PromptScheduled, p)); err != nil {
+		t.Fatal(err)
+	}
+	fa := &fakeAdapter{}
+	m = NewManager(st, t.Logf, fa)
+	defer m.Shutdown()
+	a, err = m.View(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.scheduleTick(ctx, p.DueAt+scheduleGrace+1); err != nil {
+		t.Fatal(err)
+	}
+	if got := scheduled(t, a, p.ID).Status; got != "missed" {
+		t.Fatalf("got %s", got)
+	}
+	if fa.session() != nil {
+		t.Fatal("expired schedule started provider")
+	}
+}

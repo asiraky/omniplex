@@ -41,7 +41,7 @@ type Subscriber struct {
 
 // Actor is one live session.
 type Actor struct {
-	scheduleReady   map[string]bool
+	scheduleReady   *sync.Map
 	activationError error
 	ID              string
 	Harness         string

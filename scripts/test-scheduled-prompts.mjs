@@ -92,8 +92,10 @@ try {
   await card.waitFor();
   await page.reload();
   await card.waitFor();
-  await page.screenshot({ animations: "disabled",
-    path: `${artifacts}/scheduled-prompts-desktop.png` });
+  await page.screenshot({
+    animations: "disabled",
+    path: `${artifacts}/scheduled-prompts-desktop.png`,
+  });
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await card.waitFor({ state: "hidden" });
   card = await create(page, "Send this now");
@@ -130,6 +132,16 @@ try {
   await card.waitFor({ state: "hidden" });
   await context.close();
   ({ context, page } = await open(390));
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles({
+      name: "reference.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ZkAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
   card = await create(
     page,
     "Continue implementing the feature. Run all tests and prepare the PR before morning.",
@@ -139,6 +151,7 @@ try {
   const due = (await state()).scheduledPrompts.find((p) =>
     p.prompt.startsWith("Continue implementing"),
   );
+  assert.equal(due.images.length, 1, "scheduled attachment missing");
   assert.ok(due.dueAt > scheduledAt && due.dueAt - scheduledAt <= 60_000);
   assert.equal(
     await page.evaluate(
@@ -147,13 +160,17 @@ try {
     true,
     "mobile page overflows",
   );
-  await page.screenshot({ animations: "disabled",
-    path: `${artifacts}/scheduled-prompts-mobile.png` });
+  await page.screenshot({
+    animations: "disabled",
+    path: `${artifacts}/scheduled-prompts-mobile.png`,
+  });
   await card.getByRole("button", { name: "Edit", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "In…", exact: true }).click();
-  await page.screenshot({ animations: "disabled",
-    path: `${artifacts}/schedule-dialog-mobile.png` });
+  await page.screenshot({
+    animations: "disabled",
+    path: `${artifacts}/schedule-dialog-mobile.png`,
+  });
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   card = await create(page, "FAIL scheduled delivery");
   await card.getByRole("button", { name: "Send now", exact: true }).click();
@@ -190,8 +207,10 @@ try {
   for (const context of browser.contexts()) {
     for (const page of context.pages()) {
       await page
-        .screenshot({ animations: "disabled",
-    path: `${artifacts}/failure.png` })
+        .screenshot({
+          animations: "disabled",
+          path: `${artifacts}/failure.png`,
+        })
         .catch(() => {});
       console.error((await page.locator("body").innerText()).slice(-5000));
     }

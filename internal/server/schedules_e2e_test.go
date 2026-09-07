@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -118,6 +119,15 @@ type scheduleBrowserSession struct {
 }
 
 func (s *scheduleBrowserSession) Prompt(_ context.Context, p adapter.PromptInput) error {
+	if strings.HasPrefix(p.Text, "Continue implementing") {
+		if len(p.Images) != 1 {
+			return errors.New("scheduled image was lost")
+		}
+		if _, err := os.Stat(p.Images[0].Path); err != nil {
+			return err
+		}
+	}
+
 	s.owner.mu.Lock()
 	s.owner.deliveries = append(s.owner.deliveries, p.Text)
 	s.owner.mu.Unlock()
