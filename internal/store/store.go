@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS commands (
   created_at    INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scheduled_prompts (
+ session_id TEXT NOT NULL,
+ schedule_id TEXT NOT NULL,
+ due_at INTEGER NOT NULL,
+ status TEXT NOT NULL,
+ PRIMARY KEY (session_id, schedule_id)
+);
+CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
+
 CREATE TABLE IF NOT EXISTS labels (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
@@ -75,9 +84,10 @@ CREATE TABLE IF NOT EXISTS labels (
 
 // SessionMeta is the row-level view of a session, enough for a session list.
 type SessionMeta struct {
-	ID      string `json:"id"`
-	Cwd     string `json:"cwd"`
-	Harness string `json:"harness"`
+	ScheduledCount int    `json:"scheduledCount,omitempty"`
+	ID             string `json:"id"`
+	Cwd            string `json:"cwd"`
+	Harness        string `json:"harness"`
 	// ProviderInstance is the provider instance the session was created under.
 	// It sits alongside Harness rather than repurposing it, so existing rows
 	// keep meaning what they say; empty resolves to the default instance for
@@ -250,6 +260,9 @@ func (s *Store) Append(ctx context.Context, sessionID string, em proto.Emission)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET head_seq = ?, updated_at = ? WHERE id = ?`, seq, ts, sessionID); err != nil {
+		return proto.Event{}, err
+	}
+	if err := updateScheduleIndex(ctx, tx, sessionID, em, payload); err != nil {
 		return proto.Event{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -468,6 +481,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	for _, q := range []string{
+		`DELETE FROM scheduled_prompts WHERE session_id = ?`,
 		`DELETE FROM events WHERE session_id = ?`,
 		`DELETE FROM snapshots WHERE session_id = ?`,
 		`DELETE FROM commands WHERE session_id = ?`,

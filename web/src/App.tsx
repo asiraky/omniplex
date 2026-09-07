@@ -9,6 +9,8 @@ import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
 import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
+import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./components/ScheduledPrompts";
+import type { ScheduledPrompt } from "./protocol";
 import { JobsStrip } from "./components/JobsStrip";
 import { NewSession } from "./components/NewSession";
 import type { NewSessionInput } from "./components/NewSession";
@@ -76,6 +78,7 @@ const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => 
 const SHOW_MODE_SWITCHER = false;
 
 export function App() {
+  const [scheduleEditor, setScheduleEditor] = useState<{id: string; sessionId: string; text: string; imageIds: string[]; schedule?: ScheduledPrompt} | null>(null);
   const { copied: transcriptCopied, copy: copyTranscript } = useCopy();
   // The snapshot a previous page of this tab saved as it went to background
   // (resume.ts). A mobile browser discards a backgrounded tab and reloads it
@@ -677,6 +680,21 @@ export function App() {
     },
     [activeId, attachments],
   );
+
+  async function saveSchedule(input: ScheduleInput) {
+    const editor = scheduleEditor;
+    if (!editor || !clientRef.current) throw new Error("Reconnect before scheduling");
+    await clientRef.current.command("schedule_prompt", { sessionId: editor.sessionId, id: editor.schedule?.id ?? editor.id, revision: editor.schedule?.revision ?? 0, ...input, imageIds: editor.imageIds });
+    if (!editor.schedule) {
+      // Clear only the draft and images captured when this sheet opened.
+      setDrafts(all => all[editor.sessionId] === editor.text ? {...all, [editor.sessionId]: ""} : all);
+      setAttachments(all => {
+        const staged = all[editor.sessionId] ?? [];
+        for (const a of staged) if (a.id && editor.imageIds.includes(a.id)) URL.revokeObjectURL(a.previewUrl);
+        return {...all, [editor.sessionId]: staged.filter(a => !a.id || !editor.imageIds.includes(a.id))};
+      });
+    }
+  }
 
   const loadComposerItems = useCallback(async (): Promise<ComposerItem[]> => {
     if (!activeId) return [];
@@ -1398,6 +1416,8 @@ export function App() {
 
               {liveJobCount(state.jobs) > 0 && <JobsStrip jobs={state.jobs} onOpen={openJobs} />}
 
+              <ScheduledPrompts schedules={state.scheduledPrompts ?? []} disabled={state.closed || workspaceBusy || workspaceFailed} onEdit={p => activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:p.prompt,imageIds:(p.images ?? []).map(i=>i.id),schedule:p})} onAction={async (action,p) => {if(!clientRef.current)throw new Error("Reconnect first");await clientRef.current.command(action,{sessionId:activeId,id:p.id,revision:p.revision});}} />
+              {scheduleEditor && <ScheduleDialog key={`schedule:${scheduleEditor.id}`} initialText={scheduleEditor.text} imageCount={scheduleEditor.imageIds.length} schedule={scheduleEditor.schedule} onClose={()=>setScheduleEditor(null)} onSave={saveSchedule} />}
               <Composer
                 key={activeId}
                 ref={composerRef}
@@ -1408,6 +1428,7 @@ export function App() {
                 disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
                 busy={state.phase === "turn"}
                 onSend={send}
+                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:(attachments[activeId] ?? []).filter(a=>a.status==="ready").map(a=>a.id!)})}
                 onCancel={cancel}
                 attachments={activeId ? (attachments[activeId] ?? []) : []}
                 onAttachImages={attachImages}

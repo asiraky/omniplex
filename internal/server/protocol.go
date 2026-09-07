@@ -132,6 +132,10 @@ type deleteProjectArgs struct {
 }
 
 type promptArgs struct {
+	ID        string `json:"id"`
+	Revision  int    `json:"revision"`
+	DueAt     int64  `json:"dueAt"`
+	TimeZone  string `json:"timeZone"`
 	SessionID string `json:"sessionId"`
 	Text      string `json:"text"`
 	// ImageIDs names images already uploaded to this session, in the order

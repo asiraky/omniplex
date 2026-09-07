@@ -33,7 +33,10 @@ type registered struct {
 
 // Manager owns the set of live actors and the provider-instance registry.
 type Manager struct {
-	store *store.Store
+	schedulerCancel context.CancelFunc
+	schedulerWG     sync.WaitGroup
+	scheduleReady   sync.Map
+	store           *store.Store
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
@@ -1032,18 +1035,23 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		}
 	} else {
 		reg, regErr := m.instanceFor(meta)
+		var env map[string]string
+		if regErr == nil {
+			env, regErr = m.envFor(reg.inst)
+		}
 		if regErr != nil {
-			return nil, regErr
+			if activate {
+				return nil, regErr
+			}
+			// Reading and cancelling saved work must remain possible when its
+			// provider credentials/configuration are unavailable.
+			a, err = RestoreIdle(ctx, m.store, nil, meta, nil, m.logf)
+			if err == nil {
+				a.activationError = regErr
+			}
+		} else {
+			a, err = RestoreIdle(ctx, m.store, reg.ad, meta, env, m.logf)
 		}
-		// Resume reuses the instance the session was created under: its env is
-		// re-materialised, so the same account backs the same conversation. A
-		// missing secret refuses the resume rather than falling through to the
-		// ambient account.
-		env, envErr := m.envFor(reg.inst)
-		if envErr != nil {
-			return nil, envErr
-		}
-		a, err = RestoreIdle(ctx, m.store, reg.ad, meta, env, m.logf)
 	}
 	if err != nil {
 		return nil, err
@@ -1086,6 +1094,7 @@ func (m *Manager) Peek(id string) (*Actor, bool) {
 // adopt registers a live actor and arranges for it to be forgotten when its
 // harness exits, so the next attach resumes the session cleanly.
 func (m *Manager) adopt(a *Actor) {
+	a.scheduleReady = &m.scheduleReady
 	m.mu.Lock()
 	m.actors[a.ID] = a
 	m.mu.Unlock()
@@ -1134,6 +1143,13 @@ func (m *Manager) List(ctx context.Context) ([]store.SessionMeta, error) {
 		}
 	}
 	m.mu.Unlock()
+	counts, err := m.store.ScheduleCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range metas {
+		metas[i].ScheduledCount = counts[metas[i].ID]
+	}
 	return metas, nil
 }
 
@@ -1346,6 +1362,10 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 // Shutdown tears down every harness process. Sessions are left resumable: the
 // log is the session, and a restart reattaches to it.
 func (m *Manager) Shutdown() {
+	if m.schedulerCancel != nil {
+		m.schedulerCancel()
+		m.schedulerWG.Wait()
+	}
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
 	m.mu.Lock()

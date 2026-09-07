@@ -254,14 +254,15 @@ type WorkspaceState struct {
 
 // State is the complete renderable state of a session as of Seq.
 type State struct {
-	SessionID string `json:"sessionId"`
-	Seq       int64  `json:"seq"`
-	Cwd       string `json:"cwd"`
-	Harness   string `json:"harness"`
-	Model     string `json:"model"`
-	Mode      string `json:"mode"`
-	Effort    string `json:"effort"`
-	Title     string `json:"title"`
+	Scheduled []proto.ScheduledPrompt `json:"scheduledPrompts,omitempty"`
+	SessionID string                  `json:"sessionId"`
+	Seq       int64                   `json:"seq"`
+	Cwd       string                  `json:"cwd"`
+	Harness   string                  `json:"harness"`
+	Model     string                  `json:"model"`
+	Mode      string                  `json:"mode"`
+	Effort    string                  `json:"effort"`
+	Title     string                  `json:"title"`
 	// HarnessSessionID is the harness's own conversation id, used to resume.
 	HarnessSessionID string         `json:"harnessSessionId,omitempty"`
 	Phase            string         `json:"phase"` // idle | turn | closed
@@ -470,10 +471,10 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.SessionConfigChanged:
 		var p proto.SessionConfigChangedPayload
 		decode(ev.Payload, &p)
-		if p.Model != "" {
+		if p.ReplaceSettings || p.Model != "" {
 			s.Model = p.Model
 		}
-		if p.Mode != "" {
+		if p.ReplaceSettings || p.Mode != "" {
 			s.Mode = p.Mode
 		}
 		// Unlike the fields around it, an empty effort is a choice — "let the
@@ -563,6 +564,13 @@ func (s *State) Apply(ev proto.Event) {
 				}
 			}
 			s.removeQueued(p.QueueID)
+			for i := range s.Scheduled {
+				if s.Scheduled[i].ID == p.QueueID {
+					s.Scheduled[i].Status = "sent"
+					s.Scheduled[i].TurnID = p.TurnID
+					s.Scheduled[i].Revision++
+				}
+			}
 		}
 		s.Turns = append(s.Turns, Turn{ID: p.TurnID, Prompt: p.Prompt, Images: p.Images, Recovery: p.Recovery, StartedAt: ev.Timestamp})
 		if s.Title == "" {
@@ -586,6 +594,21 @@ func (s *State) Apply(ev proto.Event) {
 				it.Images = p.Images
 				it.TurnID = p.TurnID
 			})
+		}
+
+	case proto.PromptScheduled:
+		var p proto.ScheduledPrompt
+		decode(ev.Payload, &p)
+		found := false
+		for i := range s.Scheduled {
+			if s.Scheduled[i].ID == p.ID {
+				s.Scheduled[i] = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.Scheduled = append(s.Scheduled, p)
 		}
 
 	case proto.PromptQueued:
@@ -638,6 +661,15 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.TurnFinished:
 		var p proto.TurnFinishedPayload
 		decode(ev.Payload, &p)
+		if p.StopReason == proto.StopError {
+			for i := range s.Scheduled {
+				if s.Scheduled[i].TurnID == p.TurnID {
+					s.Scheduled[i].Status = "failed"
+					s.Scheduled[i].Error = p.Error
+					s.Scheduled[i].Revision++
+				}
+			}
+		}
 		// Only the finish of the turn that is actually open may take the
 		// session idle. A stale finish — an adapter closing a turn the log
 		// never opened, or a duplicate for a turn already superseded — must
@@ -914,6 +946,7 @@ func (s *State) Clone() *State {
 		out.Elicitations[i].Schema = append(json.RawMessage(nil), pending.Schema...)
 	}
 
+	out.Scheduled = append([]proto.ScheduledPrompt(nil), s.Scheduled...)
 	out.Queued = make([]QueuedPrompt, len(s.Queued))
 	copy(out.Queued, s.Queued)
 

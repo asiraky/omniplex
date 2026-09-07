@@ -130,8 +130,8 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
     case "session.config_changed":
       return {
         ...s,
-        model: p.model || s.model,
-        mode: p.mode || s.mode,
+        model: p.replaceSettings ? p.model ?? "" : p.model || s.model,
+        mode: p.replaceSettings ? p.mode ?? "" : p.mode || s.mode,
         // "" is a value effort can be set to — the harness's own default —
         // so an event that carries it must win, which || would not let it.
         effort: p.effort ?? s.effort,
@@ -176,6 +176,7 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         title: s.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
         turns: [...s.turns, { id: p.turnId, prompt, images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
         // Starting is what takes a prompt out of the queue.
+        scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.id === p.queueId ? {...q, status: "sent", turnId: p.turnId, revision: q.revision + 1} : q),
         queuedPrompts: p.queueId ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : s.queuedPrompts,
         // A harness-initiated turn has no prompt — nobody asked anything —
         // so there is no prompt item to add. A prompt that is nothing but
@@ -194,6 +195,8 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
       };
     }
 
+    case "prompt.scheduled":
+      return { ...s, scheduledPrompts: [...(s.scheduledPrompts ?? []).filter(q => q.id !== p.id), p] };
     case "prompt.queued":
       return {
         ...s,
@@ -234,6 +237,7 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
       return {
         ...s,
         phase: match ? "idle" : s.phase,
+        scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.turnId === p.turnId && p.stopReason === "error" ? {...q, status: "failed", error: p.error, revision: q.revision + 1} : q),
         turns: s.turns.map((t) =>
           t.id === p.turnId
             ? {

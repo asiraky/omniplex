@@ -411,12 +411,18 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"sessionId": actor.ID}, nil
 
-	case "prompt":
+	case "prompt", "schedule_prompt":
 		var a promptArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		var actor *session.Actor
+		var err error
+		if f.Command == "schedule_prompt" {
+			actor, err = c.srv.mgr.View(ctx, a.SessionID)
+		} else {
+			actor, err = c.srv.mgr.Get(ctx, a.SessionID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -436,6 +442,14 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 				images = append(images, proto.PromptImage{ID: m.ID, MediaType: m.MediaType, Path: paths[i]})
 			}
 		}
+		if f.Command == "schedule_prompt" {
+			err := actor.Schedule(ctx, proto.ScheduledPrompt{ID: a.ID, Revision: a.Revision, Prompt: a.Text, Images: images, DueAt: a.DueAt, TimeZone: a.TimeZone})
+			if err != nil {
+				return nil, err
+			}
+			c.srv.mgr.NotifyList()
+			return map[string]any{"scheduleId": a.ID}, nil
+		}
 		res, err := actor.Prompt(ctx, a.Text, images)
 		if err != nil {
 			return nil, err
@@ -446,6 +460,24 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"turnId": res.TurnID}, nil
 
+	case "cancel_schedule", "send_schedule":
+		var a struct {
+			SessionID string `json:"sessionId"`
+			ID        string `json:"id"`
+			Revision  int    `json:"revision"`
+		}
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.View(ctx, a.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if err := actor.ScheduleAction(ctx, f.Command, a.ID, a.Revision); err != nil {
+			return nil, err
+		}
+		c.srv.mgr.NotifyList()
+		return nil, nil
 	case "dequeue_prompt":
 		var a struct {
 			SessionID string `json:"sessionId"`
