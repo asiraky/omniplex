@@ -388,16 +388,24 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 			removeWorktree = false
 		}
 	}
+	stage := "deprovision"
 	if removeWorktree && meta.WorkspaceMode != "local" {
 		if meta.DeprovisionScript != "" {
 			err = m.runDeprovisionHook(ctx, meta, p, a)
 		} else {
+			stage = "worktree-remove"
 			err = m.removeWorktree(ctx, meta, p, a)
 		}
 	}
 	if err != nil {
-		_ = m.store.SetPhase(ctx, meta.ID, "cleanup_failed")
-		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupFailed, proto.WorkspaceFailedPayload{Hook: "deprovision", Error: err.Error()}))
+		// Teardown runs in a goroutine, long after the client was told the
+		// delete had been accepted, so this log line is the only place the
+		// reason is recorded outside that one session's event stream.
+		m.logf("workspace cleanup failed for %s (%s): %v", meta.ID, stage, err)
+		if phaseErr := m.store.SetPhase(ctx, meta.ID, "cleanup_failed"); phaseErr != nil {
+			m.logf("marking %s cleanup_failed: %v", meta.ID, phaseErr)
+		}
+		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupFailed, proto.WorkspaceFailedPayload{Hook: stage, Error: err.Error()}))
 		m.notifyList()
 		return
 	}
@@ -484,6 +492,31 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 	if rel, relErr := filepath.Rel(target, root); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return errors.New("refusing to remove an ancestor of the project root")
 	}
+	common := func(dir string) (string, error) {
+		b, e := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-common-dir").Output()
+		if e != nil {
+			return "", e
+		}
+		v := strings.TrimSpace(string(b))
+		if !filepath.IsAbs(v) {
+			v = filepath.Join(dir, v)
+		}
+		abs, absErr := filepath.Abs(v)
+		if absErr != nil {
+			return "", absErr
+		}
+		if canonical, canonicalErr := filepath.EvalSymlinks(abs); canonicalErr == nil {
+			abs = canonical
+		}
+		return abs, nil
+	}
+	// The project root's common dir is resolved before the registration check
+	// rather than after it, because it is what proves ownership of a worktree
+	// Git has already forgotten.
+	rootCommon, err := common(root)
+	if err != nil {
+		return err
+	}
 	listed, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return fmt.Errorf("list worktrees: %w", err)
@@ -503,32 +536,20 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 		}
 	}
 	if !found {
+		// A directory that is on disk but unregistered is the wreckage of an
+		// earlier removal that deleted the administrative entry and then
+		// failed to delete the files. Refusing it means the workspace can
+		// never be cleaned up by any route, so force delete — which exists for
+		// exactly this — finishes the job by hand once the .git pointer has
+		// confirmed whose worktree it was.
+		if allowMissingLease && orphanedWorktreeOf(target, rootCommon) {
+			m.logf("force removing orphaned worktree %s (no Git administrative entry)", target)
+			return m.deleteWorktreeDir(ctx, root, target)
+		}
 		if allowMissingLease {
 			return fmt.Errorf("cannot force delete: %s exists but is not a registered Git worktree", target)
 		}
 		return fmt.Errorf("refusing cleanup: %s is not a registered worktree", target)
-	}
-	common := func(dir string) (string, error) {
-		b, e := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-common-dir").Output()
-		if e != nil {
-			return "", e
-		}
-		v := strings.TrimSpace(string(b))
-		if !filepath.IsAbs(v) {
-			v = filepath.Join(dir, v)
-		}
-		abs, absErr := filepath.Abs(v)
-		if absErr != nil {
-			return "", absErr
-		}
-		if canonical, canonicalErr := filepath.EvalSymlinks(abs); canonicalErr == nil {
-			abs = canonical
-		}
-		return abs, nil
-	}
-	rootCommon, err := common(root)
-	if err != nil {
-		return err
 	}
 	targetCommon, err := common(target)
 	if err != nil {
@@ -537,16 +558,64 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 	if rootCommon != targetCommon {
 		return errors.New("refusing cleanup: worktree belongs to another repository")
 	}
+	// Anything still running in there will race the removal and can leave the
+	// worktree half-deleted and unregistered, so an ordinary cleanup stops and
+	// names the process instead of starting. Force delete accepts the risk:
+	// its whole purpose is to get rid of a workspace that will not go quietly.
+	if !allowMissingLease {
+		if procs := processesIn(target); len(procs) > 0 {
+			return fmt.Errorf("refusing cleanup: %s is still in use by %s — stop it and delete again", filepath.Base(target), describeProcs(procs))
+		}
+	}
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", target)
 	cmd.Dir = p.Root
 	b, err := cmd.CombinedOutput()
-	if len(b) > 0 && a != nil {
-		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "deprovision", Stream: "stdout", Chunk: string(b)}))
+	if len(b) > 0 {
+		// Git's own diagnosis is the only useful thing in a failure, so it is
+		// logged whether or not there is an actor to narrate it to. Without
+		// this the closed-session and force-delete paths report a bare "exit
+		// status 128" and nothing anywhere records why.
+		m.logf("git worktree remove %s: %s", target, strings.TrimSpace(string(b)))
+		if a != nil {
+			_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "worktree-remove", Stream: "stdout", Chunk: string(b)}))
+		}
 	}
 	if err != nil {
-		return err
+		// Git deletes the administrative entry even when it could not delete
+		// the checkout, so by now this is no longer a worktree it will act on
+		// again — leaving it here is what makes the failure permanent. Finish
+		// by hand instead. The usual cause is a file recreated underneath the
+		// walk, which a second pass simply wins.
+		m.logf("git worktree remove %s failed (%v); removing the directory directly", target, err)
+		if rmErr := m.deleteWorktreeDir(ctx, root, target); rmErr != nil {
+			return fmt.Errorf("%w (and removing the directory failed: %v)", err, rmErr)
+		}
+		return nil
 	}
 	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
 	prune.Dir = p.Root
+	return prune.Run()
+}
+
+// deleteWorktreeDir removes a checkout Git has stopped managing and then
+// prunes, so the repository forgets it whether or not Git had already.
+//
+// The removal is retried once: the common failure is a live process recreating
+// files behind the walk, and the second pass normally finds a smaller tree and
+// wins. Repeating forever against a busy dev server would only hang the
+// cleanup, so one retry is the whole budget.
+func (m *Manager) deleteWorktreeDir(ctx context.Context, root, target string) error {
+	err := os.RemoveAll(target)
+	if err != nil {
+		err = os.RemoveAll(target)
+	}
+	if err != nil {
+		if procs := processesIn(target); len(procs) > 0 {
+			return fmt.Errorf("%w — %s is still writing to it", err, describeProcs(procs))
+		}
+		return err
+	}
+	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
+	prune.Dir = root
 	return prune.Run()
 }
