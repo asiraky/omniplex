@@ -563,7 +563,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 	// names the process instead of starting. Force delete accepts the risk:
 	// its whole purpose is to get rid of a workspace that will not go quietly.
 	if !allowMissingLease {
-		if procs := processesIn(target); len(procs) > 0 {
+		if procs := processesIn(target, false); len(procs) > 0 {
 			return fmt.Errorf("refusing cleanup: %s is still in use by %s — stop it and delete again", filepath.Base(target), describeProcs(procs))
 		}
 	}
@@ -597,6 +597,11 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 	return prune.Run()
 }
 
+// removeTree is os.RemoveAll behind a seam, so a test can reproduce a removal
+// that reports success while the directory is still there — the outcome a live
+// writer produces and the one worth guarding against.
+var removeTree = os.RemoveAll
+
 // deleteWorktreeDir removes a checkout Git has stopped managing and then
 // prunes, so the repository forgets it whether or not Git had already.
 //
@@ -605,12 +610,24 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 // wins. Repeating forever against a busy dev server would only hang the
 // cleanup, so one retry is the whole budget.
 func (m *Manager) deleteWorktreeDir(ctx context.Context, root, target string) error {
-	err := os.RemoveAll(target)
+	err := removeTree(target)
 	if err != nil {
-		err = os.RemoveAll(target)
+		err = removeTree(target)
+	}
+	if err == nil {
+		// RemoveAll returning nil only means the tree was empty at the moment
+		// it finished. Force delete deliberately runs with a writer still
+		// active, and that writer can recreate the directory immediately
+		// afterwards. Reporting success here would let the caller purge the
+		// session, leaving a directory on disk that no session names any more
+		// and nothing in the UI can ever offer to clean up again — a worse
+		// version of the state this whole change exists to prevent.
+		if _, statErr := os.Lstat(target); statErr == nil {
+			err = fmt.Errorf("%s was recreated while it was being removed", target)
+		}
 	}
 	if err != nil {
-		if procs := processesIn(target); len(procs) > 0 {
+		if procs := processesIn(target, true); len(procs) > 0 {
 			return fmt.Errorf("%w — %s is still writing to it", err, describeProcs(procs))
 		}
 		return err

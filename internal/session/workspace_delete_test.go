@@ -167,6 +167,39 @@ func TestForceDeleteProceedsDespiteARunningProcess(t *testing.T) {
 	}
 }
 
+// Force delete runs with a writer still active, so the tree can come back the
+// instant it is emptied. Reporting success would let the caller purge the
+// session, leaving a directory nothing names any more and no route in the UI
+// to clean it up — strictly worse than the wedge this change removes.
+func TestRemovalDoesNotReportSuccessWhenTheDirectoryComesBack(t *testing.T) {
+	root, worktree := repoWithWorktree(t)
+	mgr, _, _ := deleteFixture(t, root, worktree)
+
+	victim := filepath.Join(t.TempDir(), "recreated")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Stand in for a dev server that rewrites its cache the moment the tree is
+	// emptied: the removal succeeds and the directory is there again straight
+	// afterwards.
+	original := removeTree
+	removeTree = func(path string) error {
+		if err := original(path); err != nil {
+			return err
+		}
+		return os.MkdirAll(filepath.Join(path, "cache"), 0o755)
+	}
+	t.Cleanup(func() { removeTree = original })
+
+	err := mgr.deleteWorktreeDir(context.Background(), root, victim)
+	if err == nil {
+		t.Fatal("removal reported success for a directory that was recreated")
+	}
+	if !strings.Contains(err.Error(), "recreated") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestRemoveGitWorktreePrunesWhenTheDirectoryIsAlreadyGone(t *testing.T) {
 	root, worktree := repoWithWorktree(t)
 	mgr, meta, p := deleteFixture(t, root, worktree)

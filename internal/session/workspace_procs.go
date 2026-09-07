@@ -41,10 +41,21 @@ func under(path, dir string) bool {
 // and every later attempt is refused for a completely different reason. It is
 // far cheaper to notice the process first and say so.
 //
+// includeDeleted decides whether processes sitting in an already-unlinked
+// directory count. They are the ones that wedged a half-finished removal, so
+// they belong in a diagnosis of why files keep coming back — but they are not
+// grounds for refusing to delete a directory that exists now. The kernel
+// renders an unlinked cwd as its former pathname, and a worktree recreated at
+// that same path (the same branch provisioned again, say) is a different
+// directory the old process cannot touch. Refusing that would block a
+// perfectly safe delete until an unrelated process happened to exit.
+//
 // Linux only, and best effort by nature: /proc is a moving target and a
-// process may exit or chdir a microsecond later. An empty result is "nothing
-// seen", not a guarantee, so callers must still cope with removal failing.
-func processesIn(target string) []procRef {
+// process may exit or chdir a microsecond later, and cwd is unreadable for
+// processes belonging to another user or hidden by hidepid. An empty result is
+// "nothing seen", not a guarantee, so callers must still cope with removal
+// failing.
+func processesIn(target string, includeDeleted bool) []procRef {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
@@ -65,10 +76,13 @@ func processesIn(target string) []procRef {
 		if linkErr != nil {
 			continue
 		}
-		// A deleted cwd reads back as "/path/to/dir (deleted)". That process
-		// is exactly the one that survived a half-finished removal, so strip
-		// the marker rather than skipping it.
-		cwd = strings.TrimSuffix(cwd, " (deleted)")
+		// A deleted cwd reads back as "/path/to/dir (deleted)".
+		if trimmed, wasDeleted := strings.CutSuffix(cwd, " (deleted)"); wasDeleted {
+			if !includeDeleted {
+				continue
+			}
+			cwd = trimmed
+		}
 		if !filepath.IsAbs(cwd) || !under(cwd, target) {
 			continue
 		}
@@ -110,7 +124,16 @@ func describeProcs(procs []procRef) string {
 // exist. That pointer is enough to prove whose worktree this was, which is the
 // only question that matters before removing it.
 func orphanedWorktreeOf(target, rootCommon string) bool {
-	b, err := os.ReadFile(filepath.Join(target, ".git"))
+	pointer := filepath.Join(target, ".git")
+	// Lstat, not Stat: a symlink at .git could aim the check at a legitimate
+	// pointer file anywhere on disk while the directory being removed is
+	// something else entirely. Git writes a regular file here and nothing
+	// else is trusted.
+	info, err := os.Lstat(pointer)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	b, err := os.ReadFile(pointer)
 	if err != nil {
 		return false
 	}
@@ -127,7 +150,11 @@ func orphanedWorktreeOf(target, rootCommon string) bool {
 		gitDir = filepath.Join(target, gitDir)
 	}
 	gitDir = filepath.Clean(gitDir)
-	// Only ever a worktree admin directory of this exact repository, never the
-	// repository itself: rootCommon/worktrees/<id>.
-	return under(gitDir, filepath.Join(rootCommon, "worktrees")) && gitDir != filepath.Join(rootCommon, "worktrees")
+	// A worktree's administrative directory is always an immediate child of
+	// this exact repository's worktrees directory — rootCommon/worktrees/<id>.
+	// Requiring an immediate child rather than merely something underneath
+	// keeps a deeper path from being read as one, and rules out the worktrees
+	// directory itself.
+	dir, id := filepath.Split(gitDir)
+	return filepath.Clean(dir) == filepath.Join(rootCommon, "worktrees") && id != ""
 }

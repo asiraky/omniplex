@@ -88,7 +88,7 @@ func TestProcessesInFindsAProcessSittingInTheDirectory(t *testing.T) {
 	deep := startIn(t, inner)
 	outside := startIn(t, sibling)
 
-	found := processesIn(resolve(target))
+	found := processesIn(resolve(target), true)
 	if !hasPID(found, deep) {
 		t.Errorf("process in a subdirectory was not reported: %v", found)
 	}
@@ -99,10 +99,12 @@ func TestProcessesInFindsAProcessSittingInTheDirectory(t *testing.T) {
 	}
 }
 
-// The process that wedges a delete is precisely the one whose directory has
-// already been removed underneath it, which the kernel reports as a "(deleted)"
-// symlink. Missing that case would make the retry look safe when it is not.
-func TestProcessesInStillFindsAProcessWhoseDirectoryIsAlreadyGone(t *testing.T) {
+// A process whose directory was already removed underneath it is what wedged a
+// half-finished delete, so it belongs in the diagnosis of why files keep
+// reappearing. It must not count towards refusing a delete though: the kernel
+// still renders its cwd as the old pathname, and a worktree recreated at that
+// same path is a different directory it cannot touch.
+func TestProcessesInCountsADeletedWorkingDirectoryOnlyWhenDiagnosing(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "worktree")
 	inner := filepath.Join(target, "apps")
@@ -115,13 +117,16 @@ func TestProcessesInStillFindsAProcessWhoseDirectoryIsAlreadyGone(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if found := processesIn(resolved); !hasPID(found, pid) {
-		t.Errorf("process with a deleted cwd was not reported: %v", found)
+	if found := processesIn(resolved, true); !hasPID(found, pid) {
+		t.Errorf("process with a deleted cwd was not reported when diagnosing: %v", found)
+	}
+	if found := processesIn(resolved, false); hasPID(found, pid) {
+		t.Errorf("process with a deleted cwd blocked a delete: %v", found)
 	}
 }
 
 func TestProcessesInReportsNothingForAnIdleDirectory(t *testing.T) {
-	if found := processesIn(resolve(t.TempDir())); len(found) != 0 {
+	if found := processesIn(resolve(t.TempDir()), false); len(found) != 0 {
 		t.Errorf("unexpected processes: %v", found)
 	}
 }
@@ -157,13 +162,33 @@ func TestOrphanedWorktreeOfRejectsAnythingItCannotProveIsOurs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(empty, ".git"), []byte("gitdir:   \n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Deeper than an immediate child of worktrees/, so not an administrative
+	// directory Git would ever have written.
+	deep := t.TempDir()
+	if err := os.WriteFile(filepath.Join(deep, ".git"), []byte("gitdir: "+filepath.Join(rootCommon, "worktrees", "a", "b")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlinked .git would let any directory borrow a legitimate pointer
+	// file and be removed in its place.
+	symlinked := t.TempDir()
+	if err := os.Symlink(filepath.Join(worktree, ".git"), filepath.Join(symlinked, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	// Traversal back out of the repository through a relative pointer.
+	traversal := t.TempDir()
+	if err := os.WriteFile(filepath.Join(traversal, ".git"), []byte("gitdir: "+filepath.Join(rootCommon, "worktrees", "..", "..")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := map[string]string{
-		"another repository's worktree": other,
-		"a directory with no .git":      plain,
-		"a .git that is not a pointer":  garbage,
-		"the worktrees directory":       pointsAtAdminRoot,
-		"an empty gitdir":               empty,
+		"another repository's worktree":    other,
+		"a directory with no .git":         plain,
+		"a .git that is not a pointer":     garbage,
+		"the worktrees directory":          pointsAtAdminRoot,
+		"an empty gitdir":                  empty,
+		"a gitdir nested below worktrees":  deep,
+		"a symlinked .git":                 symlinked,
+		"a gitdir escaping the repository": traversal,
 		// The project root's .git is a directory, not a pointer file.
 		"the project root": root,
 	}
