@@ -39,6 +39,22 @@ func New(bin string) *Adapter {
 
 func (a *Adapter) ID() string { return "codex" }
 
+// ConfigFields declares how an instance of Codex is configured. CODEX_HOME is
+// the whole mechanism: it holds the login, so pointing a second instance at
+// its own directory is what makes it a second account.
+func (a *Adapter) ConfigFields() []adapter.ConfigField {
+	return []adapter.ConfigField{
+		{
+			Env:         "CODEX_HOME",
+			Label:       "Codex home",
+			Description: "Directory holding this account's Codex login and settings. Leave empty on the default instance to use the machine's own login.",
+			Placeholder: "~/.codex",
+			Kind:        adapter.FieldPath,
+			Isolates:    true,
+		},
+	}
+}
+
 func (a *Adapter) Meta() adapter.HarnessMeta {
 	return adapter.HarnessMeta{
 		ID:      "codex",

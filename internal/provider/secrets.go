@@ -19,7 +19,12 @@ type SecretStore struct {
 }
 
 // OpenSecretStore opens (creating if needed) ~/.omniplex/secrets.
+// OMNIPLEX_SECRETS overrides the root, pairing with OMNIPLEX_CONFIG so an
+// isolated dev server keeps its credentials beside its config.
 func OpenSecretStore() (*SecretStore, error) {
+	if root := os.Getenv("OMNIPLEX_SECRETS"); root != "" {
+		return OpenSecretStoreAt(root)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -101,6 +106,19 @@ func (s *SecretStore) Delete(instanceID, name string) error {
 		return err
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// Purge removes every secret an instance holds. It is the delete-instance
+// gesture: removing an instance without its secrets would leave credentials
+// on disk with nothing referencing them.
+func (s *SecretStore) Purge(instanceID string) error {
+	if !validID.MatchString(instanceID) {
+		return fmt.Errorf("invalid instance id %q", instanceID)
+	}
+	if err := os.RemoveAll(filepath.Join(s.root, instanceID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

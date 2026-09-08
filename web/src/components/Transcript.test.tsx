@@ -420,11 +420,41 @@ describe("a turn that failed", () => {
       />,
     );
 
-    expect(screen.getByText(/Claude Code is not signed in/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /sign in again/i }));
+    expect(screen.getByText(/Claude Code needs to sign in again/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     expect(onLogin).toHaveBeenCalledOnce();
     expect(screen.queryByText(/Continue where it left off/)).toBeNull();
     expect(screen.queryByText(/restart/i)).toBeNull();
+  });
+
+  // Retry appears only once the provider reports ready again, and re-sending
+  // the failed prompt is always the user's press — never a side effect of a
+  // sign-in finishing.
+  it("offers retry only when the provider is ready, and only on request", () => {
+    const onRetryTurn = vi.fn();
+    const authFailed = failed({ failure: "auth", error: "signed out" });
+    const props = {
+      onFinish: () => {},
+      onRetryProvision: () => {},
+      onCleanup: () => {},
+      onForceDelete: () => {},
+      onContinue: () => {},
+      onOpenDiff: () => {},
+      providerName: "Claude Code",
+      onRetryTurn,
+    };
+
+    const { unmount } = render(
+      <Transcript state={authFailed} {...props} providerReady={false} />,
+    );
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+    unmount();
+
+    render(<Transcript state={authFailed} {...props} providerReady />);
+    expect(onRetryTurn).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+    expect(onRetryTurn).toHaveBeenCalledOnce();
+    expect(onRetryTurn.mock.calls[0][0]).toMatchObject({ id: "t1", prompt: "go" });
   });
 
   it("only says the server restarted when the server says so", () => {
