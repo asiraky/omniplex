@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { render, viewport } from "~/test/harness";
 import { NewSession, type NewSessionInput } from "./NewSession";
@@ -45,6 +45,7 @@ function open(over: Partial<React.ComponentProps<typeof NewSession>> = {}) {
 
 const surface = () => document.querySelector("[data-slot=dialog-content]")!;
 
+beforeEach(() => localStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
 
 // Radix Select drives its trigger with pointer capture and scrolls the chosen
@@ -587,4 +588,156 @@ describe("an interactive-login harness", () => {
     fireEvent.click(screen.getByRole("button", { name: /sign in again/i }));
     expect(onLogin).toHaveBeenCalledWith("claude");
   });
+});
+
+describe("remembered session choices", () => {
+  const ready = { state: "ready" } as const;
+  const agents = ["claude", "codex"].map((id) => ({
+    id,
+    name: id,
+    availability: ready,
+    permissionModes: [
+      { id: "ask", label: "Ask", default: true },
+      { id: `${id}-bypass`, label: "Bypass" },
+    ],
+    instances: [
+      {
+        id,
+        driver: id,
+        displayName: id,
+        enabled: true,
+        availability: ready,
+        models: [
+          {
+            id: `${id}-basic`,
+            label: `${id} Basic`,
+            default: true,
+            efforts: ["low", "high"],
+          },
+          {
+            id: `${id}-advanced`,
+            label: `${id} Advanced`,
+            efforts: ["low", "high", "ultra"],
+          },
+        ],
+      },
+    ],
+  })) as unknown as HarnessMeta[];
+
+  async function pickModel(label: string) {
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.change(screen.getByPlaceholderText(/Search models and accounts/), {
+      target: { value: label },
+    });
+    fireEvent.click(await screen.findByRole("option", { name: new RegExp(label) }));
+  }
+  async function switchHarness(id: string) {
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText(/Search models and accounts/)).toBeNull(),
+    );
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(id + "$", "i") }));
+    fireEvent.keyDown(screen.getByPlaceholderText(/Search models and accounts/), { key: "Escape" });
+  }
+  async function bypass() {
+    fireEvent.click(screen.getByRole("combobox", { name: /Permissions/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Bypass" }));
+  }
+  async function highEffort() {
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    fireEvent.click(await screen.findByRole("option", { name: "High" }));
+  }
+
+  it("restores choices when switching away and back, cancelling and reopening, then starting", async () => {
+    const onCreate = vi.fn(async () => {});
+    const props = { harnesses: agents, onCreate };
+    open(props);
+    await pickModel("codex Advanced");
+    await bypass();
+    await highEffort();
+    await switchHarness("claude");
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Ask");
+    await pickModel("claude Advanced");
+    await bypass();
+    await switchHarness("codex");
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain(
+      "codex Advanced",
+    );
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain(
+      "High",
+    );
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    await switchHarness("claude");
+    cleanup();
+    open(props);
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain(
+      "claude Advanced",
+    );
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    await switchHarness("codex");
+    const start = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          harness: "codex",
+          model: "codex-advanced",
+          mode: "codex-bypass",
+          effort: "high",
+        }),
+      ),
+    );
+  });
+
+  it("keeps explicit Auto over a project seed and keeps another project's choices separate", async () => {
+    const seeded = {
+      ...project,
+      config: { ...project.config, defaults: {
+        ...project.config.defaults, harness: "codex",
+        harnesses: { codex: { effort: "high" } },
+      } },
+    } as Project;
+    const other = { ...project, id: "p2", config: { ...project.config, name: "other" } };
+    const props = { projects: [seeded, other], harnesses: agents };
+    open(props);
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto/ }));
+    await bypass();
+    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "other" }));
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("claude Basic");
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Ask");
+    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "repo" }));
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    cleanup();
+    open(props);
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
+  });
+
+
+  it("keeps an unsupported effort preference while validating the session request", async () => {
+    const onCreate = vi.fn(async () => {});
+    open({ harnesses: agents, onCreate });
+    await pickModel("codex Advanced");
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Ultra/i }));
+    await pickModel("codex Basic");
+    await bypass();
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
+    const start = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ effort: "" })));
+    cleanup();
+    open({ harnesses: agents });
+    await pickModel("codex Advanced");
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toMatch(/Ultra/i);
+  });
+
 });

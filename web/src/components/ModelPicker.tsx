@@ -57,6 +57,7 @@ export function ModelPicker({
   harnesses,
   value,
   onChange,
+  onInstanceChange,
   lockInstance = false,
   disabled = false,
   efforts = [],
@@ -76,6 +77,8 @@ export function ModelPicker({
    * it — so only the model can change and the rail becomes a label.
    */
   lockInstance?: boolean;
+  /** New-session preferences can select an account immediately on a rail click. */
+  onInstanceChange?: (instance: PickerInstance) => void;
   disabled?: boolean;
   /**
    * The running model's reasoning levels, most modest first. Empty — a legacy
@@ -159,7 +162,11 @@ export function ModelPicker({
             instances={instances}
             browsing={shown?.id ?? ""}
             selected={selectedInstance?.id ?? ""}
-            onBrowse={setBrowsing}
+            onBrowse={(id) => {
+              setBrowsing(id);
+              const target = instances.find((i) => i.id === id);
+              if (target) onInstanceChange?.(target);
+            }}
           />
         )}
         <CommandList className="max-h-[min(60dvh,22rem)] flex-1">
