@@ -617,7 +617,7 @@ describe("remembered session choices", () => {
           {
             id: `${id}-advanced`,
             label: `${id} Advanced`,
-            efforts: ["low", "high"],
+            efforts: ["low", "high", "ultra"],
           },
         ],
       },
@@ -690,4 +690,54 @@ describe("remembered session choices", () => {
       ),
     );
   });
+
+  it("keeps explicit Auto over a project seed and keeps another project's choices separate", async () => {
+    const seeded = {
+      ...project,
+      config: { ...project.config, defaults: {
+        ...project.config.defaults, harness: "codex",
+        harnesses: { codex: { effort: "high" } },
+      } },
+    } as Project;
+    const other = { ...project, id: "p2", config: { ...project.config, name: "other" } };
+    const props = { projects: [seeded, other], harnesses: agents };
+    open(props);
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto/ }));
+    await bypass();
+    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "other" }));
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("claude Basic");
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Ask");
+    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "repo" }));
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
+    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    cleanup();
+    open(props);
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
+  });
+
+
+  it("keeps an unsupported effort preference while validating the session request", async () => {
+    const onCreate = vi.fn(async () => {});
+    open({ harnesses: agents, onCreate });
+    await pickModel("codex Advanced");
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Ultra/i }));
+    await pickModel("codex Basic");
+    await bypass();
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
+    const start = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ effort: "" })));
+    cleanup();
+    open({ harnesses: agents });
+    await pickModel("codex Advanced");
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toMatch(/Ultra/i);
+  });
+
 });

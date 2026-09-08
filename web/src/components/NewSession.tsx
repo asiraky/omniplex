@@ -225,11 +225,12 @@ export function NewSession({
     setPreferences(next);
     saveSessionPrefs(next);
   };
+  // Catalogue validation affects what we send, not the preference we keep.
   const currentPrefs: HarnessPrefs = {
     instance: instance?.id ?? "",
-    model,
-    mode,
-    effort,
+    model: chosen?.model ?? model,
+    mode: preferredMode,
+    effort: preferredEffort,
     want1m,
   };
   const selectModel = (next: ModelSelection) => {
@@ -238,8 +239,8 @@ export function NewSession({
     remember(next.harness, {
       instance: next.instance,
       model: next.model,
-      mode: next.harness === harnessId ? mode : (previous?.mode ?? seed?.mode ?? ""),
-      effort: next.harness === harnessId ? effort : (previous?.effort ?? seed?.effort ?? ""),
+      mode: previous?.mode ?? seed?.mode ?? "",
+      effort: previous?.effort ?? seed?.effort ?? "",
       want1m: previous?.want1m ?? false,
     });
   };
