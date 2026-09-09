@@ -467,6 +467,14 @@ type UsageUpdatedPayload struct {
 	CacheRead  int64   `json:"cacheRead"`
 	CacheWrite int64   `json:"cacheWrite"`
 	Cost       float64 `json:"cost"`
+	// Accounting marks an emission whose token counts are fresh accounting for
+	// the period it covers — a Claude turn's result — rather than a restatement
+	// of the previous reading, which is what the occupancy report that follows
+	// each result is. Historical aggregation counts accounting emissions and
+	// skips the rest; events recorded before the flag existed are deduplicated
+	// by comparison instead. Harnesses that report cumulative totals (Codex)
+	// leave it unset and their adapter's semantics govern.
+	Accounting bool `json:"accounting,omitempty"`
 	// ContextPct is how full the context window is, and is deliberately NOT
 	// clamped to 100: an over-limit reading is a real signal (compaction is
 	// imminent or overdue), and clamping it in the adapter is what let a

@@ -660,6 +660,7 @@ export interface ServerFrame {
     | "harnesses"
     | "labels"
     | "projects"
+    | "quotas"
     | "composer_items_changed"
     | "snapshot"
     | "event"
@@ -676,6 +677,8 @@ export interface ServerFrame {
   projects?: Project[];
   /** Absent means none defined: an empty list is omitted from the frame. */
   labels?: Label[];
+  /** Every provider instance's cached usage limits; the whole list, always. */
+  quotas?: QuotaStatus[];
   cwd?: string;
   access?: Access;
   sessionId?: string;
@@ -700,4 +703,69 @@ export interface ScheduledPrompt {
  status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
  error?: string;
  turnId?: string;
+}
+
+// ---- Account-level usage ----
+
+/** One provider-reported allowance bucket, already normalised by the server. */
+export interface QuotaWindow {
+  id: string;
+  kind: "session" | "weekly" | "monthly" | "credits";
+  label: string;
+  /** 0–100 as the provider reports it; undefined when a sparse update omitted it. */
+  usedPercent?: number;
+  /** Epoch ms; absent means the provider did not say. */
+  resetsAt?: number;
+  windowDurationMins?: number;
+  /** How many reset credits remain, for credits windows. */
+  count?: number;
+}
+
+export interface QuotaSnapshot {
+  checkedAt: number;
+  plan?: string;
+  accountId?: string;
+  windows?: QuotaWindow[];
+  /** "unsupported" when the account has no plan limits (an API key, say). */
+  unavailable?: string;
+}
+
+/** One provider instance's usage limits plus how the last refresh went. */
+export interface QuotaStatus {
+  provider: string;
+  instance: string;
+  displayName: string;
+  snapshot: QuotaSnapshot;
+  lastError?: string;
+  lastAttempt?: number;
+}
+
+/** Token and cost totals over some usage, per bucket or for the whole range. */
+export interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  /** Tokens excluded from cost because their model or category had no published price. */
+  unpriced: number;
+}
+
+/** One aggregated cell: a bucket of time, a provider, a model. */
+export interface UsageRow {
+  start: number;
+  provider: string;
+  model: string;
+  totals: UsageTotals;
+}
+
+/** The bounded aggregate the server sends for one range. */
+export interface UsageReport {
+  range: string;
+  from: number;
+  to: number;
+  bucketMs: number;
+  priceVersion: string;
+  rows: UsageRow[];
+  totals: UsageTotals;
 }

@@ -402,6 +402,80 @@ type SummaryResult struct {
 	Model string
 }
 
+// ---- Account-level usage limits ----
+//
+// Quota is separate from the per-session usage.updated payload on purpose:
+// that event is context occupancy and turn accounting for one conversation,
+// while quota answers the account question — “can I keep working?” — for the
+// provider instance the session ran under. Nothing about quota is session
+// state: it is cached per instance, merged from whatever source last spoke,
+// and presented on its own page.
+
+// Quota window kinds. Kinds drive presentation (icons, wording) without any
+// provider-specific vocabulary leaking into the core.
+const (
+	QuotaSession = "session"
+	QuotaWeekly  = "weekly"
+	QuotaMonthly = "monthly"
+	QuotaCredits = "credits"
+)
+
+// QuotaWindow is one provider-reported allowance bucket, already normalised:
+// a percentage used, when it resets, and how wide the window is. ID is stable
+// across reads and live updates, which is what lets a sparse update land on
+// the row an earlier read drew.
+type QuotaWindow struct {
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	// UsedPercent is 0–100 as the provider reports it. Not clamped: an
+	// over-limit reading is a real signal, exactly like context occupancy.
+	// A pointer because a sparse live update carries only the fields it knows:
+	// nil means “unchanged”, not “zero”.
+	UsedPercent *float64 `json:"usedPercent,omitempty"`
+	// ResetsAt is epoch milliseconds; zero means the provider did not say.
+	ResetsAt   int64 `json:"resetsAt,omitempty"`
+	WindowMins int   `json:"windowDurationMins,omitempty"`
+	// Count is how many reset credits remain, for credits windows. Nil for
+	// utilisation windows.
+	Count *int `json:"count,omitempty"`
+}
+
+// QuotaSnapshot is one provider account's usage limits at a moment. A
+// snapshot with no windows and a non-empty Unavailable is a legible negative
+// answer (an API-key session has no plan limits) rather than a failure.
+type QuotaSnapshot struct {
+	CheckedAt   int64         `json:"checkedAt"` // epoch ms
+	Plan        string        `json:"plan,omitempty"`
+	AccountID   string        `json:"accountId,omitempty"`
+	Windows     []QuotaWindow `json:"windows,omitempty"`
+	Unavailable string        `json:"unavailable,omitempty"`
+}
+
+// QuotaReader is an optional adapter capability: read the account's usage
+// limits out-of-band, without a live session, by asking the harness once.
+// It runs under the provider instance's environment overlay for the same
+// reason a session does — the quota belongs to the account the overlay
+// selects.
+type QuotaReader interface {
+	ReadQuota(ctx context.Context, env map[string]string) (QuotaSnapshot, error)
+}
+
+// SessionQuota is the optional live-session counterpart: ask the running
+// harness process, which is cheaper than spawning one and always reads the
+// account the process is authenticated as.
+type SessionQuota interface {
+	Quota(ctx context.Context) (QuotaSnapshot, error)
+}
+
+// QuotaReporter is an optional HostServices extension. A harness that pushes
+// live usage-limit updates — Claude's rate-limit events, Codex's
+// account/rateLimits notifications — reports them through it; the host caches
+// them per provider instance, merging sparse windows by id.
+type QuotaReporter interface {
+	ReportQuota(snap QuotaSnapshot)
+}
+
 // FailureError is an error that already knows how it should be presented. An
 // adapter that refuses a prompt because the harness needs a login knows that
 // much at the point of refusal; without somewhere to put it, the classification

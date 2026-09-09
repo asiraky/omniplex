@@ -60,7 +60,11 @@ type serverFrame struct {
 	// whole on every change; a client treats an absent field on a labels
 	// frame as "none defined".
 	Labels []store.Label `json:"labels,omitempty"`
-	Cwd    string        `json:"cwd,omitempty"`
+	// Quotas is every provider instance's cached usage limits, sent on
+	// welcome and re-sent whole whenever a live push or a refresh changes one
+	// — the whole list, because one provider moving must never blank another.
+	Quotas []session.QuotaStatus `json:"quotas,omitempty"`
+	Cwd    string                `json:"cwd,omitempty"`
 	// Access travels on welcome, after the gate, so an unpaired caller
 	// learns nothing about how else this machine can be reached.
 	Access *endpoints.Set `json:"access,omitempty"`
@@ -257,4 +261,17 @@ type resolveElicitationArgs struct {
 	RequestID string          `json:"requestId"`
 	Action    string          `json:"action"`
 	Value     json.RawMessage `json:"value"`
+}
+
+// usageReportArgs asks for the historical usage aggregate over one range.
+// The range ids are the usage package's: 24h | 7d | 30d | 90d.
+type usageReportArgs struct {
+	Range string `json:"range"`
+}
+
+// quotaRefreshArgs re-reads one provider instance's usage limits. An empty
+// instance refreshes every instance; each one's outcome — snapshot or error —
+// travels in its own status, so one provider failing never blanks another.
+type quotaRefreshArgs struct {
+	Instance string `json:"instance"`
 }

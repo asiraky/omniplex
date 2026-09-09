@@ -240,7 +240,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 
 	var startRes struct {
 		Thread struct {
-			ID string `json:"id"`
+			ID    string `json:"id"`
+			Model string `json:"model"`
 		} `json:"thread"`
 	}
 	if err := s.conn.Call(ctx, method, startParams, &startRes); err != nil {
@@ -258,10 +259,25 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		}
 	}
 	s.threadID = startRes.Thread.ID
-
+	// The thread's resolved model is recorded even when the caller named none:
+	// it is what the account-usage aggregation prices against, and a session
+	// that never said must not report a blank forever. The CLI's answer is
+	// authoritative for the process, so it wins over the request's own guess.
+	if startRes.Thread.Model != "" {
+		s.mu.Lock()
+		s.model = startRes.Thread.Model
+		s.mu.Unlock()
+	}
 	s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
 		HarnessSessionID: s.threadID,
+		Model:            s.model,
 	}))
+
+	// The account's usage limits are readable the moment the app-server is
+	// up, and the Limits page is most wanted right after a session starts —
+	// before any turn has run. Off the hot path: a slow read must not delay
+	// the first prompt.
+	go s.pushQuota()
 
 	return s, nil
 }
@@ -871,6 +887,15 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			host.ComposerCatalogueChanged()
 		}
 
+	case "account/rateLimits/updated":
+		// A sparse live update of the account's allowance — the structured
+		// twin of what the CLI's /status prints, pushed as usage moves. It
+		// belongs to the account, not the transcript: it goes to the host's
+		// quota cache and never becomes a canonical event.
+		if snap, ok := parseCodexUpdate(params); ok {
+			s.reportQuota(snap)
+		}
+
 	case "thread/compacted":
 		var p struct {
 			TurnID string `json:"turnId"`
@@ -1003,6 +1028,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 			TurnID: done, StopReason: stop, Error: errMsg,
 		}))
+
+		// A finished turn is when the allowance moved, so the quota cache
+		// re-reads now — the notification the CLI pushes on its own covers the
+		// same ground, but a CLI that does not push still lands here.
+		go s.pushQuota()
 
 	case "error":
 		var p struct {

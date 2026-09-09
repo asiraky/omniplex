@@ -1,4 +1,5 @@
 import {
+  ActivityIcon,
   ChevronRightIcon,
   CircleAlertIcon,
   FolderIcon,
@@ -161,6 +162,8 @@ interface SidebarProps {
   onDelete: (id: string, removeWorktree: boolean) => void | Promise<unknown>;
   /** Opens the "how to reach this server" panel. */
   onShowAccess: () => void;
+  /** Opens the account-level Usage page: cost history, tokens, limits. */
+  onShowUsage: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
   /**
@@ -798,6 +801,20 @@ function SidebarPanel({
             ? `${shownCount} of ${props.sessions.length} sessions`
             : `${props.sessions.length} session${props.sessions.length === 1 ? "" : "s"}`}
         </span>
+        {/* The account-level Usage page: one tap from wherever the list
+            already is, and reachable with nothing open. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <IconButton
+              label="Usage and limits"
+              onClick={props.onShowUsage}
+              className="text-muted-foreground hover:text-foreground size-6"
+            >
+              <ActivityIcon />
+            </IconButton>
+          </TooltipTrigger>
+          <TooltipContent>Usage and limits</TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <button

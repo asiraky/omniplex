@@ -3,7 +3,7 @@ import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useSessionPR } from "./useSessionPR";
-import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UserConfig, Workspace } from "./protocol";
+import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -71,6 +71,7 @@ const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((
 // The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
 const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
+const UsagePage = lazy(() => import("./components/Usage").then((m) => ({ default: m.UsagePage })));
 
 // The permission-mode switcher is parked, not removed: changing modes mid-chat
 // is not something we want to offer right now, and hiding it is cheaper to
@@ -285,6 +286,13 @@ export function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  // The account-level Usage page: cost history, token history, and the
+  // providers' remaining allowance. A full-page destination, not a session
+  // view — it never needs one attached.
+  const [showUsage, setShowUsage] = useState(false);
+  // Every provider instance's cached usage limits, pushed by the server on
+  // welcome and whenever a live push or refresh changes one.
+  const [quotas, setQuotas] = useState<QuotaStatus[]>([]);
   // What the panel should put on screen, and a counter that changes on every
   // request. Without the counter, asking for the same file twice would look
   // identical to the panel and it would not bring it back into view.
@@ -351,6 +359,7 @@ export function App() {
       },
       onProjects: setProjects,
       onLabels: setLabels,
+      onQuotas: setQuotas,
       // State only lands for the session currently attached; the client
       // discards anything else.
       onState: (id, s) => {
@@ -1123,7 +1132,34 @@ export function App() {
     // measured elements are remounted under it: re-run to observe the new ones.
   }, [hasSession, themePreview]);
 
+  // Historical usage: the server aggregates the event log and prices it, so
+  // the phone only ever downloads the bucketed result.
+  const loadUsageReport = useCallback(async (range: string): Promise<UsageReport> => {
+    const res = await clientRef.current!.command("usage_report", { range });
+    return res.report as UsageReport;
+  }, []);
+  const refreshQuota = useCallback(async (instance: string): Promise<QuotaStatus[]> => {
+    const res = await clientRef.current!.command("quota_refresh", { instance });
+    return (res.quotas ?? []) as QuotaStatus[];
+  }, []);
+
   if (themePreview) return <Suspense fallback={<div className="flex h-dvh items-center justify-center"><Spinner /></div>}><ThemePreview /></Suspense>;
+
+  // The Usage page covers the whole viewport, above everything: it answers an
+  // account question, and the session underneath keeps streaming while it is
+  // up.
+  if (showUsage) {
+    return (
+      <Suspense fallback={<div className="flex h-dvh items-center justify-center"><Spinner /></div>}>
+        <UsagePage
+          quotas={quotas}
+          onRefreshQuota={refreshQuota}
+          loadReport={loadUsageReport}
+          onClose={() => setShowUsage(false)}
+        />
+      </Suspense>
+    );
+  }
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -1137,6 +1173,7 @@ export function App() {
         onNew={startNew}
         onDelete={remove}
         onShowAccess={() => setShowAccess(true)}
+        onShowUsage={() => setShowUsage(true)}
         accentOf={accentOf}
         projects={projects}
         projectName={(id)=>projects.find(p=>p.id===id)?.config.name}

@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, HarnessMeta, Item, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
+import type { Access, HarnessMeta, Item, Label, Project, QuotaStatus, ServerFrame, SessionMeta, SessionState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -23,6 +23,7 @@ export interface ClientEvents {
   onComposerItemsChanged(sessionId: string): void;
   onProjects(projects: Project[]): void;
   onLabels(labels: Label[]): void;
+  onQuotas(quotas: QuotaStatus[]): void;
   onState(sessionId: string, state: SessionState): void;
   onAccess(access: Access): void;
 }
@@ -251,6 +252,7 @@ export class Client {
         this.events.onHarnesses(f.harnesses ?? [], f.cwd ?? "");
         this.events.onProjects(f.projects ?? []);
         this.events.onLabels(f.labels ?? []);
+        this.events.onQuotas(f.quotas ?? []);
         if (f.access) {
           this.events.onAccess(f.access);
         }
@@ -278,6 +280,13 @@ export class Client {
       // The list travels whole; absent means the last label was deleted.
       case "labels":
         this.events.onLabels(f.labels ?? []);
+        break;
+
+      // Usage limits changed somewhere: a live rate-limit push from a
+      // running session, or a refresh any device asked for. The whole list,
+      // so one provider moving never blanks another.
+      case "quotas":
+        this.events.onQuotas(f.quotas ?? []);
         break;
 
       case "composer_items_changed":

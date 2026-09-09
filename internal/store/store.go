@@ -15,6 +15,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/proto"
+	"github.com/asiraky/omniplex/internal/usage"
 )
 
 const schema = `
@@ -72,6 +73,8 @@ CREATE TABLE IF NOT EXISTS scheduled_prompts (
  PRIMARY KEY (session_id, schedule_id)
 );
 CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
+
+CREATE INDEX IF NOT EXISTS events_type_time ON events(type, created_at);
 
 CREATE TABLE IF NOT EXISTS labels (
   id            TEXT PRIMARY KEY,
@@ -307,6 +310,38 @@ func (s *Store) ReadEvents(ctx context.Context, sessionID string, afterSeq int64
 		}
 		ev.Payload = json.RawMessage(payload)
 		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// UsageEvents feeds the account-level usage aggregation: every
+// usage.updated, session.created, and session.config_changed event of each
+// session that used tokens in the window, ordered for a per-session walk.
+// The usage rows reach back before the window too (a cumulative counter needs
+// its previous reading to delta against, and a model switch before the window
+// still tells the walk which model an in-window event ran on), so only the
+// sessions are picked by `from`, not the events themselves.
+func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT e.session_id, s.harness, e.type, e.payload, e.created_at
+		 FROM events e JOIN sessions s ON s.id = e.session_id
+		 WHERE e.session_id IN (SELECT DISTINCT session_id FROM events WHERE type = 'usage.updated' AND created_at >= ?)
+		   AND e.type IN ('usage.updated', 'session.created', 'session.config_changed')
+		 ORDER BY e.session_id, e.seq`, from)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []usage.EventRow{}
+	for rows.Next() {
+		var r usage.EventRow
+		var payload []byte
+		if err := rows.Scan(&r.SessionID, &r.Harness, &r.Type, &payload, &r.Timestamp); err != nil {
+			return nil, err
+		}
+		r.Payload = json.RawMessage(payload)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

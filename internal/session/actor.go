@@ -95,6 +95,13 @@ type Actor struct {
 	// for queued prompts whose images came back out of the log without one.
 	imagePath func(sessionID, imageID string) (string, error)
 
+	// quotaSink receives the account-level usage-limit pushes the harness
+	// streams (Claude rate-limit events, Codex rateLimits notifications). Set
+	// by the manager at adopt time, bound to the instance the session runs
+	// under; nil means the pushes go nowhere, which is what a session without
+	// a manager (tests) wants.
+	quotaSink func(adapter.QuotaSnapshot)
+
 	// checkpoints snapshots the checkout around each turn, so a finished turn
 	// can say which files it changed. Nil when the session has no Git checkout
 	// to snapshot.
@@ -162,6 +169,7 @@ const (
 	cmdContinue      = "continue"
 	cmdStopJob       = "stop_job"
 	cmdDequeue       = "dequeue_prompt"
+	cmdQuota         = "quota"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -888,6 +896,24 @@ func (a *Actor) handle(c command) (stop bool) {
 		cancel()
 		c.reply <- cmdResult{err: err}
 
+	case cmdQuota:
+		// An account-level read, not a turn: the harness is asked out-of-band
+		// through its own control path, so it is safe to serve while a turn
+		// runs. A harness that cannot answer says so legibly.
+		if a.sess == nil {
+			c.reply <- cmdResult{err: ErrNotReady}
+			return false
+		}
+		reader, ok := a.sess.(adapter.SessionQuota)
+		if !ok {
+			c.reply <- cmdResult{err: errors.New("this harness does not report usage limits")}
+			return false
+		}
+		quotaCtx, cancel := context.WithTimeout(ctx, quotaTimeout)
+		snap, err := reader.Quota(quotaCtx)
+		cancel()
+		c.reply <- cmdResult{value: snap, err: err}
+
 	case cmdSetMode:
 		if a.state.Closed {
 			c.reply <- cmdResult{err: ErrClosed}
@@ -1579,6 +1605,19 @@ func (h hostServices) Elicit(ctx context.Context, req adapter.ElicitationRequest
 }
 
 func (h hostServices) Logf(format string, args ...any) { h.a.logf(format, args...) }
+
+// ReportQuota forwards a live usage-limit push from the harness to the
+// manager's per-instance cache. The actor is a conduit only: the instance
+// identity was bound at adopt time, and the adapter that pushed cannot even
+// see it.
+func (h hostServices) ReportQuota(snap adapter.QuotaSnapshot) {
+	h.a.mu.Lock()
+	sink := h.a.quotaSink
+	h.a.mu.Unlock()
+	if sink != nil {
+		sink(snap)
+	}
+}
 
 func (h hostServices) ComposerCatalogueChanged() {
 	h.a.mu.Lock()

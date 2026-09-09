@@ -150,24 +150,51 @@ const canUseTool = (toolName, input, { signal, suggestions }) =>
 // installed Claude Code offers, print them, and exit. It runs as its own
 // short-lived process so the host never has to hold a session open to find
 // out — and so a hung query cannot take a live session down with it.
+// The `usage` op is the same shape: it starts a conversation, asks the one
+// control question, prints the answer, and exits. The prompt generator never
+// yields, so no turn is ever run and no transcript turn is created.
 // ---------------------------------------------------------------------------
-if (config.op === "models") {
+// readUsage asks the SDK for the account's usage limits. The method name is
+// explicitly experimental and unstable, so it is resolved by shape: the
+// current long name, a plain `getUsage`, or anything ending in the get_usage
+// control subtype. Null means this CLI cannot answer.
+const usageMethod = (q) =>
+  ["usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET", "getUsage"].map(
+    (name) => q?.[name],
+  ).find((fn) => typeof fn === "function");
+
+const readUsage = async (q) => {
+  const fn = usageMethod(q);
+  if (!fn) return null;
+  return await fn.call(q);
+};
+
+// ---------------------------------------------------------------------------
+// lifecycle one-shot ops
+// ---------------------------------------------------------------------------
+const queryOptions = (config) => ({
+  cwd: config.cwd || process.cwd(),
+  ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
+});
+
+if (config.op === "models" || config.op === "usage") {
   const listing = query({
     // The SDK needs a prompt stream; this one never yields, because the
     // control request below is the only thing we want from the query.
     prompt: (async function* () {
       await new Promise(() => {});
     })(),
-    options: {
-      cwd: config.cwd || process.cwd(),
-      ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
-    },
+    options: queryOptions(config),
   });
   // Exit only once the frame has actually left the pipe: process.exit would
   // otherwise truncate a buffered write and the host would see nothing.
   const finish = (code) => process.stdout.write("", () => die(code));
   try {
-    notify("models", { models: await listing.supportedModels() });
+    if (config.op === "models") {
+      notify("models", { models: await listing.supportedModels() });
+    } else {
+      notify("usage", { usage: await readUsage(listing) });
+    }
     // Ending the generator asks the CLI to shut down. Not awaited: the answer
     // is already on the wire, and a slow teardown must not delay it.
     listing.return(undefined).catch(() => {});
@@ -319,6 +346,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
         });
       break;
+    case "getUsage":
+      // The SDK's method name is explicitly unstable, so resolve it by shape:
+      // whichever of the current and any future settled name exists.
+      readUsage(session)
+        .then((usage) => {
+          if (frame.id !== undefined) respond(frame.id, usage ?? {});
+        })
+        .catch((e) => {
+          if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
+        });
+      break;
     default:
       if (frame.id !== undefined) respondError(frame.id, `unknown method: ${frame.method}`);
   }
@@ -344,10 +382,27 @@ const reportContextUsage = () => {
     .catch(() => {});
 };
 
+// The account's usage limits — the structured data behind Claude Code's
+// /usage. Asked once the turn settles so the host's quota cache merges a
+// fresh snapshot after completed turns, without a user message or a throwaway
+// turn. Errors are swallowed: an older CLI without the control method keeps
+// whatever the host last cached.
+const reportUsage = () => {
+  Promise.resolve()
+    .then(() => readUsage(session))
+    .then((usage) => {
+      if (usage) notify("rate_limits", { usage });
+    })
+    .catch(() => {});
+};
+
 try {
   for await (const message of session) {
     notify("message", { message });
-    if (message?.type === "result") reportContextUsage();
+    if (message?.type === "result") {
+      reportContextUsage();
+      reportUsage();
+    }
   }
   notify("fatal", { message: "session ended" });
   die(0);

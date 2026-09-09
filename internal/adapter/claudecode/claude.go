@@ -444,6 +444,12 @@ type session struct {
 	// deliberately excludes output: this request's output is next request's
 	// input, so counting it would double-count.
 	lastPromptTokens int64
+
+	// scopedLimit is the model name the last usage read gave its model-scoped
+	// weekly bucket. Streamed rate-limit events cannot name the model, so this
+	// is what lets one land on the row the read drew rather than opening a
+	// second one under a guessed name.
+	scopedLimit string
 }
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
@@ -927,6 +933,25 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		}
 		s.handleSDKMessage(p.Message)
 
+	case "rate_limits":
+		// The bridge's post-turn usage read: a full snapshot the host's quota
+		// cache merges after every completed turn. This is the account's
+		// allowance, not session state, so it never becomes a canonical event.
+		var p struct {
+			Usage json.RawMessage `json:"usage"`
+		}
+		if err := json.Unmarshal(params, &p); err != nil || len(p.Usage) == 0 {
+			return
+		}
+		snap, err := parseClaudeUsage(p.Usage)
+		if err != nil {
+			return
+		}
+		s.mu.Lock()
+		s.scopedLimit = scopedLimitName(p.Usage)
+		s.mu.Unlock()
+		s.reportQuota(snap)
+
 	case "fatal":
 		var p struct {
 			Message string `json:"message"`
@@ -977,6 +1002,17 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 		}
 	case "context_usage":
 		s.handleContextUsage(msg)
+	case "rate_limit_event":
+		// The CLI streams this while a turn runs when a limit moves. It is a
+		// sparse account-level update, not session state: it goes to the host's
+		// quota cache, never into the transcript.
+		s.mu.Lock()
+		scoped := s.scopedLimit
+		s.mu.Unlock()
+		snap, ok := parseClaudeRateLimitEvent(msg["rate_limit_info"], scoped)
+		if ok {
+			s.reportQuota(snap)
+		}
 	}
 }
 
@@ -1464,6 +1500,7 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		s.usage.ContextPct = 0
 	}
 	out := s.usage
+	out.Accounting = true
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.UsageUpdated, out))
