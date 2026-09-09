@@ -53,6 +53,9 @@ while IFS= read -r line; do
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"abort\",\"success\":true}"
       [ -f "$DIR/abort_events" ] && cat "$DIR/abort_events"
       ;;
+    *'"type":"get_commands"'*)
+      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_commands\",\"success\":true,\"data\":{\"commands\":[{\"name\":\"skill:merge\",\"description\":\"Land a PR\",\"source\":\"skill\",\"sourceInfo\":{\"path\":\"/home/me/.agents/skills/merge/SKILL.md\",\"scope\":\"user\",\"origin\":\"top-level\"}},{\"name\":\"llama\",\"description\":\"Manage models\",\"source\":\"extension\",\"sourceInfo\":{\"path\":\"<inline>\",\"scope\":\"temporary\",\"origin\":\"top-level\"}}]}}"
+      ;;
     *'"type":"set_model"'*)
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"set_model\",\"success\":true,\"data\":{\"provider\":\"openai\",\"id\":\"gpt-x\",\"contextWindow\":400000}}"
       ;;

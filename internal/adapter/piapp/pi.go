@@ -176,7 +176,15 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if sid == "" {
 		sid = o.SessionID
 	}
-	args := []string{"--mode", "rpc", "--session-id", sid}
+	// --approve trusts the workspace's project-local resources. Pi never
+	// prompts for trust in rpc mode; without this it falls back to
+	// defaultProjectTrust, which ignores .pi/settings.json, project
+	// extensions, and project skills — so a repo's own skills would be
+	// missing from the composer with nothing to say why. Omniplex only ever
+	// opens workspaces the operator asked it to open, and the harness already
+	// runs with full access to them, so withholding trust from the skills
+	// while granting it to the shell buys nothing.
+	args := []string{"--mode", "rpc", "--approve", "--session-id", sid}
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
