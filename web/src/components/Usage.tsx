@@ -520,7 +520,12 @@ function ProviderLimits({
 }) {
   const snap = status.snapshot;
   const observed = snap.checkedAt || status.lastAttempt || 0;
-  const stale = status.lastError !== "";
+  const hasWindows = !!snap.windows && snap.windows.length > 0;
+  // The stale banner only makes sense above figures that could be out of
+  // date. With nothing observed yet the empty state below carries the
+  // failure instead — and lastError is absent (not "") when the server has
+  // nothing to report, so a truthiness check, not a comparison.
+  const stale = !!status.lastError && observed > 0 && hasWindows;
 
   return (
     <section aria-label={`${status.displayName} usage limits`} className="rounded-xl border p-3">
@@ -554,11 +559,12 @@ function ProviderLimits({
           This account has no plan limits — an API key or third-party provider, which is billed per
           token rather than capped.
         </p>
-      ) : !snap.windows || snap.windows.length === 0 ? (
+      ) : !hasWindows ? (
         <div className="mt-3 flex items-center justify-between gap-3">
           <p className="text-muted-foreground text-[12px] leading-relaxed">
             Not observed yet{observed > 0 && ` — the last attempt was ${formatAge(observed, now)}`}. Refresh asks
             the provider directly, without starting a session or sending a message.
+            {status.lastError && <> The last refresh failed: {status.lastError}.</>}
           </p>
         </div>
       ) : (

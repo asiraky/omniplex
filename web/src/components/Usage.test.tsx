@@ -128,6 +128,25 @@ describe("UsagePage limits view", () => {
     expect(screen.getAllByRole("progressbar").length).toBe(2);
   });
 
+  it("renders no stale banner for a provider that was never observed", async () => {
+    // The server omits lastError when there is nothing to report; an absent
+    // error must not read as a failure, and epoch-zero must never render as
+    // an age. This is the never-observed card, not a stale snapshot.
+    renderPage({
+      quotas: [
+        quotaStatus({
+          snapshot: { checkedAt: 0, windows: [] },
+          lastError: undefined,
+        }),
+      ],
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Limits" }));
+
+    expect(await screen.findByText(/Not observed yet/)).toBeTruthy();
+    expect(screen.queryByText(/The last refresh failed/)).toBeNull();
+    expect(screen.queryByText(/20706d ago/)).toBeNull();
+  });
+
   it("keeps one provider's figures when another's refresh fails", async () => {
     const healthy = quotaStatus();
     const failing = quotaStatus({
