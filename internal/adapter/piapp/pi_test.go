@@ -236,6 +236,61 @@ func TestPromptStreamsTurn(t *testing.T) {
 	}
 }
 
+// A resumed session is a fresh pi process whose message counter starts over,
+// and pi can hand out the same synthetic tool call id ("toolcall:0") again.
+// Neither may reuse an item id from an earlier turn, or the projection folds
+// the new reply or tool output into that old item.
+func TestRespawnedSessionDoesNotReuseItemIDs(t *testing.T) {
+	events := []string{
+		`{"type":"agent_start"}`,
+		`{"type":"message_start","message":{"role":"assistant"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"reply"}}`,
+		`{"type":"tool_execution_start","toolCallId":"toolcall:0","toolName":"bash","args":{"command":"ls"}}`,
+		`{"type":"tool_execution_end","toolCallId":"toolcall:0","toolName":"bash","isError":false,"result":{"content":[{"type":"text","text":"ok"}]}}`,
+		`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{}}}`,
+		`{"type":"agent_settled"}`,
+	}
+	type ids struct{ block, toolStart, toolEnd string }
+	runTurn := func(turnID string) ids {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "events"), []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1", Resume: true, HarnessSessionID: "harness-123"})
+		if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: turnID, Text: "hi"}); err != nil {
+			t.Fatalf("Prompt: %v", err)
+		}
+		var got ids
+		for _, e := range drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) }) {
+			switch p := e.Payload.(type) {
+			case proto.MessageChunkPayload:
+				got.block = p.BlockID
+			case proto.ToolCallStartedPayload:
+				got.toolStart = p.ToolCallID
+			case proto.ToolCallUpdatedPayload:
+				got.toolEnd = p.ToolCallID
+			}
+		}
+		if got.block == "" || got.toolStart == "" {
+			t.Fatalf("turn %s missing a chunk or tool call: %+v", turnID, got)
+		}
+		// Start and end must name the same item, or the result lands in a
+		// separate, title-less row.
+		if got.toolStart != got.toolEnd {
+			t.Fatalf("tool start id %q and end id %q differ", got.toolStart, got.toolEnd)
+		}
+		return got
+	}
+
+	before, after := runTurn("t1"), runTurn("t2")
+	if before.block == after.block {
+		t.Errorf("respawned process reused block id %q from an earlier turn", before.block)
+	}
+	if before.toolStart == after.toolStart {
+		t.Errorf("respawned process reused tool item id %q from an earlier turn", before.toolStart)
+	}
+}
+
 func TestCancelAbortsTurn(t *testing.T) {
 	dir := t.TempDir()
 	// The prompt starts work but never settles; abort answers with an aborted

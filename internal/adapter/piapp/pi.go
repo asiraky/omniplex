@@ -294,9 +294,10 @@ type session struct {
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
 	turnID  string
-	// msgSeq counts assistant messages within the session so block ids stay
+	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
-	// at zero on each one.
+	// at zero on each one. It restarts on respawn, so it is only unique
+	// alongside the turn id.
 	msgSeq int
 	// lastStop and lastErr are the final assistant message's verdict, carried
 	// from message_end to agent_settled — the turn boundary — where they
@@ -635,8 +636,9 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return
 		}
+		turn := s.ensureTurn()
 		s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-			TurnID: s.ensureTurn(), ToolCallID: p.ToolCallID,
+			TurnID: turn, ToolCallID: toolItemID(turn, p.ToolCallID),
 			Kind: toolKind(p.ToolName), Title: toolTitle(p.ToolName, p.Args),
 			Status: proto.StatusInProgress, RawInput: p.Args,
 		}))
@@ -670,8 +672,10 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 				content = append(content, proto.ToolContent{Type: "text", Text: c.Text})
 			}
 		}
+		// The tool ends inside the turn that started it (pi settles after its
+		// tools finish), so the current turn rebuilds the same item id.
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: p.ToolCallID, Status: status, Content: content,
+			ToolCallID: toolItemID(s.currentTurn(), p.ToolCallID), Status: status, Content: content,
 		}))
 
 	case "compaction_end":
@@ -756,9 +760,12 @@ func (s *session) handleMessageUpdate(raw json.RawMessage) {
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: kind,
-		// contentIndex restarts per message, so the block id is scoped by the
-		// message counter to keep two messages' first blocks apart.
-		BlockID: fmt.Sprintf("m%d.b%d", seq, ev.ContentIndex),
+		// Block ids are folded session-wide, so they must never repeat.
+		// contentIndex restarts per message, hence the message counter; the
+		// counter restarts with the process, hence the turn id. Without it a
+		// respawned pi reuses an earlier turn's ids and its reply is appended
+		// to that old message instead of appearing in its own turn.
+		BlockID: fmt.Sprintf("%s:m%d.b%d", turn, seq, ev.ContentIndex),
 		Delta:   ev.Delta,
 	}))
 }
@@ -926,6 +933,14 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 }
 
 // ---- tool presentation ----
+
+// toolItemID scopes pi's tool call id by turn. Tool items are folded
+// session-wide like message blocks, and pi's ids are not unique across turns:
+// its Mistral provider derives one from the call's index ("toolcall:0") when
+// the API omits it, so every such turn would overwrite the same item.
+func toolItemID(turn, toolCallID string) string {
+	return turn + ":" + toolCallID
+}
 
 // toolKind maps pi's built-in tool names onto the canonical kinds. Unknown
 // names — extension tools, MCP servers — are KindOther, not a guess.
