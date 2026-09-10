@@ -636,8 +636,9 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return
 		}
+		turn := s.ensureTurn()
 		s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-			TurnID: s.ensureTurn(), ToolCallID: p.ToolCallID,
+			TurnID: turn, ToolCallID: toolItemID(turn, p.ToolCallID),
 			Kind: toolKind(p.ToolName), Title: toolTitle(p.ToolName, p.Args),
 			Status: proto.StatusInProgress, RawInput: p.Args,
 		}))
@@ -671,8 +672,10 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 				content = append(content, proto.ToolContent{Type: "text", Text: c.Text})
 			}
 		}
+		// The tool ends inside the turn that started it (pi settles after its
+		// tools finish), so the current turn rebuilds the same item id.
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: p.ToolCallID, Status: status, Content: content,
+			ToolCallID: toolItemID(s.currentTurn(), p.ToolCallID), Status: status, Content: content,
 		}))
 
 	case "compaction_end":
@@ -930,6 +933,14 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 }
 
 // ---- tool presentation ----
+
+// toolItemID scopes pi's tool call id by turn. Tool items are folded
+// session-wide like message blocks, and pi's ids are not unique across turns:
+// its Mistral provider derives one from the call's index ("toolcall:0") when
+// the API omits it, so every such turn would overwrite the same item.
+func toolItemID(turn, toolCallID string) string {
+	return turn + ":" + toolCallID
+}
 
 // toolKind maps pi's built-in tool names onto the canonical kinds. Unknown
 // names — extension tools, MCP servers — are KindOther, not a guess.
