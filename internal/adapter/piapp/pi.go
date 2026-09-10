@@ -294,9 +294,10 @@ type session struct {
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
 	turnID  string
-	// msgSeq counts assistant messages within the session so block ids stay
+	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
-	// at zero on each one.
+	// at zero on each one. It restarts on respawn, so it is only unique
+	// alongside the turn id.
 	msgSeq int
 	// lastStop and lastErr are the final assistant message's verdict, carried
 	// from message_end to agent_settled — the turn boundary — where they
@@ -756,9 +757,12 @@ func (s *session) handleMessageUpdate(raw json.RawMessage) {
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: kind,
-		// contentIndex restarts per message, so the block id is scoped by the
-		// message counter to keep two messages' first blocks apart.
-		BlockID: fmt.Sprintf("m%d.b%d", seq, ev.ContentIndex),
+		// Block ids are folded session-wide, so they must never repeat.
+		// contentIndex restarts per message, hence the message counter; the
+		// counter restarts with the process, hence the turn id. Without it a
+		// respawned pi reuses an earlier turn's ids and its reply is appended
+		// to that old message instead of appearing in its own turn.
+		BlockID: fmt.Sprintf("%s:m%d.b%d", turn, seq, ev.ContentIndex),
 		Delta:   ev.Delta,
 	}))
 }

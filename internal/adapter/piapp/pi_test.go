@@ -236,6 +236,41 @@ func TestPromptStreamsTurn(t *testing.T) {
 	}
 }
 
+// A resumed session is a fresh pi process whose message counter starts over.
+// Its reply must not reuse the block ids of a turn from the previous process,
+// or the projection folds the new text into that old message.
+func TestRespawnedSessionDoesNotReuseBlockIDs(t *testing.T) {
+	events := []string{
+		`{"type":"agent_start"}`,
+		`{"type":"message_start","message":{"role":"assistant"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"reply"}}`,
+		`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{}}}`,
+		`{"type":"agent_settled"}`,
+	}
+	firstBlock := func(turnID string) string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "events"), []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1", Resume: true, HarnessSessionID: "harness-123"})
+		if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: turnID, Text: "hi"}); err != nil {
+			t.Fatalf("Prompt: %v", err)
+		}
+		for _, e := range drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) }) {
+			if p, ok := e.Payload.(proto.MessageChunkPayload); ok {
+				return p.BlockID
+			}
+		}
+		t.Fatalf("turn %s streamed no chunk", turnID)
+		return ""
+	}
+
+	before, after := firstBlock("t1"), firstBlock("t2")
+	if before == after {
+		t.Fatalf("respawned process reused block id %q from an earlier turn", before)
+	}
+}
+
 func TestCancelAbortsTurn(t *testing.T) {
 	dir := t.TempDir()
 	// The prompt starts work but never settles; abort answers with an aborted
