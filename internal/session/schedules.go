@@ -111,7 +111,7 @@ func (a *Actor) dispatchScheduled(now int64) error {
 		_, pickedUp := a.scheduleReady.Load(a.ID + ":" + p.ID)
 		if p.Status == "pending" || !pickedUp {
 			p.Revision++
-			if now-p.DueAt > scheduleGrace {
+			if now-p.DueAt > graceFor(p) {
 				p.Status = "missed"
 				p.Error = "The host did not pick up this message within one hour."
 			} else {
@@ -154,7 +154,15 @@ func (a *Actor) dispatchScheduled(now int64) error {
 		if err := a.scheduleSettings(p); err != nil {
 			return a.failSchedule(p, err)
 		}
-		_, err := a.startTurn(context.Background(), p.Prompt, images, nil, p.ID)
+		// A resume the server armed itself says so on the turn it starts, so
+		// the transcript reads as a continuation rather than as a prompt
+		// nobody remembers writing — and so the next limit can count the
+		// chain (see autoresume.go).
+		var recovery *proto.TurnRecovery
+		if p.Kind == proto.ScheduleResume {
+			recovery = &proto.TurnRecovery{ResumeOf: p.ResumeOf, Attempt: p.Attempt, Cause: proto.RecoveryLimit}
+		}
+		_, err := a.startTurn(context.Background(), p.Prompt, images, recovery, p.ID)
 		if err != nil {
 			// A durable turn already records a provider failure. Never resend it.
 			for _, current := range a.state.Scheduled {
@@ -164,9 +172,27 @@ func (a *Actor) dispatchScheduled(now int64) error {
 			}
 			return a.failSchedule(p, err)
 		}
+		// Worth a buzz: this is work restarting hours after the person who
+		// asked for it walked away, and the phone in their pocket is the only
+		// thing that will tell them it is moving again.
+		if p.Kind == proto.ScheduleResume {
+			a.notify(Notice{Kind: NoticeResumed, Body: "Usage limit lifted — picked the work back up"})
+		}
 		return nil
 	}
 	return nil
+}
+
+// graceFor is how late a due schedule may be picked up. An instruction a human
+// wrote for 9am is stale by lunchtime — they meant 9am. A resume the server
+// armed is not: it exists precisely because nobody was watching, and a laptop
+// that was shut for the evening is the ordinary case rather than the strange
+// one, so it stays good for most of a day.
+func graceFor(p proto.ScheduledPrompt) int64 {
+	if p.Kind == proto.ScheduleResume {
+		return 12 * scheduleGrace
+	}
+	return scheduleGrace
 }
 func (a *Actor) failSchedule(p proto.ScheduledPrompt, err error) error {
 	p.Status = "failed"

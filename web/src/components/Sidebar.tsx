@@ -85,6 +85,35 @@ function loud(s: SessionMeta) {
   return working(s) || needsInput(s) || failed(s) || background(s);
 }
 
+/**
+ * Time since a working session last produced anything, ticking once a second.
+ *
+ * `ago` rounds everything under a minute to "now", which is the wrong answer
+ * for the one case that matters here: a row that claims to be working and has
+ * been silent for fifty seconds reads identically to one streaming right now.
+ * Past a minute of silence it goes amber — not an error, just the point where
+ * "still going" stops being the obvious reading.
+ */
+function Quiet({ ts }: { ts: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const text =
+    s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${pad(s % 60)}` : `${Math.floor(s / 3600)}h${pad(Math.floor(s / 60) % 60)}`;
+  return (
+    <span
+      className={cn("tabular-nums", s >= 60 && "text-amber-600 dark:text-amber-500")}
+      title="Since this session last produced anything"
+    >
+      {text}
+    </span>
+  );
+}
+
 function ago(ms: number) {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (s < 60) return "now";
@@ -495,7 +524,7 @@ function SessionList({
                     />
                   )}
                   <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
-                    {ago(s.updatedAt)}
+                    {working(s) ? <Quiet ts={s.updatedAt} /> : ago(s.updatedAt)}
                   </span>
                 </span>
                 <span className="text-muted-foreground mt-1 flex min-w-0 items-center gap-1 font-mono text-[10px]">

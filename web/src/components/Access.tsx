@@ -1,6 +1,7 @@
 import { ExternalLinkIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { NotificationSettings } from "~/components/NotificationSettings";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -213,6 +214,11 @@ function AccessBody({
           </Alert>
         )}
       </div>
+
+      {/* Notifications live here because this is already the panel about this
+          device and how it reaches the server — and because the HTTPS control
+          directly above is the thing that has to be on before they can work. */}
+      <NotificationSettings />
     </>
   );
 }

@@ -83,9 +83,25 @@ type Actor struct {
 	// onExit lets the manager forget a disposed actor, so the next attach
 	// resumes the session from the log instead of finding a dead one.
 	onExit func()
-	// onPhase fires when the session moves between idle and turn, so a
-	// session list rendered elsewhere can follow along.
-	onPhase func()
+	// onAttention fires when the session's derived attention state changes,
+	// so a session list rendered elsewhere can follow along. It is handed
+	// both ends of the move because the interesting facts are transitions,
+	// not states: "stopped working and is now waiting on you" is worth a
+	// notification, whereas already being idle is not.
+	//
+	// The phase the session came from rides along because "working" is
+	// derived from more than a turn — provisioning a workspace is working
+	// too — and a watcher that wants to say "your turn is finished" has to
+	// be able to tell those apart.
+	onAttention func(prev, next, prevPhase string)
+	// onList wakes the session list for changes attention does not cover —
+	// a prompt scheduled for later moves nothing about whose turn it is, but
+	// the list still has to show it.
+	onList func()
+	// onNotice carries a one-off thing worth telling the user about that no
+	// attention transition describes — a session that picked its own work
+	// back up hours after a usage limit stopped it. See Manager.OnNotice.
+	onNotice func(Notice)
 
 	// recovery is set by Resume when the log shows a turn the server died in
 	// the middle of. Recover consumes it; see recovery.go.
@@ -126,6 +142,7 @@ type command struct {
 	mode         string
 	effort       string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
+	delivery     string              // prompt: how it should reach a busy harness; empty is proto.DeliveryNow
 }
 
 type permAsk struct {
@@ -162,6 +179,7 @@ const (
 	cmdContinue      = "continue"
 	cmdStopJob       = "stop_job"
 	cmdDequeue       = "dequeue_prompt"
+	cmdAutoResume    = "auto_resume"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -503,8 +521,13 @@ func (r PromptResult) Queued() bool { return r.QueueID != "" }
 // queued prompt starts its own turn once the session is idle. Images are
 // already stored on this host; each carries the path the harness reads it
 // from.
-func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage) (PromptResult, error) {
-	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text, images: images})
+//
+// delivery says what "a turn is already running" should mean for this prompt
+// (proto.DeliveryNow, DeliveryInterrupt, DeliveryEnd); empty is DeliveryNow.
+// It is per prompt rather than per session because the same conversation takes
+// both "stop and read this" and "read this when you are really done".
+func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage, delivery string) (PromptResult, error) {
+	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text, images: images, delivery: delivery})
 	if err != nil {
 		return PromptResult{}, err
 	}
@@ -813,6 +836,14 @@ func (a *Actor) handle(c command) (stop bool) {
 		a.shutdown(false)
 		return true
 
+	case cmdAutoResume:
+		if a.state.Closed {
+			c.reply <- cmdResult{err: ErrClosed}
+			return false
+		}
+		value, err := a.handleAutoResume(c)
+		c.reply <- cmdResult{value: value, err: err}
+
 	case cmdActivate:
 		if a.state.Closed {
 			c.reply <- cmdResult{}
@@ -1039,6 +1070,18 @@ func (a *Actor) handle(c command) (stop bool) {
 			a.recovery = nil
 			a.mu.Unlock()
 		}
+		// Interrupt: the human wants the running turn to stop and this message
+		// answered instead. Stopping is what they mean by it, so it goes
+		// through the same path the Stop button does — minus dropping the
+		// queue, because anything already waiting is not what they asked to
+		// throw away. The finish interruptTurn appends clears turnActive on
+		// this goroutine, so the prompt falls through to start a turn of its
+		// own rather than queueing behind the turn it just ended.
+		if c.delivery == proto.DeliveryInterrupt && c.recovery == nil && a.turnActive != "" {
+			if err := a.interruptTurn(ctx); err != nil {
+				a.logf("interrupt for a prompt on %s: %v", a.ID, err)
+			}
+		}
 		if a.turnActive != "" {
 			if c.recovery != nil {
 				// The server's own continuation does not wait in line: if
@@ -1051,9 +1094,19 @@ func (a *Actor) handle(c command) (stop bool) {
 			// step, the way the terminal does; otherwise it starts its own
 			// turn when this one ends. A steer that fails on the way out is
 			// simply queued the old way.
+			//
+			// Two deliveries are never steered. A prompt held for the end of
+			// the work must not be handed over — that is precisely what the
+			// human asked us not to do — and an interrupting one must not
+			// either: the harness has just been told to stop, and a steer it
+			// picked up on the way down would run as a fresh turn of its own.
+			// Both wait in the log, removable, until dispatchQueued starts
+			// them: for an interrupt that is the moment the cancelled turn
+			// finishes, which is as soon as it can be.
 			queueID := uuid.NewString()
 			sent := false
-			if st, ok := a.sess.(adapter.Steerer); ok {
+			steerable := c.delivery != proto.DeliveryEnd && c.delivery != proto.DeliveryInterrupt
+			if st, ok := a.sess.(adapter.Steerer); ok && steerable {
 				// Bounded like the other harness RPCs made from this goroutine.
 				steerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				err := st.Steer(steerCtx, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images})
@@ -1065,7 +1118,7 @@ func (a *Actor) handle(c command) (stop bool) {
 					a.markSent(queueID)
 				}
 			}
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Sent: sent}))
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Sent: sent, Delivery: c.delivery}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
@@ -1105,30 +1158,19 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{value: "idle"}
 			return false
 		}
-		if a.sess == nil {
-			// A read-only restore may expose the interrupted turn before the
-			// recovery worker activates its process. Stop means do not recover it.
-			a.mu.Lock()
-			a.recovery = nil
-			a.mu.Unlock()
-			a.dropQueue()
-			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-				TurnID: a.turnActive, StopReason: proto.StopCancelled,
-			}))
-			c.reply <- cmdResult{value: "idle"}
-			return false
-		}
-		// Bounded for the same reason as the settings RPCs above: Cancel runs on
-		// the actor goroutine, so an interrupt promise the harness never settles
-		// must not wedge every later command for this session.
-		cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := a.sess.Cancel(cancelCtx)
-		cancel()
+		// A read-only restore may expose the interrupted turn before the
+		// recovery worker activates its process. Stop means do not recover it.
+		idle := a.sess == nil
+		err := a.interruptTurn(ctx)
 		// The queue goes after the harness has been told, not before: a steer
 		// it read in the moment between would otherwise vanish from the log
 		// although the model saw it. Nothing from the harness is processed
 		// while Cancel runs, so nothing queued can start in between.
 		a.dropQueue()
+		if idle {
+			c.reply <- cmdResult{value: "idle"}
+			return false
+		}
 		c.reply <- cmdResult{value: "cancelling", err: err}
 
 	case cmdAskPerm:
@@ -1354,10 +1396,103 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 		if a.sent[next.QueueID] {
 			continue
 		}
+		// A prompt held for the end of the work waits for the work to have
+		// genuinely ended, not merely paused. Skipped rather than returned on:
+		// a held prompt must not block an ordinary one queued behind it.
+		if next.Delivery == proto.DeliveryEnd && !a.workReallyEnded() {
+			continue
+		}
 		if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
 			a.logf("queued prompt on %s: %v", a.ID, err)
 		}
 		return
+	}
+}
+
+// workReallyEnded reports whether the agent is finished rather than stopped.
+// This is the whole of proto.DeliveryEnd: "send it when you are done" must not
+// fire on a turn that died on an error or a usage limit, was interrupted, or
+// stopped to ask the human something — in every one of those the work is
+// unfinished and the message would arrive in the middle of it.
+//
+// Callers hold the actor goroutine, so the projection is stable here.
+func (a *Actor) workReallyEnded() bool {
+	if a.turnActive != "" || len(a.state.Pending) > 0 || len(a.state.Elicitations) > 0 {
+		return false
+	}
+	// The last turn is the one that says how the work ended. A session with no
+	// turns at all has nothing unfinished, so a held prompt may start.
+	for i := len(a.state.Turns) - 1; i >= 0; i-- {
+		turn := a.state.Turns[i]
+		if !turn.Done {
+			return false
+		}
+		return turn.StopReason == "" || turn.StopReason == proto.StopEndTurn
+	}
+	return true
+}
+
+// interruptTurn tells the harness to stop the running turn. It does not touch
+// the queue: cmdCancel drops it afterwards (stop means stop), while a prompt
+// sent with proto.DeliveryInterrupt keeps it — the human asked to cut this
+// turn short, not to throw away what was already waiting.
+//
+// A session with no live process cannot be told anything, so the turn is
+// closed here instead; that is the read-only restore whose interrupted turn is
+// visible before the recovery worker has started a process for it.
+func (a *Actor) interruptTurn(ctx context.Context) error {
+	if a.turnActive == "" {
+		return nil
+	}
+	a.cancelOpenAsks()
+	if a.sess == nil {
+		a.mu.Lock()
+		a.recovery = nil
+		a.mu.Unlock()
+		a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+			TurnID: a.turnActive, StopReason: proto.StopCancelled,
+		}))
+		return nil
+	}
+	// Bounded for the same reason as the settings RPCs: this runs on the actor
+	// goroutine, so an interrupt promise the harness never settles must not
+	// wedge every later command for this session.
+	cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err := a.sess.Cancel(cancelCtx)
+	cancel()
+	return err
+}
+
+// cancelOpenAsks closes the questions the interrupted turn was waiting on. The
+// harness has already given up on them — the SDK settles its own callback when
+// the turn aborts — so an answer can no longer reach anything. Left standing
+// they are a card the human can never usefully press, the session keeps
+// claiming it needs input, and a message held for the end of the work waits on
+// a question that will never be answered.
+func (a *Actor) cancelOpenAsks() {
+	for _, pend := range append([]projection.PendingPermission(nil), a.state.Pending...) {
+		if ch, ok := a.pendingPerm[pend.RequestID]; ok {
+			select {
+			case ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}:
+			default:
+			}
+			delete(a.pendingPerm, pend.RequestID)
+		}
+		a.append(proto.Emit(proto.PermissionResolved, proto.PermissionResolvedPayload{
+			RequestID: pend.RequestID, Outcome: proto.OutcomeCancelled,
+		}))
+	}
+	for _, pend := range append([]projection.PendingElicitation(nil), a.state.Elicitations...) {
+		if ch, ok := a.pendingElicit[pend.RequestID]; ok {
+			select {
+			case ch <- adapter.ElicitationResult{Action: "cancel"}:
+			default:
+			}
+			delete(a.pendingElicit, pend.RequestID)
+		}
+		a.append(proto.Emit(proto.ElicitationResolved, proto.ElicitationResolvedPayload{
+			RequestID: pend.RequestID, Action: "cancel",
+		}))
 	}
 }
 
@@ -1396,8 +1531,18 @@ func (a *Actor) resolveImages(images []proto.PromptImage) []proto.PromptImage {
 // dropQueue takes every waiting prompt out of the queue. Presenters that
 // want the text back read it from the state before asking for whatever
 // caused this.
+//
+// A prompt held for the end of the work is the exception. The rule exists
+// because a queued prompt would start the instant the interrupt landed, which
+// is not what "stop" means — but a held message was never waiting behind this
+// turn, it is waiting for the job to be genuinely finished. Stopping one turn
+// is not that, and dropping it would silently throw away a message the user
+// deliberately parked. It stays visible in the transcript, with its own Remove.
 func (a *Actor) dropQueue() {
 	for _, q := range append([]projection.QueuedPrompt(nil), a.state.Queued...) {
+		if q.Delivery == proto.DeliveryEnd {
+			continue
+		}
 		a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: q.QueueID, Reason: proto.DequeueCancelled}))
 	}
 	// Cancel discards what the harness was holding too (adapter.Steerer).
@@ -1408,6 +1553,12 @@ func (a *Actor) dropQueue() {
 // This is the only place any of those three happen.
 func (a *Actor) append(em proto.Emission) error {
 	ctx := context.Background()
+
+	// A usage limit reaches us as prose in a failed turn. Recognising it here,
+	// before the event is written, is what puts the classification in the log
+	// rather than in the reader of the log; see autoresume.go.
+	now := time.Now()
+	em = classifyLimit(em, now)
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {
@@ -1423,6 +1574,14 @@ func (a *Actor) append(em proto.Emission) error {
 	a.mu.Unlock()
 
 	if em.Type == proto.TurnStarted {
+		// Work has started, so an armed continuation has been overtaken —
+		// either by this very turn, or by a human who got there first. Either
+		// way it must not land later, half an hour into something else.
+		if p, ok := em.Payload.(proto.TurnStartedPayload); ok {
+			if err := a.cancelPendingResumes(p.QueueID); err != nil {
+				a.logf("cancel armed resume on %s: %v", a.ID, err)
+			}
+		}
 		// A turn the actor did not start itself is the harness resuming work
 		// on its own — a background task completing, an auto-continuation.
 		// Track it like any other turn so prompts are refused while it runs
@@ -1461,6 +1620,11 @@ func (a *Actor) append(em proto.Emission) error {
 			a.measuring = ""
 			a.turnActive = ""
 		}
+		// The limit that ended this turn lifts by itself, so the session
+		// schedules its own continuation rather than waiting for someone to
+		// notice. Only once the finish is durable: a resume armed against an
+		// event that failed to write would continue a turn nothing recorded.
+		a.armAutoResume(em, now)
 	}
 
 	// The stored phase column is a cache of the projection, kept for the
@@ -1484,20 +1648,21 @@ func (a *Actor) append(em proto.Emission) error {
 	// while idle — re-notifies the session list.
 	if att := a.state.Attention(); att != a.Attention() {
 		a.mu.Lock()
+		prev := a.attention
 		a.attention = att
-		onPhase := a.onPhase
+		onAttention := a.onAttention
 		a.mu.Unlock()
-		if onPhase != nil {
-			onPhase()
+		if onAttention != nil {
+			onAttention(prev, att, prevPhase)
 		}
 	}
 
 	if em.Type == proto.PromptScheduled {
 		a.mu.Lock()
-		onPhase := a.onPhase
+		onList := a.onList
 		a.mu.Unlock()
-		if onPhase != nil {
-			onPhase()
+		if onList != nil {
+			onList()
 		}
 	}
 	a.fanout(ev)

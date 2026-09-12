@@ -2,7 +2,7 @@ import { ArrowLeftIcon, BotIcon, SquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Markdown } from "~/components/Markdown";
-import { fmtTokens } from "~/lib/format";
+import { fmtPct, fmtTokens } from "~/lib/format";
 import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
 import type { Item, Job, JobKind, SessionState } from "~/protocol";
@@ -14,6 +14,10 @@ export interface JobsSurfaceProps {
   state: SessionState;
   /** A ws command: `stop_job` and `session_job_output`. */
   command: (command: string, args: unknown) => Promise<any>;
+  /** Open this job rather than the roster — a transcript row asking to be
+      followed into the agent it started. Re-applied on every nonce, so the
+      same job can be asked for twice. */
+  reveal?: { jobId: string; nonce: number } | null;
 }
 
 // A live elapsed timer written straight to the DOM: re-rendering the roster
@@ -61,8 +65,19 @@ function fmtCost(c: number): string {
 function usageParts(job: Job): string[] {
   const out: string[] = [];
   if (job.usage?.totalTokens) out.push(`${fmtTokens(job.usage.totalTokens)} tok`);
+  const pct = contextPct(job);
+  // Occupancy, not spend: a subagent that is about to run out of room is worth
+  // seeing before it does, and a token total cannot say how full it is.
+  if (pct !== undefined) out.push(`${fmtPct(pct)} ctx`);
   if (job.usage?.cost) out.push(fmtCost(job.usage.cost));
   return out;
+}
+
+/** How full the subagent's own context is, for harnesses that report it. */
+function contextPct(job: Job): number | undefined {
+  const { contextUsed = 0, contextWindow = 0 } = job.usage ?? {};
+  if (contextWindow <= 0 || contextUsed <= 0) return undefined;
+  return Math.min(100, (contextUsed / contextWindow) * 100);
 }
 
 function JobRow({
@@ -75,6 +90,7 @@ function JobRow({
   onStop: (j: Job) => void;
 }) {
   const live = isLive(job);
+  const pct = contextPct(job);
   const meta = [
     job.kind === "agent" ? job.taskType : undefined,
     <Elapsed key="t" since={job.startedAt} finishedAt={job.finishedAt} />,
@@ -86,9 +102,24 @@ function JobRow({
     // Fixed height on purpose: a streaming activity line must never reflow the
     // roster under the reader's eyes.
     <div
-      className="bg-card/60 flex h-[3.75rem] items-stretch overflow-hidden rounded-lg border"
+      className="bg-card/60 relative flex h-[3.75rem] items-stretch overflow-hidden rounded-lg border"
       style={{ marginLeft: `${Math.min(job.depth, 4) * 0.75}rem` }}
     >
+      {/* The context meter rides the row's bottom edge rather than taking a
+          line of its own: the row height is fixed so that a streaming activity
+          line cannot reflow the roster, and a bar costs no height at all. */}
+      {pct !== undefined && (
+        <div
+          className="bg-muted absolute inset-x-0 bottom-0 h-0.5"
+          role="img"
+          aria-label={`Context ${fmtPct(pct)} full`}
+        >
+          <div
+            className={cn("h-full", pct >= 85 ? "bg-destructive" : pct >= 60 ? "bg-amber-500" : "bg-primary/60")}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
       <button
         type="button"
         onClick={() => onOpen(job)}
@@ -299,9 +330,22 @@ function AgentPane({
 }
 
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({ sessionId, state, command }: JobsSurfaceProps) {
+export function JobsSurface({ sessionId, state, command, reveal }: JobsSurfaceProps) {
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
   const [openId, setOpenId] = useState<string | null>(null);
+  // A job named from the transcript wins over whatever was open. Keyed on the
+  // nonce so that leaving the pane and asking again re-opens it, and so that a
+  // job arriving late — the ask can beat its own job.started over a slow
+  // link — is still honoured once it lands.
+  const revealNonce = reveal?.nonce;
+  const revealId = reveal?.jobId;
+  const routed = useRef(0);
+  useEffect(() => {
+    if (!revealNonce || !revealId || routed.current === revealNonce) return;
+    if (!state.jobs.some((j) => j.id === revealId)) return;
+    routed.current = revealNonce;
+    setOpenId(revealId);
+  }, [revealNonce, revealId, state.jobs]);
   const open = openId ? state.jobs.find((j) => j.id === openId) : undefined;
 
   const stop = (j: Job) => void command("stop_job", { sessionId, jobId: j.id }).catch(() => {});

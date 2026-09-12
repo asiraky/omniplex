@@ -108,6 +108,11 @@ type Manager struct {
 	// edited or removed on the phone stayed on the laptop's screen until it
 	// reconnected, and a removed one could still be picked in new-session.
 	projectSub map[string]chan struct{}
+	// attentionWatcher receives whose-turn-is-it transitions. Guarded by
+	// listMu with the maps above; see OnAttention for why it is a hook
+	// rather than another broadcast channel.
+	attentionWatcher func(AttentionChange)
+	noticeWatcher    func(Notice)
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -1181,7 +1186,9 @@ func (m *Manager) adopt(a *Actor) {
 	m.mu.Unlock()
 	a.mu.Lock()
 	a.onExit = m.forgetFn(a.ID, a)
-	a.onPhase = m.notifyList
+	a.onAttention = m.attentionChanged(a.ID)
+	a.onList = m.notifyList
+	a.onNotice = m.noticed(a.ID)
 	a.imagePath = m.imagePath
 	a.mu.Unlock()
 	select {
@@ -1557,6 +1564,94 @@ func (m *Manager) notifyProjects() {
 		case ch <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// AttentionChange describes a session moving from one derived attention state
+// to another — see projection.Attention.
+type AttentionChange struct {
+	SessionID string
+	Prev      string
+	Next      string
+	// PrevPhase is the projection phase the session left. "working" covers
+	// both a running turn and a workspace being provisioned, and only one of
+	// those finishing is news, so the phase disambiguates them.
+	PrevPhase string
+}
+
+// Notice is something worth telling the user that is not an attention
+// transition. Attention answers "does this want me?", and a session that
+// resumed itself at 3am does not: it is working, which is the state nothing
+// notifies about. It is still the one thing they would want to know.
+type Notice struct {
+	SessionID string
+	// Kind names the notice for the presenter, like a notifiable transition.
+	Kind string
+	// Body is the line the user reads, already written: the session layer
+	// knows why it is speaking, and the notifier does not.
+	Body string
+}
+
+// Notice kinds.
+const (
+	// NoticeResumed: a usage limit lifted and the session continued by itself.
+	NoticeResumed = "auto_resumed"
+)
+
+// OnNotice registers the watcher for notices. One watcher, installed at
+// startup, for the same reasons OnAttention has one.
+func (m *Manager) OnNotice(fn func(Notice)) {
+	m.listMu.Lock()
+	m.noticeWatcher = fn
+	m.listMu.Unlock()
+}
+
+// noticed is what each actor calls. Like attentionChanged it hands the notice
+// off on its own goroutine: this runs on the actor loop, and delivery talks to
+// a push service over the network.
+func (m *Manager) noticed(sessionID string) func(Notice) {
+	return func(n Notice) {
+		m.listMu.Lock()
+		watcher := m.noticeWatcher
+		m.listMu.Unlock()
+		if watcher == nil {
+			return
+		}
+		n.SessionID = sessionID
+		go watcher(n)
+	}
+}
+
+// OnAttention registers a watcher for attention transitions.
+//
+// This is a single hook rather than the subscribe/notify pattern the lists
+// use, because it is not a "something changed, go and re-read" wake-up: the
+// transition *is* the payload, and a coalescing channel would lose the very
+// edges a watcher cares about. There is one watcher — the notifier — and it
+// is installed at startup.
+func (m *Manager) OnAttention(fn func(AttentionChange)) {
+	m.listMu.Lock()
+	m.attentionWatcher = fn
+	m.listMu.Unlock()
+}
+
+// attentionChanged is what each actor calls. It refreshes the session list —
+// the job the old onPhase hook did — and then hands the transition to the
+// watcher.
+func (m *Manager) attentionChanged(sessionID string) func(prev, next, prevPhase string) {
+	return func(prev, next, prevPhase string) {
+		m.notifyList()
+
+		m.listMu.Lock()
+		watcher := m.attentionWatcher
+		m.listMu.Unlock()
+		if watcher == nil {
+			return
+		}
+		// On its own goroutine: this runs on the actor loop, and a watcher
+		// that talks to a push service over the network must never be able to
+		// stall a turn.
+		go watcher(AttentionChange{SessionID: sessionID, Prev: prev, Next: next, PrevPhase: prevPhase})
 	}
 }
 

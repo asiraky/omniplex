@@ -17,6 +17,7 @@ import {
   SearchIcon,
   TerminalIcon,
   Trash2Icon,
+  PauseIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
@@ -36,11 +37,13 @@ import { Markdown } from "~/components/Markdown";
 import { RecentSkills } from "~/components/RecentSkills";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
+import { Switch } from "~/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
-import { fmtTokens } from "~/lib/format";
+import { fmtPct, fmtTokens } from "~/lib/format";
 import { isLive, jobLabel } from "~/lib/jobs";
+import { waitLabel } from "~/lib/scheduleTime";
 import { cn } from "~/lib/utils";
 import type {
   ComposerItem,
@@ -49,12 +52,13 @@ import type {
   PromptImage,
   PullRequest,
   QueuedPrompt,
+  ScheduledPrompt,
   SessionState,
   ToolStatus,
   Turn,
 } from "~/protocol";
 import { saveResume } from "~/resume";
-import { buildRows, foldLabel, rowTurnID, summarise } from "~/rows";
+import { buildRows, foldLabel, formatDuration, rowTurnID, summarise } from "~/rows";
 import { atBottom, useAutoScroll } from "~/useAutoScroll";
 import { useSmoothText } from "~/useSmoothText";
 
@@ -233,7 +237,8 @@ function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
 // A batch of subagents, as one card that stays in the transcript: unlike a
 // tool call, a spawned agent keeps running after the turn that started it, so
 // the card reads from the live job rather than the tool item where it can.
-// Clicking anywhere on it opens the jobs panel.
+// The header opens the roster; each row opens the agent it names, because
+// "what is that one doing" is the question a running batch actually raises.
 function JobsCard({
   items,
   jobs,
@@ -241,25 +246,25 @@ function JobsCard({
 }: {
   items: Item[];
   jobs: Job[];
-  onOpen?: () => void;
+  onOpen?: (jobId?: string) => void;
 }) {
   const rows = items.map((item) => ({ item, job: jobs.find((j) => j.toolCallId === item.id) }));
   const live = rows.some((r) => (r.job ? isLive(r.job) : r.item.status === "in_progress" || r.item.status === "pending"));
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="fade-in bg-card/60 hover:bg-accent/40 focus-visible:ring-ring w-full rounded-lg border text-left transition-colors outline-none focus-visible:ring-2"
-    >
-      <div className="text-muted-foreground flex items-center gap-2 px-3 pt-2 font-mono text-[10px] tracking-wide uppercase">
+    <div className="fade-in bg-card/60 w-full rounded-lg border text-left">
+      <button
+        type="button"
+        onClick={() => onOpen?.()}
+        className="text-muted-foreground hover:bg-accent/40 focus-visible:ring-ring flex w-full items-center gap-2 rounded-t-lg px-3 pt-2 pb-1 font-mono text-[10px] tracking-wide uppercase outline-none focus-visible:ring-2"
+      >
         <BotIcon className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">
+        <span className="min-w-0 flex-1 truncate text-left">
           {items.length === 1 ? "1 agent" : `${items.length} agents`}
         </span>
         {live ? <Spinner className="text-primary size-3.5" /> : null}
         <ChevronRightIcon className="size-3.5" />
-      </div>
-      <ul className="space-y-1 px-3 py-2">
+      </button>
+      <ul className="space-y-1 px-1.5 pb-2">
         {rows.map(({ item, job }) => {
           const label = job ? jobLabel(job) : item.title || "agent";
           const status: ToolStatus | undefined = job
@@ -272,9 +277,23 @@ function JobsCard({
                   : "cancelled"
             : item.status;
           const tokens = job?.usage.totalTokens;
+          // Occupancy, where the harness reports it: a subagent close to full
+          // is about to compact or stall, and the token total cannot say so.
+          const window = job?.usage.contextWindow ?? 0;
+          const used = job?.usage.contextUsed ?? 0;
+          const ctx = window > 0 && used > 0 ? Math.min(100, (used / window) * 100) : undefined;
           return (
-            <li key={item.id} className="flex min-w-0 items-center gap-2 text-[13px]">
-              <span className="min-w-0 flex-1 truncate font-mono">{label}</span>
+            <li key={item.id}>
+              <button
+                type="button"
+                // A row with no job behind it has nowhere to go: the tool call
+                // is all there is, and it is already on screen.
+                disabled={!job}
+                onClick={() => onOpen?.(job?.id)}
+                aria-label={job ? `Open ${label}` : undefined}
+                className="hover:bg-accent/40 focus-visible:ring-ring flex min-h-11 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-[13px] outline-none focus-visible:ring-2 disabled:cursor-default disabled:hover:bg-transparent md:min-h-0 md:py-0.5"
+              >
+              <span className="min-w-0 flex-1 truncate text-left font-mono">{label}</span>
               {job?.activity && isLive(job) && (
                 <span className="text-muted-foreground hidden min-w-0 max-w-[40%] truncate text-[11px] sm:inline">
                   {job.activity}
@@ -283,12 +302,24 @@ function JobsCard({
               {tokens ? (
                 <span className="text-muted-foreground shrink-0 font-mono text-[10px]">{fmtTokens(tokens)}</span>
               ) : null}
+              {ctx !== undefined && (
+                <span
+                  title={`Context ${fmtPct(ctx)} full`}
+                  className={cn(
+                    "shrink-0 font-mono text-[10px]",
+                    ctx >= 85 ? "text-destructive" : ctx >= 60 ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground",
+                  )}
+                >
+                  {fmtPct(ctx)}
+                </span>
+              )}
               <StatusMark status={status} />
+              </button>
             </li>
           );
         })}
       </ul>
-    </button>
+    </div>
   );
 }
 
@@ -508,7 +539,7 @@ function Message({
   item: Item;
   sessionId: string;
   streaming: boolean;
-  recovered?: "restart" | "continue";
+  recovered?: "restart" | "continue" | "limit";
 }) {
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
@@ -524,7 +555,9 @@ function Message({
         <div className="text-muted-foreground rounded-full border px-3 py-1 text-[12px]">
           {recovered === "restart"
             ? "Server restarted — the agent was asked to pick the work back up"
-            : "Asked the agent to pick the work back up"}
+            : recovered === "limit"
+              ? "Usage limit reset — the agent picked the work back up"
+              : "Asked the agent to pick the work back up"}
         </div>
       </div>
     );
@@ -776,6 +809,221 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
   );
 }
 
+/**
+ * The offer to hand a finished subagent back to the agent that started it.
+ *
+ * A subagent can outlive the turn that spawned it, and when it does the
+ * harness is idle and nobody has told it the work came back. Injecting the
+ * result would be the tidy-looking answer and the wrong one: it starts a turn
+ * that spends tokens and runs tools with no human present, and the harnesses
+ * that deliver their own notifications would then deliver it twice. So the
+ * news goes to the reader, in the transcript, with one tap to pass it on.
+ */
+function HandoffCard({ jobs, onHandoff, onDismiss }: { jobs: Job[]; onHandoff: () => void; onDismiss: () => void }) {
+  const what = jobs.length === 1 ? jobLabel(jobs[0]) : `${jobs.length} agents`;
+  return (
+    <div className="fade-in flex flex-wrap items-center justify-center gap-1 pt-1 pb-2">
+      <span className="text-muted-foreground text-[12px]">{what} finished after the turn ended.</span>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onHandoff}
+        aria-label={`Tell the agent that ${what} finished`}
+        className="text-muted-foreground hover:text-foreground h-11 rounded-full border border-dashed px-3 text-[12px] font-normal md:h-7"
+      >
+        <BotIcon aria-hidden className="text-primary size-3.5" />
+        Tell the agent
+      </Button>
+      <IconButton label="Dismiss" onClick={onDismiss}>
+        <XIcon className="size-3.5" />
+      </IconButton>
+    </div>
+  );
+}
+
+/** What to say to the agent about subagents it was never told about. */
+function handoffPrompt(jobs: Job[]): string {
+  const lines = jobs.map((j) => `- ${jobLabel(j)}: ${j.error ? `failed — ${j.error}` : j.status}`);
+  return `These background agents finished after your last turn ended:\n${lines.join("\n")}\n\nRead their results and carry on.`;
+}
+
+// How long the session may go without producing anything before the transcript
+// says so out loud. Long turns are normal — a minute inside one tool call is
+// not news — but four silent minutes and a spinner look exactly like a wedged
+// harness, and that is the case this exists for.
+const QUIET_MS = 30_000;
+
+/**
+ * The live status of the running turn: what the harness says it is doing, how
+ * long it has been at it, and how long since it last said anything.
+ *
+ * A spinner alone answers "is a turn open", which is not the question anybody
+ * actually has — that is "is this still moving". `silent` says whether
+ * anything is streaming right now; when something is, this stays out of the
+ * way unless the harness has gone quiet or has something to report.
+ */
+function TurnStatus({ state, silent }: { state: SessionState; silent: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const turn = state.turns.reduce<Turn | undefined>((acc, t) => (t.done ? acc : t), undefined);
+  // Clamped at zero: these are server clocks read against a browser one, and a
+  // phone a few seconds ahead should not be told the turn started in the
+  // future.
+  const elapsed = turn?.startedAt ? Math.max(0, now - turn.startedAt) : 0;
+  const quiet = state.lastEventAt ? Math.max(0, now - state.lastEventAt) : 0;
+  const activity = state.activity ?? "";
+  const blocked = !!state.blocked;
+
+  // Nothing to add: output is flowing, recently, and the harness has made no
+  // claim of its own.
+  if (!silent && !activity && quiet < QUIET_MS) return null;
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 text-sm",
+        blocked ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground",
+      )}
+    >
+      {blocked ? (
+        <PauseIcon className="size-3.5 shrink-0" />
+      ) : (
+        <Spinner className="text-primary size-3.5 shrink-0" />
+      )}
+      <span className="min-w-0 truncate">{activity || "thinking…"}</span>
+      {elapsed > 0 && <span className="tabular-nums">{formatDuration(elapsed)}</span>}
+      {quiet >= QUIET_MS && !blocked && (
+        <span className="tabular-nums opacity-70">· quiet {formatDuration(quiet)}</span>
+      )}
+    </div>
+  );
+}
+
+// LimitedCard is the turn a provider's usage or spend window ended.
+//
+// It is deliberately not the interrupted card with a different sentence. Every
+// other failure asks the reader to decide something; this one has already been
+// decided — the window reopens at a known time and the session will carry on
+// by itself — so the card's job is to say when that is and to make the two
+// overrides available: go now, or do not go at all. The switch mirrors the
+// global setting and overrides it for this failure only, which is the honest
+// shape of "usually yes, but not on this one".
+function LimitedCard({
+  turn,
+  armedResume,
+  onContinue,
+  onAutoResume,
+}: {
+  turn: Turn;
+  armedResume?: ScheduledPrompt | null;
+  onContinue: () => void;
+  onAutoResume?: (on: boolean) => void;
+}) {
+  const [sending, setSending] = useState(false);
+  // The wait is stated as a countdown, so a card left open on a phone does not
+  // still say "in 4h" three hours later. A minute is as fine as this needs to
+  // be, and costs one render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // The three states a resume can be in by the time someone reads this card:
+  // still coming, and the two ways it did not happen. Nothing else is worth a
+  // line — an unarmed limit is fully described by the switch below it.
+  const due = armedResume?.status === "pending" || armedResume?.status === "ready";
+  const upcoming = armedResume && due ? armedResume : null;
+  const broken = armedResume && !due ? armedResume : null;
+  const armed = !!upcoming;
+  const resetAt = turn.resetAt;
+  // Whether the provider's window is believed to be open right now.
+  const open = !resetAt || now >= resetAt;
+  return (
+    // Not the red of the other failure cards: nothing broke, and a session
+    // that is going to carry on by itself in four hours should not look like
+    // one that needs rescuing.
+    <div className="fade-in bg-card/60 rounded-lg border px-3.5 py-3">
+      <p className="text-[13px]">
+        {resetAt
+          ? `Usage limit reached — resets ${waitLabel(resetAt, now)}.`
+          : "Usage limit reached."}
+      </p>
+      {/* The provider's own words, only when they are the only place the time
+          could come from. Next to a reset we already printed they are an
+          upsell and a second copy of the same clock. */}
+      {!resetAt && turn.error && (
+        <p className="text-muted-foreground mt-1.5 font-mono text-[11px] break-words">
+          {turn.error}
+        </p>
+      )}
+      {upcoming && (
+        <p className="text-muted-foreground mt-1.5 text-[12px]">
+          {/* With a reset time above, naming the resume's own clock says the
+              same minute twice: it is that time plus a small buffer. Without
+              one, this line is the only time on the card. */}
+          {resetAt
+            ? "Omniplex will pick the work back up when it reopens."
+            : `Omniplex will pick the work back up at ${waitLabel(upcoming.dueAt, now)}.`}
+        </p>
+      )}
+      {broken && (
+        <p className="text-muted-foreground mt-1.5 text-[12px]">
+          {broken.status === "missed"
+            ? "The resume came due while the server was down, so nobody picked the work back up."
+            : "Picking the work back up did not work."}
+        </p>
+      )}
+      {broken?.error && (
+        <p className="text-destructive mt-1 font-mono text-[11px] break-words">{broken.error}</p>
+      )}
+      {upcoming && (upcoming.attempt ?? 1) > 1 && (
+        <p className="text-muted-foreground mt-1 text-[12px]">
+          The limit has come back {upcoming.attempt} times, so each wait is longer than the last.
+        </p>
+      )}
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+        {/* Continuing before the window reopens fails the same way and burns
+            the wait for nothing, so while the provider says it is shut there
+            is no button to press — the switch is the only decision left. Once
+            the countdown runs out (it re-renders every 30s) the button comes
+            back, and it is there from the start when no reset time was named,
+            because then nobody knows the window is shut. Someone who thinks
+            the provider is lying about the time can still just send a message:
+            the composer is directly below this card. */}
+        {open && (
+          <Button
+            size="sm"
+            disabled={sending}
+            onClick={() => {
+              setSending(true);
+              onContinue();
+            }}
+          >
+            {sending ? "Continuing…" : broken ? "Try again" : "Continue now"}
+          </Button>
+        )}
+        {onAutoResume && (
+          <label className="flex cursor-pointer items-center gap-2 text-[12px]">
+            <Switch
+              checked={armed}
+              onCheckedChange={(on) => onAutoResume(on)}
+              aria-label="Resume automatically when the limit resets"
+            />
+            <span className={armed ? "" : "text-muted-foreground"}>
+              Resume when the limit resets
+            </span>
+          </label>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // InterruptedCard is what a turn that died looks like. A cross on the last
 // tool call is not an explanation: it says something stopped, not that the
 // work is unfinished and nobody is coming back for it. The server retries by
@@ -783,14 +1031,20 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
 // work — which is precisely when a human has to decide.
 function InterruptedCard({
   turn,
+  armedResume,
   onContinue,
+  onAutoResume,
   onLogin,
   providerName,
   providerReady,
   onRetryTurn,
 }: {
   turn: Turn;
+  /** The continuation the server has armed for this failure, if any. */
+  armedResume?: ScheduledPrompt | null;
   onContinue: () => void;
+  /** Overrides the global auto-resume flag for this failure. */
+  onAutoResume?: (on: boolean) => void;
   onLogin?: () => void;
   providerName?: string;
   /** Live: true once the instance reports ready again after a sign-in. */
@@ -809,6 +1063,22 @@ function InterruptedCard({
   // continuing it cannot work: the next attempt fails the same way. What it
   // needs is the one instruction that fixes it.
   const needsLogin = turn.failure === "auth";
+  // A usage limit is the one failure that repairs itself, so its card is about
+  // the wait rather than about the error: when the window reopens, whether the
+  // session is going to pick the work back up by itself, and the button for
+  // someone who does not want to wait for either.
+  const limited = turn.failure === "usage_limit";
+
+  if (limited) {
+    return (
+      <LimitedCard
+        turn={turn}
+        armedResume={armedResume}
+        onContinue={onContinue}
+        onAutoResume={onAutoResume}
+      />
+    );
+  }
 
   if (needsLogin) {
     return (
@@ -883,7 +1153,8 @@ function InterruptedCard({
 // will land and looks like the user bubble it is about to become, dimmed, so
 // the reader can see what is coming. One the harness already holds is read at
 // its next step and cannot be taken back; one still waiting on the server can.
-function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; sessionId: string; onDequeue: (queueId: string) => void }) {
+function QueuedCard({ queued, sessionId, onDequeue, onSendHeldNow }: { queued: QueuedPrompt; sessionId: string; onDequeue: (queueId: string) => void; onSendHeldNow?: (queueId: string) => void }) {
+  const held = queued.delivery === "end" && !queued.sent;
   return (
     <div data-queue-id={queued.queueId} className="fade-in flex flex-col items-end">
       {queued.images && queued.images.length > 0 && (
@@ -901,7 +1172,22 @@ function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; se
           <span>Sent · read after the current step</span>
         ) : (
           <>
-            <span>Queued</span>
+            {/* A held message can sit here for a long time — through a
+                question, an error, a limit — so it says what it is waiting
+                for, and offers the way out of the wait. */}
+            <span>{held ? "Waiting until the agent is done" : "Queued"}</span>
+            {held && onSendHeldNow && (
+              <>
+                <span aria-hidden>·</span>
+                <button
+                  type="button"
+                  onClick={() => onSendHeldNow(queued.queueId)}
+                  className="hover:text-foreground focus-visible:ring-ring rounded-sm px-1 transition-colors outline-none focus-visible:ring-2"
+                >
+                  Send now
+                </button>
+              </>
+            )}
             <span aria-hidden>·</span>
             <button
               type="button"
@@ -927,6 +1213,8 @@ export function Transcript({
   onCleanup,
   onForceDelete,
   onContinue,
+  onAutoResume,
+  onHandoff,
   onLogin,
   providerName,
   providerReady,
@@ -940,6 +1228,7 @@ export function Transcript({
   recentsSeeded = false,
   onPickRecent,
   onDequeue,
+  onSendHeldNow,
 }: {
   state: SessionState;
   /** True when the server holds items older than the loaded window. */
@@ -959,6 +1248,12 @@ export function Transcript({
   onCleanup: () => void;
   onForceDelete: () => void;
   onContinue: () => void;
+  /** Arms or disarms the automatic continuation of a turn a usage limit ended,
+      overriding the global setting for that one failure. */
+  onAutoResume?: (on: boolean) => void;
+  /** Sends a prompt on the reader's behalf — the "tell the agent" handoff.
+      Absent means the offer is not made. */
+  onHandoff?: (text: string) => void;
   /** Opens this session provider's interactive sign-in flow, when it has one. */
   onLogin?: () => void;
   /** The provider instance named in authentication failures. */
@@ -971,7 +1266,7 @@ export function Transcript({
   /** The session's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
   /** Opens the panel on the jobs surface. */
-  onOpenJobs?: () => void;
+  onOpenJobs?: (jobId?: string) => void;
   /** The session branch's pull request, when omniplex could find one. */
   pr?: PullRequest | null;
   /** Opens the delete confirmation for this session. */
@@ -985,6 +1280,8 @@ export function Transcript({
   onPickRecent?: (item: ComposerItem) => void;
   /** Takes a queued prompt back before it runs. */
   onDequeue?: (queueId: string) => void;
+  /** Sends a held prompt straight away instead of waiting for the agent. */
+  onSendHeldNow?: (queueId: string) => void;
 }) {
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
@@ -1217,6 +1514,46 @@ export function Transcript({
     return last?.done && last.stopReason === "error" ? last : undefined;
   }, [state.turns, state.phase, state.closed]);
 
+  // The continuation the server armed for a turn a usage limit ended. There is
+  // never more than one — arming again replaces it — so the newest still-due
+  // resume entry is it.
+  const armedResume = useMemo(() => {
+    const resumes = (state.scheduledPrompts ?? []).filter((p) => p.kind === "resume");
+    const pending = resumes.filter((p) => p.status === "pending" || p.status === "ready").at(-1);
+    if (pending) return pending;
+    // A resume that never landed is the other thing the card has to say, and
+    // it belongs to the turn it was meant to continue: a resume that did fire
+    // and hit the limit again is marked failed against *its own* turn, and
+    // saying "could not resume" on the new limit would be a lie.
+    return (
+      resumes
+        .filter(
+          (p) =>
+            (p.status === "failed" || p.status === "missed") && p.resumeOf === interrupted?.id,
+        )
+        .at(-1) ?? null
+    );
+  }, [state.scheduledPrompts, interrupted]);
+
+  // Subagents that came back after the turn that started them was already
+  // over: the harness is idle and has not heard about them. Dismissals are
+  // per-mount, which is per-session — the offer is news, and news does not
+  // need to survive a page load.
+  const [handedOff, setHandedOff] = useState<string[]>([]);
+  const orphaned = useMemo(() => {
+    if (state.closed || state.phase === "turn") return [];
+    const lastEnd = state.turns.reduce((a, t) => Math.max(a, t.finishedAt ?? 0), 0);
+    if (!lastEnd) return [];
+    return (jobs ?? []).filter(
+      (j) =>
+        j.kind === "agent" &&
+        !isLive(j) &&
+        !j.hidden &&
+        (j.finishedAt ?? 0) > lastEnd &&
+        !handedOff.includes(j.id),
+    );
+  }, [jobs, state.turns, state.phase, state.closed, handedOff]);
+
   // What each turn changed, to be shown under the turn that changed it. A turn
   // that changed nothing has no entry, and gets no card.
   const turnDiffs = useMemo(
@@ -1341,18 +1678,19 @@ export function Transcript({
             );
           })}
 
-          {state.phase === "turn" &&
-            liveAgentId === undefined &&
-            !rows.some((r) => r.kind === "run" && r.live) && (
-              <div className="text-muted-foreground flex items-center gap-2 text-sm">
-                <Spinner className="text-primary size-3.5" /> thinking…
-              </div>
-            )}
+          {state.phase === "turn" && (
+            <TurnStatus
+              state={state}
+              silent={liveAgentId === undefined && !rows.some((r) => r.kind === "run" && r.live)}
+            />
+          )}
 
           {interrupted && (
             <InterruptedCard
               turn={interrupted}
+              armedResume={armedResume}
               onContinue={onContinue}
+              onAutoResume={onAutoResume}
               onLogin={onLogin}
               providerName={providerName}
               providerReady={providerReady}
@@ -1360,8 +1698,19 @@ export function Transcript({
             />
           )}
 
+          {orphaned.length > 0 && onHandoff && (
+            <HandoffCard
+              jobs={orphaned}
+              onHandoff={() => {
+                onHandoff(handoffPrompt(orphaned));
+                setHandedOff((seen) => [...seen, ...orphaned.map((j) => j.id)]);
+              }}
+              onDismiss={() => setHandedOff((seen) => [...seen, ...orphaned.map((j) => j.id)])}
+            />
+          )}
+
           {(state.queuedPrompts ?? []).map((q) => (
-            <QueuedCard key={q.queueId} queued={q} sessionId={state.sessionId} onDequeue={(id) => onDequeue?.(id)} />
+            <QueuedCard key={q.queueId} queued={q} sessionId={state.sessionId} onDequeue={(id) => onDequeue?.(id)} onSendHeldNow={onSendHeldNow} />
           ))}
 
           {/* Last, because it is the latest news about the work above it. */}

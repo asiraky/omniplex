@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -142,6 +143,8 @@ func main() {
 
 	access := endpoints.NewBuilder(plan, plan.Port)
 
+	previewDomain := previewDomain(logf)
+
 	srv := server.New(server.Options{
 		Manager:     mgr,
 		Store:       st,
@@ -153,6 +156,9 @@ func main() {
 		Attachments: attachments,
 		Commit:      buildCommit(),
 		Logf:        logf,
+		// Previews are published under this domain when one is configured;
+		// without it they are still detected and still reachable on the LAN.
+		PreviewDomain: previewDomain,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
 		AllowAnyOrigin: false,
@@ -217,25 +223,59 @@ func main() {
 	// survives reboots, so it is watched rather than read once.
 	watchProxy(guard, access, plan.Port)
 
+	// Background work that lives as long as the process: preview detection
+	// and watching for interfaces that appear after startup.
+	bgCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	go srv.Run(bgCtx)
+
 	banner.Write(os.Stdout, opts)
 
+	serve := func(l net.Listener) {
+		if err := httpSrv.Serve(l); err != nil && err != http.ErrServerClosed {
+			log.Printf("serve on %s stopped: %v", l.Addr(), err)
+		}
+	}
 	for _, ln := range listeners {
-		go func(l net.Listener) {
-			if err := httpSrv.Serve(l); err != nil && err != http.ErrServerClosed {
-				log.Printf("serve on %s stopped: %v", l.Addr(), err)
-			}
-		}(ln)
+		go serve(ln)
+	}
+
+	// An interface that comes up after startup — a VPN dialled from the
+	// menu bar, a tailnet reconnecting — would otherwise never be listened
+	// on, and the failure looks like a proxy misconfiguration rather than a
+	// missing bind. Only when addresses were chosen automatically: an
+	// explicit -addr is an instruction, not a starting point.
+	if *addr == "" {
+		rebinder := netinfo.NewRebinder(plan, listeners, *bindPublic, serve, access.SetPlan, logf)
+		go rebinder.Run(bgCtx)
 	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 
+	stopBackground()
+
 	log.Println("shutting down; disposing harnesses")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
 	mgr.Shutdown()
+}
+
+// previewDomain resolves the domain previews are published under. The
+// environment wins over the config file so a worktree can publish under a
+// different domain than the main checkout without editing shared state.
+func previewDomain(logf func(string, ...any)) string {
+	if v := strings.TrimSpace(os.Getenv("OMNIPLEX_PREVIEW_DOMAIN")); v != "" {
+		return v
+	}
+	cfg, err := userconfig.Load()
+	if err != nil {
+		logf("load user config: %v (previews will not be published)", err)
+		return ""
+	}
+	return strings.TrimSpace(cfg.PreviewDomain)
 }
 
 // configureProviders loads provider instances from the user config, sweeping

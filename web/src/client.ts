@@ -4,9 +4,29 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, AuthFlowEvent, HarnessMeta, Item, Label, Project, ServerFrame, SessionMeta, SessionState } from "./protocol";
+import type {
+  Access,
+  AppNotification,
+  AuthFlowEvent,
+  HarnessMeta,
+  Item,
+  Label,
+  PreviewSet,
+  Project,
+  ServerFrame,
+  SessionMeta,
+  SessionState,
+} from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
+
+// How often a visible client renews its presence lease.
+//
+// Comfortably under the server's 25s presenceLease in internal/server/ws.go,
+// so two of these can be lost to a slow 4G round trip before the server stops
+// believing anybody is looking. The frame is a few dozen bytes and only a
+// visible tab sends it, so this costs nothing worth measuring.
+const PRESENCE_RENEW_MS = 10_000;
 
 interface Pending {
   resolve: (v: any) => void;
@@ -23,8 +43,16 @@ export interface ClientEvents {
   onComposerItemsChanged(sessionId: string): void;
   onProjects(projects: Project[]): void;
   onLabels(labels: Label[]): void;
+  onPreviews(previews: PreviewSet[]): void;
   onState(sessionId: string, state: SessionState): void;
   onAccess(access: Access): void;
+  /**
+   * Something happened that is worth telling the user, and this device is
+   * looking at the app but not at the session concerned. A device that is not
+   * looking at anything is told by web push instead — the server decides
+   * which, because only it can see every device at once.
+   */
+  onNotify(note: AppNotification): void;
 }
 
 const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
@@ -34,6 +62,7 @@ export class Client {
   private attempt = 0;
   private closedByUs = false;
   private stableTimer: number | null = null;
+  private presenceTimer: number | undefined;
 
   private pending = new Map<string, Pending>();
 
@@ -70,6 +99,12 @@ export class Client {
         this.events.onStatus("online");
         this.raw({ type: "hello", protocolVersion: 1, clientId: clientId() });
 
+        // Presence is per connection and is not remembered across one, so it
+        // is re-asserted as part of the handshake. A reconnect that did not
+        // would leave the server believing this device is not being looked
+        // at, and push a notification to a phone sitting on the desk.
+        this.presence(document.visibilityState === "visible");
+
         // Re-attach where we left off; the server sends only what we missed.
         if (this.sessionId && !this.snapshotRequest) {
           this.raw({ type: "attach", sessionId: this.sessionId, afterSeq: this.cursor });
@@ -90,6 +125,10 @@ export class Client {
 
     ws.onclose = () => {
       if (this.stableTimer) window.clearTimeout(this.stableTimer);
+      // Nothing to renew against a socket that is gone; the handshake asserts
+      // presence again once we are back.
+      window.clearInterval(this.presenceTimer);
+      this.presenceTimer = undefined;
       this.ws = null;
       if (this.closedByUs) return;
       this.dropAuthFlows();
@@ -273,6 +312,31 @@ export class Client {
     for (const [flowId, listener] of listeners) {
       listener({ flowId, error: "Connection lost — start the sign-in again." });
     }
+    }
+  }
+
+  /**
+   * Tells the server whether this browser is in front of the user.
+   *
+   * It decides where a finished turn is announced: nowhere if somebody is
+   * watching that very session, in the app if somebody is at a screen looking
+   * at something else, and as a push to every device if nobody is looking at
+   * all.
+   */
+  presence(visible: boolean) {
+    this.raw({ type: "presence", visible });
+
+    // The server holds this as a lease, so being visible has to be repeated
+    // to stay true. Only while visible: a hidden tab has nothing to renew,
+    // and a phone that locks or is suspended mid-lease stops renewing on its
+    // own — which is the whole point. It cannot be relied on to send anything
+    // at the moment iOS freezes it.
+    window.clearInterval(this.presenceTimer);
+    if (visible) {
+      this.presenceTimer = window.setInterval(() => {
+        this.raw({ type: "presence", visible: true });
+      }, PRESENCE_RENEW_MS);
+    }
   }
 
   private raw(frame: Record<string, unknown>) {
@@ -291,6 +355,7 @@ export class Client {
         this.events.onHarnesses(f.harnesses ?? [], f.cwd ?? "");
         this.events.onProjects(f.projects ?? []);
         this.events.onLabels(f.labels ?? []);
+        this.events.onPreviews(f.previews ?? []);
         if (f.access) {
           this.events.onAccess(f.access);
         }
@@ -298,6 +363,10 @@ export class Client {
 
       case "sessions":
         this.events.onSessions(f.sessions ?? []);
+        break;
+
+      case "notify":
+        if (f.notification) this.events.onNotify(f.notification);
         break;
 
       // Harnesses can change after the welcome frame: a model list is read
@@ -318,6 +387,12 @@ export class Client {
       // The list travels whole; absent means the last label was deleted.
       case "labels":
         this.events.onLabels(f.labels ?? []);
+        break;
+
+      // A dev server started or stopped somewhere. The set travels whole and
+      // only on change, so a running service costs nothing on a slow link.
+      case "previews":
+        this.events.onPreviews(f.previews ?? []);
         break;
 
       case "composer_items_changed":

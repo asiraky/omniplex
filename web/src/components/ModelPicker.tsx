@@ -66,7 +66,7 @@ export function ModelPicker({
   onEffortChange,
   id,
   className,
-  compact = false,
+  compactTrigger = false,
   open: controlledOpen,
   onOpenChange,
 }: {
@@ -95,11 +95,12 @@ export function ModelPicker({
   id?: string;
   className?: string;
   /**
-   * Below md the trigger names only the model: the logo and effort label go,
-   * so it can share a phone-width row with the composer's buttons. Both are
-   * still one tap away in the picker.
+   * For a trigger sharing a phone-width row with other controls: the effort
+   * suffix leaves the button below md, so the model's name keeps its space
+   * instead of truncating away to nothing. The level is still one tap away in
+   * the menu, and comes back on a wider screen.
    */
-  compact?: boolean;
+  compactTrigger?: boolean;
   /** Optional controlled state, used by composer actions such as /model. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -244,7 +245,12 @@ export function ModelPicker({
       className={cn("h-auto min-h-11 w-full justify-start gap-2 px-3 py-2 md:min-h-9", className)}
     >
       {selectedInstance && (
-        <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "max-md:hidden")} />
+        // In a compact trigger the logo goes below md too: the account cannot
+        // be changed mid-session anyway, and its 24px is the difference between
+        // reading "Sonnet 5" and reading "Son…".
+        <span className={cn("contents", compactTrigger && "hidden md:contents")}>
+          <ProviderLogo provider={selectedInstance.driver} />
+        </span>
       )}
       <span className="min-w-0 flex-1 truncate text-left text-[13px]">
         {selectedModel?.label ?? "No model"}
@@ -256,7 +262,9 @@ export function ModelPicker({
         )}
       </span>
       {namesEffort && (
-        <span className={cn("text-muted-foreground shrink-0 text-[12px]", compact && "max-md:hidden")}>
+        <span
+          className={cn("text-muted-foreground shrink-0 text-[12px]", compactTrigger && "hidden md:inline")}
+        >
           <span aria-hidden className="mr-1.5 opacity-60">
             ·
           </span>

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/asiraky/omniplex/internal/endpoints"
+	"github.com/asiraky/omniplex/internal/preview"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
@@ -44,6 +45,10 @@ type clientFrame struct {
 	CommandID string          `json:"commandId,omitempty"`
 	Command   string          `json:"command,omitempty"`
 	Args      json.RawMessage `json:"args,omitempty"`
+
+	// presence: whether the document is visible to the user. Sent on connect
+	// and on every visibility change; see conn.visible.
+	Visible bool `json:"visible,omitempty"`
 }
 
 // Server → client frames.
@@ -66,6 +71,12 @@ type serverFrame struct {
 	// learns nothing about how else this machine can be reached.
 	Access *endpoints.Set `json:"access,omitempty"`
 
+	// Previews are the running dev servers of every session, re-sent whole
+	// when any of them change. Live state rather than history: "a port was
+	// listening at 14:03" is a fact about now, and writing every dev server
+	// restart into a permanent transcript would be noise outliving its use.
+	Previews []previewSet `json:"previews,omitempty"`
+
 	SessionID string            `json:"sessionId,omitempty"`
 	Seq       int64             `json:"seq,omitempty"`
 	State     *projection.State `json:"state,omitempty"`
@@ -79,6 +90,24 @@ type serverFrame struct {
 	// These travel only to the connection that began the flow and are never
 	// persisted: their traffic sits next to secrets.
 	AuthFlow *session.AuthFlowEvent `json:"authFlow,omitempty"`
+	// Notification is an in-app alert for a connection that is looking at the
+	// app but not at the session concerned. The same news reaches a device
+	// that is not looking at anything as a web push instead; see notify.go.
+	Notification *notification `json:"notification,omitempty"`
+}
+
+// previewSet is one session's previews as the client sees them.
+type previewSet struct {
+	SessionID string        `json:"sessionId"`
+	Previews  []previewItem `json:"previews"`
+}
+
+// previewItem is a preview plus the address to use for it, which the server
+// resolves per connection: the same service is a public subdomain to a phone
+// and a loopback port to the machine it runs on.
+type previewItem struct {
+	preview.Preview
+	URL string `json:"url"`
 }
 
 // Command argument shapes.
@@ -149,11 +178,25 @@ type promptArgs struct {
 	// stored for idempotent retry, and inlining a screenshot would put a
 	// megabyte in the command log and on every reconnect that replays it.
 	ImageIDs []string `json:"imageIds,omitempty"`
+	// Delivery is how this prompt should reach a busy harness — one of
+	// proto.DeliveryNow (the default), DeliveryInterrupt, DeliveryEnd. It is
+	// ignored when the session is idle: there is nothing to interrupt and
+	// nothing to wait for.
+	Delivery string `json:"delivery,omitempty"`
 }
 
 type sessionArgs struct {
 	SessionID  string `json:"sessionId"`
 	Comparison string `json:"comparison,omitempty"`
+}
+
+// autoResumeArgs overrides the global auto-resume flag for the turn a usage
+// limit just ended: the switch beside the Continue button. It is per-failure
+// rather than per-session on purpose — the answer to "wait for the window this
+// time?" is a decision about this piece of work, not a standing preference.
+type autoResumeArgs struct {
+	SessionID string `json:"sessionId"`
+	Enabled   bool   `json:"enabled"`
 }
 
 // summarizeArgs asks for a fresh summary of one session. There is no "use the

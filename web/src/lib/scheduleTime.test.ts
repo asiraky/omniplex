@@ -3,7 +3,10 @@ import {
   absoluteCandidates,
   day,
   localDateTime,
+  scheduleLabel,
   validateSchedule,
+  waitLabel,
+  zoneOr,
 } from "./scheduleTime";
 
 describe("scheduled local times", () => {
@@ -35,6 +38,30 @@ describe("scheduled local times", () => {
       localDateTime(Date.parse("2026-09-07T14:00:00Z"), "Australia/Brisbane"),
     ).toBe("2026-09-08T00:00");
   });
+  // A card left open on a phone says how long the wait still is, not just a
+  // clock time the reader would have to do arithmetic against.
+  it("states a wait as a clock time and a distance", () => {
+    const now = Date.parse("2026-09-08T09:00:00Z");
+    expect(waitLabel(now + 30_000, now)).toMatch(/any moment now/);
+    expect(waitLabel(now + 25 * 60_000, now)).toMatch(/in 25 min/);
+    expect(waitLabel(now + 2 * 3_600_000, now)).toMatch(/in 2h/);
+    expect(waitLabel(now + 2 * 3_600_000 + 10 * 60_000, now)).toMatch(/in 2h 10m/);
+    // Tomorrow is named, because "3:00" alone reads as today.
+    expect(waitLabel(now + 20 * 3_600_000, now)).toMatch(/^[A-Z][a-z]{2}/);
+  });
+
+  // A schedule the server armed carries no zone, and an old one may carry
+  // something Intl refuses. Neither may throw: this used to white-screen the
+  // scheduled list the moment an auto-resume was armed.
+  it("falls back to the device zone for a missing or unusable one", () => {
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(zoneOr("Australia/Brisbane")).toBe("Australia/Brisbane");
+    expect(zoneOr("")).toBe(here);
+    expect(zoneOr(undefined)).toBe(here);
+    expect(zoneOr("Local")).toBe(here);
+    expect(() => scheduleLabel(Date.now(), "")).not.toThrow();
+  });
+
   it("accepts only future instants within 24 elapsed hours", () => {
     const now = 1000;
     expect(validateSchedule(now, now)).toBeTruthy();

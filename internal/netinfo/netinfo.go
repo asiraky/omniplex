@@ -107,10 +107,16 @@ func Local() ([]Addr, error) {
 		}
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		return rank(out[i].Kind) < rank(out[j].Kind)
-	})
+	sortAddrs(out)
 	return out, nil
+}
+
+// sortAddrs orders addresses nearest first, so a banner and an endpoint list
+// read from this machine outwards.
+func sortAddrs(addrs []Addr) {
+	sort.SliceStable(addrs, func(i, j int) bool {
+		return rank(addrs[i].Kind) < rank(addrs[j].Kind)
+	})
 }
 
 func rank(k Kind) int {

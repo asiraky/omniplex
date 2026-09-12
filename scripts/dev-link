@@ -47,10 +47,22 @@ stop() {
 
 start() {
   : > "$LOG"
-  # setsid: the server outlives the shell that ran this, and lands in a process
+  # The server has to outlive the shell that ran this, and land in a process
   # group of its own so --stop can take the whole tree (air, go, vite) and
-  # nothing else.
-  setsid sh -c 'npm run dev' >> "$LOG" 2>&1 &
+  # nothing else. setsid is the obvious way and is what Linux has; macOS ships
+  # no setsid at all, and this script is mostly run on a Mac, so fall back to
+  # perl, which is present on both and whose setpgrp does the same job.
+  #
+  # Each branch backgrounds a single command on purpose. Wrapping this in a
+  # shell function would add a fork, and $! would then be the wrapper rather
+  # than the process that becomes the group leader — so --stop would signal a
+  # group that does not exist and leave the whole tree running.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid sh -c 'npm run dev' >> "$LOG" 2>&1 &
+  else
+    perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n";' -- \
+      sh -c 'npm run dev' >> "$LOG" 2>&1 &
+  fi
   echo $! > "$PIDFILE"
   i=0
   until running; do
@@ -80,8 +92,32 @@ esac
 # read only the last banner in the log so a restart does not print a stale code.
 plain=$(sed -e 's/\x1b\[[0-9;]*m//g' -e 's/\r//g' "$LOG" | awk '/Omniplex — harness multiplexer/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}')
 
-url=$(printf '%s\n' "$plain" | grep -m1 "Tailscale" | awk '{print $NF}')
-[ -n "$url" ] || url="http://127.0.0.1:$PORT"
+# The address to hand over is the tailnet one: it is the only one that works
+# from a phone that is not on this LAN, and it is encrypted end to end.
+#
+# The banner writes it in one of two shapes. Normally the Tailscale CLI
+# answers and the line is the MagicDNS name, labelled "Tailscale". When the
+# CLI is slow or absent the name is unknown, and the banner falls back to the
+# raw 100.x address, labelled "overlay network". Both are usable; match both.
+#
+# Match on the label at the start of the line and take the field that is
+# actually a URL. Grepping for the word "Tailscale" anywhere also matches the
+# prose "prefer the Tailscale address.", which yielded a helpful "open
+# address." when the CLI was slow enough to drop the real line.
+addrs=$(printf '%s\n' "$plain" | sed -e 's/^\[go\][[:space:]]*//')
+pick() { printf '%s\n' "$addrs" | awk -v want="$1" '
+  index($0, want) == 1 { for (i = NF; i >= 1; i--) if ($i ~ /^https?:\/\//) { print $i; exit } }
+' | head -1; }
+
+url=$(pick "Tailscale (HTTPS)")
+[ -n "$url" ] || url=$(pick "Tailscale")
+[ -n "$url" ] || url=$(pick "overlay network")
+overlay=yes
+if [ -z "$url" ]; then
+  overlay=no
+  url="http://127.0.0.1:$PORT"
+fi
+
 code=$(printf '%s\n' "$plain" | grep -m1 "and enter" | awk '{print $NF}')
 
 echo
@@ -92,6 +128,14 @@ if [ -n "$code" ]; then
   echo "  code    $code   (single use, 10 minutes; scripts/dev-link --restart mints another)"
 else
   echo "  pair    already paired, or the server is loopback-only"
+fi
+if [ "$overlay" = no ]; then
+  # Worth saying out loud: the address above is only good on this machine, and
+  # handing it to someone on a phone just wastes their time. The usual cause is
+  # the tunnel coming up after the server did, in which case the address exists
+  # now even though the banner was written before it did.
+  echo "  note    no overlay address in the banner — this URL only works on this machine."
+  echo "          if the tunnel is up now, scripts/dev-link --restart will pick it up."
 fi
 echo "  log     $LOG"
 echo

@@ -35,6 +35,11 @@ type fakeAdapter struct {
 	listGate      chan struct{}
 	createGate    <-chan struct{}
 	createStarted chan<- struct{}
+	// blockComposer makes ComposerItems wait on composerRelease so a test can
+	// prove attach/State do not sit behind that harness RPC.
+	blockComposer   bool
+	composerStarted chan<- struct{}
+	composerRelease <-chan struct{}
 }
 
 func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
@@ -87,7 +92,7 @@ func TestViewedInterruptedTurnRecoversWhenActivated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := actor.Prompt(ctx, "keep going", nil); err != nil {
+	if _, err := actor.Prompt(ctx, "keep going", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-first.session().prompts
@@ -402,7 +407,7 @@ func TestComposerActionReservesTheTurnBeforeCallingHarness(t *testing.T) {
 	if state.Phase != "turn" || len(state.Turns) == 0 || state.Turns[len(state.Turns)-1].Prompt != "/review focus on races" {
 		t.Fatalf("action did not become a canonical turn: %+v", state)
 	}
-	res, err := actor.Prompt(ctx, "must wait", nil)
+	res, err := actor.Prompt(ctx, "must wait", nil, "")
 	if err != nil || !res.Queued() {
 		t.Fatalf("concurrent prompt = %+v, %v; want queued", res, err)
 	}
@@ -926,7 +931,7 @@ func TestDisconnectIsNotCancel(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	sess := fa.session()
 
-	res, err := actor.Prompt(context.Background(), "do a thing", nil)
+	res, err := actor.Prompt(context.Background(), "do a thing", nil, "")
 	turnID := res.TurnID
 	if err != nil {
 		t.Fatal(err)
@@ -1006,7 +1011,7 @@ func TestResumeFinishesInterruptedTurnAndCancelsPendingPermission(t *testing.T) 
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "keep working", nil); err != nil {
+	if _, err := actor.Prompt(context.Background(), "keep working", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1056,7 +1061,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "do the long thing", nil); err != nil {
+	if _, err := actor.Prompt(context.Background(), "do the long thing", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1131,7 +1136,7 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 		t.Fatalf("continue on a fresh session: %v; want ErrNothingToContinue", err)
 	}
 
-	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
+	if _, err := actor.Prompt(context.Background(), "start", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1223,7 +1228,7 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "long job", nil); err != nil {
+	if _, err := actor.Prompt(context.Background(), "long job", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1273,7 +1278,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
+	if _, err := actor.Prompt(context.Background(), "start", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1358,7 +1363,7 @@ func TestClosedSessionRemainsAttachableWithoutHarness(t *testing.T) {
 	if !state.Closed || state.Phase != "closed" {
 		t.Fatalf("closed transcript state: closed=%v phase=%q", state.Closed, state.Phase)
 	}
-	if _, err := view.Prompt(context.Background(), "must not run", nil); !errors.Is(err, ErrClosed) {
+	if _, err := view.Prompt(context.Background(), "must not run", nil, ""); !errors.Is(err, ErrClosed) {
 		t.Fatalf("prompt on closed transcript err=%v; want ErrClosed", err)
 	}
 }
@@ -1478,7 +1483,7 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 
 	// The turn is real: a prompt while it runs waits behind it rather than
 	// starting a second one.
-	if res, err := actor.Prompt(ctx, "hello", nil); err != nil || !res.Queued() {
+	if res, err := actor.Prompt(ctx, "hello", nil, ""); err != nil || !res.Queued() {
 		t.Fatalf("prompt during harness-initiated turn = %+v, %v; want queued", res, err)
 	}
 
@@ -1514,7 +1519,7 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	ctx := context.Background()
 
-	res, err := actor.Prompt(ctx, "do the thing", nil)
+	res, err := actor.Prompt(ctx, "do the thing", nil, "")
 	turnID := res.TurnID
 	if err != nil {
 		t.Fatal(err)
@@ -1580,7 +1585,7 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 	sess.refuse = &adapter.FailureError{Kind: proto.FailureAuth, Err: errors.New("claude needs you to sign in again")}
 	sess.mu.Unlock()
 
-	if _, err := actor.Prompt(ctx, "do the thing", nil); err == nil {
+	if _, err := actor.Prompt(ctx, "do the thing", nil, ""); err == nil {
 		t.Fatal("the refused prompt reported success")
 	}
 
@@ -1688,13 +1693,13 @@ func TestPromptQueuesBehindRunningTurn(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	ctx := context.Background()
 
-	first, err := actor.Prompt(ctx, "first", nil)
+	first, err := actor.Prompt(ctx, "first", nil, "")
 	if err != nil || first.Queued() {
 		t.Fatalf("first prompt = %+v, %v", first, err)
 	}
 	<-fa.session().prompts
 
-	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}}, "")
 	if err != nil || !second.Queued() {
 		t.Fatalf("second prompt = %+v, %v; want queued", second, err)
 	}
@@ -1720,9 +1725,9 @@ func TestDequeuePromptTakesItBack(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	ctx := context.Background()
 
-	first, _ := actor.Prompt(ctx, "first", nil)
+	first, _ := actor.Prompt(ctx, "first", nil, "")
 	<-fa.session().prompts
-	queued, _ := actor.Prompt(ctx, "later", nil)
+	queued, _ := actor.Prompt(ctx, "later", nil, "")
 	if err := actor.DequeuePrompt(ctx, queued.QueueID); err != nil {
 		t.Fatal(err)
 	}
@@ -1751,9 +1756,9 @@ func TestCancelDropsQueuedPrompts(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	ctx := context.Background()
 
-	first, _ := actor.Prompt(ctx, "first", nil)
+	first, _ := actor.Prompt(ctx, "first", nil, "")
 	<-fa.session().prompts
-	if _, err := actor.Prompt(ctx, "later", nil); err != nil {
+	if _, err := actor.Prompt(ctx, "later", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := actor.Cancel(ctx); err != nil {
@@ -1791,11 +1796,11 @@ func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
-	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
+	if _, err := actor.Prompt(context.Background(), "start", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
-	if res, err := actor.Prompt(context.Background(), "after", nil); err != nil || !res.Queued() {
+	if res, err := actor.Prompt(context.Background(), "after", nil, ""); err != nil || !res.Queued() {
 		t.Fatalf("queued prompt = %+v, %v", res, err)
 	}
 	id := actor.ID
@@ -1835,9 +1840,9 @@ func TestQueuedImagesGetTheirPathBack(t *testing.T) {
 	}
 	actor.mu.Unlock()
 
-	first, _ := actor.Prompt(ctx, "first", nil)
+	first, _ := actor.Prompt(ctx, "first", nil, "")
 	<-fa.session().prompts
-	if _, err := actor.Prompt(ctx, "look", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/upload/img.png"}}); err != nil {
+	if _, err := actor.Prompt(ctx, "look", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/upload/img.png"}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
@@ -1855,13 +1860,13 @@ func TestPromptSteersIntoRunningTurn(t *testing.T) {
 	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
 	ctx := context.Background()
 
-	first, err := actor.Prompt(ctx, "first", nil)
+	first, err := actor.Prompt(ctx, "first", nil, "")
 	if err != nil || first.Queued() {
 		t.Fatalf("first prompt = %+v, %v", first, err)
 	}
 	<-fa.session().prompts
 
-	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}}, "")
 	if err != nil || !second.Queued() {
 		t.Fatalf("second prompt = %+v, %v; want queued", second, err)
 	}
@@ -1912,9 +1917,9 @@ func TestHarnessStartsTurnFromHeldPrompt(t *testing.T) {
 	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
 	ctx := context.Background()
 
-	first, _ := actor.Prompt(ctx, "first", nil)
+	first, _ := actor.Prompt(ctx, "first", nil, "")
 	<-fa.session().prompts
-	second, _ := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	second, _ := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}}, "")
 	<-fa.session().prompts
 
 	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
@@ -1948,9 +1953,9 @@ func TestCancelDiscardsSentPrompts(t *testing.T) {
 	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
 	ctx := context.Background()
 
-	first, _ := actor.Prompt(ctx, "first", nil)
+	first, _ := actor.Prompt(ctx, "first", nil, "")
 	<-fa.session().prompts
-	if _, err := actor.Prompt(ctx, "later", nil); err != nil {
+	if _, err := actor.Prompt(ctx, "later", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts
@@ -1978,9 +1983,9 @@ func TestSteerRefusedFallsBackToQueue(t *testing.T) {
 	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true, steerRefuse: errors.New("pipe closed")})
 	ctx := context.Background()
 
-	first, _ := actor.Prompt(ctx, "first", nil)
+	first, _ := actor.Prompt(ctx, "first", nil, "")
 	<-fa.session().prompts
-	second, _ := actor.Prompt(ctx, "second", nil)
+	second, _ := actor.Prompt(ctx, "second", nil, "")
 	state, _ := actor.State(ctx)
 	if len(state.Queued) != 1 || state.Queued[0].Sent {
 		t.Fatalf("queued state = %+v, want one unsent entry", state.Queued)
@@ -1995,4 +2000,193 @@ func TestSteerRefusedFallsBackToQueue(t *testing.T) {
 		return len(next.Queued) == 0 && len(next.Turns) == 2 && next.Turns[1].Prompt == "second"
 	})
 	_ = second
+}
+
+// The attention hook carries the phase the session left, because "working" is
+// derived from more than a running turn — provisioning a workspace looks the
+// same — and the notifier tells "your turn finished" from "the session you
+// just opened is ready" on exactly this field.
+func TestAttentionHookReportsThePhaseItLeft(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+
+	type move struct{ prev, next, prevPhase string }
+	moves := make(chan move, 8)
+	actor.mu.Lock()
+	actor.onAttention = func(prev, next, prevPhase string) {
+		moves <- move{prev, next, prevPhase}
+	}
+	actor.mu.Unlock()
+
+	fa.session().emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1"}))
+
+	var finished move
+	deadline := time.After(2 * time.Second)
+	for finished.next == "" {
+		select {
+		case m := <-moves:
+			if m.next == projection.AttentionNeedsPrompt {
+				finished = m
+			}
+		case <-deadline:
+			t.Fatal("no transition back to needs_prompt")
+		}
+	}
+	if finished.prev != projection.AttentionWorking {
+		t.Fatalf("prev = %q, want working", finished.prev)
+	}
+	if finished.prevPhase != "turn" {
+		t.Fatalf("prevPhase = %q, want turn — the notifier cannot tell a finished turn from a ready workspace without it", finished.prevPhase)
+	}
+}
+
+// TestInterruptDeliveryStopsTheTurnAndRunsFirst: "interrupt" means the running
+// turn is cut short and this message becomes the next turn. It is never steered
+// — a message handed to a harness that is being told to stop would be read on
+// the way down — and the rest of the queue survives, unlike a cancel.
+func TestInterruptDeliveryStopsTheTurnAndRunsFirst(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil, "")
+	<-fa.session().prompts
+	later, err := actor.Prompt(ctx, "later", nil, proto.DeliveryEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urgent, err := actor.Prompt(ctx, "stop and do this", nil, proto.DeliveryInterrupt)
+	if err != nil || !urgent.Queued() {
+		t.Fatalf("interrupting prompt = %+v, %v; want queued", urgent, err)
+	}
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("an interrupting prompt was steered into the dying turn: %+v", in)
+	default:
+	}
+	state, _ := actor.State(ctx)
+	if len(state.Queued) != 2 || state.Queued[1].Delivery != proto.DeliveryInterrupt || state.Queued[1].Sent {
+		t.Fatalf("queued state = %+v", state.Queued)
+	}
+
+	// The harness reports the cancelled turn; the interrupting prompt starts
+	// the moment it lands, and the held one does not.
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	in := <-fa.session().prompts
+	if in.Text != "stop and do this" || in.TurnID == "" {
+		t.Fatalf("dispatched prompt = %+v", in)
+	}
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return len(next.Queued) == 1 && next.Queued[0].QueueID == later.QueueID && next.Phase == "turn"
+	})
+}
+
+// TestEndDeliveryWaitsForWorkToReallyEnd: a message held until the agent is
+// done must sit through a turn that failed and through a question waiting on
+// the human, and go out on the first turn that actually ends cleanly.
+func TestEndDeliveryWaitsForWorkToReallyEnd(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil, "")
+	<-fa.session().prompts
+	held, err := actor.Prompt(ctx, "when you are done, write it up", nil, proto.DeliveryEnd)
+	if err != nil || !held.Queued() {
+		t.Fatalf("held prompt = %+v, %v; want queued", held, err)
+	}
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("a held prompt was steered into the running turn: %+v", in)
+	default:
+	}
+
+	// A turn that died is not the end of the work.
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopError}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase == "idle"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("held prompt ran after a failed turn: %+v", in)
+	default:
+	}
+	if state, _ := actor.State(ctx); len(state.Queued) != 1 {
+		t.Fatalf("held prompt left the queue: %+v", state.Queued)
+	}
+
+	// Nor is a turn that ended cleanly but left a question standing.
+	second, _ := actor.Prompt(ctx, "carry on", nil, "")
+	<-fa.session().prompts
+	fa.session().emit(proto.Emit(proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "ask", ToolName: "Bash"}))
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: second.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return next.Phase != "turn"
+	})
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("held prompt ran with a permission still pending: %+v", in)
+	default:
+	}
+
+	// Answered, with the last turn clean: now the work has really ended.
+	fa.session().emit(proto.Emit(proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "ask", Outcome: proto.OutcomeAllowOnce}))
+	in := <-fa.session().prompts
+	if in.Text != "when you are done, write it up" || in.TurnID == "" {
+		t.Fatalf("released prompt = %+v", in)
+	}
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return len(next.Queued) == 0 && next.Phase == "turn"
+	})
+}
+
+// TestCancelKeepsAHeldPrompt: stop drops the queue, because a prompt waiting
+// behind the turn would start the instant the interrupt landed. A message held
+// for the end of the work was never waiting behind this turn, so stopping one
+// turn must not throw it away.
+func TestCancelKeepsAHeldPrompt(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil, "")
+	<-fa.session().prompts
+	if _, err := actor.Prompt(ctx, "when you are done, write it up", nil, proto.DeliveryEnd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.Prompt(ctx, "and this one is just queued", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := actor.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	waitFor(t, func() bool {
+		next, _ := actor.State(ctx)
+		return len(next.Queued) == 1 && next.Phase != "turn"
+	})
+	state, _ := actor.State(ctx)
+	if state.Queued[0].Delivery != proto.DeliveryEnd {
+		t.Fatalf("cancel kept the wrong prompt: %+v", state.Queued)
+	}
+	select {
+	case in := <-fa.session().prompts:
+		t.Fatalf("the held prompt ran after a cancel: %+v", in)
+	default:
+	}
+
+	// And it goes out on the next turn that ends cleanly, which is the whole
+	// point of having kept it.
+	clean, err := actor.Prompt(ctx, "carry on", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-fa.session().prompts
+	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: clean.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.session().prompts
+	if in.Text != "when you are done, write it up" {
+		t.Fatalf("released prompt = %+v", in)
+	}
 }

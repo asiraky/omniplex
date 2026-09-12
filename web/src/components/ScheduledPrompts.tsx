@@ -12,6 +12,7 @@ import {
   localDateTime,
   scheduleLabel,
   validateSchedule,
+  zoneOr,
 } from "~/lib/scheduleTime";
 
 export type ScheduleInput = { text: string; dueAt: number; timeZone: string };
@@ -282,8 +283,15 @@ export function ScheduledPrompts({
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
+  // A resume the server armed is not a message anybody scheduled: there is no
+  // text they wrote, nothing to edit, and the failure card in the transcript
+  // already says when it is coming and offers both overrides. Repeating it
+  // here was two boxes for one fact, above a composer that is short of room
+  // on a phone.
   const visible = schedules
-    .filter((p) => p.status !== "sent" && p.status !== "cancelled")
+    .filter(
+      (p) => p.kind !== "resume" && p.status !== "sent" && p.status !== "cancelled",
+    )
     .sort((a, b) => a.dueAt - b.dueAt);
   if (!visible.length) return null;
   async function action(name: string, p: ScheduledPrompt) {
@@ -320,16 +328,14 @@ export function ScheduledPrompts({
             · {scheduleLabel(p.dueAt, p.timeZone)}
           </div>
           <div className="text-xs text-muted-foreground">
-            {p.timeZone}
+            {zoneOr(p.timeZone)}
             {p.status === "pending" && p.dueAt > Date.now()
               ? ` · in ${Math.ceil((p.dueAt - Date.now()) / 60_000)} min`
               : ""}{" "}
             · {p.model || "Default model"}
             {p.effort ? ` · ${p.effort}` : ""}
           </div>
-          <p className="mt-2 line-clamp-3 whitespace-pre-wrap break-words">
-            {p.prompt}
-          </p>
+          <p className="mt-2 line-clamp-3 whitespace-pre-wrap break-words">{p.prompt}</p>
           {!!p.images?.length && (
             <p className="text-xs">{p.images.length} image(s) attached</p>
           )}

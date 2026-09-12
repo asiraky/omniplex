@@ -302,3 +302,39 @@ func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
 		t.Fatalf("prompt item = %+v", it)
 	}
 }
+
+
+// The harness's own account of what it is doing is live state, not history: it
+// lands on the projection, survives further events, and dies with the turn. A
+// stale "waiting for approval" on an idle session is worse than no answer at
+// all. Mirrored by web/src/apply.test.ts.
+func TestActivityIsCarriedAndClearedWithTheTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ActivityUpdated, proto.ActivityUpdatedPayload{Activity: "waiting for approval", Blocked: true}))
+
+	if s.Activity != "waiting for approval" || !s.Blocked {
+		t.Fatalf("activity = %q blocked=%v, want the harness's own words", s.Activity, s.Blocked)
+	}
+	if s.LastEventAt != 2000 {
+		t.Fatalf("lastEventAt = %d, want the head event's timestamp", s.LastEventAt)
+	}
+
+	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	if s.Activity != "" || s.Blocked {
+		t.Fatalf("activity = %q blocked=%v after the turn ended, want cleared", s.Activity, s.Blocked)
+	}
+}
+
+// A subagent's context occupancy is a reading, not a running total: it falls
+// when the subagent compacts, so the newest reading wins outright.
+func TestSubagentContextOccupancyTakesTheNewestReading(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.JobStarted, proto.JobPayload{JobID: "j1", Kind: proto.KindAgent, Status: proto.JobRunning}))
+	s.Apply(event(t, 2, proto.JobUpdated, proto.JobPayload{JobID: "j1", Usage: &proto.JobUsage{ContextUsed: 90000, ContextWindow: 200000}}))
+	s.Apply(event(t, 3, proto.JobUpdated, proto.JobPayload{JobID: "j1", Usage: &proto.JobUsage{ContextUsed: 20000, ContextWindow: 200000}}))
+
+	if got := s.Jobs[0].Usage.ContextUsed; got != 20000 {
+		t.Fatalf("contextUsed = %d, want the newest reading (20000) after a compaction", got)
+	}
+}

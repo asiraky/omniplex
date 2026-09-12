@@ -31,6 +31,13 @@ type conn struct {
 	// can be cut when that device is revoked.
 	deviceID string
 
+	// host is the Host this connection arrived on. Preview addresses are
+	// resolved against it, because the right address for a service depends
+	// on how the client reached us: a phone through Caddy and the machine
+	// itself on loopback are looking at the same port and need different
+	// URLs.
+	host string
+
 	wmu sync.Mutex
 
 	amu      sync.Mutex
@@ -41,15 +48,117 @@ type conn struct {
 	// nobody else could ever answer their prompts.
 	flowMu sync.Mutex
 	flows  map[string]bool
+	// visibleUntil is a lease, not a flag: the moment the client's claim to be
+	// visible stops counting unless it is renewed.
+	//
+	// A flag was wrong on the platform this feature exists for. An iOS home
+	// screen app is suspended when the phone locks, and a suspended app sends
+	// nothing — not the presence update, not even a socket close. The server
+	// went on believing that phone was in front of somebody until a ping
+	// failed, up to 40 seconds later, and because the rule is global that one
+	// frozen phone suppressed the push to every other device too. The failure
+	// was silent and looked exactly like the feature not working.
+	//
+	// A lease inverts that. Presence now decays on its own and has to be kept
+	// alive, so a client that cannot speak stops counting without having to
+	// tell us anything. It fails towards sending a notification.
+	//
+	// It starts as the zero time, which is already expired: a socket opens
+	// before the client has said anything, and a connection that has not
+	// claimed to be visible must not be counted as somebody watching.
+	pmu          sync.Mutex
+	visibleUntil time.Time
 }
 
-func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID string) {
+// presenceLease is how long one presence report is believed.
+//
+// The client renews every presenceRenew while it is visible, so this only has
+// to outlast a missed renewal or two on a bad connection — the 4G round trips
+// this app assumes are normal. Longer means a sleeping phone keeps everything
+// else quiet for longer; shorter means a stalled network silently turns into
+// notifications you did not need. Two missed renewals is the compromise.
+const presenceLease = 25 * time.Second
+
+// setVisible records the client's document visibility.
+//
+// Visible takes a lease. Hidden clears it outright rather than letting it
+// lapse: a client that says it is hidden is telling us something it knows,
+// and there is no reason to wait out the lease before believing it.
+func (c *conn) setVisible(v bool) {
+	c.pmu.Lock()
+	if v {
+		c.visibleUntil = time.Now().Add(presenceLease)
+	} else {
+		c.visibleUntil = time.Time{}
+	}
+	c.pmu.Unlock()
+}
+
+func (c *conn) isVisible() bool {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	return time.Now().Before(c.visibleUntil)
+}
+
+// isAttached reports whether this connection is streaming a given session.
+func (c *conn) isAttached(sessionID string) bool {
+	c.amu.Lock()
+	defer c.amu.Unlock()
+	_, ok := c.attached[sessionID]
+	return ok
+}
+
+// watchingSession reports whether any connection, on any device, is both
+// looking at the app and attached to this session — the one case where a
+// notification would be telling somebody what they just watched happen.
+func (s *Server) watchingSession(sessionID string) bool {
+	s.liveMu.Lock()
+	conns := make([]*conn, 0, len(s.live))
+	for c := range s.live {
+		conns = append(conns, c)
+	}
+	s.liveMu.Unlock()
+
+	for _, c := range conns {
+		if c.isVisible() && c.isAttached(sessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+// notifyVisible sends an in-app notification to every connection that is
+// looking at the app, and reports how many were told.
+//
+// The count is the caller's signal that a human is at a screen: zero means
+// nobody saw it and the message has to chase them onto a device instead.
+func (s *Server) notifyVisible(note notification) int {
+	s.liveMu.Lock()
+	conns := make([]*conn, 0, len(s.live))
+	for c := range s.live {
+		conns = append(conns, c)
+	}
+	s.liveMu.Unlock()
+
+	sent := 0
+	for _, c := range conns {
+		if !c.isVisible() {
+			continue
+		}
+		c.send(serverFrame{Type: "notify", Notification: &note})
+		sent++
+	}
+	return sent
+}
+
+func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID, host string) {
 	c := &conn{
 		srv:      s,
 		ws:       ws,
 		id:       uuid.NewString(),
 		ctx:      ctx,
 		deviceID: deviceID,
+		host:     host,
 		attached: map[string]context.CancelFunc{},
 		flows:    map[string]bool{},
 	}
@@ -85,6 +194,12 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	projectsID, projectsCh := s.mgr.SubscribeProjects()
 	defer s.mgr.UnsubscribeProjects(projectsID)
 
+	// Previews are machine-level live state, pushed whole on change like the
+	// label set. Only on change: a dev server that keeps running should cost
+	// nothing on a 4G connection.
+	previewsID, previewsCh := s.previews.Subscribe()
+	defer s.previews.Unsubscribe(previewsID)
+
 	go func() {
 		for {
 			select {
@@ -98,6 +213,8 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 				c.sendLabels()
 			case <-projectsCh:
 				c.sendProjects()
+			case <-previewsCh:
+				c.send(serverFrame{Type: "previews", Previews: s.previewsFor(c.host)})
 			}
 		}
 	}()
@@ -133,6 +250,7 @@ func (c *conn) dispatch(f clientFrame) {
 			Harnesses: c.srv.mgr.Harnesses(c.ctx),
 			Projects:  projects,
 			Labels:    labels,
+			Previews:  c.srv.previewsFor(c.host),
 			Cwd:       c.srv.defaultCwd,
 			Access:    c.srv.access(c.ctx),
 		})
@@ -149,6 +267,13 @@ func (c *conn) dispatch(f clientFrame) {
 		// connection's other frames. Acks carry their commandId, so order
 		// does not matter.
 		go c.command(f)
+
+	case "presence":
+		// Whether this browser is actually in front of the user. It decides
+		// whether a finished turn becomes a toast here or a push to their
+		// phone, so it is its own tiny frame rather than something inferred:
+		// a tab can be open for days behind an editor.
+		c.setVisible(f.Visible)
 
 	case "ping":
 		c.send(serverFrame{Type: "pong"})
@@ -240,6 +365,10 @@ func (c *conn) attach(f clientFrame) {
 		actor.Unsubscribe(sub)
 	}
 	c.amu.Unlock()
+
+	// Opening a session is the moment its previews matter, so detect now
+	// rather than up to a poll interval later.
+	c.srv.previewWatch.Nudge()
 
 	// 2. Drain the live queue. Events at or below the catch-up point are
 	//    dropped here; the client also discards seq <= lastApplied.
@@ -494,7 +623,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			c.srv.mgr.NotifyList()
 			return map[string]any{"scheduleId": a.ID}, nil
 		}
-		res, err := actor.Prompt(ctx, a.Text, images)
+		res, err := actor.Prompt(ctx, a.Text, images, a.Delivery)
 		if err != nil {
 			return nil, err
 		}
@@ -556,6 +685,24 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		c.srv.mgr.NotifyList()
 		return map[string]any{"turnId": turnID}, nil
+
+	case "set_auto_resume":
+		var a autoResumeArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		// Get, not View: arming reads the session's own settings onto the
+		// scheduled entry, and a resume has to be able to start a turn.
+		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		armed, err := actor.SetAutoResume(ctx, a.Enabled)
+		if err != nil {
+			return nil, err
+		}
+		c.srv.mgr.NotifyList()
+		return map[string]any{"scheduled": armed}, nil
 
 	case "cancel":
 		var a sessionArgs

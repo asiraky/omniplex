@@ -267,7 +267,7 @@ func TestTurnDiffLandsOnTheTurnItMeasured(t *testing.T) {
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
 
-	res, err := actor.Prompt(ctx, "do some work", nil)
+	res, err := actor.Prompt(ctx, "do some work", nil, "")
 	turnID := res.TurnID
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +356,7 @@ func TestTurnDiffIgnoresChangesMadeBetweenTurns(t *testing.T) {
 
 	runTurn := func(prompt string, work func()) string {
 		t.Helper()
-		res, err := actor.Prompt(ctx, prompt, nil)
+		res, err := actor.Prompt(ctx, prompt, nil, "")
 		turnID := res.TurnID
 		if err != nil {
 			t.Fatal(err)
@@ -436,7 +436,7 @@ func TestNoCheckpointsOutsideARepository(t *testing.T) {
 		t.Fatal("checkpointing started outside a repository")
 	}
 
-	res, err := actor.Prompt(ctx, "work", nil)
+	res, err := actor.Prompt(ctx, "work", nil, "")
 	turnID := res.TurnID
 	if err != nil {
 		t.Fatal(err)

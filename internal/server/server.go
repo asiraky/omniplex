@@ -23,7 +23,9 @@ import (
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/overlay"
+	"github.com/asiraky/omniplex/internal/preview"
 	"github.com/asiraky/omniplex/internal/projection"
+	"github.com/asiraky/omniplex/internal/push"
 	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
 )
@@ -55,6 +57,15 @@ type Server struct {
 	attachments *attachment.Store
 	logf        func(string, ...any)
 
+	// previews holds the dev servers each session is running, and previewRouter
+	// publishes them on their own origins. With no preview domain configured
+	// the router still resolves LAN and loopback addresses; it simply never
+	// hands out a subdomain it knows would not resolve.
+	previews      *preview.Registry
+	previewAuth   *preview.Auth
+	previewRouter *preview.Router
+	previewWatch  *preview.Watcher
+
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
 	liveMu sync.Mutex
@@ -64,7 +75,18 @@ type Server struct {
 	// a revoked phone must not keep an interactive shell.
 	termMu   sync.Mutex
 	termLive map[*websocket.Conn]string
+
+	// push sends Web Push notifications. Built on first use rather than at
+	// startup, because it mints a VAPID keypair and most runs never need one.
+	pushMu sync.Mutex
+	push   *push.Sender
 }
+
+// baseCtx is a context for work the server does on its own behalf, with no
+// request behind it — reading the VAPID keys, sending a notification after a
+// turn ends. It is not tied to any connection, because the whole point of a
+// notification is that nobody is connected.
+func (s *Server) baseCtx() context.Context { return context.Background() }
 
 type Options struct {
 	Manager    *session.Manager
@@ -88,6 +110,11 @@ type Options struct {
 	// a deploy verifiable: without it "the server restarted" and "the server
 	// restarted running the new binary" look identical from outside.
 	Commit string
+	// PreviewDomain is the parent domain a wildcard certificate covers, e.g.
+	// "agent.example.net". Previews are published as
+	// <id>.<PreviewDomain>. Empty means no wildcard exists, so previews are
+	// still detected and still linkable on the LAN, but nothing is published.
+	PreviewDomain string
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
@@ -111,6 +138,13 @@ func New(o Options) *Server {
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}
 	}
+	// Notifications follow whose-turn-is-it, so the server watches the one
+	// signal that already answers that rather than trying to recognise a
+	// finished turn from the event stream. See notify.go.
+	if o.Manager != nil {
+		o.Manager.OnAttention(s.handleAttention)
+		o.Manager.OnNotice(s.handleNotice)
+	}
 	if o.WebFS != nil {
 		// Prepared once: hashing the bundle per request would put a read of
 		// every file on the hot path for content that cannot change.
@@ -118,12 +152,39 @@ func New(o Options) *Server {
 			s.web = assets
 		}
 	}
+	s.previews = preview.NewRegistry()
+	if a, err := preview.NewAuth(); err == nil {
+		s.previewAuth = a
+		s.previewRouter = preview.NewRouter(s.previews, a, o.PreviewDomain, s.logf)
+	}
+	s.previewWatch = preview.NewWatcher(s.previews, s.previewTargets, 0)
+	// This server's own ports are not previews of the sessions whose
+	// checkouts they run in — including Vite's, which is this UI rather than
+	// anything the session is building.
+	if o.Endpoints != nil {
+		s.previews.Exclude(o.Endpoints.Port())
+	}
+	if o.DevViteURL != "" {
+		if u, err := url.Parse(o.DevViteURL); err == nil {
+			if port, convErr := strconv.Atoi(u.Port()); convErr == nil {
+				s.previews.Exclude(port)
+			}
+		}
+	}
+
 	if o.DevViteURL != "" {
 		if target, err := url.Parse(o.DevViteURL); err == nil {
 			s.devProxy = devProxy(target)
 		}
 	}
 	return s
+}
+
+// Run drives the background work a server owns for as long as ctx lives.
+// Today that is preview detection; it is a method rather than a goroutine
+// started in New so that a test can construct a server without one.
+func (s *Server) Run(ctx context.Context) {
+	s.previewWatch.Run(ctx)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -294,11 +355,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/sessions/{id}/attachments/{attachmentId}", s.handleGetAttachment)
 
+	// Web Push. The key route is a GET because a browser asks for it on every
+	// load to reconcile what it holds against what the server has.
+	mux.HandleFunc("GET /api/push/key", s.handlePushKey)
+	mux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
+	mux.HandleFunc("POST /api/push/unsubscribe", s.handlePushUnsubscribe)
+	mux.HandleFunc("POST /api/push/test", s.handlePushTest)
+
 	mux.HandleFunc("/ws", s.serveWS)
 
 	// A pty per open terminal tab, scoped to the session's checkout. Behind
 	// the gate like everything else: private by default.
 	mux.HandleFunc("/api/term", s.serveTerm)
+
+	// Opening a preview is a redirect the server issues, because only it
+	// knows which of the several addresses a service has is the one this
+	// request can actually reach, and only it can mint the ticket.
+	mux.HandleFunc("GET /api/previews/{id}/open", s.handleOpenPreview)
 
 	// In development the bundle on disk is stale or absent, so Vite is the
 	// source of truth for everything that is not the API.
@@ -309,7 +382,20 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", s.web.handler())
 	}
 
-	return withCORS(compressHTTP(s.gate(mux)), s.allowAny)
+	main := withCORS(compressHTTP(s.gate(mux)), s.allowAny)
+
+	// Preview hosts are served ahead of everything else, and outside the
+	// gate: a preview carries its own credential, so running it through a
+	// gate that knows only about device cookies would redirect every one of
+	// them to the pairing page. Compression is skipped too, since whatever
+	// the dev server chose is already applied by the time we see it.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.previewRouter.PreviewID(r.Host); ok {
+			s.previewRouter.ServeHTTP(w, r)
+			return
+		}
+		main.ServeHTTP(w, r)
+	})
 }
 
 func isScriptExtension(name string) bool {
@@ -409,7 +495,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	device, _ := auth.DeviceFrom(r.Context())
-	s.handleWS(ws, ctx, device.ID)
+	s.handleWS(ws, ctx, device.ID, r.Host)
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 }
 

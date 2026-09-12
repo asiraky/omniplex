@@ -19,6 +19,21 @@ the grace window for messages previously waiting on a busy session. Failed and
 missed messages stay available for explicit retry or rescheduling. Provider
 limits and requests for human input can still prevent completion.
 
+## Resuming after a usage limit
+
+A turn that ends because the provider's usage or spend window is exhausted arms
+a scheduled prompt of its own, so the rails above carry the wait: the entry is
+an event in the log, the scheduler finds it without attaching anything, and a
+five-hour wait survives a server restart. It is due at the time the harness
+named plus a small buffer, or — when the harness named no time — after a
+backoff that grows with each attempt (30m, 1h, 2h, 3h, 4h, 5h, 10h) and then
+gives up. These entries read differently in the list ("Resuming after the usage
+limit"), cannot be edited, carry no authoring timezone so they show in the
+reader's own, and are cancelled by any turn a human starts. The behaviour is a
+machine-wide flag under **Usage limits** in settings, on by default, and every
+limited turn can override it from the switch on its own card. A session that
+picks its work back up says so in the transcript and sends a push.
+
 ## Persistence
 
 Startup creates the SQLite `scheduled_prompts` table and `scheduled_due` index.

@@ -178,6 +178,15 @@ describe("queued prompts", () => {
     s = applyEvent(s, ev(4, "prompt.dequeued", { queueId: "q1", reason: "removed" }));
     expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q2"]);
   });
+
+  it("keeps the delivery, which is what tells a held prompt from a queued one", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "prompt.queued", { queueId: "q1", prompt: "later", delivery: "end" }));
+    s = applyEvent(s, ev(3, "prompt.queued", { queueId: "q2", prompt: "now-ish" }));
+    expect(s.queuedPrompts[0].delivery).toBe("end");
+    expect(s.queuedPrompts[1].delivery).toBeUndefined();
+  });
 });
 
 describe("a queued prompt starting", () => {
@@ -221,5 +230,29 @@ describe("a sent prompt", () => {
     expect(s.title).toBe("next");
     expect(s.items.map((it) => it.id)).toEqual(["prompt:t2"]);
     expect(s.items[0].images).toHaveLength(1);
+  });
+});
+
+// Mirrors internal/projection/state_test.go: the harness's own account of what
+// it is doing is live state, so it lands on the state and dies with the turn.
+describe("liveness", () => {
+  it("carries the harness's activity and drops it when the turn ends", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }, 1000));
+    s = applyEvent(s, ev(2, "activity.updated", { activity: "waiting for approval", blocked: true }, 2000));
+    expect(s.activity).toBe("waiting for approval");
+    expect(s.blocked).toBe(true);
+    expect(s.lastEventAt).toBe(2000);
+
+    s = applyEvent(s, ev(3, "turn.finished", { turnId: "t1", stopReason: "end_turn" }, 3000));
+    expect(s.activity).toBe("");
+    expect(s.blocked).toBe(false);
+  });
+
+  it("tracks the newest event's timestamp, whatever the event was", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1" }, 1000));
+    s = applyEvent(s, ev(2, "message.chunk", { messageId: "m1", text: "hi" }, 9000));
+    expect(s.lastEventAt).toBe(9000);
   });
 });

@@ -236,6 +236,13 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	// The token is gone from the database, but a socket it already opened was
 	// only authorised once, at upgrade. Cut it.
 	s.closeDevice(id)
+	// A push subscription is a capability that outlives the token entirely:
+	// the push service will keep delivering to that browser whether or not it
+	// can still reach this server. Revoking a device that is not coming back
+	// has to take its notifications with it.
+	if err := s.store.DeleteDeviceSubscriptions(r.Context(), id); err != nil {
+		s.logf("push: drop subscriptions for revoked device: %v", err)
+	}
 	// Revoking the device you are using should also drop your own cookie,
 	// so the browser does not keep presenting a token that no longer exists.
 	if current, ok := auth.DeviceFrom(r.Context()); ok && current.ID == id {

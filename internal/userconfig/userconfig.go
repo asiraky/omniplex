@@ -47,6 +47,19 @@ type Config struct {
 	// settings still gets a usable summary — and clearing the box is how you
 	// go back to the default rather than a separate stored flag.
 	SummaryPrompt string `json:"summaryPrompt,omitempty"`
+	// PreviewDomain is the parent domain a wildcard certificate and a wildcard
+	// DNS record cover, e.g. "agent.example.net". A session's dev
+	// servers are published as <id>.<PreviewDomain>, which is what makes them
+	// reachable from a phone. Empty is the honest default: with no wildcard
+	// in place such a hostname resolves nowhere, so previews stay local-only
+	// rather than being advertised as links that cannot work.
+	PreviewDomain string `json:"previewDomain,omitempty"`
+	// AutoResumeOnLimit continues work a provider's usage or spend limit cut
+	// short, once the window it named reopens. Nil means on: the failure is
+	// unambiguous, the wait is otherwise dead time, and every resume it starts
+	// is announced. A single session can still override it from the card the
+	// failed turn leaves behind.
+	AutoResumeOnLimit *bool `json:"autoResumeOnLimit,omitempty"`
 	// Providers declares provider instances — configured accounts for the
 	// harness adapters. Entries are held raw and written back verbatim: an
 	// entry naming a driver this build has never heard of must survive a

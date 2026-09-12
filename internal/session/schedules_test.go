@@ -84,7 +84,7 @@ func TestScheduledBusyWaitDoesNotExpireAndNormalQueueIsNotBlocked(t *testing.T) 
 	if err := a.Schedule(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	turn, err := a.Prompt(ctx, "now", nil)
+	turn, err := a.Prompt(ctx, "now", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestScheduledBusyWaitSurvivesHarnessExit(t *testing.T) {
 	if err := a.Schedule(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Prompt(ctx, "busy", nil); err != nil {
+	if _, err := a.Prompt(ctx, "busy", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	<-fa.session().prompts

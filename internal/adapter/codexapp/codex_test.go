@@ -344,3 +344,117 @@ func TestTrustArgsSkipsAnEmptyCwd(t *testing.T) {
 		t.Fatalf("trustArgs(\"\") = %q, want nil", args)
 	}
 }
+
+// TestCollabSpawnOpensAJobRow: the whole point of the polyfill. Codex runs a
+// subagent as its own thread and says so through a collab tool call; without
+// this, a spawned agent was a tool call that never visibly ended and the
+// roster stayed empty.
+func TestCollabSpawnOpensAJobRow(t *testing.T) {
+	s := subagentSession(t)
+	s.handleItem(false, "turn-a", "", json.RawMessage(`{"item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","prompt":"trace the leak","receiverThreadIds":["agent-9"]}}`))
+
+	got := drain(s)
+	if len(got) != 2 {
+		t.Fatalf("emissions = %+v, want the tool call and the job", got)
+	}
+	if got[0].Type != proto.ToolCallStarted {
+		t.Fatalf("first emission = %s, want a tool call", got[0].Type)
+	}
+	if got[1].Type != proto.JobStarted {
+		t.Fatalf("second emission = %s, want job.started", got[1].Type)
+	}
+	job := got[1].Payload.(proto.JobPayload)
+	if job.JobID != "agent-9" || job.Kind != proto.JobAgent || job.ToolCallID != "call-1" {
+		t.Fatalf("job = %+v, want the spawned thread tied to its tool call", job)
+	}
+}
+
+// TestSubagentFinishingClosesItsJob is the bug the user hit: the subagents had
+// finished and nothing in omniplex ever said so.
+func TestSubagentFinishingClosesItsJob(t *testing.T) {
+	s := subagentSession(t)
+	s.handleItem(false, "turn-a", "", json.RawMessage(`{"item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","receiverThreadIds":["agent-9"]}}`))
+	drain(s)
+
+	s.handleItem(true, "turn-a", "", json.RawMessage(`{"item":{"type":"subAgentActivity","id":"act-1","agentThreadId":"agent-9","agentPath":"reviewer","kind":"completed"}}`))
+
+	got := drain(s)
+	if len(got) != 1 || got[0].Type != proto.JobFinished {
+		t.Fatalf("emissions = %+v, want one job.finished", got)
+	}
+	if p := got[0].Payload.(proto.JobPayload); p.JobID != "agent-9" || p.Status != proto.JobCompleted {
+		t.Fatalf("finish = %+v, want agent-9 completed", p)
+	}
+
+	// And only once, however many ways codex says it again.
+	s.handleItem(true, "turn-a", "", json.RawMessage(`{"item":{"type":"subAgentActivity","id":"act-1","agentThreadId":"agent-9","kind":"completed"}}`))
+	if got := drain(s); len(got) != 0 {
+		t.Fatalf("repeated completion emitted %+v, want nothing", got)
+	}
+}
+
+// A subagent's thread knows its own context window — the reading the claude
+// path cannot produce — and it belongs on that subagent's row.
+func TestSubagentTokenUsageLandsOnItsJob(t *testing.T) {
+	s := subagentSession(t)
+	s.turnID = "turn-a"
+	s.handleItem(false, "turn-a", "", json.RawMessage(`{"item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","receiverThreadIds":["agent-9"]}}`))
+	drain(s)
+
+	s.handleSubagentNotification("thread/tokenUsage/updated", "agent-9", "turn-a", json.RawMessage(
+		`{"threadId":"agent-9","tokenUsage":{"total":{"inputTokens":800,"outputTokens":200},"last":{"totalTokens":50000},"modelContextWindow":200000}}`))
+
+	got := drain(s)
+	if len(got) != 1 || got[0].Type != proto.JobUpdated {
+		t.Fatalf("emissions = %+v, want one job.updated", got)
+	}
+	u := got[0].Payload.(proto.JobPayload).Usage
+	if u == nil || u.TotalTokens != 1000 || u.ContextUsed != 50000 || u.ContextWindow != 200000 {
+		t.Fatalf("usage = %+v, want 1000 tokens and 50k of a 200k window", u)
+	}
+}
+
+// A subagent going idle is waiting for its parent's next instruction, not
+// done: reaping it there would take the row away mid-conversation.
+func TestIdleSubagentIsNotFinished(t *testing.T) {
+	s := subagentSession(t)
+	s.handleItem(false, "turn-a", "", json.RawMessage(`{"item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","receiverThreadIds":["agent-9"]}}`))
+	drain(s)
+
+	s.handleSubagentNotification("thread/status/changed", "agent-9", "turn-a", json.RawMessage(
+		`{"threadId":"agent-9","status":{"type":"idle","activeFlags":[]}}`))
+
+	for _, e := range drain(s) {
+		if e.Type == proto.JobFinished {
+			t.Fatalf("idle closed the subagent's row: %+v", e)
+		}
+	}
+	if j := s.agentJobs["agent-9"]; j == nil || j.done {
+		t.Fatalf("agent job = %+v, want it still open", j)
+	}
+}
+
+// Codex's own answer to "are you still working", which is the signal a spinner
+// cannot give: busy and stuck-waiting-on-a-human look identical without it.
+func TestThreadStatusBecomesActivity(t *testing.T) {
+	s := subagentSession(t)
+	s.handleNotification("thread/status/changed", json.RawMessage(
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]}}`))
+
+	got := drain(s)
+	if len(got) != 1 || got[0].Type != proto.ActivityUpdated {
+		t.Fatalf("emissions = %+v, want one activity.updated", got)
+	}
+	p := got[0].Payload.(proto.ActivityUpdatedPayload)
+	if p.Activity != "waiting for approval" || !p.Blocked {
+		t.Fatalf("activity = %+v, want a blocked wait for approval", p)
+	}
+
+	// Level-triggered: codex resends the same status freely, and this log is
+	// durable, so only the edge travels.
+	s.handleNotification("thread/status/changed", json.RawMessage(
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]}}`))
+	if got := drain(s); len(got) != 0 {
+		t.Fatalf("a resent status emitted %+v, want nothing", got)
+	}
+}

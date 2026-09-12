@@ -191,7 +191,11 @@ type Turn struct {
 	// Failure classifies Error, so a presenter branches on a kind rather than
 	// on the wording of a message.
 	Failure string `json:"failure,omitempty"`
-	Done    bool   `json:"done"`
+	// ResetAt is when a usage limit lifts, in unix milliseconds, and is set
+	// only on a turn whose Failure says one stopped it. Zero means the
+	// harness named a limit but no time.
+	ResetAt int64 `json:"resetAt,omitempty"`
+	Done    bool  `json:"done"`
 	// Recovery is set when the server started this turn itself to continue
 	// work a restart interrupted.
 	Recovery *proto.TurnRecovery `json:"recovery,omitempty"`
@@ -215,6 +219,10 @@ type QueuedPrompt struct {
 	// Sent means the harness holds it and reads it at its next step; it
 	// cannot be taken back.
 	Sent bool `json:"sent,omitempty"`
+	// Delivery is how the human asked for it to reach the agent. Only
+	// proto.DeliveryEnd changes what a presenter shows: that prompt is
+	// waiting for the work to genuinely end, not for the next gap in it.
+	Delivery string `json:"delivery,omitempty"`
 }
 
 // PendingPermission is a permission request awaiting a human. It lives in the
@@ -268,6 +276,20 @@ type State struct {
 	Phase            string         `json:"phase"` // idle | turn | closed
 	Closed           bool           `json:"closed"`
 	Workspace        WorkspaceState `json:"workspace"`
+
+	// LastEventAt is when this session last produced anything at all. A
+	// presenter reads it to answer the question a spinner cannot: a turn that
+	// is streaming and a turn that has been silent for four minutes look
+	// identical without it. Free to carry — it is the head event's own
+	// timestamp, not a new fact.
+	LastEventAt int64 `json:"lastEventAt,omitempty"`
+	// Activity is what the harness says it is doing right now, when it says
+	// anything: "waiting on approval", "retrying after an API error".
+	// Ephemeral by nature but carried on the state because a client that
+	// attaches mid-turn needs it as much as one that was here all along.
+	Activity string `json:"activity,omitempty"`
+	// Blocked marks an Activity the harness cannot leave without a human.
+	Blocked bool `json:"blocked,omitempty"`
 
 	Items []Item `json:"items"`
 	// ItemsBefore is how many items were trimmed from the front of Items when
@@ -395,6 +417,14 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		if p.Usage.Cost > 0 {
 			j.Usage.Cost = p.Usage.Cost
 		}
+		// Occupancy is a reading, not a total: it falls when the subagent
+		// compacts, and the newest reading is the true one.
+		if p.Usage.ContextUsed > 0 {
+			j.Usage.ContextUsed = p.Usage.ContextUsed
+		}
+		if p.Usage.ContextWindow > 0 {
+			j.Usage.ContextWindow = p.Usage.ContextWindow
+		}
 	}
 	if p.Error != "" {
 		j.Error = p.Error
@@ -461,6 +491,9 @@ func (s *State) Apply(ev proto.Event) {
 		return
 	}
 	s.Seq = ev.Seq
+	if ev.Timestamp > s.LastEventAt {
+		s.LastEventAt = ev.Timestamp
+	}
 
 	switch ev.Type {
 	case proto.SessionCreated:
@@ -614,7 +647,7 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PromptQueued:
 		var p proto.PromptQueuedPayload
 		decode(ev.Payload, &p)
-		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp, Sent: p.Sent})
+		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp, Sent: p.Sent, Delivery: p.Delivery})
 
 	case proto.PromptInjected:
 		// The harness read a prompt it was holding into the running turn.
@@ -689,12 +722,17 @@ func (s *State) Apply(ev proto.Event) {
 				s.Turns[i].StopReason = p.StopReason
 				s.Turns[i].Error = p.Error
 				s.Turns[i].Failure = p.Failure
+				s.Turns[i].ResetAt = p.ResetAt
 				s.Turns[i].Done = true
 				s.Turns[i].FinishedAt = ev.Timestamp
 			}
 		}
 		if match {
 			s.Phase = "idle"
+			// Whatever the harness was doing, it is not doing it any more.
+			// An activity that outlives its turn is the stalest possible
+			// signal: it says "waiting on approval" at an idle session.
+			s.Activity, s.Blocked = "", false
 			// Any tool of this turn left mid-flight was interrupted, not
 			// broken: it is cancelled, never failed. A call that is standing
 			// for a live job is left alone — it outlived its turn on purpose,
@@ -809,6 +847,11 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.UsageUpdatedPayload
 		decode(ev.Payload, &p)
 		s.Usage = p
+
+	case proto.ActivityUpdated:
+		var p proto.ActivityUpdatedPayload
+		decode(ev.Payload, &p)
+		s.Activity, s.Blocked = p.Activity, p.Blocked
 
 	case proto.ContextCompacted:
 		var p proto.ContextCompactedPayload

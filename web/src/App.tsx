@@ -3,7 +3,7 @@ import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useSessionPR } from "./useSessionPR";
-import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UserConfig, Workspace } from "./protocol";
+import type { Access, AuthFlowEvent, ComposerItem, Delivery, FileContent, FileDiff, FileTree, HarnessMeta, Label, PreviewSet, Project, ProjectConfig, PullRequest, SessionChanges, SessionMeta, SessionState, SessionSummary, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -12,6 +12,7 @@ import { Composer, type ComposerHandle } from "./components/Composer";
 import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./components/ScheduledPrompts";
 import type { ScheduledPrompt } from "./protocol";
 import { JobsStrip } from "./components/JobsStrip";
+import { PreviewStrip } from "./components/PreviewStrip";
 import { NewSession } from "./components/NewSession";
 import type { NewSessionInput } from "./components/NewSession";
 import { PermissionPrompt } from "./components/PermissionPrompt";
@@ -34,14 +35,15 @@ import { Transcript } from "./components/Transcript";
 import { IconButton } from "./components/IconButton";
 import { Button } from "./components/ui/button";
 import { Spinner } from "./components/ui/spinner";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./components/ui/select";
 import { isSupportedImage, MAX_IMAGE_BYTES, prepareImage, uploadAttachment, type Attachment } from "./lib/attachments";
+import { QuickView, type QuickViewTarget } from "./components/QuickView";
+import {
+  composePrompt,
+  countLines,
+  type Blob as ComposerBlob,
+  type BlobOrigin,
+  type FileRef,
+} from "./lib/composerRefs";
 import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "./lib/recentSkills";
 import { loadResume } from "./resume";
 import { cn } from "./lib/utils";
@@ -63,7 +65,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { enable as enablePush, invitable } from "./lib/push";
+import { markInvited, shouldInvite } from "./lib/pushInvite";
+import { listenToWorker, sessionFromLaunchURL } from "./lib/pwa";
+
 const LAST_SESSION = "omniplex.lastSession";
+
+// The session a notification was tapped to open, when the app was not already
+// running. Read at module scope so the address bar is cleaned on the first
+// evaluation rather than on a render that might not happen; see pwa.ts.
+const launchSession = sessionFromLaunchURL();
 
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
@@ -73,11 +84,6 @@ const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({
 const ProvidersSettings = lazy(() => import("./components/ProvidersSettings"));
 const InstanceAuthDialog = lazy(() => import("./components/AuthFlowDialog"));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
-
-// The permission-mode switcher is parked, not removed: changing modes mid-chat
-// is not something we want to offer right now, and hiding it is cheaper to
-// reverse than deleting it. Flip this to bring it back.
-const SHOW_MODE_SWITCHER = false;
 
 export function App() {
   const [scheduleEditor, setScheduleEditor] = useState<{id: string; sessionId: string; text: string; imageIds: string[]; schedule?: ScheduledPrompt} | null>(null);
@@ -103,6 +109,10 @@ export function App() {
   // written after commit, never during render, so it can only ever hold a
   // value the UI actually rendered.
   const activeRef = useRef<string | null>(resume?.state.sessionId ?? null);
+  // select is defined further down but is needed by callbacks registered once,
+  // at connect, and by messages arriving from the service worker. A ref keeps
+  // those pointing at the current one rather than at the first render's.
+  const selectRef = useRef<((id: string) => void) | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [harnesses, setHarnesses] = useState<HarnessMeta[]>([]);
@@ -111,6 +121,9 @@ export function App() {
   // The user's label definitions, server-owned: every mutation round-trips
   // and comes back as a broadcast, so paired devices all render the same set.
   const [labels, setLabels] = useState<Label[]>([]);
+  // Previews arrive for every session at once, because they are machine-level
+  // live state; the strip only ever shows the open one's.
+  const [previews, setPreviews] = useState<PreviewSet[]>([]);
   const [manageLabels, setManageLabels] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(resume?.state.sessionId ?? null);
   const [state, setState] = useState<SessionState | null>(resume?.state ?? null);
@@ -133,6 +146,15 @@ export function App() {
   // upload starts as soon as a picture is picked, so by send time this is a
   // list of ids the server already holds.
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
+  // Large pastes collapsed to chips, per session and for the same reason as
+  // the drafts and the images. Unlike an image these never leave the browser
+  // until the message is sent: there is nothing to upload, the text is folded
+  // into the prompt at send time.
+  const [blobs, setBlobs] = useState<Record<string, ComposerBlob[]>>({});
+  // What a chip is showing full size, if anything. Up here rather than in the
+  // Composer so it survives the remount a session switch causes, and so the
+  // dialog is not clipped by the composer's own stacking context.
+  const [quickView, setQuickView] = useState<QuickViewTarget | null>(null);
   const [composerRevision, setComposerRevision] = useState(0);
   // Where each session's transcript was scrolled, kept up here for the same
   // reason as the drafts: switching sessions unmounts the Transcript, so a
@@ -308,9 +330,9 @@ export function App() {
     (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
     [],
   );
-  const openJobs = useCallback(() => {
+  const openJobs = useCallback((jobId?: string) => {
     setShowChanges(true);
-    setPanelRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
+    setPanelRequest((current) => ({ kind: "jobs", jobId, nonce: (current?.nonce ?? 0) + 1 }));
   }, []);
 
   const openPath = useCallback((path: string, line?: number) => {
@@ -353,12 +375,25 @@ export function App() {
       },
       onProjects: setProjects,
       onLabels: setLabels,
+      onPreviews: setPreviews,
       // State only lands for the session currently attached; the client
       // discards anything else.
       onState: (id, s) => {
         if (id === activeRef.current) setState(s);
       },
       onAccess: setAccess,
+      // An alert for a session other than the one on screen. It is a toast
+      // rather than a system notification on purpose: the user is already
+      // looking at this window, and a banner over it would be the operating
+      // system telling them something the app could just say.
+      onNotify: (note) => {
+        toast(note.title, {
+          description: note.body,
+          action: note.sessionId
+            ? { label: "Open", onClick: () => selectRef.current?.(note.sessionId!) }
+            : undefined,
+        });
+      },
     });
     clientRef.current = client;
     // A resumed page attaches where it left off: the client carries the
@@ -382,6 +417,13 @@ export function App() {
   useEffect(() => {
     if (!sessionsLoaded || restoreAttempted.current) return;
     restoreAttempted.current = true;
+    // Launched by tapping a notification with nothing already open. That
+    // session wins over both the resume cache and the last-session memory:
+    // the user just said which one they wanted.
+    if (launchSession && sessions.some((s) => s.id === launchSession && s.phase !== "closed")) {
+      select(launchSession);
+      return;
+    }
     if (activeId) {
       // Hydrated from the resume cache before the list could say whether the
       // session still exists. It usually does; when it doesn't — deleted or
@@ -430,6 +472,87 @@ export function App() {
     },
     [isDesktop],
   );
+
+  useEffect(() => {
+    selectRef.current = select;
+  }, [select]);
+
+  // Presence, and what the service worker has to say.
+  //
+  // The server decides where a finished turn is announced, and it can only do
+  // that if it knows which devices are actually being looked at — so document
+  // visibility is reported as it changes rather than inferred from the socket
+  // being open. A tab can sit open behind an editor for days.
+  useEffect(() => {
+    const report = () => clientRef.current?.presence(document.visibilityState === "visible");
+    const hide = () => clientRef.current?.presence(false);
+    report();
+    document.addEventListener("visibilitychange", report);
+    // pageshow covers the phone case the visibility event misses: a page
+    // restored from the back-forward cache never fires visibilitychange, and
+    // would otherwise be presumed hidden for the rest of its life.
+    window.addEventListener("pageshow", report);
+    // pagehide is the last thing an iOS app reliably gets before it is frozen
+    // or discarded, and it often fires when visibilitychange does not. Saying
+    // "hidden" here clears the lease outright instead of leaving the server to
+    // wait it out. When even this is missed, the lease expiring covers it.
+    window.addEventListener("pagehide", hide);
+    return () => {
+      document.removeEventListener("visibilitychange", report);
+      window.removeEventListener("pageshow", report);
+      window.removeEventListener("pagehide", hide);
+    };
+  }, []);
+
+  useEffect(() => {
+    return listenToWorker({
+      // A push that arrived while this window was visible. The worker turns it
+      // into a message rather than a banner, and it lands here as a toast —
+      // the same treatment a notification from the socket gets.
+      onNotification: (note) => {
+        toast(note.title ?? "Omniplex", {
+          description: note.body,
+          action: note.sessionId
+            ? { label: "Open", onClick: () => selectRef.current?.(note.sessionId!) }
+            : undefined,
+        });
+      },
+      // A notification was tapped while the app was already open.
+      onOpenSession: (sessionId) => {
+        if (sessionId) selectRef.current?.(sessionId);
+      },
+    });
+  }, []);
+
+  // Offer notifications once, on a device that has never answered.
+  //
+  // Delayed rather than immediate: arriving to a permission request before the
+  // app has even painted is how people learn to dismiss them reflexively, and
+  // the first seconds after a cold load on 4G are busy enough already.
+  useEffect(() => {
+    if (!shouldInvite(invitable())) return;
+    const timer = setTimeout(() => {
+      // Asked once per device either way — accepting and declining both count,
+      // so this never becomes a thing that nags on every load.
+      markInvited();
+      toast("Get notified when a turn finishes", {
+        description: "Omniplex can tell you when a session needs you and nothing is open.",
+        duration: Infinity,
+        action: {
+          label: "Turn on",
+          // The click is the user gesture that lets Safari raise the real
+          // permission dialog at all.
+          onClick: () => {
+            void enablePush().catch((e: unknown) => {
+              toast.error(e instanceof Error ? e.message : "Could not turn notifications on.");
+            });
+          },
+        },
+        cancel: { label: "Not now", onClick: () => {} },
+      });
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, []);
 
   // The sidebar stays as it was: on a phone the new-session screen covers it
   // completely, so closing it would only mean cancelling drops you onto an
@@ -665,13 +788,24 @@ export function App() {
   );
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, delivery: Delivery = "now") => {
       if (!activeId) return;
       const staged = attachments[activeId] ?? [];
+      const stagedBlobs = blobs[activeId] ?? [];
       const imageIds = staged.filter((a) => a.status === "ready").map((a) => a.id!);
       // Left out entirely when there are none: the overwhelming majority of
-      // prompts carry no picture, and the frame is persisted for retry.
-      const args = { sessionId: activeId, text, ...(imageIds.length ? { imageIds } : {}) };
+      // prompts carry no picture, and the frame is persisted for retry. The
+      // default delivery is left out for the same reason — the server reads an
+      // absent one as "now".
+      const args = {
+        sessionId: activeId,
+        // The chips are folded back into one string here, at the last
+        // possible moment. Nothing downstream — the queue, the event log, the
+        // harness — has to learn what a chip is.
+        text: composePrompt(text, stagedBlobs),
+        ...(imageIds.length ? { imageIds } : {}),
+        ...(delivery !== "now" ? { delivery } : {}),
+      };
       clientRef.current?.command("prompt", args).catch((e) => {
         toast.error("Could not send that prompt", { description: e.message });
       });
@@ -679,8 +813,39 @@ export function App() {
       // the transcript is about to show the same pictures back from the server.
       for (const a of staged) URL.revokeObjectURL(a.previewUrl);
       setAttachments((all) => (all[activeId]?.length ? { ...all, [activeId]: [] } : all));
+      setBlobs((all) => (all[activeId]?.length ? { ...all, [activeId]: [] } : all));
     },
-    [activeId, attachments],
+    [activeId, attachments, blobs],
+  );
+
+  /** Stage a collapsed paste against the active session. */
+  const attachBlob = useCallback(
+    (text: string, origin: BlobOrigin) => {
+      if (!activeId) return;
+      const blob: ComposerBlob = { key: uuid(), text, origin, lines: countLines(text) };
+      setBlobs((all) => ({ ...all, [activeId]: [...(all[activeId] ?? []), blob] }));
+    },
+    [activeId],
+  );
+
+  const removeBlob = useCallback(
+    (key: string) => {
+      if (!activeId) return;
+      setBlobs((all) => ({ ...all, [activeId]: (all[activeId] ?? []).filter((b) => b.key !== key) }));
+    },
+    [activeId],
+  );
+
+  /** Write a `@path` chip into the draft, from the panel's file tree. */
+  const mentionFile = useCallback(
+    (ref: FileRef) => {
+      composerRef.current?.addRef(ref);
+      // On a phone the panel is the whole screen, so the chip would land
+      // somewhere invisible; step out of the way and show the message it was
+      // just added to.
+      if (!isDesktop) setShowChanges(false);
+    },
+    [isDesktop],
   );
 
   async function saveSchedule(input: ScheduleInput) {
@@ -779,6 +944,47 @@ export function App() {
     [activeId, state],
   );
 
+  // "Send now" on a prompt that is being held until the agent is done. There is
+  // no server command for changing a queued prompt's delivery, and there does
+  // not need to be: the client has the text and the image ids, so taking it out
+  // of the queue and sending it again as a normal message is the same thing.
+  const sendHeldNow = useCallback(
+    (queueId: string) => {
+      if (!activeId) return;
+      const held = state?.queuedPrompts?.find((q) => q.queueId === queueId);
+      if (!held) return;
+      const imageIds = (held.images ?? []).map((i) => i.id);
+      clientRef.current?.command("dequeue_prompt", { sessionId: activeId, queueId }).then(
+        () =>
+          clientRef.current?.command("prompt", {
+            sessionId: activeId,
+            text: held.prompt,
+            ...(imageIds.length ? { imageIds } : {}),
+          }),
+        (e) => toast.error("Could not send that prompt", { description: e.message }),
+      ).catch((e) => toast.error("Could not send that prompt", { description: e.message }));
+    },
+    [activeId, state],
+  );
+
+  // The switch beside the Continue button on a turn a usage limit ended. The
+  // armed schedule comes back through the session's own state, so nothing is
+  // held here: the switch reflects the log, and every device showing this
+  // session agrees about it.
+  const setAutoResume = useCallback(
+    (on: boolean) => {
+      if (!activeId) return;
+      clientRef.current
+        ?.command("set_auto_resume", { sessionId: activeId, enabled: on })
+        .catch((e) =>
+          toast.error(on ? "Could not arm the resume" : "Could not cancel the resume", {
+            description: e.message,
+          }),
+        );
+    },
+    [activeId],
+  );
+
   const resolvePermission = useCallback(
     (requestId: string, outcome: string, optionId: string) => {
       if (activeId) {
@@ -869,6 +1075,10 @@ export function App() {
   );
 
   const meta = useMemo(() => sessions.find((s) => s.id === activeId), [sessions, activeId]);
+  const activePreviews = useMemo(
+    () => previews.find((set) => set.sessionId === activeId)?.previews ?? [],
+    [previews, activeId],
+  );
   const activeProviderInstance = harnesses
     .flatMap((h) => h.instances ?? [])
     .find((i) => i.id === (meta?.providerInstance || meta?.harness));
@@ -1114,6 +1324,19 @@ export function App() {
       }
       return changed ? next : all;
     });
+    // Collapsed pastes go the same way. Nothing to revoke — they are strings —
+    // but a 200 KB log tail held for a session that no longer exists is still
+    // memory nobody can reach.
+    setBlobs((all) => {
+      const live = new Set(sessions.map((s) => s.id));
+      const next: Record<string, ComposerBlob[]> = {};
+      let changed = false;
+      for (const [id, list] of Object.entries(all)) {
+        if (live.has(id) || !seenSessions.current.has(id)) next[id] = list;
+        else changed = true;
+      }
+      return changed ? next : all;
+    });
   }, [sessions]);
 
   // Nothing measures the composer on its own, so a fixed padding could only
@@ -1204,26 +1427,9 @@ export function App() {
                 {state.title || "Untitled session"}
               </p>
 
-              {SHOW_MODE_SWITCHER && modeOptions.length > 0 && !state.closed && (
-                <Select value={currentModeId} onValueChange={switchMode}>
-                  {/* Every mode gets the same chip: one that changed shape or
-                      colour by mode would jitter the header and shout at the
-                      user about a choice they already made deliberately. */}
-                  <SelectTrigger
-                    aria-label="Permission mode"
-                    className="h-8 w-auto shrink-0 gap-1 px-2 text-[11px]"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {modeOptions.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              {/* The permission mode lives in the composer's control row,
+                  beside the model: both are "how the next turn runs", and on a
+                  phone the header is out of a thumb's reach. */}
 
               {/* Filing the open session — the same menu the sidebar row
                   carries, so a session can be labelled from either place.
@@ -1412,7 +1618,7 @@ export function App() {
             <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={(turn)=>activeId&&clientRef.current?.command("prompt",{sessionId:activeId,text:turn.prompt,...(turn.images?.length?{imageIds:turn.images.map(i=>i.id)}:{})})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
+              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onAutoResume={setAutoResume} onHandoff={send} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={(turn)=>activeId&&clientRef.current?.command("prompt",{sessionId:activeId,text:turn.prompt,...(turn.images?.length?{imageIds:turn.images.map(i=>i.id)}:{})})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} onSendHeldNow={sendHeldNow} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1448,6 +1654,7 @@ export function App() {
 
               <ScheduledPrompts schedules={state.scheduledPrompts ?? []} disabled={state.closed || workspaceBusy || workspaceFailed} onEdit={p => activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:p.prompt,imageIds:(p.images ?? []).map(i=>i.id),schedule:p})} onAction={async (action,p) => {if(!clientRef.current)throw new Error("Reconnect first");await clientRef.current.command(action,{sessionId:activeId,id:p.id,revision:p.revision});}} />
               {scheduleEditor && <ScheduleDialog key={`schedule:${scheduleEditor.id}`} initialText={scheduleEditor.text} imageCount={scheduleEditor.imageIds.length} schedule={scheduleEditor.schedule} onClose={()=>setScheduleEditor(null)} onSave={saveSchedule} />}
+              <PreviewStrip previews={activePreviews} />
               <Composer
                 key={activeId}
                 ref={composerRef}
@@ -1458,11 +1665,15 @@ export function App() {
                 disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
                 busy={state.phase === "turn"}
                 onSend={send}
-                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:(attachments[activeId] ?? []).filter(a=>a.status==="ready").map(a=>a.id!)})}
+                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:composePrompt(drafts[activeId] ?? "", blobs[activeId] ?? []),imageIds:(attachments[activeId] ?? []).filter(a=>a.status==="ready").map(a=>a.id!)})}
                 onCancel={cancel}
                 attachments={activeId ? (attachments[activeId] ?? []) : []}
                 onAttachImages={attachImages}
                 onRemoveAttachment={(key) => activeId && removeAttachment(activeId, key)}
+                blobs={activeId ? (blobs[activeId] ?? []) : []}
+                onAttachBlob={attachBlob}
+                onRemoveBlob={removeBlob}
+                onQuickView={setQuickView}
                 harnesses={harnesses}
                 harness={state.harness}
                 instance={meta?.providerInstance ?? ""}
@@ -1470,6 +1681,10 @@ export function App() {
                 effort={state.effort}
                 onSwitchModel={switchModel}
                 onSwitchEffort={switchEffort}
+                sessionId={activeId ?? ""}
+                modes={state.closed ? [] : modeOptions}
+                mode={currentModeId}
+                onSwitchMode={switchMode}
                 usage={state.usage}
                 loadComposerItems={loadComposerItems}
                 onRunClientAction={runClientComposerAction}
@@ -1506,6 +1721,7 @@ export function App() {
           loadDiff={loadFileDiff}
           loadTree={loadFileTree}
           loadFile={loadFile}
+          onMention={mentionFile}
           request={panelRequest}
           pr={pr}
           />
@@ -1528,6 +1744,11 @@ export function App() {
           />
         </Suspense>
       )}
+
+      {/* One quickview for the whole app: a chip, a thumbnail and a file row
+          all open the same dialog, so there is one mounted copy rather than
+          one per chip. */}
+      <QuickView target={quickView} onClose={() => setQuickView(null)} loadFile={loadFile} />
 
       {manageLabels && (
         <LabelManager
