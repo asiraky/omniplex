@@ -358,11 +358,13 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		// after init overwrites the model with the bare id the harness reports
 		// — and after a mid-session model switch, which cannot move it.
 		oneM:    strings.Contains(o.Model, "[1m]"),
-		effort:  o.Effort,
-		events:  make(chan proto.Emission, 256),
-		streams: map[string]*stream{},
-		steers:  map[string]bool{},
-		done:    make(chan struct{}),
+		effort:      o.Effort,
+		mode:        o.Mode,
+		events:      make(chan proto.Emission, 256),
+		streams:     map[string]*stream{},
+		steers:      map[string]bool{},
+		alwaysAllow: map[string]bool{},
+		done:        make(chan struct{}),
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
 
@@ -419,6 +421,10 @@ type session struct {
 	turnID    string
 	streams   map[string]*stream
 	sawResult bool
+	// activity is the last thing we told the log the harness was doing, so a
+	// repeated status becomes one event rather than a heartbeat. See
+	// emitActivity.
+	activity string
 	// steers are prompts handed to the harness mid-turn that it has not read
 	// yet, keyed by the uuid stamped on them; the value is whether Cancel
 	// has since discarded them. The harness echoes the uuid back when it
@@ -431,6 +437,18 @@ type session struct {
 	suppress bool
 	model    string
 	effort   string
+	// mode is the permission mode omniplex asked for: the one passed at start,
+	// or the last one SetMode carried. It is the authority on what this
+	// session runs, not the mode a later system/init echoes — the CLI reports
+	// the mode it booted with, so folding that back after a mid-session switch
+	// would silently undo the switch in every presenter.
+	mode string
+	// alwaysAllow is the fallback for a tool the SDK offered no permission
+	// suggestion for: without it, "always" degrades to "once" and the human is
+	// asked the same question forever. Keyed by tool name, which is exactly
+	// what the option says ("Always allow this tool"). Process-scoped on
+	// purpose — a durable rule is the SDK's job, through updatedPermissions.
+	alwaysAllow map[string]bool
 	// oneM records whether this process was started with the 1M window
 	// enabled. It is start-time and immutable: the CLI reads
 	// CLAUDE_CODE_DISABLE_1M_CONTEXT once at boot, so no model switch or
@@ -571,6 +589,10 @@ func (s *session) Cancel(ctx context.Context) error {
 		return nil
 	}
 	s.turnID = ""
+	// The projection drops the activity when the turn ends, so the cache of
+	// what we last published drops with it: otherwise the next turn's first
+	// identical status would dedupe away into silence.
+	s.activity = ""
 	s.sawResult = true
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
@@ -584,7 +606,16 @@ func (s *session) Cancel(ctx context.Context) error {
 // request, not a notification, so a mode the harness refuses (managed settings
 // can disable bypass and auto) comes back as a legible error.
 func (s *session) SetMode(ctx context.Context, mode string) error {
-	return s.conn.Call(ctx, "setPermissionMode", map[string]any{"mode": mode}, nil)
+	if err := s.conn.Call(ctx, "setPermissionMode", map[string]any{"mode": mode}, nil); err != nil {
+		return err
+	}
+	// Recorded only once the harness accepted it, like SetModel below: this is
+	// what a later system/init reports as the session's mode, so a refused
+	// switch must not leave us claiming the new one.
+	s.mu.Lock()
+	s.mode = mode
+	s.mu.Unlock()
+	return nil
 }
 
 // SetModel switches the model mid-session via the SDK's setModel. It is a
@@ -654,6 +685,7 @@ func (s *session) watchExit() {
 	s.mu.Lock()
 	turn, saw := s.turnID, s.sawResult
 	s.turnID = ""
+	s.activity = "" // cleared with the turn; see emitActivity
 	s.mu.Unlock()
 
 	if turn != "" && !saw {
@@ -785,6 +817,11 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 	var p struct {
 		ToolName string          `json:"toolName"`
 		Input    json.RawMessage `json:"input"`
+		// Suggestions are the SDK's own permission updates — the rules that
+		// make the CLI stop asking this question. They are the entire
+		// mechanism behind "always"; handing them back is what a terminal
+		// client does when the human picks "don't ask again".
+		Suggestions json.RawMessage `json:"suggestions"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
@@ -803,6 +840,15 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 		return s.askUserQuestion(ctx, p.Input)
 	}
 
+	// A tool the human already answered "always" for, and that the SDK gave us
+	// no rule to record. Asking again is the bug this exists to prevent.
+	s.mu.Lock()
+	remembered := s.alwaysAllow[p.ToolName]
+	s.mu.Unlock()
+	if remembered {
+		return map[string]any{"behavior": "allow", "updatedInput": p.Input}, nil
+	}
+
 	outcome, err := s.host.RequestPermission(ctx, adapter.PermissionRequest{
 		TurnID:   s.currentTurn(),
 		ToolName: p.ToolName,
@@ -813,10 +859,81 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 	if err != nil {
 		return map[string]any{"behavior": "deny", "message": "permission unavailable: " + err.Error()}, nil
 	}
-	if outcome.Allowed() {
-		return map[string]any{"behavior": "allow", "updatedInput": p.Input}, nil
+	if !outcome.Allowed() {
+		return map[string]any{"behavior": "deny", "message": "Denied by user"}, nil
 	}
-	return map[string]any{"behavior": "deny", "message": "Denied by user"}, nil
+	allow := map[string]any{"behavior": "allow", "updatedInput": p.Input}
+	if outcome.Outcome != proto.OutcomeAllowAlways {
+		return allow, nil
+	}
+	// "Always" is only a promise if something records it. updatedPermissions is
+	// how the SDK is told to stop asking; without it the human answers the same
+	// question on every single call, which is exactly what they reported.
+	if rules := durableRules(p.Suggestions); len(rules) > 0 {
+		allow["updatedPermissions"] = rules
+		// A suggestion is often "switch this session to acceptEdits" — that is
+		// how the CLI itself stops asking about edits. Applying it silently
+		// would leave the mode chip claiming Manual while the harness accepts
+		// every edit, which is the same "my selection was not saved" confusion
+		// from the other direction. Say what happened.
+		if mode := suggestedMode(rules); mode != "" {
+			s.mu.Lock()
+			s.mode = mode
+			s.mu.Unlock()
+			s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Mode: mode}))
+		}
+		return allow, nil
+	}
+	// No suggestion to record — the SDK has no rule shape for this tool. Keep
+	// the promise ourselves for as long as this process lives.
+	s.mu.Lock()
+	s.alwaysAllow[p.ToolName] = true
+	s.mu.Unlock()
+	return allow, nil
+}
+
+// durableRules turns the SDK's permission suggestions into the updates we
+// actually want to apply. The suggestions are taken as given — they are the
+// CLI's own idea of the narrowest rule that covers this call — but their
+// destination is ours to choose: rules and directories are written to the
+// workspace's .claude/settings.local.json, so the next session in this
+// worktree does not ask again, while a mode change stays session-scoped
+// because writing one to disk would silently reconfigure the project.
+func durableRules(suggestions json.RawMessage) []map[string]any {
+	if len(suggestions) == 0 {
+		return nil
+	}
+	var parsed []map[string]any
+	if err := json.Unmarshal(suggestions, &parsed); err != nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(parsed))
+	for _, rule := range parsed {
+		if len(rule) == 0 {
+			continue
+		}
+		if str, _ := rule["type"].(string); str == "setMode" {
+			rule["destination"] = "session"
+		} else {
+			rule["destination"] = "localSettings"
+		}
+		out = append(out, rule)
+	}
+	return out
+}
+
+// suggestedMode reports the permission mode a set of rules switches this
+// session to, or "" when none of them does.
+func suggestedMode(rules []map[string]any) string {
+	for _, rule := range rules {
+		if str, _ := rule["type"].(string); str != "setMode" {
+			continue
+		}
+		if mode, _ := rule["mode"].(string); mode != "" {
+			return mode
+		}
+	}
+	return ""
 }
 
 // askQuestion is one entry of an AskUserQuestion tool call.
@@ -1064,8 +1181,47 @@ func contextWindowFor(oneM bool) int64 {
 	return 200_000
 }
 
+// emitActivity publishes what the harness says it is doing, and only when the
+// answer changes. The transcript already proves liveness while text is
+// streaming; this exists for the stretches where nothing streams and the CLI
+// is nonetheless busy — a retry backoff, a compaction — which is exactly when
+// a spinner alone is indistinguishable from a hang.
+func (s *session) emitActivity(activity string, blocked bool) {
+	s.mu.Lock()
+	if s.activity == activity {
+		s.mu.Unlock()
+		return
+	}
+	s.activity = activity
+	s.mu.Unlock()
+	s.emit(proto.Emit(proto.ActivityUpdated, proto.ActivityUpdatedPayload{Activity: activity, Blocked: blocked}))
+}
+
 func (s *session) handleSystem(msg map[string]json.RawMessage) {
 	switch str(msg["subtype"]) {
+	case "api_retry":
+		// The one silence that reliably looks like a hang. The CLI backs off
+		// and retries an API error without saying anything on the transcript,
+		// so a turn can sit motionless for minutes while working perfectly.
+		// Naming it is the difference between "wedged" and "wait".
+		var m struct {
+			Attempt      int   `json:"attempt"`
+			MaxRetries   int   `json:"max_retries"`
+			RetryDelayMs int64 `json:"retry_delay_ms"`
+		}
+		remarshal(msg, &m)
+		s.emitActivity(fmt.Sprintf("retrying after an API error (%d/%d)", m.Attempt, m.MaxRetries), false)
+
+	case "status":
+		// 'compacting' is the other long silence: the CLI is rewriting the
+		// conversation and will not stream until it is done. 'requesting' and
+		// a null status are ordinary work, and clear the line.
+		if str(msg["status"]) == "compacting" {
+			s.emitActivity("compacting the conversation", false)
+		} else {
+			s.emitActivity("", false)
+		}
+
 	case "commands_changed":
 		if host, ok := s.host.(adapter.ComposerCatalogueInvalidator); ok {
 			host.ComposerCatalogueChanged()
@@ -1080,9 +1236,18 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		s.model = s.tagged(init.Model)
 		model := s.model
 		harnessID := s.harnessSessionID
+		// The mode omniplex asked for wins over the one the CLI reports. init
+		// describes the process as it booted, and it arrives more than once —
+		// after a /clear rotation, for instance — so echoing it back would
+		// quietly revert a mid-session switch in every presenter. Only a
+		// session that expressed no preference learns its mode from here.
+		mode := s.mode
+		if mode == "" {
+			mode = init.PermissionMode
+		}
 		s.mu.Unlock()
 		s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
-			Model: model, Mode: init.PermissionMode, HarnessSessionID: harnessID,
+			Model: model, Mode: mode, HarnessSessionID: harnessID,
 		}))
 	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
 		s.handleTask(msg)
@@ -1217,6 +1382,9 @@ func (s *session) handleStreamEvent(msg map[string]json.RawMessage) {
 		// by itself, without a prompt — this opens one, so the events below
 		// never carry an empty turn id.
 		turn := s.ensureTurn()
+		// Whatever silence we were explaining is over: the model is talking
+		// again. Cheap because emitActivity only writes on a change.
+		s.emitActivity("", false)
 		s.mu.Lock()
 		st := s.streams[parent]
 		if st == nil {
@@ -1513,6 +1681,7 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	turn := s.turnID
 	s.sawResult = true
 	s.turnID = ""
+	s.activity = "" // cleared with the turn; see emitActivity
 	// The turn the CLI ran from a discarded steer has ended with this.
 	s.suppress = false
 	s.mu.Unlock()

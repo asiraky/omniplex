@@ -28,7 +28,43 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Light first so a browser that honours media on this link picks it
+         when the system is light. The unconditioned dark file is the
+         fallback, and matches the document's default class. Both share id
+         "/" so they install as one app. The OS splash can only see the
+         system scheme — the in-app light/dark/system choice lives in
+         localStorage and is applied after launch. -->
+    <link rel="manifest" href="/manifest-light.webmanifest" media="(prefers-color-scheme: light)" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS does not build a launch splash from the web manifest. These
+         images are the only way a home-screen launch shows the mark rather
+         than a blank page; sizes have to match the device exactly or Safari
+         ignores the tag. Android Chrome uses the 512 icon and
+         background_color from the matching manifest. -->
+    <link rel="apple-touch-startup-image" href="/splash/dark-640x1136.png" media="(prefers-color-scheme: dark) and (device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-640x1136.png" media="(prefers-color-scheme: light) and (device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-750x1334.png" media="(prefers-color-scheme: dark) and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-750x1334.png" media="(prefers-color-scheme: light) and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1242x2208.png" media="(prefers-color-scheme: dark) and (device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1242x2208.png" media="(prefers-color-scheme: light) and (device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1125x2436.png" media="(prefers-color-scheme: dark) and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1125x2436.png" media="(prefers-color-scheme: light) and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-828x1792.png" media="(prefers-color-scheme: dark) and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-828x1792.png" media="(prefers-color-scheme: light) and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1242x2688.png" media="(prefers-color-scheme: dark) and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1242x2688.png" media="(prefers-color-scheme: light) and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1170x2532.png" media="(prefers-color-scheme: dark) and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1170x2532.png" media="(prefers-color-scheme: light) and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1179x2556.png" media="(prefers-color-scheme: dark) and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1179x2556.png" media="(prefers-color-scheme: light) and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1284x2778.png" media="(prefers-color-scheme: dark) and (device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1284x2778.png" media="(prefers-color-scheme: light) and (device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1290x2796.png" media="(prefers-color-scheme: dark) and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1290x2796.png" media="(prefers-color-scheme: light) and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1206x2622.png" media="(prefers-color-scheme: dark) and (device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1206x2622.png" media="(prefers-color-scheme: light) and (device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/dark-1320x2868.png" media="(prefers-color-scheme: dark) and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splash/light-1320x2868.png" media="(prefers-color-scheme: light) and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3)" />
     <!-- Added to the home screen on iOS, the app runs without browser chrome
          and keeps its own name under the icon. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -65,6 +101,63 @@
     </script>
   </head>
   <body>
+    <!-- The boot screen.
+         Inline on purpose: it is markup and CSS in the document itself, so it
+         paints the moment the HTML arrives, without waiting on the bundle, a
+         stylesheet or a font. On the flaky 4G this app assumes, that gap is
+         seconds long and was previously a white rectangle that reads as a
+         crash.
+         This is not the PWA splash screen, which is drawn by the OS from the
+         manifest before any of our code runs and cannot be animated. This is
+         what covers the handover from that splash to the first React paint.
+         The colours are the two --background literals, matching the theme
+         script above; #root sits behind this and is revealed when it goes. -->
+    <style>
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: #fcfcfc;
+        /* Removed by main.tsx once React has painted; the transition is what
+           stops the swap from being a flicker. */
+        transition: opacity 220ms ease-out;
+        z-index: 50;
+      }
+      html.dark #boot {
+        background: #121418;
+      }
+      #boot.done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      /* The mark's ring, drawn as a gap travelling around the circle. One
+         dash of the circumference rotating: the O appears to be drawn rather
+         than to spin as a whole. */
+      #boot circle {
+        transform-origin: 16px 16px;
+        stroke-dasharray: 38 12;
+        animation: boot-sweep 1.15s linear infinite;
+      }
+      @keyframes boot-sweep {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      /* Someone who asked for less motion gets the mark, still. */
+      @media (prefers-reduced-motion: reduce) {
+        #boot circle {
+          animation: none;
+          stroke-dasharray: none;
+        }
+      }
+    </style>
+    <div id="boot">
+      <svg width="72" height="72" viewBox="0 0 32 32" role="img" aria-label="Loading Omniplex">
+        <rect width="32" height="32" rx="7" fill="#505ac8" />
+        <circle cx="16" cy="16" r="8" fill="none" stroke="#ffffff" stroke-width="4" />
+      </svg>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

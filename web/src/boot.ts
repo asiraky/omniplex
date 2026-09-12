@@ -1,3 +1,5 @@
+import { checkForUpdate } from "./lib/pwa";
+
 // Noticing that the server has been rebuilt.
 //
 // The document is revalidated on every load, so a reload always picks up the
@@ -27,6 +29,12 @@ const RELOADED_FOR = "omniplex.reloadedFor";
 export function checkBuild(serverBuild: string | undefined) {
   const ours = currentBuild();
   if (!serverBuild || ours === "dev" || serverBuild === ours) return;
+
+  // The server has a different bundle, so any installed service worker is by
+  // definition stale too. Asking it to check now rather than on its own
+  // schedule means the reload below lands on the new worker instead of being
+  // served the old one and having to reload a second time.
+  void checkForUpdate();
 
   try {
     if (sessionStorage.getItem(RELOADED_FOR) === serverBuild) return;

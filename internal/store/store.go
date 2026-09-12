@@ -188,6 +188,9 @@ func Open(path string) (*Store, error) {
 	if err := s.initAuth(); err != nil {
 		return nil, fmt.Errorf("apply auth schema: %w", err)
 	}
+	if err := s.initPush(); err != nil {
+		return nil, fmt.Errorf("apply push schema: %w", err)
+	}
 	return s, nil
 }
 

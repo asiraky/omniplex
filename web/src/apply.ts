@@ -121,6 +121,7 @@ function imageTitle(n: number): string {
 export function applyEvent(state: SessionState, ev: Event): SessionState {
   if (ev.seq <= state.seq) return state;
   const s: SessionState = { ...state, seq: ev.seq };
+  if (ev.timestamp > (s.lastEventAt ?? 0)) s.lastEventAt = ev.timestamp;
   const p = ev.payload ?? {};
 
   switch (ev.type) {
@@ -200,7 +201,11 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
     case "prompt.queued":
       return {
         ...s,
-        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp, sent: p.sent }],
+        // delivery rides along: a prompt held for the end of the work is a
+        // different card from an ordinary queued one, and the transcript can
+        // only tell them apart if the fold keeps it. Mirrors
+        // internal/projection/state.go.
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp, sent: p.sent, delivery: p.delivery }],
       };
 
     case "prompt.injected": {
@@ -237,6 +242,10 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
       return {
         ...s,
         phase: match ? "idle" : s.phase,
+        // An activity outliving its turn is the stalest possible signal: it
+        // says "waiting for approval" at a session that is done.
+        activity: match ? "" : s.activity,
+        blocked: match ? false : s.blocked,
         scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.turnId === p.turnId && p.stopReason === "error" ? {...q, status: "failed", error: p.error, revision: q.revision + 1} : q),
         turns: s.turns.map((t) =>
           t.id === p.turnId
@@ -350,6 +359,9 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
 
     case "usage.updated":
       return { ...s, usage: p };
+
+    case "activity.updated":
+      return { ...s, activity: p.activity ?? "", blocked: !!p.blocked };
 
     case "context.compacted":
       // Anchored to the event's sequence so a replay lands the same item and

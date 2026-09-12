@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 
+import { recordCopy } from "~/lib/copyOrigin";
 import { cn } from "~/lib/utils";
 
 /**
@@ -21,12 +22,19 @@ export type TerminalTarget =
 export function TerminalSurface({
   target,
   onEnded,
+  label = "Terminal",
 }: {
   target: TerminalTarget;
   /** The process exited or the socket dropped. */
   onEnded?: () => void;
+  /** What a chip made from this terminal's output is called — the tab's own
+      name, so "Term 2" in the panel reads as "Term 2" in the composer. */
+  label?: string;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // Held by ref so renaming a tab does not tear down the shell.
+  const labelRef = useRef(label);
+  labelRef.current = label;
   const [gone, setGone] = useState(false);
   // Bumping this remounts the effect: a fresh socket, a fresh shell.
   const [generation, setGeneration] = useState(0);
@@ -95,8 +103,20 @@ export function TerminalSurface({
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(host);
 
+    // Copying command output records that it came from this terminal, so
+    // pasting it into the composer collapses to a chip that says so rather
+    // than to an unlabelled wall of text. xterm draws its selection itself
+    // rather than making a DOM one, so the text has to come from its API —
+    // `window.getSelection()` here would be empty.
+    const onCopy = () => {
+      const selected = term.getSelection();
+      if (selected) recordCopy(selected, { kind: "terminal", label: labelRef.current });
+    };
+    host.addEventListener("copy", onCopy);
+
     return () => {
       disposed = true;
+      host.removeEventListener("copy", onCopy);
       ro.disconnect();
       data.dispose();
       resize.dispose();

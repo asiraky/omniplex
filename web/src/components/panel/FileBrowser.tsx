@@ -1,8 +1,11 @@
-import { ChevronRightIcon, EyeIcon, EyeOffIcon, FolderIcon, PanelRightCloseIcon, PanelRightOpenIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AtSignIcon, ChevronRightIcon, EyeIcon, EyeOffIcon, FolderIcon, PanelRightCloseIcon, PanelRightOpenIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { CodeLines, selectedLineRange } from "~/components/CodeLines";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
+import { setRefDrag, type FileRef } from "~/lib/composerRefs";
+import { watchCopies } from "~/lib/copyOrigin";
 import { fileIconFor } from "~/lib/fileIcons";
 import { buildTree, type TreeNode } from "~/lib/tree";
 import { cn } from "~/lib/utils";
@@ -16,37 +19,68 @@ function FileRow({
   selected,
   changed,
   onOpen,
+  onMention,
 }: {
   node: TreeNode<string>;
   depth: number;
   selected: boolean;
   changed: boolean;
   onOpen: (path: string) => void;
+  onMention?: (path: string) => void;
 }) {
   const { Icon, tone } = fileIconFor(node.path);
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(node.path)}
-      title={node.path}
-      style={{ paddingLeft: 8 + depth * 14 }}
+    <div
       className={cn(
-        "focus-visible:ring-ring group flex min-h-11 w-full items-center gap-2 rounded-md py-1 pr-2 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0",
+        "group relative flex items-center rounded-md transition-colors",
         selected ? "bg-accent" : "hover:bg-accent/50",
       )}
     >
-      <span className="size-3.5 shrink-0" aria-hidden />
-      <Icon className={cn("size-3.5 shrink-0", tone || "text-muted-foreground/70")} />
-      <span
-        className={cn(
-          "min-w-0 flex-1 truncate font-mono text-[11px]",
-          selected ? "text-foreground" : "text-muted-foreground/90 group-hover:text-foreground",
-        )}
+      <button
+        type="button"
+        onClick={() => onOpen(node.path)}
+        title={node.path}
+        // The row is the drag handle. `text/plain` on the drag is the token
+        // itself, which is what lets a browser that will not report a caret
+        // position still drop the mention in the right place.
+        draggable
+        onDragStart={(e) => setRefDrag(e.dataTransfer, { path: node.path })}
+        style={{ paddingLeft: 8 + depth * 14 }}
+        className="focus-visible:ring-ring flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 text-left outline-none focus-visible:ring-2 md:min-h-0"
       >
-        {node.name}
-      </span>
-      {changed && <span className="bg-attention-foreground/70 size-1.5 shrink-0 rounded-full" title="Changed in this session" />}
-    </button>
+        <span className="size-3.5 shrink-0" aria-hidden />
+        <Icon className={cn("size-3.5 shrink-0", tone || "text-muted-foreground/70")} />
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate font-mono text-[11px]",
+            selected ? "text-foreground" : "text-muted-foreground/90 group-hover:text-foreground",
+          )}
+        >
+          {node.name}
+        </span>
+        {changed && (
+          <span
+            className="bg-attention-foreground/70 size-1.5 shrink-0 rounded-full"
+            title="Changed in this session"
+          />
+        )}
+      </button>
+      {/* Dragging a row onto the composer is a desktop gesture — on a phone the
+          panel *is* the screen, so there is nowhere to drag to. This button is
+          the same action for a thumb, and it stays visible there rather than
+          waiting for a hover that never comes. */}
+      {onMention && (
+        <button
+          type="button"
+          onClick={() => onMention(node.path)}
+          aria-label={`Mention ${node.path} in the message`}
+          title="Add to the message"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:ring-ring mr-1 grid size-8 shrink-0 place-items-center rounded-md outline-none focus-visible:ring-2 focus-visible:opacity-100 md:size-6 md:opacity-0 md:group-hover:opacity-100"
+        >
+          <AtSignIcon className="size-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -58,6 +92,7 @@ function DirectoryRow({
   changedPaths,
   onToggle,
   onOpen,
+  onMention,
 }: {
   node: TreeNode<string>;
   depth: number;
@@ -66,6 +101,7 @@ function DirectoryRow({
   changedPaths: Set<string>;
   onToggle: (path: string) => void;
   onOpen: (path: string) => void;
+  onMention?: (path: string) => void;
 }) {
   const open = openDirs.has(node.path);
   return (
@@ -95,6 +131,7 @@ function DirectoryRow({
               changedPaths={changedPaths}
               onToggle={onToggle}
               onOpen={onOpen}
+              onMention={onMention}
             />
           ) : (
             <FileRow
@@ -104,6 +141,7 @@ function DirectoryRow({
               selected={child.path === selectedPath}
               changed={changedPaths.has(child.path)}
               onOpen={onOpen}
+              onMention={onMention}
             />
           ),
         )}
@@ -117,9 +155,24 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
   const [file, setFile] = useState<FileContent | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const lineRefs = useRef(new Map<number, HTMLTableRowElement>());
+  const hostRef = useRef<HTMLDivElement>(null);
   const loadRef = useRef(loadFile);
   loadRef.current = loadFile;
+
+  // Copying a chunk of a file records which chunk it was, so pasting it into
+  // the composer produces a chip that says "App.tsx:40-91" instead of an
+  // anonymous lump of text. Best effort: a selection that started outside the
+  // table has no line to report and is left as an ordinary paste.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    return watchCopies(host, () => {
+      const range = selectedLineRange(window.getSelection());
+      return range ? { kind: "file", path, from: range.from, to: range.to } : null;
+    });
+    // Re-run once the content lands: the host does not exist while the file is
+    // still being read, so binding on mount alone would bind to nothing.
+  }, [path, file]);
 
   useEffect(() => {
     let stale = false;
@@ -141,12 +194,6 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
     };
   }, [path]);
 
-  // Scroll to the requested line once the content is on screen.
-  useEffect(() => {
-    if (!file || line === undefined) return;
-    lineRefs.current.get(line)?.scrollIntoView({ block: "center" });
-  }, [file, line]);
-
   if (loading) {
     return (
       <p className="text-muted-foreground flex items-center gap-2 px-3 py-4 text-[12px]">
@@ -167,31 +214,9 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
     return <p className="text-muted-foreground px-3 py-4 text-[12px]">Binary file — nothing to show as text.</p>;
   }
 
-  const lines = file.content.split("\n");
-  // A trailing newline yields one phantom empty line nobody wrote.
-  if (lines[lines.length - 1] === "") lines.pop();
-
   return (
-    <div className="scroll-thin h-full overflow-auto overscroll-contain">
-      <table className="w-full border-collapse font-mono text-[11.5px] leading-relaxed">
-        <tbody>
-          {lines.map((text, i) => (
-            <tr
-              key={i}
-              ref={(el) => {
-                if (el) lineRefs.current.set(i + 1, el);
-                else lineRefs.current.delete(i + 1);
-              }}
-              className={cn(i + 1 === line && "bg-attention/40")}
-            >
-              <td className="text-muted-foreground/50 w-[1%] min-w-10 pr-3 pl-2 text-right align-top select-none">
-                {i + 1}
-              </td>
-              <td className="pr-3 break-words whitespace-pre-wrap">{text}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div ref={hostRef} className="scroll-thin h-full overflow-auto overscroll-contain">
+      <CodeLines content={file.content} highlight={line} />
       {file.truncated && (
         <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
           Truncated — the file is larger than the viewer will show.
@@ -219,6 +244,7 @@ export function FileBrowser({
   line,
   onSelect,
   loadFile,
+  onMention,
 }: {
   tree: FileTree | null;
   loading: boolean;
@@ -231,8 +257,12 @@ export function FileBrowser({
   line?: number;
   onSelect: (path: string) => void;
   loadFile: (path: string) => Promise<FileContent>;
+  /** Writes a `@path` chip into the composer. Absent when there is no composer
+      to write into, which is when the row's button is not offered at all. */
+  onMention?: (ref: FileRef) => void;
 }) {
   const [treeHidden, setTreeHidden] = useState(false);
+  const mentionPath = useCallback((path: string) => onMention?.({ path }), [onMention]);
   const nodes = useMemo(
     () => buildTree((tree?.files ?? []).map((p) => ({ path: p, file: p }))),
     [tree],
@@ -287,6 +317,7 @@ export function FileBrowser({
             changedPaths={changedPaths}
             onToggle={toggle}
             onOpen={onSelect}
+            onMention={onMention && mentionPath}
           />
         ) : (
           <FileRow
@@ -296,6 +327,7 @@ export function FileBrowser({
             selected={node.path === selectedPath}
             changed={changedPaths.has(node.path)}
             onOpen={onSelect}
+            onMention={onMention && mentionPath}
           />
         ),
       )}
@@ -313,6 +345,11 @@ export function FileBrowser({
         <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]" title={selectedPath ?? tree?.root}>
           {selectedPath ?? tree?.root ?? "…"}
         </span>
+        {selectedPath && onMention && (
+          <IconButton label="Add this file to the message" onClick={() => onMention({ path: selectedPath })}>
+            <AtSignIcon />
+          </IconButton>
+        )}
         {selectedPath && (
           <IconButton
             label={treeHidden ? "Show the tree" : "Hide the tree"}

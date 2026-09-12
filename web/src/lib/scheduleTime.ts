@@ -33,9 +33,28 @@ export function absoluteCandidates(value: string, timeZone: string): number[] {
     .filter((at) => localDateTime(at, timeZone) === value)
     .sort((a, b) => a - b);
 }
+/**
+ * The zone to render a schedule in. A human's schedule carries the zone they
+ * wrote it in; one the server armed itself carries none, and belongs in the
+ * reader's own. Anything Intl refuses — a zone from an older build, or Go's
+ * "Local" — falls back the same way rather than throwing: a schedule shown in
+ * the wrong zone is a nuisance, a schedule that takes the list down with it is
+ * not.
+ */
+export function zoneOr(timeZone: string | undefined): string {
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!timeZone) return here;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone }).format(0);
+    return timeZone;
+  } catch {
+    return here;
+  }
+}
+
 export function scheduleLabel(at: number, timeZone: string): string {
   return new Intl.DateTimeFormat(undefined, {
-    timeZone,
+    timeZone: zoneOr(timeZone),
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -44,6 +63,29 @@ export function scheduleLabel(at: number, timeZone: string): string {
     timeZoneName: "shortOffset",
   }).format(at);
 }
+// waitLabel is a moment stated the way somebody glancing at a phone reads it:
+// the clock time in their own zone, and how long that is from now, because
+// "11:10 am" alone does not say whether that is ten minutes or ten hours away.
+// The zone is the device's on purpose — the reader may well be in a different
+// one from the machine the session runs on.
+export function waitLabel(at: number, now: number): string {
+  const clock = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    // Only worth naming a day when it is not this one.
+    ...(new Date(at).toDateString() === new Date(now).toDateString()
+      ? {}
+      : { weekday: "short" }),
+  }).format(at);
+  const left = at - now;
+  if (left <= minute) return `${clock} (any moment now)`;
+  const mins = Math.round(left / minute);
+  if (mins < 60) return `${clock} (in ${mins} min)`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  return `${clock} (in ${hours}h${rest ? ` ${rest}m` : ""})`;
+}
+
 export function validateSchedule(at: number, now: number): string | undefined {
   if (!Number.isFinite(at) || at <= now || at - now > day)
     return "Choose a time in the next 24 hours.";

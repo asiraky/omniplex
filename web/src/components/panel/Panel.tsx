@@ -35,6 +35,7 @@ import {
   type PanelState,
   type Surface,
 } from "~/lib/panel";
+import type { FileRef } from "~/lib/composerRefs";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
 import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, SessionChanges, SessionState } from "~/protocol";
@@ -49,6 +50,8 @@ export interface PanelRequest {
   kind: "diff" | "path" | "jobs";
   path?: string;
   line?: number;
+  /** Which job to open on the jobs surface, rather than its roster. */
+  jobId?: string;
   nonce: number;
 }
 
@@ -71,6 +74,11 @@ export interface PanelProps {
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
   pr?: PullRequest | null;
+  /** Writes a `@path` chip into the composer's draft. The panel is a
+      full-screen sheet on a phone, so it also asks to be closed afterwards —
+      adding a file you cannot then see yourself having added is half a
+      gesture. */
+  onMention?: (ref: FileRef) => void;
 }
 
 function surfaceLabel(s: Surface): string {
@@ -120,6 +128,7 @@ function PanelBody({
   loadFile,
   request,
   pr,
+  onMention,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per session so the panel reopens as it was left.
@@ -223,6 +232,10 @@ function PanelBody({
 
   // ---- requests from outside ----
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
+  // Which job the last ask named, if it named one. Carried by nonce like the
+  // diff's reveal: asking twice for the same job has to land twice, and the
+  // reader may have navigated away in between.
+  const [revealJob, setRevealJob] = useState<{ jobId: string; nonce: number } | null>(null);
   // A path request routes on the change list, so it waits for the list to
   // settle rather than judging against the empty one a fresh mount holds.
   // Each nonce is routed exactly once.
@@ -238,6 +251,7 @@ function PanelBody({
     if (request.kind === "jobs") {
       routedNonce.current = request.nonce;
       setPanel((p) => openSurface(p, { id: "jobs", kind: "jobs" }));
+      if (request.jobId) setRevealJob({ jobId: request.jobId, nonce: request.nonce });
       return;
     }
     if (!request.path) {
@@ -389,16 +403,19 @@ function PanelBody({
             line={active.kind === "file" ? fileLine : undefined}
             onSelect={selectFile}
             loadFile={loadFile}
+            onMention={onMention}
           />
         )}
-        {active?.kind === "jobs" && <JobsSurface sessionId={sessionId} state={state} command={command} />}
+        {active?.kind === "jobs" && (
+          <JobsSurface sessionId={sessionId} state={state} command={command} reveal={revealJob} />
+        )}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces
           .filter((s) => s.kind === "terminal")
           .map((s) => (
             <div key={s.id} className={cn("h-full", s.id !== panel.active && "hidden")}>
-              <TerminalSurface target={{ session: sessionId }} />
+              <TerminalSurface target={{ session: sessionId }} label={surfaceLabel(s)} />
             </div>
           ))}
       </div>

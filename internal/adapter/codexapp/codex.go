@@ -308,10 +308,32 @@ type session struct {
 	// running when it first spoke — the turn that spawned it. Lazily filled;
 	// a session runs few enough subagents that it is never worth pruning.
 	subagents map[string]string
+	// agentJobs is the set of spawned thread ids we have opened a job for, so
+	// a second mention of the same subagent updates its row rather than
+	// starting a new one. Codex announces a subagent from two directions — the
+	// collab tool call that spawned it and the subAgentActivity item — and
+	// either may arrive first.
+	agentJobs map[string]*agentJob
+	// activity is the last activity string emitted, so the level-triggered
+	// status notification becomes an edge and the log gets one event per real
+	// change rather than one per notification.
+	activity string
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
 	manualCompact  bool
 	lastCompaction string
+}
+
+// agentJob is what we know about one spawned subagent thread. The tool call
+// that spawned it is remembered so later rows — a status change, a token
+// reading — can carry the linkage bundle every job event is supposed to have.
+type agentJob struct {
+	toolCallID string
+	role       string
+	done       bool
+	// activity is the last phrase published for this subagent, so a resent
+	// status collapses to nothing. See updateAgentJob.
+	activity string
 }
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
@@ -362,6 +384,10 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 		s.mu.Lock()
 		if s.turnID == in.TurnID {
 			s.turnID = ""
+			// The projection drops the activity when the turn ends, so the
+			// cache of what we last published drops with it: otherwise the
+			// next turn's first identical status would dedupe into silence.
+			s.activity = ""
 		}
 		s.mu.Unlock()
 		return err
@@ -508,6 +534,7 @@ func (s *session) watchExit() {
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
+	s.activity = "" // cleared with the turn; see emitActivity
 	s.serverTurnID = ""
 	s.interrupting = false
 	s.mu.Unlock()
@@ -775,19 +802,214 @@ func parseDelta(params json.RawMessage) delta {
 	return p
 }
 
-func (s *session) emitMessageDelta(turn string, p delta) {
+// parent is the collab tool call a spawned subagent's output belongs under,
+// and is empty for this session's own output. It is what lets a subagent's
+// words render inside its agent pane rather than spilling into the middle of
+// the parent's transcript.
+func (s *session) emitMessageDelta(turn, parent string, p delta) {
 	s.mu.Lock()
 	s.streamed[p.ItemID] = true
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: "text", BlockID: p.ItemID, Delta: p.Delta,
+		ParentToolCallID: parent,
 	}))
 }
 
-func (s *session) emitReasoningDelta(turn string, p delta) {
+func (s *session) emitReasoningDelta(turn, parent string, p delta) {
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
+		ParentToolCallID: parent,
 	}))
+}
+
+// ---- subagents as jobs ----
+//
+// Codex runs a spawned subagent as a thread of its own, which is a richer
+// thing than the task ids the claude adapter is handed: a thread has its own
+// status, its own token usage and its own transcript. The job vocabulary is
+// the same either way, so the jobs roster fills up for codex without the UI
+// learning anything new — and, because a thread reports its context window,
+// a codex subagent can say how full it is where a claude one cannot.
+
+// agentJobFor returns the bookkeeping for a spawned thread, opening a job row
+// the first time we hear of it. Codex announces a subagent from two
+// directions — the collab tool call that spawned it, and the thread's own
+// activity item — and neither is guaranteed to arrive first, so whichever does
+// opens the row.
+func (s *session) agentJobFor(thread, toolCallID, role, name string) *agentJob {
+	s.mu.Lock()
+	if s.agentJobs == nil {
+		s.agentJobs = map[string]*agentJob{}
+	}
+	j, known := s.agentJobs[thread]
+	if !known {
+		j = &agentJob{}
+		s.agentJobs[thread] = j
+	}
+	if toolCallID != "" {
+		j.toolCallID = toolCallID
+	}
+	if role != "" {
+		j.role = role
+	}
+	tool, rl := j.toolCallID, j.role
+	s.mu.Unlock()
+
+	if !known {
+		s.emit(proto.Emit(proto.JobStarted, proto.JobPayload{
+			JobID: thread, ToolCallID: tool, Kind: proto.JobAgent,
+			TaskType: "subagent", Name: name, Role: rl, Status: proto.JobRunning,
+		}))
+	}
+	return j
+}
+
+// finishAgentJob closes a subagent's row once, whichever signal gets there
+// first — the collab tool call completing, the activity item saying so, or the
+// thread going idle.
+func (s *session) finishAgentJob(thread, status, errMsg string) {
+	s.mu.Lock()
+	j := s.agentJobs[thread]
+	if j == nil || j.done {
+		s.mu.Unlock()
+		return
+	}
+	j.done = true
+	tool := j.toolCallID
+	s.mu.Unlock()
+
+	s.emit(proto.Emit(proto.JobFinished, proto.JobPayload{
+		JobID: thread, ToolCallID: tool, Status: status, Error: errMsg,
+	}))
+}
+
+// updateAgentJob folds a spawned thread's status change into its job row. A
+// thread we have never heard of is ignored rather than invented: codex
+// multiplexes every thread on the daemon over this connection, and a status
+// for someone else's conversation is not this session's subagent.
+func (s *session) updateAgentJob(thread string, t threadStatus) {
+	s.mu.Lock()
+	j := s.agentJobs[thread]
+	tool := ""
+	if j != nil {
+		tool = j.toolCallID
+	}
+	s.mu.Unlock()
+	if j == nil || j.done {
+		return
+	}
+
+	if t.Status.Type == "systemError" {
+		s.finishAgentJob(thread, proto.JobFailed, "harness error")
+		return
+	}
+	// Idle is not finished: a subagent waits between the turns its parent
+	// drives with sendInput, and reaping it here would take the row away while
+	// the conversation is still open. The collab tool call and the
+	// subAgentActivity item both say "completed" when it really is over.
+	activity, _ := t.describe()
+
+	// Codex resends the same status freely and this log is durable, so only
+	// the edge travels: a status that says nothing new is not news.
+	s.mu.Lock()
+	same := j.activity == activity
+	j.activity = activity
+	s.mu.Unlock()
+	if same {
+		return
+	}
+	s.emit(proto.Emit(proto.JobUpdated, proto.JobPayload{
+		JobID: thread, ToolCallID: tool, Status: proto.JobRunning, Activity: activity,
+	}))
+}
+
+// updateAgentUsage folds a spawned thread's token reading into its job row.
+// This is the reading the claude path cannot produce: a codex subagent is a
+// thread, and a thread knows its own context window.
+func (s *session) updateAgentUsage(thread string, params json.RawMessage) {
+	s.mu.Lock()
+	j := s.agentJobs[thread]
+	tool := ""
+	if j != nil {
+		tool = j.toolCallID
+	}
+	s.mu.Unlock()
+	if j == nil {
+		return
+	}
+
+	var p struct {
+		TokenUsage struct {
+			Total struct {
+				InputTokens  int64 `json:"inputTokens"`
+				OutputTokens int64 `json:"outputTokens"`
+			} `json:"total"`
+			Last struct {
+				TotalTokens int64 `json:"totalTokens"`
+			} `json:"last"`
+			ModelContextWindow int64 `json:"modelContextWindow"`
+		} `json:"tokenUsage"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return
+	}
+	u := p.TokenUsage
+	s.emit(proto.Emit(proto.JobUpdated, proto.JobPayload{
+		JobID: thread, ToolCallID: tool,
+		Usage: &proto.JobUsage{
+			TotalTokens:   u.Total.InputTokens + u.Total.OutputTokens,
+			ContextUsed:   u.Last.TotalTokens,
+			ContextWindow: u.ModelContextWindow,
+		},
+	}))
+}
+
+// emitActivity publishes what the harness says it is doing, and only when
+// that answer changes. thread/status/changed is a level signal — codex resends
+// the same status freely — and the event log is durable, so the edge is
+// computed here rather than leaving every consumer to dedupe a heartbeat.
+func (s *session) emitActivity(activity string, blocked bool) {
+	s.mu.Lock()
+	if s.activity == activity {
+		s.mu.Unlock()
+		return
+	}
+	s.activity = activity
+	s.mu.Unlock()
+	s.emit(proto.Emit(proto.ActivityUpdated, proto.ActivityUpdatedPayload{Activity: activity, Blocked: blocked}))
+}
+
+// threadStatus is codex's own account of whether a thread is working. It is
+// the answer to the question a spinner cannot answer, and the reason the codex
+// adapter no longer has to infer liveness from whether bytes happen to be
+// arriving.
+type threadStatus struct {
+	Status struct {
+		Type        string   `json:"type"` // notLoaded | idle | active | systemError
+		ActiveFlags []string `json:"activeFlags"`
+	} `json:"status"`
+}
+
+// describe renders a status as the phrase a human reads. Empty means "working,
+// with nothing more to say" — the ordinary case, where the elapsed clock and
+// the streaming transcript are the whole story.
+func (t threadStatus) describe() (string, bool) {
+	switch t.Status.Type {
+	case "systemError":
+		return "harness error", false
+	case "idle", "notLoaded":
+		return "", false
+	}
+	for _, f := range t.Status.ActiveFlags {
+		switch f {
+		case "waitingOnApproval":
+			return "waiting for approval", true
+		case "waitingOnUserInput":
+			return "waiting for your input", true
+		}
+	}
+	return "", false
 }
 
 // foreignThread reports whether a notification is about a codex thread other
@@ -848,10 +1070,30 @@ func (s *session) spawningTurn(thread, turn string) string {
 // thread's turn — which codex ignores, so the phantom turn could not be stopped
 // at all.
 func (s *session) handleSubagentNotification(method, thread, turn string, params json.RawMessage) {
+	// Job rows come first, before the spawning-turn gate. A subagent that
+	// outlives the turn that started it is precisely the case the jobs roster
+	// exists for: its transcript has nowhere to go, but "still running" is
+	// news either way, and its finish is what takes the roster back to quiet.
+	switch method {
+	case "thread/status/changed":
+		var t threadStatus
+		_ = json.Unmarshal(params, &t)
+		s.updateAgentJob(thread, t)
+		return
+	case "thread/tokenUsage/updated":
+		s.updateAgentUsage(thread, params)
+		return
+	}
+
 	turn = s.spawningTurn(thread, turn)
 	if turn == "" {
 		return
 	}
+	// Everything below is the subagent's own output, and it is filed under the
+	// call that spawned it rather than dropped into the parent's timeline: a
+	// subagent's reasoning interleaved with its parent's reads as one confused
+	// train of thought, and the jobs panel is where a reader goes to follow it.
+	parent := s.agentParent(thread)
 	switch method {
 	case "item/started", "item/completed":
 		// A subagent compacting its own context says nothing about this
@@ -865,12 +1107,24 @@ func (s *session) handleSubagentNotification(method, thread, turn string, params
 		if p.Item.Type == "contextCompaction" {
 			return
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method == "item/completed", turn, parent, params)
 	case "item/agentMessage/delta":
-		s.emitMessageDelta(turn, parseDelta(params))
+		s.emitMessageDelta(turn, parent, parseDelta(params))
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
-		s.emitReasoningDelta(turn, parseDelta(params))
+		s.emitReasoningDelta(turn, parent, parseDelta(params))
 	}
+}
+
+// agentParent is the collab tool call that spawned a thread, or empty when we
+// never saw the spawn — in which case the output stands on its own rather than
+// being hidden under a call that is not there.
+func (s *session) agentParent(thread string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j := s.agentJobs[thread]; j != nil {
+		return j.toolCallID
+	}
+	return ""
 }
 
 func (s *session) handleNotification(method string, params json.RawMessage) {
@@ -886,6 +1140,17 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		if host, ok := s.host.(adapter.ComposerCatalogueInvalidator); ok {
 			host.ComposerCatalogueChanged()
 		}
+
+	case "thread/status/changed":
+		// Codex's own answer to "are you still working". Level-triggered and
+		// authoritative, including the two states that look identical to a
+		// spinner and are opposites to a human: busy, and stuck waiting on a
+		// person. Only the phrase travels; the status alone is already carried
+		// by the turn.
+		var t threadStatus
+		_ = json.Unmarshal(params, &t)
+		activity, blocked := t.describe()
+		s.emitActivity(activity, blocked)
 
 	case "thread/compacted":
 		var p struct {
@@ -905,7 +1170,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			_ = json.Unmarshal(params, &p)
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method == "item/completed", turn, "", params)
 
 	case "item/agentMessage/delta":
 		p := parseDelta(params)
@@ -913,7 +1178,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		if turn == "" {
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.emitMessageDelta(turn, p)
+		s.emitMessageDelta(turn, "", p)
 
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
 		p := parseDelta(params)
@@ -921,7 +1186,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		if turn == "" {
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.emitReasoningDelta(turn, p)
+		s.emitReasoningDelta(turn, "", p)
 
 	case "item/commandExecution/outputDelta", "command/exec/outputDelta":
 		// Streamed output is dropped; the completed item carries the
@@ -1002,6 +1267,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		s.mu.Lock()
 		done := s.turnID
 		s.turnID = ""
+		s.activity = "" // cleared with the turn; see emitActivity
 		s.serverTurnID = ""
 		s.interrupting = false
 		s.mu.Unlock()
@@ -1068,9 +1334,32 @@ type codexItem struct {
 
 	// webSearch
 	Query string `json:"query"`
+
+	// collabAgentToolCall: the multi-agent tools. The Tool field above names
+	// the operation here too (spawnAgent, sendInput, wait, …), which is why it
+	// is shared rather than repeated. ReceiverThreadIDs names the threads the
+	// call addresses, which for a spawn is the new subagent. AgentsStates is
+	// the last known status of each, keyed by thread id — codex's equivalent
+	// of the claude SDK's task_progress, and the only place a running
+	// subagent's own words show up.
+	SenderThreadID    string   `json:"senderThreadId"`
+	ReceiverThreadIDs []string `json:"receiverThreadIds"`
+	Prompt            string   `json:"prompt"`
+	Model             string   `json:"model"`
+	AgentsStates      map[string]struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	} `json:"agentsStates"`
+
+	// subAgentActivity: the lifecycle of a spawned agent, on the parent's
+	// timeline. AgentPath is the agent definition it runs (the flavour), and
+	// is what the roster labels the row with.
+	AgentThreadID string `json:"agentThreadId"`
+	AgentPath     string `json:"agentPath"`
+	Kind          string `json:"kind"`
 }
 
-func (s *session) handleItem(completed bool, turn string, params json.RawMessage) {
+func (s *session) handleItem(completed bool, turn, parent string, params json.RawMessage) {
 	var p struct {
 		Item   codexItem `json:"item"`
 		TurnID string    `json:"turnId"`
@@ -1123,6 +1412,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !streamed {
 			s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 				TurnID: turn, Role: "agent", Kind: "text", BlockID: it.ID, Delta: it.Text,
+				ParentToolCallID: parent,
 			}))
 		}
 
@@ -1133,7 +1423,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 	case "commandExecution":
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindExecute,
+				TurnID: turn, ParentToolCallID: parent, ToolCallID: it.ID, Kind: proto.KindExecute,
 				Title: firstLine(it.Command), Status: proto.StatusInProgress,
 				RawInput: jsonOf(map[string]any{"command": it.Command, "cwd": it.Cwd}),
 			}))
@@ -1161,7 +1451,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		title := "Edit " + strings.Join(paths, ", ")
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindEdit,
+				TurnID: turn, ParentToolCallID: parent, ToolCallID: it.ID, Kind: proto.KindEdit,
 				Title: title, Status: proto.StatusInProgress,
 			}))
 			return
@@ -1178,7 +1468,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		title := it.Server + "/" + it.Tool
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindOther,
+				TurnID: turn, ParentToolCallID: parent, ToolCallID: it.ID, Kind: proto.KindOther,
 				Title: title, Status: proto.StatusInProgress,
 			}))
 			return
@@ -1188,10 +1478,28 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			Content: []proto.ToolContent{{Type: "text", Text: string(it.Result)}},
 		}))
 
+	case "collabAgentToolCall":
+		s.handleCollab(completed, turn, it)
+
+	case "subAgentActivity":
+		// The parent's own record of a subagent's life. It carries the agent
+		// flavour, which the collab tool call does not, so it is worth
+		// folding in even when the spawn already opened the row.
+		if it.AgentThreadID == "" {
+			return
+		}
+		s.agentJobFor(it.AgentThreadID, "", it.AgentPath, "")
+		switch it.Kind {
+		case "completed":
+			s.finishAgentJob(it.AgentThreadID, proto.JobCompleted, "")
+		case "interrupted":
+			s.finishAgentJob(it.AgentThreadID, proto.JobStopped, "")
+		}
+
 	case "webSearch":
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindFetch,
+				TurnID: turn, ParentToolCallID: parent, ToolCallID: it.ID, Kind: proto.KindFetch,
 				Title: "Search: " + it.Query, Status: proto.StatusInProgress,
 			}))
 			return
@@ -1200,6 +1508,94 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			ToolCallID: it.ID, Status: proto.StatusCompleted,
 		}))
 	}
+}
+
+// handleCollab maps one multi-agent tool call onto the timeline and the jobs
+// roster. The call itself is a tool call like any other — it is the parent
+// deciding to do something — and the agents it addresses are jobs, because
+// they outlive the call and often the turn.
+func (s *session) handleCollab(completed bool, turn string, it codexItem) {
+	title := collabTitle(it)
+	if !completed {
+		s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+			TurnID: turn, ToolCallID: it.ID, Kind: proto.KindAgent,
+			Title: title, Status: proto.StatusInProgress,
+			RawInput: jsonOf(map[string]any{"tool": it.Tool, "prompt": it.Prompt, "model": it.Model}),
+		}))
+	}
+
+	// A spawn names its new thread in receiverThreadIds; every other tool
+	// addresses threads that already exist. Either way the addressed threads
+	// are the ones this call is about.
+	name := firstLine(it.Prompt)
+	for _, thread := range it.ReceiverThreadIDs {
+		if thread == "" {
+			continue
+		}
+		s.agentJobFor(thread, it.ID, "", name)
+	}
+
+	// agentsStates is the running commentary: a status and, when the agent
+	// has said something about itself, a message. It is the closest codex
+	// comes to the claude SDK's task_progress, so it lands in the same field.
+	for thread, st := range it.AgentsStates {
+		switch st.Status {
+		case "completed", "shutdown":
+			s.finishAgentJob(thread, proto.JobCompleted, "")
+		case "errored":
+			s.finishAgentJob(thread, proto.JobFailed, st.Message)
+		case "interrupted":
+			s.finishAgentJob(thread, proto.JobStopped, "")
+		case "notFound":
+			// Nothing to say: the agent is gone and codex does not know why.
+		default: // pendingInit, running
+			s.mu.Lock()
+			j := s.agentJobs[thread]
+			s.mu.Unlock()
+			if j == nil || j.done {
+				continue
+			}
+			s.emit(proto.Emit(proto.JobUpdated, proto.JobPayload{
+				JobID: thread, ToolCallID: it.ID, Status: proto.JobRunning, Activity: st.Message,
+			}))
+		}
+	}
+
+	if completed {
+		status := proto.StatusCompleted
+		if it.Status == "failed" {
+			status = proto.StatusFailed
+		} else if it.Status == "interrupted" {
+			status = proto.StatusCancelled
+		}
+		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
+			ToolCallID: it.ID, Status: status, Title: title,
+		}))
+	}
+}
+
+// collabTitle names a multi-agent call the way a reader would: the operation,
+// then what it is about. "Spawn agent: review the diff" says more than
+// "spawnAgent" and fits the one line a tool card gets.
+func collabTitle(it codexItem) string {
+	verb := map[string]string{
+		"spawnAgent":     "Spawn agent",
+		"sendInput":      "Send to agent",
+		"resumeAgent":    "Resume agent",
+		"wait":           "Wait for agents",
+		"closeAgent":     "Close agent",
+		"sendMessage":    "Message agent",
+		"followupTask":   "Follow-up task",
+		"interruptAgent": "Interrupt agent",
+		"listAgents":     "List agents",
+	}[it.Tool]
+	if verb == "" {
+		verb = it.Tool
+	}
+	if p := firstLine(it.Prompt); p != "" {
+		return verb + ": " + p
+	}
+	return verb
 }
 
 // New app-servers emit a contextCompaction item; older ones emit the

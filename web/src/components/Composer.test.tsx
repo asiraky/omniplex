@@ -107,7 +107,7 @@ describe("sending with images", () => {
   it("sends a message that is nothing but pictures", () => {
     const { onSend } = mount({ attachments: [staged()] });
     fireEvent.click(sendButton());
-    expect(onSend).toHaveBeenCalledWith("");
+    expect(onSend).toHaveBeenCalledWith("", "now");
   });
 
   it("refuses to send while an image is still going up", () => {
@@ -148,37 +148,6 @@ describe("sending with images", () => {
   });
 });
 
-describe("the send button's options", () => {
-  const openOptions = () =>
-    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), { button: 0, ctrlKey: false });
-
-  it("sends now from the menu", async () => {
-    const { onSend } = mount({ draft: "ship it", onSchedule: vi.fn() });
-    openOptions();
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Send now" }));
-    expect(onSend).toHaveBeenCalledWith("ship it");
-  });
-
-  it("schedules from the menu without sending", async () => {
-    const onSchedule = vi.fn();
-    const { onSend } = mount({ draft: "later", onSchedule });
-    openOptions();
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Schedule send…" }));
-    expect(onSchedule).toHaveBeenCalledTimes(1);
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it("offers no options when there is nowhere to schedule", () => {
-    mount({ draft: "hi" });
-    expect(screen.queryByRole("button", { name: "More send options" })).toBeNull();
-  });
-
-  it("holds the options back with nothing to send", () => {
-    mount({ draft: "", onSchedule: vi.fn() });
-    expect(screen.getByRole("button", { name: "More send options" })).toHaveProperty("disabled", true);
-  });
-});
-
 describe("a workspace that is still being prepared", () => {
   const compact = {
     id: "command:compact",
@@ -215,5 +184,61 @@ describe("a workspace that is still being prepared", () => {
     await waitFor(() => expect(loadComposerItems).toHaveBeenCalledTimes(1));
     await act(async () => rerender({ sendDisabled: false }));
     await waitFor(() => expect(loadComposerItems).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("how a message is delivered", () => {
+  const busy = { busy: true, draft: "and also fix the tests", sessionId: "s1" };
+  const send = () => screen.getAllByRole("button", { name: /^Send to the running turn/ }).pop()!;
+  // Radix menus open on pointerdown, not click.
+  const open = (name: RegExp | string) =>
+    fireEvent.pointerDown(screen.getByRole("button", { name }), { button: 0, ctrlKey: false });
+
+  it("sends with the default delivery until one is picked", () => {
+    const { onSend } = mount(busy);
+    fireEvent.click(send());
+    expect(onSend).toHaveBeenCalledWith("and also fix the tests", "now");
+  });
+
+  it("sends with the picked delivery and remembers it for the session", async () => {
+    const { onSend } = mount(busy);
+    open(/^Delivery:/);
+    fireEvent.click(await screen.findByText("Interrupt"));
+    fireEvent.click(send());
+    expect(onSend).toHaveBeenCalledWith("and also fix the tests", "interrupt");
+
+    // A remount is a page reload, or coming back to this session later: the
+    // choice belongs to the session, not to this component instance.
+    const second = mount(busy);
+    fireEvent.click(send());
+    expect(second.onSend).toHaveBeenCalledWith("and also fix the tests", "interrupt");
+  });
+
+  it("offers no delivery choice while the session is idle", () => {
+    mount({ ...busy, busy: false });
+    expect(screen.queryByRole("button", { name: /^Delivery:/ })).toBeNull();
+  });
+});
+
+describe("the permission mode chip", () => {
+  const modes = [
+    { id: "default", label: "Ask", description: "Ask before every edit", default: true },
+    { id: "acceptEdits", label: "Accept edits", description: "Edits go through" },
+  ];
+
+  it("switches mode without restarting the session", async () => {
+    const onSwitchMode = vi.fn();
+    mount({ modes, mode: "default", onSwitchMode });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Permission mode: Ask" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByText("Accept edits"));
+    expect(onSwitchMode).toHaveBeenCalledWith("acceptEdits");
+  });
+
+  it("stays away when the harness has no modes to offer", () => {
+    mount({ modes: [], onSwitchMode: vi.fn() });
+    expect(screen.queryByRole("button", { name: /^Permission mode/ })).toBeNull();
   });
 });

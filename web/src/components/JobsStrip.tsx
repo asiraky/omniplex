@@ -16,7 +16,7 @@ export function JobsStrip({ jobs, onOpen }: { jobs: Job[]; onOpen: () => void })
     <div className="flex justify-center px-3 pb-1.5">
       <button
         type="button"
-        onClick={onOpen}
+        onClick={() => onOpen()}
         className="bg-card/90 text-muted-foreground hover:text-foreground focus-visible:ring-ring flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-[12px] shadow-sm backdrop-blur outline-none focus-visible:ring-2"
       >
         <span className="relative flex size-2 shrink-0" aria-hidden>

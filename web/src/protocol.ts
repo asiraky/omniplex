@@ -164,10 +164,11 @@ export interface TurnRecovery {
   attempt: number;
   /**
    * What left the earlier turn unfinished: "restart" when the server died
-   * under it, "continue" when a human asked to carry on from an error. Only a
-   * restart may be described as one.
+   * under it, "continue" when a human asked to carry on from an error, and
+   * "limit" when the provider's usage window ran out and the session picked
+   * the work back up once it reopened. Only a restart may be described as one.
    */
-  cause?: "restart" | "continue";
+  cause?: "restart" | "continue" | "limit";
 }
 
 export interface Turn {
@@ -179,10 +180,19 @@ export interface Turn {
   /**
    * What kind of failure `error` describes, when the server could say: "auth"
    * (no usable credentials — retrying is pointless until someone logs in) or
-   * "restart" (the server died mid-turn). Absent means unclassified; show the
-   * message and nothing more. Branch on this rather than on the wording.
+   * "restart" (the server died mid-turn), or "usage_limit" (the provider's
+   * usage or spend window is exhausted, and waiting is the whole fix). Absent
+   * means unclassified; show the message and nothing more. Branch on this
+   * rather than on the wording.
    */
-  failure?: "auth" | "restart";
+  failure?: "auth" | "restart" | "usage_limit";
+  /**
+   * When an exhausted usage window reopens (epoch milliseconds), on a turn
+   * whose `failure` is "usage_limit". Absent when the harness named a limit
+   * but no time — the session then backs off rather than waiting for a moment
+   * nobody told it.
+   */
+  resetAt?: number;
   done: boolean;
   // Present only on a turn that continues work an earlier turn left
   // unfinished — after a restart, or because a human asked.
@@ -265,6 +275,17 @@ export interface SessionState {
   phase: "creating" | "provisioning" | "provision_failed" | "idle" | "turn" | "cleaning" | "cleanup_failed" | "closed";
   closed: boolean;
   workspace: WorkspaceState;
+  /** When this session last produced anything at all, as epoch millis. A
+      spinner cannot tell a streaming turn from one that has been silent for
+      four minutes; this can. Mirrors projection.State.LastEventAt. */
+  lastEventAt?: number;
+  /** What the harness says it is doing right now, in its own words —
+      "waiting for approval", "retrying after an API error" — when it says
+      anything at all. */
+  activity?: string;
+  /** True when `activity` is something the harness cannot leave without a
+      human. Worth looking at, rather than worth waiting for. */
+  blocked?: boolean;
   items: Item[];
   /** How many items sit above `items` on the server: snapshots carry only the
       tail of a long timeline, and this doubles as the cursor for fetching the
@@ -283,6 +304,20 @@ export interface SessionState {
   scheduledPrompts?: ScheduledPrompt[];
 }
 
+/**
+ * How a message should reach a harness that is already working.
+ *
+ * - `now` — hand it over immediately; the model reads it at its next step.
+ * - `interrupt` — stop the running turn, then run this as its own turn.
+ * - `end` — hold it until the agent is genuinely finished: no turn running,
+ *   nothing waiting on a human, and the last turn ended cleanly. A turn that
+ *   died on an error, an interrupt or a limit leaves it parked.
+ *
+ * Meaningless on an idle session — there is nothing to interrupt and nothing
+ * to wait for — so the composer only offers the choice while a turn runs.
+ */
+export type Delivery = "now" | "interrupt" | "end";
+
 export interface QueuedPrompt {
   queueId: string;
   prompt: string;
@@ -291,6 +326,8 @@ export interface QueuedPrompt {
   // The harness holds it and reads it at its next step; it cannot be taken
   // back.
   sent?: boolean;
+  /** Absent means `now`, which is what every prompt sent by an older client is. */
+  delivery?: Delivery;
 }
 
 export type JobKind = "agent" | "shell" | "monitor" | "inert";
@@ -301,6 +338,11 @@ export interface JobUsage {
   toolUses?: number;
   durationMs?: number;
   cost?: number;
+  /** The subagent's own context occupancy, for harnesses that run one as a
+      first-class conversation and so can say. totalTokens alone cannot tell
+      you how close it is to running out of room. */
+  contextUsed?: number;
+  contextWindow?: number;
 }
 
 /** Work running beside the conversation: a subagent, a background shell, a
@@ -437,6 +479,12 @@ export interface UserConfig {
    * server's default, so clearing the box is how you go back to it.
    */
   summaryPrompt?: string;
+  /**
+   * Continue work a provider's usage or spend limit cut short, once the window
+   * it named reopens. Absent means on; a single failure can still be armed or
+   * disarmed from the card the limited turn leaves behind.
+   */
+  autoResumeOnLimit?: boolean;
 }
 
 /**
@@ -776,12 +824,45 @@ export interface Event {
   payload: any;
 }
 
+/** One session's running services. */
+export interface PreviewSet {
+  sessionId: string;
+  previews: Preview[];
+}
+
+/** A web service belonging to a session, and where to reach it. */
+export interface Preview {
+  /** Stable across restarts of the service, so a bookmark keeps working. */
+  id: string;
+  port: number;
+  label: string;
+  scheme: string;
+  /** How we learned about it: the project said so, or we noticed it. */
+  source: "declared" | "docker" | "process";
+  /**
+   * The address to use from this device, resolved by the server: the same
+   * service is a public subdomain to a phone and a loopback port to the
+   * machine running it.
+   */
+  url: string;
+}
+
+/** One thing worth telling the user, already rendered by the server. */
+export interface AppNotification {
+  /** turn_finished | needs_permission | needs_answer, and whatever comes next. */
+  kind: string;
+  title: string;
+  body?: string;
+  sessionId?: string;
+}
+
 export interface ServerFrame {
   type:
     | "welcome"
     | "sessions"
     | "harnesses"
     | "labels"
+    | "previews"
     | "projects"
     | "composer_items_changed"
     | "snapshot"
@@ -791,6 +872,7 @@ export interface ServerFrame {
     | "ack"
     | "auth_event"
     | "error"
+    | "notify"
     | "pong";
   serverId?: string;
   /** Content hash of the server's UI bundle; a mismatch means we are stale. */
@@ -800,6 +882,12 @@ export interface ServerFrame {
   projects?: Project[];
   /** Absent means none defined: an empty list is omitted from the frame. */
   labels?: Label[];
+  /**
+   * The dev servers each session is currently running. Live state, re-sent
+   * whole whenever it changes and never appended to the transcript: a port
+   * that was listening an hour ago is not part of the conversation.
+   */
+  previews?: PreviewSet[];
   cwd?: string;
   access?: Access;
   sessionId?: string;
@@ -807,6 +895,12 @@ export interface ServerFrame {
   state?: SessionState;
   event?: Event;
   commandId?: string;
+  /**
+   * An in-app alert for a connection that is looking at the app but not at
+   * the session concerned. The same news reaches a device that is not looking
+   * at anything as a web push instead.
+   */
+  notification?: AppNotification;
   result?: any;
   error?: string;
   /** Narration of a running auth flow; sent only to the initiating connection. */
@@ -815,6 +909,16 @@ export interface ServerFrame {
 
 export interface ScheduledPrompt {
  id: string;
+ /**
+  * Absent on the instruction a human wrote; "resume" on one the server armed
+  * itself to pick work back up when a usage limit lifts. They ride the same
+  * durable rails and read very differently.
+  */
+ kind?: "resume";
+ /** Which consecutive auto-resume this is, on a "resume" entry. */
+ attempt?: number;
+ /** The turn a "resume" entry is continuing. */
+ resumeOf?: string;
  revision: number;
  prompt: string;
  images?: PromptImage[];

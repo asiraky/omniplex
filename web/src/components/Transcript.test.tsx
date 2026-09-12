@@ -486,4 +486,154 @@ describe("a turn that failed", () => {
     expect(screen.getByText("Asked the agent to pick the work back up")).toBeTruthy();
     expect(screen.queryByText(/Server restarted/)).toBeNull();
   });
+
+  // A usage limit is not a bug report. The card's job is the wait: when the
+  // window reopens, and whether this session is going to carry on by itself.
+  describe("because the provider is out of budget", () => {
+    const limited = (extra: Record<string, unknown> = {}, resetAt = Date.now() + 2 * 3_600_000) => {
+      const s = failed({
+        failure: "usage_limit",
+        error: "You've hit your session limit · resets 11:10am (Australia/Brisbane)",
+        resetAt,
+      });
+      return { ...s, ...extra };
+    };
+    const armed = (over: Record<string, unknown> = {}) => ({
+      id: "s1",
+      kind: "resume",
+      attempt: 1,
+      resumeOf: "t1",
+      revision: 0,
+      prompt: "[omniplex] …",
+      dueAt: Date.now() + 2 * 3_600_000,
+      timeZone: "Australia/Brisbane",
+      model: "",
+      mode: "",
+      effort: "",
+      status: "pending",
+      ...over,
+    });
+
+    it("says when the work will pick itself back up", () => {
+      render(view(limited({ scheduledPrompts: [armed()] })));
+      expect(screen.getByText(/Usage limit reached/)).toBeTruthy();
+      expect(screen.getByText(/pick the work back up when it reopens/)).toBeTruthy();
+      // The reset time is stated once. The provider's own copy of it, with its
+      // upsell, is not repeated underneath.
+      expect(screen.queryByText(/hit your session limit/)).toBeNull();
+      // Not a story about a crash: nothing broke.
+      expect(screen.queryByText(/ended with an error/)).toBeNull();
+      expect(screen.queryByText(/restart/i)).toBeNull();
+    });
+
+    it("says so when nothing is armed, and offers the switch either way", () => {
+      const onAutoResume = vi.fn();
+      render(
+        <Transcript
+          state={limited() as never}
+          onFinish={() => {}}
+          onRetryProvision={() => {}}
+          onCleanup={() => {}}
+          onForceDelete={() => {}}
+          onContinue={() => {}}
+          onAutoResume={onAutoResume}
+          onOpenDiff={() => {}}
+        />,
+      );
+      // Nothing armed says itself through the switch: no extra line for it.
+      expect(screen.queryByText(/pick the work back up/)).toBeNull();
+
+      const toggle = screen.getByRole("switch", { name: /resume automatically/i });
+      expect(toggle.getAttribute("data-state")).toBe("unchecked");
+      fireEvent.click(toggle);
+      expect(onAutoResume).toHaveBeenCalledWith(true);
+    });
+
+    it("shows the switch as on while a resume is armed, so turning it off is the override", () => {
+      const onAutoResume = vi.fn();
+      render(
+        <Transcript
+          state={limited({ scheduledPrompts: [armed()] }) as never}
+          onFinish={() => {}}
+          onRetryProvision={() => {}}
+          onCleanup={() => {}}
+          onForceDelete={() => {}}
+          onContinue={() => {}}
+          onAutoResume={onAutoResume}
+          onOpenDiff={() => {}}
+        />,
+      );
+      const toggle = screen.getByRole("switch", { name: /resume automatically/i });
+      expect(toggle.getAttribute("data-state")).toBe("checked");
+      fireEvent.click(toggle);
+      expect(onAutoResume).toHaveBeenCalledWith(false);
+    });
+
+    // Continuing before the window reopens fails the same way, so the offer
+    // only exists once the wait is actually over.
+    it("offers nothing to press while the window is still shut", () => {
+      render(view(limited({ scheduledPrompts: [armed()] })));
+      expect(screen.queryByRole("button", { name: /continue now/i })).toBeNull();
+    });
+
+    it("lets someone go by hand once the window has reopened", () => {
+      const onContinue = vi.fn();
+      render(
+        <Transcript
+          state={limited({ scheduledPrompts: [armed()] }, Date.now() - 60_000) as never}
+          onFinish={() => {}}
+          onRetryProvision={() => {}}
+          onCleanup={() => {}}
+          onForceDelete={() => {}}
+          onContinue={onContinue}
+          onOpenDiff={() => {}}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /continue now/i }));
+      expect(onContinue).toHaveBeenCalledOnce();
+    });
+
+    it("says so when the resume it was counting on never landed", () => {
+      render(
+        view(
+          limited(
+            { scheduledPrompts: [armed({ status: "failed", error: "session is closed" })] },
+            Date.now() - 60_000,
+          ),
+        ),
+      );
+      // The strip above the composer no longer carries resumes, so this card
+      // is the only place a broken one can be seen.
+      expect(screen.getByText(/Picking the work back up did not work/)).toBeTruthy();
+      expect(screen.getByText(/session is closed/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: /try again/i })).toBeTruthy();
+    });
+
+    it("ignores a resume that failed against an earlier turn", () => {
+      // A resume that fired and then hit the limit again is marked failed
+      // against the turn it started — saying "could not resume" on the new
+      // limit would be a lie about work that did carry on.
+      render(view(limited({ scheduledPrompts: [armed({ status: "failed", resumeOf: "t0" })] })));
+      expect(screen.queryByText(/did not work/)).toBeNull();
+    });
+
+    it("names the resumed turn for what it is once it runs", () => {
+      const s = limited() as never as ReturnType<typeof failed>;
+      s.items.push({
+        id: "u2",
+        kind: "message",
+        role: "user",
+        text: "[omniplex] Your previous turn stopped because…",
+        turnId: "t2",
+        receivedAt: 2,
+      });
+      s.turns.push({
+        id: "t2",
+        done: false,
+        recovery: { resumeOf: "t1", attempt: 1, cause: "limit" },
+      });
+      render(view(s));
+      expect(screen.getByText("Usage limit reset — the agent picked the work back up")).toBeTruthy();
+    });
+  });
 });

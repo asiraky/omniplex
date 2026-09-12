@@ -41,6 +41,14 @@ const (
 	ToolCallUpdated = "tool_call.updated"
 	PlanUpdated     = "plan.updated"
 	UsageUpdated    = "usage.updated"
+	// ActivityUpdated is the harness saying, in its own words, what it is
+	// doing — "waiting on approval", "retrying after an API error". It exists
+	// because a spinner cannot tell a working turn from a wedged one, and the
+	// harnesses do know the difference. Emitted only when the answer changes,
+	// so it stays a handful of events per turn rather than a heartbeat: the
+	// log is durable, and "still working" ticked once a second is noise that
+	// outlives its use.
+	ActivityUpdated = "activity.updated"
 	// ContextCompacted marks a point where the harness compressed the
 	// conversation to reclaim context window. It carries the token counts
 	// either side of the boundary so the transcript can show what happened.
@@ -301,7 +309,29 @@ type PromptQueuedPayload struct {
 	// Sent means the harness already has the prompt and will read it at its
 	// next step. It can no longer be taken back.
 	Sent bool `json:"sent,omitempty"`
+	// Delivery is how the human asked for this prompt to reach the agent.
+	// Empty means DeliveryNow, which is what every prompt did before the
+	// choice existed.
+	Delivery string `json:"delivery,omitempty"`
 }
+
+// How a prompt sent to a busy session is meant to reach the harness. The
+// choice is the human's and travels with the prompt: the same session takes
+// "answer this right now" and "read this when you are actually done" on
+// different messages.
+const (
+	// DeliveryNow hands the prompt to the harness immediately; it folds it in
+	// at its next model call. The default, and the only behaviour there used
+	// to be.
+	DeliveryNow = "now"
+	// DeliveryInterrupt stops the running turn and starts the prompt as a turn
+	// of its own.
+	DeliveryInterrupt = "interrupt"
+	// DeliveryEnd holds the prompt until the agent is genuinely finished —
+	// not merely stopped. A turn that ended on an error, an interrupt, or a
+	// question left unanswered is not finished, and the prompt keeps waiting.
+	DeliveryEnd = "end"
+)
 
 type PromptInjectedPayload struct {
 	QueueID string `json:"queueId"`
@@ -355,6 +385,10 @@ const (
 	RecoveryRestart = "restart"
 	// RecoveryContinue: a human asked to continue a turn that ended in error.
 	RecoveryContinue = "continue"
+	// RecoveryLimit: the provider's usage window had run out, and the session
+	// picked the work back up by itself once the window reset. Nobody asked
+	// for it and nothing crashed, so it is neither of the other two.
+	RecoveryLimit = "limit"
 )
 
 // ChangedFile is one path a change set touched, aggregated over the whole set:
@@ -396,6 +430,11 @@ type TurnFinishedPayload struct {
 	// on English, which is how a login failure came to be reported as a server
 	// restart. Empty means unclassified: show the message and nothing more.
 	Failure string `json:"failure,omitempty"`
+	// ResetAt is when the provider said the exhausted window reopens, in unix
+	// milliseconds, and is set only alongside FailureUsageLimit. Zero means
+	// the harness named a limit but not a time, which is the difference
+	// between waiting for a known moment and having to guess at one.
+	ResetAt int64 `json:"resetAt,omitempty"`
 }
 
 // Failure kinds for turn.finished.
@@ -405,6 +444,10 @@ const (
 	FailureAuth = "auth"
 	// FailureRestart: the server died while the turn was running.
 	FailureRestart = "restart"
+	// FailureUsageLimit: the provider's usage or spend window is exhausted.
+	// Retrying now fails the same way; retrying after the window resets is
+	// the whole fix, which is why this kind carries a time with it.
+	FailureUsageLimit = "usage_limit"
 )
 
 // MessageChunkPayload carries a delta of assistant (or replayed user) content.
@@ -496,6 +539,17 @@ type UsageUpdatedPayload struct {
 	ContextCategories []ContextCategory `json:"contextCategories,omitempty"`
 }
 
+// ActivityUpdatedPayload carries what the harness says it is doing. An empty
+// Activity means "nothing to report" and clears whatever was showing: the
+// absence of news is itself the news once a harness goes back to plain work.
+type ActivityUpdatedPayload struct {
+	Activity string `json:"activity,omitempty"`
+	// Blocked marks an activity the harness cannot leave on its own — it is
+	// waiting on a human. A presenter shows those differently from "busy":
+	// one is a reason to wait, the other is a reason to look.
+	Blocked bool `json:"blocked,omitempty"`
+}
+
 // ContextCategory is one row of the context-window occupancy breakdown.
 type ContextCategory struct {
 	Name   string `json:"name"`
@@ -517,6 +571,12 @@ type JobUsage struct {
 	ToolUses    int64   `json:"toolUses,omitempty"`
 	DurationMs  int64   `json:"durationMs,omitempty"`
 	Cost        float64 `json:"cost,omitempty"`
+	// ContextUsed and ContextWindow are the subagent's own context occupancy,
+	// for harnesses that run a subagent as a first-class conversation and so
+	// can say. A subagent that is about to run out of room is worth seeing
+	// before it does; TotalTokens alone cannot say how full it is.
+	ContextUsed   int64 `json:"contextUsed,omitempty"`
+	ContextWindow int64 `json:"contextWindow,omitempty"`
 }
 
 // JobPayload is the body of every job event. The identity fields are repeated
@@ -612,7 +672,17 @@ func DefaultPermissionOptions() []PermissionOption {
 // ScheduledPrompt is a durable one-shot instruction. Revision guards edits from
 // stale devices. The provider account remains the session's account.
 type ScheduledPrompt struct {
-	ID       string        `json:"id"`
+	ID string `json:"id"`
+	// Kind is empty for the instruction a human wrote and ScheduleResume for
+	// one the server armed to pick up work a usage limit cut short. They ride
+	// the same durable rails; they read differently, and only one of them is
+	// worth a place in the scheduled-prompts list.
+	Kind string `json:"kind,omitempty"`
+	// Attempt counts consecutive auto-resumes on ScheduleResume entries, so a
+	// provider that keeps saying no is backed off rather than polled.
+	Attempt int `json:"attempt,omitempty"`
+	// ResumeOf names the turn a ScheduleResume entry is picking back up.
+	ResumeOf string        `json:"resumeOf,omitempty"`
 	Revision int           `json:"revision"`
 	Prompt   string        `json:"prompt"`
 	Images   []PromptImage `json:"images,omitempty"`
@@ -625,3 +695,7 @@ type ScheduledPrompt struct {
 	Error    string        `json:"error,omitempty"`
 	TurnID   string        `json:"turnId,omitempty"`
 }
+
+// ScheduleResume marks a scheduled prompt the server armed itself to resume a
+// turn a usage limit ended.
+const ScheduleResume = "resume"

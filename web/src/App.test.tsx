@@ -14,7 +14,11 @@ const command = vi.fn(async (_name: string, _args: unknown) => ({}) as any);
 const attach = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
-const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn() }));
+const presence = vi.fn();
+// sonner's export is callable as well as having .error/.info on it, and App
+// calls it both ways — a plain object here fails only once a notification
+// arrives, which is a confusing way to find out.
+const toast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast }));
 
@@ -32,6 +36,7 @@ vi.mock("./client", () => ({
     attach = attach;
     command = command;
     prime = prime;
+    presence = presence;
   },
 }));
 

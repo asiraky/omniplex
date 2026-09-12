@@ -50,53 +50,32 @@ func under(path, dir string) bool {
 // directory the old process cannot touch. Refusing that would block a
 // perfectly safe delete until an unrelated process happened to exit.
 //
-// Linux only, and best effort by nature: /proc is a moving target and a
-// process may exit or chdir a microsecond later, and cwd is unreadable for
-// processes belonging to another user or hidden by hidepid. An empty result is
-// "nothing seen", not a guarantee, so callers must still cope with removal
-// failing.
+// Best effort by nature: the process table is a moving target, a process may
+// exit or chdir a microsecond later, and a working directory is unreadable for
+// processes belonging to another user. An empty result is "nothing seen", not
+// a guarantee, so callers must still cope with removal failing. How the
+// working directories are read is per platform — see scanCWDs.
 func processesIn(target string, includeDeleted bool) []procRef {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	self := os.Getpid()
 	var found []procRef
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, p := range scanCWDs() {
+		if p.Deleted && !includeDeleted {
 			continue
 		}
-		pid, convErr := strconv.Atoi(e.Name())
-		if convErr != nil || pid == self {
+		if !filepath.IsAbs(p.CWD) || !under(p.CWD, target) {
 			continue
 		}
-		// Reading another user's cwd fails with EACCES; those processes are
-		// not ours to report on anyway.
-		cwd, linkErr := os.Readlink(filepath.Join("/proc", e.Name(), "cwd"))
-		if linkErr != nil {
-			continue
-		}
-		// A deleted cwd reads back as "/path/to/dir (deleted)".
-		if trimmed, wasDeleted := strings.CutSuffix(cwd, " (deleted)"); wasDeleted {
-			if !includeDeleted {
-				continue
-			}
-			cwd = trimmed
-		}
-		if !filepath.IsAbs(cwd) || !under(cwd, target) {
-			continue
-		}
-		found = append(found, procRef{PID: pid, Name: procName(pid)})
+		found = append(found, procRef{PID: p.PID, Name: p.Name})
 	}
 	return found
 }
 
-func procName(pid int) string {
-	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
+// procCWD is one process as a platform scan saw it: pid, name, its working
+// directory, and whether that directory has already been unlinked.
+type procCWD struct {
+	PID     int
+	Name    string
+	CWD     string
+	Deleted bool
 }
 
 // describeProcs renders at most three processes for an error message, so a

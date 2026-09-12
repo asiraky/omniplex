@@ -22,6 +22,7 @@ import {
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import { Spinner } from "~/components/ui/spinner";
+import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
 import { formatEffort } from "~/lib/efforts";
 import { cn } from "~/lib/utils";
@@ -115,6 +116,39 @@ function BranchFormatField({ value, onChange }: { value: string; onChange: (v: s
       >
         #{sampleIssue.number} → {preview.text}
       </p>
+    </div>
+  );
+}
+
+// AutoResumeField is the standing answer to "a usage limit stopped the work —
+// should it carry on by itself when the window reopens?". A single failure can
+// still override it from the card that failure leaves behind, so this is the
+// default rather than the rule; the copy says so, because a setting that can
+// be overridden elsewhere and does not admit it is a setting people stop
+// trusting.
+function AutoResumeField({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="space-y-1.5">
+      <SectionHeading note="this machine only">Usage limits</SectionHeading>
+      <label htmlFor={id} className="flex cursor-pointer items-start gap-3">
+        <Switch id={id} checked={value} onCheckedChange={onChange} className="mt-0.5" />
+        <span className="text-[13px]">
+          Resume automatically when the limit resets
+          <span className="text-muted-foreground mt-0.5 block text-[11px]">
+            A turn that stops because the provider is out of budget is picked back up at the time
+            the harness named — or, if it named none, after a wait that grows with each retry. Any
+            work you start yourself cancels a pending resume, and each failure can override this
+            from its own card.
+          </span>
+        </span>
+      </label>
     </div>
   );
 }
@@ -595,6 +629,13 @@ export function ProjectSettings({
               <BranchFormatField
                 value={user.branchFormat ?? ""}
                 onChange={(v) => setUser({ ...user, branchFormat: v })}
+              />
+
+              <Separator />
+
+              <AutoResumeField
+                value={user.autoResumeOnLimit ?? true}
+                onChange={(v) => setUser({ ...user, autoResumeOnLimit: v })}
               />
 
               <Separator />
