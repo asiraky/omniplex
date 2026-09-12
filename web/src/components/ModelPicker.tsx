@@ -66,6 +66,7 @@ export function ModelPicker({
   onEffortChange,
   id,
   className,
+  compact = false,
   open: controlledOpen,
   onOpenChange,
 }: {
@@ -93,6 +94,12 @@ export function ModelPicker({
   onEffortChange?: (effort: string) => void;
   id?: string;
   className?: string;
+  /**
+   * Below md the trigger names only the model: the logo and effort label go,
+   * so it can share a phone-width row with the composer's buttons. Both are
+   * still one tap away in the picker.
+   */
+  compact?: boolean;
   /** Optional controlled state, used by composer actions such as /model. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -236,7 +243,9 @@ export function ModelPicker({
       // 36px ones.
       className={cn("h-auto min-h-11 w-full justify-start gap-2 px-3 py-2 md:min-h-9", className)}
     >
-      {selectedInstance && <ProviderLogo provider={selectedInstance.driver} />}
+      {selectedInstance && (
+        <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "max-md:hidden")} />
+      )}
       <span className="min-w-0 flex-1 truncate text-left text-[13px]">
         {selectedModel?.label ?? "No model"}
         {/* The generation and the effort compete for one line, and only one of
@@ -247,7 +256,7 @@ export function ModelPicker({
         )}
       </span>
       {namesEffort && (
-        <span className="text-muted-foreground shrink-0 text-[12px]">
+        <span className={cn("text-muted-foreground shrink-0 text-[12px]", compact && "max-md:hidden")}>
           <span aria-hidden className="mr-1.5 opacity-60">
             ·
           </span>
