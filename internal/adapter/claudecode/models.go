@@ -19,6 +19,11 @@ import (
 // serves a cached or fallback list while this runs.
 const modelListTimeout = 60 * time.Second
 
+// quotaReadTimeout bounds one out-of-band usage read. It pays the same
+// process start as the listing run, and nothing interactive blocks on it:
+// the Limits page shows the cached snapshot while a refresh runs.
+const quotaReadTimeout = 60 * time.Second
+
 // Models is the fallback list, used only until a live answer arrives or when
 // the harness cannot be asked. The current models are family aliases and
 // nothing else: no versions, because claiming a version we did not read from

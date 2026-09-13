@@ -232,6 +232,7 @@ func (m *Manager) forgetInstance(instanceID string) {
 	delete(m.probes, instanceID)
 	m.probeMu.Unlock()
 	m.forgetModels(instanceID)
+	m.forgetQuota(instanceID)
 }
 
 // InstanceAuth is the on-demand authentication picture of one instance: how

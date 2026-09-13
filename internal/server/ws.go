@@ -85,6 +85,12 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	projectsID, projectsCh := s.mgr.SubscribeProjects()
 	defer s.mgr.UnsubscribeProjects(projectsID)
 
+	// Quota changes push the whole cached list the same way: a live
+	// rate-limit event from a running session lands on the Limits page of
+	// every paired device, not just the one that asked.
+	quotaID, quotaCh := s.mgr.SubscribeQuota()
+	defer s.mgr.UnsubscribeQuota(quotaID)
+
 	go func() {
 		for {
 			select {
@@ -98,6 +104,8 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 				c.sendLabels()
 			case <-projectsCh:
 				c.sendProjects()
+			case <-quotaCh:
+				c.send(serverFrame{Type: "quotas", Quotas: s.mgr.Quotas()})
 			}
 		}
 	}()
@@ -133,6 +141,7 @@ func (c *conn) dispatch(f clientFrame) {
 			Harnesses: c.srv.mgr.Harnesses(c.ctx),
 			Projects:  projects,
 			Labels:    labels,
+			Quotas:    c.srv.mgr.Quotas(),
 			Cwd:       c.srv.defaultCwd,
 			Access:    c.srv.access(c.ctx),
 		})
@@ -415,8 +424,13 @@ claimed:
 // pollingCommand reports whether a command is a pure read the client issues on
 // a timer rather than a user issuing it once. Kept to exactly the commands that
 // are polled: everything else, including every read a user's own click causes,
-// keeps the replay guarantee it has always had.
-func pollingCommand(name string) bool { return name == "session_pr" }
+// keeps the replay guarantee it has always had. The usage reads belong here
+// too: they are pure reads of provider or log state that changes on its own,
+// so replaying a stored one would answer yesterday's question, and a ledger
+// row per view switch would grow the table for as long as the page was open.
+func pollingCommand(name string) bool {
+	return name == "session_pr" || name == "usage_report" || name == "quota_refresh"
+}
 
 // ephemeralCommand reports whether a command must bypass the command ledger.
 // The auth-flow commands qualify twice over: an auth_respond may carry a
@@ -862,6 +876,37 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"file": file}, nil
+
+	case "usage_report":
+		var a usageReportArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		report, err := c.srv.mgr.UsageReport(ctx, a.Range)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"report": report}, nil
+
+	case "quota_refresh":
+		var a quotaRefreshArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		// One provider's failure is that provider's status to report, not the
+		// command's: every instance is refreshed and every outcome travels in
+		// its own row, so one provider failing never blanks another.
+		if a.Instance != "" {
+			status, err := c.srv.mgr.RefreshQuota(ctx, a.Instance)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"quotas": []session.QuotaStatus{status}}, nil
+		}
+		for _, status := range c.srv.mgr.Quotas() {
+			_, _ = c.srv.mgr.RefreshQuota(ctx, status.Instance)
+		}
+		return map[string]any{"quotas": c.srv.mgr.Quotas()}, nil
 
 	case "summarize_session":
 		var a summarizeArgs

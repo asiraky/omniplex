@@ -108,6 +108,15 @@ type Manager struct {
 	// edited or removed on the phone stayed on the laptop's screen until it
 	// reconnected, and a removed one could still be picked in new-session.
 	projectSub map[string]chan struct{}
+
+	// The per-instance usage-limit cache and its broadcast. Cached in memory
+	// only: quota is a live property of the account, and a stale snapshot
+	// served after a restart would claim a freshness it does not have — the
+	// Limits page re-reads on demand instead.
+	quotaGeneration map[string]uint64
+	quotaMu         sync.Mutex
+	quotas          map[string]*QuotaStatus
+	quotaSub        map[string]chan struct{}
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -137,19 +146,22 @@ type modelResult struct {
 
 func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapter) *Manager {
 	m := &Manager{
-		store:      st,
-		drivers:    map[string]adapter.Adapter{},
-		instances:  map[string]registered{},
-		logf:       logf,
-		actors:     map[string]*Actor{},
-		probes:     map[string]probeResult{},
-		models:     map[string]modelResult{},
-		refreshing: map[string]bool{},
-		authFlows:  map[string]*authFlow{},
-		listSub:    map[string]chan struct{}{},
-		harnessSub: map[string]chan struct{}{},
-		labelSub:   map[string]chan struct{}{},
-		projectSub: map[string]chan struct{}{},
+		store:           st,
+		drivers:         map[string]adapter.Adapter{},
+		instances:       map[string]registered{},
+		logf:            logf,
+		actors:          map[string]*Actor{},
+		probes:          map[string]probeResult{},
+		models:          map[string]modelResult{},
+		refreshing:      map[string]bool{},
+		listSub:         map[string]chan struct{}{},
+		harnessSub:      map[string]chan struct{}{},
+		labelSub:        map[string]chan struct{}{},
+		projectSub:      map[string]chan struct{}{},
+		quotas:          map[string]*QuotaStatus{},
+		quotaGeneration: map[string]uint64{},
+		quotaSub:        map[string]chan struct{}{},
+		authFlows:       map[string]*authFlow{},
 	}
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
@@ -510,9 +522,11 @@ func (m *Manager) availability(ctx context.Context, reg registered) adapter.Avai
 	// being signed out — offers a different catalogue: a signed-out Claude
 	// lists API pricing and no Fable. The listing cached under the old
 	// identity is wrong now, not stale, so it goes at once rather than at the
-	// TTL.
+	// TTL — and so does the account's usage-limit snapshot, which belongs to
+	// the old account and must never be shown under the new one.
 	if ok && accountOf(cached.result) != accountOf(result) {
 		m.forgetModels(reg.inst.ID)
+		m.forgetQuota(reg.inst.ID)
 	}
 	return result
 }
@@ -1184,6 +1198,24 @@ func (m *Manager) adopt(a *Actor) {
 	a.onPhase = m.notifyList
 	a.imagePath = m.imagePath
 	a.mu.Unlock()
+	// The account a live session reports quota for is the instance it runs
+	// under, captured here so an adapter's push can never be filed against
+	// the wrong account. A session created before instances existed resolves
+	// to its harness's default.
+	if meta, err := m.store.Session(context.Background(), a.ID); err == nil {
+		instance := meta.ProviderInstance
+		if instance == "" {
+			instance = meta.Harness
+		}
+		driver, instanceID := meta.Harness, instance
+		generation := m.quotaEpoch(instanceID)
+		a.mu.Lock()
+		a.quotaGeneration = generation
+		a.quotaSink = func(snap adapter.QuotaSnapshot) {
+			m.reportQuotaAt(driver, instanceID, snap, snap.Full, &generation)
+		}
+		a.mu.Unlock()
+	}
 	select {
 	case <-a.quit:
 		m.mu.Lock()
