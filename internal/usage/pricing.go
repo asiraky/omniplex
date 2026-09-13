@@ -10,8 +10,8 @@ import (
 )
 
 // PriceVersion stamps every report. It names the pricing catalogue the
-// figures were calculated against, so a historical answer says which prices
-// it used rather than silently moving when a provider updates them.
+// figures were calculated against. The store records this version and the
+// actual rates with each usage event; reports reuse those recorded rates.
 const PriceVersion = "2026-04"
 
 // Rates is one model's published API pricing, in USD per million tokens.
@@ -143,6 +143,10 @@ func Price(model string, c Counts) Priced {
 	if !ok {
 		return Priced{Unpriced: c.Input + c.Output + c.CacheRead + c.CacheWrite}
 	}
+	return PriceRates(r, c)
+}
+
+func PriceRates(r Rates, c Counts) Priced {
 	var p Priced
 	charge := func(tokens int64, perMillion *float64) {
 		if tokens == 0 {
@@ -159,4 +163,16 @@ func Price(model string, c Counts) Priced {
 	charge(c.CacheRead, r.CacheRead)
 	charge(c.CacheWrite, r.CacheWrite)
 	return p
+}
+
+// RecordedPricing is persisted with an accounting event so catalogue updates
+// cannot rewrite the price previously assigned to historical usage.
+type RecordedPricing struct {
+	Version string
+	Rates   Rates
+}
+
+func RecordPricing(model string) RecordedPricing {
+	r, _ := LookupRates(model)
+	return RecordedPricing{Version: PriceVersion, Rates: r}
 }

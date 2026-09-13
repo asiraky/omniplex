@@ -10,6 +10,7 @@ import {
 } from "./usageFormat";
 
 describe("bucketStarts", () => {
+ it("aligns a rolling window with server buckets", () => { expect(bucketStarts(1250, 3250, 1000)).toEqual([1000, 2000, 3000]); });
   it("fills the gaps so idle time stays on the axis", () => {
     const starts = bucketStarts(0, 5 * 1000, 1000);
     expect(starts).toEqual([0, 1000, 2000, 3000, 4000]);

@@ -425,9 +425,10 @@ const (
 // across reads and live updates, which is what lets a sparse update land on
 // the row an earlier read drew.
 type QuotaWindow struct {
-	ID    string `json:"id"`
-	Kind  string `json:"kind"`
-	Label string `json:"label"`
+	CheckedAt int64  `json:"checkedAt,omitempty"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
 	// UsedPercent is 0–100 as the provider reports it. Not clamped: an
 	// over-limit reading is a real signal, exactly like context occupancy.
 	// A pointer because a sparse live update carries only the fields it knows:
@@ -445,6 +446,8 @@ type QuotaWindow struct {
 // snapshot with no windows and a non-empty Unavailable is a legible negative
 // answer (an API-key session has no plan limits) rather than a failure.
 type QuotaSnapshot struct {
+	// Full distinguishes complete reads from sparse notifications inside the server.
+	Full        bool          `json:"-"`
 	CheckedAt   int64         `json:"checkedAt"` // epoch ms
 	Plan        string        `json:"plan,omitempty"`
 	AccountID   string        `json:"accountId,omitempty"`

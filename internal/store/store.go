@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS events (
   PRIMARY KEY (session_id, seq)
 );
 
+CREATE TABLE IF NOT EXISTS usage_pricing (
+ session_id TEXT NOT NULL,
+ seq INTEGER NOT NULL,
+ pricing BLOB NOT NULL,
+ PRIMARY KEY(session_id, seq)
+);
+
 CREATE TABLE IF NOT EXISTS snapshots (
   session_id    TEXT NOT NULL,
   seq           INTEGER NOT NULL,
@@ -191,6 +198,10 @@ func Open(path string) (*Store, error) {
 	if err := s.initAuth(); err != nil {
 		return nil, fmt.Errorf("apply auth schema: %w", err)
 	}
+	if err := s.backfillUsagePricing(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -265,6 +276,11 @@ func (s *Store) Append(ctx context.Context, sessionID string, em proto.Emission)
 		`UPDATE sessions SET head_seq = ?, updated_at = ? WHERE id = ?`, seq, ts, sessionID); err != nil {
 		return proto.Event{}, err
 	}
+	if em.Type == proto.UsageUpdated {
+		if err := recordUsagePricing(ctx, tx, sessionID, seq); err != nil {
+			return proto.Event{}, err
+		}
+	}
 	if err := updateScheduleIndex(ctx, tx, sessionID, em, payload); err != nil {
 		return proto.Event{}, err
 	}
@@ -317,17 +333,21 @@ func (s *Store) ReadEvents(ctx context.Context, sessionID string, afterSeq int64
 // UsageEvents feeds the account-level usage aggregation: every
 // usage.updated, session.created, and session.config_changed event of each
 // session that used tokens in the window, ordered for a per-session walk.
-// The usage rows reach back before the window too (a cumulative counter needs
-// its previous reading to delta against, and a model switch before the window
-// still tells the walk which model an in-window event ran on), so only the
-// sessions are picked by `from`, not the events themselves.
+// Only the latest pre-window usage and model events travel alongside the
+// selected window: enough to establish cumulative baselines and attribution
+// without loading the full lifetime history of a long-running session.
 func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT e.session_id, s.harness, e.type, e.payload, e.created_at
+		`SELECT e.session_id, s.harness, e.type, e.payload, e.created_at, p.pricing
 		 FROM events e JOIN sessions s ON s.id = e.session_id
+ LEFT JOIN usage_pricing p ON p.session_id=e.session_id AND p.seq=e.seq
 		 WHERE e.session_id IN (SELECT DISTINCT session_id FROM events WHERE type = 'usage.updated' AND created_at >= ?)
 		   AND e.type IN ('usage.updated', 'session.created', 'session.config_changed')
-		 ORDER BY e.session_id, e.seq`, from)
+ AND (e.created_at >= ? OR e.seq = (
+ SELECT MAX(b.seq) FROM events b WHERE b.session_id=e.session_id AND b.type=e.type AND b.created_at < ?
+ AND (b.type='usage.updated' OR COALESCE(json_extract(b.payload, '$.model'), '') <> '')
+ ))
+ ORDER BY e.session_id, e.seq`, from, from, from)
 	if err != nil {
 		return nil, err
 	}
@@ -336,11 +356,16 @@ func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, 
 	out := []usage.EventRow{}
 	for rows.Next() {
 		var r usage.EventRow
-		var payload []byte
-		if err := rows.Scan(&r.SessionID, &r.Harness, &r.Type, &payload, &r.Timestamp); err != nil {
+		var payload, pricing []byte
+		if err := rows.Scan(&r.SessionID, &r.Harness, &r.Type, &payload, &r.Timestamp, &pricing); err != nil {
 			return nil, err
 		}
 		r.Payload = json.RawMessage(payload)
+		if len(pricing) > 0 {
+			if err := json.Unmarshal(pricing, &r.Pricing); err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -518,6 +543,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	for _, q := range []string{
 		`DELETE FROM scheduled_prompts WHERE session_id = ?`,
 		`DELETE FROM events WHERE session_id = ?`,
+		`DELETE FROM usage_pricing WHERE session_id = ?`,
 		`DELETE FROM snapshots WHERE session_id = ?`,
 		`DELETE FROM commands WHERE session_id = ?`,
 		`DELETE FROM sessions WHERE id = ?`,

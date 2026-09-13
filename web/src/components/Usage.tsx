@@ -81,6 +81,7 @@ export function UsagePage({ quotas, onRefreshQuota, onClose, loadReport }: Usage
   // Keyed by range so a slow reply for an old range cannot land over a newer
   // one after a flappy reconnect.
   const loadSeq = useRef(0);
+  const [refreshSeq, setRefreshSeq] = useState(0);
   useEffect(() => {
     if (view === "limits") return;
     const seq = ++loadSeq.current;
@@ -98,7 +99,7 @@ export function UsagePage({ quotas, onRefreshQuota, onClose, loadReport }: Usage
       .finally(() => {
         if (seq === loadSeq.current) setLoading(false);
       });
-  }, [view, range, loadReport]);
+  }, [view, range, loadReport, refreshSeq]);
 
   return (
     <div className="bg-background fixed inset-0 z-50 flex flex-col">
@@ -147,6 +148,7 @@ export function UsagePage({ quotas, onRefreshQuota, onClose, loadReport }: Usage
                   Past {r.label}
                 </button>
               ))}
+              <Button variant="outline" size="sm" onClick={() => setRefreshSeq((n) => n + 1)} disabled={loading} aria-label="Refresh history"><RefreshCwIcon className="size-3.5" />Refresh</Button>
               {loading && <Spinner className="text-muted-foreground/60 size-4" />}
             </div>
 
@@ -312,6 +314,8 @@ function StackedChart({
             <button
               key={b.start}
               onClick={() => setSelected(b.start)}
+              onMouseEnter={() => setSelected(b.start)}
+              onFocus={() => setSelected(b.start)}
               aria-label={`${bucketFullLabel(b.start, bucketMs)}: ${format(b.total)} ${metric === "cost" ? "cost" : "tokens"}`}
               className="group relative flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end outline-none"
             >
@@ -360,29 +364,17 @@ function StackedChart({
           {shownRows.length === 0 ? (
             <p className="text-muted-foreground">No usage in this {bucketMs >= 86400000 ? "day" : "hour"}.</p>
           ) : (
-            <table className="w-full tabular-nums">
-              <tbody>
-                {shownRows.map((r) => (
-                  <tr key={`${r.provider}/${r.model}`} className="border-border/50 border-t first:border-t-0">
-                    <td className="flex items-center gap-1.5 py-1 pr-2">
-                      <span
-                        aria-hidden
-                        className="size-2 shrink-0 rounded-full"
-                        style={{ background: providerColor(r.provider, providers.indexOf(r.provider)) }}
-                      />
-                      <span className="truncate">
-                        <span className="capitalize">{r.provider}</span>
-                        <span className="text-muted-foreground"> · {r.model || "unknown model"}</span>
-                      </span>
-                    </td>
-                    <td className="text-muted-foreground py-1 text-right">
-                      {(r.totals.input / 1e6).toFixed(1)}M in · {(r.totals.output / 1e6).toFixed(1)}M out
-                    </td>
-                    <td className="py-1 pl-3 text-right font-medium">{format(value(r.totals))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="space-y-2">
+              {shownRows.map((r) => (
+                <li key={`${r.provider}/${r.model}`} className="min-w-0 border-t pt-2 first:border-t-0 first:pt-0">
+                  <p className="break-words font-medium">{r.provider} · {r.model || "unknown model"}</p>
+                  <p className="text-muted-foreground break-words tabular-nums">
+                    {r.totals.input.toLocaleString()} input · {r.totals.output.toLocaleString()} output · {r.totals.cacheRead.toLocaleString()} cache read · {r.totals.cacheWrite.toLocaleString()} cache write
+                  </p>
+                  <p className="tabular-nums">{totalTokens(r.totals).toLocaleString()} tokens · ${r.totals.cost.toFixed(8).replace(/0+$/, "").replace(/\.$/, ".00")} API-equivalent cost{r.totals.unpriced > 0 && ` · ${r.totals.unpriced.toLocaleString()} unpriced tokens`}</p>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}
@@ -448,6 +440,7 @@ function ModelBreakdown({
                 <span className="text-muted-foreground mt-0.5 block text-[10px]">
                   {formatTokens(m.totals.input)} in · {formatTokens(m.totals.output)} out
                   {m.totals.cacheRead > 0 && ` · ${formatTokens(m.totals.cacheRead)} cached`}
+                  {m.totals.cacheWrite > 0 && ` · ${formatTokens(m.totals.cacheWrite)} cache write`}
                   {m.totals.unpriced > 0 && metric === "cost" && " · partly unpriced"}
                 </span>
               </span>
@@ -525,7 +518,7 @@ function ProviderLimits({
   // date. With nothing observed yet the empty state below carries the
   // failure instead — and lastError is absent (not "") when the server has
   // nothing to report, so a truthiness check, not a comparison.
-  const stale = !!status.lastError && observed > 0 && hasWindows;
+  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= 15 * 60_000 || snap.windows?.some((w) => (w.checkedAt && now - w.checkedAt >= 15 * 60_000) || (!!w.resetsAt && w.resetsAt <= now)));
 
   return (
     <section aria-label={`${status.displayName} usage limits`} className="rounded-xl border p-3">
@@ -535,6 +528,7 @@ function ProviderLimits({
           <p className="truncate text-[13px] font-semibold">{status.displayName}</p>
           <p className="text-muted-foreground text-[11px]">
             {snap.plan ? `${snap.plan} plan` : "plan unknown"}
+            {snap.accountId && <span className="block break-all">{snap.accountId}</span>}
             {observed > 0 && ` · observed ${formatAge(observed, now)}`}
           </p>
         </div>
@@ -548,7 +542,7 @@ function ProviderLimits({
         <p className="text-attention-foreground mt-2 flex items-start gap-1.5 rounded-md bg-attention-surface/70 px-2 py-1.5 text-[11px] leading-relaxed">
           <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
           <span>
-            The last refresh failed ({status.lastError}). The figures below are from{" "}
+            {status.lastError ? `The last refresh failed (${status.lastError}). ` : "Stale snapshot. "}The figures below are from{" "}
             {formatAge(observed, now)} and may be out of date.
           </span>
         </p>
@@ -569,7 +563,7 @@ function ProviderLimits({
         </div>
       ) : (
         <ul className="mt-3 flex flex-col gap-3">
-          {snap.windows.map((w) => (
+          {snap.windows?.map((w) => (
             <QuotaRow key={w.id} window={w} now={now} />
           ))}
         </ul>
@@ -609,6 +603,7 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
     );
   }
 
+  const stale = (w.checkedAt && now - w.checkedAt >= 15 * 60_000) || (w.resetsAt && w.resetsAt <= now);
   const used = w.usedPercent;
   const hasReading = used !== undefined;
   const pct = Math.max(0, Math.min(100, used ?? 0));
@@ -628,6 +623,7 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
           )}
         </p>
       </div>
+      {w.checkedAt && <p className="text-muted-foreground text-[11px]">{stale ? "Stale · " : ""}observed {formatAge(w.checkedAt, now)}</p>}
       <div
         role="progressbar"
         aria-label={w.label}

@@ -103,3 +103,21 @@ func TestScopedSlugStable(t *testing.T) {
 		t.Fatalf("slug = %q", scopedSlug("Fable 5"))
 	}
 }
+
+func TestParseClaudeUsageMissingStandardWindows(t *testing.T) {
+	for _, limits := range []string{
+		`{"model_scoped":[{"display_name":"Fable","utilization":12}]}`,
+		`{"five_hour":null,"seven_day":{"utilization":12}}`,
+		`{"five_hour":{"utilization":12},"seven_day":null}`,
+	} {
+		t.Run(limits, func(t *testing.T) {
+			snap, err := parseClaudeUsage(json.RawMessage(`{"rate_limits_available":true,"rate_limits":` + limits + `}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snap.Windows) != 1 || snap.Windows[0].UsedPercent == nil || *snap.Windows[0].UsedPercent != 12 {
+				t.Fatalf("available window lost: %+v", snap)
+			}
+		})
+	}
+}

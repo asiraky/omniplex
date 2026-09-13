@@ -105,9 +105,10 @@ type Manager struct {
 	// only: quota is a live property of the account, and a stale snapshot
 	// served after a restart would claim a freshness it does not have — the
 	// Limits page re-reads on demand instead.
-	quotaMu  sync.Mutex
-	quotas   map[string]*QuotaStatus
-	quotaSub map[string]chan struct{}
+	quotaGeneration map[string]uint64
+	quotaMu         sync.Mutex
+	quotas          map[string]*QuotaStatus
+	quotaSub        map[string]chan struct{}
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -137,20 +138,21 @@ type modelResult struct {
 
 func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapter) *Manager {
 	m := &Manager{
-		store:      st,
-		drivers:    map[string]adapter.Adapter{},
-		instances:  map[string]registered{},
-		logf:       logf,
-		actors:     map[string]*Actor{},
-		probes:     map[string]probeResult{},
-		models:     map[string]modelResult{},
-		refreshing: map[string]bool{},
-		listSub:    map[string]chan struct{}{},
-		harnessSub: map[string]chan struct{}{},
-		labelSub:   map[string]chan struct{}{},
-		projectSub: map[string]chan struct{}{},
-		quotas:     map[string]*QuotaStatus{},
-		quotaSub:   map[string]chan struct{}{},
+		store:           st,
+		drivers:         map[string]adapter.Adapter{},
+		instances:       map[string]registered{},
+		logf:            logf,
+		actors:          map[string]*Actor{},
+		probes:          map[string]probeResult{},
+		models:          map[string]modelResult{},
+		refreshing:      map[string]bool{},
+		listSub:         map[string]chan struct{}{},
+		harnessSub:      map[string]chan struct{}{},
+		labelSub:        map[string]chan struct{}{},
+		projectSub:      map[string]chan struct{}{},
+		quotas:          map[string]*QuotaStatus{},
+		quotaGeneration: map[string]uint64{},
+		quotaSub:        map[string]chan struct{}{},
 	}
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
@@ -1125,9 +1127,11 @@ func (m *Manager) adopt(a *Actor) {
 			instance = meta.Harness
 		}
 		driver, instanceID := meta.Harness, instance
+		generation := m.quotaEpoch(instanceID)
 		a.mu.Lock()
+		a.quotaGeneration = generation
 		a.quotaSink = func(snap adapter.QuotaSnapshot) {
-			m.reportQuota(driver, instanceID, snap, false)
+			m.reportQuotaAt(driver, instanceID, snap, snap.Full, &generation)
 		}
 		a.mu.Unlock()
 	}

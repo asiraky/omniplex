@@ -2,6 +2,7 @@ package usage
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 )
@@ -80,7 +81,7 @@ func TestCodexCumulativeDeltas(t *testing.T) {
 		usageEv("s1", "codex", now.UnixMilli()-time.Hour.Milliseconds(), 1500, 3000, 200, 0),
 	}
 	rep := Aggregate(rows, mustSpec(t, "24h"), now)
-	if rep.Totals.Input != 1500 || rep.Totals.Output != 3000 || rep.Totals.CacheRead != 200 {
+	if rep.Totals.Input != 1300 || rep.Totals.Output != 3000 || rep.Totals.CacheRead != 200 {
 		t.Fatalf("totals = %+v, want cumulative deltas", rep.Totals)
 	}
 }
@@ -210,4 +211,30 @@ func mustSpec(t *testing.T, id string) RangeSpec {
 		t.Fatal(err)
 	}
 	return spec
+}
+
+func TestCodexCachedInputPricedOnceAfterDelta(t *testing.T) {
+	ts := now.Add(-time.Hour).UnixMilli()
+	rows := []EventRow{
+		ev("s", "codex", "session.created", ts-1, map[string]any{"model": "gpt-5.4"}),
+		usageEv("s", "codex", now.Add(-48*time.Hour).UnixMilli(), 2000, 0, 1000, 0),
+		usageEv("s", "codex", ts, 3000, 0, 1900, 0),
+	}
+	rep := Aggregate(rows, mustSpec(t, "24h"), now)
+	if rep.Totals.Input != 100 || rep.Totals.CacheRead != 900 || rep.Totals.Tokens() != 1000 {
+		t.Fatalf("cached tokens counted twice: %+v", rep.Totals)
+	}
+	if math.Abs(rep.Totals.Cost-0.000475) > 1e-12 {
+		t.Fatalf("cached tokens priced at input rate: %+v", rep.Totals)
+	}
+}
+
+func TestRecordedPricingOverridesCurrentCatalogue(t *testing.T) {
+	ts := now.Add(-time.Hour).UnixMilli()
+	row := accountingEv("s", "claude", ts, 1_000_000, 0, 0, 0)
+	row.Pricing = &RecordedPricing{Version: "recorded", Rates: Rates{Input: rate(7)}}
+	rep := Aggregate([]EventRow{ev("s", "claude", "session.created", ts-1, map[string]any{"model": "claude-opus-5"}), row}, mustSpec(t, "24h"), now)
+	if rep.Totals.Cost != 7 || rep.PriceVersion != "recorded" {
+		t.Fatalf("historical rate replaced: %+v", rep)
+	}
 }

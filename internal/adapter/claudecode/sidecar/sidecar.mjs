@@ -396,6 +396,8 @@ const reportUsage = () => {
     .catch(() => {});
 };
 
+reportUsage();
+
 try {
   for await (const message of session) {
     notify("message", { message });

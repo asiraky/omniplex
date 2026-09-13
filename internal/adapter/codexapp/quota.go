@@ -135,7 +135,7 @@ type codexRateLimitsRead struct {
 // balance — because a bucket omniplex has never heard of must still be
 // visible, not silently dropped.
 func parseCodexRead(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
-	snap := adapter.QuotaSnapshot{CheckedAt: time.Now().UnixMilli()}
+	snap := adapter.QuotaSnapshot{Full: true, CheckedAt: time.Now().UnixMilli()}
 	var res codexRateLimitsRead
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return snap, fmt.Errorf("parse codex rate limits: %w", err)
@@ -159,7 +159,7 @@ func parseCodexRead(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
 		}
 	}
 
-	if rc := res.RateLimitResetCredits; rc != nil && rc.AvailableCount > 0 {
+	if rc := res.RateLimitResetCredits; rc != nil {
 		w := adapter.QuotaWindow{
 			ID: "credits", Kind: adapter.QuotaCredits, Label: "Reset credits",
 			Count: &rc.AvailableCount,
@@ -199,13 +199,27 @@ func parseCodexUpdate(params json.RawMessage) (adapter.QuotaSnapshot, bool) {
 		raw = wrapper.RateLimits
 	}
 	var s codexLimitSnapshot
-	if err := json.Unmarshal(raw, &s); err != nil || s.LimitID == "" {
+	if err := json.Unmarshal(raw, &s); err != nil {
 		return adapter.QuotaSnapshot{}, false
 	}
 	if s.LimitID == "" {
 		s.LimitID = "codex" // an older CLI that omits it
 	}
 	windows := s.windows()
+	for i := range windows {
+		w := s.Primary
+		if windows[i].ID == s.LimitID+"/secondary" {
+			w = s.Secondary
+		}
+		if w.WindowDurationMins == nil {
+			windows[i].WindowMins = 0
+			windows[i].Kind = ""
+		}
+		// A partial name or duration cannot reconstruct the previous label.
+		if s.LimitName == "" || w.WindowDurationMins == nil {
+			windows[i].Label = ""
+		}
+	}
 	if len(windows) == 0 {
 		return adapter.QuotaSnapshot{}, false
 	}

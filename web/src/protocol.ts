@@ -709,6 +709,7 @@ export interface ScheduledPrompt {
 
 /** One provider-reported allowance bucket, already normalised by the server. */
 export interface QuotaWindow {
+  checkedAt?: number;
   id: string;
   kind: "session" | "weekly" | "monthly" | "credits";
   label: string;

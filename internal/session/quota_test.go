@@ -309,3 +309,46 @@ func TestUsageReportFromDurableLog(t *testing.T) {
 		t.Fatalf("rows = %+v", rep.Rows)
 	}
 }
+func TestQuotaPublishedSnapshotIsImmutable(t *testing.T) {
+	mgr, _, _ := quotaTestManager(t)
+	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{CheckedAt: 1, Windows: []adapter.QuotaWindow{{ID: "w", UsedPercent: pct(1)}, {ID: "other", UsedPercent: pct(2)}}}, true)
+	before := mgr.Quotas()[0]
+	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{CheckedAt: 2, Windows: []adapter.QuotaWindow{{ID: "w", UsedPercent: pct(3)}}}, false)
+	if *before.Snapshot.Windows[0].UsedPercent != 1 {
+		t.Fatal("published snapshot mutated")
+	}
+	after := mgr.Quotas()[0]
+	if after.Snapshot.Windows[1].CheckedAt != 1 {
+		t.Fatal("untouched window age renewed")
+	}
+}
+
+func TestQuotaAccountSwitchRejectsOldSessionAndDropsWindows(t *testing.T) {
+	mgr, fa, _ := quotaTestManager(t)
+	if _, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	fa.mu.Lock()
+	reporter := fa.last.host.(adapter.QuotaReporter)
+	fa.mu.Unlock()
+	reporter.ReportQuota(adapter.QuotaSnapshot{Full: true, AccountID: "a", Windows: []adapter.QuotaWindow{{ID: "old"}}})
+	mgr.forgetQuota("fake")
+	reporter.ReportQuota(adapter.QuotaSnapshot{AccountID: "a", Windows: []adapter.QuotaWindow{{ID: "old"}}})
+	if len(mgr.Quotas()[0].Snapshot.Windows) != 0 {
+		t.Fatal("old session repopulated new account")
+	}
+	fa.mu.Lock()
+	fa.readSnap = adapter.QuotaSnapshot{AccountID: "b", Windows: []adapter.QuotaWindow{{ID: "new"}}}
+	fa.mu.Unlock()
+	status, err := mgr.RefreshQuota(context.Background(), "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Snapshot.AccountID != "b" {
+		t.Fatalf("read old live session: %+v", status)
+	}
+	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{AccountID: "c", Windows: []adapter.QuotaWindow{{ID: "third"}}}, false)
+	if got := mgr.Quotas()[0].Snapshot.Windows; len(got) != 1 || got[0].ID != "third" {
+		t.Fatalf("mixed accounts: %+v", got)
+	}
+}

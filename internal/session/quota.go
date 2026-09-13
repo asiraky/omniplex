@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,8 +69,26 @@ func (m *Manager) Quotas() []QuotaStatus {
 // windows wholesale — a window the provider stopped reporting is gone, not
 // lingering at a stale reading. A sparse one merges window-by-window, so a
 // live update that names one window cannot drop the others.
-func (m *Manager) reportQuota(driver, instance string, snap adapter.QuotaSnapshot, full bool) {
+func (m *Manager) quotaEpoch(instance string) uint64 {
 	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+	return m.quotaGeneration[instance]
+}
+
+func (m *Manager) reportQuota(driver, instance string, snap adapter.QuotaSnapshot, full bool) {
+	m.reportQuotaAt(driver, instance, snap, full, nil)
+}
+
+func (m *Manager) reportQuotaAt(driver, instance string, snap adapter.QuotaSnapshot, full bool, generation *uint64) {
+	m.quotaMu.Lock()
+	if generation != nil && *generation != m.quotaGeneration[instance] {
+		m.quotaMu.Unlock()
+		return
+	}
+	snap.Windows = slices.Clone(snap.Windows)
+	for i := range snap.Windows {
+		snap.Windows[i].CheckedAt = snap.CheckedAt
+	}
 	status, ok := m.quotas[instance]
 	if !ok {
 		status = &QuotaStatus{Provider: driver, Instance: instance}
@@ -78,10 +97,16 @@ func (m *Manager) reportQuota(driver, instance string, snap adapter.QuotaSnapsho
 		}
 		m.quotas[instance] = status
 	}
-	if full {
+	if snap.AccountID != "" && status.Snapshot.AccountID != "" && snap.AccountID != status.Snapshot.AccountID {
+		// Retire all processes bound to the previous account, including late
+		// sparse pushes that carry no account id of their own.
+		m.quotaGeneration[instance]++
+	}
+	if full || (snap.AccountID != "" && snap.AccountID != status.Snapshot.AccountID) {
 		status.Snapshot = snap
 	} else {
 		merged := status.Snapshot
+		merged.Windows = slices.Clone(merged.Windows)
 		merged.CheckedAt = snap.CheckedAt
 		if snap.Plan != "" {
 			merged.Plan = snap.Plan
@@ -96,6 +121,7 @@ func (m *Manager) reportQuota(driver, instance string, snap adapter.QuotaSnapsho
 					continue
 				}
 				// Sparse: each field moves only when the update carried it.
+				merged.Windows[i].CheckedAt = snap.CheckedAt
 				if w.UsedPercent != nil {
 					merged.Windows[i].UsedPercent = w.UsedPercent
 				}
@@ -141,6 +167,7 @@ func (m *Manager) forgetQuota(instanceID string) {
 	m.quotaMu.Lock()
 	_, had := m.quotas[instanceID]
 	delete(m.quotas, instanceID)
+	m.quotaGeneration[instanceID]++
 	m.quotaMu.Unlock()
 	if had {
 		m.notifyQuota()
@@ -157,9 +184,15 @@ func (m *Manager) RefreshQuota(ctx context.Context, instanceID string) (QuotaSta
 		return QuotaStatus{}, fmt.Errorf("unknown provider instance %q", instanceID)
 	}
 
+	m.availability(ctx, reg) // detect account changes before selecting a live process
+	generation := m.quotaEpoch(instanceID)
 	snap, err := m.readQuota(ctx, reg)
 
 	m.quotaMu.Lock()
+	if generation != m.quotaGeneration[instanceID] {
+		m.quotaMu.Unlock()
+		return QuotaStatus{}, fmt.Errorf("provider account changed during quota refresh")
+	}
 	status, had := m.quotas[instanceID]
 	if !had {
 		status = &QuotaStatus{Provider: reg.inst.Driver, Instance: instanceID, DisplayName: reg.inst.DisplayName}
@@ -170,6 +203,13 @@ func (m *Manager) RefreshQuota(ctx context.Context, instanceID string) (QuotaSta
 		status.LastError = err.Error()
 	} else {
 		status.LastError = ""
+		if snap.AccountID != "" && status.Snapshot.AccountID != "" && snap.AccountID != status.Snapshot.AccountID {
+			m.quotaGeneration[instanceID]++
+		}
+		snap.Windows = slices.Clone(snap.Windows)
+		for i := range snap.Windows {
+			snap.Windows[i].CheckedAt = snap.CheckedAt
+		}
 		status.Snapshot = snap
 	}
 	out := *status
@@ -223,7 +263,10 @@ func (m *Manager) readQuotaFromLive(ctx context.Context, reg registered) (adapte
 		if instance == "" {
 			instance = meta.Harness
 		}
-		if instance != reg.inst.ID {
+		a.mu.Lock()
+		generation := a.quotaGeneration
+		a.mu.Unlock()
+		if instance != reg.inst.ID || generation != m.quotaEpoch(instance) {
 			continue
 		}
 		quotaCtx, cancel := context.WithTimeout(ctx, quotaTimeout)

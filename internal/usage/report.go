@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -97,6 +98,7 @@ type EventRow struct {
 	Harness   string
 	Type      string
 	Timestamp int64 // epoch ms
+	Pricing   *RecordedPricing
 	Payload   json.RawMessage
 }
 
@@ -145,10 +147,18 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 	var lastUsage Counts
 	haveLastUsage := false
 
-	record := func(ts int64, c Counts) {
+	versions := map[string]bool{}
+	record := func(ts int64, c Counts, pricing *RecordedPricing) {
 		if ts < rep.From {
 			return
 		}
+		priced := Price(model, c)
+		version := PriceVersion
+		if pricing != nil {
+			priced = PriceRates(pricing.Rates, c)
+			version = pricing.Version
+		}
+		versions[version] = true
 		key := cellKey{start: bucketStart(ts, rep.BucketMs), provider: harness, model: model}
 		cell, ok := cells[key]
 		if !ok {
@@ -156,9 +166,9 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 			cells[key] = cell
 		}
 		cell.Totals.addTokens(c)
-		cell.Totals.addPriced(Price(key.model, c))
+		cell.Totals.addPriced(priced)
 		rep.Totals.addTokens(c)
-		rep.Totals.addPriced(Price(key.model, c))
+		rep.Totals.addPriced(priced)
 	}
 
 	for _, r := range rows {
@@ -199,10 +209,15 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 			cur := Counts{Input: p.Input, Output: p.Output, CacheRead: p.CacheRead, CacheWrite: p.CacheWrite}
 			counts := accountingDelta(harness, cur, lastUsage, haveLastUsage, p.Accounting)
 			lastUsage, haveLastUsage = cur, true
+			// Codex input includes cached tokens. Keep that inclusive baseline
+			// for deltas, then split categories before counting and pricing.
+			if harness == "codex" {
+				counts.Input = max(0, counts.Input-counts.CacheRead-counts.CacheWrite)
+			}
 			if counts == (Counts{}) {
 				continue
 			}
-			record(r.Timestamp, counts)
+			record(r.Timestamp, counts, r.Pricing)
 		}
 	}
 
@@ -222,6 +237,14 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 	})
 	for _, k := range keys {
 		rep.Rows = append(rep.Rows, *cells[k])
+	}
+	if len(versions) > 0 {
+		names := make([]string, 0, len(versions))
+		for v := range versions {
+			names = append(names, v)
+		}
+		sort.Strings(names)
+		rep.PriceVersion = strings.Join(names, ", ")
 	}
 	return rep
 }

@@ -8,7 +8,7 @@ import type { UsageReport, UsageRow, UsageTotals } from "~/protocol";
 export function bucketStarts(from: number, to: number, bucketMs: number): number[] {
   if (bucketMs <= 0 || to <= from) return [];
   const out: number[] = [];
-  for (let t = from; t < to; t += bucketMs) out.push(t);
+  for (let t = bucketOf(from, bucketMs); t < to; t += bucketMs) out.push(t);
   return out;
 }
 

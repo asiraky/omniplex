@@ -110,7 +110,7 @@ func scopedSlug(name string) string {
 // third-party session has no plan limits — and comes back as an unsupported
 // snapshot rather than an error.
 func parseClaudeUsage(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
-	snap := adapter.QuotaSnapshot{CheckedAt: time.Now().UnixMilli()}
+	snap := adapter.QuotaSnapshot{Full: true, CheckedAt: time.Now().UnixMilli()}
 	var res claudeUsageResponse
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return snap, fmt.Errorf("parse claude usage: %w", err)
@@ -126,8 +126,8 @@ func parseClaudeUsage(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
 			snap.Windows = append(snap.Windows, w)
 		}
 	}
-	add(window("five_hour", adapter.QuotaSession, "Session", rl.FiveHour.Utilization, rl.FiveHour.ResetsAt, 5*60))
-	add(window("seven_day", adapter.QuotaWeekly, "Weekly", rl.SevenDay.Utilization, rl.SevenDay.ResetsAt, 7*24*60))
+	add(window("five_hour", adapter.QuotaSession, "Session", utilOf(rl.FiveHour), resetOf(rl.FiveHour), 5*60))
+	add(window("seven_day", adapter.QuotaWeekly, "Weekly", utilOf(rl.SevenDay), resetOf(rl.SevenDay), 7*24*60))
 	add(window("seven_day_opus", adapter.QuotaWeekly, "Weekly · Opus", utilOf(rl.SevenDayOpus), resetOf(rl.SevenDayOpus), 7*24*60))
 	add(window("seven_day_sonnet", adapter.QuotaWeekly, "Weekly · Sonnet", utilOf(rl.SevenDaySonnet), resetOf(rl.SevenDaySonnet), 7*24*60))
 	add(window("seven_day_oauth_apps", adapter.QuotaWeekly, "Weekly · Connected apps", utilOf(rl.SevenDayOAuthApps), resetOf(rl.SevenDayOAuthApps), 7*24*60))

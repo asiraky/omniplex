@@ -166,3 +166,27 @@ func TestParseCodexUpdateWithoutUsableWindowIsDropped(t *testing.T) {
 		t.Fatal("a non-snapshot notification must be ignored")
 	}
 }
+
+func TestPercentageOnlyUpdatePreservesMissingMetadata(t *testing.T) {
+	snap, ok := parseCodexUpdate(json.RawMessage(`{"limitId":"codex","primary":{"usedPercent":9}}`))
+	if !ok {
+		t.Fatal("missing update")
+	}
+	w := snap.Windows[0]
+	if w.WindowMins != 0 || w.Kind != "" || w.Label != "" {
+		t.Fatalf("invented omitted metadata: %+v", w)
+	}
+	if *w.UsedPercent != 9 {
+		t.Fatal("lost reading")
+	}
+}
+
+func TestCodexExhaustedCreditsStillReported(t *testing.T) {
+	snap, err := parseCodexRead(json.RawMessage(`{"rateLimitResetCredits":{"availableCount":0}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Count == nil || *snap.Windows[0].Count != 0 {
+		t.Fatalf("exhausted credits omitted: %+v", snap)
+	}
+}

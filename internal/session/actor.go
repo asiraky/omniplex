@@ -100,7 +100,8 @@ type Actor struct {
 	// by the manager at adopt time, bound to the instance the session runs
 	// under; nil means the pushes go nowhere, which is what a session without
 	// a manager (tests) wants.
-	quotaSink func(adapter.QuotaSnapshot)
+	quotaSink       func(adapter.QuotaSnapshot)
+	quotaGeneration uint64
 
 	// checkpoints snapshots the checkout around each turn, so a finished turn
 	// can say which files it changed. Nil when the session has no Git checkout

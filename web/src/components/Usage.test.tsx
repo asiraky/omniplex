@@ -18,13 +18,13 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
     priceVersion: "2026-04",
     rows: [
       {
-        start: from + 2 * HOUR,
+        start: Math.floor(from / HOUR) * HOUR + 2 * HOUR,
         provider: "claude",
         model: "claude-opus-5",
         totals: { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0, cost: 17.5, unpriced: 0 },
       },
       {
-        start: from + 2 * HOUR,
+        start: Math.floor(from / HOUR) * HOUR + 2 * HOUR,
         provider: "codex",
         model: "gpt-5.6-sol",
         totals: { input: 200_000, output: 100_000, cacheRead: 50_000, cacheWrite: 0, cost: 1.05, unpriced: 0 },
@@ -202,4 +202,27 @@ describe("UsagePage limits view", () => {
 
     expect(await screen.findByText("2 remaining")).toBeTruthy();
   });
+});
+describe("Usage regression cases", () => {
+ it("refreshes history without changing ranges", async () => {
+  localStorage.clear();
+  const {loadReport}=renderPage();
+  await screen.findByText("$18.55");
+  fireEvent.click(screen.getByRole("button",{name:"Refresh history"}));
+  await waitFor(()=>expect(loadReport).toHaveBeenCalledTimes(2));
+ });
+ it("shows exact cache categories and cost on hover in Tokens", async () => {
+  renderPage();
+  fireEvent.click(screen.getByRole("tab",{name:"Tokens"}));
+  const bar=await screen.findByRole("button",{name:/1.9M tokens/});
+  fireEvent.mouseEnter(bar);
+  expect(screen.getByText(/50,000 cache read/)).toBeTruthy();
+  expect(screen.getByText(/1.05 API-equivalent cost/)).toBeTruthy();
+ });
+ it("marks an old successful snapshot stale and shows its account", async () => {
+  renderPage({quotas:[quotaStatus({snapshot:{checkedAt:Date.now()-24*HOUR,accountId:"account-a",windows:[{id:"w",kind:"weekly",label:"Weekly",usedPercent:10}]}})]});
+  fireEvent.click(screen.getByRole("tab",{name:"Limits"}));
+  expect(screen.getByText(/Stale snapshot/)).toBeTruthy();
+  expect(screen.getByText("account-a")).toBeTruthy();
+ });
 });
