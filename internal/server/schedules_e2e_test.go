@@ -44,7 +44,7 @@ func TestSchedulesBrowser(t *testing.T) {
 		mgr = session.NewManager(st, t.Logf, fa)
 		mgr.SetAttachments(images)
 		mgr.StartScheduler()
-		return New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false), DefaultCwd: dir, WebFS: os.DirFS(filepath.Join(root, "cmd/omniplex/webdist")), Attachments: images}).Handler()
+		return New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), DefaultCwd: dir, WebFS: os.DirFS(filepath.Join(root, "cmd/omniplex/webdist")), Attachments: images}).Handler()
 	}
 	handler := start()
 	defer func() { mgr.Shutdown() }()

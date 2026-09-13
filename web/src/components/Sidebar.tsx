@@ -3,6 +3,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   FolderIcon,
+  KeyRoundIcon,
   GitBranchIcon,
   PanelLeftIcon,
   PlusIcon,
@@ -164,6 +165,8 @@ interface SidebarProps {
   onShowAccess: () => void;
   /** Opens the account-level Usage page: cost history, tokens, limits. */
   onShowUsage: () => void;
+  /** Opens the providers screen — agents, accounts and their sign-ins. */
+  onShowProviders: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
   /**
@@ -830,6 +833,9 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
+        <IconButton label="Providers" onClick={props.onShowProviders}>
+          <KeyRoundIcon />
+        </IconButton>
         <ThemeToggle />
       </div>
     </div>

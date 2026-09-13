@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import { loadSessionPrefs, saveSessionPrefs, type HarnessPrefs } from "~/lib/sessionPrefs";
 import { initialProject, saveLastProject } from "~/lib/lastProject";
 import { defaultModel, pickerInstances, resolveInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
@@ -90,6 +91,7 @@ export function NewSession({
   onSettings,
   onRecheck,
   onLogin,
+  onManageProviders,
   onClose,
   status,
 }: {
@@ -105,24 +107,17 @@ export function NewSession({
   onRecheck: () => void;
   /** Open the harness's own sign-in for one instance; absent when the server cannot run one. */
   onLogin?: (instanceId: string) => void;
+  /** Open the providers screen, for when signing in is not the fix. */
+  onManageProviders?: () => void;
   onClose: () => void;
   status: ConnectionStatus;
 }) {
-  // Opens on the project this browser last started a session from. Everything
-  // else in this form stays project-derived: the harness, model and workspace
-  // defaults are the project's own settings, and remembering a second layer of
-  // preference over them would just be a settings page nobody edited.
   const [projectId, setProjectId] = useState(() => initialProject(projects));
-  // One selection covers both: picking a model picks the account it lives
-  // under, so there is nothing to keep in step.
-  const [chosen, setChosen] = useState<ModelSelection | null>(null);
-  const [chosenMode, setChosenMode] = useState("");
-  const [chosenEffort, setChosenEffort] = useState<string | null>(null);
-  // The 1M context window is a start-time choice (the harness fixes it when the
-  // process boots), so it belongs here rather than in the running session.
-  // Off by default: 1M is expensive and rarely needed.
-  const [want1m, setWant1m] = useState(false);
-  const [choice, setChoice] = useState<WorkspaceChoice>({ branch: "", attachPath: "" });
+  const [preferences, setPreferences] = useState(loadSessionPrefs);
+  const [choice, setChoice] = useState<WorkspaceChoice>({
+    branch: "",
+    attachPath: "",
+  });
   // "" defers to the project default; picking one pins it for this session
   // only.
   const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>("");
@@ -138,22 +133,27 @@ export function NewSession({
 
   const project = projects.find((p) => p.id === projectId) ?? projects[0];
   const instances = pickerInstances(harnesses);
-  // Until the user picks, the project's defaults decide — and where it has
-  // none, the first account that could actually start a session.
+  // Restore this browser's last choice; project defaults seed the first visit.
+  const remembered = preferences[project?.id ?? ""];
   const fallbackHarness =
+    (harnesses.some((h) => h.id === remembered?.harness) ? remembered?.harness : "") ||
     project?.config.defaults.harness ||
     harnesses.find((h) => h.availability.state === "ready")?.id ||
     harnesses[0]?.id ||
     "";
-  const instance =
-    (chosen && instances.find((i) => i.id === chosen.instance)) ??
-    resolveInstance(instances, "", fallbackHarness);
+  const instance = resolveInstance(
+    instances,
+    remembered?.byHarness[fallbackHarness]?.instance ?? "",
+    fallbackHarness,
+  );
   const harnessId = instance?.driver ?? fallbackHarness;
   const selected = harnesses.find((h) => h.id === harnessId);
+  const chosen = remembered?.byHarness[harnessId];
+  const want1m = chosen?.want1m ?? false;
   const harnessDefaults = project?.config.defaults.harnesses?.[harnessId];
   // A model the account no longer offers is not sent: the harness's own
   // default is a better answer than a name it has stopped serving.
-  const preferred = chosen?.model || (chosen ? "" : (harnessDefaults?.model ?? ""));
+  const preferred = chosen?.model ?? harnessDefaults?.model ?? "";
   const model = instance?.models.some((m) => m.id === preferred)
     ? preferred
     : (defaultModel(instance)?.id ?? "");
@@ -171,7 +171,7 @@ export function NewSession({
   const supports1m = modelMeta?.supports1m ?? false;
   const effectiveModel = supports1m && want1m ? `${model}[1m]` : model;
   const efforts = modelMeta?.efforts ?? [];
-  const preferredEffort = chosenEffort ?? harnessDefaults?.effort ?? "";
+  const preferredEffort = chosen?.effort ?? harnessDefaults?.effort ?? "";
   const effort = efforts.includes(preferredEffort) ? preferredEffort : "";
   // Modes are the selected harness's own presets, repopulated when the harness
   // changes — the same shape as the model picker. Only an expressed preference
@@ -179,11 +179,8 @@ export function NewSession({
   // so the harness's own configured default wins rather than being overridden
   // by an explicit id.
   const modes = selected?.permissionModes ?? [];
-  const mode = modes.some((m) => m.id === chosenMode)
-    ? chosenMode
-    : modes.some((m) => m.id === harnessDefaults?.mode)
-      ? (harnessDefaults?.mode ?? "")
-      : "";
+  const preferredMode = chosen?.mode ?? harnessDefaults?.mode ?? "";
+  const mode = modes.some((m) => m.id === preferredMode) ? preferredMode : "";
   const displayModeId = mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
   const modeMeta = modes.find((m) => m.id === displayModeId);
   // The project root is its own choice in the list, so listing it again inside
@@ -218,6 +215,38 @@ export function NewSession({
     // starting without having been told, which is the thing the warning
     // replaced the old hard block with.
     !loadingSpaces;
+
+  const remember = (harness: string, values: HarnessPrefs) => {
+    if (!project) return;
+    const next = {
+      ...preferences,
+      [project.id]: {
+        harness,
+        byHarness: { ...remembered?.byHarness, [harness]: values },
+      },
+    };
+    setPreferences(next);
+    saveSessionPrefs(next);
+  };
+  // Catalogue validation affects what we send, not the preference we keep.
+  const currentPrefs: HarnessPrefs = {
+    instance: instance?.id ?? "",
+    model: chosen?.model ?? model,
+    mode: preferredMode,
+    effort: preferredEffort,
+    want1m,
+  };
+  const selectModel = (next: ModelSelection) => {
+    const previous = remembered?.byHarness[next.harness];
+    const seed = project?.config.defaults.harnesses?.[next.harness];
+    remember(next.harness, {
+      instance: next.instance,
+      model: next.model,
+      mode: previous?.mode ?? seed?.mode ?? "",
+      effort: previous?.effort ?? seed?.effort ?? "",
+      want1m: previous?.want1m ?? false,
+    });
+  };
 
   const create = async () => {
     if (!project) return;
@@ -319,7 +348,6 @@ export function NewSession({
         </DialogHeader>
 
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 pt-1 pb-5">
-
         {projects.length === 0 ? (
           <div className="rounded-xl border border-dashed p-6 text-center">
             <p className="text-muted-foreground text-[13px]">
@@ -339,9 +367,6 @@ export function NewSession({
                   value={project?.id}
                   onValueChange={(v) => {
                     setProjectId(v);
-                    setChosen(null);
-                    setChosenMode("");
-                    setChosenEffort(null);
                   }}
                 >
                   <SelectTrigger id="new-session-project" className="min-w-0 flex-1">
@@ -399,16 +424,23 @@ export function NewSession({
                 id="new-session-model"
                 harnesses={harnesses}
                 value={selection}
-                onChange={(next) => {
-                  if (next.harness !== harnessId) {
-                    setChosenMode("");
-                    setChosenEffort(null);
-                  }
-                  setChosen(next);
+                onChange={selectModel}
+                onInstanceChange={(target) => {
+                  if (target.id === instance?.id) return;
+                  const previous = remembered?.byHarness[target.driver];
+                  const preferred =
+                    previous?.model ?? project?.config.defaults.harnesses?.[target.driver]?.model;
+                  const restored =
+                    target.models.find((m) => m.id === preferred) ?? defaultModel(target);
+                  selectModel({
+                    harness: target.driver,
+                    instance: target.id,
+                    model: restored?.id ?? "",
+                  });
                 }}
                 efforts={efforts}
                 effort={effort}
-                onEffortChange={setChosenEffort}
+                onEffortChange={(effort) => remember(harnessId, { ...currentPrefs, effort })}
               />
               {supports1m && (
                 <div className="flex items-center gap-1 pt-1">
@@ -416,7 +448,7 @@ export function NewSession({
                   <div className="bg-muted inline-flex rounded-md p-0.5">
                     <button
                       type="button"
-                      onClick={() => setWant1m(false)}
+                      onClick={() => remember(harnessId, { ...currentPrefs, want1m: false })}
                       className={cn(
                         "rounded px-2 py-1 text-[12px] transition-colors",
                         !want1m ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
@@ -426,7 +458,7 @@ export function NewSession({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setWant1m(true)}
+                      onClick={() => remember(harnessId, { ...currentPrefs, want1m: true })}
                       className={cn(
                         "rounded px-2 py-1 text-[12px] transition-colors",
                         want1m ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
@@ -466,6 +498,13 @@ export function NewSession({
                         <RefreshCwIcon />
                         Check again
                       </Button>
+                      {/* The account screen, for when the fix is a setting or
+                          a different credential rather than a fresh login. */}
+                      {onManageProviders && (
+                        <Button variant="outline" size="sm" onClick={onManageProviders}>
+                          Providers…
+                        </Button>
+                      )}
                     </div>
                   </AlertDescription>
                 </Alert>
@@ -477,7 +516,10 @@ export function NewSession({
                 {/* Modes all render alike: the description below says what each
                     one does. Picking one here is the whole decision — no mode
                     earns a badge, a colour, or a second opt-in. */}
-                <Select value={displayModeId} onValueChange={setChosenMode}>
+                <Select
+                  value={displayModeId}
+                  onValueChange={(mode) => remember(harnessId, { ...currentPrefs, mode })}
+                >
                   <SelectTrigger id="new-session-mode" className="w-full">
                     <SelectValue />
                   </SelectTrigger>

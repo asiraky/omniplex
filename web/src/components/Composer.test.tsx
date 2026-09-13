@@ -148,6 +148,37 @@ describe("sending with images", () => {
   });
 });
 
+describe("the send button's options", () => {
+  const openOptions = () =>
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), { button: 0, ctrlKey: false });
+
+  it("sends now from the menu", async () => {
+    const { onSend } = mount({ draft: "ship it", onSchedule: vi.fn() });
+    openOptions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Send now" }));
+    expect(onSend).toHaveBeenCalledWith("ship it");
+  });
+
+  it("schedules from the menu without sending", async () => {
+    const onSchedule = vi.fn();
+    const { onSend } = mount({ draft: "later", onSchedule });
+    openOptions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Schedule send…" }));
+    expect(onSchedule).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("offers no options when there is nowhere to schedule", () => {
+    mount({ draft: "hi" });
+    expect(screen.queryByRole("button", { name: "More send options" })).toBeNull();
+  });
+
+  it("holds the options back with nothing to send", () => {
+    mount({ draft: "", onSchedule: vi.fn() });
+    expect(screen.getByRole("button", { name: "More send options" })).toHaveProperty("disabled", true);
+  });
+});
+
 describe("a workspace that is still being prepared", () => {
   const compact = {
     id: "command:compact",

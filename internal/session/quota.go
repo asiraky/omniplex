@@ -48,9 +48,9 @@ func (a *Actor) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
 // order. Instances that have never reported anything are listed with an empty
 // snapshot: the Limits page says "unknown" rather than hiding a provider.
 func (m *Manager) Quotas() []QuotaStatus {
-	out := make([]QuotaStatus, 0, len(m.instanceOrder))
-	for _, id := range m.instanceOrder {
-		reg := m.instances[id]
+	instances := m.orderedInstances()
+	out := make([]QuotaStatus, 0, len(instances))
+	for _, reg := range instances {
 		m.quotaMu.Lock()
 		cached, ok := m.quotas[reg.inst.ID]
 		var status QuotaStatus
@@ -92,7 +92,7 @@ func (m *Manager) reportQuotaAt(driver, instance string, snap adapter.QuotaSnaps
 	status, ok := m.quotas[instance]
 	if !ok {
 		status = &QuotaStatus{Provider: driver, Instance: instance}
-		if reg, known := m.instances[instance]; known {
+		if reg, known := m.lookup(instance); known {
 			status.DisplayName = reg.inst.DisplayName
 		}
 		m.quotas[instance] = status
@@ -179,7 +179,7 @@ func (m *Manager) forgetQuota(instanceID string) {
 // A failure keeps the last good snapshot and records the error against it, so
 // one provider failing never blanks the other.
 func (m *Manager) RefreshQuota(ctx context.Context, instanceID string) (QuotaStatus, error) {
-	reg, ok := m.instances[instanceID]
+	reg, ok := m.lookup(instanceID)
 	if !ok {
 		return QuotaStatus{}, fmt.Errorf("unknown provider instance %q", instanceID)
 	}

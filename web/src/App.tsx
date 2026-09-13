@@ -3,7 +3,7 @@ import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useSessionPR } from "./useSessionPR";
-import type { Access, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
+import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -70,6 +70,8 @@ const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").the
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
 // The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
 const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
+const ProvidersSettings = lazy(() => import("./components/ProvidersSettings"));
+const InstanceAuthDialog = lazy(() => import("./components/AuthFlowDialog"));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
 const UsagePage = lazy(() => import("./components/Usage").then((m) => ({ default: m.UsagePage })));
 
@@ -852,17 +854,44 @@ export function App() {
   // The instance whose sign-in is open, if any. Closing it rechecks, so the
   // login shows up as "ready" by itself.
   const [loginInstance, setLoginInstance] = useState<string | null>(null);
+  // The providers screen, and the structured sign-in dialog for one instance.
+  const [showProviders, setShowProviders] = useState(false);
+  const [authInstance, setAuthInstance] = useState<string | null>(null);
 
   const recheck = useCallback(() => {
-    clientRef.current?.command("recheck_harnesses", {}).then((res) => {
+    // Returned so a caller with a spinner can hold it up until the answer.
+    return clientRef.current?.command("recheck_harnesses", {}).then((res) => {
       if (res?.harnesses) setHarnesses(res.harnesses);
     });
   }, []);
+
+  // What the providers surface needs from the client: commands, and the
+  // auth-flow event stream (which deliberately bypasses the state reducer —
+  // flows are ephemeral and their frames can carry nothing persistable).
+  const authWires = useMemo(
+    () => ({
+      command: (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
+      subscribe: (flowId: string, listener: (ev: AuthFlowEvent) => void) =>
+        clientRef.current?.onAuthFlow(flowId, listener) ?? (() => {}),
+    }),
+    [],
+  );
 
   const meta = useMemo(() => sessions.find((s) => s.id === activeId), [sessions, activeId]);
   const activeProviderInstance = harnesses
     .flatMap((h) => h.instances ?? [])
     .find((i) => i.id === (meta?.providerInstance || meta?.harness));
+
+  // Every "sign in" affordance routes through here: a flows-capable instance
+  // gets the structured dialog, anything else the embedded login terminal.
+  const openInstanceAuth = useCallback(
+    (instanceId: string) => {
+      const inst = harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === instanceId);
+      if (inst?.auth === "flows") setAuthInstance(instanceId);
+      else setLoginInstance(instanceId);
+    },
+    [harnesses],
+  );
 
   // The empty transcript's list of skills to reach for, and the composer it
   // writes into. Both live up here for the same reason the drafts do: the
@@ -1174,6 +1203,7 @@ export function App() {
         onDelete={remove}
         onShowAccess={() => setShowAccess(true)}
         onShowUsage={() => setShowUsage(true)}
+        onShowProviders={() => setShowProviders(true)}
         accentOf={accentOf}
         projects={projects}
         projectName={(id)=>projects.find(p=>p.id===id)?.config.name}
@@ -1287,7 +1317,7 @@ export function App() {
                   {activeProviderInstance?.canLogin && (
                     <IconButton
                       label={`Sign in again to ${activeProviderInstance.displayName}`}
-                      onClick={() => setLoginInstance(activeProviderInstance.id)}
+                      onClick={() => openInstanceAuth(activeProviderInstance.id)}
                     >
                       <LogInIcon />
                     </IconButton>
@@ -1348,7 +1378,7 @@ export function App() {
                       {transcriptCopied ? "Transcript copied" : "Copy transcript"}
                     </DropdownMenuItem>
                     {activeProviderInstance?.canLogin && (
-                      <DropdownMenuItem onSelect={() => setLoginInstance(activeProviderInstance.id)}>
+                      <DropdownMenuItem onSelect={() => openInstanceAuth(activeProviderInstance.id)}>
                         <LogInIcon /> Sign in again to {activeProviderInstance.displayName}
                       </DropdownMenuItem>
                     )}
@@ -1403,7 +1433,7 @@ export function App() {
               {activeProviderInstance?.canLogin && (
                 <IconButton
                   label={`Sign in again to ${activeProviderInstance.displayName}`}
-                  onClick={() => setLoginInstance(activeProviderInstance.id)}
+                  onClick={() => openInstanceAuth(activeProviderInstance.id)}
                 >
                   <LogInIcon />
                 </IconButton>
@@ -1419,7 +1449,7 @@ export function App() {
             <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>setLoginInstance(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
+              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={(turn)=>activeId&&clientRef.current?.command("prompt",{sessionId:activeId,text:turn.prompt,...(turn.images?.length?{imageIds:turn.images.map(i=>i.id)}:{})})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1572,10 +1602,39 @@ export function App() {
           onAddProject={()=>setProjectSettings("add")}
           onSettings={setProjectSettings}
           onRecheck={recheck}
-          onLogin={(id) => setLoginInstance(id)}
+          onLogin={openInstanceAuth}
+          onManageProviders={() => setShowProviders(true)}
           status={status}
           onClose={() => setCreating(false)}
         />
+      )}
+      {showProviders && (
+        <Suspense fallback={null}>
+          <ProvidersSettings
+            harnesses={harnesses}
+            wires={authWires}
+            onOpenTerminal={(id) => setLoginInstance(id)}
+            onRecheck={recheck}
+            onClose={() => setShowProviders(false)}
+          />
+        </Suspense>
+      )}
+      {authInstance && (
+        <Suspense fallback={null}>
+          <InstanceAuthDialog
+            wires={authWires}
+            instanceId={authInstance}
+            instanceName={
+              harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === authInstance)?.displayName ??
+              authInstance
+            }
+            onOpenTerminal={() => {
+              setAuthInstance(null);
+              setLoginInstance(authInstance);
+            }}
+            onClose={() => setAuthInstance(null)}
+          />
+        </Suspense>
       )}
       {loginInstance && (
         <Suspense fallback={null}>

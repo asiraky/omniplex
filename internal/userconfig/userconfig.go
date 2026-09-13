@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // DefaultBranchFormat turns a `gh issue list` row into a branch name. It ships
@@ -58,8 +59,13 @@ func Default() Config {
 	return Config{Version: 1, BranchFormat: DefaultBranchFormat, SummaryPrompt: DefaultSummaryPrompt}
 }
 
-// Path is ~/.omniplex/config.json, beside omniplex.db.
+// Path is ~/.omniplex/config.json, beside omniplex.db. OMNIPLEX_CONFIG
+// overrides it, so a worktree's dev server (and tests) can manage provider
+// instances without writing into the live server's configuration.
 func Path() (string, error) {
+	if p := os.Getenv("OMNIPLEX_CONFIG"); p != "" {
+		return p, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -81,6 +87,28 @@ func Normalize(cfg Config) (Config, error) {
 		cfg.SummaryPrompt = DefaultSummaryPrompt
 	}
 	return cfg, nil
+}
+
+// updateMu serialises read-modify-write cycles on the config file. Two
+// writers exist now — the settings commands and provider-instance management —
+// and interleaving their Load/Save pairs would silently drop whichever half
+// wrote first.
+var updateMu sync.Mutex
+
+// Update applies fn to the current config and persists the result, atomically
+// with respect to every other Update call in this process. fn returning an
+// error abandons the write.
+func Update(fn func(*Config) error) (Config, error) {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	cfg, err := Load()
+	if err != nil {
+		return cfg, err
+	}
+	if err := fn(&cfg); err != nil {
+		return cfg, err
+	}
+	return Save(cfg)
 }
 
 // Load never fails on a missing file: an operator who has never opened settings

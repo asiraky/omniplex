@@ -1,10 +1,11 @@
-import { ClockIcon, ArrowUpIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronDownIcon, ClockIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
 import { ContextMeter } from "~/components/ContextMeter";
 import { ModelPicker } from "~/components/ModelPicker";
 import { Button } from "~/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "~/components/ui/command";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "~/components/ui/sheet";
 import { Spinner } from "~/components/ui/spinner";
@@ -128,6 +129,7 @@ export function Composer({
 
   const uploading = attachments.some((a) => a.status === "uploading");
   const sendableImages = attachments.filter((a) => a.status === "ready").length;
+  const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0);
 
   const attach = useCallback(
     (files: File[]) => {
@@ -609,7 +611,11 @@ export function Composer({
               }}
               open={modelPickerOpen}
               onOpenChange={setModelPickerOpen}
-              className="text-muted-foreground hover:text-foreground h-11 w-auto max-w-[55%] min-w-0 border-0 px-2 shadow-none md:h-8 md:min-h-8"
+              compact
+              // shrink undoes Button's shrink-0: the picker is the one control
+              // in this row that can give up width, so it must, or the send
+              // button is what gets pushed off a narrow screen.
+              className="text-muted-foreground hover:text-foreground h-11 w-auto max-w-[55%] min-w-0 shrink border-0 px-2 shadow-none md:h-8 md:min-h-8"
             />
           )}
 
@@ -628,22 +634,49 @@ export function Composer({
               <SquareIcon className="size-3.5 fill-current" />
             </Button>
           )}
-          {onSchedule && <Button variant="ghost" size="icon" className="ml-1 size-11 shrink-0 md:size-8" aria-label="Schedule send" title="Schedule send" disabled={disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0)} onClick={onSchedule}><ClockIcon className="size-4" /></Button>}
           {/* Sending while a turn runs hands the message to the harness,
               which reads it at its next step. The button only appears once
               there is something to send, so an idle-looking stop button is
               not crowded by a dead send. */}
           {(!busy || draft.trim() || sendableImages > 0) && (
-            <Button
-              size="icon"
-              disabled={disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0)}
-              onClick={() => void send()}
-              aria-label={busy ? "Send to the running turn" : "Send"}
-              title={busy ? "The model reads it after its current step" : undefined}
-              className="ml-1.5 size-11 shrink-0 rounded-full md:ml-2 md:size-8"
-            >
-              <ArrowUpIcon />
-            </Button>
+            // Scheduling rides on send's edge rather than taking its own slot:
+            // a phone-width row has no room for a third round button.
+            <div className="ml-1.5 flex shrink-0 md:ml-2">
+              <Button
+                size="icon"
+                disabled={cannotSend}
+                onClick={() => void send()}
+                aria-label={busy ? "Send to the running turn" : "Send"}
+                title={busy ? "The model reads it after its current step" : undefined}
+                className={cn("size-11 shrink-0 rounded-full md:size-8", onSchedule && "rounded-r-none")}
+              >
+                <ArrowUpIcon />
+              </Button>
+              {onSchedule && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      size="icon"
+                      disabled={cannotSend}
+                      aria-label="More send options"
+                      className="border-primary-foreground/25 h-11 w-7 shrink-0 rounded-l-none rounded-r-full border-l md:h-8 md:w-6"
+                    >
+                      <ChevronDownIcon className="size-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent side="top" align="end">
+                    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={() => void send()}>
+                      <ArrowUpIcon />
+                      Send now
+                    </DropdownMenuItem>
+                    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule}>
+                      <ClockIcon />
+                      Schedule send…
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
           )}
         </div>
       </div>
