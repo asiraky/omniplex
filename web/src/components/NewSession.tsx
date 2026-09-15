@@ -82,6 +82,7 @@ export interface IssueListing {
 
 export function NewSession({
   projects,
+  activeProjectId,
   harnesses,
   userConfig,
   onCreate,
@@ -96,6 +97,7 @@ export function NewSession({
   status,
 }: {
   projects: Project[];
+  activeProjectId?: string;
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
   onCreate: (input: NewSessionInput) => Promise<void>;
@@ -112,7 +114,7 @@ export function NewSession({
   onClose: () => void;
   status: ConnectionStatus;
 }) {
-  const [projectId, setProjectId] = useState(() => initialProject(projects));
+  const [projectId, setProjectId] = useState(() => initialProject(projects, activeProjectId));
   const [preferences, setPreferences] = useState(loadSessionPrefs);
   const [choice, setChoice] = useState<WorkspaceChoice>({
     branch: "",
@@ -279,7 +281,7 @@ export function NewSession({
   // The dialog can mount before the project list has landed, in which case
   // the remembered id had nothing to match and the first project stood in.
   useEffect(() => {
-    if (!projectId && projects.length > 0) setProjectId(initialProject(projects));
+    if (!projectId && projects.length > 0) setProjectId(initialProject(projects, activeProjectId));
   }, [projectId, projects]);
 
   // Worktrees and issues are read per project and re-read whenever the project

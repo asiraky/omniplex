@@ -27,12 +27,9 @@ export function saveLastProject(projectId: string) {
   }
 }
 
-/**
- * The project the dialog should open on: the remembered one while it still
- * exists, else the server's first. Projects that have been deleted, or that
- * this device cannot see, fall back rather than leaving the dialog on nothing.
- */
-export function initialProject(projects: { id: string }[]): string {
+/** Prefer the open session's project, then the remembered project, then the first. */
+export function initialProject(projects: { id: string }[], activeProjectId?: string): string {
+  if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return activeProjectId;
   const last = loadLastProject();
   if (last && projects.some((p) => p.id === last)) return last;
   return projects[0]?.id ?? "";
