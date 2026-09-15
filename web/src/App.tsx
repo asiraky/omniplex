@@ -1557,6 +1557,7 @@ export function App() {
       {creating && (
         <NewSession
           projects={projects}
+          activeProjectId={meta?.projectId}
           harnesses={harnesses}
           userConfig={userConfig}
           onCreate={create}

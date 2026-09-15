@@ -492,6 +492,23 @@ describe("the remembered project", () => {
 
   afterEach(() => localStorage.clear());
 
+  it("prefers the open session's project over the remembered project", async () => {
+    localStorage.setItem("omniplex.lastProject.v1", "p2");
+    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    open({ projects: [project, other], activeProjectId: "p1", onCreate });
+    expect(screen.getByLabelText("Project").textContent).toBe("repo");
+    const start = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" })));
+  });
+
+  it("falls back to the remembered project when the active project is unavailable", () => {
+    localStorage.setItem("omniplex.lastProject.v1", "p2");
+    open({ projects: [project, other], activeProjectId: "deleted" });
+    expect(screen.getByLabelText("Project").textContent).toBe("other");
+  });
+
   it("opens on the project the last session was started from", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     open({ projects: [project, other] });

@@ -116,6 +116,22 @@ const state = (id: string, mode: string): any => ({
   queuedPrompts: [],
 });
 
+describe("new session project", () => {
+  it("uses the viewed session's project after switching sessions", async () => {
+    localStorage.setItem("omniplex.lastProject.v1", "p2");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project, { ...project, id: "p2", config: { ...project.config, name: "other" } }]);
+      events.onHarnesses([harness], "/tmp/repo");
+      events.onSessions([session("a"), { ...session("b"), projectId: "p2" }]);
+    });
+    fireEvent.click(screen.getByText("Session b"));
+    fireEvent.click(screen.getByText("Session a"));
+    fireEvent.click(screen.getAllByRole("button", { name: /New session/ })[0]);
+    expect(screen.getByLabelText("Project").textContent).toBe("repo");
+  });
+});
+
 describe("copying a transcript", () => {
   it("copies only the raw user and assistant prose from the session header", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
