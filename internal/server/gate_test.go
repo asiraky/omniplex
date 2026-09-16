@@ -25,6 +25,14 @@ import (
 // requests are rewritten to look remote before they reach the handler.
 func testServer(t *testing.T) (http.Handler, *auth.Guard) {
 	t.Helper()
+	h, g, _ := testServerWithStore(t)
+	return h, g
+}
+
+// testServerWithStore is testServer for a test that also needs to seed rows,
+// such as one that needs a session to exist before it can open its terminal.
+func testServerWithStore(t *testing.T) (http.Handler, *auth.Guard, *store.Store) {
+	t.Helper()
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "gate.db"))
 	if err != nil {
@@ -37,7 +45,7 @@ func testServer(t *testing.T) (http.Handler, *auth.Guard) {
 	t.Cleanup(mgr.Shutdown)
 
 	srv := New(Options{Manager: mgr, Store: st, Guard: guard, DefaultCwd: t.TempDir()})
-	return srv.Handler(), guard
+	return srv.Handler(), guard, st
 }
 
 // asRemote rewrites the peer address so the guard does not treat the test's

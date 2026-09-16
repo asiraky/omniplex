@@ -80,6 +80,9 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	// A paste into a shell is bounded by the same cap as a prompt; without it
+	// the library's 32 KiB default drops the terminal mid-paste.
+	ws.SetReadLimit(maxWSMessageBytes)
 	defer ws.Close(websocket.StatusNormalClosure, "")
 
 	// Registered by device, so revoking the device cuts this shell too — same

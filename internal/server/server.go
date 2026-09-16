@@ -364,6 +364,14 @@ func wantsHTML(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
+// maxWSMessageBytes caps a single inbound WebSocket message. The library
+// default is 32 KiB, which a pasted prompt clears easily, and the failure is
+// not graceful: the read loop closes the whole connection with 1009 before the
+// frame is ever dispatched. Prompts are the product, so allow a megabyte.
+// Images do not ride this path — they are uploaded over HTTP and referenced by
+// id — so this bounds text alone.
+const maxWSMessageBytes = 1 << 20
+
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	// Session snapshots and tool output are highly repetitive JSON. Context
 	// takeover keeps the dictionary across frames, which matters for streamed
@@ -384,6 +392,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ws.SetReadLimit(maxWSMessageBytes)
 	// A turn can run for many minutes with no client traffic; the read loop
 	// blocks on the socket rather than a deadline, and ping keeps NAT alive.
 	ctx, cancel := context.WithCancel(r.Context())
