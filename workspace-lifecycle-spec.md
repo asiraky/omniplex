@@ -274,7 +274,7 @@ Important rules:
    **Retry provision** / **Clean up** action. It does not silently delete the evidence.
 6. Closing a managed session closes the harness first, then runs deprovision.
    A failed deprovision retains the session so cleanup can be retried.
-7. Server shutdown only disposes harness processes. It does not release
+7. Server shutdown only disposes harness process trees. It does not release
    workspace leases or run deprovision; sessions are meant to survive a restart.
 8. Deleting a transcript is two-phase: release the workspace successfully,
    then purge the event log. The log must remain if cleanup fails.
@@ -515,6 +515,17 @@ Hook children must belong to a process group owned by Omniplex. Normal shutdown
 terminates and reaps them, then leaves the durable phase interrupted for the
 next reconciliation pass. A startup reaper also checks stale managed leases so
 a hard kill cannot leak resources forever.
+
+A harness process, and a terminal shell, is the root of a tree: the agent forks
+shells, the shells start dev servers and headless browsers, and those detach
+until nothing but the kernel links them to the session. Each such root runs in
+a cgroup of its own beneath the server's (`internal/procgroup`), placed there
+at clone time so nothing escapes, and closing the session kills the cgroup —
+one write that ends every process in it however it detached. Memory stays
+charged to the server's cgroup, so the service's limits cover the whole tree.
+The startup sweep kills trees a previous server left behind. Without a
+writable cgroup v2 tree the root gets a process group instead, which catches
+ordinary children but not a `setsid`.
 
 ## Safe default when a project has no hooks
 

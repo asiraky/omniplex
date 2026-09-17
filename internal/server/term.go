@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
 
 	"github.com/asiraky/omniplex/internal/auth"
+	"github.com/asiraky/omniplex/internal/procgroup"
 )
 
 // The terminal surface: one WebSocket per open terminal tab, carrying a pty
@@ -100,6 +102,13 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// A shell in a checkout starts dev servers and leaves them; end them with
+	// the terminal rather than with the machine.
+	// pty.Start makes the shell a session leader; say so up front so the
+	// process-group fallback does not also ask for setpgid, which cannot
+	// combine with setsid.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	tree := procgroup.Attach(cmd, "term-"+sessionID+login)
 	tty, err := pty.Start(cmd)
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "pty failed")
@@ -108,6 +117,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		_ = tty.Close()
 		_ = cmd.Process.Kill()
+		tree.Kill()
 		_, _ = cmd.Process.Wait()
 	}()
 

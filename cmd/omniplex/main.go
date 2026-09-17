@@ -28,6 +28,7 @@ import (
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/netinfo"
 	"github.com/asiraky/omniplex/internal/overlay"
+	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/server"
 	"github.com/asiraky/omniplex/internal/session"
@@ -90,6 +91,10 @@ func main() {
 	guard := auth.New(st, plan.Reachable, plan.Port)
 
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
+
+	// Trees a previous server left behind (a crash, a SIGKILL) are killed
+	// before this one starts any of its own.
+	procgroup.Sweep()
 
 	mgr := session.NewManager(st, logf,
 		claudecode.New(*claudePath),

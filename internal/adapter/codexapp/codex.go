@@ -24,6 +24,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
+	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -200,13 +201,18 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if err != nil {
 		return nil, err
 	}
+	// The whole tree, not just app-server: shells, dev servers and browsers
+	// the agent starts must end with the session.
+	tree := procgroup.Attach(cmd, "codex-"+o.SessionID)
 	if err := cmd.Start(); err != nil {
+		tree.Kill()
 		return nil, fmt.Errorf("start %s app-server: %w", a.Bin, err)
 	}
 
 	s := &session{
 		host:      host,
 		cmd:       cmd,
+		tree:      tree,
 		cwd:       o.Cwd,
 		events:    make(chan proto.Emission, 256),
 		streamed:  map[string]bool{},
@@ -301,6 +307,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 type session struct {
 	host adapter.HostServices
 	cmd  *exec.Cmd
+	tree procgroup.Group
 	conn *jsonrpc.Conn
 	cwd  string
 
@@ -514,6 +521,7 @@ func (s *session) Close() error {
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
+		s.tree.Kill()
 		_ = s.cmd.Wait()
 	})
 	return nil

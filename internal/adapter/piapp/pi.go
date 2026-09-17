@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -215,13 +216,18 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if err != nil {
 		return nil, err
 	}
+	// The whole tree, not just pi: shells, dev servers and browsers the agent
+	// starts must end with the session.
+	tree := procgroup.Attach(cmd, "pi-"+sid)
 	if err := cmd.Start(); err != nil {
+		tree.Kill()
 		return nil, fmt.Errorf("start %s --mode rpc: %w", a.Bin, err)
 	}
 
 	s := &session{
 		host:    host,
 		cmd:     cmd,
+		tree:    tree,
 		stdin:   stdin,
 		events:  make(chan proto.Emission, 256),
 		done:    make(chan struct{}),
@@ -272,6 +278,7 @@ type rpcResponse struct {
 type session struct {
 	host  adapter.HostServices
 	cmd   *exec.Cmd
+	tree  procgroup.Group
 	stdin io.WriteCloser
 
 	events chan proto.Emission
@@ -499,6 +506,7 @@ func (s *session) Close() error {
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
+		s.tree.Kill()
 		_ = s.cmd.Wait()
 	})
 	return nil
