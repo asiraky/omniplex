@@ -188,3 +188,15 @@ func contains(pids []int, pid int) bool {
 	}
 	return false
 }
+
+func TestPgidAttachStartsASessionLeader(t *testing.T) {
+	cmd := exec.Command("sleep", "300")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	g := attachPgid(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("setsid child failed to start: %v", err)
+	}
+	g.Kill()
+	_ = cmd.Wait()
+	waitGone(t, []int{cmd.Process.Pid})
+}
