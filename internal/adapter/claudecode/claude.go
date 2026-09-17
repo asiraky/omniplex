@@ -31,6 +31,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
+	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -341,13 +342,18 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if err != nil {
 		return nil, err
 	}
+	// The whole tree, not just the bridge: shells, dev servers and browsers
+	// the agent starts must end with the session.
+	tree := procgroup.Attach(cmd, "claude-"+sessionID)
 	if err := cmd.Start(); err != nil {
+		tree.Kill()
 		return nil, fmt.Errorf("start claude bridge: %w", err)
 	}
 
 	s := &session{
 		host:             host,
 		cmd:              cmd,
+		tree:             tree,
 		stdin:            stdin,
 		cwd:              o.Cwd,
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
@@ -396,6 +402,7 @@ type stream struct {
 type session struct {
 	host  adapter.HostServices
 	cmd   *exec.Cmd
+	tree  procgroup.Group
 	conn  *jsonrpc.Conn
 	stdin io.WriteCloser
 	cwd   string
@@ -649,6 +656,7 @@ func (s *session) Close() error {
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
+		s.tree.Kill()
 		_ = s.cmd.Wait()
 	})
 	return nil
