@@ -72,6 +72,17 @@ const hostEnv = Array.isArray(config.envKeys)
     )
   : undefined;
 
+// A Claude Code installed through npm is a script, and the SDK runs a script
+// under the runtime this process is on. Under Bun that is a second Bun in the
+// project cwd, which would load the same dotenv files all over again, so it
+// gets the empty env file the host gave this one. Only for a script: the SDK
+// puts executableArgs in front of a native binary's own arguments too.
+const claudeIsScript = [".js", ".mjs", ".tsx", ".ts", ".jsx"].some((ext) => config.claudePath?.endsWith(ext));
+const harnessRuntime = {
+  ...(hostEnv ? { env: hostEnv } : {}),
+  ...(process.versions.bun && claudeIsScript ? { executableArgs: ["--env-file=/dev/null"] } : {}),
+};
+
 // ---------------------------------------------------------------------------
 // prompts: the host sends them one at a time; the SDK consumes an async
 // iterable, so this is a queue with a waiter.
@@ -188,7 +199,7 @@ const readUsage = async (q) => {
 // ---------------------------------------------------------------------------
 const queryOptions = (config) => ({
   cwd: config.cwd || process.cwd(),
-  ...(hostEnv ? { env: hostEnv } : {}),
+  ...harnessRuntime,
   ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
 });
 
@@ -232,7 +243,7 @@ const session = query({
   prompt: prompts(),
   options: {
     cwd: config.cwd,
-    ...(hostEnv ? { env: hostEnv } : {}),
+    ...harnessRuntime,
     includePartialMessages: true,
     canUseTool,
     ...(config.model ? { model: config.model } : {}),

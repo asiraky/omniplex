@@ -19,7 +19,9 @@ Per adapter:
   SDK's `env` option. The second covers the bundle, which takes no runtime
   flags. Names rather than values, because argv is world-readable. Bun never
   overwrites a variable that was already set, so the listed values are the
-  host's.
+  host's. A Claude Code installed through npm is a script, which the SDK runs
+  under the bridge's own runtime: under Bun that is a second Bun in the project
+  cwd, so the bridge gives it the same empty env file through `executableArgs`.
 - **Codex.** A native binary. It reads `~/.codex/.env` and no project file.
 - **Pi.** A Node script, and its auth bridge is too. Node loads no dotenv file
   unless asked.
