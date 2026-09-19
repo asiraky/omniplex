@@ -258,6 +258,9 @@ type sidecarConfig struct {
 	SessionID  string `json:"sessionId,omitempty"`
 	Resume     string `json:"resume,omitempty"`
 	ClaudePath string `json:"claudePath,omitempty"`
+	// EnvKeys names every variable the host set on the bridge. The bridge
+	// passes exactly those on to Claude Code; resolved.command fills it.
+	EnvKeys []string `json:"envKeys,omitempty"`
 }
 
 // conversationID resolves which Claude conversation a CreateSession call names
@@ -307,27 +310,25 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	} else {
 		cfg.SessionID = sessionID
 	}
-	blob, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	args := append(append([]string{}, r.runtimeArgs...), string(blob))
-	cmd := exec.Command(r.runtime, args...)
-	cmd.Dir = o.Cwd
-	// The instance's overlay over the ambient environment is the entire
-	// credential mechanism: CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, or
-	// ANTHROPIC_API_KEY select the account per process.
-	cmd.Env = append(adapter.MergeEnv(os.Environ(), o.Env), "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
 	// The 1M context window is a process-start choice, not a runtime one: the
 	// CLI decides it from CLAUDE_CODE_DISABLE_1M_CONTEXT when it boots, and no
 	// control call changes it after. It is 1M by default on accounts that have
 	// it, which is expensive and rarely wanted, so omniplex opts in explicitly: a
 	// session runs 1M only when its model id carries the "[1m]" tag, and 200k
 	// otherwise. That makes the tag the real switch and 200k the default.
+	var extra []string
 	if !strings.Contains(o.Model, "[1m]") {
-		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
+		extra = append(extra, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
 	}
+	// The instance's overlay over the ambient environment is the entire
+	// credential mechanism: CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, or
+	// ANTHROPIC_API_KEY select the account per process. The session outlives
+	// this call, so the command is not bound to ctx.
+	cmd, err := r.command(context.Background(), cfg, o.Env, extra...)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Dir = o.Cwd
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

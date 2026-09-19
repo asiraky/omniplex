@@ -10,8 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -242,17 +240,14 @@ func (a *Adapter) ReadQuota(ctx context.Context, env map[string]string) (adapter
 	if !avail.OK() {
 		return adapter.QuotaSnapshot{}, fmt.Errorf("claude is unavailable: %s", avail.Reason)
 	}
-	blob, err := json.Marshal(sidecarConfig{Op: "usage", Cwd: workingDir(), ClaudePath: r.claudePath})
-	if err != nil {
-		return adapter.QuotaSnapshot{}, err
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, quotaReadTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.runtime, append(append([]string{}, r.runtimeArgs...), string(blob))...)
+	cmd, err := r.command(ctx, sidecarConfig{Op: "usage", Cwd: workingDir(), ClaudePath: r.claudePath}, env)
+	if err != nil {
+		return adapter.QuotaSnapshot{}, err
+	}
 	cmd.Dir = workingDir()
-	cmd.Env = append(adapter.MergeEnv(os.Environ(), env), "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
 	cmd.Stderr = nil
 
 	stdout, err := cmd.StdoutPipe()

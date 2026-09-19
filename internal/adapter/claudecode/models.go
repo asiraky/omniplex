@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -89,17 +88,14 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 		return nil, fmt.Errorf("claude is unavailable: %s", avail.Reason)
 	}
 
-	blob, err := json.Marshal(sidecarConfig{Op: "models", Cwd: workingDir(), ClaudePath: r.claudePath})
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, modelListTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.runtime, append(append([]string{}, r.runtimeArgs...), string(blob))...)
+	cmd, err := r.command(ctx, sidecarConfig{Op: "models", Cwd: workingDir(), ClaudePath: r.claudePath}, env)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = workingDir()
-	cmd.Env = append(adapter.MergeEnv(os.Environ(), env), "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
 	cmd.Stderr = nil
 
 	stdout, err := cmd.StdoutPipe()
