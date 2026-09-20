@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -30,6 +31,34 @@ type resolved struct {
 	sidecarDir string
 }
 
+// bunArgs is how Bun is asked to run the bridge. Bun loads the .env files of
+// its cwd — the user's project — into the process; an explicit, empty env file
+// is what turns that off. --no-env-file is silently ignored by Bun 1.2.
+func bunArgs(script string) []string {
+	return []string{"--env-file=" + os.DevNull, script}
+}
+
+// command builds a bridge process: the config blob on argv, the ambient
+// environment under the instance's overlay plus extra, and the names of those
+// variables in the config so the bridge can drop anything its runtime adds on
+// top (see hostEnv in sidecar.mjs) before it starts Claude Code.
+func (r resolved) command(ctx context.Context, cfg sidecarConfig, overlay map[string]string, extra ...string) (*exec.Cmd, error) {
+	env := append(adapter.MergeEnv(os.Environ(), overlay), "CLAUDE_CODE_ENTRYPOINT=sdk-ts")
+	env = append(env, extra...)
+	cfg.EnvKeys = make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		cfg.EnvKeys = append(cfg.EnvKeys, key)
+	}
+	blob, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, r.runtime, append(append([]string{}, r.runtimeArgs...), string(blob))...)
+	cmd.Env = env
+	return cmd, nil
+}
+
 // docsURL is where a user goes to install the harness we depend on.
 const docsURL = "https://code.claude.com/docs"
 
@@ -54,7 +83,7 @@ func (a *Adapter) resolve(ctx context.Context) (resolved, adapter.Availability) 
 	default:
 		script := filepath.Join(dir, "sidecar.mjs")
 		if bun, err := exec.LookPath("bun"); err == nil {
-			r.runtime, r.runtimeArgs, r.runtimeKind = bun, []string{script}, "bun"
+			r.runtime, r.runtimeArgs, r.runtimeKind = bun, bunArgs(script), "bun"
 		} else if node, err := exec.LookPath("node"); err == nil {
 			if !nodeIsRecentEnough(ctx, node) {
 				return r, adapter.Unavailable(

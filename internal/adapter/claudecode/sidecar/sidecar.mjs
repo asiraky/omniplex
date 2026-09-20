@@ -58,6 +58,31 @@ process.on("unhandledRejection", (err) => {
 // ---------------------------------------------------------------------------
 const config = JSON.parse(process.argv[2] ?? "{}");
 
+// The environment Claude Code gets is the one the host gave this process, and
+// nothing else. Bun — as a script runtime and inside a compiled bundle —
+// loads the .env files of its cwd into process.env, and the cwd is the user's
+// project: left alone, every session would carry the project's dotenv values
+// and hand them to everything it spawns, where they beat the files of any
+// other checkout. The host names the variables it set (names only: argv is
+// world-readable, values are not for it) and the rest is dropped. Bun never
+// overwrites a variable that was already set, so the named values are intact.
+const hostEnv = Array.isArray(config.envKeys)
+  ? Object.fromEntries(
+      config.envKeys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]),
+    )
+  : undefined;
+
+// A Claude Code installed through npm is a script, and the SDK runs a script
+// under the runtime this process is on. Under Bun that is a second Bun in the
+// project cwd, which would load the same dotenv files all over again, so it
+// gets the empty env file the host gave this one. Only for a script: the SDK
+// puts executableArgs in front of a native binary's own arguments too.
+const claudeIsScript = [".js", ".mjs", ".tsx", ".ts", ".jsx"].some((ext) => config.claudePath?.endsWith(ext));
+const harnessRuntime = {
+  ...(hostEnv ? { env: hostEnv } : {}),
+  ...(process.versions.bun && claudeIsScript ? { executableArgs: ["--env-file=/dev/null"] } : {}),
+};
+
 // ---------------------------------------------------------------------------
 // prompts: the host sends them one at a time; the SDK consumes an async
 // iterable, so this is a queue with a waiter.
@@ -174,6 +199,7 @@ const readUsage = async (q) => {
 // ---------------------------------------------------------------------------
 const queryOptions = (config) => ({
   cwd: config.cwd || process.cwd(),
+  ...harnessRuntime,
   ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
 });
 
@@ -217,6 +243,7 @@ const session = query({
   prompt: prompts(),
   options: {
     cwd: config.cwd,
+    ...harnessRuntime,
     includePartialMessages: true,
     canUseTool,
     ...(config.model ? { model: config.model } : {}),
