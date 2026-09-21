@@ -190,3 +190,43 @@ func TestSwitchAccountRefusesUnknownAccount(t *testing.T) {
 		t.Error("moved the conversation for a refused switch")
 	}
 }
+
+// Two switches at once must chain: each moves the conversation from wherever
+// the one before left it, and the session ends on the account that holds it.
+func TestConcurrentSwitchesChain(t *testing.T) {
+	mgr, fa, st := switchTestManager(t)
+	mgr.ConfigureInstances([]provider.Instance{workInstance(), {
+		ID: "fake-spare", Driver: "fake", DisplayName: "Fake Spare", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: "/spare"}},
+	}}, nil)
+	ctx := context.Background()
+	a, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Dispose("test done")
+
+	var wg sync.WaitGroup
+	for _, target := range []string{"fake-work", "fake-spare"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mgr.SwitchAccount(ctx, a.ID, target)
+		}()
+	}
+	wg.Wait()
+
+	moves := fa.recorded()
+	if len(moves) != 2 {
+		t.Fatalf("moves = %d, want 2", len(moves))
+	}
+	if moves[1].from["FAKE_HOME"] != moves[0].to["FAKE_HOME"] {
+		t.Errorf("second move came from %q, but the first left the conversation in %q",
+			moves[1].from["FAKE_HOME"], moves[0].to["FAKE_HOME"])
+	}
+	meta, _ := st.Session(ctx, a.ID)
+	want := map[string]string{"/work": "fake-work", "/spare": "fake-spare"}[moves[1].to["FAKE_HOME"]]
+	if meta.ProviderInstance != want {
+		t.Errorf("ProviderInstance = %q, but the conversation is with %q", meta.ProviderInstance, want)
+	}
+}

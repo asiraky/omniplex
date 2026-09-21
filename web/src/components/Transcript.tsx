@@ -816,8 +816,9 @@ function InterruptedCard({
   switchTargets?: { id: string; name: string }[];
   /** The account the session was moved to since this turn failed, if it was. */
   switchedTo?: string;
-  /** Moves the session to another account, then re-sends this turn. */
-  onSwitchAccount?: (instance: string, turn: Turn) => void;
+  /** Moves the session to another account, then re-sends this turn.
+      Resolves false when the switch did not happen, so the card can be used again. */
+  onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
 }) {
   const [sending, setSending] = useState(false);
   const error = turn.error ?? "";
@@ -874,9 +875,9 @@ function InterruptedCard({
                     size="sm"
                     variant={i === 0 ? "default" : "outline"}
                     disabled={sending}
-                    onClick={() => {
+                    onClick={async () => {
                       setSending(true);
-                      onSwitchAccount(t.id, turn);
+                      if (!(await onSwitchAccount(t.id, turn))) setSending(false);
                     }}
                   >
                     <ArrowRightLeftIcon />
@@ -1052,8 +1053,9 @@ export function Transcript({
   onRetryTurn?: (turn: Turn) => void;
   /** Other accounts of this session's harness, offered on a usage limit. */
   switchTargets?: { id: string; name: string }[];
-  /** Moves the session to another account and re-sends the given turn. */
-  onSwitchAccount?: (instance: string, turn: Turn) => void;
+  /** Moves the session to another account and re-sends the given turn;
+      resolves false when the switch was refused or failed. */
+  onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
   onOpenDiff: (path?: string) => void;
   /** The session's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];

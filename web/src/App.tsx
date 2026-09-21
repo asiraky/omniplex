@@ -1055,24 +1055,25 @@ export function App() {
   // card, where the button says exactly what it does, it goes straight on to
   // retry the prompt that hit the limit.
   const switchAccount = useCallback(
-    async (instance: string, opts: { model?: string; retry?: Turn; confirm?: boolean } = {}) => {
-      if (!activeId || !clientRef.current) return;
+    async (instance: string, opts: { model?: string; retry?: Turn; confirm?: boolean } = {}): Promise<boolean> => {
+      if (!activeId || !clientRef.current) return false;
       const name =
         harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === instance)?.displayName ?? instance;
       if (
         opts.confirm &&
         !window.confirm(`Move this session to ${name}?\n\nThe conversation comes with it; the next turn runs on ${name}.`)
       ) {
-        return;
+        return false;
       }
       try {
         await clientRef.current.command("switch_account", { sessionId: activeId, instance });
       } catch (e) {
         toast.error("Could not switch account", { description: (e as Error).message });
-        return;
+        return false;
       }
       if (opts.model && opts.model !== state?.model) switchModel(opts.model);
       if (opts.retry) retryTurn(opts.retry);
+      return true;
     },
     [activeId, harnesses, state?.model, switchModel, retryTurn],
   );

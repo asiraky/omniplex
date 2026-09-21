@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
 import { render, viewport, wrap } from "~/test/harness";
-import type { PullRequest } from "~/protocol";
+import type { PullRequest, Turn } from "~/protocol";
 
 const state = (text: string): any => ({
   sessionId: "a",
@@ -472,7 +472,7 @@ describe("a turn that failed", () => {
     };
 
     it("moves the failed prompt to the account picked", () => {
-      const onSwitchAccount = vi.fn();
+      const onSwitchAccount = vi.fn((_instance: string, _turn: Turn) => new Promise<boolean>(() => {}));
       render(
         <Transcript
           state={limited()}
@@ -494,6 +494,20 @@ describe("a turn that failed", () => {
       expect((screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement).disabled).toBe(true);
     });
 
+    it("can be used again when the switch is refused", async () => {
+      render(
+        <Transcript
+          state={limited()}
+          {...props}
+          switchTargets={[{ id: "work", name: "Worksauce" }]}
+          onSwitchAccount={async () => false}
+        />,
+      );
+      const button = screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement;
+      fireEvent.click(button);
+      await waitFor(() => expect(button.disabled).toBe(false));
+    });
+
     it("offers only the retry once the session has switched", () => {
       const s = limited();
       s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
@@ -504,7 +518,7 @@ describe("a turn that failed", () => {
           {...props}
           onRetryTurn={onRetryTurn}
           switchTargets={[{ id: "aaron", name: "Aaron" }]}
-          onSwitchAccount={() => {}}
+          onSwitchAccount={async () => true}
         />,
       );
       expect(screen.getAllByText(/Switched to Worksauce/).length).toBeGreaterThan(0);
@@ -514,7 +528,7 @@ describe("a turn that failed", () => {
     });
 
     it("with no other account, says to wait and still offers the retry", () => {
-      render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={() => {}} />);
+      render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
       expect(screen.getByRole("button", { name: /retry this prompt/i })).toBeTruthy();
     });

@@ -15,6 +15,8 @@ import (
 // conversations, and the next turn resumes it there. Another harness is a
 // different agent, not another login, so that is refused.
 func (m *Manager) SwitchAccount(ctx context.Context, sessionID, instanceID string) error {
+	m.switchMu.Lock()
+	defer m.switchMu.Unlock()
 	meta, err := m.store.Session(ctx, sessionID)
 	if err != nil {
 		return err

@@ -40,6 +40,11 @@ type Manager struct {
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
+	// switchMu serialises account switches. A switch reads the session's
+	// account before the actor runs it, so two at once would both move
+	// "from" the same account and the second would record an account the
+	// conversation never reached.
+	switchMu sync.Mutex
 	// instances is keyed by instance id, never by driver: sessions and the
 	// wire protocol route on instance ids. instMu guards the three fields
 	// below it: the registry mutates live now that instances are managed

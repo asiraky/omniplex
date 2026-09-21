@@ -96,8 +96,11 @@ func findConversation(configDir, cwd, id string) (string, error) {
 // nonAlphanumeric is how Claude Code turns a cwd into its project key.
 var nonAlphanumeric = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
-// move renames, falling back to copy-then-delete when the two accounts' config
-// directories sit on different filesystems.
+// move renames, falling back to a copy when the two accounts' config
+// directories sit on different filesystems. The source is first renamed aside
+// (same filesystem, so atomic): a failed copy puts it straight back, and once
+// the copy is whole the conversation has moved — the leftover is under a name
+// Claude never reads, so failing to delete it cannot split the history.
 func move(src, dst string) error {
 	err := os.Rename(src, dst)
 	if err == nil {
@@ -106,11 +109,20 @@ func move(src, dst string) error {
 	if !errors.Is(err, syscall.EXDEV) {
 		return err
 	}
-	if cerr := copyTree(src, dst); cerr != nil {
-		_ = os.RemoveAll(dst)
-		return cerr
+	aside := filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")
+	_ = os.RemoveAll(aside) // a leftover from an earlier move
+	if err := os.Rename(src, aside); err != nil {
+		return err
 	}
-	return os.RemoveAll(src)
+	if err := copyTree(aside, dst); err != nil {
+		_ = os.RemoveAll(dst)
+		if back := os.Rename(aside, src); back != nil {
+			return fmt.Errorf("%w (and restoring %s failed: %v)", err, src, back)
+		}
+		return err
+	}
+	_ = os.RemoveAll(aside)
+	return nil
 }
 
 func copyTree(src, dst string) error {
