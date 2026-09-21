@@ -221,17 +221,48 @@ describe("ModelPicker", () => {
     expect(row("GPT-5.6-Sol")).toBeNull();
   });
 
-  it("offers only models mid-session, when the account cannot change", () => {
-    open({ lockInstance: true, value: { harness: "claude", instance: "claude", model: "sonnet" } });
+  it("offers only models mid-session when the harness has one account", () => {
+    open({ lockDriver: true, value: { harness: "claude", instance: "claude", model: "sonnet" } });
 
     expect(screen.queryByText("Codex Work")).toBeNull();
     expect(row("Sonnet")).toBeTruthy();
+  });
+
+  it("offers the harness's other accounts mid-session, and no other harness", () => {
+    const onChange = open({
+      lockDriver: true,
+      value: { harness: "codex", instance: "codex", model: "gpt-5.6-sol" },
+    });
+
+    expect(screen.queryByText("Claude Code")).toBeNull();
+    fireEvent.click(screen.getByText("Codex Work"));
+    fireEvent.click(row("GPT-5.6-Terra")!);
+
+    expect(onChange).toHaveBeenCalledWith({ harness: "codex", instance: "codex_work", model: "gpt-5.6-terra" });
+  });
+
+  it("leaves a disabled account out of a mid-session switch", () => {
+    const disabled = {
+      ...codex,
+      instances: codex.instances!.map((i) => (i.id === "codex_work" ? { ...i, enabled: false } : i)),
+    } as HarnessMeta;
+    render(
+      <ModelPicker
+        harnesses={[claude, disabled]}
+        value={{ harness: "codex", instance: "codex", model: "gpt-5.6-sol" }}
+        onChange={() => {}}
+        lockDriver
+      />,
+    );
+    fireEvent.click(screen.getByRole("combobox"));
+
+    expect(screen.queryByText("Codex Work")).toBeNull();
   });
 });
 
 describe("ModelPicker effort", () => {
   const effortProps = {
-    lockInstance: true,
+    lockDriver: true,
     value: { harness: "claude", instance: "claude", model: "sonnet" },
     efforts: ["low", "medium", "high", "xhigh"],
   };
@@ -315,7 +346,7 @@ describe("ModelPicker effort", () => {
         onEffortChange={() => {}}
         efforts={[]}
         effort="high"
-        lockInstance
+        lockDriver
       />,
     );
 

@@ -204,6 +204,11 @@ type setModeArgs struct {
 	Mode      string `json:"mode"`
 }
 
+type switchAccountArgs struct {
+	SessionID string `json:"sessionId"`
+	Instance  string `json:"instance"`
+}
+
 type setModelArgs struct {
 	SessionID string `json:"sessionId"`
 	Model     string `json:"model"`

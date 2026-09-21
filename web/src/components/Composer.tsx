@@ -48,6 +48,7 @@ export function Composer({
   effort = "",
   onSwitchModel,
   onSwitchEffort,
+  onSwitchAccount,
   usage,
   loadComposerItems,
   onRunClientAction,
@@ -81,13 +82,18 @@ export function Composer({
   disabledPlaceholder?: string;
   /** Every harness the server reports; the picker reads this session's out. */
   harnesses?: HarnessMeta[];
-  /** The attached session's harness and account, which it cannot change. */
+  /** The attached session's harness, which it cannot change, and account,
+      which it can — to another account of the same harness. */
   harness?: string;
   instance?: string;
   model?: string;
   effort?: string;
   onSwitchModel?: (id: string) => void;
   onSwitchEffort?: (effort: string) => void;
+  /** Moves the session to another account of its harness, then runs `model`
+      there. Omitted, the picker still offers other accounts but choosing one
+      does nothing. */
+  onSwitchAccount?: (instance: string, model: string) => void;
   /** The session's token usage, source of the context meter. */
   usage?: Usage;
   loadComposerItems?: () => Promise<ComposerItem[]>;
@@ -582,13 +588,13 @@ export function Composer({
           <span className="flex-1" />
 
           {harnesses.length > 0 && (
-            // The one control for what runs the next turn: the account is
-            // fixed — the harness is already running under it — so the model
-            // is the choice, and reasoning effort opens out of the same menu
-            // rather than sitting beside it as a second dropdown.
+            // The one control for what runs the next turn: the model, the
+            // account it bills to among this harness's own accounts, and
+            // reasoning effort, which opens out of the same menu rather than
+            // sitting beside it as a second dropdown.
             <ModelPicker
               harnesses={harnesses}
-              lockInstance
+              lockDriver
               disabled={disabled}
               efforts={onSwitchEffort ? modelEfforts : []}
               effort={effort}
@@ -596,6 +602,11 @@ export function Composer({
               onEffortChange={onSwitchEffort}
               value={{ harness, instance, model }}
               onChange={(next) => {
+                const current = resolveInstance(pickerInstances(harnesses), instance, harness)?.id;
+                if (next.instance !== current) {
+                  onSwitchAccount?.(next.instance, next.model);
+                  return;
+                }
                 onSwitchModel?.(next.model);
                 // Effort is per model: a level the old model allowed (Codex's
                 // "ultra") may be one the new model rejects, which would break

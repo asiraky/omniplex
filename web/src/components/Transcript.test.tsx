@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
 import { render, viewport, wrap } from "~/test/harness";
-import type { PullRequest } from "~/protocol";
+import type { PullRequest, Turn } from "~/protocol";
 
 const state = (text: string): any => ({
   sessionId: "a",
@@ -455,6 +455,83 @@ describe("a turn that failed", () => {
     fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
     expect(onRetryTurn).toHaveBeenCalledOnce();
     expect(onRetryTurn.mock.calls[0][0]).toMatchObject({ id: "t1", prompt: "go" });
+  });
+
+  // A limit is not fixed by retrying on the same account. The card offers the
+  // harness's other accounts; once the session has moved, it offers the retry.
+  describe("on a usage limit", () => {
+    const limited = () => failed({ failure: "limit", error: "You've hit your session limit · resets 2:10pm" });
+    const props = {
+      onFinish: () => {},
+      onRetryProvision: () => {},
+      onCleanup: () => {},
+      onForceDelete: () => {},
+      onContinue: () => {},
+      onOpenDiff: () => {},
+      providerName: "Aaron",
+    };
+
+    it("moves the failed prompt to the account picked", () => {
+      const onSwitchAccount = vi.fn((_instance: string, _turn: Turn) => new Promise<boolean>(() => {}));
+      render(
+        <Transcript
+          state={limited()}
+          {...props}
+          onRetryTurn={() => {}}
+          switchTargets={[
+            { id: "work", name: "Worksauce" },
+            { id: "spare", name: "Spare" },
+          ]}
+          onSwitchAccount={onSwitchAccount}
+        />,
+      );
+      expect(screen.queryByText(/Continue where it left off/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /continue on spare/i }));
+      expect(onSwitchAccount).toHaveBeenCalledOnce();
+      expect(onSwitchAccount.mock.calls[0][0]).toBe("spare");
+      expect(onSwitchAccount.mock.calls[0][1]).toMatchObject({ id: "t1", prompt: "go" });
+      // One press: a second account's button cannot race the first switch.
+      expect((screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("can be used again when the switch is refused", async () => {
+      render(
+        <Transcript
+          state={limited()}
+          {...props}
+          switchTargets={[{ id: "work", name: "Worksauce" }]}
+          onSwitchAccount={async () => false}
+        />,
+      );
+      const button = screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement;
+      fireEvent.click(button);
+      await waitFor(() => expect(button.disabled).toBe(false));
+    });
+
+    it("offers only the retry once the session has switched", () => {
+      const s = limited();
+      s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
+      const onRetryTurn = vi.fn();
+      render(
+        <Transcript
+          state={s}
+          {...props}
+          onRetryTurn={onRetryTurn}
+          switchTargets={[{ id: "aaron", name: "Aaron" }]}
+          onSwitchAccount={async () => true}
+        />,
+      );
+      expect(screen.getAllByText(/Switched to Worksauce/).length).toBeGreaterThan(0);
+      expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+      expect(onRetryTurn).toHaveBeenCalledOnce();
+    });
+
+    it("with no other account, says to wait and still offers the retry", () => {
+      render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
+      expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
+      expect(screen.getByRole("button", { name: /retry this prompt/i })).toBeTruthy();
+    });
   });
 
   it("only says the server restarted when the server says so", () => {

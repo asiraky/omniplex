@@ -10,7 +10,7 @@ import { liveJobCount } from "./lib/jobs";
 import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./components/ScheduledPrompts";
-import type { ScheduledPrompt } from "./protocol";
+import type { ScheduledPrompt, Turn } from "./protocol";
 import { JobsStrip } from "./components/JobsStrip";
 import { NewSession } from "./components/NewSession";
 import type { NewSessionInput } from "./components/NewSession";
@@ -1024,6 +1024,59 @@ export function App() {
     },
     [activeId],
   );
+  // Re-sends a failed turn's prompt, images and all. Only ever on an explicit
+  // press: nothing finishing — a sign-in, an account switch — resends by itself.
+  const retryTurn = useCallback(
+    (turn: Turn) => {
+      if (!activeId) return;
+      clientRef.current
+        ?.command("prompt", {
+          sessionId: activeId,
+          text: turn.prompt,
+          ...(turn.images?.length ? { imageIds: turn.images.map((i) => i.id) } : {}),
+        })
+        .catch((e) => toast.error("Could not send", { description: e.message }));
+    },
+    [activeId],
+  );
+  // The session's harness's other accounts that could take the next turn: the
+  // way out of a usage limit.
+  const activeInstanceId = activeProviderInstance?.id;
+  const switchTargets = useMemo(
+    () =>
+      (harnesses.find((h) => h.id === state?.harness)?.instances ?? [])
+        .filter((i) => i.enabled !== false && i.availability?.state === "ready" && i.id !== activeInstanceId)
+        .map((i) => ({ id: i.id, name: i.displayName })),
+    [harnesses, state?.harness, activeInstanceId],
+  );
+  // Moves the session, conversation and all, to another account of its
+  // harness. From the model picker it asks first — a picker row is an easy
+  // thing to tap by accident — and may bring a model along; from the limit
+  // card, where the button says exactly what it does, it goes straight on to
+  // retry the prompt that hit the limit.
+  const switchAccount = useCallback(
+    async (instance: string, opts: { model?: string; retry?: Turn; confirm?: boolean } = {}): Promise<boolean> => {
+      if (!activeId || !clientRef.current) return false;
+      const name =
+        harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === instance)?.displayName ?? instance;
+      if (
+        opts.confirm &&
+        !window.confirm(`Move this session to ${name}?\n\nThe conversation comes with it; the next turn runs on ${name}.`)
+      ) {
+        return false;
+      }
+      try {
+        await clientRef.current.command("switch_account", { sessionId: activeId, instance });
+      } catch (e) {
+        toast.error("Could not switch account", { description: (e as Error).message });
+        return false;
+      }
+      if (opts.model && opts.model !== state?.model) switchModel(opts.model);
+      if (opts.retry) retryTurn(opts.retry);
+      return true;
+    },
+    [activeId, harnesses, state?.model, switchModel, retryTurn],
+  );
   const pending = state?.pendingPermissions?.[0];
   const elicitation = state?.pendingElicitations?.[0];
   // The tab is named after whatever is attached, so a phone with several
@@ -1449,7 +1502,7 @@ export function App() {
             <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={(turn)=>activeId&&clientRef.current?.command("prompt",{sessionId:activeId,text:turn.prompt,...(turn.images?.length?{imageIds:turn.images.map(i=>i.id)}:{})})} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
+              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1507,6 +1560,7 @@ export function App() {
                 effort={state.effort}
                 onSwitchModel={switchModel}
                 onSwitchEffort={switchEffort}
+                onSwitchAccount={(instance, model) => void switchAccount(instance, { model, confirm: true })}
                 usage={state.usage}
                 loadComposerItems={loadComposerItems}
                 onRunClientAction={runClientComposerAction}

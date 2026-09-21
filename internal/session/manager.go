@@ -40,6 +40,11 @@ type Manager struct {
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
+	// switchMu serialises account switches. A switch reads the session's
+	// account before the actor runs it, so two at once would both move
+	// "from" the same account and the second would record an account the
+	// conversation never reached.
+	switchMu sync.Mutex
 	// instances is keyed by instance id, never by driver: sessions and the
 	// wire protocol route on instance ids. instMu guards the three fields
 	// below it: the registry mutates live now that instances are managed
@@ -1198,10 +1203,23 @@ func (m *Manager) adopt(a *Actor) {
 	a.onPhase = m.notifyList
 	a.imagePath = m.imagePath
 	a.mu.Unlock()
-	// The account a live session reports quota for is the instance it runs
-	// under, captured here so an adapter's push can never be filed against
-	// the wrong account. A session created before instances existed resolves
-	// to its harness's default.
+	m.bindQuota(a)
+	select {
+	case <-a.quit:
+		m.mu.Lock()
+		if m.actors[a.ID] == a {
+			delete(m.actors, a.ID)
+		}
+		m.mu.Unlock()
+	default:
+	}
+}
+
+// bindQuota points a session's usage-limit pushes at the account it runs
+// under, captured here so an adapter's push can never be filed against the
+// wrong account. A session created before instances existed resolves to its
+// harness's default. Rebound when the session switches account.
+func (m *Manager) bindQuota(a *Actor) {
 	if meta, err := m.store.Session(context.Background(), a.ID); err == nil {
 		instance := meta.ProviderInstance
 		if instance == "" {
@@ -1215,15 +1233,6 @@ func (m *Manager) adopt(a *Actor) {
 			m.reportQuotaAt(driver, instanceID, snap, snap.Full, &generation)
 		}
 		a.mu.Unlock()
-	}
-	select {
-	case <-a.quit:
-		m.mu.Lock()
-		if m.actors[a.ID] == a {
-			delete(m.actors, a.ID)
-		}
-		m.mu.Unlock()
-	default:
 	}
 }
 
