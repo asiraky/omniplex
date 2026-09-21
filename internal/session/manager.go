@@ -1198,10 +1198,23 @@ func (m *Manager) adopt(a *Actor) {
 	a.onPhase = m.notifyList
 	a.imagePath = m.imagePath
 	a.mu.Unlock()
-	// The account a live session reports quota for is the instance it runs
-	// under, captured here so an adapter's push can never be filed against
-	// the wrong account. A session created before instances existed resolves
-	// to its harness's default.
+	m.bindQuota(a)
+	select {
+	case <-a.quit:
+		m.mu.Lock()
+		if m.actors[a.ID] == a {
+			delete(m.actors, a.ID)
+		}
+		m.mu.Unlock()
+	default:
+	}
+}
+
+// bindQuota points a session's usage-limit pushes at the account it runs
+// under, captured here so an adapter's push can never be filed against the
+// wrong account. A session created before instances existed resolves to its
+// harness's default. Rebound when the session switches account.
+func (m *Manager) bindQuota(a *Actor) {
 	if meta, err := m.store.Session(context.Background(), a.ID); err == nil {
 		instance := meta.ProviderInstance
 		if instance == "" {
@@ -1215,15 +1228,6 @@ func (m *Manager) adopt(a *Actor) {
 			m.reportQuotaAt(driver, instanceID, snap, snap.Full, &generation)
 		}
 		a.mu.Unlock()
-	}
-	select {
-	case <-a.quit:
-		m.mu.Lock()
-		if m.actors[a.ID] == a {
-			delete(m.actors, a.ID)
-		}
-		m.mu.Unlock()
-	default:
 	}
 }
 

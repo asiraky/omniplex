@@ -1,6 +1,7 @@
 import {
   ArchiveIcon,
   ArrowRightIcon,
+  ArrowRightLeftIcon,
   BotIcon,
   BrainIcon,
   CheckIcon,
@@ -321,6 +322,16 @@ function TurnFold({ turn, items }: { turn: Turn; items: Item[] }) {
 // compressed the conversation to reclaim window; the reader mostly needs to
 // know it happened and roughly how much it recovered.
 function NoticeCard({ item }: { item: Item }) {
+  if (item.noticeKind === "account") {
+    return (
+      <div className="fade-in flex justify-center">
+        <div className="text-muted-foreground flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px]">
+          <ArrowRightLeftIcon className="size-3.5 shrink-0" />
+          <span>Switched to {item.title}</span>
+        </div>
+      </div>
+    );
+  }
   const detail =
     item.preTokens && item.postTokens
       ? `${fmtTokens(item.preTokens)} → ${fmtTokens(item.postTokens)}`
@@ -788,6 +799,9 @@ function InterruptedCard({
   providerName,
   providerReady,
   onRetryTurn,
+  switchTargets = [],
+  switchedTo,
+  onSwitchAccount,
 }: {
   turn: Turn;
   onContinue: () => void;
@@ -798,6 +812,12 @@ function InterruptedCard({
   /** Re-sends this turn's prompt. Only ever called by the Retry button —
       finishing a sign-in must never resend a prompt by itself. */
   onRetryTurn?: (turn: Turn) => void;
+  /** The harness's other ready accounts, offered when this one hit a limit. */
+  switchTargets?: { id: string; name: string }[];
+  /** The account the session was moved to since this turn failed, if it was. */
+  switchedTo?: string;
+  /** Moves the session to another account, then re-sends this turn. */
+  onSwitchAccount?: (instance: string, turn: Turn) => void;
 }) {
   const [sending, setSending] = useState(false);
   const error = turn.error ?? "";
@@ -809,6 +829,67 @@ function InterruptedCard({
   // continuing it cannot work: the next attempt fails the same way. What it
   // needs is the one instruction that fixes it.
   const needsLogin = turn.failure === "auth";
+
+  // A usage limit is not fixed by trying again on the same account; it is
+  // fixed by waiting for the reset the error names, or by carrying the
+  // conversation to another account and running the prompt there.
+  if (turn.failure === "limit") {
+    const retry = onRetryTurn && (
+      <Button
+        size="sm"
+        variant={switchedTo ? "default" : "outline"}
+        disabled={sending}
+        onClick={() => {
+          setSending(true);
+          onRetryTurn(turn);
+        }}
+      >
+        {sending ? "Sending…" : "Retry this prompt"}
+      </Button>
+    );
+    return (
+      <div className="fade-in border-destructive/30 bg-destructive/5 rounded-lg border px-3.5 py-3">
+        {/* No error text: the harness's own message just above already says
+            when the limit resets. */}
+        <p className="text-[13px]">{providerName ?? "This account"} hit its usage limit.</p>
+        {switchedTo ? (
+          <>
+            <p className="text-muted-foreground mt-1.5 text-[12px]">
+              The session is on {switchedTo} now. Retry to run the prompt there.
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-2">{retry}</div>
+          </>
+        ) : (
+          <>
+            <p className="text-muted-foreground mt-1.5 text-[12px]">
+              {switchTargets.length && onSwitchAccount
+                ? "Continue on another account: the conversation moves with the session, and this prompt runs there."
+                : "Wait for the reset, or sign another account in to this harness to continue on it."}
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              {onSwitchAccount &&
+                switchTargets.map((t, i) => (
+                  <Button
+                    key={t.id}
+                    size="sm"
+                    variant={i === 0 ? "default" : "outline"}
+                    disabled={sending}
+                    onClick={() => {
+                      setSending(true);
+                      onSwitchAccount(t.id, turn);
+                    }}
+                  >
+                    <ArrowRightLeftIcon />
+                    Continue on {t.name}
+                  </Button>
+                ))}
+              {retry}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
 
   if (needsLogin) {
     return (
@@ -931,6 +1012,8 @@ export function Transcript({
   providerName,
   providerReady,
   onRetryTurn,
+  switchTargets,
+  onSwitchAccount,
   onOpenDiff,
   jobs = [],
   onOpenJobs,
@@ -967,6 +1050,10 @@ export function Transcript({
   providerReady?: boolean;
   /** Re-sends a failed turn's prompt, on explicit request only. */
   onRetryTurn?: (turn: Turn) => void;
+  /** Other accounts of this session's harness, offered on a usage limit. */
+  switchTargets?: { id: string; name: string }[];
+  /** Moves the session to another account and re-sends the given turn. */
+  onSwitchAccount?: (instance: string, turn: Turn) => void;
   onOpenDiff: (path?: string) => void;
   /** The session's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
@@ -1216,6 +1303,9 @@ export function Transcript({
     const last = state.turns[state.turns.length - 1];
     return last?.done && last.stopReason === "error" ? last : undefined;
   }, [state.turns, state.phase, state.closed]);
+  // A switch made since the limit hit: the notice it left is the newest item.
+  const lastItem = state.items[state.items.length - 1];
+  const switchedTo = lastItem?.kind === "notice" && lastItem.noticeKind === "account" ? lastItem.title : undefined;
 
   // What each turn changed, to be shown under the turn that changed it. A turn
   // that changed nothing has no entry, and gets no card.
@@ -1357,6 +1447,9 @@ export function Transcript({
               providerName={providerName}
               providerReady={providerReady}
               onRetryTurn={onRetryTurn}
+              switchTargets={switchTargets}
+              switchedTo={switchedTo}
+              onSwitchAccount={onSwitchAccount}
             />
           )}
 

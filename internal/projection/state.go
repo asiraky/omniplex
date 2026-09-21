@@ -116,7 +116,8 @@ const (
 	ItemMessage = "message"
 	ItemTool    = "tool"
 	// ItemNotice is a system event worth a line in the timeline that is
-	// neither a message nor a tool call — currently a context compaction.
+	// neither a message nor a tool call: a context compaction, or a switch to
+	// another account.
 	ItemNotice = "notice"
 )
 
@@ -149,7 +150,7 @@ type Item struct {
 	Content  []proto.ToolContent `json:"content,omitempty"`
 
 	// notice
-	NoticeKind string `json:"noticeKind,omitempty"` // compaction
+	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
 	Trigger    string `json:"trigger,omitempty"`    // auto | manual
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
@@ -826,6 +827,23 @@ func (s *State) Apply(ev proto.Event) {
 			it.Trigger = p.Trigger
 			it.PreTokens = p.PreTokens
 			it.PostTokens = p.PostTokens
+		})
+
+	case proto.SessionAccountChanged:
+		var p proto.SessionAccountChangedPayload
+		decode(ev.Payload, &p)
+		// A line in the timeline where the account changed, anchored to the
+		// sequence like a compaction so replays land the same item.
+		s.upsert("account:"+strconv.FormatInt(ev.Seq, 10), func(it *Item) {
+			it.Kind = ItemNotice
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.NoticeKind = "account"
+			it.Title = p.ToName
+			if it.Title == "" {
+				it.Title = p.To
+			}
 		})
 
 	case proto.PermissionRequested:

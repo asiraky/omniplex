@@ -65,7 +65,7 @@ export interface Item {
   input?: unknown;
   content?: ToolContent[];
   // notice
-  noticeKind?: "compaction";
+  noticeKind?: "compaction" | "account";
   /** For a compaction notice: whether the harness ("auto") or a human triggered it. */
   trigger?: string;
   preTokens?: number;
@@ -179,10 +179,12 @@ export interface Turn {
   /**
    * What kind of failure `error` describes, when the server could say: "auth"
    * (no usable credentials — retrying is pointless until someone logs in) or
-   * "restart" (the server died mid-turn). Absent means unclassified; show the
+   * "restart" (the server died mid-turn), or "limit" (the account hit a plan
+   * usage limit — another account of the same harness can take over). Absent
+   * means unclassified; show the
    * message and nothing more. Branch on this rather than on the wording.
    */
-  failure?: "auth" | "restart";
+  failure?: "auth" | "restart" | "limit";
   done: boolean;
   // Present only on a turn that continues work an earlier turn left
   // unfinished — after a restart, or because a human asked.

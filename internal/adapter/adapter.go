@@ -261,6 +261,17 @@ type ModelSwitcher interface {
 	SetModel(ctx context.Context, model string) error
 }
 
+// ConversationMover is implemented by drivers whose conversation lives in the
+// account's own storage, so moving a session to another account of the same
+// driver means moving that storage with it: the next resume under the new
+// account's env reads the conversation from where that account keeps it.
+// from and to are the two accounts' credential overlays; the harness process
+// must already be stopped. A driver that does not implement this cannot switch
+// accounts mid-session, and the host says so.
+type ConversationMover interface {
+	MoveConversation(from, to map[string]string, cwd, harnessSessionID string) error
+}
+
 // EffortSwitcher is implemented by sessions whose harness can change reasoning
 // effort mid-conversation. The effort is one of the running model's own
 // Efforts ids. A harness that cannot switch simply does not implement this,

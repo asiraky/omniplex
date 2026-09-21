@@ -457,6 +457,69 @@ describe("a turn that failed", () => {
     expect(onRetryTurn.mock.calls[0][0]).toMatchObject({ id: "t1", prompt: "go" });
   });
 
+  // A limit is not fixed by retrying on the same account. The card offers the
+  // harness's other accounts; once the session has moved, it offers the retry.
+  describe("on a usage limit", () => {
+    const limited = () => failed({ failure: "limit", error: "You've hit your session limit · resets 2:10pm" });
+    const props = {
+      onFinish: () => {},
+      onRetryProvision: () => {},
+      onCleanup: () => {},
+      onForceDelete: () => {},
+      onContinue: () => {},
+      onOpenDiff: () => {},
+      providerName: "Aaron",
+    };
+
+    it("moves the failed prompt to the account picked", () => {
+      const onSwitchAccount = vi.fn();
+      render(
+        <Transcript
+          state={limited()}
+          {...props}
+          onRetryTurn={() => {}}
+          switchTargets={[
+            { id: "work", name: "Worksauce" },
+            { id: "spare", name: "Spare" },
+          ]}
+          onSwitchAccount={onSwitchAccount}
+        />,
+      );
+      expect(screen.queryByText(/Continue where it left off/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /continue on spare/i }));
+      expect(onSwitchAccount).toHaveBeenCalledOnce();
+      expect(onSwitchAccount.mock.calls[0][0]).toBe("spare");
+      expect(onSwitchAccount.mock.calls[0][1]).toMatchObject({ id: "t1", prompt: "go" });
+      // One press: a second account's button cannot race the first switch.
+      expect((screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("offers only the retry once the session has switched", () => {
+      const s = limited();
+      s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
+      const onRetryTurn = vi.fn();
+      render(
+        <Transcript
+          state={s}
+          {...props}
+          onRetryTurn={onRetryTurn}
+          switchTargets={[{ id: "aaron", name: "Aaron" }]}
+          onSwitchAccount={() => {}}
+        />,
+      );
+      expect(screen.getAllByText(/Switched to Worksauce/).length).toBeGreaterThan(0);
+      expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+      expect(onRetryTurn).toHaveBeenCalledOnce();
+    });
+
+    it("with no other account, says to wait and still offers the retry", () => {
+      render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={() => {}} />);
+      expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
+      expect(screen.getByRole("button", { name: /retry this prompt/i })).toBeTruthy();
+    });
+  });
+
   it("only says the server restarted when the server says so", () => {
     render(view(failed({ failure: "restart", error: "server restarted during turn" })));
     expect(screen.getByText(/The server restarted/)).toBeTruthy();

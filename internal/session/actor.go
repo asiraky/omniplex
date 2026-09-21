@@ -50,8 +50,8 @@ type Actor struct {
 	store   *store.Store
 	adapter adapter.Adapter
 	// env is the provider instance's credential overlay, applied whenever this
-	// actor spawns its harness — at start, at activation, and on resume. It is
-	// fixed for the actor's lifetime, like the instance it came from.
+	// actor spawns its harness — at start, at activation, and on resume. It
+	// and adapter change only on an account switch, between processes.
 	env  map[string]string
 	sess adapter.Session
 
@@ -134,6 +134,22 @@ type command struct {
 	mode         string
 	effort       string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
+	// from is the harness process a harness event or exit came from. A
+	// process replaced by an account switch still drains its last events and
+	// its exit; those are about a process this actor no longer runs.
+	from    adapter.Session
+	account *accountSwitch
+}
+
+// accountSwitch is what the manager hands the actor to move the session to
+// another account: the new account's adapter and env, and move, which carries
+// the harness's own record of the conversation across and records the new
+// account durably. move runs with no harness process alive.
+type accountSwitch struct {
+	ad      adapter.Adapter
+	env     map[string]string
+	move    func(harnessSessionID string) error
+	changed proto.SessionAccountChangedPayload
 }
 
 type permAsk struct {
@@ -171,6 +187,7 @@ const (
 	cmdStopJob       = "stop_job"
 	cmdDequeue       = "dequeue_prompt"
 	cmdQuota         = "quota"
+	cmdSwitchAccount = "switch_account"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -721,16 +738,26 @@ func (a *Actor) pump(sess adapter.Session) {
 	go func() {
 		for em := range sess.Events() {
 			select {
-			case a.inbox <- command{kind: cmdHarnessEvent, emission: &em}:
+			case a.inbox <- command{kind: cmdHarnessEvent, emission: &em, from: sess}:
 			case <-a.quit:
 				return
 			}
 		}
 		select {
-		case a.inbox <- command{kind: cmdHarnessExit}:
+		case a.inbox <- command{kind: cmdHarnessExit, from: sess}:
 		case <-a.quit:
 		}
 	}()
+}
+
+// SwitchAccount moves the session to another account of the same harness. The
+// running harness process is stopped, the conversation moved, and the next
+// command that needs a harness resumes it under the new account. Refused while
+// anything is in flight: a turn, a job, or a question waiting on a human all
+// belong to the process being replaced.
+func (a *Actor) SwitchAccount(ctx context.Context, sw accountSwitch) error {
+	_, err := a.call(ctx, command{kind: cmdSwitchAccount, account: &sw})
+	return err
 }
 
 // ---- the actor loop ----
@@ -796,9 +823,17 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 
 	case cmdHarnessEvent:
+		if c.from != a.sess {
+			return false
+		}
 		a.append(*c.emission)
 
 	case cmdHarnessExit:
+		if c.from != a.sess {
+			// The process an account switch replaced. Its going is expected
+			// and says nothing about this session.
+			return false
+		}
 		// A harness that dies without closing its turn leaves the log saying
 		// work is still in flight. Everything downstream then reads that as a
 		// server restart — the only other way a turn stays open — and offers
@@ -942,6 +977,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		// connected presenter follows — same requirement as permission.resolved.
 		a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Mode: c.mode}))
 		c.reply <- cmdResult{}
+
+	case cmdSwitchAccount:
+		c.reply <- cmdResult{err: a.switchAccount(c.account)}
 
 	case cmdSetModel:
 		if a.state.Closed {
@@ -1225,6 +1263,40 @@ func (a *Actor) handle(c command) (stop bool) {
 		return true
 	}
 	return false
+}
+
+func (a *Actor) switchAccount(sw *accountSwitch) error {
+	switch {
+	case a.state.Closed:
+		return ErrClosed
+	case a.turnActive != "" || a.state.Phase != "idle":
+		return errors.New("wait for the turn to finish before switching account")
+	case len(interruptedJobs(a.state)) > 0:
+		return errors.New("background work is still running; wait for it or stop it before switching account")
+	case len(a.state.Pending) > 0 || len(a.state.Elicitations) > 0:
+		return errors.New("answer the waiting question before switching account")
+	}
+	// The harness writes its conversation as it goes, so it has to be gone
+	// before its files are moved. Dropping a.sess first is what marks its
+	// exit, still on its way through the inbox, as stale.
+	if old := a.sess; old != nil {
+		a.sess, a.sent = nil, nil
+		_ = old.Close()
+	}
+	id := a.state.HarnessSessionID
+	if id == "" {
+		// Named at start by omniplex and reported back only once the harness
+		// runs; a session that never ran has nothing to move.
+		id = a.ID
+	}
+	if err := sw.move(id); err != nil {
+		// Nothing changed but the process, which the next command restarts
+		// under the account the session still has.
+		return err
+	}
+	a.adapter, a.env, a.activationError = sw.ad, sw.env, nil
+	a.append(proto.Emit(proto.SessionAccountChanged, sw.changed))
+	return nil
 }
 
 func (a *Actor) shutdown(hard bool) {

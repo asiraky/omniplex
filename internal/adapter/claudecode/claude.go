@@ -464,6 +464,10 @@ type session struct {
 	// say why instead of "the process is gone".
 	fatal string
 
+	// limited is set when the turn's main thread was refused for a plan usage
+	// limit, and read and cleared by the result that ends the turn.
+	limited bool
+
 	// usage carries both cost accounting and window occupancy; it is kept on
 	// the session and re-emitted whole so a result (accounting + fallback
 	// occupancy) and a context_usage message (authoritative occupancy) can
@@ -1317,6 +1321,11 @@ func (s *session) handleStreamEvent(msg map[string]json.RawMessage) {
 
 func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 	var m struct {
+		// Error is the SDK's classification of an API error the CLI turned
+		// into a synthetic assistant message. "rate_limit" is a plan usage
+		// limit: the message text says when it resets, and the turn's result
+		// that follows does not say it was a limit at all.
+		Error   string `json:"error"`
 		Message struct {
 			ID      string `json:"id"`
 			Content []struct {
@@ -1334,6 +1343,12 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 		} `json:"message"`
 	}
 	remarshal(msg, &m)
+
+	if m.Error == "rate_limit" && str(msg["parent_tool_use_id"]) == "" {
+		s.mu.Lock()
+		s.limited = true
+		s.mu.Unlock()
+	}
 
 	// The prompt of the latest request is the conversation so far, so its
 	// input (fresh + cached) is the context in use — the occupancy fallback
@@ -1550,8 +1565,20 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	// and an error with no message left the only recourse a "continue where
 	// it left off" button, whose prompt announces a server restart that never
 	// happened.
+	s.mu.Lock()
+	limited := s.limited
+	s.limited = false
+	s.mu.Unlock()
+
 	var failure, failureKind string
-	if stop == proto.StopError {
+	switch {
+	case limited:
+		// A limit is a failure however the result is flagged: the turn did
+		// no work, and what fixes it is time or another account.
+		stop = proto.StopError
+		failure, _ = resultFailure(r.Result, strings.Join(r.Errors, "\n"), r.TerminalReason)
+		failureKind = proto.FailureLimit
+	case stop == proto.StopError:
 		failure, failureKind = resultFailure(r.Result, strings.Join(r.Errors, "\n"), r.TerminalReason)
 	}
 

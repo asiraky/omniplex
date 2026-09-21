@@ -15,6 +15,10 @@ const (
 	SessionCreated       = "session.created"
 	SessionConfigChanged = "session.config_changed"
 	SessionClosed        = "session.closed"
+	// SessionAccountChanged marks the point where a session moved to another
+	// account of the same harness. It changes who the next turn is billed to,
+	// not the conversation, so it is a line in the timeline and nothing more.
+	SessionAccountChanged = "session.account_changed"
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
@@ -266,6 +270,16 @@ type SessionConfigChangedPayload struct {
 	HarnessSessionID string `json:"harnessSessionId,omitempty"`
 }
 
+// SessionAccountChangedPayload names both accounts by id and by the name the
+// human knew them by at the time, so the timeline still reads right after an
+// account is renamed or removed.
+type SessionAccountChangedPayload struct {
+	From     string `json:"from"`
+	To       string `json:"to"`
+	FromName string `json:"fromName,omitempty"`
+	ToName   string `json:"toName,omitempty"`
+}
+
 type SessionClosedPayload struct {
 	Reason string `json:"reason"`
 }
@@ -405,6 +419,9 @@ const (
 	FailureAuth = "auth"
 	// FailureRestart: the server died while the turn was running.
 	FailureRestart = "restart"
+	// FailureLimit: the account hit a plan usage limit. Retrying on the same
+	// account fails until the window resets; another account can take over.
+	FailureLimit = "limit"
 )
 
 // MessageChunkPayload carries a delta of assistant (or replayed user) content.

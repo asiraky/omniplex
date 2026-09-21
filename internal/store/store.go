@@ -300,6 +300,15 @@ func (s *Store) SetPhase(ctx context.Context, sessionID, phase string) error {
 	return err
 }
 
+// SetProviderInstance moves a session to another account of its harness.
+func (s *Store) SetProviderInstance(ctx context.Context, sessionID, instance string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET provider_instance = ?, updated_at = ? WHERE id = ?`,
+		instance, proto.NowMillis(), sessionID)
+	return err
+}
+
 func (s *Store) SetTitle(ctx context.Context, sessionID, title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -58,7 +58,7 @@ export function ModelPicker({
   value,
   onChange,
   onInstanceChange,
-  lockInstance = false,
+  lockDriver = false,
   disabled = false,
   efforts = [],
   effort = "",
@@ -74,10 +74,12 @@ export function ModelPicker({
   value: ModelSelection;
   onChange: (next: ModelSelection) => void;
   /**
-   * Mid-session the account is fixed — the harness is already running under
-   * it — so only the model can change and the rail becomes a label.
+   * Mid-session the harness is fixed — another one is a different agent — but
+   * the account is not: the rail offers only this harness's other enabled
+   * accounts, and disappears when there are none. Picking a model under
+   * another account is a request to switch the session to it.
    */
-  lockInstance?: boolean;
+  lockDriver?: boolean;
   /** New-session preferences can select an account immediately on a rail click. */
   onInstanceChange?: (instance: PickerInstance) => void;
   disabled?: boolean;
@@ -112,7 +114,13 @@ export function ModelPicker({
   };
   const isDesktop = useIsDesktop();
 
-  const instances = useMemo(() => pickerInstances(harnesses), [harnesses]);
+  const instances = useMemo(() => {
+    const all = pickerInstances(harnesses);
+    if (!lockDriver) return all;
+    const own = all.filter((i) => i.driver === value.harness);
+    const current = resolveInstance(own, value.instance, value.harness)?.id;
+    return own.filter((i) => i.enabled || i.id === current);
+  }, [harnesses, lockDriver, value.harness, value.instance]);
   const selectedInstance = resolveInstance(instances, value.instance, value.harness);
   const selectedModel = resolveModel(selectedInstance, value.model);
 
@@ -127,18 +135,15 @@ export function ModelPicker({
     setSearch("");
   }, [open, selectedInstance?.id]);
 
-  const shown = lockInstance
-    ? selectedInstance
-    : (instances.find((i) => i.id === browsing) ?? selectedInstance);
+  const shown = instances.find((i) => i.id === browsing) ?? selectedInstance;
 
   const searching = search.trim().length > 0;
   // Search deliberately ignores the rail: a query spans every account, so
   // typing a model name finds it without knowing which account it is under.
   const matches = useMemo(() => {
     if (!searching) return [];
-    const pool = lockInstance && shown ? [shown] : instances;
-    return rankModels(rowsOf(pool), search);
-  }, [searching, search, instances, lockInstance, shown]);
+    return rankModels(rowsOf(instances), search);
+  }, [searching, search, instances]);
 
   const showEffort = efforts.length > 0 && !!onEffortChange;
   // A model that offers no levels still ran at one, and that is still half of
@@ -161,10 +166,10 @@ export function ModelPicker({
       <CommandInput
         value={search}
         onValueChange={setSearch}
-        placeholder={lockInstance ? "Search models…" : "Search models and accounts…"}
+        placeholder={instances.length > 1 ? "Search models and accounts…" : "Search models…"}
       />
       <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-        {!lockInstance && instances.length > 1 && (
+        {instances.length > 1 && (
           <InstanceRail
             instances={instances}
             browsing={shown?.id ?? ""}
@@ -187,7 +192,7 @@ export function ModelPicker({
                   instance={row.ref}
                   // While searching, rows come from every account, so each one
                   // says which — the rail is not telling you any more.
-                  showInstance={!lockInstance && instances.length > 1}
+                  showInstance={instances.length > 1}
                   selected={
                     row.instance === selectedInstance?.id && row.model.id === selectedModel?.id
                   }

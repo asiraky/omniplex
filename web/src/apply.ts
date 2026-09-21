@@ -368,6 +368,19 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         }),
       };
 
+    case "session.account_changed":
+      // The line where the session moved to another account. Mirrors
+      // internal/projection/state.go.
+      return {
+        ...s,
+        items: upsert(s, `account:${ev.seq}`, (it) => {
+          it.kind = "notice";
+          it.receivedAt ??= ev.timestamp;
+          it.noticeKind = "account";
+          it.title = p.toName || p.to;
+        }),
+      };
+
     case "permission.requested":
       return {
         ...s,

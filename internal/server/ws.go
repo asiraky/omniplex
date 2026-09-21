@@ -642,6 +642,16 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"model": a.Model}, nil
 
+	case "switch_account":
+		var a switchAccountArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.SwitchAccount(ctx, a.SessionID, a.Instance); err != nil {
+			return nil, err
+		}
+		return map[string]any{"instance": a.Instance}, nil
+
 	case "set_effort":
 		var a setEffortArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
