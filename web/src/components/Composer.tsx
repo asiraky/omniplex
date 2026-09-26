@@ -1,6 +1,7 @@
-import { ArrowUpIcon, ChevronDownIcon, ClockIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronDownIcon, ClockIcon, PaperclipIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
+import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { ContextMeter } from "~/components/ContextMeter";
 import { ModelPicker } from "~/components/ModelPicker";
 import { Button } from "~/components/ui/button";
@@ -17,9 +18,17 @@ import {
 } from "~/lib/composerItems";
 import { formatContextWindow, pickerInstances, resolveInstance, resolveModel } from "~/lib/models";
 import { cn } from "~/lib/utils";
-import { dragHasFiles, imageFilesFrom, IMAGE_ACCEPT, type Attachment } from "~/lib/attachments";
+import { dragHasFiles, filesFrom, sendPayload, type Attachment } from "~/lib/attachments";
+import type { ArtefactRef } from "~/lib/artefacts";
 import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
+
+/** What a message carries besides its text: the ready images by id, and the
+    ready files by the artefact version each became. */
+export interface ComposerAttachments {
+  imageIds: string[];
+  files: ArtefactRef[];
+}
 
 /** What the transcript's recent-skills list needs from the composer. */
 export interface ComposerHandle {
@@ -69,14 +78,15 @@ export function Composer({
       hold it back until there is something to send it to. */
   sendDisabled?: boolean;
   busy: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, attached: ComposerAttachments) => void;
   onSchedule?: () => void;
   onCancel: () => void;
-  /** Images staged for the next message. Owned by the parent for the same
-      reason the draft is: a session switch unmounts this component. */
+  /** Images and files staged for the next message. Owned by the parent for
+      the same reason the draft is: a session switch unmounts this component. */
   attachments?: Attachment[];
-  /** Hands picked, dropped, or pasted images to the parent, which uploads
-      them. Anything that is not a file is left to the textarea. */
+  /** Hands picked, dropped, or pasted files of any type to the parent, which
+      uploads them — images on the image path, everything else as artefacts.
+      Anything that is not a file is left to the textarea. */
   onAttachImages?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
   disabledPlaceholder?: string;
@@ -134,8 +144,8 @@ export function Composer({
   const [dragging, setDragging] = useState(false);
 
   const uploading = attachments.some((a) => a.status === "uploading");
-  const sendableImages = attachments.filter((a) => a.status === "ready").length;
-  const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0);
+  const sendableAttachments = attachments.filter((a) => a.status === "ready").length;
+  const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableAttachments === 0);
 
   const attach = useCallback(
     (files: File[]) => {
@@ -311,10 +321,10 @@ export function Composer({
 
   const send = async () => {
     const t = draft.trim();
-    // A message may be nothing but pictures: "what is this?" is often the whole
-    // question, and the picture is the rest of it.
-    if ((!t && sendableImages === 0) || disabled || sendDisabled) return;
-    // Sending now would send the message without the image still on its way up,
+    // A message may be nothing but attachments: "what is this?" is often the
+    // whole question, and the picture or the file is the rest of it.
+    if ((!t && sendableAttachments === 0) || disabled || sendDisabled) return;
+    // Sending now would send the message without the file still on its way up,
     // which is not what attaching it meant.
     if (uploading) return;
     if (t.startsWith("/") && !catalogueReady) return;
@@ -349,7 +359,7 @@ export function Composer({
       }
       return;
     }
-    onSend(t);
+    onSend(t, sendPayload(attachments));
     changeDraft("");
   };
 
@@ -405,8 +415,9 @@ export function Composer({
       }}
       onPaste={(e) => {
         // A screenshot on the clipboard is the fastest way to attach one, and
-        // the reason the terminal habit transfers. Text pastes are untouched.
-        const files = imageFilesFrom(e.clipboardData);
+        // the reason the terminal habit transfers; a copied file comes the same
+        // way. Text pastes are untouched.
+        const files = filesFrom(e.clipboardData);
         if (files.length === 0) return;
         e.preventDefault();
         attach(files);
@@ -451,29 +462,36 @@ export function Composer({
     />
   );
 
-  // Thumbnails of what is going out with the next message. Sized for a thumb:
-  // the remove button is always visible, because there is no hover on a phone.
+  // What is going out with the next message: pictures as thumbnails, anything
+  // else as a file tile. Sized for a thumb: the remove button is always
+  // visible, because there is no hover on a phone.
   const strip = attachments.length > 0 && (
     <div className="flex flex-wrap gap-2 px-3 pt-3">
       {attachments.map((a) => (
-        <div key={a.key} className="relative">
-          <img
-            src={a.previewUrl}
-            alt={a.name}
-            className={cn("size-16 rounded-lg border object-cover", a.status === "error" && "opacity-40")}
-          />
-          {a.status === "uploading" && (
-            <span className="bg-background/60 absolute inset-0 grid place-items-center rounded-lg">
-              <Spinner className="size-5" />
-            </span>
-          )}
-          {a.status === "error" && (
-            <span
-              title={a.error}
-              className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
-            >
-              {a.error ?? "Upload failed"}
-            </span>
+        <div key={a.key} className={cn("relative", a.kind === "file" && "max-w-60 min-w-0")}>
+          {a.kind === "file" ? (
+            <FileChip attachment={a} />
+          ) : (
+            <>
+              <img
+                src={a.previewUrl}
+                alt={a.name}
+                className={cn("size-16 rounded-lg border object-cover", a.status === "error" && "opacity-40")}
+              />
+              {a.status === "uploading" && (
+                <span className="bg-background/60 absolute inset-0 grid place-items-center rounded-lg">
+                  <Spinner className="size-5" />
+                </span>
+              )}
+              {a.status === "error" && (
+                <span
+                  title={a.error}
+                  className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
+                >
+                  {a.error ?? "Upload failed"}
+                </span>
+              )}
+            </>
           )}
           <button
             type="button"
@@ -513,13 +531,13 @@ export function Composer({
           e.preventDefault();
           dragDepth.current = 0;
           setDragging(false);
-          attach(imageFilesFrom(e.dataTransfer));
+          attach(filesFrom(e.dataTransfer));
         }}
       >
         {dragging && (
           <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
-            <ImageIcon className="size-4" />
-            Drop images to attach
+            <PaperclipIcon className="size-4" />
+            Drop files to attach
           </div>
         )}
         {strip}
@@ -561,7 +579,6 @@ export function Composer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {
@@ -576,8 +593,8 @@ export function Composer({
             size="icon"
             disabled={disabled}
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach images"
-            title="Attach images"
+            aria-label="Attach files"
+            title="Attach files"
             className="text-muted-foreground hover:text-foreground size-11 shrink-0 rounded-full md:size-8"
           >
             <PlusIcon />
@@ -649,7 +666,7 @@ export function Composer({
               which reads it at its next step. The button only appears once
               there is something to send, so an idle-looking stop button is
               not crowded by a dead send. */}
-          {(!busy || draft.trim() || sendableImages > 0) && (
+          {(!busy || draft.trim() || sendableAttachments > 0) && (
             // Scheduling rides on send's edge rather than taking its own slot:
             // a phone-width row has no room for a third round button.
             <div className="ml-1.5 flex shrink-0 md:ml-2">
@@ -691,6 +708,44 @@ export function Composer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A staged non-image file: its tile, with the upload's progress or failure
+    in place of its size until it is ready. */
+function FileChip({ attachment: a }: { attachment: Attachment }) {
+  const pct = Math.round((a.progress ?? 0) * 100);
+  const detail =
+    a.status === "uploading" ? (
+      `Uploading ${pct}%`
+    ) : a.status === "error" ? (
+      <span className="text-destructive" title={a.error}>
+        {a.error ?? "Upload failed"}
+      </span>
+    ) : undefined;
+  return (
+    <div className="relative">
+      <ArtefactTile
+        compact
+        name={a.name}
+        mediaType={a.mediaType ?? "application/octet-stream"}
+        size={a.size ?? 0}
+        detail={detail}
+        className={cn("pr-4", a.status === "error" && "border-destructive/50")}
+      />
+      {a.status === "uploading" && (
+        <span
+          role="progressbar"
+          aria-label={`Uploading ${a.name}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct}
+          className="absolute inset-x-2 bottom-0.5 h-0.5 overflow-hidden rounded-full"
+        >
+          <span className="bg-primary block h-full transition-[width]" style={{ width: `${pct}%` }} />
+        </span>
+      )}
     </div>
   );
 }

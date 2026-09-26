@@ -76,7 +76,9 @@ type Manager struct {
 	// session takes its pictures with it. Nil in tests and in a server built
 	// without the feature.
 	attachments AttachmentPurger
-	imagePath   func(sessionID, id string) (string, error)
+	// artefacts holds what sessions produced; deleting a session deletes them.
+	artefacts AttachmentPurger
+	imagePath func(sessionID, id string) (string, error)
 
 	probeMu sync.Mutex
 	probes  map[string]probeResult
@@ -203,9 +205,17 @@ func (m *Manager) SetAttachments(p AttachmentPurger) {
 	}
 }
 
+// SetArtefacts tells the manager where session artefacts live.
+func (m *Manager) SetArtefacts(p AttachmentPurger) { m.artefacts = p }
+
 // purgeAttachments is best effort: a picture left behind must never be the
 // reason a session cannot be deleted.
 func (m *Manager) purgeAttachments(id string) {
+	if m.artefacts != nil {
+		if err := m.artefacts.PurgeSession(id); err != nil {
+			m.logf("purge artefacts for %s: %v", id, err)
+		}
+	}
 	if m.attachments == nil {
 		return
 	}

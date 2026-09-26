@@ -44,7 +44,17 @@ export type Row =
   // A batch of subagent spawns, pinned where the first one happened. Never
   // folded: the work is still running beside the conversation after the turn
   // that started it is over, so the card has to stay where it can be seen.
-  | { kind: "jobs"; id: string; items: Item[] };
+  | { kind: "jobs"; id: string; items: Item[] }
+  // Artefacts the agent published. Never folded: they are what the turn was
+  // for. A finished turn shows them under its answer, one card per artefact
+  // at the last version it reached.
+  | { kind: "artefacts"; id: string; items: Item[] };
+
+function latestPerArtefact(items: Item[]): Item[] {
+  const last = new Map<string, Item>();
+  for (const it of items) last.set(it.artefactId ?? it.id, it);
+  return [...last.values()];
+}
 
 function isSpawn(item: Item) {
   return item.kind === "tool" && item.toolKind === "agent";
@@ -91,6 +101,7 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       // items are somehow split by another's folds twice, and two rows must
       // not share a key.
       let hidden: Item[] = [];
+      const produced: Item[] = [];
       const flush = () => {
         if (hidden.length > 0)
           rows.push({ kind: "fold", id: `fold:${hidden[0].id}`, turn: turnById.get(turnId)!, items: hidden });
@@ -99,6 +110,10 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       for (let k = 0; k < segment.length; k++) {
         const it = segment[k];
         if (it === answer) continue;
+        if (it.kind === "artefact") {
+          produced.push(it);
+          continue;
+        }
         // The prompt stays where the reader can see what was asked.
         if (it.kind === "message" && it.role === "user") {
           rows.push({ kind: "item", item: it });
@@ -116,6 +131,8 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       }
       flush();
       if (answer) rows.push({ kind: "item", item: answer });
+      if (produced.length > 0)
+        rows.push({ kind: "artefacts", id: `artefacts:${produced[0].id}`, items: latestPerArtefact(produced) });
       i = j;
       continue;
     }
@@ -126,6 +143,13 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       const batch = spawnBatch(visible, i);
       rows.push({ kind: "jobs", id: `jobs:${batch[0].id}`, items: batch });
       i += batch.length;
+      continue;
+    }
+    if (item.kind === "artefact") {
+      let j = i;
+      while (j < visible.length && visible[j].kind === "artefact" && !doneTurn(visible[j].turnId)) j++;
+      rows.push({ kind: "artefacts", id: `artefacts:${item.id}`, items: visible.slice(i, j) });
+      i = j;
       continue;
     }
     if (item.kind === "tool") {

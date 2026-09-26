@@ -153,6 +153,25 @@ type promptArgs struct {
 	// stored for idempotent retry, and inlining a screenshot would put a
 	// megabyte in the command log and on every reconnect that replays it.
 	ImageIDs []string `json:"imageIds,omitempty"`
+	// Files names artefacts uploaded to this session that the message
+	// carries. The agent is told where each one is on disk.
+	Files []promptFile `json:"files,omitempty"`
+}
+
+type promptFile struct {
+	ArtefactID string `json:"artefactId"`
+	Version    int    `json:"version"`
+}
+
+type skillArgs struct {
+	SessionID   string `json:"sessionId"`
+	ProjectID   string `json:"projectId"`
+	Dir         string `json:"dir"`
+	Path        string `json:"path"`
+	Content     string `json:"content"`
+	Scope       string `json:"scope"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type sessionArgs struct {

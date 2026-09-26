@@ -41,7 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
-import { isSupportedImage, MAX_IMAGE_BYTES, prepareImage, uploadAttachment, type Attachment } from "./lib/attachments";
+import { sendPayload, stageFile, uploadStaged, type Attachment } from "./lib/attachments";
 import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "./lib/recentSkills";
 import { loadResume } from "./resume";
 import { cn } from "./lib/utils";
@@ -179,35 +179,22 @@ export function App() {
       const sessionId = activeId;
       if (!sessionId) return;
       for (const file of files) {
-        if (!isSupportedImage(file)) {
-          toast.error(`${file.name} is not an image omniplex can send`, {
-            description: "PNG, JPEG, GIF and WebP only.",
-          });
-          continue;
-        }
         // Not `crypto.randomUUID`: that exists only in a secure context, and
         // the origins a phone reaches this server on are not one.
         const key = uuid();
-        const staged: Attachment = {
-          key,
-          name: file.name || "pasted image",
-          previewUrl: URL.createObjectURL(file),
-          status: "uploading",
-        };
+        const staged = stageFile(file, key);
         setAttachments((all) => ({ ...all, [sessionId]: [...(all[sessionId] ?? []), staged] }));
-        // Shrunk before it is sent, not after: a phone camera's 4 MB frame is
-        // more picture than any model looks at, and the upload is the slow
-        // part of attaching it.
+        // A picture goes up as an image, shrunk first; anything else goes up
+        // as an artefact the agent reads from disk.
         const abort = new AbortController();
         uploadsInFlight.current.set(key, abort);
-        prepareImage(file)
-          .then((ready) => {
-            if (ready.size > MAX_IMAGE_BYTES) throw new Error("This image is too large to send.");
-            return uploadAttachment(sessionId, ready, abort.signal);
-          })
-          .then((up) => patchAttachment(sessionId, key, { status: "ready", id: up.id }))
+        uploadStaged(sessionId, file, {
+          signal: abort.signal,
+          onProgress: (progress) => patchAttachment(sessionId, key, { progress }),
+        })
+          .then((patch) => patchAttachment(sessionId, key, patch))
           .catch((e: Error) => {
-            // An abort means the picture was taken back; there is nothing left
+            // An abort means the file was taken back; there is nothing left
             // to report it to.
             if (e.name !== "AbortError") patchAttachment(sessionId, key, { status: "error", error: e.message });
           })
@@ -222,7 +209,7 @@ export function App() {
     setAttachments((all) => {
       const list = all[sessionId] ?? [];
       const going = list.find((a) => a.key === key);
-      if (going) URL.revokeObjectURL(going.previewUrl);
+      if (going?.previewUrl) URL.revokeObjectURL(going.previewUrl);
       return { ...all, [sessionId]: list.filter((a) => a.key !== key) };
     });
   }, []);
@@ -319,6 +306,12 @@ export function App() {
   const openJobs = useCallback(() => {
     setShowChanges(true);
     setPanelRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
+  }, []);
+
+  // Opening an artefact from its card in the transcript; no version is the latest.
+  const openArtefact = useCallback((artefactId: string, version?: number) => {
+    setShowChanges(true);
+    setPanelRequest((current) => ({ kind: "artefact", artefactId, version, nonce: (current?.nonce ?? 0) + 1 }));
   }, []);
 
   const openPath = useCallback((path: string, line?: number) => {
@@ -677,16 +670,21 @@ export function App() {
     (text: string) => {
       if (!activeId) return;
       const staged = attachments[activeId] ?? [];
-      const imageIds = staged.filter((a) => a.status === "ready").map((a) => a.id!);
+      const { imageIds, files } = sendPayload(staged);
       // Left out entirely when there are none: the overwhelming majority of
-      // prompts carry no picture, and the frame is persisted for retry.
-      const args = { sessionId: activeId, text, ...(imageIds.length ? { imageIds } : {}) };
+      // prompts carry nothing, and the frame is persisted for retry.
+      const args = {
+        sessionId: activeId,
+        text,
+        ...(imageIds.length ? { imageIds } : {}),
+        ...(files.length ? { files } : {}),
+      };
       clientRef.current?.command("prompt", args).catch((e) => {
         toast.error("Could not send that prompt", { description: e.message });
       });
       // Cleared optimistically, like the draft: the message is on its way, and
       // the transcript is about to show the same pictures back from the server.
-      for (const a of staged) URL.revokeObjectURL(a.previewUrl);
+      for (const a of staged) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
       setAttachments((all) => (all[activeId]?.length ? { ...all, [activeId]: [] } : all));
     },
     [activeId, attachments],
@@ -701,7 +699,7 @@ export function App() {
       setDrafts(all => all[editor.sessionId] === editor.text ? {...all, [editor.sessionId]: ""} : all);
       setAttachments(all => {
         const staged = all[editor.sessionId] ?? [];
-        for (const a of staged) if (a.id && editor.imageIds.includes(a.id)) URL.revokeObjectURL(a.previewUrl);
+        for (const a of staged) if (a.id && a.previewUrl && editor.imageIds.includes(a.id)) URL.revokeObjectURL(a.previewUrl);
         return {...all, [editor.sessionId]: staged.filter(a => !a.id || !editor.imageIds.includes(a.id))};
       });
     }
@@ -1502,7 +1500,7 @@ export function App() {
             <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
+              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} onOpenArtefact={openArtefact} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1548,7 +1546,7 @@ export function App() {
                 disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
                 busy={state.phase === "turn"}
                 onSend={send}
-                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:(attachments[activeId] ?? []).filter(a=>a.status==="ready").map(a=>a.id!)})}
+                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:sendPayload(attachments[activeId] ?? []).imageIds})}
                 onCancel={cancel}
                 attachments={activeId ? (attachments[activeId] ?? []) : []}
                 onAttachImages={attachImages}

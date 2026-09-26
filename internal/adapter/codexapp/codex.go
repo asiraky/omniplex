@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,6 +167,33 @@ func settingsFor(mode string) (modeSettings, error) {
 // codex is asking for, so the grant is made here — per run, via -c, never
 // written to the user's config.toml. Trust is inherited by subpaths, so
 // naming the cwd covers a worktree beneath it without enumerating them.
+// mcpArgs adds omniplex's own MCP servers to this app-server run as config
+// overrides, leaving the user's config.toml alone.
+func mcpArgs(servers []adapter.MCPServer) []string {
+	var out []string
+	for _, m := range servers {
+		key := "mcp_servers." + m.Name
+		quoted := make([]string, len(m.Args))
+		for i, a := range m.Args {
+			quoted[i] = strconv.Quote(a)
+		}
+		out = append(out, "-c", key+".command="+strconv.Quote(m.Command), "-c", key+".args=["+strings.Join(quoted, ",")+"]")
+		if len(m.Env) > 0 {
+			keys := make([]string, 0, len(m.Env))
+			for k := range m.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			pairs := make([]string, len(keys))
+			for i, k := range keys {
+				pairs[i] = k + "=" + strconv.Quote(m.Env[k])
+			}
+			out = append(out, "-c", key+".env={"+strings.Join(pairs, ",")+"}")
+		}
+	}
+	return out
+}
+
 func trustArgs(cwd string) []string {
 	if cwd == "" {
 		return nil
@@ -183,7 +211,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	cmd := exec.Command(a.Bin, append([]string{"app-server"}, trustArgs(o.Cwd)...)...)
+	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
+	args = append(args, mcpArgs(o.MCPServers)...)
+	cmd := exec.Command(a.Bin, args...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account CODEX_HOME isolates config and login.

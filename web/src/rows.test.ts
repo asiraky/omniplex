@@ -21,9 +21,30 @@ const shape = (rows: Row[]) =>
   rows.map((r) => {
     if (r.kind === "fold") return `fold(${r.items.length})`;
     if (r.kind === "jobs") return `jobs(${r.items.length})`;
+    if (r.kind === "artefacts") return `artefacts(${r.items.map((i) => `${i.artefactId}@${i.version}`).join(",")})`;
     if (r.kind === "run") return r.live ? `live(${r.items.length})` : `run(${r.items.length})`;
     return `${r.item.kind}:${r.item.role ?? "tool"}`;
   });
+
+function artefact(id: string, version: number, over: Partial<Item> = {}): Item {
+  return { id: `artefact:${id}@${version}`, kind: "artefact", artefactId: id, version, turnId: "turn1", ...over };
+}
+
+describe("buildRows with published artefacts", () => {
+  it("keeps a finished turn's artefacts out of the fold, under the answer, at their last version", () => {
+    const rows = buildRows(
+      [prompt("make it"), tool(), artefact("a", 1), tool(), artefact("b", 1), artefact("a", 2), msg("done")],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "fold(2)", "message:agent", "artefacts(a@2,b@1)"]);
+  });
+
+  it("shows artefacts in place while the turn is still running", () => {
+    const rows = buildRows([prompt("make it"), artefact("a", 1), artefact("b", 1)], [turn("turn1", { done: false })], "turn");
+    expect(shape(rows)).toContain("artefacts(a@1,b@1)");
+  });
+});
 
 describe("buildRows on a finished turn", () => {
   it("folds everything between the prompt and the answer", () => {

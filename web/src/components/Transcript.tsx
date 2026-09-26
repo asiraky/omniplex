@@ -31,6 +31,7 @@ import {
   type ComponentType,
 } from "react";
 
+import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { ChangedFiles } from "~/components/ChangedFiles";
 import { IconButton } from "~/components/IconButton";
 import { Markdown } from "~/components/Markdown";
@@ -38,6 +39,7 @@ import { RecentSkills } from "~/components/RecentSkills";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { parseAttachedFiles, pickVersion, type Artefact, type AttachedFile } from "~/lib/artefacts";
 import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
@@ -429,7 +431,101 @@ function PromptImages({ sessionId, images }: { sessionId: string; images: Prompt
   );
 }
 
-function UserMessage({ item, sessionId }: { item: Item; sessionId: string }) {
+const NO_ARTEFACTS: Artefact[] = [];
+
+type OpenArtefact = (id: string, version?: number) => void;
+
+// The files a prompt carried, parsed back out of the trailer the server wrote
+// for the agent. The tile reads size from the session's artefacts; a file the
+// window has not loaded yet still shows, sized zero, rather than vanishing.
+function PromptFiles({
+  files,
+  artefacts,
+  onOpen,
+}: {
+  files: AttachedFile[];
+  artefacts: Artefact[];
+  onOpen?: OpenArtefact;
+}) {
+  return (
+    <div className="mb-1.5 flex w-full max-w-[85%] flex-col items-end gap-1.5">
+      {files.map((f) => {
+        const a = artefacts.find((x) => x.id === f.artefactId);
+        const v = a && pickVersion(a, f.version);
+        return (
+          <ArtefactTile
+            key={`${f.artefactId}@${f.version}`}
+            name={f.name}
+            mediaType={f.mediaType}
+            size={v?.size ?? 0}
+            source="upload"
+            compact
+            className="w-full max-w-72"
+            onOpen={onOpen && (() => onOpen(f.artefactId, f.version))}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// What the agent published in a turn, one card per artefact. The card shows
+// the version the turn reached, and how many exist, so an old turn's card still
+// says there is something newer.
+// A turn that publishes a pile of files shows the first few: nine full-width
+// cards is a screen of scrolling on a phone before the next message.
+const ARTEFACTS_SHOWN = 3;
+
+function ArtefactCards({ items, artefacts, onOpen }: { items: Item[]; artefacts: Artefact[]; onOpen?: OpenArtefact }) {
+  const [expanded, setExpanded] = useState(false);
+  // Collapsing to hide a single card saves nothing.
+  const shown = expanded || items.length <= ARTEFACTS_SHOWN + 1 ? items : items.slice(0, ARTEFACTS_SHOWN);
+  return (
+    <div className="fade-in flex flex-col gap-2">
+      {shown.map((it) => {
+        const a = artefacts.find((x) => x.id === it.artefactId);
+        const v = a && pickVersion(a, it.version);
+        return (
+          <ArtefactTile
+            key={it.id}
+            name={a?.name ?? it.title ?? "artefact"}
+            entry={v?.entry}
+            mediaType={v?.mediaType ?? it.mediaType ?? ""}
+            size={v?.size ?? it.size ?? 0}
+            version={it.version}
+            versions={a?.versions.length}
+            source="agent"
+            detail={v?.note}
+            className="max-w-md"
+            onOpen={onOpen && it.artefactId ? () => onOpen(it.artefactId!, it.version) : undefined}
+          />
+        );
+      })}
+      {shown.length < items.length && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="text-muted-foreground hover:text-foreground hover:bg-accent/50 focus-visible:ring-ring min-h-11 max-w-md rounded-xl border border-dashed px-3 text-left text-[12.5px] transition-colors outline-none focus-visible:ring-2 md:min-h-9"
+        >
+          Show {items.length - shown.length} more {items.length - shown.length === 1 ? "file" : "files"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function UserMessage({
+  item,
+  sessionId,
+  artefacts,
+  onOpenArtefact,
+}: {
+  item: Item;
+  sessionId: string;
+  artefacts: Artefact[];
+  onOpenArtefact?: OpenArtefact;
+}) {
+  const { text, files } = useMemo(() => parseAttachedFiles(item.text ?? ""), [item.text]);
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -453,7 +549,7 @@ function UserMessage({ item, sessionId }: { item: Item; sessionId: string }) {
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [item.text, expanded]);
+  }, [text, expanded]);
 
   // Clamp whenever not expanded — including before the first measurement — so
   // the measurement above runs against a constrained element. A short message
@@ -471,9 +567,10 @@ function UserMessage({ item, sessionId }: { item: Item; sessionId: string }) {
   return (
     <div ref={wrapRef} data-msg-id={item.id} className="group fade-in flex flex-col items-end">
       {item.images && item.images.length > 0 && <PromptImages sessionId={sessionId} images={item.images} />}
-      {/* An image-only message has no bubble to draw: an empty one reads as a
-          message that failed to arrive. */}
-      {(item.text || !item.images?.length) && (
+      {files.length > 0 && <PromptFiles files={files} artefacts={artefacts} onOpen={onOpenArtefact} />}
+      {/* An attachment-only message has no bubble to draw: an empty one reads
+          as a message that failed to arrive. */}
+      {(text || (!item.images?.length && files.length === 0)) && (
         <div
           ref={bodyRef}
           style={
@@ -492,7 +589,7 @@ function UserMessage({ item, sessionId }: { item: Item; sessionId: string }) {
             clamped && "overflow-hidden",
           )}
         >
-          {item.text}
+          {text}
         </div>
       )}
       {overflowing && (
@@ -515,11 +612,15 @@ function Message({
   sessionId,
   streaming,
   recovered,
+  artefacts,
+  onOpenArtefact,
 }: {
   item: Item;
   sessionId: string;
   streaming: boolean;
   recovered?: "restart" | "continue";
+  artefacts: Artefact[];
+  onOpenArtefact?: OpenArtefact;
 }) {
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
@@ -542,7 +643,7 @@ function Message({
   }
 
   if (item.role === "user") {
-    return <UserMessage item={item} sessionId={sessionId} />;
+    return <UserMessage item={item} sessionId={sessionId} artefacts={artefacts} onOpenArtefact={onOpenArtefact} />;
   }
 
   if (item.contentKind === "thought") {
@@ -965,7 +1066,18 @@ function InterruptedCard({
 // will land and looks like the user bubble it is about to become, dimmed, so
 // the reader can see what is coming. One the harness already holds is read at
 // its next step and cannot be taken back; one still waiting on the server can.
-function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; sessionId: string; onDequeue: (queueId: string) => void }) {
+function QueuedCard({
+  queued,
+  sessionId,
+  artefacts,
+  onDequeue,
+}: {
+  queued: QueuedPrompt;
+  sessionId: string;
+  artefacts: Artefact[];
+  onDequeue: (queueId: string) => void;
+}) {
+  const { text, files } = parseAttachedFiles(queued.prompt ?? "");
   return (
     <div data-queue-id={queued.queueId} className="fade-in flex flex-col items-end">
       {queued.images && queued.images.length > 0 && (
@@ -973,9 +1085,14 @@ function QueuedCard({ queued, sessionId, onDequeue }: { queued: QueuedPrompt; se
           <PromptImages sessionId={sessionId} images={queued.images} />
         </div>
       )}
-      {(queued.prompt || !queued.images?.length) && (
+      {files.length > 0 && (
+        <div className="flex w-full justify-end opacity-60">
+          <PromptFiles files={files} artefacts={artefacts} />
+        </div>
+      )}
+      {(text || (!queued.images?.length && files.length === 0)) && (
         <div className="bg-user-bubble text-user-bubble-foreground max-w-[85%] rounded-2xl rounded-br-md border border-dashed border-current/30 px-3.5 py-2 text-[14px] leading-relaxed break-words whitespace-pre-wrap opacity-60">
-          {queued.prompt}
+          {text}
         </div>
       )}
       <div className="text-muted-foreground mt-1 flex items-center gap-1 text-[12px]">
@@ -1018,6 +1135,7 @@ export function Transcript({
   onOpenDiff,
   jobs = [],
   onOpenJobs,
+  onOpenArtefact,
   pr,
   onFinish,
   recents = [],
@@ -1061,6 +1179,8 @@ export function Transcript({
   jobs?: Job[];
   /** Opens the panel on the jobs surface. */
   onOpenJobs?: () => void;
+  /** Opens an artefact in the panel; no version means the latest. */
+  onOpenArtefact?: OpenArtefact;
   /** The session branch's pull request, when omniplex could find one. */
   pr?: PullRequest | null;
   /** Opens the delete confirmation for this session. */
@@ -1293,6 +1413,7 @@ export function Transcript({
     );
   }, [state.sessionId, lastPromptID, anchorTo, scrollerRef]);
 
+  const artefacts = state.artefacts ?? NO_ARTEFACTS;
   const rows = useMemo(
     () => buildRows(ownItems, state.turns, state.phase),
     [ownItems, state.turns, state.phase],
@@ -1412,6 +1533,8 @@ export function Transcript({
                   <ToolRun items={row.items} live={row.live} />
                 ) : row.kind === "jobs" ? (
                   <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />
+                ) : row.kind === "artefacts" ? (
+                  <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />
                 ) : row.item.kind === "tool" ? (
                   <ToolCard item={row.item} />
                 ) : row.item.kind === "notice" ? (
@@ -1421,6 +1544,8 @@ export function Transcript({
                     item={row.item}
                     sessionId={state.sessionId}
                     streaming={state.phase === "turn" && row.item.id === liveAgentId}
+                    artefacts={artefacts}
+                    onOpenArtefact={onOpenArtefact}
                     recovered={
                       (row.item.turnId && recoveredTurns.get(row.item.turnId)) || undefined
                     }
@@ -1456,7 +1581,12 @@ export function Transcript({
           )}
 
           {(state.queuedPrompts ?? []).map((q) => (
-            <QueuedCard key={q.queueId} queued={q} sessionId={state.sessionId} onDequeue={(id) => onDequeue?.(id)} />
+            <QueuedCard
+              key={q.queueId}
+              queued={q}
+              sessionId={state.sessionId}
+              artefacts={artefacts}
+              onDequeue={(id) => onDequeue?.(id)} />
           ))}
 
           {/* Last, because it is the latest news about the work above it. */}

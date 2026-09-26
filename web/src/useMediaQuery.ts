@@ -8,6 +8,10 @@ const DESKTOP = "(min-width: 768px)";
 // is wide and touch-only, a small window on a laptop is narrow and has a mouse.
 const COARSE = "(pointer: coarse)";
 
+// Room for the transcript and a docked side panel both: below this the panel
+// is a full-screen sheet. A phone on its side clears `md` but not this.
+const DOCKS_PANEL = "(min-width: 1024px)";
+
 function useMatches(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
 
@@ -24,6 +28,10 @@ function useMatches(query: string): boolean {
 
 export function useIsDesktop(): boolean {
   return useMatches(DESKTOP);
+}
+
+export function useDocksPanel(): boolean {
+  return useMatches(DOCKS_PANEL);
 }
 
 export function useIsCoarsePointer(): boolean {

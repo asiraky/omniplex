@@ -7,6 +7,7 @@ import { Composer } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
 
 const png = (name = "shot.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+const pdf = (name = "b.pdf") => new File([new Uint8Array([1, 2, 3])], name, { type: "application/pdf" });
 
 // jsdom has no DataTransfer worth using; the composer only ever asks a drop
 // for its files and its types, so that is all a test has to hand it.
@@ -18,6 +19,19 @@ const staged = (over: Partial<Attachment> = {}): Attachment => ({
   previewUrl: "blob:preview",
   status: "ready",
   id: "img-1",
+  ...over,
+});
+
+const stagedFile = (over: Partial<Attachment> = {}): Attachment => ({
+  key: "k2",
+  kind: "file",
+  name: "b.pdf",
+  previewUrl: "",
+  mediaType: "application/pdf",
+  size: 3,
+  status: "ready",
+  artefactId: "art-1",
+  version: 1,
   ...over,
 });
 
@@ -90,6 +104,17 @@ describe("attaching images", () => {
     expect(onAttachImages).toHaveBeenCalledWith([file]);
   });
 
+  it("takes any kind of file, however it arrives", () => {
+    const { onAttachImages } = mount();
+    const picked = pdf("picked.pdf");
+    const dropped = new File(["a,b"], "data.csv", { type: "text/csv" });
+    const pasted = new File(["x"], "notes", { type: "" });
+    fireEvent.change(fileInput(), { target: { files: [picked] } });
+    fireEvent.drop(box(), { dataTransfer: transfer([dropped]) });
+    fireEvent.paste(box(), { clipboardData: { files: [pasted], types: ["Files"] } });
+    expect(onAttachImages.mock.calls).toEqual([[[picked]], [[dropped]], [[pasted]]]);
+  });
+
   it("ignores a drop that carries no files", () => {
     const { onAttachImages } = mount();
     fireEvent.drop(box(), { dataTransfer: { files: [], types: ["text/uri-list"] } });
@@ -107,7 +132,7 @@ describe("sending with images", () => {
   it("sends a message that is nothing but pictures", () => {
     const { onSend } = mount({ attachments: [staged()] });
     fireEvent.click(sendButton());
-    expect(onSend).toHaveBeenCalledWith("");
+    expect(onSend).toHaveBeenCalledWith("", { imageIds: ["img-1"], files: [] });
   });
 
   it("refuses to send while an image is still going up", () => {
@@ -141,6 +166,42 @@ describe("sending with images", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it("sends ready files by artefact version alongside images", () => {
+    const { onSend } = mount({ draft: "see attached", attachments: [staged(), stagedFile()] });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith("see attached", {
+      imageIds: ["img-1"],
+      files: [{ artefactId: "art-1", version: 1 }],
+    });
+  });
+
+  it("sends a message that is nothing but a file", () => {
+    const { onSend } = mount({ attachments: [stagedFile()] });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith("", { imageIds: [], files: [{ artefactId: "art-1", version: 1 }] });
+  });
+
+  it("refuses to send while a file is still going up, and shows how far it has got", () => {
+    const { onSend } = mount({
+      draft: "read this",
+      attachments: [stagedFile({ status: "uploading", artefactId: undefined, version: undefined, progress: 0.4 })],
+    });
+    expect(screen.getByRole("progressbar", { name: "Uploading b.pdf" }).getAttribute("aria-valuenow")).toBe("40");
+    fireEvent.click(sendButton());
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("does not count a file that failed to upload as something to send", () => {
+    mount({ attachments: [stagedFile({ status: "error", artefactId: undefined, error: "too large" })] });
+    expect(sendButton()).toHaveProperty("disabled", true);
+  });
+
+  it("removes a staged file", () => {
+    const { onRemoveAttachment } = mount({ attachments: [stagedFile()] });
+    fireEvent.click(screen.getByRole("button", { name: "Remove b.pdf" }));
+    expect(onRemoveAttachment).toHaveBeenCalledWith("k2");
+  });
+
   it("removes a staged image", () => {
     const { onRemoveAttachment } = mount({ attachments: [staged()] });
     fireEvent.click(screen.getByRole("button", { name: "Remove shot.png" }));
@@ -156,7 +217,7 @@ describe("the send button's options", () => {
     const { onSend } = mount({ draft: "ship it", onSchedule: vi.fn() });
     openOptions();
     fireEvent.click(await screen.findByRole("menuitem", { name: "Send now" }));
-    expect(onSend).toHaveBeenCalledWith("ship it");
+    expect(onSend).toHaveBeenCalledWith("ship it", { imageIds: [], files: [] });
   });
 
   it("schedules from the menu without sending", async () => {

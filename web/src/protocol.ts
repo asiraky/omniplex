@@ -2,6 +2,9 @@
 // internal/proto and internal/server; the protocol is the contract between
 // them, and no language owns it.
 
+import type { Artefact } from "./lib/artefacts";
+export type { Artefact, ArtefactVersion } from "./lib/artefacts";
+
 export type StopReason =
   | "end_turn"
   | "max_tokens"
@@ -48,7 +51,7 @@ export interface PromptImage {
 
 export interface Item {
   id: string;
-  kind: "message" | "tool" | "notice";
+  kind: "message" | "tool" | "notice" | "artefact";
   turnId?: string;
   /** The Task/Agent tool call this item's work happened inside, for subagents. */
   parentId?: string;
@@ -70,6 +73,11 @@ export interface Item {
   trigger?: string;
   preTokens?: number;
   postTokens?: number;
+  // artefact: title is its name
+  artefactId?: string;
+  version?: number;
+  mediaType?: string;
+  size?: number;
 }
 
 /** One file the session changed, aggregated across the whole session. */
@@ -283,6 +291,9 @@ export interface SessionState {
       turn once the session is idle; until then it can be taken back. */
   queuedPrompts: QueuedPrompt[];
   scheduledPrompts?: ScheduledPrompt[];
+  /** Everything the session produced or was given, never windowed. Absent
+      on states from before artefacts existed. */
+  artefacts?: Artefact[];
 }
 
 export interface QueuedPrompt {

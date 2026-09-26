@@ -19,9 +19,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/adapter/codexapp"
 	"github.com/asiraky/omniplex/internal/adapter/piapp"
+	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
@@ -43,6 +45,12 @@ import (
 var webdist embed.FS
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCP(os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("mcp: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "relocate" {
 		if err := runRelocateCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("relocate project: %v", err)
@@ -106,6 +114,16 @@ func main() {
 	// go away with the session that collected them.
 	attachments := attachment.New(filepath.Join(filepath.Dir(*dbPath), "attachments"))
 	mgr.SetAttachments(attachments)
+
+	// What sessions produce lives beside the attachments, outside every
+	// worktree, so it outlives the checkout it was made in.
+	artefacts := artefact.New(filepath.Join(filepath.Dir(*dbPath), "artefacts"))
+	signer, err := artefact.LoadSigner(artefacts.Dir())
+	if err != nil {
+		log.Fatalf("artefact key: %v", err)
+	}
+	mgr.SetArtefacts(artefacts)
+	session.ToolServers = artefactTools(signer, plan.Port)
 	defer mgr.Shutdown()
 
 	// Provider instances: configured accounts layered over the default
@@ -148,16 +166,18 @@ func main() {
 	access := endpoints.NewBuilder(plan, plan.Port)
 
 	srv := server.New(server.Options{
-		Manager:     mgr,
-		Store:       st,
-		Guard:       guard,
-		Endpoints:   access,
-		DefaultCwd:  *cwd,
-		WebFS:       webFS,
-		DevViteURL:  devViteURL,
-		Attachments: attachments,
-		Commit:      buildCommit(),
-		Logf:        logf,
+		Manager:        mgr,
+		Store:          st,
+		Guard:          guard,
+		Endpoints:      access,
+		DefaultCwd:     *cwd,
+		WebFS:          webFS,
+		DevViteURL:     devViteURL,
+		Attachments:    attachments,
+		Artefacts:      artefacts,
+		ArtefactSigner: signer,
+		Commit:         buildCommit(),
+		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
 		AllowAnyOrigin: false,
@@ -386,4 +406,27 @@ func mustCwd() string {
 		return "."
 	}
 	return d
+}
+
+// artefactTools is the MCP server every harness gets: this binary, run as
+// `omniplex mcp`, pointed back at this server over loopback with a token for
+// its one session.
+func artefactTools(signer *artefact.Signer, port int) func(string) []adapter.MCPServer {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("artefact tools off: %v", err)
+		return nil
+	}
+	return func(sessionID string) []adapter.MCPServer {
+		return []adapter.MCPServer{{
+			Name:    "omniplex",
+			Command: exe,
+			Args:    []string{"mcp"},
+			Env: map[string]string{
+				"OMNIPLEX_URL":         fmt.Sprintf("http://127.0.0.1:%d", port),
+				"OMNIPLEX_AGENT_TOKEN": signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Session: sessionID}),
+			},
+			Tools: []string{mcpPublishTool},
+		}}
+	}
 }

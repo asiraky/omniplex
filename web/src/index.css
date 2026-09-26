@@ -210,6 +210,20 @@
     scrollbar-color: color-mix(in oklch, var(--muted-foreground) 45%, transparent) transparent;
   }
 
+  /* A shadow on whichever side has more to scroll to. Phones hide scrollbars,
+     so a table cut at the screen edge otherwise looks like the whole table.
+     The "local" covers ride with the content and hide a shadow once its edge
+     is reached; the "scroll" shadows stay put. */
+  .scroll-shadow-x {
+    --scroll-cover: var(--background);
+    --scroll-shade: color-mix(in oklch, var(--foreground) 16%, transparent);
+    background:
+      linear-gradient(to right, var(--scroll-cover) 40%, transparent) left / 2rem 100% no-repeat local,
+      linear-gradient(to left, var(--scroll-cover) 40%, transparent) right / 2rem 100% no-repeat local,
+      linear-gradient(to right, var(--scroll-shade), transparent) left / 0.75rem 100% no-repeat scroll,
+      linear-gradient(to left, var(--scroll-shade), transparent) right / 0.75rem 100% no-repeat scroll;
+  }
+
   /* The block cursor trailing streaming text. Markdown output is a stack of
      block elements, so there the caret hangs off the last of them — otherwise
      it would sit on a line of its own below the prose. */

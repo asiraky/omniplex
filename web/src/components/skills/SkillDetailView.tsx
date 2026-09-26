@@ -1,0 +1,413 @@
+import { ArrowLeftIcon, CopyIcon, EllipsisVerticalIcon, FileIcon, PencilIcon, XIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { IconButton } from "~/components/IconButton";
+import { Markdown } from "~/components/Markdown";
+import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
+import { Spinner } from "~/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { useCopy } from "~/lib/clipboard";
+import { fileIconFor } from "~/lib/fileIcons";
+import { fmtSize, splitFrontmatter, type Skill, type SkillDetail, type SkillFileContent } from "~/lib/skills";
+import { cn } from "~/lib/utils";
+
+import { ErrorLine, errorText, HarnessChips, ProblemIcon, ScopeBadge, Segmented, type SkillsCommand } from "./parts";
+
+type ViewMode = "preview" | "source";
+
+const isMarkdown = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
+
+function stripDetail(d: SkillDetail): Skill {
+  const { content: _content, files: _files, ...skill } = d;
+  return skill;
+}
+
+/** SKILL.md's frontmatter as a compact key/value block above the body. */
+function FrontmatterBlock({ fields }: { fields: [string, string][] }) {
+  if (fields.length === 0) return null;
+  return (
+    <dl className="bg-muted/40 mb-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-lg border px-3 py-2">
+      {fields.map(([key, value], i) => (
+        <div key={`${key}-${i}`} className="contents">
+          <dt className="text-muted-foreground font-mono text-[10.5px] leading-5">{key}</dt>
+          <dd className="min-w-0 text-[12px] leading-5 break-words">{value || <span className="text-muted-foreground">…</span>}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function SourceView({ text }: { text: string }) {
+  return (
+    <pre className="bg-muted/30 overflow-x-auto rounded-lg border px-3 py-2 font-mono text-[11.5px] leading-relaxed break-words whitespace-pre-wrap">
+      {text}
+    </pre>
+  );
+}
+
+function DocumentView({ text, path, mode }: { text: string; path: string; mode: ViewMode }) {
+  if (mode === "source" || !isMarkdown(path)) return <SourceView text={text} />;
+  const { fields, body } = splitFrontmatter(text);
+  return (
+    <>
+      <FrontmatterBlock fields={fields} />
+      <Markdown text={body} className="text-[13px] leading-relaxed break-words" />
+    </>
+  );
+}
+
+export function SkillDetailView({
+  command,
+  scopeArgs,
+  skill,
+  startEditing,
+  onBack,
+  onChanged,
+}: {
+  command: SkillsCommand;
+  scopeArgs: Record<string, unknown>;
+  skill: Skill;
+  /** Open straight into the editor, as after creating the skill. */
+  startEditing?: boolean;
+  onBack: () => void;
+  onChanged: (skill: Skill) => void;
+}) {
+  const [detail, setDetail] = useState<SkillDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadSeq, setReloadSeq] = useState(0);
+
+  // null = SKILL.md; otherwise a file path relative to the skill.
+  const [doc, setDoc] = useState<string | null>(null);
+  const [mode, setMode] = useState<ViewMode>("preview");
+  const [file, setFile] = useState<SkillFileContent | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [fileError, setFileError] = useState("");
+  // Files already fetched this visit: flipping between two on 4G should not
+  // cost a round trip each time.
+  const fileCache = useRef(new Map<string, SkillFileContent>());
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const pendingEdit = useRef(Boolean(startEditing));
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { copy } = useCopy();
+
+  const commandRef = useRef(command);
+  commandRef.current = command;
+  const argsRef = useRef(scopeArgs);
+  argsRef.current = scopeArgs;
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+
+  useEffect(() => {
+    let stale = false;
+    setLoading(true);
+    setError("");
+    commandRef
+      .current<SkillDetail>("read_skill", { ...argsRef.current, dir: skill.dir })
+      .then((d) => {
+        if (stale) return;
+        setDetail(d);
+        setLoading(false);
+        if (pendingEdit.current) {
+          pendingEdit.current = false;
+          setDraft(d.content);
+          setEditing(true);
+        }
+      })
+      .catch((e) => {
+        if (stale) return;
+        setError(errorText(e));
+        setLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [skill.dir, reloadSeq]);
+
+  useEffect(() => {
+    if (doc === null) return;
+    const cached = fileCache.current.get(doc);
+    if (cached) {
+      setFile(cached);
+      setFileError("");
+      return;
+    }
+    let stale = false;
+    setFile(null);
+    setFileLoading(true);
+    setFileError("");
+    commandRef
+      .current<SkillFileContent>("read_skill_file", { ...argsRef.current, dir: skill.dir, path: doc })
+      .then((f) => {
+        if (stale) return;
+        fileCache.current.set(doc, f);
+        setFile(f);
+        setFileLoading(false);
+      })
+      .catch((e) => {
+        if (stale) return;
+        setFileError(errorText(e));
+        setFileLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [doc, skill.dir]);
+
+  const openDoc = (next: string | null) => {
+    setDoc(next);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  };
+
+  const current = detail ?? skill;
+  const dirty = editing && detail !== null && draft !== detail.content;
+
+  const confirmDiscard = () => !dirty || window.confirm("Discard your unsaved changes?");
+
+  const startEdit = () => {
+    if (!detail) return;
+    setDraft(detail.content);
+    setSaveError("");
+    openDoc(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    if (!confirmDiscard()) return;
+    setEditing(false);
+    setSaveError("");
+  };
+
+  const save = useCallback(async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      await commandRef.current("save_skill", { ...argsRef.current, dir: skill.dir, content: draft });
+      const fresh = await commandRef.current<SkillDetail>("read_skill", { ...argsRef.current, dir: skill.dir });
+      setDetail(fresh);
+      setEditing(false);
+      onChangedRef.current(stripDetail(fresh));
+    } catch (e) {
+      setSaveError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, saving, skill.dir]);
+
+  const back = () => {
+    if (!confirmDiscard()) return;
+    onBack();
+  };
+
+  const header = (
+    <div className="flex items-start gap-1 border-b px-1 py-1">
+      <IconButton label="Back to skills" onClick={back}>
+        <ArrowLeftIcon />
+      </IconButton>
+      <div className="min-w-0 flex-1 py-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <h2 className="min-w-0 truncate font-mono text-[13px] font-medium" title={current.name}>
+            {current.name}
+          </h2>
+          <ProblemIcon problem={current.problem} />
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <ScopeBadge skill={current} />
+          <HarnessChips harnesses={current.harnesses} />
+          {!current.editable && <span className="text-muted-foreground text-[10px]">read-only</span>}
+        </div>
+      </div>
+      {current.editable && !editing && (
+        <Button variant="outline" size="sm" className="mt-1 h-11 text-[12px] md:h-8" onClick={startEdit} disabled={!detail}>
+          <PencilIcon className="size-3.5" />
+          Edit
+        </Button>
+      )}
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="More actions" className="size-11 shrink-0 md:size-8">
+                <EllipsisVerticalIcon />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>More actions</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="end" className="min-w-44">
+          <DropdownMenuItem onSelect={() => void copy(current.dir)} className="gap-2 text-[13px]">
+            <CopyIcon className="size-3.5" />
+            Copy path
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void copy(`${current.dir}/SKILL.md`)} className="gap-2 text-[13px]">
+            <FileIcon className="size-3.5" />
+            Copy SKILL.md path
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
+  if (editing) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {header}
+        <div className="flex items-center gap-2 border-b px-3 py-1.5">
+          <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10.5px]">
+            Editing SKILL.md{dirty ? " · unsaved" : ""}
+          </span>
+          <Button variant="ghost" size="sm" className="h-11 text-[12px] md:h-8" onClick={cancelEdit} disabled={saving}>
+            Cancel
+          </Button>
+          <Button size="sm" className="h-11 text-[12px] md:h-8" onClick={() => void save()} disabled={saving || !dirty}>
+            {saving && <Spinner className="size-3.5" />}
+            Save
+          </Button>
+        </div>
+        {saveError && <ErrorLine message={saveError} className="border-b px-3 py-2" />}
+        <textarea
+          aria-label="SKILL.md source"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+              e.preventDefault();
+              if (dirty) void save();
+            }
+          }}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          // 16px on a phone so focusing it does not zoom Mobile Safari.
+          className="bg-background placeholder:text-muted-foreground min-h-0 w-full flex-1 resize-none px-3 py-2 font-mono text-base leading-relaxed outline-none md:text-[12px]"
+        />
+      </div>
+    );
+  }
+
+  const docPath = doc ?? "SKILL.md";
+  const viewingText = doc === null ? (detail?.content ?? null) : file && !file.binary ? file.content : null;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {header}
+      <div className="flex items-center gap-2 border-b px-3 py-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="min-w-0 truncate font-mono text-[11px]" title={docPath}>
+            {docPath}
+          </span>
+          {doc !== null && (
+            <button
+              type="button"
+              onClick={() => openDoc(null)}
+              aria-label="Back to SKILL.md"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex size-11 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 md:size-6"
+            >
+              <XIcon className="size-3.5" />
+            </button>
+          )}
+        </div>
+        {isMarkdown(docPath) && (
+          <Segmented
+            label="View"
+            value={mode}
+            onChange={setMode}
+            options={[
+              { id: "preview", label: "Preview" },
+              { id: "source", label: "Source" },
+            ]}
+          />
+        )}
+      </div>
+
+      <div ref={scrollRef} className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3">
+        {current.problem && (
+          <div className="bg-attention-surface text-attention-foreground mb-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12px]">
+            <ProblemIcon problem={current.problem} className="mt-px" />
+            <span className="min-w-0 break-words">{current.problem}</span>
+          </div>
+        )}
+
+        {loading && !detail ? (
+          <p className="text-muted-foreground flex items-center gap-2 py-4 text-[12px]">
+            <Spinner className="text-primary size-3.5" /> Reading {current.name}…
+          </p>
+        ) : error && !detail ? (
+          <div className="space-y-2 py-2">
+            <ErrorLine message={error} />
+            <Button variant="outline" size="sm" onClick={() => setReloadSeq((n) => n + 1)}>
+              Try again
+            </Button>
+          </div>
+        ) : doc !== null && fileLoading ? (
+          <p className="text-muted-foreground flex items-center gap-2 py-4 text-[12px]">
+            <Spinner className="text-primary size-3.5" /> Reading {doc}…
+          </p>
+        ) : doc !== null && fileError ? (
+          <ErrorLine message={fileError} className="py-2" />
+        ) : doc !== null && file?.binary ? (
+          <p className="text-muted-foreground py-4 text-[12px]">Binary file — nothing to show as text.</p>
+        ) : viewingText !== null ? (
+          <DocumentView text={viewingText} path={docPath} mode={mode} />
+        ) : null}
+
+        {detail && detail.files.length > 0 && (
+          <section className="mt-6">
+            <h3 className="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">
+              Files <span className="tabular-nums">{detail.files.length}</span>
+            </h3>
+            <ul className="-mx-1">
+              {detail.files.map((f) => {
+                const { Icon, tone } = fileIconFor(f.path);
+                const selected = f.path === doc;
+                return (
+                  <li key={f.path}>
+                    <button
+                      type="button"
+                      onClick={() => openDoc(selected ? null : f.path)}
+                      aria-current={selected ? "true" : undefined}
+                      className={cn(
+                        "focus-visible:ring-ring group flex min-h-11 w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0",
+                        selected ? "bg-accent" : "hover:bg-accent/50",
+                      )}
+                    >
+                      <Icon className={cn("size-3.5 shrink-0", tone || "text-muted-foreground/70")} />
+                      <span className="text-muted-foreground/90 group-hover:text-foreground min-w-0 flex-1 truncate font-mono text-[11px]">
+                        {f.path}
+                      </span>
+                      <span className="text-muted-foreground/70 shrink-0 text-[10px] tabular-nums">{fmtSize(f.size)}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+
+        <section className="mt-6 mb-2">
+          <h3 className="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">Found at</h3>
+          <ul className="text-muted-foreground space-y-0.5 font-mono text-[10.5px] break-all">
+            {current.paths.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+            {!current.paths.includes(current.dir) && (
+              <li className="text-muted-foreground/70">→ {current.dir}</li>
+            )}
+          </ul>
+        </section>
+      </div>
+    </div>
+  );
+}

@@ -33,6 +33,22 @@ type CreateOptions struct {
 	// SessionID.
 	Resume           bool
 	HarnessSessionID string
+
+	// MCPServers are stdio MCP servers omniplex runs beside the harness, the
+	// way it gives an agent tools of its own (publishing an artefact). An
+	// adapter whose harness cannot take MCP servers ignores them.
+	MCPServers []MCPServer
+}
+
+// MCPServer is one stdio MCP server. Tools lists the tool names it serves, so
+// an adapter can pre-approve them rather than ask a human about omniplex's own
+// tools.
+type MCPServer struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"`
+	Tools   []string          `json:"tools"`
 }
 
 // PromptInput is one user turn.

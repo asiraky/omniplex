@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
+	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/endpoints"
@@ -53,7 +54,11 @@ type Server struct {
 	// attachments holds images a human added to a prompt. Nil in tests that
 	// never upload one, in which case the endpoints report the feature off.
 	attachments *attachment.Store
-	logf        func(string, ...any)
+	// artefacts holds what sessions produced; signer mints the tokens that
+	// open them outside the device gate. Both nil turns artefacts off.
+	artefacts *artefact.Store
+	signer    *artefact.Signer
+	logf      func(string, ...any)
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -84,6 +89,9 @@ type Options struct {
 	// Attachments stores images attached to prompts. Nil turns the feature
 	// off: uploads are refused and nothing else changes.
 	Attachments *attachment.Store
+	// Artefacts and ArtefactSigner turn on session artefacts.
+	Artefacts      *artefact.Store
+	ArtefactSigner *artefact.Signer
 	// Commit is the git revision this binary was built from. It is what makes
 	// a deploy verifiable: without it "the server restarted" and "the server
 	// restarted running the new binary" look identical from outside.
@@ -105,6 +113,8 @@ func New(o Options) *Server {
 		webFS:       o.WebFS,
 		allowAny:    o.AllowAnyOrigin,
 		attachments: o.Attachments,
+		artefacts:   o.Artefacts,
+		signer:      o.ArtefactSigner,
 		commit:      o.Commit,
 		logf:        o.Logf,
 	}
@@ -294,6 +304,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/attachments", s.handleUploadAttachment)
 	mux.HandleFunc("GET /api/sessions/{id}/attachments/{attachmentId}", s.handleGetAttachment)
 
+	s.routeArtefacts(mux)
+
 	mux.HandleFunc("/ws", s.serveWS)
 
 	// A pty per open terminal tab, scoped to the session's checkout. Behind
@@ -327,7 +339,7 @@ func publicPaths(path string) bool {
 	case "/pair", "/api/pair", "/api/health":
 		return true
 	}
-	return false
+	return artefactPublicPath(path)
 }
 
 // gate refuses anything from an unpaired device before it reaches a handler.

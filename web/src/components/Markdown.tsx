@@ -166,7 +166,7 @@ const COMPONENTS: Components = {
   code: ({ children }) => <InlineCode>{children}</InlineCode>,
   pre: ({ node }) => <CodeBlock code={codeText(node)} lang={codeLang(node)} />,
   table: ({ children }) => (
-    <div className="scroll-thin my-2 overflow-x-auto overscroll-x-contain rounded-lg border first:mt-0 last:mb-0">
+    <div className="scroll-thin scroll-shadow-x my-2 overflow-x-auto overscroll-x-contain rounded-lg border first:mt-0 last:mb-0">
       <table className="w-full border-collapse text-[13px]">{children}</table>
     </div>
   ),
@@ -194,6 +194,9 @@ const COMPONENTS: Components = {
 };
 
 const PLUGINS = [remarkGfm, remarkBreaks];
+// A written document means its single newlines as soft wraps, the way every
+// other renderer reads a README; only chat prose relies on them as breaks.
+const DOCUMENT_PLUGINS = [remarkGfm];
 
 /**
  * Markdown as an agent writes it: GitHub flavour, single newlines kept as
@@ -203,18 +206,23 @@ const PLUGINS = [remarkGfm, remarkBreaks];
  *
  * Memoised on the text, so a message that has stopped changing is not
  * re-parsed every time a later one grows.
+ *
+ * `document` is for a whole file rather than a chat message: complete, so no
+ * fence needs closing, and written with soft-wrapped lines.
  */
 export const Markdown = memo(function Markdown({
   text,
   className,
+  document = false,
 }: {
   text: string;
   className?: string;
+  document?: boolean;
 }) {
   return (
     <div className={cn("min-w-0", className)}>
-      <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
-        {closeOpenFence(text)}
+      <ReactMarkdown remarkPlugins={document ? DOCUMENT_PLUGINS : PLUGINS} components={COMPONENTS}>
+        {document ? text : closeOpenFence(text)}
       </ReactMarkdown>
     </div>
   );

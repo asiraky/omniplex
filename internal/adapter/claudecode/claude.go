@@ -262,6 +262,18 @@ type sidecarConfig struct {
 	// EnvKeys names every variable the host set on the bridge. The bridge
 	// passes exactly those on to Claude Code; resolved.command fills it.
 	EnvKeys []string `json:"envKeys,omitempty"`
+	// MCPServers are omniplex's own tool servers, keyed by name as the SDK
+	// wants them. AllowedTools pre-approves their tools: asking a human
+	// whether the agent may publish into their own session is noise.
+	MCPServers   map[string]sdkMCPServer `json:"mcpServers,omitempty"`
+	AllowedTools []string                `json:"allowedTools,omitempty"`
+}
+
+type sdkMCPServer struct {
+	Type    string            `json:"type"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // conversationID resolves which Claude conversation a CreateSession call names
@@ -304,6 +316,15 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		AllowDangerouslySkipPermissions: true,
 		Effort:                          o.Effort,
 		ClaudePath:                      r.claudePath,
+	}
+	for _, m := range o.MCPServers {
+		if cfg.MCPServers == nil {
+			cfg.MCPServers = map[string]sdkMCPServer{}
+		}
+		cfg.MCPServers[m.Name] = sdkMCPServer{Type: "stdio", Command: m.Command, Args: m.Args, Env: m.Env}
+		for _, t := range m.Tools {
+			cfg.AllowedTools = append(cfg.AllowedTools, "mcp__"+m.Name+"__"+t)
+		}
 	}
 	// One field or the other, never both — the SDK rejects the pair.
 	if o.Resume {

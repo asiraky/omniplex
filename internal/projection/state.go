@@ -119,6 +119,10 @@ const (
 	// neither a message nor a tool call: a context compaction, or a switch to
 	// another account.
 	ItemNotice = "notice"
+	// ItemArtefact is an artefact the agent published, at the point in the
+	// conversation it was published. Uploads get no item: they show on the
+	// message that carried them.
+	ItemArtefact = "artefact"
 )
 
 // Item is one entry in the session timeline, in the order it first appeared.
@@ -154,7 +158,36 @@ type Item struct {
 	Trigger    string `json:"trigger,omitempty"`    // auto | manual
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
+
+	// artefact: Title is its name. Enough to draw the tile without the
+	// artefact list.
+	ArtefactID string `json:"artefactId,omitempty"`
+	Version    int    `json:"version,omitempty"`
+	MediaType  string `json:"mediaType,omitempty"`
+	Size       int64  `json:"size,omitempty"`
 }
+
+// Artefact is something the session produced, with every version of it.
+type Artefact struct {
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	Versions []ArtefactVersion `json:"versions"`
+}
+
+type ArtefactVersion struct {
+	Version     int    `json:"version"`
+	MediaType   string `json:"mediaType"`
+	Size        int64  `json:"size"`
+	Entry       string `json:"entry"`
+	Files       int    `json:"files"`
+	Source      string `json:"source"`
+	Note        string `json:"note,omitempty"`
+	TurnID      string `json:"turnId,omitempty"`
+	PublishedAt int64  `json:"publishedAt"`
+}
+
+// Latest is the newest version.
+func (a Artefact) Latest() ArtefactVersion { return a.Versions[len(a.Versions)-1] }
 
 // Job is work running beside the conversation: a subagent, a background
 // shell, a monitor. It is the projection of the job.* events, merged field by
@@ -284,6 +317,9 @@ type State struct {
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
 	Queued       []QueuedPrompt            `json:"queuedPrompts"`
+	// Artefacts is never windowed: it is small, and the list has to be whole
+	// for the artefacts surface to be.
+	Artefacts []Artefact `json:"artefacts"`
 
 	itemIndex map[string]int `json:"-"`
 }
@@ -299,6 +335,7 @@ func New(sessionID string) *State {
 		Pending:      []PendingPermission{},
 		Elicitations: []PendingElicitation{},
 		Queued:       []QueuedPrompt{},
+		Artefacts:    []Artefact{},
 		itemIndex:    map[string]int{},
 	}
 }
@@ -316,6 +353,9 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	var s State
 	if err := json.Unmarshal(blob, &s); err != nil {
 		return nil, err
+	}
+	if s.Artefacts == nil {
+		s.Artefacts = []Artefact{}
 	}
 	s.reindex()
 	return &s, nil
@@ -829,6 +869,11 @@ func (s *State) Apply(ev proto.Event) {
 			it.PostTokens = p.PostTokens
 		})
 
+	case proto.ArtefactPublished:
+		var p proto.ArtefactPublishedPayload
+		decode(ev.Payload, &p)
+		s.applyArtefact(p, ev)
+
 	case proto.SessionAccountChanged:
 		var p proto.SessionAccountChangedPayload
 		decode(ev.Payload, &p)
@@ -926,6 +971,61 @@ func truncate(s string, n int) string {
 // Clone returns a deep copy safe to hand outside the actor goroutine. A
 // shallow copy would share the item and content slices with the live state,
 // which the actor keeps mutating.
+// ArtefactByID finds an artefact.
+func (s *State) ArtefactByID(id string) (Artefact, bool) {
+	for _, a := range s.Artefacts {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return Artefact{}, false
+}
+
+// ArtefactByName finds an artefact by name, for deciding whether a publish is
+// a new artefact or the next version of one.
+func (s *State) ArtefactByName(name string) (Artefact, bool) {
+	for _, a := range s.Artefacts {
+		if a.Name == name {
+			return a, true
+		}
+	}
+	return Artefact{}, false
+}
+
+func (s *State) applyArtefact(p proto.ArtefactPublishedPayload, ev proto.Event) {
+	v := ArtefactVersion{
+		Version: p.Version, MediaType: p.MediaType, Size: p.Size, Entry: p.Entry, Files: p.Files,
+		Source: p.Source, Note: p.Note, TurnID: p.TurnID, PublishedAt: ev.Timestamp,
+	}
+	found := false
+	for i := range s.Artefacts {
+		if s.Artefacts[i].ID == p.ArtefactID {
+			s.Artefacts[i].Versions = append(s.Artefacts[i].Versions, v)
+			s.Artefacts[i].Name = p.Name
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.Artefacts = append(s.Artefacts, Artefact{ID: p.ArtefactID, Name: p.Name, Versions: []ArtefactVersion{v}})
+	}
+	if p.Source == proto.ArtefactFromUpload {
+		return
+	}
+	s.upsert("artefact:"+p.ArtefactID+"@"+strconv.Itoa(p.Version), func(it *Item) {
+		it.Kind = ItemArtefact
+		it.TurnID = p.TurnID
+		if it.ReceivedAt == 0 {
+			it.ReceivedAt = ev.Timestamp
+		}
+		it.Title = p.Name
+		it.ArtefactID = p.ArtefactID
+		it.Version = p.Version
+		it.MediaType = p.MediaType
+		it.Size = p.Size
+	})
+}
+
 func (s *State) Clone() *State {
 	out := *s
 	out.itemIndex = nil
@@ -948,6 +1048,11 @@ func (s *State) Clone() *State {
 	copy(out.Jobs, s.Jobs)
 	out.Plan = make([]proto.PlanEntry, len(s.Plan))
 	copy(out.Plan, s.Plan)
+	out.Artefacts = make([]Artefact, len(s.Artefacts))
+	for i, a := range s.Artefacts {
+		a.Versions = append([]ArtefactVersion(nil), a.Versions...)
+		out.Artefacts[i] = a
+	}
 
 	out.Pending = make([]PendingPermission, len(s.Pending))
 	for i, p := range s.Pending {

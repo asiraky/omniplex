@@ -442,6 +442,11 @@ func ephemeralCommand(name string) bool {
 	switch name {
 	case "auth_begin", "auth_respond", "auth_cancel", "provider_auth_overview", "provider_model_settings":
 		return true
+	// Skill reads are reads of files on disk that change underneath; a stored
+	// answer would be stale. save_skill is idempotent (it writes the whole
+	// file), so replaying it is harmless and skipping the ledger costs nothing.
+	case "list_skills", "read_skill", "read_skill_file", "save_skill":
+		return true
 	}
 	return false
 }
@@ -499,6 +504,13 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			for i, m := range metas {
 				images = append(images, proto.PromptImage{ID: m.ID, MediaType: m.MediaType, Path: paths[i]})
 			}
+		}
+		if len(a.Files) > 0 {
+			trailer, err := c.srv.attachedFiles(ctx, actor, a.SessionID, a.Files)
+			if err != nil {
+				return nil, err
+			}
+			a.Text += trailer
 		}
 		if f.Command == "schedule_prompt" {
 			err := actor.Schedule(ctx, proto.ScheduledPrompt{ID: a.ID, Revision: a.Revision, Prompt: a.Text, Images: images, DueAt: a.DueAt, TimeZone: a.TimeZone})
@@ -875,6 +887,13 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"tree": tree}, nil
+
+	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill":
+		var a skillArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		return c.srv.skillCommand(ctx, f.Command, a)
 
 	case "session_read_file":
 		var a readFileArgs

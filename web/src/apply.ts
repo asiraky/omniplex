@@ -43,6 +43,58 @@ function upsert(state: SessionState, id: string, mut: (it: Item) => void): Item[
   return [...state.items, it];
 }
 
+// applyArtefact folds artefact.published: a version onto its artefact, and a
+// timeline item for anything the agent published. Uploads get no item; they
+// show on the message that carried them. Mirrors State.applyArtefact in
+// internal/projection/state.go.
+interface ArtefactPublished {
+  artefactId: string;
+  version: number;
+  name: string;
+  mediaType: string;
+  size: number;
+  entry: string;
+  files: number;
+  source: "agent" | "upload";
+  note?: string;
+  turnId?: string;
+}
+
+function applyArtefact(s: SessionState, ts: number, p: ArtefactPublished): SessionState {
+  const version = {
+    version: p.version,
+    mediaType: p.mediaType,
+    size: p.size,
+    entry: p.entry,
+    files: p.files,
+    source: p.source,
+    note: p.note,
+    turnId: p.turnId,
+    publishedAt: ts,
+  };
+  const list = s.artefacts ?? [];
+  const i = list.findIndex((a) => a.id === p.artefactId);
+  const artefacts =
+    i >= 0
+      ? list.map((a, j) => (j === i ? { ...a, name: p.name, versions: [...a.versions, version] } : a))
+      : [...list, { id: p.artefactId, name: p.name, versions: [version] }];
+  if (p.source === "upload") return { ...s, artefacts };
+  return {
+    ...s,
+    artefacts,
+    items: upsert(s, `artefact:${p.artefactId}@${p.version}`, (it) => {
+      it.kind = "artefact";
+      it.turnId = p.turnId || undefined;
+      it.receivedAt ??= ts;
+      it.title = p.name;
+      it.artefactId = p.artefactId;
+      it.version = p.version;
+      it.mediaType = p.mediaType;
+      it.size = p.size;
+    }),
+  };
+}
+
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
@@ -367,6 +419,9 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
           it.postTokens = p.postTokens;
         }),
       };
+
+    case "artefact.published":
+      return applyArtefact(s, ev.timestamp, p as ArtefactPublished);
 
     case "session.account_changed":
       // The line where the session moved to another account. Mirrors

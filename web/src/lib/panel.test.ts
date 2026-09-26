@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { closeSurface, defaultPanel, fileSurface, loadPanel, openSurface, savePanel } from "./panel";
+import { artefactSurface, closeSurface, defaultPanel, fileSurface, loadPanel, openSurface, putSurface, savePanel } from "./panel";
 
 describe("panel surfaces", () => {
   it("reuses a singleton and a repeated file path", () => {
@@ -22,6 +22,24 @@ describe("panel surfaces", () => {
     // Closing an inactive tab leaves the active one alone.
     p = closeSurface(p, "diff");
     expect(p.active).toBe("files");
+  });
+});
+
+describe("artefact tabs", () => {
+  it("keep one tab per artefact and move it to the version asked for", () => {
+    let p = putSurface(defaultPanel(), artefactSurface("a", 1));
+    p = putSurface(p, artefactSurface("b"));
+    p = putSurface(p, artefactSurface("a", 3));
+    expect(p.surfaces.map((s) => `${s.id}@${s.version ?? "latest"}`)).toEqual(["diff@latest", "artefact:a@3", "artefact:b@latest"]);
+    expect(p.active).toBe("artefact:a");
+  });
+
+  it("drop a saved artefact tab that has lost its id", () => {
+    localStorage.setItem(
+      "omniplex.panel.v1:s4",
+      JSON.stringify({ surfaces: [{ id: "artefact:x", kind: "artefact" }, artefactSurface("y", 2)], active: "artefact:x" }),
+    );
+    expect(loadPanel("s4")).toEqual({ surfaces: [artefactSurface("y", 2)], active: "artefact:y" });
   });
 });
 

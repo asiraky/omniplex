@@ -73,6 +73,12 @@ const (
 	WorkspaceCleanupFinished = "workspace.cleanup_finished"
 	WorkspaceCleanupFailed   = "workspace.cleanup_failed"
 	WorkspaceReleased        = "workspace.released"
+
+	// ArtefactPublished is a new version of something the session produced:
+	// a file or bundle the agent published, or one a human uploaded. The
+	// bytes are in the artefact store; this is the record that they belong
+	// to the session.
+	ArtefactPublished = "artefact.published"
 )
 
 // Stop reasons for turn.finished.
@@ -283,6 +289,29 @@ type SessionAccountChangedPayload struct {
 type SessionClosedPayload struct {
 	Reason string `json:"reason"`
 }
+
+// ArtefactPublishedPayload names one stored version of an artefact. Versions
+// of one artefact share its id; a publish under a name the session already
+// has is its next version.
+type ArtefactPublishedPayload struct {
+	ArtefactID string `json:"artefactId"`
+	Version    int    `json:"version"`
+	Name       string `json:"name"`
+	MediaType  string `json:"mediaType"`
+	Size       int64  `json:"size"`
+	Entry      string `json:"entry"`
+	Files      int    `json:"files"`
+	// Source is who produced it: the agent, or a human uploading.
+	Source string `json:"source"`
+	Note   string `json:"note,omitempty"`
+	// TurnID is the turn it was published in, when there was one.
+	TurnID string `json:"turnId,omitempty"`
+}
+
+const (
+	ArtefactFromAgent  = "agent"
+	ArtefactFromUpload = "upload"
+)
 
 // PromptImage is one image a human attached to a prompt.
 //

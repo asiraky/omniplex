@@ -564,3 +564,46 @@ describe("a turn that failed", () => {
     expect(screen.queryByText(/Server restarted/)).toBeNull();
   });
 });
+
+describe("published artefacts", () => {
+  const published = (n: number) => {
+    const s = state("done");
+    s.items = Array.from({ length: n }, (_, i) => ({
+      id: `art${i}`,
+      kind: "artefact",
+      artefactId: `a${i}`,
+      version: 1,
+      title: `file-${i}.md`,
+      mediaType: "text/markdown",
+      size: 10,
+      receivedAt: 1,
+    }));
+    s.turns = [];
+    return render(
+      <Transcript
+        state={s}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+      />,
+    );
+  };
+  const tiles = () => screen.queryAllByText(/^file-\d+\.md$/);
+
+  it("folds a long run of files behind a button that shows the rest", () => {
+    published(9);
+    expect(tiles()).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Show 6 more files" }));
+    expect(tiles()).toHaveLength(9);
+    expect(screen.queryByRole("button", { name: /^Show \d+ more/ })).toBeNull();
+  });
+
+  it("does not fold away a single file", () => {
+    published(4);
+    expect(tiles()).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: /^Show \d+ more/ })).toBeNull();
+  });
+});

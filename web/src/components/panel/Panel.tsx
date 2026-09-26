@@ -1,16 +1,22 @@
 import {
+  BookOpenIcon,
   BotIcon,
   FileDiffIcon,
+  FileIcon,
   FolderTreeIcon,
   Maximize2Icon,
   Minimize2Icon,
+  PackageIcon,
   PlusIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
+import { ArtefactList } from "~/components/artefacts/ArtefactList";
+import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { IconButton } from "~/components/IconButton";
+import { SkillsSurface } from "~/components/skills/SkillsSurface";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
@@ -25,12 +31,15 @@ import {
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { fileIconFor } from "~/lib/fileIcons";
 import { liveJobCount } from "~/lib/jobs";
+import type { Artefact } from "~/lib/artefacts";
 import {
+  artefactSurface,
   closeSurface,
   fileSurface,
   loadPanel,
   newTerminalSurface,
   openSurface,
+  putSurface,
   savePanel,
   type PanelState,
   type Surface,
@@ -38,7 +47,9 @@ import {
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
 import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, SessionChanges, SessionState } from "~/protocol";
-import { useIsDesktop } from "~/useMediaQuery";
+import { useDocksPanel } from "~/useMediaQuery";
+
+const NO_ARTEFACTS: Artefact[] = [];
 
 const WIDTH_KEY = "omniplex.changesWidth";
 const MIN_WIDTH = 320;
@@ -46,9 +57,12 @@ const DEFAULT_WIDTH = 460;
 
 /** An imperative ask from outside: put this on screen. */
 export interface PanelRequest {
-  kind: "diff" | "path" | "jobs";
+  kind: "diff" | "path" | "jobs" | "artefact" | "artefacts" | "skills";
   path?: string;
   line?: number;
+  artefactId?: string;
+  /** artefact: the version to show; none shows the latest. */
+  version?: number;
   nonce: number;
 }
 
@@ -73,8 +87,14 @@ export interface PanelProps {
   pr?: PullRequest | null;
 }
 
-function surfaceLabel(s: Surface): string {
+function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
   switch (s.kind) {
+    case "artefacts":
+      return "Artefacts";
+    case "skills":
+      return "Skills";
+    case "artefact":
+      return artefacts.find((a) => a.id === s.artefactId)?.name ?? "Artefact";
     case "diff":
       return "Diff";
     case "files":
@@ -96,6 +116,12 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
       return <FolderTreeIcon className={className} />;
     case "jobs":
       return <BotIcon className={className} />;
+    case "artefacts":
+      return <PackageIcon className={className} />;
+    case "artefact":
+      return <FileIcon className={className} />;
+    case "skills":
+      return <BookOpenIcon className={className} />;
     case "terminal":
       return <TerminalIcon className={className} />;
     case "file": {
@@ -235,9 +261,15 @@ function PanelBody({
       if (request.path) setReveal({ path: request.path, nonce: request.nonce });
       return;
     }
-    if (request.kind === "jobs") {
+    if (request.kind === "jobs" || request.kind === "artefacts" || request.kind === "skills") {
       routedNonce.current = request.nonce;
-      setPanel((p) => openSurface(p, { id: "jobs", kind: "jobs" }));
+      const kind = request.kind;
+      setPanel((p) => openSurface(p, { id: kind, kind }));
+      return;
+    }
+    if (request.kind === "artefact") {
+      routedNonce.current = request.nonce;
+      if (request.artefactId) setPanel((p) => putSurface(p, artefactSurface(request.artefactId!, request.version)));
       return;
     }
     if (!request.path) {
@@ -271,18 +303,43 @@ function PanelBody({
   }, []);
 
   const jobCount = liveJobCount(state.jobs);
+  const artefacts = state.artefacts ?? NO_ARTEFACTS;
+  const openArtefact = useCallback(
+    (id: string, version?: number) => setPanel((p) => putSurface(p, artefactSurface(id, version))),
+    [],
+  );
+  const shownArtefact = active?.kind === "artefact" ? artefacts.find((a) => a.id === active.artefactId) : undefined;
 
   const addSurface = useCallback((s: Surface) => setPanel((p) => openSurface(p, s)), []);
+
+  // The active tab is always in view: opening an artefact from the transcript
+  // appends a tab, and on a phone the strip is a few tabs wide.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const strip = tabsRef.current;
+    const tab = strip && panel.active ? strip.querySelector<HTMLElement>(`[data-surface="${CSS.escape(panel.active)}"]`) : null;
+    if (!strip || !tab) return;
+    const box = strip.getBoundingClientRect();
+    const at = tab.getBoundingClientRect();
+    if (at.left < box.left) strip.scrollLeft -= box.left - at.left;
+    else if (at.right > box.right) strip.scrollLeft += at.right - box.right;
+  }, [panel.active, open]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-1 border-b px-1.5 pt-[calc(0.375rem+env(safe-area-inset-top))] pb-1.5">
-        <div role="tablist" aria-label="Panel tabs" className="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        <div
+          ref={tabsRef}
+          role="tablist"
+          aria-label="Panel tabs"
+          className="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overscroll-x-contain"
+        >
           {panel.surfaces.map((s) => {
             const selected = s.id === panel.active;
             return (
               <span
                 key={s.id}
+                data-surface={s.id}
                 className={cn(
                   "group flex shrink-0 items-center rounded-md border text-[11.5px] transition-colors",
                   selected ? "bg-accent border-border" : "hover:bg-accent/50 border-transparent",
@@ -293,11 +350,11 @@ function PanelBody({
                   role="tab"
                   aria-selected={selected}
                   onClick={() => setPanel((p) => ({ ...p, active: s.id }))}
-                  title={s.kind === "file" ? s.path : surfaceLabel(s)}
+                  title={s.kind === "file" ? s.path : surfaceLabel(s, artefacts)}
                   className="focus-visible:ring-ring flex min-h-8 items-center gap-1.5 rounded-l-md py-1 pl-2 outline-none focus-visible:ring-2"
                 >
                   <SurfaceIcon s={s} className="size-3.5 shrink-0" />
-                  <span className="max-w-32 truncate">{surfaceLabel(s)}</span>
+                  <span className="max-w-32 truncate">{surfaceLabel(s, artefacts)}</span>
                   {s.kind === "jobs" && jobCount > 0 && (
                     <span className="bg-primary/15 text-primary rounded-full px-1.5 text-[10px] tabular-nums">
                       {jobCount}
@@ -306,7 +363,7 @@ function PanelBody({
                 </button>
                 <button
                   type="button"
-                  aria-label={`Close ${surfaceLabel(s)}`}
+                  aria-label={`Close ${surfaceLabel(s, artefacts)}`}
                   onClick={() => setPanel((p) => closeSurface(p, s.id))}
                   className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-8 items-center rounded-r-md py-1 pr-1.5 pl-1 opacity-60 outline-none focus-visible:ring-2 group-hover:opacity-100"
                 >
@@ -315,8 +372,11 @@ function PanelBody({
               </span>
             );
           })}
+        </div>
 
-          <DropdownMenu>
+        {/* Outside the scroller: with a row of tabs, a + that scrolled away with
+            them would be off screen on a phone. */}
+        <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -336,12 +396,17 @@ function PanelBody({
               <DropdownMenuItem onSelect={() => addSurface({ id: "jobs", kind: "jobs" })}>
                 <BotIcon className="size-3.5" /> Jobs
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addSurface({ id: "artefacts", kind: "artefacts" })}>
+                <PackageIcon className="size-3.5" /> Artefacts
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addSurface({ id: "skills", kind: "skills" })}>
+                <BookOpenIcon className="size-3.5" /> Skills
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setPanel((p) => openSurface(p, newTerminalSurface(p)))}>
                 <TerminalIcon className="size-3.5" /> Terminal
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
 
         {!inSheet && onToggleExpanded && (
           <IconButton
@@ -392,6 +457,22 @@ function PanelBody({
           />
         )}
         {active?.kind === "jobs" && <JobsSurface sessionId={sessionId} state={state} command={command} />}
+        {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
+        {active?.kind === "artefact" &&
+          (shownArtefact ? (
+            <ArtefactSurface
+              key={shownArtefact.id}
+              sessionId={sessionId}
+              artefact={shownArtefact}
+              version={active.version}
+              onVersionChange={(v) => openArtefact(shownArtefact.id, v)}
+            />
+          ) : (
+            <div className="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-[13px]">
+              This artefact is not in this session.
+            </div>
+          ))}
+        {active?.kind === "skills" && <SkillsSurface command={command} sessionId={sessionId} />}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces
@@ -413,7 +494,7 @@ function PanelBody({
  * readable.
  */
 export function Panel(props: PanelProps) {
-  const isDesktop = useIsDesktop();
+  const docked = useDocksPanel();
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_KEY));
     return Number.isFinite(stored) && stored >= MIN_WIDTH ? stored : DEFAULT_WIDTH;
@@ -422,7 +503,7 @@ export function Panel(props: PanelProps) {
 
   // Escape closes the docked panel. The sheet does this for itself.
   useEffect(() => {
-    if (!props.open || !isDesktop) return;
+    if (!props.open || !docked) return;
     const onKey = (e: KeyboardEvent) => {
       // A dialog or sheet over the panel owns Escape first; closing both at
       // once would dismiss something the user was not looking at.
@@ -431,7 +512,7 @@ export function Panel(props: PanelProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [props.open, props.onClose, isDesktop]);
+  }, [props.open, props.onClose, docked]);
 
   useEffect(() => {
     if (!dragging.current) localStorage.setItem(WIDTH_KEY, String(width));
@@ -456,7 +537,7 @@ export function Panel(props: PanelProps) {
     window.addEventListener("pointerup", onUp);
   }, []);
 
-  if (!isDesktop) {
+  if (!docked) {
     if (!props.open) return null;
     return (
       <Sheet open onOpenChange={(v) => !v && props.onClose()}>
