@@ -109,6 +109,9 @@ type createArgs struct {
 	// harness default" as an empty value from an older client omitting agent
 	// fields and asking the server to inherit the project profile.
 	AgentSettingsExplicit bool `json:"agentSettingsExplicit"`
+	// Text is the first message. It waits in the new thread's queue while the
+	// workspace is prepared, so starting a thread is one round trip.
+	Text string `json:"text"`
 }
 
 // deleteThreadArgs carries the user's answer to the confirmation dialog's

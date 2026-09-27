@@ -16,7 +16,7 @@ import {
   replaceComposerTrigger,
   submittedComposerAction,
 } from "~/lib/composerItems";
-import { formatContextWindow, pickerInstances, resolveInstance, resolveModel } from "~/lib/models";
+import { formatContextWindow, pickerInstances, resolveInstance, resolveModel, type PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import { dragHasFiles, filesFrom, sendPayload, type Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
@@ -58,6 +58,8 @@ export function Composer({
   onSwitchModel,
   onSwitchEffort,
   onSwitchAccount,
+  anyHarness = false,
+  onPickInstance,
   usage,
   loadComposerItems,
   onRunClientAction,
@@ -104,6 +106,10 @@ export function Composer({
       there. Omitted, the picker still offers other accounts but choosing one
       does nothing. */
   onSwitchAccount?: (instance: string, model: string) => void;
+  /** A thread not yet started can pick any harness, not only its own. */
+  anyHarness?: boolean;
+  /** Choosing an account on the picker's rail, before any model under it. */
+  onPickInstance?: (instance: PickerInstance) => void;
   /** The thread's token usage, source of the context meter. */
   usage?: Usage;
   loadComposerItems?: () => Promise<ComposerItem[]>;
@@ -588,18 +594,20 @@ export function Composer({
               e.target.value = "";
             }}
           />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            disabled={disabled}
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach files"
-            title="Attach files"
-            className="text-muted-foreground hover:text-foreground size-11 shrink-0 rounded-full md:size-8"
-          >
-            <PlusIcon />
-          </Button>
+          {onAttachImages && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={disabled}
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach files"
+              title="Attach files"
+              className="text-muted-foreground hover:text-foreground size-11 shrink-0 rounded-full md:size-8"
+            >
+              <PlusIcon />
+            </Button>
+          )}
 
           {usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />}
 
@@ -612,7 +620,8 @@ export function Composer({
             // sitting beside it as a second dropdown.
             <ModelPicker
               harnesses={harnesses}
-              lockDriver
+              lockDriver={!anyHarness}
+              onInstanceChange={onPickInstance}
               disabled={disabled}
               efforts={onSwitchEffort ? modelEfforts : []}
               effort={effort}

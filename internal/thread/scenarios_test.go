@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/store"
 )
@@ -298,5 +299,39 @@ func TestAttachingToACheckoutBeingCleanedUpIsRefused(t *testing.T) {
 
 	if _, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree}); err == nil {
 		t.Fatal("attaching to a checkout being cleaned up should be refused")
+	}
+}
+
+// The first message can go with the request that creates the thread. It
+// waits while the workspace is prepared and reaches the agent once it starts.
+func TestAMessageSentWhileTheWorkspaceIsPreparedRunsWhenTheAgentStarts(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	gate := make(chan struct{})
+	fa := &fakeAdapter{createGate: gate}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Prompt(context.Background(), "fix the login page", nil)
+	if err != nil {
+		t.Fatalf("a message to a thread being prepared was refused: %v", err)
+	}
+	if !res.Queued() {
+		t.Fatalf("the message started a turn with no agent to run it: %+v", res)
+	}
+	close(gate)
+	ready(t, st, a.ID)
+	waitFor(t, func() bool { return fa.thread() != nil })
+	select {
+	case in := <-fa.thread().prompts:
+		if in.Text != "fix the login page" {
+			t.Fatalf("the agent got %q", in.Text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the queued message never reached the agent")
 	}
 }

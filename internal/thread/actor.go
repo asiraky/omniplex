@@ -43,9 +43,13 @@ type Subscriber struct {
 type Actor struct {
 	scheduleReady   *sync.Map
 	activationError error
-	ID              string
-	Harness         string
-	Cwd             string
+	// preparing is true from StartPending until the harness starts. A prompt
+	// sent meanwhile waits in the queue, which is what lets the first message
+	// create the thread: it is there for the agent the moment it starts.
+	preparing bool
+	ID        string
+	Harness   string
+	Cwd       string
 
 	store   *store.Store
 	adapter adapter.Adapter
@@ -261,7 +265,7 @@ func StartPending(st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, en
 	a := &Actor{ID: meta.ID, Harness: meta.Harness, Cwd: meta.Cwd, store: st, adapter: ad, env: env,
 		inbox: make(chan command, 64), quit: make(chan struct{}), state: projection.New(meta.ID),
 		pendingPerm: map[string]chan adapter.PermissionOutcome{}, pendingElicit: map[string]chan adapter.ElicitationResult{},
-		subs: map[string]*Subscriber{}, logf: logf}
+		subs: map[string]*Subscriber{}, logf: logf, preparing: true}
 	a.wg.Add(1)
 	go a.run()
 	a.enqueueEmission(proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness, Model: meta.Model, Mode: meta.Mode, Effort: meta.Effort, Title: meta.Title}))
@@ -915,7 +919,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		a.Cwd, a.sess = cwd, sess
+		a.Cwd, a.sess, a.preparing = cwd, sess, false
 		a.pump(sess)
 		a.startCheckpoints()
 		if c.resume {
@@ -1157,6 +1161,12 @@ func (a *Actor) handle(c command) (stop bool) {
 				}
 			}
 			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Sent: sent}))
+			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
+			return false
+		}
+		if a.sess == nil && a.preparing && c.recovery == nil {
+			queueID := uuid.NewString()
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}

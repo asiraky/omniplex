@@ -14,8 +14,8 @@ import type { ScheduledPrompt, Turn } from "./protocol";
 import type { NewProjectRequest } from "./components/NewProject";
 import type { AddFolderRequest } from "./components/ProjectSettings";
 import { JobsStrip } from "./components/JobsStrip";
-import { NewThread } from "./components/NewThread";
-import type { NewThreadInput } from "./components/NewThread";
+import { ThreadDraft } from "./components/ThreadDraft";
+import type { NewThreadInput } from "./components/ThreadDraft";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { ElicitationPrompt } from "./components/ElicitationPrompt";
 import { DeleteThreadDialog, useDeleteThread } from "./components/DeleteThreadDialog";
@@ -66,6 +66,8 @@ import {
 import { toast } from "sonner";
 
 const LAST_THREAD = "omniplex.lastThread";
+// The drafts key for a thread not yet started.
+const NEW_THREAD = "new-thread";
 
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const ThreadSummaryPanel = lazy(() => import("./components/ThreadSummary").then((m) => ({ default: m.ThreadSummaryPanel })));
@@ -245,7 +247,8 @@ export function App() {
     wasDesktop.current = isDesktop;
     setSidebarOpen(isDesktop || activeRef.current === null);
   }, [isDesktop]);
-  const [creating, setCreating] = useState(false);
+  // A thread being written but not yet sent, and the project it opened on.
+  const [creating, setCreating] = useState<{ projectId?: string } | null>(null);
   const [projectSettings, setProjectSettings] = useState<Project | null>(null);
   const [newProject, setNewProject] = useState(false);
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
@@ -414,6 +417,7 @@ export function App() {
 
   const select = useCallback(
     (id: string) => {
+      setCreating(null);
       setActiveId(id);
       activeRef.current = id;
       // The panel belongs to a checkout, so it must not survive a move to a
@@ -431,18 +435,36 @@ export function App() {
     [isDesktop],
   );
 
-  // The sidebar stays as it was: on a phone the new-thread screen covers it
-  // completely, so closing it would only mean cancelling drops you onto an
-  // empty screen instead of back where you started.
-  const startNew = useCallback(() => setCreating(true), []);
+  // The draft takes the thread's place: nothing is attached while it is up,
+  // and picking a thread from the list leaves it.
+  const startNew = useCallback(() => {
+    const projectId = threads.find((t) => t.id === activeRef.current)?.projectId;
+    setCreating({ projectId });
+    if (activeRef.current) {
+      activeRef.current = null;
+      setActiveId(null);
+      setState(null);
+      setResume(null);
+      clientRef.current?.detach();
+    }
+    if (!isDesktop) setSidebarOpen(false);
+  }, [isDesktop, threads]);
 
   const create = useCallback(
     async (input: NewThreadInput) => {
       const res = await clientRef.current!.command("create_thread", input);
-      setCreating(false);
+      setDraft(NEW_THREAD, "");
       select(res.threadId);
+      // The thread exists but the message did not go: it waits in the new
+      // thread's composer rather than being lost.
+      if (res.promptError) {
+        setDraft(res.threadId, input.text);
+        toast.error("The thread started, but the message did not send", {
+          description: res.promptError,
+        });
+      }
     },
-    [select],
+    [select, setDraft],
   );
 
   const listWorkspaces = useCallback(async (projectId: string, folderId: string) => {
@@ -1505,8 +1527,13 @@ export function App() {
             </>
           ) : (
             <>
-              <span className="text-muted-foreground flex-1 text-[13px]">
-                {meta ? "Attaching…" : ""}
+              <span
+                className={cn(
+                  "flex-1 text-[13px]",
+                  creating && !meta ? "font-medium" : "text-muted-foreground",
+                )}
+              >
+                {meta ? "Attaching…" : creating ? "New thread" : ""}
               </span>
               {activeProviderInstance?.canLogin && (
                 <IconButton
@@ -1569,7 +1596,6 @@ export function App() {
                 draft={activeId ? (drafts[activeId] ?? "") : ""}
                 onDraftChange={(text) => activeId && setDraft(activeId, text)}
                 disabled={state.closed || workspaceCleaning || workspaceFailed}
-                sendDisabled={workspacePreparing}
                 disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
                 busy={state.phase === "turn"}
                 onSend={send}
@@ -1594,6 +1620,24 @@ export function App() {
               />
             </div>
           </div>
+        ) : creating ? (
+          <ThreadDraft
+            projects={projects}
+            activeProjectId={creating.projectId}
+            harnesses={harnesses}
+            userConfig={userConfig}
+            status={status}
+            draft={drafts[NEW_THREAD] ?? ""}
+            onDraftChange={(text) => setDraft(NEW_THREAD, text)}
+            onStart={create}
+            onListWorkspaces={listWorkspaces}
+            onListIssues={listIssues}
+            onAddProject={() => setNewProject(true)}
+            onSettings={setProjectSettings}
+            onRecheck={recheck}
+            onLogin={openInstanceAuth}
+            onManageProviders={() => setShowProviders(true)}
+          />
         ) : (
           <EmptyState
             restoring={restoring}
@@ -1670,24 +1714,6 @@ export function App() {
         />
       )}
 
-      {creating && (
-        <NewThread
-          projects={projects}
-          activeProjectId={meta?.projectId}
-          harnesses={harnesses}
-          userConfig={userConfig}
-          onCreate={create}
-          onListWorkspaces={listWorkspaces}
-          onListIssues={listIssues}
-          onAddProject={() => setNewProject(true)}
-          onSettings={setProjectSettings}
-          onRecheck={recheck}
-          onLogin={openInstanceAuth}
-          onManageProviders={() => setShowProviders(true)}
-          status={status}
-          onClose={() => setCreating(false)}
-        />
-      )}
       {showProviders && (
         <Suspense fallback={null}>
           <ProvidersSettings

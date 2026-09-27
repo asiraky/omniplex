@@ -464,6 +464,15 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if a.Text == "" {
+			return map[string]any{"threadId": actor.ID}, nil
+		}
+		// The thread exists now, so failing the command would have a retry
+		// make a second one. The message is handed back instead.
+		if _, err := actor.Prompt(ctx, a.Text, nil); err != nil {
+			return map[string]any{"threadId": actor.ID, "promptError": err.Error()}, nil
+		}
+		c.srv.mgr.NotifyList()
 		return map[string]any{"threadId": actor.ID}, nil
 
 	case "prompt", "schedule_prompt":

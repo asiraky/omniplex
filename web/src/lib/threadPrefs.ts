@@ -9,6 +9,10 @@ export interface HarnessPrefs {
 export interface ProjectPrefs {
   harness: string;
   byHarness: Record<string, HarnessPrefs>;
+  /** The folder the last thread started in; "" is the whole project. */
+  folderId?: string;
+  /** Whether the last thread in a git folder worked in it or on a copy. */
+  copy?: boolean;
 }
 export type ThreadPrefs = Record<string, ProjectPrefs>;
 const KEY = "omniplex.threadChoices.v1";
@@ -31,7 +35,12 @@ export function loadThreadPrefs(): ThreadPrefs {
         });
       }
       Object.defineProperty(result, project, {
-        value: { harness: value.harness, byHarness },
+        value: {
+          harness: value.harness,
+          byHarness,
+          ...(typeof value.folderId === "string" ? { folderId: value.folderId } : {}),
+          ...(typeof value.copy === "boolean" ? { copy: value.copy } : {}),
+        },
         enumerable: true,
       });
     }

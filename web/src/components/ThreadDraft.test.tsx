@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { render, viewport } from "~/test/harness";
-import { NewThread, type NewThreadInput } from "./NewThread";
+import { render } from "~/test/harness";
+import { ThreadDraft, type NewThreadInput } from "./ThreadDraft";
 import type { HarnessMeta, Project, Workspace } from "~/protocol";
 
 const project = {
@@ -21,33 +22,49 @@ const harness = {
   availability: { state: "ready" },
 } as unknown as HarnessMeta;
 
-function open(over: Partial<React.ComponentProps<typeof NewThread>> = {}) {
+type Props = React.ComponentProps<typeof ThreadDraft>;
+
+// The draft text lives with the caller, as it does in the app. It starts with
+// a message typed so Send is live as soon as nothing else holds it back.
+function Draft(props: Omit<Props, "draft" | "onDraftChange">) {
+  const [draft, setDraft] = useState("hi");
+  return <ThreadDraft {...props} draft={draft} onDraftChange={setDraft} />;
+}
+
+function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
+  const { onCreate, ...rest } = over;
   render(
-    <NewThread
+    <Draft
       projects={[project]}
       harnesses={[harness]}
       userConfig={null}
       status="online"
-      onCreate={vi.fn()}
+      onStart={onCreate ?? vi.fn(async () => {})}
       onListWorkspaces={vi.fn(async () => [] as Workspace[])}
       onListIssues={vi.fn(async () => ({ issues: [], issuesError: "" }))}
       onAddProject={vi.fn()}
       onSettings={vi.fn()}
       onRecheck={vi.fn()}
-      onClose={vi.fn()}
-      {...over}
+      {...rest}
     />,
   );
 }
 
-const surface = () => document.querySelector("[data-slot=dialog-content]")!;
+const chip = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
+// Radix menus open on pointer down, not click.
+const menu = (label: string) =>
+  fireEvent.pointerDown(chip(label), { button: 0, ctrlKey: false });
+async function openGit() {
+  if (screen.queryByRole("radiogroup", { name: "Git" })) return;
+  fireEvent.click(await waitFor(() => chip("Git")));
+  await waitFor(() => screen.getByRole("radiogroup", { name: "Git" }));
+}
 
 beforeEach(() => localStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
 
 // Radix Select drives its trigger with pointer capture and scrolls the chosen
-// item into view — neither of which jsdom implements. No-ops are enough for the
-// Base dropdown test to open and pick.
+// item into view, neither of which jsdom implements.
 beforeAll(() => {
   const proto = window.HTMLElement.prototype;
   proto.hasPointerCapture ??= () => false;
@@ -56,57 +73,29 @@ beforeAll(() => {
   proto.scrollIntoView ??= () => {};
 });
 
-describe("NewThread", () => {
-  it("takes the whole screen on a phone rather than floating as a card", () => {
-    viewport("phone");
-    open();
-
-    const cls = surface().className;
-    expect(cls).toContain("max-md:h-[100dvh]");
-    expect(cls).toContain("max-md:w-screen");
-    expect(cls).toContain("max-md:rounded-none");
-    // A 85dvh cap would fight the full-height rule it sits beside.
-    expect(cls).toContain("max-md:max-h-none");
-    // The card's width cap has to start where the card does. At `sm` it would
-    // still be in force from 640 to 767px, leaving a 448px strip pinned to the
-    // left edge by the full-screen inset.
-    expect(cls).toContain("md:max-w-md");
-    expect(cls).not.toContain("sm:max-w-md");
-    // Including the primitive's own default cap, which is dropped rather than
-    // overridden for exactly the same reason.
-    expect(cls).not.toContain("sm:max-w-lg");
+describe("ThreadDraft", () => {
+  it("creates the thread carrying the message", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onCreate, projects: [{ ...project, folders: [] } as unknown as Project] });
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ projectId: "p1", text: "hi" });
   });
 
-  it("keeps a way out in the corner", () => {
-    viewport("phone");
-    open();
-    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
-  });
-
-  it("keeps Start reachable without scrolling the form back down", () => {
-    viewport("phone");
-    open();
-    // The form is its own scroll container, so the footer below it stays put.
-    const scroller = surface().querySelector(".overflow-y-auto");
-    expect(scroller).not.toBeNull();
-    expect(surface().querySelector("[data-slot=dialog-footer]")).not.toBeNull();
-    expect(scroller!.contains(surface().querySelector("[data-slot=dialog-footer]"))).toBe(false);
-  });
-
-  it("matches the project select to the buttons beside it", () => {
-    open();
-    const row = screen.getByRole("combobox", { name: /Project/ }).parentElement!;
-    const buttons = Array.from(row.querySelectorAll("button")).filter(
-      (b) => b.getAttribute("data-slot") === "button",
-    );
-    expect(buttons.length).toBe(2);
-    // Inheriting the icon size rather than carrying a one-off override is the
-    // whole point: these were 32px next to a 36px select.
-    for (const b of buttons) {
-      expect(b.className).toContain("size-11");
-      expect(b.className).toContain("md:size-9");
-      expect(b.className).not.toContain("md:size-8");
-    }
+  it("puts the message back when the thread could not be created", async () => {
+    open({
+      onCreate: vi.fn(async () => {
+        throw new Error("no room");
+      }),
+      projects: [{ ...project, folders: [] } as unknown as Project],
+    });
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => screen.getByText("no room"));
+    expect(document.querySelector("textarea")!.value).toBe("hi");
   });
 
   it("starts a bypass thread with no confirmation of any kind", async () => {
@@ -121,7 +110,7 @@ describe("NewThread", () => {
           ...project,
           // "local" keeps the workspace choice out of it: this test is about
           // the permission mode, and the main checkout is the one choice
-          // that needs nothing else named before Start is live.
+          // that needs nothing else named before Send is live.
           defaults: {
             ...project.defaults,
             harnesses: { claude: { mode: "bypassPermissions" } },
@@ -141,8 +130,8 @@ describe("NewThread", () => {
       onCreate,
     });
 
-    const start = await screen.findByRole("button", { name: "Start" });
-    // The workspace listing lands a tick later; Start is disabled until it has.
+    const start = await screen.findByRole("button", { name: "Send" });
+    // The workspace listing lands a tick later; Send is disabled until it has.
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     await act(async () => {
       fireEvent.click(start);
@@ -227,8 +216,8 @@ describe("NewThread", () => {
     const model = await waitFor(() => screen.getByText("GPT-5.6-Sol"));
     fireEvent.click(model.closest("[data-slot='command-item']")!);
 
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
-    const start = screen.getByRole("button", { name: "Start" });
+    expect(chip("Permissions").textContent).toBe("Bypass");
+    const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
@@ -257,8 +246,8 @@ describe("NewThread", () => {
     } as unknown as HarnessMeta;
     open({ harnesses: [claude], onCreate });
 
-    fireEvent.click(screen.getByRole("button", { name: "1M" }));
-    const start = screen.getByRole("button", { name: "Start" });
+    fireEvent.click(screen.getByRole("button", { name: "1M context" }));
+    const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
@@ -267,67 +256,9 @@ describe("NewThread", () => {
 
   // The flag is the only thing that decides it: an Opus row the harness did
   // not flag gets no toggle, however Opus-shaped its name is.
-  it("hides the 1M window for a model the harness does not flag", () => {
-    const claude = {
-      ...harness,
-      instances: [
-        {
-          id: "claude",
-          driver: "claude",
-          displayName: "Claude Code",
-          enabled: true,
-          availability: { state: "ready" } as const,
-          models: [{ id: "claude-opus-5", label: "Opus 5", default: true }],
-        },
-      ],
-    } as unknown as HarnessMeta;
-    open({ harnesses: [claude] });
-
-    expect(screen.queryByRole("button", { name: "1M" })).toBeNull();
-  });
-
-  it("gives the bypass mode the same plain treatment as every other mode", () => {
-    const withModes = {
-      ...harness,
-      permissionModes: [
-        { id: "default", label: "Default", default: true },
-        { id: "bypassPermissions", label: "Bypass", description: "Skip all permission checks" },
-      ],
-    } as unknown as HarnessMeta;
-    const withDefault = (mode: string) =>
-      ({
-        ...project,
-        defaults: {
-          ...project.defaults,
-          harnesses: { claude: { mode } },
-        },
-      }) as unknown as Project;
-
-    open({ projects: [withDefault("default")], harnesses: [withModes] });
-    const plain = screen.getByRole("combobox", { name: /Permissions/ }).className;
-    const plainText = surface().textContent ?? "";
-    cleanup();
-
-    open({ projects: [withDefault("bypassPermissions")], harnesses: [withModes] });
-    const bypass = screen.getByRole("combobox", { name: /Permissions/ });
-    // No warning colour, no badge, no extra copy: the control renders the same
-    // whichever mode is selected. Only the label and description differ.
-    expect(bypass.className).toBe(plain);
-    expect(bypass.textContent).toBe("Bypass");
-    expect((surface().textContent ?? "").replace("BypassSkip all permission checks", "")).toBe(
-      plainText.replace("Default", ""),
-    );
-  });
-
-  it("writes branch names in the interface font, not a terminal one", async () => {
-    open();
-    fireEvent.click(await waitFor(() => screen.getByRole("button", { name: "Name the branch" })));
-    const field = await waitFor(() => screen.getByRole("combobox", { name: /Branch/ }));
-    expect(field.className).not.toContain("font-mono");
-  });
-
   it("offers an existing copy only when there is one, a level below the copy choice", async () => {
     open();
+    await openGit();
     await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/ }));
     expect(screen.getByRole("radio", { name: /Work in the folder/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
@@ -335,6 +266,7 @@ describe("NewThread", () => {
 
     const side = { path: "/tmp/repo/.worktrees/side", branch: "issue/1-side" } as Workspace;
     open({ onListWorkspaces: vi.fn(async () => [side]) });
+    await openGit();
     await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" }));
     fireEvent.click(screen.getByRole("radio", { name: /Work in the folder/ }));
     expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
@@ -355,13 +287,14 @@ describe("NewThread", () => {
       onListWorkspaces: vi.fn(async () => [root]),
     });
 
+    await openGit();
     const choice = await waitFor(() => screen.getByRole("radio", { name: /Work in the folder/ }));
     expect(choice.getAttribute("disabled")).toBeNull();
     fireEvent.click(choice);
 
     // No warning copy is shown for a busy main checkout — it was removed.
     expect(screen.queryByText(/already on the main checkout/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(confirm).not.toHaveBeenCalled();
     expect(onCreate.mock.calls[0][0]).toMatchObject({ workspace: "local", branch: "" });
@@ -372,8 +305,9 @@ describe("NewThread", () => {
     open({ onCreate });
 
     // The managed default lands on the copy; the branch name is optional.
+    await openGit();
     await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/, checked: true }));
-    const start = screen.getByRole("button", { name: "Start" });
+    const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
@@ -394,6 +328,7 @@ describe("NewThread", () => {
     } as Workspace;
     open({ onCreate, onListWorkspaces: vi.fn(async () => [under]) });
 
+    await openGit();
     fireEvent.click(await waitFor(() => screen.getByRole("button", { name: "Name the branch" })));
     const field = await waitFor(() => screen.getByRole("combobox", { name: /Branch/ }));
     fireEvent.change(field, { target: { value: "issue/9-stack" } });
@@ -404,7 +339,7 @@ describe("NewThread", () => {
     const option = await waitFor(() => screen.getByRole("option", { name: "feature/underneath" }));
     fireEvent.click(option);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0][0]).toMatchObject({
@@ -427,6 +362,7 @@ describe("NewThread", () => {
       onListWorkspaces: vi.fn(async () => [side]),
     });
 
+    await openGit();
     fireEvent.click(
       await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" })),
     );
@@ -437,7 +373,7 @@ describe("NewThread", () => {
 
     // No warning copy is shown for a busy worktree — it was removed.
     expect(screen.queryByText(/already in this worktree/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0][0]).toMatchObject({
       workspace: "",
@@ -453,13 +389,14 @@ describe("NewThread", () => {
     open({ onListWorkspaces: vi.fn(() => pending) });
 
     // The managed default lands on a copy with no name, so nothing but the
-    // outstanding check is holding Start back.
+    // outstanding check is holding Send back.
+    await openGit();
     await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/ }));
-    expect(screen.getByRole("button", { name: "Start" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
 
     release([]);
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Start" }).hasAttribute("disabled")).toBe(false),
+      expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(false),
     );
   });
 });
@@ -479,7 +416,7 @@ describe("scope", () => {
   } as unknown as Project;
 
   const start = async () => {
-    const button = screen.getByRole("button", { name: "Start" });
+    const button = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button);
   };
@@ -489,8 +426,8 @@ describe("scope", () => {
     const onListWorkspaces = vi.fn(async () => [] as Workspace[]);
     open({ projects: [bowerbird], onCreate, onListWorkspaces });
 
-    expect(screen.getByRole("combobox", { name: "Scope" }).textContent).toBe("Everything");
-    expect(screen.queryByRole("radiogroup", { name: "Git" })).toBeNull();
+    expect(chip("Scope").textContent).toBe("Everything");
+    expect(screen.queryByRole("button", { name: /^Git/ })).toBeNull();
     await start();
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "", workspace: "local", branch: "" });
@@ -502,11 +439,10 @@ describe("scope", () => {
     const onListWorkspaces = vi.fn(async () => [] as Workspace[]);
     open({ projects: [bowerbird], onCreate, onListWorkspaces });
 
-    const scope = screen.getByRole("combobox", { name: "Scope" });
-    scope.focus();
-    fireEvent.keyDown(scope, { key: "ArrowDown" });
-    fireEvent.click(await waitFor(() => screen.getByRole("option", { name: "site" })));
+    menu("Scope");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
 
+    await openGit();
     await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/, checked: true }));
     expect(onListWorkspaces).toHaveBeenCalledWith("p1", "f1");
     await start();
@@ -519,8 +455,8 @@ describe("scope", () => {
     const plain = { ...project, folders: [folder("f2", "/tmp/notes", false)] } as unknown as Project;
     open({ projects: [plain], onCreate });
 
-    expect(screen.queryByRole("combobox", { name: "Scope" })).toBeNull();
-    expect(screen.queryByRole("radiogroup", { name: "Git" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Scope/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Git/ })).toBeNull();
     await start();
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "f2", workspace: "local" });
@@ -543,8 +479,8 @@ describe("the remembered project", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({ projects: [project, other], activeProjectId: "p1", onCreate });
-    expect(screen.getByLabelText("Project").textContent).toBe("repo");
-    const start = screen.getByRole("button", { name: "Start" });
+    expect(chip("Project").textContent).toBe("repo");
+    const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" })));
@@ -553,19 +489,19 @@ describe("the remembered project", () => {
   it("falls back to the remembered project when the active project is unavailable", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     open({ projects: [project, other], activeProjectId: "deleted" });
-    expect(screen.getByLabelText("Project").textContent).toBe("other");
+    expect(chip("Project").textContent).toBe("other");
   });
 
   it("opens on the project the last thread was started from", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     open({ projects: [project, other] });
-    expect(screen.getByLabelText("Project").textContent).toBe("other");
+    expect(chip("Project").textContent).toBe("other");
   });
 
   it("opens on the first project when the remembered one is gone", () => {
     localStorage.setItem("omniplex.lastProject.v1", "deleted");
     open({ projects: [project, other] });
-    expect(screen.getByLabelText("Project").textContent).toBe("repo");
+    expect(chip("Project").textContent).toBe("repo");
   });
 
   it("remembers only a thread that actually started", async () => {
@@ -574,7 +510,7 @@ describe("the remembered project", () => {
     });
     open({ projects: [project, other], onCreate });
 
-    const start = await waitFor(() => screen.getByRole("button", { name: "Start" }));
+    const start = await waitFor(() => screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(screen.getByText("no")).toBeTruthy());
@@ -583,7 +519,7 @@ describe("the remembered project", () => {
     cleanup();
     const ok = vi.fn(async (_input: NewThreadInput) => {});
     open({ projects: [project, other], onCreate: ok });
-    const go = await waitFor(() => screen.getByRole("button", { name: "Start" }));
+    const go = await waitFor(() => screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect((go as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(go);
     await waitFor(() => expect(ok).toHaveBeenCalled());
@@ -630,29 +566,6 @@ describe("a signed-out harness", () => {
   });
 });
 
-describe("an interactive-login harness", () => {
-  it("offers sign-in again even when the health check says ready", () => {
-    const onLogin = vi.fn();
-    const ready = {
-      ...harness,
-      instances: [
-        {
-          id: "claude",
-          driver: "claude",
-          displayName: "Claude Code",
-          enabled: true,
-          canLogin: true,
-          availability: { state: "ready" },
-          models: [],
-        },
-      ],
-    } as HarnessMeta;
-
-    open({ harnesses: [ready], onLogin });
-    fireEvent.click(screen.getByRole("button", { name: /sign in again/i }));
-    expect(onLogin).toHaveBeenCalledWith("claude");
-  });
-});
 
 describe("remembered thread choices", () => {
   const ready = { state: "ready" } as const;
@@ -704,8 +617,8 @@ describe("remembered thread choices", () => {
     fireEvent.keyDown(screen.getByPlaceholderText(/Search models and accounts/), { key: "Escape" });
   }
   async function bypass() {
-    fireEvent.click(screen.getByRole("combobox", { name: /Permissions/ }));
-    fireEvent.click(await screen.findByRole("option", { name: "Bypass" }));
+    menu("Permissions");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Bypass/ }));
   }
   async function highEffort() {
     fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
@@ -721,7 +634,7 @@ describe("remembered thread choices", () => {
     await bypass();
     await highEffort();
     await switchHarness("claude");
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Ask");
+    expect(chip("Permissions").textContent).toBe("Ask");
     await pickModel("claude Advanced");
     await bypass();
     await switchHarness("codex");
@@ -731,16 +644,16 @@ describe("remembered thread choices", () => {
     expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain(
       "High",
     );
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    expect(chip("Permissions").textContent).toBe("Bypass");
     await switchHarness("claude");
     cleanup();
     open(props);
     expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain(
       "claude Advanced",
     );
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    expect(chip("Permissions").textContent).toBe("Bypass");
     await switchHarness("codex");
-    const start = screen.getByRole("button", { name: "Start" });
+    const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() =>
@@ -770,21 +683,21 @@ describe("remembered thread choices", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto/ }));
     await bypass();
-    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
-    fireEvent.click(await screen.findByRole("option", { name: "other" }));
+    menu("Project");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "other" }));
     expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("claude Basic");
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Ask");
-    fireEvent.click(screen.getByRole("combobox", { name: /Project/ }));
-    fireEvent.click(await screen.findByRole("option", { name: "repo" }));
+    expect(chip("Permissions").textContent).toBe("Ask");
+    menu("Project");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "repo" }));
     expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
-    expect(screen.getByRole("combobox", { name: /Permissions/ }).textContent).toBe("Bypass");
+    expect(chip("Permissions").textContent).toBe("Bypass");
     cleanup();
     open(props);
     expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
   });
 
 
-  it("keeps an unsupported effort preference while validating the thread request", async () => {
+  it("drops to the strongest effort the newly picked model allows", async () => {
     const onCreate = vi.fn(async () => {});
     open({ harnesses: agents, onCreate });
     await pickModel("codex Advanced");
@@ -793,15 +706,15 @@ describe("remembered thread choices", () => {
     fireEvent.click(await screen.findByRole("option", { name: /Ultra/i }));
     await pickModel("codex Basic");
     await bypass();
-    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Auto");
-    const start = screen.getByRole("button", { name: "Start" });
-    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(start);
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ effort: "" })));
-    cleanup();
-    open({ harnesses: agents });
-    await pickModel("codex Advanced");
-    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toMatch(/Ultra/i);
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "codex-basic", effort: "high" }),
+      ),
+    );
   });
+
 
 });

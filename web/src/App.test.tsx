@@ -125,7 +125,7 @@ describe("new thread project", () => {
     fireEvent.click(screen.getByText("Thread b"));
     fireEvent.click(screen.getByText("Thread a"));
     fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
-    expect(screen.getByLabelText("Project").textContent).toBe("repo");
+    expect(screen.getByRole("button", { name: /^Project/ }).textContent).toBe("repo");
   });
 });
 
@@ -735,8 +735,9 @@ describe("composer drafts", () => {
     command.mockImplementation(async (name: string) =>
       name === "create_thread" ? { threadId: "fresh" } : ({} as any),
     );
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "go" } });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
     });
     await act(async () => events.onState("fresh", state("fresh", "default")));
     await act(async () => {
@@ -792,8 +793,9 @@ describe("losing the attached thread", () => {
     command.mockImplementation(async (name: string) =>
       name === "create_thread" ? { threadId: "fresh" } : ({} as any),
     );
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "go" } });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
     });
     expect(attach).toHaveBeenCalledWith("fresh");
 
