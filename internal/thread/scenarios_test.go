@@ -73,13 +73,15 @@ func TestManagedWorktreeBranchesFromTheThreadsOwnBase(t *testing.T) {
 	}
 }
 
-// A base that does not exist is a typo, and saying so beats silently branching
-// from HEAD and leaving the user to notice much later.
-func TestUnknownBaseRefFailsProvisioning(t *testing.T) {
+// A base nobody can find is not fatal. Refusing to start the thread punishes
+// the user for a stale folder default they may not have written, so the
+// worktree branches from the repository's default branch and says so.
+func TestUnknownBaseRefFallsBackToTheDefaultBranch(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
+	wantMain := git(t, root, "rev-parse", "main")
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
 		ProjectID: p.ID, Workspace: "managed", Branch: "issue/8-nowhere", BaseRef: "no/such/ref",
@@ -87,10 +89,17 @@ func TestUnknownBaseRefFailsProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool {
-		m, e := st.Thread(context.Background(), a.ID)
-		return e == nil && m.Phase == "provision_failed"
-	})
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "rev-parse", "HEAD"); got != wantMain {
+		t.Fatalf("worktree HEAD %s, want the default branch %s", got, wantMain)
+	}
+	state, err := a.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Workspace.Output, "no/such/ref") || !strings.Contains(state.Workspace.Output, "note:") {
+		t.Fatalf("the fallback was swallowed instead of shown: %q", state.Workspace.Output)
+	}
 }
 
 // Deleting a thread is deleting a thread. Removing the checkout it ran in is

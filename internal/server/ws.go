@@ -1100,16 +1100,45 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"status": "disconnected"}, nil
 
-	case "add_project":
-		var a addProjectArgs
+	case "create_project":
+		var a thread.NewProjectOptions
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		p, err := c.srv.mgr.AddProject(ctx, a.Path)
+		p, err := c.srv.mgr.NewProject(ctx, a)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"project": p}, nil
+
+	case "add_folder":
+		var a addFolderArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		p, err := c.srv.mgr.AddFolder(ctx, a.ProjectID, a.AddFolderOptions)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"project": p}, nil
+
+	case "remove_folder":
+		var a removeFolderArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		p, err := c.srv.mgr.RemoveFolder(ctx, a.ProjectID, a.FolderID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"project": p}, nil
+
+	case "list_github_repos":
+		repos, err := c.srv.mgr.GitHubRepos(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"repos": repos}, nil
 
 	case "save_project":
 		var a saveProjectArgs

@@ -20,7 +20,6 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
 // registered pairs a provider instance with the adapter that serves its
@@ -975,32 +974,6 @@ func relHook(root, path string) string {
 		return ""
 	}
 	return rel
-}
-
-// AddProject registers a folder already on disk as a project of its own. A
-// plain folder is the project's home, so what Omniplex makes for it lands
-// there; a git folder is pointed at, and the home waits until it is needed.
-func (m *Manager) AddProject(ctx context.Context, path string) (project.Project, error) {
-	abs, err := userconfig.ExpandHome(strings.TrimSpace(path))
-	if err != nil {
-		return project.Project{}, err
-	}
-	if info, statErr := os.Stat(abs); statErr != nil {
-		return project.Project{}, statErr
-	} else if !info.IsDir() {
-		return project.Project{}, fmt.Errorf("%s is not a folder", abs)
-	}
-	now := proto.NowMillis()
-	f := project.NewFolder(uuid.NewString(), abs)
-	p := project.Project{ID: uuid.NewString(), Name: filepath.Base(abs), Defaults: project.NormalizeDefaults(project.Defaults{}), Folders: []project.Folder{f}, CreatedAt: now, UpdatedAt: now}
-	if !project.IsGit(abs) {
-		p.Home = abs
-	}
-	if err := m.store.CreateProject(ctx, p); err != nil {
-		return p, err
-	}
-	m.notifyProjects()
-	return m.store.Project(ctx, p.ID)
 }
 
 // SaveProject saves a project's name and thread defaults.

@@ -3,7 +3,7 @@ import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useThreadPR } from "./useThreadPR";
-import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Folder, Project, ProjectDefaults, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, ThreadSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
+import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Folder, GitHubRepo, Project, ProjectDefaults, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, ThreadSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -11,6 +11,8 @@ import { OpenPathContext } from "./lib/openPath";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./components/ScheduledPrompts";
 import type { ScheduledPrompt, Turn } from "./protocol";
+import type { NewProjectRequest } from "./components/NewProject";
+import type { AddFolderRequest } from "./components/ProjectSettings";
 import { JobsStrip } from "./components/JobsStrip";
 import { NewThread } from "./components/NewThread";
 import type { NewThreadInput } from "./components/NewThread";
@@ -67,6 +69,7 @@ const LAST_THREAD = "omniplex.lastThread";
 
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const ThreadSummaryPanel = lazy(() => import("./components/ThreadSummary").then((m) => ({ default: m.ThreadSummaryPanel })));
+const NewProject = lazy(() => import("./components/NewProject").then((m) => ({ default: m.NewProject })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
 // The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
 const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
@@ -243,7 +246,8 @@ export function App() {
     setSidebarOpen(isDesktop || activeRef.current === null);
   }, [isDesktop]);
   const [creating, setCreating] = useState(false);
-  const [projectSettings, setProjectSettings] = useState<Project | "add" | null>(null);
+  const [projectSettings, setProjectSettings] = useState<Project | null>(null);
+  const [newProject, setNewProject] = useState(false);
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
   // The summary panel. Summaries are held per thread so flicking between two
   // threads does not re-bill a model for an answer we already have; they are
@@ -611,10 +615,29 @@ export function App() {
   }, []);
   const openLabelManager = useCallback(() => setManageLabels(true), []);
 
-  const addProject = useCallback(async (path: string) => {
-    const res = await clientRef.current!.command("add_project", { path });
-    setProjects((p) => [res.project, ...p.filter((x) => x.id !== res.project.id)]);
+  const putProject = useCallback((project: Project) => {
+    setProjects((p) => [project, ...p.filter((x) => x.id !== project.id)]);
+    return project;
   }, []);
+  const createProject = useCallback(
+    async (req: NewProjectRequest) =>
+      putProject((await clientRef.current!.command("create_project", req)).project as Project),
+    [putProject],
+  );
+  const addFolder = useCallback(
+    async (projectId: string, req: AddFolderRequest) =>
+      putProject((await clientRef.current!.command("add_folder", { projectId, ...req })).project as Project),
+    [putProject],
+  );
+  const removeFolder = useCallback(
+    async (projectId: string, folderId: string) =>
+      putProject((await clientRef.current!.command("remove_folder", { projectId, folderId })).project as Project),
+    [putProject],
+  );
+  const listRepos = useCallback(
+    async () => (await clientRef.current!.command("list_github_repos", {})).repos as GitHubRepo[],
+    [],
+  );
   // A project's own settings and each changed folder's are separate saves; the
   // last answer carries every one of them.
   const saveProject = useCallback(async (projectId: string, name: string, defaults: ProjectDefaults, folders: Folder[]) => {
@@ -1265,6 +1288,7 @@ export function App() {
         labels={labels}
         onSetLabel={setThreadLabel}
         onManageLabels={openLabelManager}
+        onNewProject={() => setNewProject(true)}
         onSetUnread={setThreadUnread}
       />
 
@@ -1655,7 +1679,7 @@ export function App() {
           onCreate={create}
           onListWorkspaces={listWorkspaces}
           onListIssues={listIssues}
-          onAddProject={()=>setProjectSettings("add")}
+          onAddProject={() => setNewProject(true)}
           onSettings={setProjectSettings}
           onRecheck={recheck}
           onLogin={openInstanceAuth}
@@ -1708,20 +1732,27 @@ export function App() {
           />
         </Suspense>
       )}
+      {newProject && (
+        <Suspense fallback={null}>
+          <NewProject
+            onCreate={createProject}
+            listRepos={listRepos}
+            onClose={() => setNewProject(false)}
+          />
+        </Suspense>
+      )}
       {projectSettings && (
         <Suspense fallback={null}>
           <ProjectSettings
-          project={projectSettings === "add" ? null : projectSettings}
+          project={projectSettings}
           harnesses={harnesses}
           userConfig={userConfig}
-          onAdd={addProject}
           onSave={saveProject}
+          onAddFolder={addFolder}
+          onRemoveFolder={removeFolder}
+          listRepos={listRepos}
           onDelete={deleteProject}
-          threadCount={
-            projectSettings === "add"
-              ? 0
-              : threads.filter((s) => s.projectId === projectSettings.id).length
-          }
+          threadCount={threads.filter((s) => s.projectId === projectSettings.id).length}
           onSaveUserConfig={saveUserConfig}
           onClose={() => setProjectSettings(null)}
           />

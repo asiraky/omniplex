@@ -128,8 +128,13 @@ type saveUserConfigArgs struct {
 	Config userconfig.Config `json:"config"`
 }
 
-type addProjectArgs struct {
-	Path string `json:"path"`
+type addFolderArgs struct {
+	ProjectID string `json:"projectId"`
+	thread.AddFolderOptions
+}
+type removeFolderArgs struct {
+	ProjectID string `json:"projectId"`
+	FolderID  string `json:"folderId"`
 }
 type saveProjectArgs struct {
 	ProjectID string           `json:"projectId"`

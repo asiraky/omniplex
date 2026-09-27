@@ -1,10 +1,11 @@
-import { FolderIcon } from "lucide-react";
+import { FolderIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
@@ -27,6 +28,9 @@ import type { Project } from "~/protocol";
  * Unchecking it switches everything off, which empties the list — recoverable
  * from the empty state's own button, and worth keeping symmetrical rather than
  * making the one control in the menu behave differently from the rest.
+ *
+ * New project closes the menu. It is always there, so with fewer than two
+ * projects the menu is only that.
  */
 export function ProjectFilter({
   projects,
@@ -34,6 +38,7 @@ export function ProjectFilter({
   onToggle,
   onShowAll,
   onHideAll,
+  onNew,
 }: {
   projects: Project[];
   /** Project ids currently switched off. */
@@ -41,15 +46,19 @@ export function ProjectFilter({
   onToggle: (id: string, show: boolean) => void;
   onShowAll: () => void;
   onHideAll: () => void;
+  onNew: () => void;
 }) {
   // Only a hidden id that still names a real project counts: one left behind
   // by a deleted project hides nothing, so it must not light the trigger
   // either. With one project there is nothing to filter between at all.
   const offCount = projects.filter((p) => hidden.has(p.id)).length;
   const filtering = offCount > 0;
-  const name = filtering ? `Filter by project — ${offCount} hidden` : "Filter by project";
-
-  if (projects.length < 2) return null;
+  const choosing = projects.length > 1;
+  const name = !choosing
+    ? "Projects"
+    : filtering
+      ? `Filter by project, ${offCount} hidden`
+      : "Filter by project";
 
   return (
     <DropdownMenu>
@@ -76,6 +85,8 @@ export function ProjectFilter({
       </Tooltip>
 
       <DropdownMenuContent align="end" className="min-w-44">
+        {choosing && (
+          <>
         <DropdownMenuCheckboxItem
           checked={!filtering}
           // Radix closes the menu on select by default, which would make
@@ -99,6 +110,12 @@ export function ProjectFilter({
             <span className="truncate">{p.name}</span>
           </DropdownMenuCheckboxItem>
         ))}
+        <DropdownMenuSeparator />
+          </>
+        )}
+        <DropdownMenuItem onSelect={onNew} className="gap-2 text-[13px]">
+          <PlusIcon /> New project…
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -69,9 +69,11 @@ func (c Config) ProjectsDirOrDefault() (string, error) {
 	return filepath.Join(home, "Omniplex"), nil
 }
 
-// ExpandHome turns a leading ~ into the user's home folder and makes the
-// path absolute. People type ~/code, not /home/them/code.
+// ExpandHome turns a leading ~ into the user's home folder. People type
+// ~/code, not /home/them/code. A relative path is refused: it would resolve
+// against wherever the server was started, which is nobody's intent.
 func ExpandHome(path string) (string, error) {
+	path = strings.TrimSpace(path)
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -79,7 +81,10 @@ func ExpandHome(path string) (string, error) {
 		}
 		path = filepath.Join(home, path[1:])
 	}
-	return filepath.Abs(path)
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("give the full path, starting with / or ~: %s", path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func Default() Config {

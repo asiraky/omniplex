@@ -186,6 +186,8 @@ interface SidebarProps {
   onSetLabel: (threadId: string, labelId: string) => void;
   /** Opens the label manager, which App owns — the header can open it too. */
   onManageLabels: () => void;
+  /** Opens the new project dialog, which App owns. */
+  onNewProject: () => void;
   /** Flips the unread flag by hand — the row's "come back to this" action. */
   onSetUnread: (threadId: string, unread: boolean) => void;
 }
@@ -746,14 +748,15 @@ function SidebarPanel({
         {/* One label control, not two: what is showing, and the way to the
             manager that creates and edits them. */}
         {/* Project first: it decides the shape of the list, where the label
-            filter only thins it. Hidden entirely with one project, which is
-            the common case and has nothing to choose between. */}
+            filter only thins it. With one project it is only the way to New
+            project. */}
         <ProjectFilter
           projects={props.projects}
           hidden={projectView.hidden}
           onToggle={projectView.onToggle}
           onShowAll={projectView.onShowAll}
           onHideAll={projectView.onHideAll}
+          onNew={props.onNewProject}
         />
         <LabelFilter
           labels={props.labels}

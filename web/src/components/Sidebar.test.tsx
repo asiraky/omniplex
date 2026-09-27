@@ -44,6 +44,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
+    onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     ...over,
   };
@@ -76,6 +77,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
+    onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     ...over,
   };
@@ -493,7 +495,7 @@ describe("Sidebar", () => {
       expect(rowOrder()).toEqual(["Thread b"]);
       expect(header("omniplex", 1)).toBeNull();
       expect(screen.getByText("1 of 3 threads")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Filter by project — 1 hidden" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter by project, 1 hidden" })).toBeTruthy();
     });
 
     it("offers no project filter when there is nothing to choose between", () => {

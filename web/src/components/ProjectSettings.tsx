@@ -1,7 +1,17 @@
-import { FileIcon, FolderIcon, FolderOpenIcon, Trash2Icon } from "lucide-react";
+import {
+  FileIcon,
+  FolderGit2Icon,
+  FolderIcon,
+  FolderOpenIcon,
+  FolderPlusIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
+import { FolderBrowser, GitHubPicker } from "~/components/FolderSources";
 import { Alert, AlertDescription } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
   Dialog,
@@ -27,6 +37,7 @@ import { formatEffort } from "~/lib/efforts";
 import { cn } from "~/lib/utils";
 import type {
   Folder,
+  GitHubRepo,
   HarnessMeta,
   Issue,
   Project,
@@ -222,6 +233,138 @@ function HookField({
   );
 }
 
+/** Where a folder added to a project comes from. Exactly one is set. */
+export interface AddFolderRequest {
+  path?: string;
+  url?: string;
+  name?: string;
+}
+
+/**
+ * The folders a project points at. Adding and removing take effect at once,
+ * like removing the project does: they are not settings Save would undo.
+ * Removing takes the pointer away and nothing else.
+ */
+function FoldersSection({
+  folders,
+  onAdd,
+  onRemove,
+  listRepos,
+}: {
+  folders: Folder[];
+  onAdd: (req: AddFolderRequest) => Promise<void>;
+  onRemove: (folderId: string) => Promise<void>;
+  listRepos: () => Promise<GitHubRepo[]>;
+}) {
+  const [adding, setAdding] = useState<"github" | "folder" | "new" | null>(null);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      setAdding(null);
+      setNewName("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const option = (id: "github" | "folder" | "new", label: string, Icon: typeof FolderIcon) => (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-pressed={adding === id}
+      onClick={() => setAdding(adding === id ? null : id)}
+      className={cn("h-11 flex-1 md:h-8", adding === id && "bg-accent")}
+    >
+      <Icon />
+      {label}
+    </Button>
+  );
+
+  return (
+    <div className="space-y-2">
+      <SectionHeading>Folders</SectionHeading>
+      <ul className="divide-y rounded-lg border">
+        {folders.map((f) => (
+          <li key={f.id} className="flex min-h-11 items-center gap-2 px-3 py-1.5 md:min-h-9">
+            {f.git ? (
+              <FolderGit2Icon className="text-muted-foreground size-3.5 shrink-0" />
+            ) : (
+              <FolderIcon className="text-muted-foreground size-3.5 shrink-0" />
+            )}
+            <span className="min-w-0 flex-1 font-mono text-[11px] break-all">{f.path}</span>
+            {f.git && <Badge variant="secondary">Git</Badge>}
+            {folders.length > 1 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${f.path}`}
+                disabled={busy}
+                onClick={() => void run(() => onRemove(f.id))}
+                className="text-muted-foreground hover:text-destructive size-11 shrink-0 md:size-7"
+              >
+                <Trash2Icon />
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="text-muted-foreground text-[11px]">
+        Removing a folder only takes it out of the project. Nothing on disk is touched.
+      </p>
+
+      <p className="flex items-center gap-1.5 pt-1 text-[12px]">
+        <PlusIcon className="size-3.5" /> Add to project
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {option("github", "From GitHub", FolderGit2Icon)}
+        {option("folder", "A folder here", FolderOpenIcon)}
+        {option("new", "New folder", FolderPlusIcon)}
+      </div>
+      {adding === "github" && (
+        <GitHubPicker
+          listRepos={listRepos}
+          busy={busy}
+          onChoose={(url) => void run(() => onAdd({ url }))}
+        />
+      )}
+      {adding === "folder" && (
+        <FolderBrowser busy={busy} onChoose={(path) => void run(() => onAdd({ path }))} />
+      )}
+      {adding === "new" && (
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newName.trim()) void run(() => onAdd({ name: newName.trim() }));
+          }}
+        >
+          <Input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Folder name"
+            aria-label="New folder name"
+            autoFocus
+            className="min-w-0 flex-1"
+          />
+          <Button type="submit" disabled={!newName.trim() || busy}>
+            {busy && <Spinner aria-hidden className="size-4" />}
+            Add
+          </Button>
+        </form>
+      )}
+      {error && <p className="text-destructive text-[11px] break-words">{error}</p>}
+    </div>
+  );
+}
+
 /**
  * Forgetting a project. Deliberately not in the footer next to Save: this is
  * the one control on the screen that cannot be undone by editing a field
@@ -316,17 +459,21 @@ export function ProjectSettings({
   project,
   harnesses,
   userConfig,
-  onAdd,
   onSave,
+  onAddFolder,
+  onRemoveFolder,
+  listRepos,
   onDelete,
   threadCount,
   onSaveUserConfig,
   onClose,
 }: {
-  project: Project | null;
+  project: Project;
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
-  onAdd: (path: string) => Promise<void>;
+  onAddFolder: (projectId: string, req: AddFolderRequest) => Promise<Project>;
+  onRemoveFolder: (projectId: string, folderId: string) => Promise<Project>;
+  listRepos: () => Promise<GitHubRepo[]>;
   onSave: (id: string, name: string, defaults: ProjectDefaults, folders: Folder[]) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   /** How many threads still belong to this project; a project with any is
@@ -335,13 +482,10 @@ export function ProjectSettings({
   onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
   onClose: () => void;
 }) {
-  const [path, setPath] = useState("");
-  const [name, setName] = useState(project?.name ?? "");
-  const [defs, setDefs] = useState<ProjectDefaults>(
-    project?.defaults ?? { harness: "codex", harnesses: {}, workspace: "local" },
-  );
-  const [folders, setFolders] = useState<Folder[]>(project?.folders ?? []);
-  const [settingsHarness, setSettingsHarness] = useState(project?.defaults.harness ?? "codex");
+  const [name, setName] = useState(project.name);
+  const [defs, setDefs] = useState<ProjectDefaults>(project.defaults);
+  const [folders, setFolders] = useState<Folder[]>(project.folders);
+  const [settingsHarness, setSettingsHarness] = useState(project.defaults.harness ?? "codex");
   const [user, setUser] = useState<UserConfig>(userConfig ?? { version: 1 });
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -351,10 +495,8 @@ export function ProjectSettings({
     setBusy(true);
     setError(null);
     try {
-      if (project) {
-        await onSave(project.id, name, defs, folders);
-        await onSaveUserConfig(user);
-      } else await onAdd(path);
+      await onSave(project.id, name, defs, folders);
+      await onSaveUserConfig(user);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -374,6 +516,9 @@ export function ProjectSettings({
     });
   const folder = (id: string, patch: Partial<Folder>) =>
     setFolders(folders.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  // The server's list after an add or remove, keeping edits not saved yet.
+  const takeFolders = (next: Project) =>
+    setFolders((current) => next.folders.map((f) => current.find((c) => c.id === f.id) ?? f));
   // Copies, base branches and hooks only mean something in a git folder.
   const gitFolders = folders.filter((f) => f.git);
 
@@ -385,27 +530,12 @@ export function ProjectSettings({
         className="flex max-h-[min(90dvh,44rem)] flex-col gap-0 p-0 md:max-w-lg"
       >
         <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
-          <DialogTitle>{project ? `${name} settings` : "Add project"}</DialogTitle>
-          <DialogDescription>
-            {project
-              ? "Defaults every new thread in this project starts from."
-              : "Point Omniplex at a folder to start creating threads in it."}
-          </DialogDescription>
+          <DialogTitle>{`${name} settings`}</DialogTitle>
+          <DialogDescription>Defaults every new thread in this project starts from.</DialogDescription>
         </DialogHeader>
 
         <div className="scroll-thin min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-          {!project ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="project-root">Folder</Label>
-              <Input
-                id="project-root"
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                placeholder="~/code/my-app"
-                className="font-mono md:text-[12px]"
-              />
-            </div>
-          ) : (
+          {
             <div className="space-y-5">
               <div className="space-y-1.5">
                 <Label htmlFor="project-name">Project name</Label>
@@ -414,12 +544,16 @@ export function ProjectSettings({
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
-                {folders.map((f) => (
-                  <p key={f.id} className="text-muted-foreground font-mono text-[10px] break-all">
-                    {f.path}
-                  </p>
-                ))}
               </div>
+
+              <Separator />
+
+              <FoldersSection
+                folders={folders}
+                listRepos={listRepos}
+                onAdd={async (req) => takeFolders(await onAddFolder(project.id, req))}
+                onRemove={async (id) => takeFolders(await onRemoveFolder(project.id, id))}
+              />
 
               <Separator />
 
@@ -616,7 +750,7 @@ export function ProjectSettings({
                 }}
               />
             </div>
-          )}
+          }
 
           {error && (
             <Alert variant="destructive">
@@ -633,8 +767,8 @@ export function ProjectSettings({
           </Button>
           {/* Dead while a delete is in flight: a save landing after the
               delete commits would write the project straight back. */}
-          <Button disabled={busy || deleting || (!project && !path.trim())} onClick={save}>
-            {busy ? "Saving…" : project ? "Save" : "Add project"}
+          <Button disabled={busy || deleting} onClick={save}>
+            {busy ? "Saving…" : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -467,6 +467,16 @@ export interface UserConfig {
    * server's default, so clearing the box is how you go back to it.
    */
   summaryPrompt?: string;
+  /** Where new projects' home folders go. Empty means ~/Omniplex. */
+  projectsDir?: string;
+}
+
+/** One of the signed-in user's GitHub repositories, from `gh repo list`. */
+export interface GitHubRepo {
+  /** owner/repo */
+  name: string;
+  description?: string;
+  private?: boolean;
 }
 
 /**

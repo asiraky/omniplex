@@ -328,23 +328,3 @@ func TestAThreadAcrossTheProjectStartsInTheHomeFolder(t *testing.T) {
 		t.Fatalf("a thread in one folder started in %q", meta.Cwd)
 	}
 }
-
-// A plain folder added as a project is its home; a repo waits for one.
-func TestAddProjectMakesAPlainFolderTheHome(t *testing.T) {
-	st, _ := testProject(t, t.TempDir())
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
-	defer mgr.Shutdown()
-	plain := t.TempDir()
-	repo, _, _ := gitRepo(t)
-	pp, err := mgr.AddProject(context.Background(), plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gp, err := mgr.AddProject(context.Background(), repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pp.Home != plain || pp.Folders[0].Git || gp.Home != "" || !gp.Folders[0].Git {
-		t.Fatalf("plain home %q git %v; repo home %q git %v", pp.Home, pp.Folders[0].Git, gp.Home, gp.Folders[0].Git)
-	}
-}
