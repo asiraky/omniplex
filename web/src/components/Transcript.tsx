@@ -39,7 +39,7 @@ import { RecentSkills } from "~/components/RecentSkills";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
-import { parseAttachedFiles, pickVersion, type Artefact, type AttachedFile } from "~/lib/artefacts";
+import { parseAttachedFiles, type Artefact, type AttachedFile } from "~/lib/artefacts";
 import { attachmentUrl } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
@@ -433,7 +433,7 @@ function PromptImages({ sessionId, images }: { sessionId: string; images: Prompt
 
 const NO_ARTEFACTS: Artefact[] = [];
 
-type OpenArtefact = (id: string, version?: number) => void;
+type OpenArtefact = (id: string) => void;
 
 // The files a prompt carried, parsed back out of the trailer the server wrote
 // for the agent. The tile reads size from the session's artefacts; a file the
@@ -451,17 +451,16 @@ function PromptFiles({
     <div className="mb-1.5 flex w-full max-w-[85%] flex-col items-end gap-1.5">
       {files.map((f) => {
         const a = artefacts.find((x) => x.id === f.artefactId);
-        const v = a && pickVersion(a, f.version);
         return (
           <ArtefactTile
-            key={`${f.artefactId}@${f.version}`}
+            key={f.artefactId}
             name={f.name}
             mediaType={f.mediaType}
-            size={v?.size ?? 0}
+            size={a?.size ?? 0}
             source="upload"
             compact
             className="w-full max-w-72"
-            onOpen={onOpen && (() => onOpen(f.artefactId, f.version))}
+            onOpen={onOpen && (() => onOpen(f.artefactId))}
           />
         );
       })}
@@ -469,10 +468,9 @@ function PromptFiles({
   );
 }
 
-// What the agent published in a turn, one card per artefact. The card shows
-// the version the turn reached, and how many exist, so an old turn's card still
-// says there is something newer.
-// A turn that publishes a pile of files shows the first few: nine full-width
+// What the agent showed in a turn, one card per artefact. The card opens the
+// file as it is now, since there is only ever the one.
+// A turn that shows a pile of files shows the first few: nine full-width
 // cards is a screen of scrolling on a phone before the next message.
 const ARTEFACTS_SHOWN = 3;
 
@@ -484,20 +482,18 @@ function ArtefactCards({ items, artefacts, onOpen }: { items: Item[]; artefacts:
     <div className="fade-in flex flex-col gap-2">
       {shown.map((it) => {
         const a = artefacts.find((x) => x.id === it.artefactId);
-        const v = a && pickVersion(a, it.version);
         return (
           <ArtefactTile
             key={it.id}
             name={a?.name ?? it.title ?? "artefact"}
-            entry={v?.entry}
-            mediaType={v?.mediaType ?? it.mediaType ?? ""}
-            size={v?.size ?? it.size ?? 0}
-            version={it.version}
-            versions={a?.versions.length}
+            entry={a?.entry}
+            mediaType={a?.mediaType ?? it.mediaType ?? ""}
+            size={a?.size ?? it.size ?? 0}
+            files={a?.files}
             source="agent"
-            detail={v?.note}
+            detail={a?.note}
             className="max-w-md"
-            onOpen={onOpen && it.artefactId ? () => onOpen(it.artefactId!, it.version) : undefined}
+            onOpen={onOpen && it.artefactId ? () => onOpen(it.artefactId!) : undefined}
           />
         );
       })}
@@ -1179,7 +1175,7 @@ export function Transcript({
   jobs?: Job[];
   /** Opens the panel on the jobs surface. */
   onOpenJobs?: () => void;
-  /** Opens an artefact in the panel; no version means the latest. */
+  /** Opens an artefact in the panel. */
   onOpenArtefact?: OpenArtefact;
   /** The session branch's pull request, when omniplex could find one. */
   pr?: PullRequest | null;

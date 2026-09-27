@@ -43,8 +43,8 @@ export interface UploadedImage {
  * Two kinds travel through the same staging. A picture the model can look at
  * goes up as an image and is named by `id`; anything else — a PDF, a zip, a
  * HEIC the image path would refuse — goes up as an artefact and is named by
- * `artefactId@version`, which the server turns into a file on disk the agent
- * can read.
+ * `artefactId`: the server saved it in the project's uploads folder and tells
+ * the agent where.
  */
 export interface Attachment {
   /** Local identity, stable across the upload. Not the server's id. */
@@ -60,7 +60,6 @@ export interface Attachment {
   id?: string;
   /** The artefact a file became, present once uploaded. */
   artefactId?: string;
-  version?: number;
   mediaType?: string;
   size?: number;
   /** 0..1 while a file uploads; images are small enough to go without. */
@@ -233,19 +232,18 @@ export async function uploadStaged(
     kind: "file",
     status: "ready",
     artefactId: up.artefact.id,
-    version: up.version,
     progress: 1,
   };
 }
 
 /** What a message carries: the ready images by id and the ready files by
-    artefact version. Anything still uploading or failed is left out. */
+    artefact id. Anything still uploading or failed is left out. */
 export function sendPayload(attachments: Attachment[]): { imageIds: string[]; files: ArtefactRef[] } {
   const imageIds: string[] = [];
   const files: ArtefactRef[] = [];
   for (const a of attachments) {
     if (a.status !== "ready") continue;
-    if (a.artefactId && a.version !== undefined) files.push({ artefactId: a.artefactId, version: a.version });
+    if (a.artefactId) files.push({ artefactId: a.artefactId });
     else if (a.id) imageIds.push(a.id);
   }
   return { imageIds, files };

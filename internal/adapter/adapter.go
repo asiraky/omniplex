@@ -35,9 +35,14 @@ type CreateOptions struct {
 	HarnessSessionID string
 
 	// MCPServers are stdio MCP servers omniplex runs beside the harness, the
-	// way it gives an agent tools of its own (publishing an artefact). An
-	// adapter whose harness cannot take MCP servers ignores them.
+	// way it gives an agent tools of its own (showing a file). An adapter
+	// whose harness cannot take MCP servers ignores them.
 	MCPServers []MCPServer
+
+	// ExtraDirs are folders outside Cwd the agent may read and write: the
+	// project's home folder, when the session works in a repo. An adapter
+	// whose harness has no such setting ignores them.
+	ExtraDirs []string
 }
 
 // MCPServer is one stdio MCP server. Tools lists the tool names it serves, so

@@ -61,8 +61,6 @@ export interface PanelRequest {
   path?: string;
   line?: number;
   artefactId?: string;
-  /** artefact: the version to show; none shows the latest. */
-  version?: number;
   nonce: number;
 }
 
@@ -269,7 +267,7 @@ function PanelBody({
     }
     if (request.kind === "artefact") {
       routedNonce.current = request.nonce;
-      if (request.artefactId) setPanel((p) => putSurface(p, artefactSurface(request.artefactId!, request.version)));
+      if (request.artefactId) setPanel((p) => putSurface(p, artefactSurface(request.artefactId!)));
       return;
     }
     if (!request.path) {
@@ -305,7 +303,7 @@ function PanelBody({
   const jobCount = liveJobCount(state.jobs);
   const artefacts = state.artefacts ?? NO_ARTEFACTS;
   const openArtefact = useCallback(
-    (id: string, version?: number) => setPanel((p) => putSurface(p, artefactSurface(id, version))),
+    (id: string) => setPanel((p) => putSurface(p, artefactSurface(id))),
     [],
   );
   const shownArtefact = active?.kind === "artefact" ? artefacts.find((a) => a.id === active.artefactId) : undefined;
@@ -464,8 +462,6 @@ function PanelBody({
               key={shownArtefact.id}
               sessionId={sessionId}
               artefact={shownArtefact}
-              version={active.version}
-              onVersionChange={(v) => openArtefact(shownArtefact.id, v)}
             />
           ) : (
             <div className="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-[13px]">
@@ -505,9 +501,10 @@ export function Panel(props: PanelProps) {
   useEffect(() => {
     if (!props.open || !docked) return;
     const onKey = (e: KeyboardEvent) => {
-      // A dialog or sheet over the panel owns Escape first; closing both at
-      // once would dismiss something the user was not looking at.
-      if (e.key !== "Escape" || document.querySelector("[role=dialog]")) return;
+      // A dialog, sheet, menu or popover owns Escape first; closing both at
+      // once would dismiss something the user was not looking at. Radix
+      // prevents the default of the Escape it dismisses a layer with.
+      if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("[role=dialog]")) return;
       props.onClose();
     };
     window.addEventListener("keydown", onKey);

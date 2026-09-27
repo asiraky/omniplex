@@ -1,13 +1,13 @@
 package server
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +23,7 @@ type artefactRig struct {
 	local   *httptest.Server // trusted: the device gate lets it through
 	remote  *httptest.Server // an unpaired device
 	session string
+	dir     string // the session's folder, which is also its home
 	agent   string // agent token for the session
 }
 
@@ -50,25 +51,32 @@ func newArtefactRig(t *testing.T) *artefactRig {
 	remote := httptest.NewServer(asRemote(h))
 	t.Cleanup(local.Close)
 	t.Cleanup(remote.Close)
-	return &artefactRig{srv: srv, local: local, remote: remote, session: a.ID,
+	return &artefactRig{srv: srv, local: local, remote: remote, session: a.ID, dir: dir,
 		agent: signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Session: a.ID})}
 }
 
-func tarBody(t *testing.T, files map[string]string) *bytes.Buffer {
+// write puts files under the session's folder and returns the path of name.
+func (r *artefactRig) write(t *testing.T, name string, files map[string]string) string {
 	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for name, body := range files {
-		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
-		tw.Write([]byte(body))
+	for rel, body := range files {
+		p := filepath.Join(r.dir, name, filepath.FromSlash(rel))
+		if len(files) == 1 && rel == "" {
+			p = filepath.Join(r.dir, name)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	tw.Close()
-	return &buf
+	return filepath.Join(r.dir, name)
 }
 
-func (r *artefactRig) publish(t *testing.T, token, name string, files map[string]string) (*http.Response, map[string]any) {
+func (r *artefactRig) show(t *testing.T, token, path string) (*http.Response, map[string]any) {
 	t.Helper()
-	req, _ := http.NewRequest("POST", r.remote.URL+"/api/agent/artefacts?name="+name, tarBody(t, files))
+	body, _ := json.Marshal(map[string]string{"path": path})
+	req, _ := http.NewRequest("POST", r.remote.URL+"/api/agent/artefacts", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -78,6 +86,27 @@ func (r *artefactRig) publish(t *testing.T, token, name string, files map[string
 	var out map[string]any
 	json.NewDecoder(res.Body).Decode(&out)
 	return res, out
+}
+
+func (r *artefactRig) api(id string) string {
+	return r.local.URL + "/api/sessions/" + r.session + "/artefacts/" + id
+}
+
+func send(t *testing.T, method, url string) map[string]any {
+	t.Helper()
+	req, _ := http.NewRequest(method, url, nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("%s %s: %d %s", method, url, res.StatusCode, b)
+	}
+	var out map[string]any
+	json.NewDecoder(res.Body).Decode(&out)
+	return out
 }
 
 func post(t *testing.T, url, body string) map[string]any {
@@ -107,49 +136,61 @@ func get(t *testing.T, url string) (*http.Response, string) {
 	return res, string(b)
 }
 
-func TestAgentPublishVersionsByNameAndNeedsItsToken(t *testing.T) {
+func TestAgentShowNeedsItsTokenAndAPathInTheSession(t *testing.T) {
 	r := newArtefactRig(t)
-	bundle := map[string]string{"index.html": "<html><head><title>v1</title></head><body><script src=app.js></script></body></html>", "app.js": "console.log(1)"}
+	proto := r.write(t, "proto", map[string]string{"index.html": "<h1>", "app.js": "1"})
 
-	res, _ := r.publish(t, "forged", "proto", bundle)
-	if res.StatusCode != http.StatusUnauthorized {
+	if res, _ := r.show(t, "forged", proto); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("forged token: %d", res.StatusCode)
 	}
-	res, first := r.publish(t, r.agent, "proto", bundle)
-	if res.StatusCode != 200 || first["version"] != float64(1) || first["entry"] != "index.html" || first["files"] != float64(2) {
-		t.Fatalf("first publish: %d %v", res.StatusCode, first)
+	outside := filepath.Join(t.TempDir(), "elsewhere.md")
+	os.WriteFile(outside, []byte("x"), 0o644)
+	res, out := r.show(t, r.agent, outside)
+	if res.StatusCode != http.StatusForbidden || !strings.Contains(out["error"].(string), r.dir) {
+		t.Fatalf("outside the session: %d %v", res.StatusCode, out)
 	}
-	_, second := r.publish(t, r.agent, "proto", map[string]string{"index.html": "v2"})
-	if second["version"] != float64(2) || second["artefactId"] != first["artefactId"] {
-		t.Fatalf("second publish = %v, want v2 of %v", second, first["artefactId"])
+	if res, _ := r.show(t, r.agent, "proto"); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("relative path: %d", res.StatusCode)
 	}
-	_, other := r.publish(t, r.agent, "notes", map[string]string{"notes.md": "# n"})
-	if other["version"] != float64(1) || other["artefactId"] == first["artefactId"] {
-		t.Fatalf("a new name must be a new artefact: %v", other)
+
+	res, first := r.show(t, r.agent, proto)
+	if res.StatusCode != 200 || first["entry"] != "index.html" || first["files"] != float64(2) || first["dir"] != true {
+		t.Fatalf("first show: %d %v", res.StatusCode, first)
+	}
+	// Showing the same folder again, after a revision, is the same artefact.
+	r.write(t, "proto", map[string]string{"extra.css": "b{}"})
+	_, second := r.show(t, r.agent, proto)
+	if second["artefactId"] != first["artefactId"] || second["files"] != float64(3) {
+		t.Fatalf("second show = %v, want a revision of %v", second, first["artefactId"])
+	}
+	_, other := r.show(t, r.agent, r.write(t, "notes.md", map[string]string{"": "# n"}))
+	if other["artefactId"] == first["artefactId"] {
+		t.Fatalf("another path must be another artefact: %v", other)
 	}
 }
 
-func TestPreviewTokenServesBundleSandboxedWithBridge(t *testing.T) {
+func TestPreviewServesLiveFilesSandboxedWithBridge(t *testing.T) {
 	r := newArtefactRig(t)
-	_, pub := r.publish(t, r.agent, "proto", map[string]string{
+	proto := r.write(t, "proto", map[string]string{
 		"index.html": "<html><head><title>x</title></head><body>hi</body></html>",
 		"app.js":     "1",
+		".env":       "SECRET=1",
 	})
-	id := pub["artefactId"].(string)
+	_, shown := r.show(t, r.agent, proto)
+	id := shown["artefactId"].(string)
 
 	// The raw route is the app's own origin: behind the gate, and a document
 	// there never gets to run script.
-	res, _ := get(t, r.remote.URL+"/api/sessions/"+r.session+"/artefacts/"+id+"/v/1/index.html")
-	if res.StatusCode != http.StatusUnauthorized {
+	raw := "/api/sessions/" + r.session + "/artefacts/" + id + "/f/index.html"
+	if res, _ := get(t, r.remote.URL+raw); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("raw route from an unpaired device: %d", res.StatusCode)
 	}
-	res, _ = get(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts/"+id+"/v/1/index.html")
+	res, _ := get(t, r.local.URL+raw)
 	if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") != "sandbox" {
 		t.Fatalf("raw html: %d csp=%q", res.StatusCode, res.Header.Get("Content-Security-Policy"))
 	}
 
-	preview := post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts/"+id+"/v/1/preview", "")
-	url := preview["url"].(string)
+	url := post(t, r.api(id)+"/preview", "")["url"].(string)
 	if !strings.HasSuffix(url, "/index.html") {
 		t.Fatalf("preview url %q", url)
 	}
@@ -167,13 +208,16 @@ func TestPreviewTokenServesBundleSandboxedWithBridge(t *testing.T) {
 	if head < 0 || !strings.HasPrefix(body[head+len("<head>"):], "<script>") || !strings.Contains(body, "<body>hi</body>") {
 		t.Fatalf("bridge not first in head: %q", body)
 	}
-	res, body = get(t, r.remote.URL+strings.TrimSuffix(url, "index.html")+"app.js")
-	if res.StatusCode != 200 || body != "1" {
+	base := r.remote.URL + strings.TrimSuffix(url, "index.html")
+	// Live: the agent's edit shows without showing the file again.
+	r.write(t, "proto", map[string]string{"app.js": "2"})
+	if res, body := get(t, base+"app.js"); res.StatusCode != 200 || body != "2" {
 		t.Fatalf("relative asset: %d %q", res.StatusCode, body)
 	}
-	res, _ = get(t, r.remote.URL+strings.TrimSuffix(url, "index.html")+"..%2f..%2f..%2fa.db")
-	if res.StatusCode != 404 {
-		t.Fatalf("traversal through the preview route: %d", res.StatusCode)
+	for _, rel := range []string{"..%2f..%2fa.db", ".env"} {
+		if res, _ := get(t, base+rel); res.StatusCode != 404 {
+			t.Fatalf("%s through the preview route: %d", rel, res.StatusCode)
+		}
 	}
 	// A preview token is not a share link.
 	tok := strings.Split(url, "/")[2]
@@ -182,39 +226,58 @@ func TestPreviewTokenServesBundleSandboxedWithBridge(t *testing.T) {
 	}
 }
 
-func TestShareLinkFollowsLatestUnlessPinned(t *testing.T) {
+func TestShareIsASnapshotUntilUpdatedAndDiesWhenStopped(t *testing.T) {
 	r := newArtefactRig(t)
-	_, pub := r.publish(t, r.agent, "report", map[string]string{"report.md": "one"})
-	id := pub["artefactId"].(string)
+	report := r.write(t, "report.md", map[string]string{"": "one"})
+	_, shown := r.show(t, r.agent, report)
+	id := shown["artefactId"].(string)
 
-	latest := post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts/"+id+"/share", "")["url"].(string)
-	pinned := post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts/"+id+"/share", `{"version":1}`)["url"].(string)
+	if st := send(t, "GET", r.api(id)+"/share"); st["share"] != nil {
+		t.Fatalf("shared before anyone shared it: %v", st)
+	}
+	link := send(t, "POST", r.api(id)+"/share")["share"].(map[string]any)["url"].(string)
 	// The share route answers with the host the request came to.
-	if !strings.HasPrefix(latest, r.local.URL+"/s/") {
-		t.Fatalf("share url %q", latest)
+	if !strings.HasPrefix(link, r.local.URL+"/s/") {
+		t.Fatalf("share url %q", link)
+	}
+	remote := strings.Replace(link, r.local.URL, r.remote.URL, 1)
+
+	os.WriteFile(report, []byte("two"), 0o644)
+	if _, body := get(t, remote); body != "one" {
+		t.Fatalf("the link followed an edit nobody shared: %q", body)
+	}
+	if st := send(t, "GET", r.api(id)+"/share")["share"].(map[string]any); st["url"] != link {
+		t.Fatalf("status url %v, want %s", st["url"], link)
 	}
 
-	// Version 2 renames its file: a latest link must still land on it.
-	r.publish(t, r.agent, "report", map[string]string{"final.md": "two"})
-
-	remote := func(u string) string { return strings.Replace(u, r.local.URL, r.remote.URL, 1) }
-	if _, body := get(t, remote(latest)); body != "two" {
-		t.Fatalf("latest link served %q", body)
+	updated := send(t, "POST", r.api(id)+"/share")["share"].(map[string]any)["url"].(string)
+	if updated != link {
+		t.Fatalf("update changed the link: %s", updated)
 	}
-	if _, body := get(t, remote(pinned)); body != "one" {
-		t.Fatalf("pinned link served %q", body)
+	if _, body := get(t, remote); body != "two" {
+		t.Fatalf("updated link served %q", body)
+	}
+
+	send(t, "DELETE", r.api(id)+"/share")
+	if res, _ := get(t, remote); res.StatusCode != 404 {
+		t.Fatalf("stopped link: %d", res.StatusCode)
+	}
+	again := send(t, "POST", r.api(id)+"/share")["share"].(map[string]any)["url"].(string)
+	if again == link {
+		t.Fatal("sharing again brought the stopped link back")
+	}
+	if res, _ := get(t, remote); res.StatusCode != 404 {
+		t.Fatalf("stopped link after sharing again: %d", res.StatusCode)
 	}
 }
 
-func TestUploadsNeverBecomeVersionsAndTrailerNamesThem(t *testing.T) {
+func TestUploadsLandInTheUploadsFolderAndTrailerNamesThem(t *testing.T) {
 	r := newArtefactRig(t)
 	upload := func() map[string]any {
-		return post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts?name=brief.pdf", "%PDF-1.4 x")
+		return post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts?name=brief.pdf", "%PDF-1.4 x")["artefact"].(map[string]any)
 	}
-	first, second := upload(), upload()
-	a1 := first["artefact"].(map[string]any)
-	a2 := second["artefact"].(map[string]any)
-	if a1["name"] != "brief.pdf" || a2["name"] != "brief (2).pdf" || a1["id"] == a2["id"] {
+	a1, a2 := upload(), upload()
+	if a1["path"] != filepath.Join(r.dir, "uploads", "brief.pdf") || a2["name"] != "brief (2).pdf" || a1["id"] == a2["id"] {
 		t.Fatalf("uploads: %v / %v", a1, a2)
 	}
 
@@ -222,14 +285,15 @@ func TestUploadsNeverBecomeVersionsAndTrailerNamesThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	trailer, err := r.srv.attachedFiles(context.Background(), actor, r.session, []promptFile{{ArtefactID: a2["id"].(string), Version: 1}})
+	trailer, err := r.srv.attachedFiles(context.Background(), actor, []promptFile{{ArtefactID: a2["id"].(string)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(trailer, "- brief (2).pdf (application/pdf, 10 B, artefact "+a2["id"].(string)+"@1): /") {
+	want := "- brief (2).pdf (application/pdf, 10 B, artefact " + a2["id"].(string) + "): " + filepath.Join(r.dir, "uploads", "brief (2).pdf")
+	if !strings.Contains(trailer, want) {
 		t.Fatalf("trailer = %q", trailer)
 	}
-	if _, err := r.srv.attachedFiles(context.Background(), actor, r.session, []promptFile{{ArtefactID: "nope", Version: 1}}); err == nil {
+	if _, err := r.srv.attachedFiles(context.Background(), actor, []promptFile{{ArtefactID: "nope"}}); err == nil {
 		t.Fatal("an unknown file was accepted")
 	}
 }
@@ -237,8 +301,8 @@ func TestUploadsNeverBecomeVersionsAndTrailerNamesThem(t *testing.T) {
 func TestSharedPageGetsAViewportOnlyWhenItHasNone(t *testing.T) {
 	r := newArtefactRig(t)
 	serve := func(name, doc string) string {
-		_, pub := r.publish(t, r.agent, name, map[string]string{"index.html": doc})
-		url := post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts/"+pub["artefactId"].(string)+"/share", "")["url"].(string)
+		_, shown := r.show(t, r.agent, r.write(t, name, map[string]string{"index.html": doc}))
+		url := send(t, "POST", r.api(shown["artefactId"].(string))+"/share")["share"].(map[string]any)["url"].(string)
 		_, body := get(t, url)
 		return body
 	}

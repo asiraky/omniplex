@@ -506,7 +506,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			}
 		}
 		if len(a.Files) > 0 {
-			trailer, err := c.srv.attachedFiles(ctx, actor, a.SessionID, a.Files)
+			trailer, err := c.srv.attachedFiles(ctx, actor, a.Files)
 			if err != nil {
 				return nil, err
 			}

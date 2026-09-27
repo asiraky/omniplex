@@ -4,25 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { forgetTextCache, readText, TEXT_CAP } from "~/components/artefacts/viewers";
-import { rawUrl, type Artefact, type ArtefactVersion } from "~/lib/artefacts";
-import { render, viewport } from "~/test/harness";
+import { rawUrl, type Artefact } from "~/lib/artefacts";
+import { makeArtefact } from "~/test/artefact";
+import { render, viewport, wrap } from "~/test/harness";
 
-function artefact(name: string, mediaType: string, versions = 1, over: Partial<ArtefactVersion> = {}): Artefact {
-  return {
-    id: `a-${name}`,
-    name,
-    versions: Array.from({ length: versions }, (_, i) => ({
-      version: i + 1,
-      mediaType,
-      size: 1234,
-      entry: name,
-      files: 1,
-      source: "agent" as const,
-      publishedAt: Date.now() - 60_000 * (versions - i),
-      ...over,
-    })),
-  };
+function artefact(name: string, mediaType: string, over: Partial<Artefact> = {}): Artefact {
+  return makeArtefact({ id: `a-${name}`, name, mediaType, size: 1234, shownAt: Date.now() - 60_000, ...over });
 }
+
+const raw = (a: Artefact, download = false) => rawUrl("s1", a.id, a.entry, { rev: a.modifiedAt, download });
 
 type Route = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
@@ -39,10 +29,8 @@ function serve(routes: Record<string, string | Route>) {
   return fetch;
 }
 
-function mount(a: Artefact, over: Partial<Parameters<typeof ArtefactSurface>[0]> = {}) {
-  const onVersionChange = vi.fn();
-  const view = render(<ArtefactSurface sessionId="s1" artefact={a} onVersionChange={onVersionChange} {...over} />);
-  return { onVersionChange, ...view };
+function mount(a: Artefact) {
+  return render(<ArtefactSurface sessionId="s1" artefact={a} />);
 }
 
 const radio = (name: string) => screen.getByRole("radio", { name });
@@ -59,7 +47,7 @@ afterEach(() => {
 describe("choosing a viewer", () => {
   it("renders markdown, and flips to its source and back", async () => {
     const a = artefact("notes.md", "text/markdown");
-    serve({ [rawUrl("s1", a.id, 1, "notes.md")]: "# Hello\n\nSome *words*." });
+    serve({ [raw(a)]: "# Hello\n\nSome *words*." });
     mount(a);
     expect(await screen.findByRole("heading", { name: "Hello" })).toBeTruthy();
 
@@ -73,7 +61,7 @@ describe("choosing a viewer", () => {
 
   it("reads the file once for both preview and source", async () => {
     const a = artefact("notes.md", "text/markdown");
-    const fetch = serve({ [rawUrl("s1", a.id, 1, "notes.md")]: "# Hi" });
+    const fetch = serve({ [raw(a)]: "# Hi" });
     mount(a);
     await screen.findByRole("heading", { name: "Hi" });
     fireEvent.click(radio("Source"));
@@ -86,9 +74,9 @@ describe("choosing a viewer", () => {
     const md2 = artefact("b.md", "text/markdown");
     const csv = artefact("c.csv", "text/csv");
     serve({
-      [rawUrl("s1", md.id, 1, "a.md")]: "# A",
-      [rawUrl("s1", md2.id, 1, "b.md")]: "# B",
-      [rawUrl("s1", csv.id, 1, "c.csv")]: "col\nval",
+      [raw(md)]: "# A",
+      [raw(md2)]: "# B",
+      [raw(csv)]: "col\nval",
     });
     const first = mount(md);
     await screen.findByRole("heading", { name: "A" });
@@ -107,24 +95,24 @@ describe("choosing a viewer", () => {
 
   it("shows a PDF inline on a desktop and as a card to open on a phone", async () => {
     const a = artefact("paper.pdf", "application/pdf");
-    const raw = rawUrl("s1", a.id, 1, "paper.pdf");
+    const pdf = raw(a);
     serve({});
     const desk = mount(a);
-    expect(frame()?.getAttribute("src")).toBe(raw);
+    expect(frame()?.getAttribute("src")).toBe(pdf);
     desk.unmount();
 
     viewport("phone");
     mount(a);
     expect(frame()).toBeNull();
-    expect(screen.getByRole("link", { name: "Open PDF" }).getAttribute("href")).toBe(raw);
+    expect(screen.getByRole("link", { name: "Open PDF" }).getAttribute("href")).toBe(pdf);
   });
 
   it("pretty-prints JSON, and shows it as written when it will not parse", async () => {
     const good = artefact("d.json", "application/json");
     const bad = artefact("e.json", "application/json");
     serve({
-      [rawUrl("s1", good.id, 1, "d.json")]: '{"a":1}',
-      [rawUrl("s1", bad.id, 1, "e.json")]: "{nope",
+      [raw(good)]: '{"a":1}',
+      [raw(bad)]: "{nope",
     });
     const first = mount(good);
     expect(await screen.findByText('"a": 1')).toBeTruthy();
@@ -139,14 +127,14 @@ describe("choosing a viewer", () => {
     const fetch = serve({});
     mount(a);
     const links = screen.getAllByRole("link", { name: /download/i });
-    expect(links.every((l) => l.getAttribute("href") === rawUrl("s1", a.id, 1, "deck.docx", true))).toBe(true);
+    expect(links.every((l) => l.getAttribute("href") === raw(a, true))).toBe(true);
     // Nothing is fetched for a type with no viewer.
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("offers no preview/source switch where there is only one form", async () => {
     const a = artefact("main.go", "text/x-go");
-    serve({ [rawUrl("s1", a.id, 1, "main.go")]: "package main\n" });
+    serve({ [raw(a)]: "package main\n" });
     mount(a);
     expect(await screen.findByText("package main")).toBeTruthy();
     expect(screen.queryByRole("radio", { name: "Source" })).toBeNull();
@@ -156,7 +144,7 @@ describe("choosing a viewer", () => {
     const a = artefact("log.txt", "text/plain");
     let calls = 0;
     serve({
-      [rawUrl("s1", a.id, 1, "log.txt")]: () =>
+      [raw(a)]: () =>
         ++calls === 1
           ? new Response(JSON.stringify({ error: "the disk is on fire" }), { status: 500 })
           : new Response("second time lucky"),
@@ -172,13 +160,13 @@ describe("html", () => {
   it("loads the page from a preview URL, not the raw route", async () => {
     const a = artefact("index.html", "text/html");
     const fetch = serve({
-      [`/api/sessions/s1/artefacts/${a.id}/v/1/preview`]: () =>
+      [`/api/sessions/s1/artefacts/${a.id}/preview`]: () =>
         new Response(JSON.stringify({ url: "/p/tok1/index.html", expiresAt: Date.now() + 3_600_000 })),
     });
     mount(a);
     await waitFor(() => expect(frame()?.getAttribute("src")).toBe("/p/tok1/index.html"));
     expect(screen.getByTestId("url-pill").textContent).toBe("/index.html");
-    expect(fetch).toHaveBeenCalledWith(`/api/sessions/s1/artefacts/${a.id}/v/1/preview`, expect.objectContaining({ method: "POST" }));
+    expect(fetch).toHaveBeenCalledWith(`/api/sessions/s1/artefacts/${a.id}/preview`, expect.objectContaining({ method: "POST" }));
     // The new-tab link opens the page in its sandboxed form too.
     fireEvent.pointerDown(screen.getByRole("button", { name: "More" }), { button: 0, ctrlKey: false });
     expect((await screen.findByRole("menuitem", { name: "Open in a new tab" })).getAttribute("href")).toBe("/p/tok1/index.html");
@@ -188,7 +176,7 @@ describe("html", () => {
     const a = artefact("index.html", "text/html");
     let calls = 0;
     serve({
-      [`/api/sessions/s1/artefacts/${a.id}/v/1/preview`]: () =>
+      [`/api/sessions/s1/artefacts/${a.id}/preview`]: () =>
         ++calls === 1
           ? new Response(JSON.stringify({ error: "preview unavailable" }), { status: 503 })
           : new Response(JSON.stringify({ url: "/p/t2/index.html", expiresAt: Date.now() + 3_600_000 })),
@@ -200,49 +188,82 @@ describe("html", () => {
   });
 });
 
-describe("versions", () => {
-  it("shows the version asked for and reports a pick of another", async () => {
-    const a = artefact("r.txt", "text/plain", 3);
-    serve({
-      [rawUrl("s1", a.id, 2, "r.txt")]: "version two",
-      [rawUrl("s1", a.id, 3, "r.txt")]: "version three",
-    });
-    const { onVersionChange } = mount(a, { version: 2 });
-    expect(await screen.findByText("version two")).toBeTruthy();
-
-    fireEvent.pointerDown(screen.getByRole("button", { name: /^Version: v2$/ }), { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole("menuitem", { name: /v3.*latest/ }));
-    expect(onVersionChange).toHaveBeenCalledWith(3);
+describe("revisions", () => {
+  it("reads the file again when the agent shows a new revision", async () => {
+    const a = artefact("r.txt", "text/plain");
+    const b = { ...a, modifiedAt: a.modifiedAt + 5000 };
+    serve({ [raw(a)]: "first draft", [raw(b)]: "second draft" });
+    const view = mount(a);
+    expect(await screen.findByText("first draft")).toBeTruthy();
+    view.rerender(wrap(<ArtefactSurface sessionId="s1" artefact={b} />));
+    expect(await screen.findByText("second draft")).toBeTruthy();
   });
 });
 
 describe("sharing", () => {
-  it("links to the latest or pins this version, as chosen", async () => {
-    const a = artefact("r.txt", "text/plain", 2);
+  function shareServer(a: Artefact) {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-    const bodies: unknown[] = [];
+    const calls: string[] = [];
+    let link: { url: string; sharedAt: number; expiresAt: number } | null = null;
+    let n = 0;
     serve({
-      [rawUrl("s1", a.id, 2, "r.txt")]: "x",
+      [raw(a)]: "x",
       [`/api/sessions/s1/artefacts/${a.id}/share`]: (_url, init) => {
-        const body = JSON.parse(String(init?.body));
-        bodies.push(body);
-        const url = body.version ? `https://h/s/pinned` : `https://h/s/latest`;
-        return new Response(JSON.stringify({ url, expiresAt: Date.now() + 7 * 86_400_000 }));
+        const method = init?.method ?? "GET";
+        calls.push(method);
+        if (method === "POST") link = { url: link?.url ?? `https://h/s/${++n}`, sharedAt: Date.now(), expiresAt: Date.now() + 7 * 86_400_000 };
+        if (method === "DELETE") link = null;
+        return new Response(JSON.stringify({ share: link }));
       },
     });
+    return { writeText, calls, setLink: (l: typeof link) => (link = l) };
+  }
+
+  it("shares nothing until asked, then copies, updates and stops the link", async () => {
+    const a = artefact("r.txt", "text/plain");
+    const { writeText, calls } = shareServer(a);
     mount(a);
     fireEvent.click(screen.getByRole("button", { name: "Share" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Copy link" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("https://h/s/latest"));
+    fireEvent.click(await screen.findByRole("button", { name: "Create link" }));
+    expect(((await screen.findByRole("textbox", { name: "Share link" })) as HTMLInputElement).value).toBe("https://h/s/1");
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("https://h/s/1"));
 
-    fireEvent.click(radio("This version (v2)"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Copy link|Copied/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Update link" }));
     });
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("https://h/s/pinned"));
-    expect(bodies).toEqual([{}, { version: 2 }]);
+    expect((screen.getByRole("textbox", { name: "Share link" }) as HTMLInputElement).value).toBe("https://h/s/1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop sharing" }));
+    expect(await screen.findByRole("button", { name: "Create link" })).toBeTruthy();
+    expect(calls).toEqual(["GET", "POST", "POST", "DELETE"]);
+  });
+
+  it("says when the file has changed since the link was made", async () => {
+    const a = artefact("r.txt", "text/plain", { modifiedAt: Date.now() });
+    const { setLink } = shareServer(a);
+    setLink({ url: "https://h/s/old", sharedAt: a.modifiedAt - 60_000, expiresAt: Date.now() + 86_400_000 });
+    const view = mount(a);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    expect(await screen.findByText(/changed since/)).toBeTruthy();
+    view.unmount();
+
+    setLink({ url: "https://h/s/new", sharedAt: a.modifiedAt + 1, expiresAt: Date.now() + 86_400_000 });
+    mount(a);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    await screen.findByRole("textbox", { name: "Share link" });
+    expect(screen.queryByText(/changed since/)).toBeNull();
+  });
+
+  it("treats an expired link as no link", async () => {
+    const a = artefact("r.txt", "text/plain");
+    const { setLink } = shareServer(a);
+    setLink({ url: "https://h/s/old", sharedAt: 1, expiresAt: Date.now() - 1 });
+    mount(a);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    expect(await screen.findByRole("button", { name: "Create link" })).toBeTruthy();
   });
 });
 

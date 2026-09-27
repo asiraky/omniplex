@@ -2,7 +2,7 @@
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Event, Item, Job, JobPayload, SessionState, TurnDiff } from "./protocol";
+import type { Artefact, Event, Item, Job, JobPayload, SessionState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 
 export function emptyState(sessionId: string): SessionState {
@@ -43,52 +43,28 @@ function upsert(state: SessionState, id: string, mut: (it: Item) => void): Item[
   return [...state.items, it];
 }
 
-// applyArtefact folds artefact.published: a version onto its artefact, and a
-// timeline item for anything the agent published. Uploads get no item; they
-// show on the message that carried them. Mirrors State.applyArtefact in
-// internal/projection/state.go.
-interface ArtefactPublished {
-  artefactId: string;
-  version: number;
-  name: string;
-  mediaType: string;
-  size: number;
-  entry: string;
-  files: number;
-  source: "agent" | "upload";
-  note?: string;
-  turnId?: string;
-}
+// applyArtefact folds artefact.shown: the artefact as it is now replaces what
+// was known of it, and anything the agent showed gets a timeline item at the
+// point it was shown. Uploads get no item; they show on the message that
+// carried them. Mirrors State.applyArtefact in internal/projection/state.go.
+type ArtefactShown = Omit<Artefact, "id" | "shownAt"> & { artefactId: string };
 
-function applyArtefact(s: SessionState, ts: number, p: ArtefactPublished): SessionState {
-  const version = {
-    version: p.version,
-    mediaType: p.mediaType,
-    size: p.size,
-    entry: p.entry,
-    files: p.files,
-    source: p.source,
-    note: p.note,
-    turnId: p.turnId,
-    publishedAt: ts,
-  };
+function applyArtefact(s: SessionState, ts: number, seq: number, p: ArtefactShown): SessionState {
+  const { artefactId, ...rest } = p;
+  const artefact: Artefact = { ...rest, id: artefactId, turnId: p.turnId || undefined, shownAt: ts };
   const list = s.artefacts ?? [];
-  const i = list.findIndex((a) => a.id === p.artefactId);
-  const artefacts =
-    i >= 0
-      ? list.map((a, j) => (j === i ? { ...a, name: p.name, versions: [...a.versions, version] } : a))
-      : [...list, { id: p.artefactId, name: p.name, versions: [version] }];
+  const i = list.findIndex((a) => a.id === artefactId);
+  const artefacts = i >= 0 ? list.map((a, j) => (j === i ? artefact : a)) : [...list, artefact];
   if (p.source === "upload") return { ...s, artefacts };
   return {
     ...s,
     artefacts,
-    items: upsert(s, `artefact:${p.artefactId}@${p.version}`, (it) => {
+    items: upsert(s, `artefact:${artefactId}@${seq}`, (it) => {
       it.kind = "artefact";
       it.turnId = p.turnId || undefined;
       it.receivedAt ??= ts;
       it.title = p.name;
-      it.artefactId = p.artefactId;
-      it.version = p.version;
+      it.artefactId = artefactId;
       it.mediaType = p.mediaType;
       it.size = p.size;
     }),
@@ -420,8 +396,8 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         }),
       };
 
-    case "artefact.published":
-      return applyArtefact(s, ev.timestamp, p as ArtefactPublished);
+    case "artefact.shown":
+      return applyArtefact(s, ev.timestamp, ev.seq, p as ArtefactShown);
 
     case "session.account_changed":
       // The line where the session moved to another account. Mirrors

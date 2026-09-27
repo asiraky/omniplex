@@ -3,34 +3,24 @@ import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ArtefactList } from "~/components/artefacts/ArtefactList";
-import type { Artefact } from "~/lib/artefacts";
+import { makeArtefact } from "~/test/artefact";
 import { render } from "~/test/harness";
 
-const art = (id: string, sources: ("agent" | "upload")[], times: number[]): Artefact => ({
-  id,
-  name: `${id}.txt`,
-  versions: sources.map((source, i) => ({
-    version: i + 1,
-    mediaType: "text/plain",
-    size: 10,
-    entry: `${id}.txt`,
-    files: 1,
-    source,
-    publishedAt: times[i]!,
-  })),
-});
+const art = (id: string, source: "agent" | "upload", shownAt: number) =>
+  makeArtefact({ id, name: `${id}.txt`, mediaType: "text/plain", source, shownAt });
 
 const names = () => screen.getAllByRole("button", { name: /\.txt/ }).map((b) => b.textContent?.match(/(old|revised|upload)\.txt/)?.[0]);
 
 describe("ArtefactList", () => {
   const list = [
-    art("old", ["agent"], [100]),
-    // Uploaded first, revised by the agent last: newest, and the agent's.
-    art("revised", ["upload", "agent"], [50, 300]),
-    art("upload", ["upload"], [200]),
+    art("old", "agent", 100),
+    // Uploaded first, then revised and shown by the agent: newest, and the
+    // agent's.
+    art("revised", "agent", 300),
+    art("upload", "upload", 200),
   ];
 
-  it("lists newest first by latest version and filters by who made the latest", () => {
+  it("lists the most recently shown first and filters by who showed it", () => {
     render(<ArtefactList artefacts={list} onOpen={vi.fn()} />);
     expect(names()).toEqual(["revised.txt", "upload.txt", "old.txt"]);
     fireEvent.click(screen.getByRole("radio", { name: "Uploads" }));
@@ -39,7 +29,7 @@ describe("ArtefactList", () => {
     expect(names()).toEqual(["revised.txt", "old.txt"]);
   });
 
-  it("opens the one tapped at its latest", () => {
+  it("opens the one tapped", () => {
     const onOpen = vi.fn();
     render(<ArtefactList artefacts={list} onOpen={onOpen} />);
     fireEvent.click(screen.getByRole("button", { name: /upload\.txt/ }));

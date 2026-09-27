@@ -31,7 +31,6 @@ const stagedFile = (over: Partial<Attachment> = {}): Attachment => ({
   size: 3,
   status: "ready",
   artefactId: "art-1",
-  version: 1,
   ...over,
 });
 
@@ -166,25 +165,25 @@ describe("sending with images", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("sends ready files by artefact version alongside images", () => {
+  it("sends ready files by artefact alongside images", () => {
     const { onSend } = mount({ draft: "see attached", attachments: [staged(), stagedFile()] });
     fireEvent.click(sendButton());
     expect(onSend).toHaveBeenCalledWith("see attached", {
       imageIds: ["img-1"],
-      files: [{ artefactId: "art-1", version: 1 }],
+      files: [{ artefactId: "art-1" }],
     });
   });
 
   it("sends a message that is nothing but a file", () => {
     const { onSend } = mount({ attachments: [stagedFile()] });
     fireEvent.click(sendButton());
-    expect(onSend).toHaveBeenCalledWith("", { imageIds: [], files: [{ artefactId: "art-1", version: 1 }] });
+    expect(onSend).toHaveBeenCalledWith("", { imageIds: [], files: [{ artefactId: "art-1" }] });
   });
 
   it("refuses to send while a file is still going up, and shows how far it has got", () => {
     const { onSend } = mount({
       draft: "read this",
-      attachments: [stagedFile({ status: "uploading", artefactId: undefined, version: undefined, progress: 0.4 })],
+      attachments: [stagedFile({ status: "uploading", artefactId: undefined, progress: 0.4 })],
     });
     expect(screen.getByRole("progressbar", { name: "Uploading b.pdf" }).getAttribute("aria-valuenow")).toBe("40");
     fireEvent.click(sendButton());

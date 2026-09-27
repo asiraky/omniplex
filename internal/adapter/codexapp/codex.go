@@ -124,12 +124,15 @@ type modeSettings struct {
 	reviewer       string         // ApprovalsReviewer
 }
 
-func settingsFor(mode string) (modeSettings, error) {
+func settingsFor(mode string, writableRoots []string) (modeSettings, error) {
 	policy := func(approval, sandbox string, sandboxPolicy map[string]any, reviewer string) modeSettings {
 		return modeSettings{approvalPolicy: approval, sandbox: sandbox, sandboxPolicy: sandboxPolicy, reviewer: reviewer}
 	}
 	readOnly := map[string]any{"type": "readOnly", "networkAccess": false}
 	workspaceWrite := map[string]any{"type": "workspaceWrite", "networkAccess": false}
+	if len(writableRoots) > 0 {
+		workspaceWrite["writableRoots"] = writableRoots
+	}
 	fullAccess := map[string]any{"type": "dangerFullAccess"}
 
 	switch mode {
@@ -167,6 +170,28 @@ func settingsFor(mode string) (modeSettings, error) {
 // codex is asking for, so the grant is made here — per run, via -c, never
 // written to the user's config.toml. Trust is inherited by subpaths, so
 // naming the cwd covers a worktree beneath it without enumerating them.
+func trustArgs(cwd string) []string {
+	if cwd == "" {
+		return nil
+	}
+	// The path is quoted as a TOML basic string: a repo path may contain
+	// characters that a bare dotted key cannot carry.
+	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
+}
+
+// writableRootsArgs lets a workspace-write sandbox write to folders outside
+// the cwd: the project's home folder, when the session works in a repo.
+func writableRootsArgs(dirs []string) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(dirs))
+	for i, d := range dirs {
+		quoted[i] = strconv.Quote(d)
+	}
+	return []string{"-c", "sandbox_workspace_write.writable_roots=[" + strings.Join(quoted, ",") + "]"}
+}
+
 // mcpArgs adds omniplex's own MCP servers to this app-server run as config
 // overrides, leaving the user's config.toml alone.
 func mcpArgs(servers []adapter.MCPServer) []string {
@@ -194,25 +219,17 @@ func mcpArgs(servers []adapter.MCPServer) []string {
 	return out
 }
 
-func trustArgs(cwd string) []string {
-	if cwd == "" {
-		return nil
-	}
-	// The path is quoted as a TOML basic string: a repo path may contain
-	// characters that a bare dotted key cannot carry.
-	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
-}
-
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	// Resolve the mode before spawning anything: an unknown id should fail
 	// legibly, not leave an orphaned app-server.
-	mode, err := settingsFor(o.Mode)
+	mode, err := settingsFor(o.Mode, o.ExtraDirs)
 	if err != nil {
 		return nil, err
 	}
 
 	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
 	args = append(args, mcpArgs(o.MCPServers)...)
+	args = append(args, writableRootsArgs(o.ExtraDirs)...)
 	cmd := exec.Command(a.Bin, args...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
@@ -249,6 +266,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		subagents: map[string]string{},
 		done:      make(chan struct{}),
 		effort:    o.Effort,
+		extraDirs: o.ExtraDirs,
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
 
@@ -340,6 +358,8 @@ type session struct {
 	tree procgroup.Group
 	conn *jsonrpc.Conn
 	cwd  string
+	// extraDirs stay writable across a permission change.
+	extraDirs []string
 
 	threadID string
 	effort   string
@@ -513,7 +533,7 @@ func (s *session) Cancel(ctx context.Context) error {
 // is sent explicitly — including the reviewer — so switching away from a mode
 // resets what that mode had set.
 func (s *session) SetMode(ctx context.Context, mode string) error {
-	m, err := settingsFor(mode)
+	m, err := settingsFor(mode, s.extraDirs)
 	if err != nil {
 		return err
 	}

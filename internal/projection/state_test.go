@@ -303,28 +303,28 @@ func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
 	}
 }
 
-func TestArtefactVersionsFoldIntoOneArtefact(t *testing.T) {
+func TestShowingAPathAgainRevisesOneArtefact(t *testing.T) {
 	s := New("s")
-	pub := func(seq int64, v int, src string) {
-		s.Apply(event(t, seq, proto.ArtefactPublished, proto.ArtefactPublishedPayload{
-			ArtefactID: "a1", Version: v, Name: "report.html", MediaType: "text/html", Size: int64(v * 10),
+	show := func(seq int64, size int64, src string) {
+		s.Apply(event(t, seq, proto.ArtefactShown, proto.ArtefactShownPayload{
+			ArtefactID: "a1", Path: "/home/p/report.html", Name: "report.html", MediaType: "text/html", Size: size,
 			Entry: "report.html", Files: 1, Source: src, TurnID: "t1",
 		}))
 	}
-	pub(1, 1, proto.ArtefactFromAgent)
-	pub(2, 2, proto.ArtefactFromAgent)
-	s.Apply(event(t, 3, proto.ArtefactPublished, proto.ArtefactPublishedPayload{
-		ArtefactID: "u1", Version: 1, Name: "brief.pdf", MediaType: "application/pdf", Size: 5, Files: 1, Source: proto.ArtefactFromUpload,
+	show(1, 10, proto.ArtefactFromAgent)
+	show(2, 20, proto.ArtefactFromAgent)
+	s.Apply(event(t, 3, proto.ArtefactShown, proto.ArtefactShownPayload{
+		ArtefactID: "u1", Path: "/home/p/uploads/brief.pdf", Name: "brief.pdf", MediaType: "application/pdf", Size: 5, Files: 1, Source: proto.ArtefactFromUpload,
 	}))
 
 	if len(s.Artefacts) != 2 {
 		t.Fatalf("artefacts = %+v", s.Artefacts)
 	}
-	a, ok := s.ArtefactByName("report.html")
-	if !ok || len(a.Versions) != 2 || a.Latest().Version != 2 || a.Latest().Size != 20 {
+	a, ok := s.ArtefactByPath("/home/p/report.html")
+	if !ok || a.ID != "a1" || a.Size != 20 {
 		t.Fatalf("report = %+v", a)
 	}
-	// One timeline item per agent-published version; uploads show on their
+	// One timeline card per time the agent showed it; uploads show on their
 	// message instead.
 	var items []Item
 	for _, it := range s.Items {
@@ -332,14 +332,14 @@ func TestArtefactVersionsFoldIntoOneArtefact(t *testing.T) {
 			items = append(items, it)
 		}
 	}
-	if len(items) != 2 || items[1].Version != 2 || items[1].TurnID != "t1" || items[1].Title != "report.html" {
+	if len(items) != 2 || items[0].ID == items[1].ID || items[1].ArtefactID != "a1" || items[1].TurnID != "t1" || items[1].Size != 20 {
 		t.Fatalf("items = %+v", items)
 	}
 
 	// A clone is independent of the actor's state.
 	c := s.Clone()
-	pub(4, 3, proto.ArtefactFromAgent)
-	if got, _ := c.ArtefactByID("a1"); len(got.Versions) != 2 {
-		t.Fatalf("clone shares versions: %+v", got)
+	show(4, 30, proto.ArtefactFromAgent)
+	if got, _ := c.ArtefactByID("a1"); got.Size != 20 {
+		t.Fatalf("clone shares artefacts: %+v", got)
 	}
 }

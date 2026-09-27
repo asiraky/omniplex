@@ -1,6 +1,7 @@
 /**
- * Artefacts: the outputs a session produces or is handed — a page, a report, a
- * picture, a spreadsheet — attached to the session and viewable in the panel.
+ * Artefacts: files a session shows the user, from the agent or uploaded, a
+ * page, a report, a picture, a spreadsheet. They stay where they are on the
+ * server and the panel reads them live.
  *
  * This module is the client's whole model of them: the shapes the server
  * sends, the URLs that read them back, and the rules that decide how each type
@@ -8,66 +9,64 @@
  * can badge an artefact without pulling the viewers into the first bundle.
  */
 
-export interface ArtefactVersion {
-  /** 1-based. */
-  version: number;
-  mediaType: string;
-  /** Bytes, total across a bundle's files. */
-  size: number;
-  /** The file to show, relative to the version's root: "report.pdf", "index.html". */
-  entry: string;
-  /** 1 for a single file, more for a bundle (a directory). */
-  files: number;
-  source: "agent" | "upload";
-  /** The agent's one-line description of this version. */
-  note?: string;
-  turnId?: string;
-  publishedAt: number;
-}
-
+/**
+ * A file or folder the session has shown: a file on the server, read live.
+ * The agent revises it in place and shows it again, which updates this record
+ * rather than adding another.
+ */
 export interface Artefact {
   id: string;
   name: string;
-  /** Ascending: the last one is the latest. */
-  versions: ArtefactVersion[];
+  /** Absolute, on the server. */
+  path: string;
+  /** A folder rather than a single file. */
+  dir?: boolean;
+  mediaType: string;
+  /** Bytes, total across a folder's files. */
+  size: number;
+  /** The file to show, relative to a folder, or the file's own name. */
+  entry: string;
+  files: number;
+  /** Newest file's modification time when last shown, in millis. Keys the
+      viewer's cache, so a revision is refetched and nothing else is. */
+  modifiedAt: number;
+  source: "agent" | "upload";
+  /** The agent's one line on what it is or what changed. */
+  note?: string;
+  turnId?: string;
+  shownAt: number;
 }
 
 /** How a prompt names an uploaded file. */
 export interface ArtefactRef {
   artefactId: string;
-  version: number;
 }
 
 /** Matches the server's upload cap. Checked here so a phone finds out before
     it spends minutes of 4G on a file that will be refused. */
 export const MAX_ARTEFACT_BYTES = 200 * 1024 * 1024;
 
-export function latestVersion(a: Artefact): ArtefactVersion | undefined {
-  return a.versions[a.versions.length - 1];
-}
-
-/** The requested version, or the latest when none is asked for or the one
-    asked for does not exist. */
-export function pickVersion(a: Artefact, version?: number): ArtefactVersion | undefined {
-  return (version !== undefined ? a.versions.find((v) => v.version === version) : undefined) ?? latestVersion(a);
-}
-
 // ---- URLs and requests ----
 
 const base = (sessionId: string, artefactId: string) =>
   `/api/sessions/${encodeURIComponent(sessionId)}/artefacts/${encodeURIComponent(artefactId)}`;
 
-/** Raw bytes of one file in a version. Each path segment is encoded on its
-    own so a bundle's subdirectories survive as directories. */
+/** Raw bytes of one file, as it is on disk now. Each path segment is encoded
+    on its own so a folder's subdirectories survive as directories. `rev` is
+    the artefact's modifiedAt: the server ignores it, but it gives each
+    revision its own URL, so nothing keyed on the URL shows a stale one. */
 export function rawUrl(
   sessionId: string,
   artefactId: string,
-  version: number,
   path: string,
-  download = false,
+  opts: { download?: boolean; rev?: number } = {},
 ): string {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
-  return `${base(sessionId, artefactId)}/v/${version}/${encoded}${download ? "?download=1" : ""}`;
+  const q = new URLSearchParams();
+  if (opts.rev !== undefined) q.set("m", String(opts.rev));
+  if (opts.download) q.set("download", "1");
+  const query = q.toString();
+  return `${base(sessionId, artefactId)}/f/${encoded}${query ? `?${query}` : ""}`;
 }
 
 export interface ExpiringUrl {
@@ -75,12 +74,8 @@ export interface ExpiringUrl {
   expiresAt: number;
 }
 
-async function postJSON<T>(url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+async function call<T>(method: string, url: string): Promise<T> {
+  const res = await fetch(url, { method });
   if (!res.ok) throw new Error((await errorText(res)) || `request failed (${res.status})`);
   return (await res.json()) as T;
 }
@@ -92,19 +87,39 @@ async function errorText(res: Response): Promise<string> {
     .catch(() => "");
 }
 
-/** A sandboxed, tokenised URL for an HTML version: `/p/<token>/index.html`. */
-export function requestPreview(sessionId: string, artefactId: string, version: number): Promise<ExpiringUrl> {
-  return postJSON<ExpiringUrl>(`${base(sessionId, artefactId)}/v/${version}/preview`);
+/** A sandboxed, tokenised URL for an HTML artefact: `/p/<token>/index.html`.
+    It serves the live files, so a revision shows on reload. */
+export function requestPreview(sessionId: string, artefactId: string): Promise<ExpiringUrl> {
+  return call<ExpiringUrl>("POST", `${base(sessionId, artefactId)}/preview`);
 }
 
-/** An absolute link anyone can open. No version means "always the latest". */
-export function requestShare(sessionId: string, artefactId: string, version?: number): Promise<ExpiringUrl> {
-  return postJSON<ExpiringUrl>(`${base(sessionId, artefactId)}/share`, version === undefined ? {} : { version });
+/** A share link: a copy of the artefact taken when it was shared. */
+export interface ShareLink {
+  url: string;
+  sharedAt: number;
+  expiresAt: number;
+}
+
+type ShareReply = { share: ShareLink | null };
+
+/** The artefact's share link, or null when it has none. */
+export function getShare(sessionId: string, artefactId: string): Promise<ShareLink | null> {
+  return call<ShareReply>("GET", `${base(sessionId, artefactId)}/share`).then((r) => r.share);
+}
+
+/** Shares the artefact as it is now. When it is already shared, the link stays
+    the same and starts showing the files as they are now. */
+export function share(sessionId: string, artefactId: string): Promise<ShareLink> {
+  return call<ShareReply>("POST", `${base(sessionId, artefactId)}/share`).then((r) => r.share!);
+}
+
+/** Stops sharing: the link stops working, and sharing again makes a new one. */
+export function unshare(sessionId: string, artefactId: string): Promise<void> {
+  return call<ShareReply>("DELETE", `${base(sessionId, artefactId)}/share`).then(() => undefined);
 }
 
 export interface UploadedArtefact {
   artefact: Artefact;
-  version: number;
 }
 
 /**
@@ -354,15 +369,14 @@ export interface AttachedFile {
   name: string;
   mediaType: string;
   artefactId: string;
-  version: number;
 }
 
 const OPEN_TAG = "<attached-files>";
 const CLOSE_TAG = "</attached-files>";
-// `- <name> (<mediaType>, <size>, artefact <id>@<version>): <path>`. The name
+// `- <name> (<mediaType>, <size>, artefact <id>): <path>`. The name
 // is greedy so one with its own parentheses — "report (final).pdf" — keeps
 // them: the match settles on the last group shaped like the metadata.
-const LINE = /^- (.+) \(([^,()]+), ([^,()]+), artefact ([^\s@(),]+)@(\d+)\): .*$/;
+const LINE = /^- (.+) \(([^,()]+), ([^,()]+), artefact ([^\s(),]+)\): .*$/;
 
 /**
  * Splits the server's attached-files trailer off a prompt's text.
@@ -386,7 +400,7 @@ export function parseAttachedFiles(text: string): { text: string; files: Attache
     if (!line) continue;
     const m = LINE.exec(line);
     if (!m) continue;
-    files.push({ name: m[1]!, mediaType: m[2]!.trim(), artefactId: m[4]!, version: Number(m[5]) });
+    files.push({ name: m[1]!, mediaType: m[2]!.trim(), artefactId: m[4]! });
   }
   if (files.length === 0) return { text, files: [] };
   return { text: trimmed.slice(0, open).trimEnd(), files };
@@ -403,7 +417,7 @@ export function retoken(current: string, fresh: string): string {
   return current.replace(token, next[0]);
 }
 
-/** A preview URL as the reader thinks of it: the path inside the bundle, with
+/** A preview URL as the reader thinks of it: the path inside the folder, with
     the origin and token stripped. Anything outside the bundle is shown whole. */
 export function bundlePath(url: string): string {
   try {

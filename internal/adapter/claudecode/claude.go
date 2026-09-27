@@ -264,9 +264,11 @@ type sidecarConfig struct {
 	EnvKeys []string `json:"envKeys,omitempty"`
 	// MCPServers are omniplex's own tool servers, keyed by name as the SDK
 	// wants them. AllowedTools pre-approves their tools: asking a human
-	// whether the agent may publish into their own session is noise.
+	// whether the agent may show a file in their own session is noise.
 	MCPServers   map[string]sdkMCPServer `json:"mcpServers,omitempty"`
 	AllowedTools []string                `json:"allowedTools,omitempty"`
+	// AdditionalDirectories are folders outside Cwd the agent may work in.
+	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
 }
 
 type sdkMCPServer struct {
@@ -316,6 +318,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		AllowDangerouslySkipPermissions: true,
 		Effort:                          o.Effort,
 		ClaudePath:                      r.claudePath,
+		AdditionalDirectories:           o.ExtraDirs,
 	}
 	for _, m := range o.MCPServers {
 		if cfg.MCPServers == nil {

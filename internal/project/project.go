@@ -45,8 +45,11 @@ type Config struct {
 }
 
 type Project struct {
-	ID        string `json:"id"`
-	Root      string `json:"root"`
+	ID   string `json:"id"`
+	Root string `json:"root"`
+	// Home is where Omniplex puts new things for the project: artefacts,
+	// uploads. Never inside a git repo. Empty until first needed.
+	Home      string `json:"home,omitempty"`
 	Config    Config `json:"config"`
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`

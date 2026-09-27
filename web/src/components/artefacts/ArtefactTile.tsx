@@ -55,8 +55,7 @@ export function ArtefactTile({
   entry,
   mediaType,
   size,
-  version,
-  versions,
+  files,
   source,
   compact = false,
   detail,
@@ -68,10 +67,8 @@ export function ArtefactTile({
   entry?: string;
   mediaType: string;
   size: number;
-  /** The version this tile shows; labelled only when there is more than one. */
-  version?: number;
-  /** How many versions exist. */
-  versions?: number;
+  /** How many files, for a folder. */
+  files?: number;
   source?: "agent" | "upload";
   compact?: boolean;
   /** Replaces the size line: upload progress, an error. */
@@ -80,10 +77,9 @@ export function ArtefactTile({
   onOpen?: () => void;
   className?: string;
 }) {
-  const shown = version ?? versions;
   const meta = [
     formatBytes(size),
-    versions !== undefined && versions > 1 && shown !== undefined ? `v${shown}` : "",
+    files !== undefined && files > 1 ? `${files} files` : "",
     source === "upload" ? "Uploaded" : "",
   ]
     .filter(Boolean)

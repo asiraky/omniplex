@@ -74,11 +74,11 @@ const (
 	WorkspaceCleanupFailed   = "workspace.cleanup_failed"
 	WorkspaceReleased        = "workspace.released"
 
-	// ArtefactPublished is a new version of something the session produced:
-	// a file or bundle the agent published, or one a human uploaded. The
-	// bytes are in the artefact store; this is the record that they belong
-	// to the session.
-	ArtefactPublished = "artefact.published"
+	// ArtefactShown is a file or folder in the project put in front of the
+	// user: the agent showing what it made, or a human uploading one. The
+	// file stays where it is and is read live; showing the same path again
+	// is the same artefact, revised.
+	ArtefactShown = "artefact.shown"
 )
 
 // Stop reasons for turn.finished.
@@ -290,21 +290,22 @@ type SessionClosedPayload struct {
 	Reason string `json:"reason"`
 }
 
-// ArtefactPublishedPayload names one stored version of an artefact. Versions
-// of one artefact share its id; a publish under a name the session already
-// has is its next version.
-type ArtefactPublishedPayload struct {
+// ArtefactShownPayload describes an artefact as it was when shown. Path is
+// absolute on the server; one path is always one artefact id.
+type ArtefactShownPayload struct {
 	ArtefactID string `json:"artefactId"`
-	Version    int    `json:"version"`
+	Path       string `json:"path"`
 	Name       string `json:"name"`
+	Dir        bool   `json:"dir,omitempty"`
 	MediaType  string `json:"mediaType"`
 	Size       int64  `json:"size"`
 	Entry      string `json:"entry"`
 	Files      int    `json:"files"`
-	// Source is who produced it: the agent, or a human uploading.
+	ModifiedAt int64  `json:"modifiedAt"`
+	// Source is who showed it: the agent, or a human uploading.
 	Source string `json:"source"`
 	Note   string `json:"note,omitempty"`
-	// TurnID is the turn it was published in, when there was one.
+	// TurnID is the turn it was shown in, when there was one.
 	TurnID string `json:"turnId,omitempty"`
 }
 

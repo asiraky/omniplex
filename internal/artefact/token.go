@@ -17,13 +17,13 @@ import (
 // another: a preview token is not a share link, and neither lets an agent
 // publish.
 const (
-	// KindPreview opens one version inside the app's sandboxed viewer. Short
-	// lived: the viewer asks for another when it needs one.
+	// KindPreview opens an artefact's live files inside the app's sandboxed
+	// viewer. Short lived: the viewer asks for another when it needs one.
 	KindPreview = "p"
-	// KindShare is a link for someone outside the app. Version 0 follows the
-	// latest version.
+	// KindShare is a link for someone outside the app. It opens the share's
+	// snapshot while the share exists and its nonce matches.
 	KindShare = "s"
-	// KindAgent lets the omniplex MCP server a harness runs publish into its
+	// KindAgent lets the omniplex MCP server a harness runs show files in its
 	// own session, and nothing else.
 	KindAgent = "a"
 )
@@ -32,10 +32,11 @@ var ErrBadToken = errors.New("bad or expired token")
 
 // Claims is what a token grants.
 type Claims struct {
-	Kind      string
-	Session   string
-	Artefact  string
-	Version   int
+	Kind     string
+	Session  string
+	Artefact string
+	// Nonce ties a share link to one share, so stopping it kills the link.
+	Nonce     string
 	ExpiresAt int64 // unix millis; 0 never expires
 }
 
@@ -88,7 +89,7 @@ var b64 = base64.RawURLEncoding
 
 // Mint signs claims into a token safe to put in a URL path segment.
 func (s *Signer) Mint(c Claims) string {
-	payload := strings.Join([]string{c.Kind, c.Session, c.Artefact, strconv.Itoa(c.Version), strconv.FormatInt(c.ExpiresAt, 10)}, "|")
+	payload := strings.Join([]string{c.Kind, c.Session, c.Artefact, c.Nonce, strconv.FormatInt(c.ExpiresAt, 10)}, "|")
 	return b64.EncodeToString([]byte(payload)) + "." + b64.EncodeToString(s.mac(payload))
 }
 
@@ -110,13 +111,12 @@ func (s *Signer) Check(token, kind string, now time.Time) (Claims, error) {
 	if len(parts) != 5 || parts[0] != kind {
 		return Claims{}, ErrBadToken
 	}
-	v, err1 := strconv.Atoi(parts[3])
-	exp, err2 := strconv.ParseInt(parts[4], 10, 64)
-	if err1 != nil || err2 != nil {
+	exp, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil {
 		return Claims{}, ErrBadToken
 	}
 	if exp != 0 && now.UnixMilli() > exp {
 		return Claims{}, ErrBadToken
 	}
-	return Claims{Kind: parts[0], Session: parts[1], Artefact: parts[2], Version: v, ExpiresAt: exp}, nil
+	return Claims{Kind: parts[0], Session: parts[1], Artefact: parts[2], Nonce: parts[3], ExpiresAt: exp}, nil
 }

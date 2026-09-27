@@ -22,9 +22,9 @@ export interface TextRead {
   truncated: boolean;
 }
 
-// Versions never change once published, so a URL's text is good for as long
-// as the tab lives. Small and bounded: this only exists so that flipping
-// between preview and source, or back to a version just looked at, is instant.
+// A raw URL carries the revision it was made for, so its text is good for as
+// long as the tab lives. Small and bounded: this only exists so that flipping
+// between preview and source, or back to a file just looked at, is instant.
 const cache = new Map<string, TextRead>();
 const CACHE_ENTRIES = 8;
 

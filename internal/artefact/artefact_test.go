@@ -1,8 +1,6 @@
 package artefact
 
 import (
-	"archive/tar"
-	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,127 +9,189 @@ import (
 	"time"
 )
 
-func tarOf(t *testing.T, files map[string]string, extra ...*tar.Header) *bytes.Buffer {
+// tree writes files under root, creating folders as needed.
+func tree(t *testing.T, root string, files map[string]string) {
 	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
 	for name, body := range files {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		tw.Write([]byte(body))
-	}
-	for _, h := range extra {
-		if err := tw.WriteHeader(h); err != nil {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tw.Close()
-	return &buf
 }
 
-func TestStageFileCommitsAndOpens(t *testing.T) {
-	s := New(t.TempDir())
-	st, err := s.StageFile("sess-1", "../../Report (final).md", strings.NewReader("# hi"))
+func TestDescribeFile(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{"Report (final).md": "# hi"})
+	info, err := Describe(filepath.Join(dir, "Report (final).md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Entry != "Report (final).md" || st.Files != 1 || st.Size != 4 || !strings.HasPrefix(st.MediaType, "text/markdown") {
-		t.Fatalf("meta = %+v", st.Meta)
+	if info.Dir || info.Entry != "Report (final).md" || info.Files != 1 || info.Size != 4 || !strings.HasPrefix(info.MediaType, "text/markdown") || info.ModifiedAt == 0 {
+		t.Fatalf("info = %+v", info)
 	}
-	if err := st.Commit("art-1", 1); err != nil {
+}
+
+func TestDescribeFolderLeavesOutHiddenFilesDependenciesAndLinks(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{
+		"proto/index.html":              "<h1>",
+		"proto/assets/app.js":           "x",
+		"proto/.env":                    "SECRET=1",
+		"proto/.git/config":             "c",
+		"proto/node_modules/x/index.js": "y",
+	})
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, "proto", "passwd")); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.Open("sess-1", "art-1", 1, "Report (final).md")
+	info, err := Describe(filepath.Join(dir, "proto"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != "# hi" {
-		t.Fatalf("read %q", b)
-	}
-	if v, err := s.Latest("sess-1", "art-1"); err != nil || v != 1 {
-		t.Fatalf("latest = %d, %v", v, err)
+	if !info.Dir || info.Entry != "index.html" || info.Files != 2 || info.Size != 5 || !strings.HasPrefix(info.MediaType, "text/html") {
+		t.Fatalf("info = %+v", info)
 	}
 }
 
-func TestStageRejectsEmptyAndOversize(t *testing.T) {
-	s := New(t.TempDir())
-	if _, err := s.StageFile("s", "a.txt", strings.NewReader("")); !errors.Is(err, ErrEmpty) {
-		t.Fatalf("empty: %v", err)
-	}
-	if _, err := s.StageTar("s", tarOf(t, nil)); !errors.Is(err, ErrEmpty) {
-		t.Fatalf("empty tar: %v", err)
-	}
-	// Nothing staged survives a failure.
-	entries, _ := os.ReadDir(filepath.Join(s.Dir(), "s"))
-	if len(entries) != 0 {
-		t.Fatalf("leftover staging: %v", entries)
-	}
-}
-
-func TestStageTarBundlePicksEntryAndSkipsLinks(t *testing.T) {
-	s := New(t.TempDir())
-	buf := tarOf(t, map[string]string{
-		"proto/assets/app.js": "x",
-		"proto/about.html":    "<p>",
-		"proto/index.html":    "<h1>",
-		"notes.md":            "n",
-	}, &tar.Header{Name: "evil", Linkname: "/etc/passwd", Typeflag: tar.TypeSymlink})
-	st, err := s.StageTar("s", buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.Entry != "proto/index.html" || st.Files != 4 || !strings.HasPrefix(st.MediaType, "text/html") {
-		t.Fatalf("meta = %+v", st.Meta)
-	}
-	st.Commit("a", 2)
-	if _, err := s.Open("s", "a", 2, "evil"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("symlink was stored: %v", err)
-	}
-	if _, err := s.Open("s", "a", 2, "proto/assets/app.js"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestStageTarRefusesEscapes(t *testing.T) {
-	s := New(t.TempDir())
-	for _, name := range []string{"../x", "/abs", "a/../../x"} {
-		if _, err := s.StageTar("s", tarOf(t, map[string]string{name: "x"})); !errors.Is(err, ErrBadPath) {
-			t.Fatalf("%q: %v", name, err)
+func TestDescribeRefusesEmptyAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{"empty.txt": "", "only-hidden/.env": "x"})
+	for name, want := range map[string]error{"empty.txt": ErrEmpty, "only-hidden": ErrEmpty, "missing": ErrNotFound} {
+		if _, err := Describe(filepath.Join(dir, name)); !errors.Is(err, want) {
+			t.Errorf("%s: %v, want %v", name, err, want)
 		}
 	}
 }
 
-func TestOpenRefusesTraversalAndBadIDs(t *testing.T) {
-	s := New(t.TempDir())
-	st, _ := s.StageFile("s", "a.txt", strings.NewReader("x"))
-	st.Commit("a", 1)
-	for _, rel := range []string{"../../../etc/passwd", "", "..", "/a.txt"} {
-		if _, err := s.Open("s", "a", 1, rel); err == nil {
-			t.Fatalf("%q opened", rel)
+func TestResolveServesOnlyWhatIsInsideTheArtefact(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{
+		"proto/index.html": "<h1>",
+		"proto/.env":       "SECRET=1",
+		"secret.txt":       "s",
+		"report.md":        "r",
+	})
+	proto := filepath.Join(dir, "proto")
+	os.Symlink(filepath.Join(dir, "secret.txt"), filepath.Join(proto, "escape.txt"))
+	os.Symlink(filepath.Join(proto, "index.html"), filepath.Join(proto, "alias.html"))
+
+	if p, err := Resolve(proto, true, "index.html"); err != nil || filepath.Base(p) != "index.html" {
+		t.Fatalf("index: %q %v", p, err)
+	}
+	if _, err := Resolve(proto, true, "alias.html"); err != nil {
+		t.Fatalf("a link that stays inside should resolve: %v", err)
+	}
+	for _, rel := range []string{"../secret.txt", "escape.txt", ".env", "", "/index.html", "missing.html"} {
+		if _, err := Resolve(proto, true, rel); err == nil {
+			t.Errorf("%q resolved", rel)
 		}
 	}
-	if _, err := s.Open("../s", "a", 1, "a.txt"); !errors.Is(err, ErrBadPath) {
+	// A single file serves itself and nothing beside it.
+	report := filepath.Join(dir, "report.md")
+	if _, err := Resolve(report, false, "report.md"); err != nil {
+		t.Fatalf("file: %v", err)
+	}
+	if _, err := Resolve(report, false, "secret.txt"); err == nil {
+		t.Fatal("a file artefact served its neighbour")
+	}
+}
+
+func TestSnapshotIsACopyThatUpdatesBehindTheSameLink(t *testing.T) {
+	s := New(t.TempDir())
+	src := filepath.Join(t.TempDir(), "proto")
+	tree(t, src, map[string]string{"index.html": "one", "old.css": "o", ".env": "SECRET=1"})
+	now := time.UnixMilli(1_000_000)
+
+	first, err := s.Snapshot("s", "a", src, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Entry != "index.html" || first.ExpiresAt != now.Add(ShareTTL).UnixMilli() {
+		t.Fatalf("share = %+v", first)
+	}
+	// Editing the source after sharing does not reach the link.
+	tree(t, src, map[string]string{"index.html": "two"})
+	os.Remove(filepath.Join(src, "old.css"))
+	if b := readShared(t, s, "index.html"); b != "one" {
+		t.Fatalf("shared copy followed the edit: %q", b)
+	}
+	if _, err := s.OpenShared("s", "a", ".env"); err == nil {
+		t.Fatal("hidden file was shared")
+	}
+
+	later := now.Add(time.Hour)
+	second, err := s.Snapshot("s", "a", src, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Nonce != first.Nonce || second.ExpiresAt != later.Add(ShareTTL).UnixMilli() {
+		t.Fatalf("update changed the link or kept the old expiry: %+v then %+v", first, second)
+	}
+	if b := readShared(t, s, "index.html"); b != "two" {
+		t.Fatalf("update not copied: %q", b)
+	}
+	if _, err := s.OpenShared("s", "a", "old.css"); err == nil {
+		t.Fatal("a file deleted before the update is still shared")
+	}
+
+	// Stopping forgets the link: sharing again makes a new one.
+	if err := s.Unshare("s", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Share("s", "a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("share after stop: %v", err)
+	}
+	third, _ := s.Snapshot("s", "a", src, later)
+	if third.Nonce == first.Nonce {
+		t.Fatal("sharing again revived the stopped link")
+	}
+}
+
+func readShared(t *testing.T, s *Store, rel string) string {
+	t.Helper()
+	p, err := s.OpenShared("s", "a", rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	return string(b)
+}
+
+func TestShareRefusesBadIDs(t *testing.T) {
+	s := New(t.TempDir())
+	if _, err := s.Snapshot("../s", "a", t.TempDir(), time.Now()); !errors.Is(err, ErrBadPath) {
 		t.Fatalf("bad session id: %v", err)
 	}
-	if _, err := s.Open("s", "a", 0, "a.txt"); !errors.Is(err, ErrBadPath) {
-		t.Fatalf("version 0: %v", err)
+	if err := s.PurgeSession(".."); !errors.Is(err, ErrBadPath) {
+		t.Fatalf("purge ..: %v", err)
 	}
 }
 
-func TestLatestFollowsHighestVersion(t *testing.T) {
-	s := New(t.TempDir())
-	for _, v := range []int{1, 3, 2} {
-		st, _ := s.StageFile("s", "a.txt", strings.NewReader("x"))
-		if err := st.Commit("a", v); err != nil {
-			t.Fatal(err)
-		}
+func TestSaveUploadNumbersTakenNamesAndNeverHidesAFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "uploads")
+	a, err := SaveUpload(dir, "../../brief.pdf", strings.NewReader("a"))
+	if err != nil || a != filepath.Join(dir, "brief.pdf") {
+		t.Fatalf("first: %q %v", a, err)
 	}
-	if v, _ := s.Latest("s", "a"); v != 3 {
-		t.Fatalf("latest = %d", v)
+	b, _ := SaveUpload(dir, "brief.pdf", strings.NewReader("b"))
+	if b != filepath.Join(dir, "brief (2).pdf") {
+		t.Fatalf("second: %q", b)
 	}
-	if _, err := s.Latest("s", "missing"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("missing: %v", err)
+	if got, _ := os.ReadFile(a); string(got) != "a" {
+		t.Fatalf("first overwritten: %q", got)
+	}
+	c, _ := SaveUpload(dir, ".bashrc", strings.NewReader("c"))
+	if filepath.Base(c) != "bashrc" {
+		t.Fatalf("hidden upload: %q", c)
+	}
+	if _, err := SaveUpload(dir, "empty.txt", strings.NewReader("")); !errors.Is(err, ErrEmpty) {
+		t.Fatalf("empty: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "empty.txt")); err == nil {
+		t.Fatal("empty upload left a file")
 	}
 }
 
@@ -156,9 +216,9 @@ func TestPickEntry(t *testing.T) {
 func TestTokensRoundTripAndRefuseTampering(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	s := NewSigner([]byte("0123456789abcdef0123456789abcdef"))
-	tok := s.Mint(Claims{Kind: KindShare, Session: "s", Artefact: "a", Version: 0, ExpiresAt: 2_000_000})
+	tok := s.Mint(Claims{Kind: KindShare, Session: "s", Artefact: "a", Nonce: "n1", ExpiresAt: 2_000_000})
 	c, err := s.Check(tok, KindShare, now)
-	if err != nil || c.Session != "s" || c.Artefact != "a" || c.Version != 0 {
+	if err != nil || c.Session != "s" || c.Artefact != "a" || c.Nonce != "n1" {
 		t.Fatalf("claims = %+v, %v", c, err)
 	}
 	if _, err := s.Check(tok, KindPreview, now); err == nil {

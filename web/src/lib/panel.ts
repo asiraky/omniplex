@@ -13,9 +13,8 @@ export interface Surface {
   kind: SurfaceKind;
   /** file surfaces: the workspace-relative path. */
   path?: string;
-  /** artefact surfaces: which artefact, and the version on screen (none: the latest). */
+  /** artefact surfaces: which artefact. */
   artefactId?: string;
-  version?: number;
 }
 
 export interface PanelState {
@@ -95,9 +94,9 @@ export function fileSurface(path: string): Surface {
   return { id: `file:${path}`, kind: "file", path };
 }
 
-/** One tab per artefact: opening it again at another version moves that tab. */
-export function artefactSurface(artefactId: string, version?: number): Surface {
-  return { id: `artefact:${artefactId}`, kind: "artefact", artefactId, version };
+/** One tab per artefact. */
+export function artefactSurface(artefactId: string): Surface {
+  return { id: `artefact:${artefactId}`, kind: "artefact", artefactId };
 }
 
 /** Opens the surface, replacing a tab with the same id rather than just focusing it. */

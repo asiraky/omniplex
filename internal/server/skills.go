@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/skills"
 )
@@ -49,36 +48,16 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 // attached: what each is and where it is on this host, so the agent can read
 // it. The web client parses the same block back out to draw the files as
 // cards on the message.
-func (s *Server) attachedFiles(ctx context.Context, actor *session.Actor, sessionID string, files []promptFile) (string, error) {
-	if s.artefacts == nil {
-		return "", fmt.Errorf("this server does not store artefacts")
-	}
-	st, err := actor.State(ctx)
-	if err != nil {
-		return "", err
-	}
+func (s *Server) attachedFiles(ctx context.Context, actor *session.Actor, files []promptFile) (string, error) {
 	var b strings.Builder
 	b.WriteString("\n\n<attached-files>\n")
 	for _, f := range files {
-		a, ok := st.ArtefactByID(f.ArtefactID)
-		if !ok {
+		a, err := actor.Artefact(ctx, f.ArtefactID)
+		if err != nil {
 			return "", fmt.Errorf("no such file %s", f.ArtefactID)
 		}
-		var v *projection.ArtefactVersion
-		for i := range a.Versions {
-			if a.Versions[i].Version == f.Version {
-				v = &a.Versions[i]
-			}
-		}
-		if v == nil {
-			return "", fmt.Errorf("no version %d of %s", f.Version, a.Name)
-		}
-		p, err := s.artefacts.Open(sessionID, a.ID, f.Version, v.Entry)
-		if err != nil {
-			return "", err
-		}
-		mt := strings.TrimSpace(strings.SplitN(v.MediaType, ";", 2)[0])
-		fmt.Fprintf(&b, "- %s (%s, %s, artefact %s@%d): %s\n", a.Name, mt, humanSize(v.Size), a.ID, f.Version, p)
+		mt := strings.TrimSpace(strings.SplitN(a.MediaType, ";", 2)[0])
+		fmt.Fprintf(&b, "- %s (%s, %s, artefact %s): %s\n", a.Name, mt, humanSize(a.Size), a.ID, a.Path)
 	}
 	b.WriteString("</attached-files>")
 	return b.String(), nil

@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { MAX_IMAGE_BYTES, sendPayload, stageFile, uploadStaged, type Attachment, type UploadDeps } from "~/lib/attachments";
+import { makeArtefact } from "~/test/artefact";
 
 const file = (name: string, type: string, size = 3) => {
   const f = new File([new Uint8Array(Math.min(size, 16))], name, { type });
@@ -13,10 +14,7 @@ function deps(over: Partial<UploadDeps> = {}): UploadDeps {
   return {
     prepare: vi.fn(async (f: File) => f),
     uploadImage: vi.fn(async () => ({ id: "img-1", mediaType: "image/png", size: 3 })),
-    uploadFile: vi.fn(async () => ({
-      artefact: { id: "art-1", name: "x", versions: [] },
-      version: 2,
-    })),
+    uploadFile: vi.fn(async () => ({ artefact: makeArtefact({ id: "art-1", source: "upload" }) })),
     ...over,
   };
 }
@@ -34,11 +32,11 @@ describe("uploadStaged", () => {
     const d = deps({
       uploadFile: vi.fn(async (_s, _f, opts) => {
         opts.onProgress?.(0.5);
-        return { artefact: { id: "art-9", name: "r.pdf", versions: [] }, version: 1 };
+        return { artefact: makeArtefact({ id: "art-9", name: "r.pdf", source: "upload" }) };
       }),
     });
     const patch = await uploadStaged("s1", file("r.pdf", "application/pdf"), { onProgress }, d);
-    expect(patch).toMatchObject({ kind: "file", status: "ready", artefactId: "art-9", version: 1 });
+    expect(patch).toMatchObject({ kind: "file", status: "ready", artefactId: "art-9" });
     expect(onProgress).toHaveBeenCalledWith(0.5);
     expect(d.uploadImage).not.toHaveBeenCalled();
   });
@@ -88,22 +86,19 @@ describe("stageFile", () => {
 describe("sendPayload", () => {
   const a = (over: Partial<Attachment>): Attachment => ({ key: "k", name: "n", previewUrl: "", status: "ready", ...over });
 
-  it("names ready images by id and ready files by artefact version, and drops the rest", () => {
+  it("names ready images by id and ready files by artefact id, and drops the rest", () => {
     expect(
       sendPayload([
         a({ id: "img-1" }),
-        a({ kind: "file", artefactId: "art-1", version: 3 }),
+        a({ kind: "file", artefactId: "art-1" }),
         a({ kind: "file", status: "uploading" }),
         a({ status: "error", error: "no" }),
         // An image that fell back to a file is sent as the file it became.
-        a({ kind: "file", artefactId: "art-2", version: 1 }),
+        a({ kind: "file", artefactId: "art-2" }),
       ]),
     ).toEqual({
       imageIds: ["img-1"],
-      files: [
-        { artefactId: "art-1", version: 3 },
-        { artefactId: "art-2", version: 1 },
-      ],
+      files: [{ artefactId: "art-1" }, { artefactId: "art-2" }],
     });
   });
 });

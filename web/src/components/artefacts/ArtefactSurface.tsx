@@ -1,12 +1,12 @@
 import {
   CheckIcon,
-  ChevronDownIcon,
   CodeIcon,
   CopyIcon,
   DownloadIcon,
   EllipsisIcon,
   EyeIcon,
   ExternalLinkIcon,
+  FolderIcon,
   Share2Icon,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -31,24 +31,27 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import {
   delimiterFor,
   hasSourceView,
+  getShare,
   loadViewMode,
-  pickVersion,
   rawUrl,
   readsText,
   requestPreview,
-  requestShare,
   retoken,
   saveViewMode,
+  share,
+  unshare,
   viewerFor,
   type Artefact,
-  type ArtefactVersion,
   type ExpiringUrl,
+  type ShareLink,
   type ViewerKind,
   type ViewMode,
 } from "~/lib/artefacts";
@@ -69,28 +72,29 @@ interface PreviewState {
   error?: string;
 }
 
-/** A preview URL for an HTML version, kept fresh while the surface is open. */
-function usePreview(sessionId: string, artefactId: string, version: number, enabled: boolean) {
+/** A preview URL for an HTML artefact, kept fresh while the surface is open.
+    The URL serves the live files, so a revision needs no new one. */
+function usePreview(sessionId: string, artefactId: string, enabled: boolean) {
   const [state, setState] = useState<PreviewState & { key: string }>({ key: "" });
   const [attempt, setAttempt] = useState(0);
-  const key = `${sessionId}/${artefactId}@${version}`;
+  const key = `${sessionId}/${artefactId}`;
 
   useEffect(() => {
     if (!enabled) return;
     let stale = false;
-    requestPreview(sessionId, artefactId, version)
+    requestPreview(sessionId, artefactId)
       .then((preview) => !stale && setState({ key, preview }))
       .catch((e: unknown) => !stale && setState({ key, error: e instanceof Error ? e.message : String(e) }));
     return () => {
       stale = true;
     };
-  }, [sessionId, artefactId, version, enabled, attempt, key]);
+  }, [sessionId, artefactId, enabled, attempt, key]);
 
   const refresh = useCallback(async () => {
-    const preview = await requestPreview(sessionId, artefactId, version);
+    const preview = await requestPreview(sessionId, artefactId);
     setState({ key, preview });
     return preview;
-  }, [sessionId, artefactId, version, key]);
+  }, [sessionId, artefactId, key]);
 
   const current = state.key === key ? state : { key };
   useEffect(() => {
@@ -118,32 +122,22 @@ function useViewMode(kind: ViewerKind): [ViewMode, (mode: ViewMode) => void] {
 }
 
 /**
- * One artefact in the panel: which version, the ways out of the app (download,
- * a new tab, a share link), and the file itself in whichever viewer suits it.
+ * One artefact in the panel: the file as it is on disk now, the ways out of
+ * the app (download, a new tab, a share link), and where it lives.
  */
-export function ArtefactSurface({
-  sessionId,
-  artefact,
-  version,
-  onVersionChange,
-}: {
-  sessionId: string;
-  artefact: Artefact;
-  /** Omitted: the latest. */
-  version?: number;
-  onVersionChange: (version: number) => void;
-}) {
-  const v = pickVersion(artefact, version);
-  const kind: ViewerKind = v ? viewerFor(v.entry, v.mediaType) : "fallback";
+export function ArtefactSurface({ sessionId, artefact: a }: { sessionId: string; artefact: Artefact }) {
+  const kind: ViewerKind = viewerFor(a.entry, a.mediaType);
   const [mode, setMode] = useViewMode(kind);
-  const n = v?.version ?? 0;
-  const raw = v ? rawUrl(sessionId, artefact.id, n, v.entry) : "";
-  const download = v ? rawUrl(sessionId, artefact.id, n, v.entry, true) : "";
-  const text = useArtefactText(raw, Boolean(v) && readsText(kind, mode));
-  const preview = usePreview(sessionId, artefact.id, n, Boolean(v) && kind === "html");
+  const raw = rawUrl(sessionId, a.id, a.entry, { rev: a.modifiedAt });
+  const download = rawUrl(sessionId, a.id, a.entry, { rev: a.modifiedAt, download: true });
+  const text = useArtefactText(raw, readsText(kind, mode));
+  const preview = usePreview(sessionId, a.id, kind === "html");
   // Where the mini browser is, so a new tab opens the page being looked at.
+  // Keyed on the revision: when the agent shows the page again, the browser
+  // starts over on it.
   const [location, setLocation] = useState<{ key: string; url: string } | null>(null);
-  const locationKey = `${artefact.id}@${n}`;
+  const locationKey = `${a.id}@${a.modifiedAt}`;
+  const { copied: pathCopied, copy: copyPath } = useCopy();
 
   // Flipping preview and source keeps the reader roughly where they were, by
   // proportion: the two are different heights, but a third of the way down
@@ -165,16 +159,6 @@ export function ArtefactSurface({
     pendingScroll.current = null;
   }, [mode, text.status]);
 
-  if (!v) {
-    return (
-      <div className="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-[13px]">
-        This artefact has no versions yet.
-      </div>
-    );
-  }
-
-  const latest = artefact.versions[artefact.versions.length - 1]!;
-  const isLatest = v.version === latest.version;
   const openUrl =
     kind === "html"
       ? preview.preview
@@ -192,7 +176,7 @@ export function ArtefactSurface({
         <Suspense fallback={<Loading />}>
           <MiniBrowser
             key={locationKey}
-            title={artefact.name}
+            title={a.name}
             preview={preview.preview}
             refreshPreview={preview.refresh}
             onLocationChange={(url) => setLocation({ key: locationKey, url })}
@@ -200,18 +184,18 @@ export function ArtefactSurface({
         </Suspense>
       );
     }
-    if (kind === "image" || (kind === "svg" && mode === "preview")) return <ImageView src={raw} name={artefact.name} />;
+    if (kind === "image" || (kind === "svg" && mode === "preview")) return <ImageView src={raw} name={a.name} />;
     if (kind === "audio" || kind === "video") return <MediaView src={raw} kind={kind} />;
-    if (kind === "pdf") return <PdfView src={raw} downloadUrl={download} name={artefact.name} size={v.size} />;
+    if (kind === "pdf") return <PdfView src={raw} downloadUrl={download} name={a.name} size={a.size} />;
     if (kind === "fallback") {
-      return <FallbackView name={artefact.name} mediaType={v.mediaType} size={v.size} src={raw} downloadUrl={download} />;
+      return <FallbackView name={a.name} mediaType={a.mediaType} size={a.size} src={raw} downloadUrl={download} />;
     }
     // Everything left reads the file as text.
     if (text.status === "error") return <Failure message={text.error} onRetry={text.retry} />;
-    if (text.status !== "ready") return <Loading label={`Reading ${v.entry}…`} />;
+    if (text.status !== "ready") return <Loading label={`Reading ${a.entry}…`} />;
     if (mode === "source") return <CodeView text={text.text} truncated={text.truncated} />;
     if (kind === "markdown") return <MarkdownView text={text.text} truncated={text.truncated} />;
-    if (kind === "csv") return <CsvView text={text.text} delimiter={delimiterFor(v.entry, v.mediaType)} truncated={text.truncated} />;
+    if (kind === "csv") return <CsvView text={text.text} delimiter={delimiterFor(a.entry, a.mediaType)} truncated={text.truncated} />;
     if (kind === "json") return <JsonView text={text.text} truncated={text.truncated} />;
     return <CodeView text={text.text} truncated={text.truncated} />;
   })();
@@ -221,11 +205,11 @@ export function ArtefactSurface({
 
   return (
     <div className="@container flex h-full min-h-0 flex-col">
-      {/* One row, so a phone spends its height on the file. The name is also
-          the version picker; the rarer ways out sit behind the ⋯. */}
+      {/* One row, so a phone spends its height on the file. The rarer ways
+          out, and where the file lives, sit behind the ⋯. */}
       <header className="flex min-w-0 items-center gap-1 border-b py-1 pr-1 pl-2">
-        <TypeBadge name={v.entry || artefact.name} mediaType={v.mediaType} className="hidden size-8 @xs:grid" />
-        <VersionPicker artefact={artefact} version={v} onChange={onVersionChange} />
+        <TypeBadge name={a.entry || a.name} mediaType={a.mediaType} className="hidden size-8 @xs:grid" />
+        <Title artefact={a} />
         {hasSourceView(kind) && (
           <div role="radiogroup" aria-label="View" className="bg-muted flex shrink-0 rounded-md p-0.5">
             {(["preview", "source"] as const).map((m) => (
@@ -247,23 +231,30 @@ export function ArtefactSurface({
             ))}
           </div>
         )}
-        <SharePopover
-          key={`${artefact.id}@${v.version}`}
-          sessionId={sessionId}
-          artefactId={artefact.id}
-          name={artefact.name}
-          version={v.version}
-          isLatest={isLatest}
-        />
+        <SharePopover key={a.id} sessionId={sessionId} artefact={a} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <IconButton label="More" className="size-10 md:size-8">
               <EllipsisIcon />
             </IconButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-48">
+          <DropdownMenuContent align="end" className="w-[min(20rem,calc(100vw-1rem))]">
+            <DropdownMenuLabel className="text-muted-foreground font-mono text-[11px] font-normal break-all">
+              {a.path}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              className="min-h-11 md:min-h-0"
+              onSelect={(e) => {
+                // Stay open long enough to say it worked.
+                e.preventDefault();
+                void copyPath(a.path);
+              }}
+            >
+              {pathCopied ? <CheckIcon /> : <FolderIcon />} {pathCopied ? "Copied" : "Copy path"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem asChild className="min-h-11 md:min-h-0">
-              <a href={download} download={v.files > 1 ? v.entry : artefact.name}>
+              <a href={download} download={a.files > 1 ? a.entry : a.name}>
                 <DownloadIcon /> Download
               </a>
             </DropdownMenuItem>
@@ -286,86 +277,27 @@ export function ArtefactSurface({
   );
 }
 
-/** The name and what this version is. With more than one version the whole
-    block opens the list, so the target is the title rather than a small
-    chevron beside it. */
-function VersionPicker({
-  artefact,
-  version: v,
-  onChange,
-}: {
-  artefact: Artefact;
-  version: ArtefactVersion;
-  onChange: (version: number) => void;
-}) {
-  const latest = artefact.versions[artefact.versions.length - 1]!.version;
-  const many = artefact.versions.length > 1;
-  const label = `v${v.version}${v.version === latest ? " · latest" : ""}`;
-  const now = Date.now();
-  const title = (
-    <span className="flex min-w-0 flex-1 flex-col text-left">
-      <span className="truncate text-[13px] leading-tight font-medium" title={artefact.name}>
-        {artefact.name}
-      </span>
-      <span className="text-muted-foreground flex min-w-0 items-center gap-1 text-[11px] leading-tight">
-        {many && (
-          <span className="text-foreground/80 flex shrink-0 items-center gap-0.5 font-medium tabular-nums">
-            {label}
-            <ChevronDownIcon className="size-3" />
-          </span>
-        )}
-        <span className="truncate" title={v.note}>
-          {[
-            formatAge(v.publishedAt, now),
-            v.source === "upload" ? "uploaded" : "",
-            v.files > 1 ? `${v.files} files` : "",
-            v.note ?? "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </span>
-      </span>
-    </span>
-  );
-  if (!many) return <div className="flex min-h-10 min-w-0 flex-1 items-center px-1 md:min-h-8">{title}</div>;
+/** The name, and when and why it was last shown. */
+function Title({ artefact: a }: { artefact: Artefact }) {
+  const detail = [
+    formatAge(a.shownAt, Date.now()),
+    a.source === "upload" ? "uploaded" : "",
+    a.files > 1 ? `${a.files} files` : "",
+    a.note ?? "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Version: ${label}`}
-          className="hover:bg-accent/50 focus-visible:ring-ring flex min-h-10 min-w-0 flex-1 items-center rounded-md px-1 outline-none focus-visible:ring-2 md:min-h-8"
-        >
-          {title}
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[min(20rem,calc(100vw-2rem))]">
-        {[...artefact.versions].reverse().map((ver) => (
-          <DropdownMenuItem
-            key={ver.version}
-            onSelect={() => onChange(ver.version)}
-            className="min-h-11 items-start md:min-h-0"
-          >
-            <span className="w-4 shrink-0 pt-0.5">{ver.version === v.version && <CheckIcon />}</span>
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="text-[12.5px] font-medium tabular-nums">
-                v{ver.version}
-                {ver.version === latest && <span className="text-muted-foreground font-normal"> · latest</span>}
-              </span>
-              <span className="text-muted-foreground line-clamp-2 text-[11px]">
-                {[formatAge(ver.publishedAt, now), ver.source === "upload" ? "uploaded" : "", ver.note ?? ""]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
-            </span>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <div className="flex min-h-10 min-w-0 flex-1 flex-col justify-center px-1 md:min-h-8">
+      <span className="truncate text-[13px] leading-tight font-medium" title={a.path}>
+        {a.name}
+      </span>
+      <span className="text-muted-foreground truncate text-[11px] leading-tight" title={a.note}>
+        {detail}
+      </span>
+    </div>
   );
 }
-
-type ShareMode = "latest" | "version";
 
 /** The system share sheet, where there is one: on a phone that is Messages,
     Slack and the rest, which beats a copied link. */
@@ -374,70 +306,68 @@ function canShareNatively(): boolean {
 }
 
 /**
- * Makes a link anyone can open. "Always latest" follows the artefact as the
- * agent revises it; "This version" pins what is on screen now.
+ * A link anyone can open, to a copy of the artefact taken when it was shared.
+ * The file stays in the project and the agent can go on changing it; the link
+ * shows those changes only once someone updates it. Nothing is shared until
+ * someone asks, so opening the popover only asks whether a link exists.
  *
- * The link is made as soon as the popover opens, so Copy and Share run inside
- * the tap: Safari refuses both the clipboard and the share sheet once a
- * network round trip has come between the tap and the call. It is also shown,
- * so it can still be long-pressed and copied by hand.
+ * Copy and Share use the link already on screen, so they run inside the tap:
+ * Safari refuses both the clipboard and the share sheet once a network round
+ * trip has come between the tap and the call. That is why making the link and
+ * copying it are two taps.
  */
-function SharePopover({
-  sessionId,
-  artefactId,
-  name,
-  version,
-  isLatest,
-}: {
-  sessionId: string;
-  artefactId: string;
-  name: string;
-  version: number;
-  isLatest: boolean;
-}) {
+function SharePopover({ sessionId, artefact: a }: { sessionId: string; artefact: Artefact }) {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<ShareMode>(isLatest ? "latest" : "version");
-  const [links, setLinks] = useState<Partial<Record<ShareMode, ExpiringUrl>>>({});
+  // undefined: not asked yet. null: not shared.
+  const [link, setLink] = useState<ShareLink | null | undefined>(undefined);
+  const [busy, setBusy] = useState<"" | "share" | "stop">("");
   const [error, setError] = useState("");
   const { copied, copy } = useCopy();
-  const inFlight = useRef<Partial<Record<ShareMode, Promise<ExpiringUrl>>>>({});
-  const known = links[mode];
-  const link = known && known.expiresAt > Date.now() ? known : undefined;
-
-  const ensure = useCallback(
-    (m: ShareMode) => {
-      const pending = inFlight.current[m];
-      if (pending) return pending;
-      const made = requestShare(sessionId, artefactId, m === "latest" ? undefined : version).then(
-        (made) => {
-          setLinks((all) => ({ ...all, [m]: made }));
-          return made;
-        },
-        (e: unknown) => {
-          setError(e instanceof Error ? e.message : String(e));
-          throw e;
-        },
-      );
-      inFlight.current[m] = made;
-      void made.catch(() => {}).finally(() => delete inFlight.current[m]);
-      return made;
-    },
-    [sessionId, artefactId, version],
-  );
 
   useEffect(() => {
-    if (open && !link) void ensure(mode).catch(() => {});
-  }, [open, mode, link, ensure]);
+    if (!open) return;
+    let stale = false;
+    getShare(sessionId, a.id).then(
+      (l) => !stale && setLink(l),
+      (e: unknown) => !stale && setError(e instanceof Error ? e.message : String(e)),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [open, sessionId, a.id]);
 
-  const withLink = async (use: (url: string) => Promise<unknown>) => {
+  const run = async (what: "share" | "stop") => {
+    setBusy(what);
     setError("");
     try {
-      await use((link ?? (await ensure(mode))).url);
+      if (what === "share") setLink(await share(sessionId, a.id));
+      else {
+        await unshare(sessionId, a.id);
+        setLink(null);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const withLink = async (use: (url: string) => Promise<unknown>) => {
+    if (!live) return;
+    setError("");
+    try {
+      await use(live.url);
     } catch (e) {
       // Dismissing the share sheet is not an error worth showing.
       if (e instanceof Error && e.name !== "AbortError") setError(e.message);
     }
   };
+
+  const now = Date.now();
+  const live = link && link.expiresAt > now ? link : null;
+  // Only as good as the last time the file was shown: an edit the agent has
+  // not shown yet is not known here, which is why Update link is always there.
+  const changed = live !== null && a.modifiedAt > live.sharedAt;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -447,59 +377,81 @@ function SharePopover({
         </IconButton>
       </PopoverTrigger>
       <PopoverContent align="end" className="flex w-[min(20rem,calc(100vw-1rem))] flex-col gap-3 p-3">
-        <div>
-          <p className="text-[13px] font-medium">Share a link</p>
-          <p className="text-muted-foreground text-[11.5px]">Anyone with the link can view it for 7 days.</p>
-        </div>
-        <div role="radiogroup" aria-label="Link to" className="bg-muted grid grid-cols-2 rounded-md p-0.5">
-          {(
-            [
-              ["latest", "Always latest"],
-              ["version", `This version (v${version})`],
-            ] as const
-          ).map(([m, label]) => (
-            <button
-              key={m}
-              type="button"
-              role="radio"
-              aria-checked={mode === m}
-              onClick={() => setMode(m)}
-              className={cn(
-                "focus-visible:ring-ring min-h-10 rounded px-2 text-[12px] outline-none focus-visible:ring-2 md:min-h-8",
-                mode === m ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+        {link === undefined ? (
+          !error && <p className="text-muted-foreground text-[12px]">Checking…</p>
+        ) : !live ? (
+          <>
+            <div>
+              <p className="text-[13px] font-medium">Share a link</p>
+              <p className="text-muted-foreground text-[11.5px] leading-snug">
+                Anyone with the link sees a copy of this as it is now, for 7 days. Changes after that stay here until
+                you update the link.
+              </p>
+            </div>
+            <Button disabled={busy !== ""} onClick={() => void run("share")}>
+              <Share2Icon /> {busy === "share" ? "Creating…" : "Create link"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <div>
+              <p className="text-[13px] font-medium">Shared</p>
+              <p className="text-muted-foreground text-[11.5px] leading-snug">
+                The link shows it as it was {formatAge(live.sharedAt, now)}
+                {changed ? ", and it has changed since" : ""}. It works for {timeLeft(live.expiresAt, now)}.
+              </p>
+            </div>
+            <input
+              readOnly
+              value={live.url}
+              aria-label="Share link"
+              onFocus={(e) => e.currentTarget.select()}
+              className="bg-muted/50 w-full rounded-md border px-2 py-1.5 font-mono text-[16px] md:text-[11px]"
+            />
+            <div className="flex gap-2">
+              <Button
+                className="flex-1"
+                variant={canShareNatively() ? "outline" : "default"}
+                onClick={() => void withLink(copy)}
+              >
+                {copied ? <CheckIcon /> : <CopyIcon />}
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+              {canShareNatively() && (
+                <Button className="flex-1" onClick={() => void withLink((url) => navigator.share({ title: a.name, url }))}>
+                  <Share2Icon /> Share…
+                </Button>
               )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <input
-          readOnly
-          value={link?.url ?? ""}
-          placeholder="Making a link…"
-          aria-label="Share link"
-          onFocus={(e) => e.currentTarget.select()}
-          className="bg-muted/50 w-full rounded-md border px-2 py-1.5 font-mono text-[16px] md:text-[11px]"
-        />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                className="flex-1"
+                variant={changed ? "default" : "outline"}
+                disabled={busy !== ""}
+                onClick={() => void run("share")}
+              >
+                {busy === "share" ? "Updating…" : "Update link"}
+              </Button>
+              <Button className="flex-1" variant="ghost" disabled={busy !== ""} onClick={() => void run("stop")}>
+                {busy === "stop" ? "Stopping…" : "Stop sharing"}
+              </Button>
+            </div>
+          </>
+        )}
         {error && (
           <p role="alert" className="text-destructive text-[11.5px]">
             {error}
           </p>
         )}
-        <div className="flex gap-2">
-          <Button className="flex-1" variant={canShareNatively() ? "outline" : "default"} onClick={() => void withLink(copy)}>
-            {copied ? <CheckIcon /> : <CopyIcon />}
-            {copied ? "Copied" : "Copy link"}
-          </Button>
-          {canShareNatively() && (
-            <Button className="flex-1" onClick={() => void withLink((url) => navigator.share({ title: name, url }))}>
-              <Share2Icon /> Share…
-            </Button>
-          )}
-        </div>
       </PopoverContent>
     </Popover>
   );
+}
+
+function timeLeft(expiresAt: number, now: number): string {
+  const hours = Math.max(1, Math.round((expiresAt - now) / 3_600_000));
+  if (hours < 48) return `${hours} more ${hours === 1 ? "hour" : "hours"}`;
+  return `${Math.round(hours / 24)} more days`;
 }
 
 export default ArtefactSurface;

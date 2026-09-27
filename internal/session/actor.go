@@ -139,7 +139,7 @@ type command struct {
 	// its exit; those are about a process this actor no longer runs.
 	from    adapter.Session
 	account *accountSwitch
-	publish *Publish
+	show    *Show
 }
 
 // accountSwitch is what the manager hands the actor to move the session to
@@ -169,27 +169,28 @@ type cmdResult struct {
 }
 
 const (
-	cmdPrompt          = "prompt"
-	cmdPublishArtefact = "publish_artefact"
-	cmdCancel          = "cancel"
-	cmdResolvePerm     = "resolve_permission"
-	cmdAskPerm         = "ask_permission"
-	cmdResolveElicit   = "resolve_elicitation"
-	cmdAskElicit       = "ask_elicitation"
-	cmdClose           = "close"
-	cmdActivate        = "activate"
-	cmdSetMode         = "set_mode"
-	cmdSetModel        = "set_model"
-	cmdSetEffort       = "set_effort"
-	cmdListComposer    = "list_composer_items"
-	cmdRunComposer     = "run_composer_action"
-	cmdHarnessEvent    = "harness_event"
-	cmdHarnessExit     = "harness_exit"
-	cmdContinue        = "continue"
-	cmdStopJob         = "stop_job"
-	cmdDequeue         = "dequeue_prompt"
-	cmdQuota           = "quota"
-	cmdSwitchAccount   = "switch_account"
+	cmdPrompt        = "prompt"
+	cmdShowArtefact  = "show_artefact"
+	cmdArtefact      = "artefact"
+	cmdCancel        = "cancel"
+	cmdResolvePerm   = "resolve_permission"
+	cmdAskPerm       = "ask_permission"
+	cmdResolveElicit = "resolve_elicitation"
+	cmdAskElicit     = "ask_elicitation"
+	cmdClose         = "close"
+	cmdActivate      = "activate"
+	cmdSetMode       = "set_mode"
+	cmdSetModel      = "set_model"
+	cmdSetEffort     = "set_effort"
+	cmdListComposer  = "list_composer_items"
+	cmdRunComposer   = "run_composer_action"
+	cmdHarnessEvent  = "harness_event"
+	cmdHarnessExit   = "harness_exit"
+	cmdContinue      = "continue"
+	cmdStopJob       = "stop_job"
+	cmdDequeue       = "dequeue_prompt"
+	cmdQuota         = "quota"
+	cmdSwitchAccount = "switch_account"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -231,9 +232,10 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 		logf:          logf,
 	}
 
+	mcp, extraDirs := harnessExtras(ctx, st, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 		SessionID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
-		MCPServers: toolServers(meta.ID),
+		MCPServers: mcp, ExtraDirs: extraDirs,
 	})
 	if err != nil {
 		return nil, err
@@ -298,6 +300,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// needs.
 	a.recovery = planRecovery(state)
 
+	mcp, extraDirs := harnessExtras(ctx, st, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 		SessionID:        meta.ID,
 		Cwd:              meta.Cwd,
@@ -307,7 +310,8 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 		Resume:           true,
 		HarnessSessionID: state.HarnessSessionID,
 		Env:              env,
-		MCPServers:       toolServers(meta.ID),
+		MCPServers:       mcp,
+		ExtraDirs:        extraDirs,
 	})
 	if err != nil {
 		return nil, err
@@ -820,9 +824,16 @@ func (a *Actor) handle(c command) (stop bool) {
 	case "state":
 		c.reply <- cmdResult{value: a.state.Clone()}
 
-	case cmdPublishArtefact:
-		v, err := a.handlePublish(c.publish)
+	case cmdShowArtefact:
+		v, err := a.handleShow(c.show)
 		c.reply <- cmdResult{value: v, err: err}
+	case cmdArtefact:
+		v, ok := a.state.ArtefactByID(c.reqID)
+		if !ok {
+			c.reply <- cmdResult{err: ErrNoArtefact}
+			break
+		}
+		c.reply <- cmdResult{value: v}
 
 	case "emit":
 		a.append(*c.emission)
@@ -889,10 +900,16 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.resume {
 			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
 		}
+		meta, err := a.store.Session(ctx, a.ID)
+		if err != nil {
+			c.reply <- cmdResult{err: err}
+			return false
+		}
+		mcp, extraDirs := harnessExtras(ctx, a.store, meta, cwd, a.logf)
 		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 			SessionID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
-			MCPServers: toolServers(a.ID),
+			MCPServers: mcp, ExtraDirs: extraDirs,
 		})
 		if err != nil {
 			c.reply <- cmdResult{err: err}

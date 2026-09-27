@@ -2,7 +2,7 @@ import { PackageIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
-import { latestVersion, type Artefact } from "~/lib/artefacts";
+import type { Artefact } from "~/lib/artefacts";
 import { cn } from "~/lib/utils";
 
 export type ArtefactFilter = "all" | "agent" | "upload";
@@ -13,14 +13,12 @@ const FILTERS: { id: ArtefactFilter; label: string }[] = [
   { id: "upload", label: "Uploads" },
 ];
 
-/** Newest first by their latest version, narrowed to one source. An
-    artefact's source is its latest version's: an upload the agent has since
-    revised is the agent's work now. */
+/** Most recently shown first, narrowed to one source. An upload the agent
+    has since revised and shown is the agent's work now. */
 export function listArtefacts(artefacts: Artefact[], filter: ArtefactFilter): Artefact[] {
   return artefacts
-    .filter((a) => a.versions.length > 0)
-    .filter((a) => filter === "all" || latestVersion(a)!.source === filter)
-    .sort((a, b) => latestVersion(b)!.publishedAt - latestVersion(a)!.publishedAt);
+    .filter((a) => filter === "all" || a.source === filter)
+    .sort((a, b) => b.shownAt - a.shownAt);
 }
 
 /**
@@ -34,7 +32,7 @@ export function ArtefactList({
   onOpen,
 }: {
   artefacts: Artefact[];
-  onOpen: (id: string, version?: number) => void;
+  onOpen: (id: string) => void;
 }) {
   const [filter, setFilter] = useState<ArtefactFilter>("all");
   const shown = useMemo(() => listArtefacts(artefacts, filter), [artefacts, filter]);
@@ -45,8 +43,8 @@ export function ArtefactList({
         <PackageIcon className="size-8 opacity-60" />
         <p className="text-foreground text-[13px] font-medium">No artefacts yet</p>
         <p className="max-w-72 text-[12px] leading-relaxed">
-          The agent can publish what it makes (a report, a page, a chart) with its publish_artefact tool, and
-          they show up here. You can also drop any file into the composer to hand it to the agent.
+          When the agent makes something for you (a report, a page, a chart) it shows it with its show_file tool,
+          and it lands here. You can also drop any file into the composer to hand it to the agent.
         </p>
       </div>
     );
@@ -76,27 +74,23 @@ export function ArtefactList({
       <div className="@container scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
         {shown.length === 0 ? (
           <p className="text-muted-foreground px-2 py-10 text-center text-[12px]">
-            {filter === "upload" ? "Nothing uploaded yet." : "The agent has not published anything yet."}
+            {filter === "upload" ? "Nothing uploaded yet." : "The agent has not shown you anything yet."}
           </p>
         ) : (
           <ul className="grid grid-cols-1 gap-2 @lg:grid-cols-2 @4xl:grid-cols-3">
-            {shown.map((a) => {
-              const v = latestVersion(a)!;
-              return (
-                <li key={a.id} className="min-w-0">
-                  <ArtefactTile
-                    name={a.name}
-                    entry={v.entry}
-                    mediaType={v.mediaType}
-                    size={v.size}
-                    version={v.version}
-                    versions={a.versions.length}
-                    source={v.source}
-                    onOpen={() => onOpen(a.id)}
-                  />
-                </li>
-              );
-            })}
+            {shown.map((a) => (
+              <li key={a.id} className="min-w-0">
+                <ArtefactTile
+                  name={a.name}
+                  entry={a.entry}
+                  mediaType={a.mediaType}
+                  size={a.size}
+                  files={a.files}
+                  source={a.source}
+                  onOpen={() => onOpen(a.id)}
+                />
+              </li>
+            ))}
           </ul>
         )}
       </div>

@@ -45,9 +45,9 @@ export type Row =
   // folded: the work is still running beside the conversation after the turn
   // that started it is over, so the card has to stay where it can be seen.
   | { kind: "jobs"; id: string; items: Item[] }
-  // Artefacts the agent published. Never folded: they are what the turn was
+  // Artefacts the agent showed. Never folded: they are what the turn was
   // for. A finished turn shows them under its answer, one card per artefact
-  // at the last version it reached.
+  // however many times it was shown.
   | { kind: "artefacts"; id: string; items: Item[] };
 
 function latestPerArtefact(items: Item[]): Item[] {

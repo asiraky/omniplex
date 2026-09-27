@@ -64,7 +64,7 @@ const EXPIRY_MARGIN_MS = 30_000;
 
 /**
  * An HTML artefact in a small browser: back, forward, reload, where you are
- * inside the bundle, a device width, and the page's console.
+ * inside the folder, a device width, and the page's console.
  *
  * The page is in a sandboxed frame without `allow-same-origin`, so it runs in
  * an opaque origin and cannot reach this app, its cookie, or its API. It talks

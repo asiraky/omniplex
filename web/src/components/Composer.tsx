@@ -24,7 +24,7 @@ import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
 /** What a message carries besides its text: the ready images by id, and the
-    ready files by the artefact version each became. */
+    ready files by the artefact each became. */
 export interface ComposerAttachments {
   imageIds: string[];
   files: ArtefactRef[];

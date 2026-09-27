@@ -256,6 +256,7 @@ const session = query({
     // omniplex's own tools (publishing artefacts), pre-approved.
     ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
     ...(config.allowedTools?.length ? { allowedTools: config.allowedTools } : {}),
+    ...(config.additionalDirectories?.length ? { additionalDirectories: config.additionalDirectories } : {}),
     // Echo each user message back on the stream at the moment the CLI reads
     // it, with the uuid the host stamped on it. A prompt sent while a turn is
     // running is held by the CLI until its next model call; the echo is the

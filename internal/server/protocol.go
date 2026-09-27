@@ -160,7 +160,6 @@ type promptArgs struct {
 
 type promptFile struct {
 	ArtefactID string `json:"artefactId"`
-	Version    int    `json:"version"`
 }
 
 type skillArgs struct {

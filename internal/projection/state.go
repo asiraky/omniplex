@@ -119,8 +119,8 @@ const (
 	// neither a message nor a tool call: a context compaction, or a switch to
 	// another account.
 	ItemNotice = "notice"
-	// ItemArtefact is an artefact the agent published, at the point in the
-	// conversation it was published. Uploads get no item: they show on the
+	// ItemArtefact is an artefact the agent showed, at the point in the
+	// conversation it showed it. Uploads get no item: they show on the
 	// message that carried them.
 	ItemArtefact = "artefact"
 )
@@ -162,32 +162,27 @@ type Item struct {
 	// artefact: Title is its name. Enough to draw the tile without the
 	// artefact list.
 	ArtefactID string `json:"artefactId,omitempty"`
-	Version    int    `json:"version,omitempty"`
 	MediaType  string `json:"mediaType,omitempty"`
 	Size       int64  `json:"size,omitempty"`
 }
 
-// Artefact is something the session produced, with every version of it.
+// Artefact is a file or folder the session has shown, as it was the last time
+// it was shown. The file itself is live on disk and may have moved on.
 type Artefact struct {
-	ID       string            `json:"id"`
-	Name     string            `json:"name"`
-	Versions []ArtefactVersion `json:"versions"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Dir        bool   `json:"dir,omitempty"`
+	MediaType  string `json:"mediaType"`
+	Size       int64  `json:"size"`
+	Entry      string `json:"entry"`
+	Files      int    `json:"files"`
+	ModifiedAt int64  `json:"modifiedAt"`
+	Source     string `json:"source"`
+	Note       string `json:"note,omitempty"`
+	TurnID     string `json:"turnId,omitempty"`
+	ShownAt    int64  `json:"shownAt"`
 }
-
-type ArtefactVersion struct {
-	Version     int    `json:"version"`
-	MediaType   string `json:"mediaType"`
-	Size        int64  `json:"size"`
-	Entry       string `json:"entry"`
-	Files       int    `json:"files"`
-	Source      string `json:"source"`
-	Note        string `json:"note,omitempty"`
-	TurnID      string `json:"turnId,omitempty"`
-	PublishedAt int64  `json:"publishedAt"`
-}
-
-// Latest is the newest version.
-func (a Artefact) Latest() ArtefactVersion { return a.Versions[len(a.Versions)-1] }
 
 // Job is work running beside the conversation: a subagent, a background
 // shell, a monitor. It is the projection of the job.* events, merged field by
@@ -869,8 +864,8 @@ func (s *State) Apply(ev proto.Event) {
 			it.PostTokens = p.PostTokens
 		})
 
-	case proto.ArtefactPublished:
-		var p proto.ArtefactPublishedPayload
+	case proto.ArtefactShown:
+		var p proto.ArtefactShownPayload
 		decode(ev.Payload, &p)
 		s.applyArtefact(p, ev)
 
@@ -968,9 +963,6 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// Clone returns a deep copy safe to hand outside the actor goroutine. A
-// shallow copy would share the item and content slices with the live state,
-// which the actor keeps mutating.
 // ArtefactByID finds an artefact.
 func (s *State) ArtefactByID(id string) (Artefact, bool) {
 	for _, a := range s.Artefacts {
@@ -981,38 +973,38 @@ func (s *State) ArtefactByID(id string) (Artefact, bool) {
 	return Artefact{}, false
 }
 
-// ArtefactByName finds an artefact by name, for deciding whether a publish is
-// a new artefact or the next version of one.
-func (s *State) ArtefactByName(name string) (Artefact, bool) {
+// ArtefactByPath finds the artefact for a path, so showing a file again
+// revises it rather than adding a second one.
+func (s *State) ArtefactByPath(p string) (Artefact, bool) {
 	for _, a := range s.Artefacts {
-		if a.Name == name {
+		if a.Path == p {
 			return a, true
 		}
 	}
 	return Artefact{}, false
 }
 
-func (s *State) applyArtefact(p proto.ArtefactPublishedPayload, ev proto.Event) {
-	v := ArtefactVersion{
-		Version: p.Version, MediaType: p.MediaType, Size: p.Size, Entry: p.Entry, Files: p.Files,
-		Source: p.Source, Note: p.Note, TurnID: p.TurnID, PublishedAt: ev.Timestamp,
+func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
+	a := Artefact{
+		ID: p.ArtefactID, Name: p.Name, Path: p.Path, Dir: p.Dir, MediaType: p.MediaType, Size: p.Size,
+		Entry: p.Entry, Files: p.Files, ModifiedAt: p.ModifiedAt, Source: p.Source, Note: p.Note,
+		TurnID: p.TurnID, ShownAt: ev.Timestamp,
 	}
 	found := false
 	for i := range s.Artefacts {
 		if s.Artefacts[i].ID == p.ArtefactID {
-			s.Artefacts[i].Versions = append(s.Artefacts[i].Versions, v)
-			s.Artefacts[i].Name = p.Name
+			s.Artefacts[i] = a
 			found = true
 			break
 		}
 	}
 	if !found {
-		s.Artefacts = append(s.Artefacts, Artefact{ID: p.ArtefactID, Name: p.Name, Versions: []ArtefactVersion{v}})
+		s.Artefacts = append(s.Artefacts, a)
 	}
 	if p.Source == proto.ArtefactFromUpload {
 		return
 	}
-	s.upsert("artefact:"+p.ArtefactID+"@"+strconv.Itoa(p.Version), func(it *Item) {
+	s.upsert("artefact:"+p.ArtefactID+"@"+strconv.FormatInt(ev.Seq, 10), func(it *Item) {
 		it.Kind = ItemArtefact
 		it.TurnID = p.TurnID
 		if it.ReceivedAt == 0 {
@@ -1020,12 +1012,14 @@ func (s *State) applyArtefact(p proto.ArtefactPublishedPayload, ev proto.Event) 
 		}
 		it.Title = p.Name
 		it.ArtefactID = p.ArtefactID
-		it.Version = p.Version
 		it.MediaType = p.MediaType
 		it.Size = p.Size
 	})
 }
 
+// Clone returns a deep copy safe to hand outside the actor goroutine. A
+// shallow copy would share the item and content slices with the live state,
+// which the actor keeps mutating.
 func (s *State) Clone() *State {
 	out := *s
 	out.itemIndex = nil
@@ -1048,11 +1042,7 @@ func (s *State) Clone() *State {
 	copy(out.Jobs, s.Jobs)
 	out.Plan = make([]proto.PlanEntry, len(s.Plan))
 	copy(out.Plan, s.Plan)
-	out.Artefacts = make([]Artefact, len(s.Artefacts))
-	for i, a := range s.Artefacts {
-		a.Versions = append([]ArtefactVersion(nil), a.Versions...)
-		out.Artefacts[i] = a
-	}
+	out.Artefacts = append([]Artefact{}, s.Artefacts...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))
 	for i, p := range s.Pending {

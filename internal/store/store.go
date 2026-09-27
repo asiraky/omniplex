@@ -169,6 +169,7 @@ func Open(path string) (*Store, error) {
 		`ALTER TABLE sessions ADD COLUMN provider_instance TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN label_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN home TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate schema: %w", err)
@@ -458,10 +459,25 @@ func (s *Store) UpdateProject(ctx context.Context, p project.Project) error {
 	return nil
 }
 
+// SetProjectHome records the folder Omniplex puts new things in for a
+// project. Written once, the first time it is needed.
+func (s *Store) SetProjectHome(ctx context.Context, id, home string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE projects SET home=? WHERE id=?`, home, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) Project(ctx context.Context, id string) (project.Project, error) {
 	var p project.Project
 	var b []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,root,config,created_at,updated_at FROM projects WHERE id=?`, id).Scan(&p.ID, &p.Root, &b, &p.CreatedAt, &p.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,root,home,config,created_at,updated_at FROM projects WHERE id=?`, id).Scan(&p.ID, &p.Root, &p.Home, &b, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -475,7 +491,7 @@ func (s *Store) Project(ctx context.Context, id string) (project.Project, error)
 }
 
 func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,root,config,created_at,updated_at FROM projects ORDER BY updated_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,root,home,config,created_at,updated_at FROM projects ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +500,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
 	for rows.Next() {
 		var p project.Project
 		var b []byte
-		if err := rows.Scan(&p.ID, &p.Root, &b, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Root, &p.Home, &b, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(b, &p.Config); err != nil {

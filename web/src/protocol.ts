@@ -3,7 +3,7 @@
 // them, and no language owns it.
 
 import type { Artefact } from "./lib/artefacts";
-export type { Artefact, ArtefactVersion } from "./lib/artefacts";
+export type { Artefact } from "./lib/artefacts";
 
 export type StopReason =
   | "end_turn"
@@ -75,7 +75,6 @@ export interface Item {
   postTokens?: number;
   // artefact: title is its name
   artefactId?: string;
-  version?: number;
   mediaType?: string;
   size?: number;
 }

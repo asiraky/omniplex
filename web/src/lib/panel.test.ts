@@ -26,20 +26,20 @@ describe("panel surfaces", () => {
 });
 
 describe("artefact tabs", () => {
-  it("keep one tab per artefact and move it to the version asked for", () => {
-    let p = putSurface(defaultPanel(), artefactSurface("a", 1));
+  it("keep one tab per artefact and focus it when opened again", () => {
+    let p = putSurface(defaultPanel(), artefactSurface("a"));
     p = putSurface(p, artefactSurface("b"));
-    p = putSurface(p, artefactSurface("a", 3));
-    expect(p.surfaces.map((s) => `${s.id}@${s.version ?? "latest"}`)).toEqual(["diff@latest", "artefact:a@3", "artefact:b@latest"]);
+    p = putSurface(p, artefactSurface("a"));
+    expect(p.surfaces.map((s) => s.id)).toEqual(["diff", "artefact:a", "artefact:b"]);
     expect(p.active).toBe("artefact:a");
   });
 
   it("drop a saved artefact tab that has lost its id", () => {
     localStorage.setItem(
       "omniplex.panel.v1:s4",
-      JSON.stringify({ surfaces: [{ id: "artefact:x", kind: "artefact" }, artefactSurface("y", 2)], active: "artefact:x" }),
+      JSON.stringify({ surfaces: [{ id: "artefact:x", kind: "artefact" }, artefactSurface("y")], active: "artefact:x" }),
     );
-    expect(loadPanel("s4")).toEqual({ surfaces: [artefactSurface("y", 2)], active: "artefact:y" });
+    expect(loadPanel("s4")).toEqual({ surfaces: [artefactSurface("y")], active: "artefact:y" });
   });
 });
 

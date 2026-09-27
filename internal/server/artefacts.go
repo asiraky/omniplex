@@ -4,15 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
-	"path"
+	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,25 +22,26 @@ import (
 
 const (
 	previewTTL = time.Hour
-	shareTTL   = 7 * 24 * time.Hour
 	// sandboxCSP makes a served document its own opaque origin: its scripts
 	// run, but cannot read the app's cookies, storage or API.
 	sandboxCSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
-	// bridgeLimit caps the HTML the preview route will read into memory to
+	// bridgeLimit caps the HTML the token routes will read into memory to
 	// add the bridge. Anything larger is served as it is, without one.
 	bridgeLimit = 8 << 20
 )
 
 func (s *Server) routeArtefacts(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{id}/artefacts", s.handleUploadArtefact)
-	mux.HandleFunc("GET /api/sessions/{id}/artefacts/{aid}/v/{version}/{path...}", s.handleRawArtefact)
-	mux.HandleFunc("POST /api/sessions/{id}/artefacts/{aid}/v/{version}/preview", s.handlePreviewArtefact)
+	mux.HandleFunc("GET /api/sessions/{id}/artefacts/{aid}/f/{path...}", s.handleRawArtefact)
+	mux.HandleFunc("POST /api/sessions/{id}/artefacts/{aid}/preview", s.handlePreviewArtefact)
+	mux.HandleFunc("GET /api/sessions/{id}/artefacts/{aid}/share", s.handleShareStatus)
 	mux.HandleFunc("POST /api/sessions/{id}/artefacts/{aid}/share", s.handleShareArtefact)
+	mux.HandleFunc("DELETE /api/sessions/{id}/artefacts/{aid}/share", s.handleUnshareArtefact)
 	// Public: each carries its own signed token, checked by its handler.
-	mux.HandleFunc("GET /p/{token}/{path...}", s.handleTokenArtefact(artefact.KindPreview))
-	mux.HandleFunc("GET /s/{token}/{path...}", s.handleTokenArtefact(artefact.KindShare))
-	mux.HandleFunc("GET /s/{token}", s.handleTokenArtefact(artefact.KindShare))
-	mux.HandleFunc("POST /api/agent/artefacts", s.handleAgentPublish)
+	mux.HandleFunc("GET /p/{token}/{path...}", s.handlePreviewToken)
+	mux.HandleFunc("GET /s/{token}/{path...}", s.handleShareToken)
+	mux.HandleFunc("GET /s/{token}", s.handleShareToken)
+	mux.HandleFunc("POST /api/agent/artefacts", s.handleAgentShow)
 }
 
 // artefactPublicPath says whether a path carries its own token and so skips
@@ -53,95 +52,95 @@ func artefactPublicPath(p string) bool {
 
 func (s *Server) artefactsOff(w http.ResponseWriter) bool {
 	if s.artefacts == nil || s.signer == nil {
-		writeError(w, http.StatusNotImplemented, "this server does not store artefacts")
+		writeError(w, http.StatusNotImplemented, "this server does not have artefacts")
 		return true
 	}
 	return false
 }
 
-func writeStageError(w http.ResponseWriter, err error) {
+func writeArtefactError(w http.ResponseWriter, err error) {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge), errors.Is(err, artefact.ErrTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "artefact is larger than 200 MB")
-	case errors.Is(err, artefact.ErrEmpty), errors.Is(err, artefact.ErrBadPath), errors.Is(err, session.ErrNoName):
+		writeError(w, http.StatusRequestEntityTooLarge, "too large: at most 200 MB and 2000 files")
+	case errors.Is(err, artefact.ErrEmpty), errors.Is(err, artefact.ErrBadPath):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, artefact.ErrNotFound), errors.Is(err, session.ErrNoArtefact):
+		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
 }
 
+// sessionArtefact finds an artefact a session has shown.
+func (s *Server) sessionArtefact(r *http.Request, sessionID, id string) (projection.Artefact, error) {
+	actor, err := s.mgr.View(r.Context(), sessionID)
+	if err != nil {
+		return projection.Artefact{}, session.ErrNoArtefact
+	}
+	return actor.Artefact(r.Context(), id)
+}
+
+func artefactFromPayload(p proto.ArtefactShownPayload) projection.Artefact {
+	return projection.Artefact{
+		ID: p.ArtefactID, Name: p.Name, Path: p.Path, Dir: p.Dir, MediaType: p.MediaType, Size: p.Size,
+		Entry: p.Entry, Files: p.Files, ModifiedAt: p.ModifiedAt, Source: p.Source, Note: p.Note,
+		TurnID: p.TurnID, ShownAt: proto.NowMillis(),
+	}
+}
+
 // handleUploadArtefact takes one file a human dropped into the composer, of
-// any type. Like image attachments the body is the file itself. It becomes an
-// artefact of the session straight away, so the upload is paid for while the
-// message is still being typed.
+// any type. The body is the file itself. It is saved into the project's
+// uploads folder, where the agent can read it, and shown straight away, so
+// the upload is paid for while the message is still being typed.
 func (s *Server) handleUploadArtefact(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
 	sessionID := r.PathValue("id")
-	name := r.URL.Query().Get("name")
 	actor, err := s.mgr.View(r.Context(), sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no such session")
 		return
 	}
-	staged, err := s.artefacts.StageFile(sessionID, name, http.MaxBytesReader(w, r.Body, artefact.MaxBytes+1))
-	if err != nil {
-		writeStageError(w, err)
+	home, _, err := s.mgr.ArtefactRoots(r.Context(), sessionID)
+	if err != nil || home == "" {
+		writeError(w, http.StatusConflict, "this session has no folder to save uploads in")
 		return
 	}
-	defer staged.Discard()
-	// An upload is always a new artefact: two files called brief.pdf dropped
-	// in on different days are not versions of each other.
-	pub, err := actor.PublishArtefact(r.Context(), session.Publish{Staged: staged, Name: uniqueName(actor, r, staged.Entry), Source: proto.ArtefactFromUpload})
+	p, err := artefact.SaveUpload(filepath.Join(home, "uploads"), r.URL.Query().Get("name"), http.MaxBytesReader(w, r.Body, artefact.MaxBytes+1))
 	if err != nil {
-		writeStageError(w, err)
+		writeArtefactError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"artefact": artefactFromPayload(pub), "version": pub.Version})
-}
-
-// uniqueName keeps an upload from landing as a version of an artefact that
-// already has its name, by numbering it the way a download folder would.
-func uniqueName(actor *session.Actor, r *http.Request, name string) string {
-	st, err := actor.State(r.Context())
+	info, err := artefact.Describe(p)
 	if err != nil {
-		return name
+		writeArtefactError(w, err)
+		return
 	}
-	if _, taken := st.ArtefactByName(name); !taken {
-		return name
+	shown, err := actor.ShowArtefact(r.Context(), session.Show{Path: p, Info: info, Source: proto.ArtefactFromUpload})
+	if err != nil {
+		writeArtefactError(w, err)
+		return
 	}
-	ext := path.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		if _, taken := st.ArtefactByName(candidate); !taken {
-			return candidate
-		}
-	}
+	writeJSON(w, map[string]any{"artefact": artefactFromPayload(shown)})
 }
 
-func artefactFromPayload(p proto.ArtefactPublishedPayload) projection.Artefact {
-	return projection.Artefact{ID: p.ArtefactID, Name: p.Name, Versions: []projection.ArtefactVersion{{
-		Version: p.Version, MediaType: p.MediaType, Size: p.Size, Entry: p.Entry, Files: p.Files,
-		Source: p.Source, Note: p.Note, TurnID: p.TurnID, PublishedAt: proto.NowMillis(),
-	}}}
-}
-
-// handleRawArtefact serves a stored file to the app. Behind the device gate,
-// so an <img>, <audio> or fetch gets it with the cookie and nothing else.
+// handleRawArtefact serves an artefact's live file to the app. Behind the
+// device gate, so an <img>, <audio> or fetch gets it with the cookie and
+// nothing else.
 func (s *Server) handleRawArtefact(w http.ResponseWriter, r *http.Request) {
-	if s.artefacts == nil {
-		http.NotFound(w, r)
-		return
-	}
-	version, err := strconv.Atoi(r.PathValue("version"))
+	a, err := s.sessionArtefact(r, r.PathValue("id"), r.PathValue("aid"))
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	s.serveArtefactFile(w, r, r.PathValue("id"), r.PathValue("aid"), version, r.PathValue("path"), false)
+	p, err := artefact.Resolve(a.Path, a.Dir, r.PathValue("path"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveArtefactFile(w, r, p, false)
 }
 
 // handlePreviewArtefact mints a short-lived URL for the in-app viewer. The
@@ -153,103 +152,144 @@ func (s *Server) handlePreviewArtefact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID, id := r.PathValue("id"), r.PathValue("aid")
-	version, err := strconv.Atoi(r.PathValue("version"))
+	a, err := s.sessionArtefact(r, sessionID, id)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad version")
+		writeArtefactError(w, err)
 		return
 	}
-	meta, err := s.artefacts.Entry(sessionID, id, version)
+	info, err := artefact.Describe(a.Path)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "no such artefact")
+		writeArtefactError(w, err)
 		return
 	}
 	exp := time.Now().Add(previewTTL).UnixMilli()
-	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindPreview, Session: sessionID, Artefact: id, Version: version, ExpiresAt: exp})
-	writeJSON(w, map[string]any{"url": "/p/" + tok + "/" + escapePath(meta.Entry), "expiresAt": exp})
+	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindPreview, Session: sessionID, Artefact: id, ExpiresAt: exp})
+	writeJSON(w, map[string]any{"url": "/p/" + tok + "/" + escapePath(info.Entry), "expiresAt": exp})
 }
 
-// handleShareArtefact mints a link anyone holding it can open, for a week.
-// Without a version it follows the latest one, so the link sent to a
-// colleague on Monday shows Wednesday's revision.
+// shareStatus is what the app is told about a share.
+type shareStatus struct {
+	URL       string `json:"url"`
+	SharedAt  int64  `json:"sharedAt"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+func (s *Server) shareStatusOf(r *http.Request, sessionID, id string, sh artefact.Share) shareStatus {
+	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindShare, Session: sessionID, Artefact: id, Nonce: sh.Nonce})
+	return shareStatus{URL: requestOrigin(r) + "/s/" + tok, SharedAt: sh.SharedAt, ExpiresAt: sh.ExpiresAt}
+}
+
+// handleShareStatus says whether an artefact is shared, and where. An expired
+// share reads as not shared.
+func (s *Server) handleShareStatus(w http.ResponseWriter, r *http.Request) {
+	if s.artefactsOff(w) {
+		return
+	}
+	sessionID, id := r.PathValue("id"), r.PathValue("aid")
+	sh, err := s.artefacts.Share(sessionID, id)
+	if err != nil || sh.Expired(time.Now()) {
+		writeJSON(w, map[string]any{"share": nil})
+		return
+	}
+	writeJSON(w, map[string]any{"share": s.shareStatusOf(r, sessionID, id, sh)})
+}
+
+// handleShareArtefact copies the artefact as it is now and returns a link to
+// the copy. Sharing again updates the copy behind the same link, so the
+// colleague sent it on Monday sees Wednesday's revision only once someone
+// chose to send it.
 func (s *Server) handleShareArtefact(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
-	var body struct {
-		Version int `json:"version"`
-	}
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
 	sessionID, id := r.PathValue("id"), r.PathValue("aid")
-	check := body.Version
-	if check == 0 {
-		v, err := s.artefacts.Latest(sessionID, id)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "no such artefact")
-			return
-		}
-		check = v
-	}
-	if _, err := s.artefacts.Entry(sessionID, id, check); err != nil {
-		writeError(w, http.StatusNotFound, "no such artefact")
+	a, err := s.sessionArtefact(r, sessionID, id)
+	if err != nil {
+		writeArtefactError(w, err)
 		return
 	}
-	exp := time.Now().Add(shareTTL).UnixMilli()
-	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindShare, Session: sessionID, Artefact: id, Version: body.Version, ExpiresAt: exp})
-	// The link has no path: it redirects to whichever version's entry is
-	// current when it is opened, which a latest-following link needs.
-	writeJSON(w, map[string]any{"url": requestOrigin(r) + "/s/" + tok, "expiresAt": exp})
-}
-
-// handleTokenArtefact serves the preview and share routes.
-func (s *Server) handleTokenArtefact(kind string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.artefacts == nil || s.signer == nil {
-			http.NotFound(w, r)
-			return
-		}
-		c, err := s.signer.Check(r.PathValue("token"), kind, time.Now())
-		if err != nil {
-			http.Error(w, "This link has expired or is not valid.", http.StatusNotFound)
-			return
-		}
-		version := c.Version
-		if version == 0 {
-			if version, err = s.artefacts.Latest(c.Session, c.Artefact); err != nil {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		rel := r.PathValue("path")
-		if rel == "" {
-			// The bare link, or one missing its trailing slash: send it to
-			// the entry so relative URLs inside resolve under the token.
-			meta, err := s.artefacts.Entry(c.Session, c.Artefact, version)
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			http.Redirect(w, r, "/"+kind+"/"+r.PathValue("token")+"/"+escapePath(meta.Entry), http.StatusFound)
-			return
-		}
-		s.serveArtefactFile(w, r, c.Session, c.Artefact, version, rel, true)
+	sh, err := s.artefacts.Snapshot(sessionID, id, a.Path, time.Now())
+	if err != nil {
+		writeArtefactError(w, err)
+		return
 	}
+	writeJSON(w, map[string]any{"share": s.shareStatusOf(r, sessionID, id, sh)})
 }
 
-// serveArtefactFile writes one stored file. The raw route is same-origin with
-// the app, so a document served there is sandboxed with no scripts at all; the
-// token routes let scripts run in an opaque origin. bridge adds the viewer
-// bridge to HTML.
-func (s *Server) serveArtefactFile(w http.ResponseWriter, r *http.Request, sessionID, id string, version int, rel string, bridge bool) {
-	p, err := s.artefacts.Open(sessionID, id, version, rel)
+// handleUnshareArtefact deletes the copy. The link stops working at once.
+func (s *Server) handleUnshareArtefact(w http.ResponseWriter, r *http.Request) {
+	if s.artefactsOff(w) {
+		return
+	}
+	if err := s.artefacts.Unshare(r.PathValue("id"), r.PathValue("aid")); err != nil {
+		writeArtefactError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"share": nil})
+}
+
+const deadLink = "This link has expired or is not valid."
+
+// handlePreviewToken serves the in-app viewer's live files.
+func (s *Server) handlePreviewToken(w http.ResponseWriter, r *http.Request) {
+	if s.artefacts == nil || s.signer == nil {
+		http.NotFound(w, r)
+		return
+	}
+	c, err := s.signer.Check(r.PathValue("token"), artefact.KindPreview, time.Now())
+	if err != nil {
+		http.Error(w, deadLink, http.StatusNotFound)
+		return
+	}
+	a, err := s.sessionArtefact(r, c.Session, c.Artefact)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
+	p, err := artefact.Resolve(a.Path, a.Dir, r.PathValue("path"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveArtefactFile(w, r, p, true)
+}
+
+// handleShareToken serves a share's snapshot to whoever holds the link.
+func (s *Server) handleShareToken(w http.ResponseWriter, r *http.Request) {
+	if s.artefacts == nil || s.signer == nil {
+		http.NotFound(w, r)
+		return
+	}
+	c, err := s.signer.Check(r.PathValue("token"), artefact.KindShare, time.Now())
+	if err != nil {
+		http.Error(w, deadLink, http.StatusNotFound)
+		return
+	}
+	sh, err := s.artefacts.Share(c.Session, c.Artefact)
+	if err != nil || sh.Nonce != c.Nonce || sh.Expired(time.Now()) {
+		http.Error(w, deadLink, http.StatusNotFound)
+		return
+	}
+	rel := r.PathValue("path")
+	if rel == "" {
+		// The bare link, or one missing its trailing slash: send it to the
+		// entry so relative URLs inside resolve under the token.
+		http.Redirect(w, r, "/s/"+r.PathValue("token")+"/"+escapePath(sh.Entry), http.StatusFound)
+		return
+	}
+	p, err := s.artefacts.OpenShared(c.Session, c.Artefact, rel)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveArtefactFile(w, r, p, true)
+}
+
+// serveArtefactFile writes one file. The raw route is same-origin with the
+// app, so a document served there is sandboxed with no scripts at all; the
+// token routes let scripts run in an opaque origin. bridge adds the viewer
+// bridge to HTML.
+func serveArtefactFile(w http.ResponseWriter, r *http.Request, p string, bridge bool) {
 	f, err := os.Open(p)
 	if err != nil {
 		http.NotFound(w, r)
@@ -265,9 +305,9 @@ func (s *Server) serveArtefactFile(w http.ResponseWriter, r *http.Request, sessi
 	h := w.Header()
 	h.Set("Content-Type", mediaType)
 	h.Set("X-Content-Type-Options", "nosniff")
-	// A version never changes, so the URL is the cache key; private because
-	// the bytes are someone's work.
-	h.Set("Cache-Control", "private, max-age=3600")
+	// The files are live: the agent revises them in place. Revalidate every
+	// time; an unchanged file costs a 304.
+	h.Set("Cache-Control", "private, no-cache")
 	tokenised := strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/s/")
 	if tokenised {
 		// The token is the whole credential: a link out of the page must not
@@ -282,10 +322,10 @@ func (s *Server) serveArtefactFile(w http.ResponseWriter, r *http.Request, sessi
 		}
 	}
 	if r.URL.Query().Get("download") == "1" {
-		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(rel)}))
+		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(p)}))
 	}
 	if bridge && strings.HasPrefix(mediaType, "text/html") && info.Size() <= bridgeLimit {
-		body, err := os.ReadFile(p)
+		body, err := io.ReadAll(f)
 		if err == nil {
 			http.ServeContent(w, r, "", info.ModTime(), bytes.NewReader(injectBridge(body)))
 			return
@@ -387,11 +427,10 @@ func requestOrigin(r *http.Request) string {
 	return scheme + "://" + host
 }
 
-// handleAgentPublish is where the omniplex MCP server a harness runs sends
-// what the agent published. The body is a tar of the file or directory, read
-// by the MCP process with the harness's own permissions, so the server never
-// opens a path an agent names.
-func (s *Server) handleAgentPublish(w http.ResponseWriter, r *http.Request) {
+// handleAgentShow is where the omniplex MCP server a harness runs sends a
+// file the agent wants to show. The path has to be inside the session's
+// project: its home folder, its working directory or the project's root.
+func (s *Server) handleAgentShow(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
@@ -401,25 +440,67 @@ func (s *Server) handleAgentPublish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "bad agent token")
 		return
 	}
+	var body struct {
+		Path  string `json:"path"`
+		Title string `json:"title"`
+		Note  string `json:"note"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	actor, err := s.mgr.View(r.Context(), c.Session)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no such session")
 		return
 	}
-	staged, err := s.artefacts.StageTar(c.Session, http.MaxBytesReader(w, r.Body, artefact.MaxBytes+1<<20))
+	home, roots, err := s.mgr.ArtefactRoots(r.Context(), c.Session)
 	if err != nil {
-		writeStageError(w, err)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer staged.Discard()
-	name := strings.TrimSpace(r.URL.Query().Get("name"))
-	if name == "" {
-		name = path.Base(staged.Entry)
-	}
-	pub, err := actor.PublishArtefact(r.Context(), session.Publish{Staged: staged, Name: name, Source: proto.ArtefactFromAgent, Note: r.URL.Query().Get("note")})
-	if err != nil {
-		writeStageError(w, err)
+	if !filepath.IsAbs(body.Path) {
+		writeError(w, http.StatusBadRequest, "path must be absolute")
 		return
 	}
-	writeJSON(w, pub)
+	p, err := filepath.EvalSymlinks(filepath.Clean(body.Path))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no such file: "+body.Path)
+		return
+	}
+	if !insideAny(roots, p) {
+		writeError(w, http.StatusForbidden, "that is outside this project. Move it into "+home+" and show it from there.")
+		return
+	}
+	info, err := artefact.Describe(p)
+	if err != nil {
+		writeArtefactError(w, err)
+		return
+	}
+	shown, err := actor.ShowArtefact(r.Context(), session.Show{
+		Path: p, Name: strings.TrimSpace(body.Title), Note: strings.TrimSpace(body.Note), Info: info, Source: proto.ArtefactFromAgent,
+	})
+	if err != nil {
+		writeArtefactError(w, err)
+		return
+	}
+	writeJSON(w, shown)
+}
+
+// insideAny reports whether p is inside one of roots, with the roots' own
+// symlinks resolved the way p's were.
+func insideAny(roots []string, p string) bool {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		if artefact.Within(real, p) {
+			return true
+		}
+	}
+	return false
 }

@@ -7,13 +7,11 @@ import {
   formatBytes,
   hasSourceView,
   parseAttachedFiles,
-  pickVersion,
   rawUrl,
   readsText,
   retoken,
   typeFamily,
   viewerFor,
-  type Artefact,
 } from "~/lib/artefacts";
 
 const trailer = (...lines: string[]) => `\n\n<attached-files>\n${lines.join("\n")}\n</attached-files>`;
@@ -23,34 +21,34 @@ describe("parseAttachedFiles", () => {
     const text =
       "Summarise these" +
       trailer(
-        "- report.pdf (application/pdf, 1.2 MB, artefact 3f2a9c@1): /home/me/.omniplex/a/3f2a9c/1/report.pdf",
-        "- data.csv (text/csv, 812 B, artefact 77b0@4): /tmp/x/data.csv",
+        "- report.pdf (application/pdf, 1.2 MB, artefact 3f2a9c): /home/me/Omniplex/acme/uploads/report.pdf",
+        "- data.csv (text/csv, 812 B, artefact 77b0): /tmp/x/data.csv",
       );
     expect(parseAttachedFiles(text)).toEqual({
       text: "Summarise these",
       files: [
-        { name: "report.pdf", mediaType: "application/pdf", artefactId: "3f2a9c", version: 1 },
-        { name: "data.csv", mediaType: "text/csv", artefactId: "77b0", version: 4 },
+        { name: "report.pdf", mediaType: "application/pdf", artefactId: "3f2a9c" },
+        { name: "data.csv", mediaType: "text/csv", artefactId: "77b0" },
       ],
     });
   });
 
   it("keeps parentheses and spaces that belong to the name", () => {
-    const text = trailer("- Q3 report (final) v2.pdf (application/pdf, 3 MB, artefact abc@2): /p/Q3 report (final) v2.pdf");
+    const text = trailer("- Q3 report (final) v2.pdf (application/pdf, 3 MB, artefact abc): /p/Q3 report (final) v2.pdf");
     expect(parseAttachedFiles(text)).toEqual({
       text: "",
-      files: [{ name: "Q3 report (final) v2.pdf", mediaType: "application/pdf", artefactId: "abc", version: 2 }],
+      files: [{ name: "Q3 report (final) v2.pdf", mediaType: "application/pdf", artefactId: "abc" }],
     });
   });
 
   it("tolerates trailing whitespace after the block", () => {
-    const text = "hi" + trailer("- a.txt (text/plain, 1 B, artefact x@1): /a.txt") + "\n  \n";
+    const text = "hi" + trailer("- a.txt (text/plain, 1 B, artefact x): /a.txt") + "\n  \n";
     expect(parseAttachedFiles(text).text).toBe("hi");
     expect(parseAttachedFiles(text).files).toHaveLength(1);
   });
 
   it("leaves text alone when the block is not at the end", () => {
-    const text = "see" + trailer("- a.txt (text/plain, 1 B, artefact x@1): /a.txt") + "\nand then more words";
+    const text = "see" + trailer("- a.txt (text/plain, 1 B, artefact x): /a.txt") + "\nand then more words";
     expect(parseAttachedFiles(text)).toEqual({ text, files: [] });
   });
 
@@ -65,16 +63,16 @@ describe("parseAttachedFiles", () => {
   });
 
   it("skips lines it cannot read but keeps the ones it can", () => {
-    const text = "x" + trailer("- garbage", "- b.md (text/markdown, 2 KB, artefact q@3): /b.md");
+    const text = "x" + trailer("- garbage", "- b.md (text/markdown, 2 KB, artefact q): /b.md");
     expect(parseAttachedFiles(text)).toEqual({
       text: "x",
-      files: [{ name: "b.md", mediaType: "text/markdown", artefactId: "q", version: 3 }],
+      files: [{ name: "b.md", mediaType: "text/markdown", artefactId: "q" }],
     });
   });
 
   it("takes the last block when the text quotes an earlier one", () => {
-    const earlier = trailer("- old.txt (text/plain, 1 B, artefact o@1): /old.txt");
-    const text = `quoting:${earlier}\nplease redo` + trailer("- new.txt (text/plain, 1 B, artefact n@2): /new.txt");
+    const earlier = trailer("- old.txt (text/plain, 1 B, artefact o): /old.txt");
+    const text = `quoting:${earlier}\nplease redo` + trailer("- new.txt (text/plain, 1 B, artefact n): /new.txt");
     const out = parseAttachedFiles(text);
     expect(out.files.map((f) => f.artefactId)).toEqual(["n"]);
     expect(out.text).toBe(`quoting:${earlier}\nplease redo`);
@@ -148,33 +146,10 @@ describe("typeFamily and badgeLabel", () => {
   });
 });
 
-describe("pickVersion", () => {
-  const a: Artefact = {
-    id: "a",
-    name: "x",
-    versions: [1, 2, 3].map((version) => ({
-      version,
-      mediaType: "text/plain",
-      size: 1,
-      entry: "x.txt",
-      files: 1,
-      source: "agent" as const,
-      publishedAt: version,
-    })),
-  };
-
-  it("falls back to the latest when none, or one that does not exist, is asked for", () => {
-    expect(pickVersion(a)?.version).toBe(3);
-    expect(pickVersion(a, 2)?.version).toBe(2);
-    expect(pickVersion(a, 9)?.version).toBe(3);
-    expect(pickVersion({ ...a, versions: [] })).toBeUndefined();
-  });
-});
-
 describe("urls", () => {
-  it("encodes each path segment but keeps a bundle's directories", () => {
-    expect(rawUrl("s 1", "a/1", 2, "sub dir/p#1.html")).toBe("/api/sessions/s%201/artefacts/a%2F1/v/2/sub%20dir/p%231.html");
-    expect(rawUrl("s", "a", 1, "x.pdf", true)).toBe("/api/sessions/s/artefacts/a/v/1/x.pdf?download=1");
+  it("encodes each path segment but keeps a folder's directories", () => {
+    expect(rawUrl("s 1", "a/1", "sub dir/p#1.html")).toBe("/api/sessions/s%201/artefacts/a%2F1/f/sub%20dir/p%231.html");
+    expect(rawUrl("s", "a", "x.pdf", { rev: 5, download: true })).toBe("/api/sessions/s/artefacts/a/f/x.pdf?m=5&download=1");
   });
 
   it("moves a page onto a fresh token and keeps where the reader was", () => {
@@ -183,7 +158,7 @@ describe("urls", () => {
     expect(retoken("https://example.com/", "/p/NEW/index.html")).toBe("/p/NEW/index.html");
   });
 
-  it("shows a preview page as its path inside the bundle", () => {
+  it("shows a preview page as its path inside the folder", () => {
     expect(bundlePath(`${window.location.origin}/p/tok123/docs/a%20b.html#top`)).toBe("/docs/a b.html#top");
     expect(bundlePath("/p/tok/index.html")).toBe("/index.html");
     expect(bundlePath("https://example.com/p/tok/x.html")).toBe("https://example.com/p/tok/x.html");

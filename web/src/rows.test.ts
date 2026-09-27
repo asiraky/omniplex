@@ -21,17 +21,19 @@ const shape = (rows: Row[]) =>
   rows.map((r) => {
     if (r.kind === "fold") return `fold(${r.items.length})`;
     if (r.kind === "jobs") return `jobs(${r.items.length})`;
-    if (r.kind === "artefacts") return `artefacts(${r.items.map((i) => `${i.artefactId}@${i.version}`).join(",")})`;
+    if (r.kind === "artefacts") return `artefacts(${r.items.map((i) => i.id.replace("artefact:", "")).join(",")})`;
     if (r.kind === "run") return r.live ? `live(${r.items.length})` : `run(${r.items.length})`;
     return `${r.item.kind}:${r.item.role ?? "tool"}`;
   });
 
-function artefact(id: string, version: number, over: Partial<Item> = {}): Item {
-  return { id: `artefact:${id}@${version}`, kind: "artefact", artefactId: id, version, turnId: "turn1", ...over };
+// One showing of an artefact. The agent can show the same one several times
+// in a turn; seq tells the showings apart.
+function artefact(id: string, seq: number, over: Partial<Item> = {}): Item {
+  return { id: `artefact:${id}@${seq}`, kind: "artefact", artefactId: id, turnId: "turn1", ...over };
 }
 
-describe("buildRows with published artefacts", () => {
-  it("keeps a finished turn's artefacts out of the fold, under the answer, at their last version", () => {
+describe("buildRows with shown artefacts", () => {
+  it("keeps a finished turn's artefacts out of the fold, under the answer, one card each at its last showing", () => {
     const rows = buildRows(
       [prompt("make it"), tool(), artefact("a", 1), tool(), artefact("b", 1), artefact("a", 2), msg("done")],
       [turn("turn1")],

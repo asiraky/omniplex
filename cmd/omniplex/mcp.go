@@ -1,15 +1,13 @@
 package main
 
 import (
-	"archive/tar"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,30 +15,42 @@ import (
 
 // The omniplex MCP server: `omniplex mcp`, run by a harness as a stdio MCP
 // server beside each session. It gives the agent omniplex's own tools. Today
-// that is one, publish_artefact.
+// that is one, show_file.
 //
 // It is configured entirely by environment, set by the server that started
-// the harness: where that server is, and a token that lets this process
-// publish into its own session and nowhere else. It reads the files itself,
-// with the harness's permissions, and streams them to the server as a tar, so
-// the server never opens a path an agent names.
+// the harness: where that server is, a token that lets this process show
+// files in its own session and nowhere else, and the session's home folder.
 
-const mcpPublishTool = "publish_artefact"
+const mcpShowTool = "show_file"
 
-const publishDescription = `Publish a file or folder as an artefact: something the user will open and read, look at, or pass on. The user may not be at your machine and cannot browse its files, so publishing is how they see what you made. It appears as a card in the conversation and opens in omniplex's viewer: HTML runs in a sandboxed mini browser, markdown renders with a source toggle, and PDF, images, SVG, audio, video, CSV, JSON and code all preview. Other types can be downloaded. The user can share it by link.
+// showDescription tells the agent what the tool is for. home is where the
+// session keeps what it makes; cwd is where the agent works.
+func showDescription(home, cwd string) string {
+	var b strings.Builder
+	b.WriteString(`Show the user a file or folder you made for them: a report, a write-up, a plan, a mockup, a clickable prototype, a diagram, a chart, a data export. The user may not be at your machine and cannot browse its files, so this is how they see your work. It appears as a card in the conversation and opens in omniplex's viewer: HTML runs in a sandboxed mini browser, markdown renders, and PDF, images, SVG, audio, video, CSV, JSON and code all preview. Other types download.
 
-What counts as an artefact. Deliverables meant for a person: reports, write-ups, specs, plans, briefs, research summaries, comparisons, mockups and clickable prototypes, diagrams, charts, data exports, drafts of emails or documents, generated images or audio. Not artefacts: scratch or intermediate files, logs, test or build output, dependencies, secrets or .env files, or anything the user did not need to see.
+The file stays where it is and the viewer reads it live. There are no copies and no versions. To revise it, edit the same file in place, then call show_file again with the same path and a note saying what changed. Never make report-v2.md next to report.md: overwrite report.md.
 
-In a git repository. When the working directory is a git repository, the user reviews your changes to the project as a diff, and that diff is the deliverable of a coding task. Never publish source changes, config, tests or the repository to show your work. Decide by what the user wants back:
-- A change to keep or merge (a fix, a feature, a refactor, a doc that belongs in the repo): edit the project. Do not publish.
-- Something to read, look at or decide on (explain, investigate, write up, compare options, draft, mock up, prototype before building, diagram): make an artefact.
-Write an artefact's files outside the repository, in a scratch directory such as one under the system temp directory, so they never show up in the diff or get committed. Put them in the project only if the user asked for the file to live there. A document the user asked you to add to the project (an ADR, a README, a docs page) is a project change first; publish it as well only if they want to read or share it rendered.
+`)
+	if home != "" {
+		fmt.Fprintf(&b, "Where to put it. Put what you make for the user in %s, the project's folder for these things, unless they asked for it somewhere else. Give each one a clear name, since that is the title the user sees.", home)
+		if cwd != "" && !within(home, cwd) {
+			b.WriteString(" Your working directory is a git repository or a copy of one. Files you make there show up in the user's diff and can get committed, so do not put deliverables in it.")
+		}
+		b.WriteString("\n\n")
+	}
+	b.WriteString(`What to show. Deliverables meant for a person: reports, specs, plans, briefs, research summaries, comparisons, mockups and prototypes, diagrams, charts, data exports, drafts of emails or documents, generated images or audio. Not: scratch or intermediate files, logs, test or build output, dependencies, secrets. When the task is a change to the code (a fix, a feature, a refactor), the diff is the deliverable: edit the project and show nothing. Show something when the user wants to read it, look at it or decide on it. A file the user attached is already in front of them; show it again only after you have changed it.
 
-Outside a git repository. There is no diff to review. The files you make for the user are the output: publish the ones they should see, once they are ready.
+Formats. Prefer what the viewer renders: markdown for documents, HTML for anything interactive or visually designed, CSV for tables, SVG or PNG for diagrams and charts. A multi-file HTML prototype is a folder with index.html in it: show the folder, and relative links, scripts, styles and images work. Keep it self-contained, with no build step and no server. Hidden files and node_modules are never part of a folder.
 
-Versions. Publishing a name again adds a new version of that artefact, and the user can switch between versions. Pick a clear, stable name ("Onboarding research summary", not "output.md"), reuse it every time you revise that thing, and say what changed in the note. Use a new name only for a separate deliverable. Publish when a version is worth looking at, not after every small edit. To revise a file the user attached, publish your edited copy under its name.
+Only the user shares. Sharing takes a snapshot for a link; your later edits reach it only when they update the link.`)
+	return b.String()
+}
 
-Formats. Prefer what the viewer renders: markdown for documents, HTML for anything interactive or visually designed, CSV for tables, SVG or PNG for diagrams and charts. For a multi-file HTML prototype, publish its folder: index.html is the entry, and relative links, scripts, styles and images work. Keep it self-contained, with no build step and no server. One version is capped at 200 MB and 2000 files.`
+func within(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
 
 type rpcMsg struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -57,6 +67,8 @@ type rpcErr struct {
 func runMCP(in io.Reader, out io.Writer) error {
 	base := os.Getenv("OMNIPLEX_URL")
 	token := os.Getenv("OMNIPLEX_AGENT_TOKEN")
+	home := os.Getenv("OMNIPLEX_HOME")
+	cwd, _ := os.Getwd()
 	enc := json.NewEncoder(out)
 	reply := func(id json.RawMessage, result any, e *rpcErr) {
 		msg := map[string]any{"jsonrpc": "2.0", "id": id}
@@ -95,15 +107,15 @@ func runMCP(in io.Reader, out io.Writer) error {
 			reply(m.ID, map[string]any{}, nil)
 		case "tools/list":
 			reply(m.ID, map[string]any{"tools": []any{map[string]any{
-				"name":        mcpPublishTool,
-				"description": publishDescription,
+				"name":        mcpShowTool,
+				"description": showDescription(home, cwd),
 				"inputSchema": map[string]any{
 					"type":     "object",
 					"required": []string{"path"},
 					"properties": map[string]any{
-						"path": map[string]any{"type": "string", "description": "File or folder to publish. Relative paths resolve against the working directory. A folder is published as one bundle; symlinks, .git and node_modules are left out."},
-						"name": map[string]any{"type": "string", "description": "Title the user sees, and the key for versions: the same name adds a version, a new name makes a new artefact. Defaults to the file or folder name, so pass a readable one."},
-						"note": map[string]any{"type": "string", "description": "One line on what this version is or, for a revision, what changed."},
+						"path":  map[string]any{"type": "string", "description": "File or folder to show. Relative paths resolve against the working directory. Showing a path again updates the same card."},
+						"title": map[string]any{"type": "string", "description": "Title the user sees. Defaults to the file or folder name."},
+						"note":  map[string]any{"type": "string", "description": "One line on what this is or, when showing it again, what changed."},
 					},
 				},
 			}}}, nil)
@@ -111,16 +123,16 @@ func runMCP(in io.Reader, out io.Writer) error {
 			var p struct {
 				Name      string `json:"name"`
 				Arguments struct {
-					Path string `json:"path"`
-					Name string `json:"name"`
-					Note string `json:"note"`
+					Path  string `json:"path"`
+					Title string `json:"title"`
+					Note  string `json:"note"`
 				} `json:"arguments"`
 			}
-			if err := json.Unmarshal(m.Params, &p); err != nil || p.Name != mcpPublishTool {
+			if err := json.Unmarshal(m.Params, &p); err != nil || p.Name != mcpShowTool {
 				reply(m.ID, nil, &rpcErr{Code: -32602, Message: "unknown tool"})
 				continue
 			}
-			text, err := publish(base, token, p.Arguments.Path, p.Arguments.Name, p.Arguments.Note)
+			text, err := showFile(base, token, p.Arguments.Path, p.Arguments.Title, p.Arguments.Note)
 			if err != nil {
 				reply(m.ID, map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": err.Error()}}}, nil)
 				continue
@@ -133,10 +145,7 @@ func runMCP(in io.Reader, out io.Writer) error {
 	return sc.Err()
 }
 
-// skipDirs are never part of a published bundle.
-var skipDirs = map[string]bool{".git": true, "node_modules": true, ".DS_Store": true}
-
-func publish(base, token, p, name, note string) (string, error) {
+func showFile(base, token, p, title, note string) (string, error) {
 	if base == "" || token == "" {
 		return "", errors.New("omniplex did not configure this tool (OMNIPLEX_URL / OMNIPLEX_AGENT_TOKEN unset)")
 	}
@@ -147,27 +156,13 @@ func publish(base, token, p, name, note string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return "", fmt.Errorf("cannot publish %s: %w", p, err)
-	}
-	if name == "" {
-		name = filepath.Base(abs)
-	}
-
-	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeTar(pw, abs, info)) }()
-
-	q := url.Values{"name": {name}}
-	if note != "" {
-		q.Set("note", note)
-	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(base, "/")+"/api/agent/artefacts?"+q.Encode(), pr)
+	reqBody, _ := json.Marshal(map[string]string{"path": abs, "title": title, "note": note})
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(base, "/")+"/api/agent/artefacts", bytes.NewReader(reqBody))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/x-tar")
+	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("could not reach omniplex: %w", err)
@@ -182,67 +177,17 @@ func publish(base, token, p, name, note string) (string, error) {
 		if e.Error == "" {
 			e.Error = strings.TrimSpace(string(body))
 		}
-		return "", fmt.Errorf("omniplex refused the artefact (%d): %s", res.StatusCode, e.Error)
+		return "", fmt.Errorf("omniplex could not show %s (%d): %s", p, res.StatusCode, e.Error)
 	}
-	var pub struct {
-		Name    string `json:"name"`
-		Version int    `json:"version"`
-		Entry   string `json:"entry"`
-		Files   int    `json:"files"`
+	var shown struct {
+		Name  string `json:"name"`
+		Entry string `json:"entry"`
+		Files int    `json:"files"`
 	}
-	json.Unmarshal(body, &pub)
-	what := pub.Entry
-	if pub.Files > 1 {
-		what = fmt.Sprintf("%d files, opens on %s", pub.Files, pub.Entry)
+	json.Unmarshal(body, &shown)
+	what := shown.Entry
+	if shown.Files > 1 {
+		what = fmt.Sprintf("%d files, opens on %s", shown.Files, shown.Entry)
 	}
-	return fmt.Sprintf("Published %q version %d (%s). It is attached to the session and the user can open it from the conversation.", pub.Name, pub.Version, what), nil
-}
-
-// writeTar writes a file, or a directory's regular files, as a tar. Symlinks
-// are skipped: following one could publish something outside the folder.
-func writeTar(w io.Writer, root string, info fs.FileInfo) error {
-	tw := tar.NewWriter(w)
-	add := func(p, rel string, fi fs.FileInfo) error {
-		h := &tar.Header{Name: filepath.ToSlash(rel), Mode: 0o644, Size: fi.Size(), ModTime: fi.ModTime(), Typeflag: tar.TypeReg}
-		if err := tw.WriteHeader(h); err != nil {
-			return err
-		}
-		f, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
-	}
-	if !info.IsDir() {
-		if err := add(root, filepath.Base(root), info); err != nil {
-			return err
-		}
-		return tw.Close()
-	}
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p != root && skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		return add(p, rel, fi)
-	})
-	if err != nil {
-		return err
-	}
-	return tw.Close()
+	return fmt.Sprintf("Showing %q (%s). The user can open it from the conversation. To revise it, edit the file in place and show it again.", shown.Name, what), nil
 }

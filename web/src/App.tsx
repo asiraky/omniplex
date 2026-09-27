@@ -308,10 +308,10 @@ export function App() {
     setPanelRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
   }, []);
 
-  // Opening an artefact from its card in the transcript; no version is the latest.
-  const openArtefact = useCallback((artefactId: string, version?: number) => {
+  // Opening an artefact from its card in the transcript.
+  const openArtefact = useCallback((artefactId: string) => {
     setShowChanges(true);
-    setPanelRequest((current) => ({ kind: "artefact", artefactId, version, nonce: (current?.nonce ?? 0) + 1 }));
+    setPanelRequest((current) => ({ kind: "artefact", artefactId, nonce: (current?.nonce ?? 0) + 1 }));
   }, []);
 
   const openPath = useCallback((path: string, line?: number) => {

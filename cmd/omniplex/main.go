@@ -411,13 +411,13 @@ func mustCwd() string {
 // artefactTools is the MCP server every harness gets: this binary, run as
 // `omniplex mcp`, pointed back at this server over loopback with a token for
 // its one session.
-func artefactTools(signer *artefact.Signer, port int) func(string) []adapter.MCPServer {
+func artefactTools(signer *artefact.Signer, port int) func(sessionID, home string) []adapter.MCPServer {
 	exe, err := os.Executable()
 	if err != nil {
 		log.Printf("artefact tools off: %v", err)
 		return nil
 	}
-	return func(sessionID string) []adapter.MCPServer {
+	return func(sessionID, home string) []adapter.MCPServer {
 		return []adapter.MCPServer{{
 			Name:    "omniplex",
 			Command: exe,
@@ -425,8 +425,9 @@ func artefactTools(signer *artefact.Signer, port int) func(string) []adapter.MCP
 			Env: map[string]string{
 				"OMNIPLEX_URL":         fmt.Sprintf("http://127.0.0.1:%d", port),
 				"OMNIPLEX_AGENT_TOKEN": signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Session: sessionID}),
+				"OMNIPLEX_HOME":        home,
 			},
-			Tools: []string{mcpPublishTool},
+			Tools: []string{mcpShowTool},
 		}}
 	}
 }

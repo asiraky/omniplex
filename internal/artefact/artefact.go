@@ -1,19 +1,22 @@
-// Package artefact stores the outputs a session produces: a report the agent
-// wrote, a prototype it built, a PDF someone dropped into the composer. Any
-// file type, a single file or a directory bundle.
+// Package artefact deals with the things a session shows you: a report the
+// agent wrote, a prototype it built, a PDF someone dropped into the composer.
+// Any file type, a single file or a folder.
 //
-// The bytes live here, beside the database and outside every worktree, because
-// a worktree is deleted with its session's workspace while what the session
-// produced is worth keeping. Which artefacts a session has, and their versions,
-// is in the event log (artefact.published). This package only keeps the bytes,
-// laid out as <dir>/<session>/<artefact>/<version>/<files...>.
+// An artefact is a real file in the project. The agent writes it where it
+// works, revises it in place, and the app reads it live, so there is one copy
+// and no version history. Which files a session has shown is in the event log
+// (artefact.shown).
 //
-// A version is written once and never changed: it is staged in a temporary
-// directory and renamed into place, so a reader never sees half a bundle.
+// The only bytes this package keeps are share snapshots. Sharing copies the
+// artefact as it is right now into <dir>/<session>/<artefact>/, so the person
+// holding the link never sees a half-edited file and the agent can keep
+// working. Updating the share takes a fresh copy behind the same link.
 package artefact
 
 import (
-	"archive/tar"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,16 +28,19 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
-	// MaxBytes caps one version, across every file in a bundle.
+	// MaxBytes caps what one share copies and what one upload writes.
 	MaxBytes = 200 << 20
-	// MaxFiles caps the files in one bundle. A prototype with node_modules in
-	// it is a mistake, not an artefact.
+	// MaxFiles caps the files in a folder artefact. A prototype with
+	// node_modules in it is a mistake, not an artefact.
 	MaxFiles = 2000
+	// ShareTTL is how long a share link lasts after it was last updated.
+	ShareTTL = 7 * 24 * time.Hour
 )
 
 var (
@@ -46,190 +52,98 @@ var (
 	safeID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 )
 
-// Meta describes one stored version.
-type Meta struct {
+// Info describes an artefact as it is on disk now.
+type Info struct {
+	Dir       bool   `json:"dir"`
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
-	// Entry is the file a viewer opens: the single file, or a bundle's
-	// index.html.
+	// Entry is the file a viewer opens, relative to the artefact: the file's
+	// own name, or a folder's index.html.
 	Entry string `json:"entry"`
 	Files int    `json:"files"`
+	// ModifiedAt is the newest file's modification time, in millis. The app
+	// uses it to know a revision is not the copy it already has.
+	ModifiedAt int64 `json:"modifiedAt"`
 }
 
-type Store struct{ dir string }
-
-func New(dir string) *Store {
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
-	return &Store{dir: dir}
+// skipped is what is never part of an artefact: hidden files (.git, .env,
+// .DS_Store) and installed dependencies.
+func skipped(name string) bool {
+	return strings.HasPrefix(name, ".") || name == "node_modules"
 }
 
-func (s *Store) Dir() string { return s.dir }
-
-func (s *Store) versionDir(session, id string, version int) (string, error) {
-	if !safeID.MatchString(session) || !safeID.MatchString(id) || version < 1 {
-		return "", ErrBadPath
-	}
-	return filepath.Join(s.dir, session, id, strconv.Itoa(version)), nil
-}
-
-// Staged is a version whose bytes are written but which has no identity yet.
-// Staging is the slow part (an upload over 4G, a bundle off disk) and happens
-// outside the session actor; Commit is one rename, cheap enough to run inside
-// it, which is where the version number is decided.
-type Staged struct {
-	Meta
-	session string
-	tmp     string
-	store   *Store
-}
-
-// Commit moves the staged bytes into place as id's version.
-func (st *Staged) Commit(id string, version int) error {
-	dst, err := st.store.versionDir(st.session, id, version)
+// Describe reads the artefact at p, a file or a folder.
+func Describe(p string) (Info, error) {
+	info, err := os.Stat(p)
 	if err != nil {
-		return err
+		return Info{}, ErrNotFound
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
+	if info.Mode().IsRegular() {
+		if info.Size() == 0 {
+			return Info{}, ErrEmpty
+		}
+		return Info{
+			MediaType: MediaType(p), Size: info.Size(), Entry: filepath.Base(p), Files: 1,
+			ModifiedAt: info.ModTime().UnixMilli(),
+		}, nil
 	}
-	if err := os.Rename(st.tmp, dst); err != nil {
-		return err
+	if !info.IsDir() {
+		return Info{}, ErrBadPath
 	}
-	st.tmp = ""
-	return nil
+	files, size, modified, err := walk(p)
+	if err != nil {
+		return Info{}, err
+	}
+	entry := pickEntry(files)
+	return Info{
+		Dir: true, MediaType: MediaType(filepath.Join(p, filepath.FromSlash(entry))), Size: size,
+		Entry: entry, Files: len(files), ModifiedAt: modified,
+	}, nil
 }
 
-// Discard drops staged bytes that were never committed. Safe after Commit.
-func (st *Staged) Discard() {
-	if st.tmp != "" {
-		os.RemoveAll(st.tmp)
-		st.tmp = ""
-	}
-}
-
-// StageFile stages a single file.
-func (s *Store) StageFile(session, name string, r io.Reader) (*Staged, error) {
-	name = cleanName(name)
-	if name == "" {
-		return nil, ErrBadPath
-	}
-	return s.stage(session, func(tmp string) error {
-		n, err := writeFile(filepath.Join(tmp, name), r, MaxBytes)
+// walk lists a folder artefact's files, slash-separated and sorted. Symlinks
+// are left out: following one could put anything on disk into a share.
+func walk(root string) (files []string, size, modified int64, err error) {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			return ErrEmpty
+		if p == root {
+			return nil
 		}
-		return nil
-	})
-}
-
-// StageTar stages the contents of a tar stream. A tar holding one regular file
-// is a single-file artefact; anything more is a bundle. Links and anything
-// that is not a regular file are skipped rather than trusted.
-func (s *Store) StageTar(session string, r io.Reader) (*Staged, error) {
-	return s.stage(session, func(tmp string) error {
-		tr := tar.NewReader(r)
-		var total int64
-		files := 0
-		for {
-			h, err := tr.Next()
-			if err == io.EOF {
-				break
+		if skipped(d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
 			}
-			if err != nil {
-				return err
-			}
-			if h.Typeflag != tar.TypeReg {
-				continue
-			}
-			rel, ok := safeRel(h.Name)
-			if !ok {
-				return fmt.Errorf("%w: %q", ErrBadPath, h.Name)
-			}
-			files++
-			if files > MaxFiles {
-				return fmt.Errorf("%w: more than %d files", ErrTooLarge, MaxFiles)
-			}
-			dst := filepath.Join(tmp, filepath.FromSlash(rel))
-			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-				return err
-			}
-			n, err := writeFile(dst, tr, MaxBytes-total)
-			if err != nil {
-				return err
-			}
-			total += n
+			return nil
 		}
-		if files == 0 {
-			return ErrEmpty
-		}
-		return nil
-	})
-}
-
-func (s *Store) stage(session string, fill func(tmp string) error) (*Staged, error) {
-	if !safeID.MatchString(session) {
-		return nil, ErrBadPath
-	}
-	root := filepath.Join(s.dir, session)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, err
-	}
-	tmp, err := os.MkdirTemp(root, ".staging-")
-	if err != nil {
-		return nil, err
-	}
-	if err := fill(tmp); err != nil {
-		os.RemoveAll(tmp)
-		return nil, err
-	}
-	meta, err := describe(tmp)
-	if err != nil {
-		os.RemoveAll(tmp)
-		return nil, err
-	}
-	return &Staged{Meta: meta, session: session, tmp: tmp, store: s}, nil
-}
-
-// describe works out the entry, media type, size and file count of a staged
-// version.
-func describe(root string) (Meta, error) {
-	var files []string
-	var size int64
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
+		if len(files) == MaxFiles {
+			return fmt.Errorf("%w: more than %d files", ErrTooLarge, MaxFiles)
+		}
 		size += info.Size()
+		modified = max(modified, info.ModTime().UnixMilli())
 		rel, _ := filepath.Rel(root, p)
 		files = append(files, filepath.ToSlash(rel))
 		return nil
 	})
 	if err != nil {
-		return Meta{}, err
+		return nil, 0, 0, err
 	}
 	if len(files) == 0 {
-		return Meta{}, ErrEmpty
+		return nil, 0, 0, ErrEmpty
 	}
 	sort.Strings(files)
-	entry := pickEntry(files)
-	return Meta{
-		MediaType: MediaType(filepath.Join(root, filepath.FromSlash(entry))),
-		Size:      size,
-		Entry:     entry,
-		Files:     len(files),
-	}, nil
+	return files, size, modified, nil
 }
 
-// pickEntry chooses what a bundle opens on: the shallowest index.html, else
+// pickEntry chooses what a folder opens on: the shallowest index.html, else
 // the shallowest HTML file, else the shallowest README or markdown file, else
 // the first file.
 func pickEntry(files []string) string {
@@ -259,67 +173,294 @@ func pickEntry(files []string) string {
 	return best
 }
 
-// Open resolves a file inside a stored version. rel is slash-separated and
-// relative to the version; anything that climbs out is refused.
-func (s *Store) Open(session, id string, version int, rel string) (string, error) {
-	dir, err := s.versionDir(session, id, version)
-	if err != nil {
-		return "", err
-	}
+// Resolve finds the file rel names inside the artefact at root. A single-file
+// artefact serves only itself. A folder serves what is inside it and nothing
+// a symlink or a ".." would reach outside it, and never a hidden file.
+func Resolve(root string, dir bool, rel string) (string, error) {
 	clean, ok := safeRel(rel)
 	if !ok {
 		return "", ErrBadPath
 	}
-	p := filepath.Join(dir, filepath.FromSlash(clean))
-	info, err := os.Lstat(p)
-	if err != nil || !info.Mode().IsRegular() {
+	if !dir {
+		if clean != filepath.Base(root) {
+			return "", ErrNotFound
+		}
+		return regular(root)
+	}
+	for _, seg := range strings.Split(clean, "/") {
+		if skipped(seg) {
+			return "", ErrNotFound
+		}
+	}
+	p, err := regular(filepath.Join(root, filepath.FromSlash(clean)))
+	if err != nil {
+		return "", err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", ErrNotFound
+	}
+	if !Within(realRoot, p) {
 		return "", ErrNotFound
 	}
 	return p, nil
 }
 
-// Latest is the highest version stored for an artefact, read off disk so a
-// share link that follows the latest version needs nothing but the store.
-func (s *Store) Latest(session, id string) (int, error) {
-	if !safeID.MatchString(session) || !safeID.MatchString(id) {
-		return 0, ErrBadPath
-	}
-	entries, err := os.ReadDir(filepath.Join(s.dir, session, id))
+// regular resolves p's symlinks and insists on a regular file.
+func regular(p string) (string, error) {
+	real, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return 0, ErrNotFound
+		return "", ErrNotFound
 	}
-	latest := 0
-	for _, e := range entries {
-		if v, err := strconv.Atoi(e.Name()); err == nil && e.IsDir() && v > latest {
-			latest = v
+	info, err := os.Stat(real)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", ErrNotFound
+	}
+	return real, nil
+}
+
+// Within reports whether p is root or inside it. Both should be clean and
+// absolute.
+func Within(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// ---- shares ----
+
+// Share is a snapshot someone can open with a link.
+type Share struct {
+	// Nonce is in the link. Stopping a share forgets it, so a link that was
+	// stopped stays dead even if the artefact is shared again.
+	Nonce     string `json:"nonce"`
+	Entry     string `json:"entry"`
+	SharedAt  int64  `json:"sharedAt"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+// Expired reports whether the share has run out.
+func (s Share) Expired(now time.Time) bool { return now.UnixMilli() > s.ExpiresAt }
+
+// Store keeps share snapshots.
+type Store struct {
+	dir string
+	mu  sync.Mutex
+}
+
+func New(dir string) *Store {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return &Store{dir: dir}
+}
+
+func (s *Store) Dir() string { return s.dir }
+
+func (s *Store) shareDir(session, id string) (string, error) {
+	if !safeID.MatchString(session) || !safeID.MatchString(id) {
+		return "", ErrBadPath
+	}
+	return filepath.Join(s.dir, session, id), nil
+}
+
+// Snapshot copies the artefact at src into the share for (session, id),
+// replacing any earlier copy. The link stays the same when there already is a
+// share; the week it lasts starts again.
+func (s *Store) Snapshot(session, id, src string, now time.Time) (Share, error) {
+	dir, err := s.shareDir(session, id)
+	if err != nil {
+		return Share{}, err
+	}
+	info, err := Describe(src)
+	if err != nil {
+		return Share{}, err
+	}
+	if info.Size > MaxBytes {
+		return Share{}, ErrTooLarge
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return Share{}, err
+	}
+	tmp, err := os.MkdirTemp(dir, ".staging-")
+	if err != nil {
+		return Share{}, err
+	}
+	defer os.RemoveAll(tmp)
+	if err := copyArtefact(src, info, tmp); err != nil {
+		return Share{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, err := s.readShare(dir)
+	nonce := prev.Nonce
+	if err != nil || nonce == "" {
+		nonce = newNonce()
+	}
+	sh := Share{Nonce: nonce, Entry: info.Entry, SharedAt: now.UnixMilli(), ExpiresAt: now.Add(ShareTTL).UnixMilli()}
+
+	// Swap the new copy in with renames, so a reader mid-page sees the old
+	// files or the new ones and never a mix.
+	files := filepath.Join(dir, "files")
+	old := filepath.Join(tmp, "old")
+	if err := os.Rename(files, old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return Share{}, err
+	}
+	if err := os.Rename(filepath.Join(tmp, "files"), files); err != nil {
+		return Share{}, err
+	}
+	b, _ := json.Marshal(sh)
+	if err := writeAtomic(filepath.Join(dir, "share.json"), b); err != nil {
+		return Share{}, err
+	}
+	return sh, nil
+}
+
+func copyArtefact(src string, info Info, tmp string) error {
+	dst := filepath.Join(tmp, "files")
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+	if !info.Dir {
+		return copyFile(src, filepath.Join(dst, info.Entry))
+	}
+	files, _, _, err := walk(src)
+	if err != nil {
+		return err
+	}
+	for _, rel := range files {
+		to := filepath.Join(dst, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+			return err
+		}
+		if err := copyFile(filepath.Join(src, filepath.FromSlash(rel)), to); err != nil {
+			return err
 		}
 	}
-	if latest == 0 {
-		return 0, ErrNotFound
-	}
-	return latest, nil
+	return nil
 }
 
-// Entry re-derives the entry of a stored version, for a caller that only has
-// the store (a share link following the latest version).
-func (s *Store) Entry(session, id string, version int) (Meta, error) {
-	dir, err := s.versionDir(session, id, version)
+func copyFile(from, to string) error {
+	in, err := os.Open(from)
 	if err != nil {
-		return Meta{}, err
+		return err
 	}
-	if _, err := os.Stat(dir); err != nil {
-		return Meta{}, ErrNotFound
-	}
-	return describe(dir)
+	defer in.Close()
+	_, err = writeFile(to, in, MaxBytes)
+	return err
 }
 
-// PurgeSession deletes everything a session stored.
+// Share reads the share for (session, id), expired or not.
+func (s *Store) Share(session, id string) (Share, error) {
+	dir, err := s.shareDir(session, id)
+	if err != nil {
+		return Share{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readShare(dir)
+}
+
+func (s *Store) readShare(dir string) (Share, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "share.json"))
+	if err != nil {
+		return Share{}, ErrNotFound
+	}
+	var sh Share
+	if err := json.Unmarshal(b, &sh); err != nil || sh.Nonce == "" {
+		return Share{}, ErrNotFound
+	}
+	return sh, nil
+}
+
+// Unshare deletes the share. Its link stops working at once.
+func (s *Store) Unshare(session, id string) error {
+	dir, err := s.shareDir(session, id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.RemoveAll(dir)
+}
+
+// OpenShared resolves a file inside a share's snapshot.
+func (s *Store) OpenShared(session, id, rel string) (string, error) {
+	dir, err := s.shareDir(session, id)
+	if err != nil {
+		return "", err
+	}
+	return Resolve(filepath.Join(dir, "files"), true, rel)
+}
+
+// PurgeSession deletes every share a session made. The artefacts themselves
+// are the project's files and are left alone.
 func (s *Store) PurgeSession(session string) error {
 	if !safeID.MatchString(session) {
 		return ErrBadPath
 	}
 	return os.RemoveAll(filepath.Join(s.dir, session))
 }
+
+func newNonce() string {
+	b := make([]byte, 12)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func writeAtomic(p string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(p), ".tmp-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), p)
+}
+
+// ---- uploads ----
+
+// SaveUpload writes a file a human uploaded into dir under its own name,
+// numbered the way a download folder would when the name is taken. It returns
+// the path written.
+func SaveUpload(dir, name string, r io.Reader) (string, error) {
+	name = cleanName(name)
+	if name == "" {
+		return "", ErrBadPath
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		candidate := name
+		if i > 1 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		}
+		p := filepath.Join(dir, candidate)
+		n, err := writeFile(p, r, MaxBytes)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err == nil && n == 0 {
+			err = ErrEmpty
+		}
+		if err != nil {
+			os.Remove(p)
+			return "", err
+		}
+		return p, nil
+	}
+}
+
+// ---- helpers ----
 
 // MediaType names a file's type by extension first, because sniffing cannot
 // tell markdown from plain text or CSV from anything, and falls back to
@@ -376,7 +517,8 @@ var extraTypes = map[string]string{
 	".mov":      "video/quicktime",
 }
 
-// cleanName reduces an uploaded file name to a single safe path segment.
+// cleanName reduces an uploaded file name to a single safe path segment. A
+// leading dot is dropped so an upload is never a hidden file.
 func cleanName(name string) string {
 	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
 	name = strings.Map(func(r rune) rune {
@@ -385,8 +527,8 @@ func cleanName(name string) string {
 		}
 		return r
 	}, name)
-	name = strings.TrimSpace(name)
-	if name == "." || name == ".." || name == "" {
+	name = strings.TrimLeft(strings.TrimSpace(name), ".")
+	if name == "" {
 		return ""
 	}
 	if len(name) > 200 {
@@ -415,7 +557,7 @@ func safeRel(rel string) (string, bool) {
 
 // writeFile writes at most limit bytes from r to a new file at p.
 func writeFile(p string, r io.Reader, limit int64) (int64, error) {
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
 	}

@@ -53,6 +53,21 @@ type Config struct {
 	// load/save cycle untouched, so a config written on another branch is
 	// never destroyed. internal/provider parses them.
 	Providers []json.RawMessage `json:"providers,omitempty"`
+	// ProjectsDir is where a project's home folder is made. Empty means
+	// ~/Omniplex.
+	ProjectsDir string `json:"projectsDir,omitempty"`
+}
+
+// ProjectsDirOrDefault is the folder project home folders go in.
+func (c Config) ProjectsDirOrDefault() (string, error) {
+	if c.ProjectsDir != "" {
+		return c.ProjectsDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Omniplex"), nil
 }
 
 func Default() Config {
