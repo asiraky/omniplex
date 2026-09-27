@@ -23,22 +23,43 @@ function mount(expiresAt = Date.now() + 3_600_000, refresh = vi.fn()) {
 describe("MiniBrowser", () => {
   it("follows the page's navigation", () => {
     mount();
-    expect(screen.getByRole("button", { name: "Back" })).toHaveProperty("disabled", true);
-    fromFrame({ omniplex: "nav", url: `${location.origin}/p/tok1/docs/b.html#x`, title: "B", canBack: true });
+    const back = () => screen.getByRole("button", { name: "Back" });
+    expect(back()).toHaveProperty("disabled", true);
+    // The first page loading is not somewhere to go back from.
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
+    expect(back()).toHaveProperty("disabled", true);
+    fromFrame({ omniplex: "nav", url: `${location.origin}/p/tok1/docs/b.html#x`, title: "B" });
     expect(screen.getByTestId("url-pill").textContent).toBe("/docs/b.html#x");
-    expect(screen.getByRole("button", { name: "Back" })).toHaveProperty("disabled", false);
+    expect(back()).toHaveProperty("disabled", false);
+    fireEvent.click(back());
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
+    expect(back()).toHaveProperty("disabled", true);
+  });
+
+  it("counts a fragment link, which reports twice, as one step", () => {
+    mount();
+    const back = () => screen.getByRole("button", { name: "Back" });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html#b", title: "" });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html#b", title: "" });
+    fireEvent.click(back());
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
+    expect(back()).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Forward" })).toHaveProperty("disabled", false);
   });
 
   it("enables forward only after going back", () => {
     mount();
     const forward = () => screen.getByRole("button", { name: "Forward" });
-    fromFrame({ omniplex: "nav", url: "/p/tok1/b.html", title: "", canBack: true });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/b.html", title: "" });
     expect(forward()).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
-    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "", canBack: false });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/index.html", title: "" });
     expect(forward()).toHaveProperty("disabled", false);
     // A fresh navigation drops the forward history, as a browser does.
-    fromFrame({ omniplex: "nav", url: "/p/tok1/c.html", title: "", canBack: true });
+    fromFrame({ omniplex: "nav", url: "/p/tok1/c.html", title: "" });
     expect(forward()).toHaveProperty("disabled", true);
   });
 

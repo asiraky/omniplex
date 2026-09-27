@@ -178,3 +178,31 @@ func containsValue(value any, path string) bool {
 	}
 	return false
 }
+
+func TestRelocateProjectMovesAHomeInsideTheRootAndNoOther(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "hy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for id, home := range map[string]string{"plain": "/old/plain", "git": "/home/me/Omniplex/git", "unset": ""} {
+		root := "/old/" + id
+		if err := st.PutProject(ctx, project.Project{ID: id, Root: root, Config: project.DefaultConfig(root), CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if home != "" {
+			if err := st.SetProjectHome(ctx, id, home); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := st.RelocateProject(ctx, root, "/new/"+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]string{"plain": "/new/plain", "git": "/home/me/Omniplex/git", "unset": ""} {
+		if p, _ := st.Project(ctx, id); p.Home != want {
+			t.Errorf("%s: home %q, want %q", id, p.Home, want)
+		}
+	}
+}

@@ -81,10 +81,10 @@ func TestResolveServesOnlyWhatIsInsideTheArtefact(t *testing.T) {
 	if p, err := Resolve(proto, true, "index.html"); err != nil || filepath.Base(p) != "index.html" {
 		t.Fatalf("index: %q %v", p, err)
 	}
-	if _, err := Resolve(proto, true, "alias.html"); err != nil {
-		t.Fatalf("a link that stays inside should resolve: %v", err)
-	}
-	for _, rel := range []string{"../secret.txt", "escape.txt", ".env", "", "/index.html", "missing.html"} {
+	os.Symlink(".env", filepath.Join(proto, "env.txt"))
+	// A symlink is never part of a folder, even one that stays inside it: a
+	// share skips them, so the viewer must too.
+	for _, rel := range []string{"../secret.txt", "escape.txt", "alias.html", "env.txt", ".env", "", "/index.html", "missing.html"} {
 		if _, err := Resolve(proto, true, rel); err == nil {
 			t.Errorf("%q resolved", rel)
 		}

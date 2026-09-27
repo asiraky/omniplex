@@ -313,6 +313,11 @@ func serveArtefactFile(w http.ResponseWriter, r *http.Request, p string, bridge 
 		// The token is the whole credential: a link out of the page must not
 		// carry it to another site in the Referer.
 		h.Set("Referrer-Policy", "no-referrer")
+		// The page runs in an opaque origin, so its module scripts and
+		// fetches of its own files are cross-origin requests. The token is
+		// the whole credential and no cookie rides along, so any origin may
+		// read what the link already gives.
+		h.Set("Access-Control-Allow-Origin", "*")
 	}
 	if activeContent(mediaType) {
 		if tokenised {

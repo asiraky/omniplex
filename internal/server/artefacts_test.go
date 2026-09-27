@@ -211,10 +211,24 @@ func TestPreviewServesLiveFilesSandboxedWithBridge(t *testing.T) {
 	base := r.remote.URL + strings.TrimSuffix(url, "index.html")
 	// Live: the agent's edit shows without showing the file again.
 	r.write(t, "proto", map[string]string{"app.js": "2"})
-	if res, body := get(t, base+"app.js"); res.StatusCode != 200 || body != "2" {
+	res, body = get(t, base+"app.js")
+	if res.StatusCode != 200 || body != "2" {
 		t.Fatalf("relative asset: %d %q", res.StatusCode, body)
 	}
-	for _, rel := range []string{"..%2f..%2fa.db", ".env"} {
+	// The page is its own opaque origin: a module script or a fetch of its
+	// own files is cross-origin, and fails without this.
+	if res.Header.Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatal("a preview page cannot load its own modules or data")
+	}
+	if res, _ := get(t, r.local.URL+raw); res.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("the cookie route is readable from any origin")
+	}
+	// A symlink is not part of a folder: it would reach a hidden file, and a
+	// share (which skips symlinks) would not have it.
+	if err := os.Symlink(".env", filepath.Join(proto, "alias.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"..%2f..%2fa.db", ".env", "alias.txt"} {
 		if res, _ := get(t, base+rel); res.StatusCode != 404 {
 			t.Fatalf("%s through the preview route: %d", rel, res.StatusCode)
 		}

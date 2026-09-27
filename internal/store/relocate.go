@@ -42,14 +42,19 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 	}
 	defer tx.Rollback()
 
-	var projectID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE root = ?`, oldRoot).Scan(&projectID); err != nil {
+	var projectID, home string
+	if err := tx.QueryRowContext(ctx, `SELECT id, home FROM projects WHERE root = ?`, oldRoot).Scan(&projectID, &home); err != nil {
 		if err == sql.ErrNoRows {
 			return RelocateStats{}, fmt.Errorf("project rooted at %s: %w", oldRoot, ErrNotFound)
 		}
 		return RelocateStats{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE projects SET root = ? WHERE id = ?`, newRoot, projectID); err != nil {
+	// A plain-folder project's home is its root, and a home inside the root
+	// moves with it. One elsewhere (a git project's) stays where it is.
+	if home != "" {
+		home, _ = relocatePath(home, mappings)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET root = ?, home = ? WHERE id = ?`, newRoot, home, projectID); err != nil {
 		return RelocateStats{}, fmt.Errorf("update project root: %w", err)
 	}
 

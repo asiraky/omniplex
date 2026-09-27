@@ -175,7 +175,7 @@ func pickEntry(files []string) string {
 
 // Resolve finds the file rel names inside the artefact at root. A single-file
 // artefact serves only itself. A folder serves what is inside it and nothing
-// a symlink or a ".." would reach outside it, and never a hidden file.
+// through a symlink or a "..", and never a hidden file.
 func Resolve(root string, dir bool, rel string) (string, error) {
 	clean, ok := safeRel(rel)
 	if !ok {
@@ -200,7 +200,10 @@ func Resolve(root string, dir bool, rel string) (string, error) {
 	if err != nil {
 		return "", ErrNotFound
 	}
-	if !Within(realRoot, p) {
+	// Nothing inside the folder may be a symlink: one could reach a hidden
+	// file or leave the folder, and a share, which skips symlinks, would not
+	// have it. Resolved, the file sits exactly where its name says.
+	if rel, err := filepath.Rel(realRoot, p); err != nil || filepath.ToSlash(rel) != clean {
 		return "", ErrNotFound
 	}
 	return p, nil

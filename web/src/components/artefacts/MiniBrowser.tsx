@@ -95,8 +95,15 @@ export function MiniBrowser({
   const [frameKey, setFrameKey] = useState(0);
   const [location, setLocation] = useState(preview.url);
   const [pageTitle, setPageTitle] = useState("");
-  const [canBack, setCanBack] = useState(false);
+  // The frame is opaque-origin and its history is the tab's, so it cannot
+  // say how far back it can go. The viewer counts instead: every navigation
+  // after the first page is one more step back, less the ones it took.
+  const [backDepth, setBackDepth] = useState(0);
   const [forwardDepth, setForwardDepth] = useState(0);
+  const firstPage = useRef(true);
+  // A link to a #fragment fires popstate and hashchange both: one step, two
+  // reports.
+  const lastUrl = useRef("");
   const [loading, setLoading] = useState(true);
   const [reloadError, setReloadError] = useState("");
   const lastAction = useRef<"back" | "forward" | null>(null);
@@ -127,10 +134,18 @@ export function MiniBrowser({
       if (d.omniplex === "nav" && typeof d.url === "string") {
         setLocation(d.url);
         setPageTitle(typeof d.title === "string" ? d.title : "");
-        if (typeof d.canBack === "boolean") setCanBack(d.canBack);
+        if (d.url === lastUrl.current) return;
+        lastUrl.current = d.url;
         const action = lastAction.current;
         lastAction.current = null;
-        setForwardDepth((n) => (action === "back" ? n + 1 : action === "forward" ? Math.max(0, n - 1) : 0));
+        if (firstPage.current) {
+          firstPage.current = false;
+          setBackDepth(0);
+          setForwardDepth(0);
+        } else {
+          setBackDepth((n) => (action === "back" ? Math.max(0, n - 1) : n + 1));
+          setForwardDepth((n) => (action === "back" ? n + 1 : action === "forward" ? Math.max(0, n - 1) : 0));
+        }
         onLocationRef.current?.(d.url);
         return;
       }
@@ -173,7 +188,9 @@ export function MiniBrowser({
     setLoading(true);
     setSrc(retoken(location, fresh.url));
     // A new key remounts the frame, which reloads it even when the URL is the
-    // one it already has.
+    // one it already has. A new frame starts with no history.
+    firstPage.current = true;
+    lastUrl.current = "";
     setFrameKey((k) => k + 1);
   }, [location, refreshPreview]);
 
@@ -197,7 +214,7 @@ export function MiniBrowser({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-0.5 border-b px-1 py-1">
-        <IconButton label="Back" onClick={back} disabled={!canBack} className={chromeButton}>
+        <IconButton label="Back" onClick={back} disabled={backDepth === 0} className={chromeButton}>
           <ArrowLeftIcon />
         </IconButton>
         <IconButton label="Forward" onClick={forward} disabled={forwardDepth === 0} className={chromeButton}>

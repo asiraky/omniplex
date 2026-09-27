@@ -145,6 +145,7 @@ export function Composer({
 
   const uploading = attachments.some((a) => a.status === "uploading");
   const sendableAttachments = attachments.filter((a) => a.status === "ready").length;
+  const carriesFiles = sendPayload(attachments).files.length > 0;
   const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableAttachments === 0);
 
   const attach = useCallback(
@@ -697,9 +698,13 @@ export function Composer({
                       <ArrowUpIcon />
                       Send now
                     </DropdownMenuItem>
-                    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule}>
+                    {/* A scheduled prompt keeps its text and images, not files. */}
+                    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule} disabled={carriesFiles}>
                       <ClockIcon />
-                      Schedule send…
+                      <span className="flex flex-col">
+                        Schedule send…
+                        {carriesFiles && <span className="text-muted-foreground text-xs">Not with files attached</span>}
+                      </span>
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
