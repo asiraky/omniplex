@@ -577,7 +577,7 @@ func (s *State) Apply(ev proto.Event) {
 		if s.Title == "" {
 			s.Title = truncate(p.Prompt, 60)
 			if s.Title == "" && len(p.Images) > 0 {
-				s.Title = proto.ImageTitle(len(p.Images))
+				s.Title = proto.AttachmentTitle(p.Images)
 			}
 		}
 		// The prompt itself is a timeline item so the UI shows what was asked.

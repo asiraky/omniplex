@@ -8,7 +8,7 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 )
 
-// handleUploadAttachment takes one image for a session and answers with the id
+// handleUploadAttachment takes one image or PDF for a session and answers with the id
 // the prompt will refer to it by.
 //
 // The body is the file itself rather than a multipart form: there is exactly
@@ -46,7 +46,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleGetAttachment serves a stored image back. Behind the same gate as
+// handleGetAttachment serves a stored file back. Behind the same gate as
 // everything else, which is what lets the UI point an <img> at it: the device
 // cookie rides the request without the page having to do anything.
 func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {

@@ -41,7 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
-import { isSupportedImage, MAX_IMAGE_BYTES, prepareImage, uploadAttachment, type Attachment } from "./lib/attachments";
+import { isPdf, isSupportedFile, maxBytesFor, prepareImage, uploadAttachment, type Attachment } from "./lib/attachments";
 import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "./lib/recentSkills";
 import { loadResume } from "./resume";
 import { cn } from "./lib/utils";
@@ -168,30 +168,32 @@ export function App() {
     });
   }, []);
 
-  // Picked, dropped, or pasted images. Each is uploaded on its own the moment
+  // Picked, dropped, or pasted images and PDFs. Each is uploaded on its own the moment
   // it arrives: the composer stays usable, and a slow picture on a slow
   // connection never blocks typing the question that goes with it.
   // The in-flight upload behind each staged image, so removing one can stop it.
   const uploadsInFlight = useRef<Map<string, AbortController>>(new Map());
 
-  const attachImages = useCallback(
+  const attachFiles = useCallback(
     (files: File[]) => {
       const sessionId = activeId;
       if (!sessionId) return;
       for (const file of files) {
-        if (!isSupportedImage(file)) {
-          toast.error(`${file.name} is not an image omniplex can send`, {
-            description: "PNG, JPEG, GIF and WebP only.",
+        if (!isSupportedFile(file)) {
+          toast.error(`${file.name} is not a file omniplex can send`, {
+            description: "PNG, JPEG, GIF and WebP images, and PDFs.",
           });
           continue;
         }
+        const pdf = isPdf(file.type);
         // Not `crypto.randomUUID`: that exists only in a secure context, and
         // the origins a phone reaches this server on are not one.
         const key = uuid();
         const staged: Attachment = {
           key,
-          name: file.name || "pasted image",
-          previewUrl: URL.createObjectURL(file),
+          name: file.name || (pdf ? "document.pdf" : "pasted image"),
+          mediaType: file.type,
+          previewUrl: pdf ? "" : URL.createObjectURL(file),
           status: "uploading",
         };
         setAttachments((all) => ({ ...all, [sessionId]: [...(all[sessionId] ?? []), staged] }));
@@ -200,12 +202,14 @@ export function App() {
         // part of attaching it.
         const abort = new AbortController();
         uploadsInFlight.current.set(key, abort);
-        prepareImage(file)
+        (pdf ? Promise.resolve(file) : prepareImage(file))
           .then((ready) => {
-            if (ready.size > MAX_IMAGE_BYTES) throw new Error("This image is too large to send.");
+            if (ready.size > maxBytesFor(ready.type)) {
+              throw new Error(pdf ? "PDFs are limited to 10 MB." : "This image is too large to send.");
+            }
             return uploadAttachment(sessionId, ready, abort.signal);
           })
-          .then((up) => patchAttachment(sessionId, key, { status: "ready", id: up.id }))
+          .then((up) => patchAttachment(sessionId, key, { status: "ready", id: up.id, size: up.size }))
           .catch((e: Error) => {
             // An abort means the picture was taken back; there is nothing left
             // to report it to.
@@ -1551,7 +1555,7 @@ export function App() {
                 onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:(attachments[activeId] ?? []).filter(a=>a.status==="ready").map(a=>a.id!)})}
                 onCancel={cancel}
                 attachments={activeId ? (attachments[activeId] ?? []) : []}
-                onAttachImages={attachImages}
+                onAttachFiles={attachFiles}
                 onRemoveAttachment={(key) => activeId && removeAttachment(activeId, key)}
                 harnesses={harnesses}
                 harness={state.harness}

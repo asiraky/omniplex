@@ -1,4 +1,4 @@
-import { ArrowUpIcon, ChevronDownIcon, ClockIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronDownIcon, ClockIcon, FileTextIcon, ImageIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 
 import { ContextMeter } from "~/components/ContextMeter";
@@ -17,7 +17,7 @@ import {
 } from "~/lib/composerItems";
 import { formatContextWindow, pickerInstances, resolveInstance, resolveModel } from "~/lib/models";
 import { cn } from "~/lib/utils";
-import { dragHasFiles, imageFilesFrom, IMAGE_ACCEPT, type Attachment } from "~/lib/attachments";
+import { ATTACH_ACCEPT, attachableFilesFrom, dragHasFiles, isPdf, overPromptLimit, type Attachment } from "~/lib/attachments";
 import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
@@ -38,7 +38,7 @@ export function Composer({
   onSchedule,
   onCancel,
   attachments = [],
-  onAttachImages,
+  onAttachFiles,
   onRemoveAttachment,
   disabledPlaceholder,
   harnesses = [],
@@ -75,9 +75,9 @@ export function Composer({
   /** Images staged for the next message. Owned by the parent for the same
       reason the draft is: a session switch unmounts this component. */
   attachments?: Attachment[];
-  /** Hands picked, dropped, or pasted images to the parent, which uploads
+  /** Hands picked, dropped, or pasted images and PDFs to the parent, which uploads
       them. Anything that is not a file is left to the textarea. */
-  onAttachImages?: (files: File[]) => void;
+  onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
   disabledPlaceholder?: string;
   /** Every harness the server reports; the picker reads this session's out. */
@@ -135,14 +135,17 @@ export function Composer({
 
   const uploading = attachments.some((a) => a.status === "uploading");
   const sendableImages = attachments.filter((a) => a.status === "ready").length;
-  const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableImages === 0);
+  // The server would refuse it, and a refused send has already cleared the
+  // composer by the time it says so.
+  const tooMuch = overPromptLimit(attachments);
+  const cannotSend = disabled || sendDisabled || uploading || tooMuch || (!draft.trim() && sendableImages === 0);
 
   const attach = useCallback(
     (files: File[]) => {
       if (disabled || files.length === 0) return;
-      onAttachImages?.(files);
+      onAttachFiles?.(files);
     },
-    [disabled, onAttachImages],
+    [disabled, onAttachFiles],
   );
 
   const items = useMemo<ComposerItem[]>(() => {
@@ -316,7 +319,7 @@ export function Composer({
     if ((!t && sendableImages === 0) || disabled || sendDisabled) return;
     // Sending now would send the message without the image still on its way up,
     // which is not what attaching it meant.
-    if (uploading) return;
+    if (uploading || tooMuch) return;
     if (t.startsWith("/") && !catalogueReady) return;
     // Recorded on submit rather than on completion: choosing from the menu is
     // browsing, sending is the use. The token is reported whatever the message
@@ -406,7 +409,7 @@ export function Composer({
       onPaste={(e) => {
         // A screenshot on the clipboard is the fastest way to attach one, and
         // the reason the terminal habit transfers. Text pastes are untouched.
-        const files = imageFilesFrom(e.clipboardData);
+        const files = attachableFilesFrom(e.clipboardData);
         if (files.length === 0) return;
         e.preventDefault();
         attach(files);
@@ -457,11 +460,24 @@ export function Composer({
     <div className="flex flex-wrap gap-2 px-3 pt-3">
       {attachments.map((a) => (
         <div key={a.key} className="relative">
-          <img
-            src={a.previewUrl}
-            alt={a.name}
-            className={cn("size-16 rounded-lg border object-cover", a.status === "error" && "opacity-40")}
-          />
+          {isPdf(a.mediaType) ? (
+            <div
+              title={a.name}
+              className={cn(
+                "bg-muted text-muted-foreground flex size-16 flex-col items-center justify-center gap-1 rounded-lg border px-1",
+                a.status === "error" && "opacity-40",
+              )}
+            >
+              <FileTextIcon className="size-5 shrink-0" />
+              <span className="w-full truncate text-center text-[10px] leading-tight">{a.name}</span>
+            </div>
+          ) : (
+            <img
+              src={a.previewUrl}
+              alt={a.name}
+              className={cn("size-16 rounded-lg border object-cover", a.status === "error" && "opacity-40")}
+            />
+          )}
           {a.status === "uploading" && (
             <span className="bg-background/60 absolute inset-0 grid place-items-center rounded-lg">
               <Spinner className="size-5" />
@@ -485,6 +501,9 @@ export function Composer({
           </button>
         </div>
       ))}
+      {tooMuch && (
+        <p className="text-destructive w-full text-xs">Over 20 MB in total. Remove something to send.</p>
+      )}
     </div>
   );
 
@@ -513,13 +532,13 @@ export function Composer({
           e.preventDefault();
           dragDepth.current = 0;
           setDragging(false);
-          attach(imageFilesFrom(e.dataTransfer));
+          attach(attachableFilesFrom(e.dataTransfer));
         }}
       >
         {dragging && (
           <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
             <ImageIcon className="size-4" />
-            Drop images to attach
+            Drop images or PDFs to attach
           </div>
         )}
         {strip}
@@ -561,7 +580,7 @@ export function Composer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
+            accept={ATTACH_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {
@@ -576,8 +595,8 @@ export function Composer({
             size="icon"
             disabled={disabled}
             onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach images"
-            title="Attach images"
+            aria-label="Attach files"
+            title="Attach images or PDFs"
             className="text-muted-foreground hover:text-foreground size-11 shrink-0 rounded-full md:size-8"
           >
             <PlusIcon />

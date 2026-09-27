@@ -2,6 +2,7 @@ package attachment
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -61,22 +62,55 @@ func TestPutRefusesNonImages(t *testing.T) {
 	}
 }
 
-func TestPutRefusesOversizeAndLeavesNothingBehind(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir)
-	// A real PNG header followed by enough padding to pass the limit: the
-	// sniff must succeed so that the size check is what rejects it.
-	body := append(pngBytes(t, 4), bytes.Repeat([]byte{0}, MaxBytes+1)...)
+func pdfBytes(size int) []byte {
+	head := []byte("%PDF-1.7\n")
+	return append(head, bytes.Repeat([]byte{' '}, size-len(head))...)
+}
 
-	if _, err := s.Put("session-1", bytes.NewReader(body)); err != ErrTooLarge {
-		t.Fatalf("err = %v, want ErrTooLarge", err)
-	}
-	entries, err := os.ReadDir(filepath.Join(dir, "session-1"))
+func TestPutStoresAPDF(t *testing.T) {
+	s := New(t.TempDir())
+	meta, err := s.Put("session-1", bytes.NewReader(pdfBytes(64)))
 	if err != nil {
-		t.Fatalf("read session dir: %v", err)
+		t.Fatalf("put: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("a refused upload left %d file(s) behind", len(entries))
+	if meta.MediaType != PDF {
+		t.Fatalf("media type = %q, want %s", meta.MediaType, PDF)
+	}
+	path, mediaType, err := s.Path("session-1", meta.ID)
+	if err != nil || mediaType != PDF || filepath.Ext(path) != ".pdf" {
+		t.Fatalf("Path = %q, %q, %v", path, mediaType, err)
+	}
+}
+
+// Each kind is held to its own limit: a PDF may be bigger than any image, and
+// an image is not let through at a PDF's size.
+func TestPutEnforcesTheLimitForWhatWasSent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    []byte
+		refused bool
+	}{
+		{"image at its limit", append(pngBytes(t, 4), make([]byte, MaxImageBytes-len(pngBytes(t, 4)))...), false},
+		{"image past its limit", append(pngBytes(t, 4), make([]byte, MaxImageBytes+1-len(pngBytes(t, 4)))...), true},
+		{"PDF past the image limit", pdfBytes(MaxImageBytes + 1), false},
+		{"PDF at its limit", pdfBytes(MaxPDFBytes), false},
+		{"PDF past its limit", pdfBytes(MaxPDFBytes + 1), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := New(dir)
+			_, err := s.Put("session-1", bytes.NewReader(tc.body))
+			if tc.refused != errors.Is(err, ErrTooLarge) {
+				t.Fatalf("err = %v, refused want %v", err, tc.refused)
+			}
+			if !tc.refused && err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			entries, _ := os.ReadDir(filepath.Join(dir, "session-1"))
+			if tc.refused && len(entries) != 0 {
+				t.Fatalf("a refused upload left %d file(s) behind", len(entries))
+			}
+		})
 	}
 }
 
@@ -109,6 +143,25 @@ func TestResolveFailsOnAMissingImage(t *testing.T) {
 	// refuses to go.
 	if _, _, err := s.Resolve("session-1", []string{meta.ID, "22222222-2222-2222-2222-222222222222"}); err == nil {
 		t.Fatal("resolving an unknown id was allowed")
+	}
+}
+
+// Every file passing its own limit says nothing about all of them together.
+func TestResolveRefusesAPromptTooLargeInTotal(t *testing.T) {
+	s := New(t.TempDir())
+	put := func() string {
+		meta, err := s.Put("session-1", bytes.NewReader(pdfBytes(MaxPDFBytes)))
+		if err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		return meta.ID
+	}
+	a, b, c := put(), put(), put()
+	if _, _, err := s.Resolve("session-1", []string{a, b}); err != nil {
+		t.Fatalf("two PDFs at exactly the total were refused: %v", err)
+	}
+	if _, _, err := s.Resolve("session-1", []string{a, b, c}); !errors.Is(err, ErrPromptTooLarge) {
+		t.Fatalf("err = %v, want ErrPromptTooLarge", err)
 	}
 }
 

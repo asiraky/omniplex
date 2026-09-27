@@ -7,6 +7,7 @@ import { Composer } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
 
 const png = (name = "shot.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+const pdf = (name = "spec.pdf") => new File([new Uint8Array([1, 2, 3])], name, { type: "application/pdf" });
 
 // jsdom has no DataTransfer worth using; the composer only ever asks a drop
 // for its files and its types, so that is all a test has to hand it.
@@ -15,6 +16,7 @@ const transfer = (files: File[]) => ({ files, types: ["Files"] });
 const staged = (over: Partial<Attachment> = {}): Attachment => ({
   key: "k1",
   name: "shot.png",
+  mediaType: "image/png",
   previewUrl: "blob:preview",
   status: "ready",
   id: "img-1",
@@ -23,7 +25,7 @@ const staged = (over: Partial<Attachment> = {}): Attachment => ({
 
 function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
   const onSend = vi.fn();
-  const onAttachImages = vi.fn();
+  const onAttachFiles = vi.fn();
   const onRemoveAttachment = vi.fn();
   const view = render(
     <Composer
@@ -33,7 +35,7 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
       busy={false}
       onSend={onSend}
       onCancel={vi.fn()}
-      onAttachImages={onAttachImages}
+      onAttachFiles={onAttachFiles}
       onRemoveAttachment={onRemoveAttachment}
       {...over}
     />,
@@ -48,14 +50,14 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
           busy={false}
           onSend={onSend}
           onCancel={vi.fn()}
-          onAttachImages={onAttachImages}
+          onAttachFiles={onAttachFiles}
           onRemoveAttachment={onRemoveAttachment}
           {...over}
           {...next}
         />,
       ),
     );
-  return { onSend, onAttachImages, onRemoveAttachment, rerender };
+  return { onSend, onAttachFiles, onRemoveAttachment, rerender };
 }
 
 const fileInput = () => document.querySelector<HTMLInputElement>("input[type=file]")!;
@@ -66,40 +68,48 @@ const sendButton = () => screen.getByRole("button", { name: "Send" });
 
 describe("attaching images", () => {
   it("takes a picked file and clears the input so the same file can be picked twice", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     const file = png();
     fireEvent.change(fileInput(), { target: { files: [file] } });
-    expect(onAttachImages).toHaveBeenCalledWith([file]);
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
     expect(fileInput().value).toBe("");
   });
 
   it("takes a dropped image", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     const file = png();
     fireEvent.drop(box(), { dataTransfer: transfer([file]) });
-    expect(onAttachImages).toHaveBeenCalledWith([file]);
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
   });
 
   it("takes a pasted screenshot and leaves pasted text to the textarea", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     fireEvent.paste(box(), { clipboardData: { files: [], types: ["text/plain"] } });
-    expect(onAttachImages).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
 
     const file = png("clipboard.png");
     fireEvent.paste(box(), { clipboardData: { files: [file], types: ["Files"] } });
-    expect(onAttachImages).toHaveBeenCalledWith([file]);
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
+  });
+
+  it("takes a dropped PDF and leaves other files behind", () => {
+    const { onAttachFiles } = mount();
+    const doc = pdf();
+    const zip = new File([new Uint8Array([1])], "src.zip", { type: "application/zip" });
+    fireEvent.drop(box(), { dataTransfer: transfer([doc, zip]) });
+    expect(onAttachFiles).toHaveBeenCalledWith([doc]);
   });
 
   it("ignores a drop that carries no files", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     fireEvent.drop(box(), { dataTransfer: { files: [], types: ["text/uri-list"] } });
-    expect(onAttachImages).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
   });
 
   it("attaches nothing while the composer is disabled", () => {
-    const { onAttachImages } = mount({ disabled: true, disabledPlaceholder: "Reconnecting" });
+    const { onAttachFiles } = mount({ disabled: true, disabledPlaceholder: "Reconnecting" });
     fireEvent.change(fileInput(), { target: { files: [png()] } });
-    expect(onAttachImages).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
   });
 });
 
@@ -139,6 +149,25 @@ describe("sending with images", () => {
     expect(sendButton()).toHaveProperty("disabled", true);
     fireEvent.keyDown(box(), { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("holds back a message whose files together are more than the server takes", () => {
+    const big = (key: string) =>
+      staged({ key, name: `${key}.pdf`, mediaType: "application/pdf", previewUrl: "", id: key, size: 9_500_000 });
+    const { onSend, rerender } = mount({ draft: "summarise", attachments: [big("a"), big("b")] });
+    expect(sendButton()).toHaveProperty("disabled", false);
+
+    rerender({ draft: "summarise", attachments: [big("a"), big("b"), big("c")] });
+    expect(sendButton()).toHaveProperty("disabled", true);
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText(/Over 20 MB in total/)).toBeTruthy();
+  });
+
+  it("shows a staged PDF by name, since it has no picture", () => {
+    mount({ attachments: [staged({ name: "spec.pdf", mediaType: "application/pdf", previewUrl: "" })] });
+    expect(screen.getByText("spec.pdf")).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("removes a staged image", () => {

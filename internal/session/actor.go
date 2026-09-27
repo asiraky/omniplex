@@ -1398,8 +1398,8 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	if recovery == nil {
 		title := truncate(prompt, 60)
 		if title == "" && len(images) > 0 {
-			// An image-only prompt still deserves a name in the sidebar.
-			title = proto.ImageTitle(len(images))
+			// An attachment-only prompt still deserves a name in the sidebar.
+			title = proto.AttachmentTitle(images)
 		}
 		_ = a.store.SetTitle(ctx, a.ID, title)
 	}
