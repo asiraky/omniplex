@@ -284,7 +284,8 @@ type SessionClosedPayload struct {
 	Reason string `json:"reason"`
 }
 
-// PromptImage is one image a human attached to a prompt.
+// PromptImage is one image or PDF a human attached to a prompt. The name and
+// the wire field ("images") predate PDFs; MediaType says which it is.
 //
 // The bytes stay in the attachment store: this is the reference a presenter
 // resolves back to a picture through the attachment endpoint, so replaying a
@@ -298,14 +299,28 @@ type PromptImage struct {
 	Path string `json:"-"`
 }
 
-// ImageTitle names a prompt that was nothing but pictures, so a session sent
-// from a phone with one screenshot and no words still reads as something in
-// the sidebar.
-func ImageTitle(n int) string {
-	if n == 1 {
-		return "1 image"
+// AttachmentTitle names a prompt that was nothing but attachments, so a
+// session sent from a phone with one screenshot and no words still reads as
+// something in the sidebar.
+func AttachmentTitle(attachments []PromptImage) string {
+	pdfs := 0
+	for _, a := range attachments {
+		if a.MediaType == "application/pdf" {
+			pdfs++
+		}
 	}
-	return fmt.Sprintf("%d images", n)
+	n := len(attachments)
+	noun := "attachment"
+	switch pdfs {
+	case 0:
+		noun = "image"
+	case n:
+		noun = "PDF"
+	}
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 type PromptQueuedPayload struct {

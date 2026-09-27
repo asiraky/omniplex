@@ -38,7 +38,7 @@ import { RecentSkills } from "~/components/RecentSkills";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
-import { attachmentUrl } from "~/lib/attachments";
+import { attachmentUrl, isPdf } from "~/lib/attachments";
 import { useCopy } from "~/lib/clipboard";
 import { fmtTokens } from "~/lib/format";
 import { isLive, jobLabel } from "~/lib/jobs";
@@ -402,10 +402,11 @@ const COLLAPSED_USER_MESSAGE_MASK = `linear-gradient(to bottom, black calc(100% 
 // an overlay: it needs no knowledge of the bubble's colour, so it works in both
 // themes for free. Expanded state is per-message and never persisted —
 // reopening the session starts collapsed again.
-// The pictures a prompt carried. Read from the attachment endpoint rather than
-// from anything the event carried, so a phone attaching to a session it was not
-// in the room for sees exactly what was sent. Each thumbnail is also a link: a
-// screenshot cropped to a tile is a reminder of what was sent, not a look at it.
+// The pictures and PDFs a prompt carried. Read from the attachment endpoint
+// rather than from anything the event carried, so a phone attaching to a
+// session it was not in the room for sees exactly what was sent. Each tile is
+// also a link: a screenshot cropped to a tile is a reminder of what was sent,
+// not a look at it, and a PDF opens in the browser's own viewer.
 function PromptImages({ sessionId, images }: { sessionId: string; images: PromptImage[] }) {
   return (
     <div className="mb-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5">
@@ -417,12 +418,19 @@ function PromptImages({ sessionId, images }: { sessionId: string; images: Prompt
           rel="noreferrer"
           className="focus-visible:ring-ring rounded-lg outline-none focus-visible:ring-2"
         >
-          <img
-            src={attachmentUrl(sessionId, image.id)}
-            alt="Attached image"
-            loading="lazy"
-            className="max-h-36 max-w-[9rem] rounded-lg border object-cover"
-          />
+          {isPdf(image.mediaType) ? (
+            <span className="bg-muted text-muted-foreground flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs">
+              <FileTextIcon className="size-4 shrink-0" />
+              PDF
+            </span>
+          ) : (
+            <img
+              src={attachmentUrl(sessionId, image.id)}
+              alt="Attached image"
+              loading="lazy"
+              className="max-h-36 max-w-[9rem] rounded-lg border object-cover"
+            />
+          )}
         </a>
       ))}
     </div>

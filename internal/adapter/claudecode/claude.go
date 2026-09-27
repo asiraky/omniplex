@@ -521,8 +521,8 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 }
 
 // promptParams is the sidecar's prompt frame. Paths, not bytes: the sidecar
-// reads the files and base64s them into the SDK's image blocks, so a 10 MB
-// screenshot never crosses this pipe as JSON. The uuid rides on the message
+// reads the files and base64s them into image and document blocks, so a 10 MB
+// PDF never crosses this pipe as JSON. The uuid rides on the message
 // and comes back on the replay the CLI emits when it reads it.
 func promptParams(text string, images []proto.PromptImage, uuid string) map[string]any {
 	params := map[string]any{"text": text, "uuid": uuid}

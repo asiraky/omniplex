@@ -1,24 +1,29 @@
 /**
- * Images attached to a prompt.
+ * Images and PDFs attached to a prompt.
  *
- * The picture is uploaded the moment it is picked, not when the message is
+ * A file is uploaded the moment it is picked, not when the message is
  * sent: on a phone on 4G a 3 MB screenshot takes seconds, and paying for that
  * after hitting send would make the composer feel broken. By the time there is
  * a message to send, all that goes over the socket is a list of ids.
  */
 
+export const PDF_TYPE = "application/pdf";
+
 /** What the server stores, and therefore what may be attached. */
-export const ACCEPTED_IMAGE_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-];
+export const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", PDF_TYPE];
 
 /** Matches internal/attachment.MaxBytes, which is itself the largest image the
     Claude API will take once base64 has inflated it by a third. Checked here so
     the phone finds out before it spends the upload rather than after. */
 export const MAX_IMAGE_BYTES = 3_750_000;
+
+/** Matches internal/attachment.MaxPDFBytes. A PDF is sent as it was picked:
+    there is no shrinking one in a browser. */
+export const MAX_PDF_BYTES = 10_000_000;
+
+/** Matches internal/attachment.MaxPromptBytes: everything one message carries,
+    together. Checked here because a refused send clears the composer. */
+export const MAX_PROMPT_BYTES = 20_000_000;
 
 /** The longest edge worth sending. Anthropic resizes anything larger than this
     before the model ever sees it, so uploading more is paying 4G for pixels
@@ -32,7 +37,7 @@ const REENCODE_OVER = 400 * 1024;
 /** The `accept` attribute for a file input. Deliberately the same list the
     server enforces: offering a HEIC that will be refused is worse than not
     offering it. */
-export const IMAGE_ACCEPT = ACCEPTED_IMAGE_TYPES.join(",");
+export const ATTACH_ACCEPT = ACCEPTED_TYPES.join(",");
 
 export interface UploadedImage {
   id: string;
@@ -40,30 +45,50 @@ export interface UploadedImage {
   size: number;
 }
 
-/** One image in the composer, from picked to sendable. */
+/** One file in the composer, from picked to sendable. */
 export interface Attachment {
   /** Local identity, stable across the upload. Not the server's id. */
   key: string;
   name: string;
-  /** Object URL for the thumbnail, shown before the upload finishes. */
+  /** The picked file's type, which decides whether it gets a thumbnail. */
+  mediaType: string;
+  /** Object URL for an image's thumbnail, shown before the upload finishes.
+      Empty for a PDF, which is shown as its name. */
   previewUrl: string;
   status: "uploading" | "ready" | "error";
   /** The server's id, present once uploaded. This is what the prompt names. */
   id?: string;
+  /** Bytes the server stored, present once uploaded. */
+  size?: number;
   error?: string;
 }
 
-export function isSupportedImage(file: File): boolean {
-  return ACCEPTED_IMAGE_TYPES.includes(file.type);
+export function isSupportedFile(file: File): boolean {
+  return ACCEPTED_TYPES.includes(file.type);
 }
 
-/** Where a stored image is read back from. The device cookie rides the
-    request, so this works straight from an `<img src>`. */
+/** Whether the uploaded files together are more than one message may carry. */
+export function overPromptLimit(attachments: Attachment[]): boolean {
+  const total = attachments.reduce((sum, a) => sum + (a.status === "ready" ? (a.size ?? 0) : 0), 0);
+  return total > MAX_PROMPT_BYTES;
+}
+
+export function isPdf(mediaType: string): boolean {
+  return mediaType === PDF_TYPE;
+}
+
+/** The largest file of this type the server will take. */
+export function maxBytesFor(mediaType: string): number {
+  return isPdf(mediaType) ? MAX_PDF_BYTES : MAX_IMAGE_BYTES;
+}
+
+/** Where a stored file is read back from. The device cookie rides the
+    request, so this works straight from an `<img src>` or a link. */
 export function attachmentUrl(sessionId: string, id: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(id)}`;
 }
 
-/** Uploads one image and returns how the prompt will refer to it. */
+/** Uploads one file and returns how the prompt will refer to it. */
 export async function uploadAttachment(
   sessionId: string,
   file: File,
@@ -91,15 +116,15 @@ export async function uploadAttachment(
 }
 
 /**
- * The images in a drop or a paste.
+ * The images and PDFs in a drop or a paste.
  *
  * A screenshot pasted from the clipboard arrives as a file with no useful
  * name, and a drag from a browser carries the picture alongside its URL as
  * text — so this reads files only, and leaves anything else to the textarea.
  */
-export function imageFilesFrom(data: DataTransfer | null): File[] {
+export function attachableFilesFrom(data: DataTransfer | null): File[] {
   if (!data) return [];
-  return Array.from(data.files).filter((f) => f.type.startsWith("image/"));
+  return Array.from(data.files).filter((f) => f.type.startsWith("image/") || isPdf(f.type));
 }
 
 /** Whether a drag is carrying files at all, which decides if the composer
