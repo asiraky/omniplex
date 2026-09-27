@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,23 +29,54 @@ import (
 var ToolServers func(threadID, home string) []adapter.MCPServer
 
 // harnessExtras is what every harness gets beside its working directory: the
-// tool servers, and the thread's home folder as a folder it may write in
-// when it works somewhere else (a repo, a worktree). That is what lets an
-// agent in a repo put what it makes for you outside the repo.
+// tool servers, and the folders it may write in outside it. That is the
+// thread's home folder when it works somewhere else (a repo, a worktree), so
+// an agent in a repo can put what it makes for you outside the repo. A thread
+// scoped to the whole project also gets every folder of the project that is
+// not already inside another.
 func harnessExtras(ctx context.Context, st *store.Store, meta store.ThreadMeta, cwd string, logf func(string, ...any)) ([]adapter.MCPServer, []string) {
 	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
 		logf("home folder for %s: %v", meta.ID, err)
 		home = cwd
 	}
-	var extra []string
-	if home != "" && cwd != "" && !artefact.Within(filepath.Clean(cwd), filepath.Clean(home)) {
-		extra = []string{home}
+	dirs := []string{home}
+	if meta.ProjectID != "" && meta.FolderID == "" {
+		if p, err := st.Project(ctx, meta.ProjectID); err != nil {
+			logf("folders for %s: %v", meta.ID, err)
+		} else {
+			for _, f := range p.Folders {
+				dirs = append(dirs, f.Path)
+			}
+		}
 	}
+	extra := extraDirs(cwd, dirs)
 	if ToolServers == nil {
 		return nil, extra
 	}
 	return ToolServers(meta.ID, home), extra
+}
+
+// extraDirs drops what the agent can already reach: anything inside cwd, or
+// inside a folder already on the list.
+func extraDirs(cwd string, dirs []string) []string {
+	if cwd == "" {
+		return nil
+	}
+	covered := []string{filepath.Clean(cwd)}
+	var out []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		d = filepath.Clean(d)
+		if slices.ContainsFunc(covered, func(c string) bool { return artefact.Within(c, d) }) {
+			continue
+		}
+		covered = append(covered, d)
+		out = append(out, d)
+	}
+	return out
 }
 
 // ThreadHome is where a thread puts what it makes: its project's home

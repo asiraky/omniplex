@@ -321,26 +321,26 @@ describe("NewThread", () => {
 
   it("writes branch names in the interface font, not a terminal one", async () => {
     open();
+    fireEvent.click(await waitFor(() => screen.getByRole("button", { name: "Name the branch" })));
     const field = await waitFor(() => screen.getByRole("combobox", { name: /Branch/ }));
     expect(field.className).not.toContain("font-mono");
   });
 
-  it("offers every workspace scenario as its own choice", async () => {
+  it("offers an existing copy only when there is one, a level below the copy choice", async () => {
     open();
-    await waitFor(() => screen.getByRole("radio", { name: /Main checkout/ }));
-    for (const name of [
-      /Main checkout/,
-      /New worktree from issue or branch name/,
-      /Attach to existing worktree/,
-    ]) {
-      expect(screen.getByRole("radio", { name })).toBeTruthy();
-    }
-    // Scratch folded into the branch tile: an empty name is the scratch case,
-    // so it no longer earns a row of its own.
-    expect(screen.queryByRole("radio", { name: /New scratch worktree/ })).toBeNull();
+    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/ }));
+    expect(screen.getByRole("radio", { name: /Work in the folder/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
+    cleanup();
+
+    const side = { path: "/tmp/repo/.worktrees/side", branch: "issue/1-side" } as Workspace;
+    open({ onListWorkspaces: vi.fn(async () => [side]) });
+    await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Work in the folder/ }));
+    expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
   });
 
-  it("still offers the main checkout when another thread is on it", async () => {
+  it("still offers the folder itself when another thread is on it", async () => {
     const root = {
       path: "/tmp/repo",
       isRoot: true,
@@ -355,7 +355,7 @@ describe("NewThread", () => {
       onListWorkspaces: vi.fn(async () => [root]),
     });
 
-    const choice = await waitFor(() => screen.getByRole("radio", { name: /Main checkout/ }));
+    const choice = await waitFor(() => screen.getByRole("radio", { name: /Work in the folder/ }));
     expect(choice.getAttribute("disabled")).toBeNull();
     fireEvent.click(choice);
 
@@ -367,15 +367,12 @@ describe("NewThread", () => {
     expect(onCreate.mock.calls[0][0]).toMatchObject({ workspace: "local", branch: "" });
   });
 
-  it("creates a scratch worktree by leaving the branch name blank", async () => {
+  it("works on a copy with a made-up branch when none is named", async () => {
     const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({ onCreate });
 
-    // The managed default lands on the "New worktree" tile; leaving its name
-    // empty is the old scratch behaviour — omniplex makes the name up.
-    await waitFor(() =>
-      screen.getByRole("radio", { name: /New worktree from issue or branch name/ }),
-    );
+    // The managed default lands on the copy; the branch name is optional.
+    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/, checked: true }));
     const start = screen.getByRole("button", { name: "Start" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
@@ -397,6 +394,7 @@ describe("NewThread", () => {
     } as Workspace;
     open({ onCreate, onListWorkspaces: vi.fn(async () => [under]) });
 
+    fireEvent.click(await waitFor(() => screen.getByRole("button", { name: "Name the branch" })));
     const field = await waitFor(() => screen.getByRole("combobox", { name: /Branch/ }));
     fireEvent.change(field, { target: { value: "issue/9-stack" } });
 
@@ -416,7 +414,7 @@ describe("NewThread", () => {
     });
   });
 
-  it("attaches to a worktree another thread is already in", async () => {
+  it("continues on a copy another thread is already in", async () => {
     const side = {
       path: "/tmp/repo/.worktrees/side",
       branch: "issue/1-side",
@@ -430,9 +428,9 @@ describe("NewThread", () => {
     });
 
     fireEvent.click(
-      await waitFor(() => screen.getByRole("radio", { name: /Attach to existing worktree/ })),
+      await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" })),
     );
-    fireEvent.click(screen.getByRole("combobox", { name: /Worktree/ }));
+    fireEvent.click(screen.getByRole("combobox", { name: /Existing copy/ }));
     const row = await waitFor(() => screen.getByRole("option", { name: /issue\/1-side/ }));
     expect(row.hasAttribute("disabled")).toBe(false);
     fireEvent.click(row);
@@ -454,17 +452,78 @@ describe("NewThread", () => {
     });
     open({ onListWorkspaces: vi.fn(() => pending) });
 
-    // The managed default lands on the branch tile with an empty name, so
-    // nothing but the outstanding check is holding Start back.
-    await waitFor(() =>
-      screen.getByRole("radio", { name: /New worktree from issue or branch name/ }),
-    );
+    // The managed default lands on a copy with no name, so nothing but the
+    // outstanding check is holding Start back.
+    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/ }));
     expect(screen.getByRole("button", { name: "Start" }).hasAttribute("disabled")).toBe(true);
 
     release([]);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Start" }).hasAttribute("disabled")).toBe(false),
     );
+  });
+});
+
+describe("scope", () => {
+  const folder = (id: string, path: string, git: boolean) => ({
+    id,
+    path,
+    git,
+    copiesDir: ".worktrees",
+    provisionTimeoutSeconds: 1800,
+    deprovisionTimeoutSeconds: 600,
+  });
+  const bowerbird = {
+    ...project,
+    folders: [folder("f1", "/tmp/bowerbird/site", true), folder("f2", "/tmp/bowerbird/notes", false)],
+  } as unknown as Project;
+
+  const start = async () => {
+    const button = screen.getByRole("button", { name: "Start" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+  };
+
+  it("starts across the whole project with no git questions by default", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    const onListWorkspaces = vi.fn(async () => [] as Workspace[]);
+    open({ projects: [bowerbird], onCreate, onListWorkspaces });
+
+    expect(screen.getByRole("combobox", { name: "Scope" }).textContent).toBe("Everything");
+    expect(screen.queryByRole("radiogroup", { name: "Git" })).toBeNull();
+    await start();
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "", workspace: "local", branch: "" });
+    expect(onListWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("asks the git questions for a git folder and lists its copies", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    const onListWorkspaces = vi.fn(async () => [] as Workspace[]);
+    open({ projects: [bowerbird], onCreate, onListWorkspaces });
+
+    const scope = screen.getByRole("combobox", { name: "Scope" });
+    scope.focus();
+    fireEvent.keyDown(scope, { key: "ArrowDown" });
+    fireEvent.click(await waitFor(() => screen.getByRole("option", { name: "site" })));
+
+    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/, checked: true }));
+    expect(onListWorkspaces).toHaveBeenCalledWith("p1", "f1");
+    await start();
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "f1", workspace: "managed" });
+  });
+
+  it("asks nothing for a project whose one folder is plain", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    const plain = { ...project, folders: [folder("f2", "/tmp/notes", false)] } as unknown as Project;
+    open({ projects: [plain], onCreate });
+
+    expect(screen.queryByRole("combobox", { name: "Scope" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Git" })).toBeNull();
+    await start();
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "f2", workspace: "local" });
   });
 });
 

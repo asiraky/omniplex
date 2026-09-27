@@ -30,6 +30,8 @@ import { WorkspacePicker, type WorkspaceChoice } from "./WorkspacePicker";
 
 export interface NewThreadInput {
   projectId: string;
+  /** The folder the thread works in; empty means the whole project. */
+  folderId: string;
   harness: string;
   /** The provider instance to run under; empty means the harness's default. */
   instance: string;
@@ -61,19 +63,12 @@ type WorkspaceKind = "main" | "branch" | "attach";
 // it and be mistaken for the default.
 const BASE_DEFAULT = "project default";
 
-const WORKSPACE_KINDS: { id: WorkspaceKind; label: string; hint: string }[] = [
-  { id: "main", label: "Main checkout", hint: "Works in the project directory itself." },
-  {
-    id: "branch",
-    label: "New worktree from issue or branch name",
-    hint: "A fresh checkout on a branch you name.",
-  },
-  {
-    id: "attach",
-    label: "Attach to existing worktree",
-    hint: "Run in a checkout that is already there.",
-  },
-];
+// The scope Select's "whole project" option; Radix items cannot be empty.
+const EVERYTHING = "everything";
+
+function folderName(path: string) {
+  return path.replace(/\/+$/, "").split("/").pop() || path;
+}
 
 export interface IssueListing {
   issues: Issue[];
@@ -101,9 +96,9 @@ export function NewThread({
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
   onCreate: (input: NewThreadInput) => Promise<void>;
-  onListWorkspaces: (projectId: string) => Promise<Workspace[]>;
+  onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot delay the busy warning. */
-  onListIssues: (projectId: string) => Promise<IssueListing>;
+  onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
   onAddProject: () => void;
   onSettings: (project: Project) => void;
   onRecheck: () => void;
@@ -123,6 +118,10 @@ export function NewThread({
   // "" defers to the project default; picking one pins it for this thread
   // only.
   const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>("");
+  // "" is the whole project. Only asked when the project has several folders.
+  const [folderId, setFolderId] = useState("");
+  // The branch name and base are optional, so they wait behind a disclosure.
+  const [naming, setNaming] = useState(false);
   // "" defers to the project's base branch, which is what the placeholder in
   // the field says it will do.
   const [baseRef, setBaseRef] = useState("");
@@ -134,6 +133,11 @@ export function NewThread({
   const [error, setError] = useState<string | null>(null);
 
   const project = projects.find((p) => p.id === projectId) ?? projects[0];
+  const folders = project?.folders ?? [];
+  // One folder is the scope with nothing to choose. With several, none
+  // chosen is the whole project, which asks no git questions.
+  const scope = folders.length === 1 ? folders[0] : folders.find((f) => f.id === folderId);
+  const gitScope = scope?.git ? scope : undefined;
   const instances = pickerInstances(harnesses);
   // Restore this browser's last choice; project defaults seed the first visit.
   const remembered = preferences[project?.id ?? ""];
@@ -188,8 +192,9 @@ export function NewThread({
   // The project root is its own choice in the list, so listing it again inside
   // the attach picker would be a second door to the same room.
   const attachable = workspaces.filter((w) => !w.isRoot);
-  const kind: WorkspaceKind =
-    chosenKind || (project?.defaults.workspace === "managed" ? "branch" : "main");
+  const kind: WorkspaceKind = !gitScope
+    ? "main"
+    : chosenKind || (project?.defaults.workspace === "managed" ? "branch" : "main");
 
   // Each choice answers all three questions at once, which is the point of
   // making them separate choices: nothing is inferred from an empty field.
@@ -204,7 +209,7 @@ export function NewThread({
   // here to avoid listing it twice.
   const baseChoices = Array.from(
     new Set(workspaces.map((w) => w.branch).filter((b): b is string => !!b)),
-  ).filter((b) => b !== project?.folders[0]?.baseBranch);
+  ).filter((b) => b !== gitScope?.baseBranch);
   // "branch" can start with an empty name: that is the scratch case, and omniplex
   // makes the name up. Only attach needs a concrete answer before it can go.
   const canStart = kind === "attach" ? !!choice.attachPath : true;
@@ -257,6 +262,7 @@ export function NewThread({
     try {
       await onCreate({
         projectId: project.id,
+        folderId: scope?.id ?? "",
         harness: harnessId,
         instance: instance?.id ?? "",
         model: effectiveModel,
@@ -284,17 +290,25 @@ export function NewThread({
     if (!projectId && projects.length > 0) setProjectId(initialProject(projects, activeProjectId));
   }, [projectId, projects]);
 
-  // Worktrees and issues are read per project and re-read whenever the project
-  // changes, so a stale list cannot offer a checkout that has since gone.
+  // A folder id means nothing in another project.
   useEffect(() => {
-    if (!project) return;
-    let live = true;
-    setLoadingSpaces(true);
+    setFolderId("");
+  }, [project?.id]);
+
+  // Worktrees and issues belong to a git folder, re-read whenever the scope
+  // changes so a stale list cannot offer a copy that has since gone. Anything
+  // else has neither, so nothing is asked for.
+  useEffect(() => {
+    setLoadingSpaces(false);
     setWorkspaces([]);
     setChoice({ branch: "", attachPath: "" });
     setChosenKind("");
     setBaseRef("");
-    onListWorkspaces(project.id)
+    setNaming(false);
+    if (!project || !gitScope) return;
+    let live = true;
+    setLoadingSpaces(true);
+    onListWorkspaces(project.id, gitScope.id)
       .then((r) => {
         if (live) setWorkspaces(r);
       })
@@ -307,16 +321,17 @@ export function NewThread({
     return () => {
       live = false;
     };
-  }, [project?.id, onListWorkspaces]);
+  }, [project?.id, gitScope?.id, onListWorkspaces]);
 
   // Issue suggestions are their own request, on their own clock: `gh` may take
   // seconds to answer and nothing here should wait on it.
   useEffect(() => {
-    if (!project) return;
+    setLoadingIssues(false);
+    setIssues({ issues: [], issuesError: "" });
+    if (!project || !gitScope) return;
     let live = true;
     setLoadingIssues(true);
-    setIssues({ issues: [], issuesError: "" });
-    onListIssues(project.id)
+    onListIssues(project.id, gitScope.id)
       .then((r) => {
         if (live) setIssues(r);
       })
@@ -330,7 +345,7 @@ export function NewThread({
     return () => {
       live = false;
     };
-  }, [project?.id, onListIssues]);
+  }, [project?.id, gitScope?.id, onListIssues]);
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -402,6 +417,31 @@ export function NewThread({
                 </Button>
               </div>
             </div>
+
+            {folders.length > 1 && (
+              <div className="space-y-1.5">
+                <Label htmlFor="new-thread-scope">Scope</Label>
+                <Select
+                  value={scope?.id ?? EVERYTHING}
+                  onValueChange={(v) => setFolderId(v === EVERYTHING ? "" : v)}
+                >
+                  <SelectTrigger id="new-thread-scope" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={EVERYTHING}>Everything</SelectItem>
+                    {folders.map((f) => (
+                      <SelectItem key={f.id} value={f.id}>
+                        {folderName(f.path)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground truncate text-[11px]">
+                  {scope ? scope.path : "Every folder in the project, worked on directly."}
+                </p>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
@@ -539,114 +579,155 @@ export function NewThread({
               </div>
             )}
 
-            <fieldset className="space-y-1.5">
-              <legend className="text-foreground mb-1.5 text-sm leading-none font-medium">
-                Workspace
-              </legend>
-              {/* One list, one choice, and every scenario has a row of its
-                  own. The old two-button toggle left three of them hiding
-                  inside a text field that meant something different depending
-                  on what you did to it. */}
-              <div role="radiogroup" aria-label="Workspace" className="flex flex-col gap-1.5">
-                {WORKSPACE_KINDS.map((k) => {
-                  const picked = kind === k.id;
-                  return (
-                    <button
-                      key={k.id}
+            {gitScope && (
+              <fieldset className="min-w-0 space-y-1.5">
+                <legend className="text-foreground mb-1.5 text-sm leading-none font-medium">
+                  Git
+                </legend>
+                <div role="radiogroup" aria-label="Git" className="flex flex-col gap-1.5">
+                  {(
+                    [
+                      { id: "main", label: "Work in the folder", hint: gitScope.path },
+                      {
+                        id: "branch",
+                        label: "Work on a copy",
+                        hint: "A checkout of its own on a new branch. The folder stays as it is.",
+                      },
+                    ] as const
+                  ).map((k) => {
+                    const picked = k.id === "main" ? kind === "main" : kind !== "main";
+                    return (
+                      <button
+                        key={k.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={picked}
+                        onClick={() => {
+                          if (picked) return;
+                          setChosenKind(k.id);
+                          setChoice({ branch: "", attachPath: "" });
+                        }}
+                        className={cn(
+                          "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
+                          picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
+                        )}
+                      >
+                        <span className="text-[13px] leading-tight">{k.label}</span>
+                        <span className="text-muted-foreground truncate text-[11px] leading-tight">
+                          {k.hint}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {kind === "branch" && (
+                  <div className="flex flex-wrap gap-x-3 pt-1">
+                    <Button
                       type="button"
-                      role="radio"
-                      aria-checked={picked}
-                      onClick={() => {
-                        setChosenKind(k.id);
-                        // Each choice asks its own question, so it starts from
-                        // a blank answer rather than inheriting the last
-                        // one's — a branch name is not a worktree path.
-                        setChoice({ branch: "", attachPath: "" });
-                      }}
-                      className={cn(
-                        "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
-                        picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
-                      )}
+                      variant="link"
+                      size="sm"
+                      aria-expanded={naming}
+                      className="h-8 px-0 text-[12px]"
+                      onClick={() => setNaming(!naming)}
                     >
-                      <span className="text-[13px] leading-tight">{k.label}</span>
-                      <span className="text-muted-foreground truncate text-[11px] leading-tight">
-                        {k.id === "main" ? (project?.folders[0]?.path ?? k.hint) : k.hint}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                      {naming ? "Let Omniplex name the branch" : "Name the branch"}
+                    </Button>
+                    {attachable.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-8 px-0 text-[12px]"
+                        onClick={() => {
+                          setChosenKind("attach");
+                          setChoice({ branch: "", attachPath: "" });
+                        }}
+                      >
+                        Continue on an existing copy
+                      </Button>
+                    )}
+                  </div>
+                )}
 
-              {/* No descriptive copy here: the tile's own hint already names
-                  the directory. */}
+                {kind === "branch" && naming && (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="new-thread-workspace">Branch</Label>
+                      <WorkspacePicker
+                        id="new-thread-workspace"
+                        mode="create"
+                        value={choice}
+                        onChange={setChoice}
+                        workspaces={attachable}
+                        issues={issues.issues}
+                        issuesError={issues.issuesError}
+                        userConfig={userConfig}
+                        loading={loadingIssues}
+                        placeholder="issue/482-fix-login"
+                      />
+                    </div>
+                    <div className="space-y-1.5 pt-2">
+                      <Label htmlFor="new-thread-base">Base</Label>
+                      {/* A per-thread base is what makes stacking possible: a
+                          copy branched from another branch that has not landed
+                          yet. */}
+                      <Select
+                        value={baseRef || BASE_DEFAULT}
+                        onValueChange={(v) => setBaseRef(v === BASE_DEFAULT ? "" : v)}
+                      >
+                        <SelectTrigger id="new-thread-base" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={BASE_DEFAULT}>
+                            Folder default
+                            {gitScope.baseBranch ? ` (${gitScope.baseBranch})` : ""}
+                          </SelectItem>
+                          {baseChoices.map((b) => (
+                            <SelectItem key={b} value={b}>
+                              {b}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                )}
 
-              {kind === "branch" && (
-                <div className="space-y-1.5 pt-1">
-                  <Label htmlFor="new-thread-workspace">Branch</Label>
-                  <WorkspacePicker
-                    id="new-thread-workspace"
-                    mode="create"
-                    value={choice}
-                    onChange={setChoice}
-                    workspaces={attachable}
-                    issues={issues.issues}
-                    issuesError={issues.issuesError}
-                    userConfig={userConfig}
-                    loading={loadingIssues}
-                    placeholder="issue/482-fix-login"
-                  />
-                </div>
-              )}
-
-              {kind === "attach" && (
-                <div className="space-y-1.5 pt-1">
-                  <Label htmlFor="new-thread-attach">Worktree</Label>
-                  <WorkspacePicker
-                    id="new-thread-attach"
-                    mode="attach"
-                    value={choice}
-                    onChange={setChoice}
-                    workspaces={attachable}
-                    issues={issues.issues}
-                    issuesError={issues.issuesError}
-                    userConfig={userConfig}
-                    loading={loadingSpaces}
-                    placeholder="Search worktrees"
-                  />
-                </div>
-              )}
-
-              {kind === "branch" && (
-                <div className="space-y-1.5 pt-2">
-                  <Label htmlFor="new-thread-base">Base</Label>
-                  {/* A per-thread base is what makes stacking possible: a
-                      worktree branched from another branch that has not landed
-                      yet. A dropdown of the branches already on disk, with the
-                      project default as the first, always-present option. */}
-                  <Select
-                    value={baseRef || BASE_DEFAULT}
-                    onValueChange={(v) => setBaseRef(v === BASE_DEFAULT ? "" : v)}
-                  >
-                    <SelectTrigger id="new-thread-base" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={BASE_DEFAULT}>
-                        Project default
-                        {project?.folders[0]?.baseBranch
-                          ? ` (${project.folders[0]?.baseBranch})`
-                          : ""}
-                      </SelectItem>
-                      {baseChoices.map((b) => (
-                        <SelectItem key={b} value={b}>
-                          {b}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </fieldset>
+                {kind === "attach" && (
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label htmlFor="new-thread-attach">Existing copy</Label>
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-8 px-0 text-[12px]"
+                        onClick={() => {
+                          setChosenKind("branch");
+                          setChoice({ branch: "", attachPath: "" });
+                        }}
+                      >
+                        Start a new copy instead
+                      </Button>
+                    </div>
+                    <WorkspacePicker
+                      id="new-thread-attach"
+                      mode="attach"
+                      value={choice}
+                      onChange={setChoice}
+                      workspaces={attachable}
+                      issues={issues.issues}
+                      issuesError={issues.issuesError}
+                      userConfig={userConfig}
+                      loading={loadingSpaces}
+                      placeholder="Search copies"
+                    />
+                  </div>
+                )}
+              </fieldset>
+            )}
           </div>
         )}
 

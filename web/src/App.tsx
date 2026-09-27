@@ -445,14 +445,14 @@ export function App() {
     [select],
   );
 
-  const listWorkspaces = useCallback(async (projectId: string) => {
-    const res = await clientRef.current!.command("list_workspaces", { projectId });
+  const listWorkspaces = useCallback(async (projectId: string, folderId: string) => {
+    const res = await clientRef.current!.command("list_workspaces", { projectId, folderId });
     return (res.workspaces ?? []) as Workspace[];
   }, []);
   // Its own request: `gh` can take seconds, and nothing that shapes a choice
   // should be waiting behind it.
-  const listIssues = useCallback(async (projectId: string) => {
-    const res = await clientRef.current!.command("list_issues", { projectId });
+  const listIssues = useCallback(async (projectId: string, folderId: string) => {
+    const res = await clientRef.current!.command("list_issues", { projectId, folderId });
     return { issues: res.issues ?? [], issuesError: res.issuesError ?? "" };
   }, []);
   const saveUserConfig = useCallback(async (cfg: UserConfig) => { const res=await clientRef.current!.command("save_user_config",{config:cfg}); setUserConfig(res.userConfig); },[]);

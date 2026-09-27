@@ -197,10 +197,10 @@ export function WorkspacePicker({
   rows.forEach((r, i) => {
     const heading =
       r.kind === "existing"
-        ? "Existing worktrees"
+        ? "Existing copies"
         : r.kind === "issue"
           ? "From open issues"
-          : "Create new worktree";
+          : "New branch";
     if (heading !== last) {
       body.push(group(heading));
       last = heading;
@@ -312,13 +312,13 @@ export function WorkspacePicker({
           className="scroll-thin max-h-[min(16rem,var(--radix-popover-content-available-height))] w-[var(--radix-popover-trigger-width)] touch-pan-y overscroll-contain overflow-y-auto p-0 py-1"
         >
           {loading && (
-            <p className="text-muted-foreground px-3 py-2 text-[12px]">Loading worktrees…</p>
+            <p className="text-muted-foreground px-3 py-2 text-[12px]">Loading copies…</p>
           )}
           {!loading && rows.length === 0 && (
             <p className="text-muted-foreground px-3 py-2 text-[12px]">
               {mode === "attach"
-                ? "No other worktrees in this project yet."
-                : "Type a branch name to create a worktree."}
+                ? "No copies of this folder yet."
+                : "Type a branch name."}
             </p>
           )}
           {body}
@@ -339,10 +339,10 @@ export function WorkspacePicker({
         {mode === "attach"
           ? attached
             ? `Attaching to ${attached.path}`
-            : "Pick a worktree from the list."
+            : "Pick a copy from the list."
           : value.branch.trim()
-            ? "Creates a new worktree on this branch."
-            : "Leave blank — we'll make one up."}
+            ? "The copy gets this branch."
+            : "Leave it blank and Omniplex makes one up."}
       </p>
     </div>
   );

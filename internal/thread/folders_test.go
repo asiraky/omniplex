@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -191,5 +192,44 @@ func TestRemovingAFolderLeavesItOnDiskAndKeepsTheLastOne(t *testing.T) {
 	}
 	if _, err := mgr.RemoveFolder(ctx, p.ID, "nope"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown folder: %v", err)
+	}
+}
+
+// A thread across the whole project starts in the home folder and is handed
+// every folder the home does not already hold, once. A thread in one folder
+// gets only the home, not its sibling folders.
+func TestAThreadAcrossTheProjectReachesEveryFolder(t *testing.T) {
+	mgr, _ := projectsIn(t)
+	ctx := context.Background()
+	p, err := mgr.NewProject(ctx, NewProjectOptions{Name: "Bowerbird"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := p.Home
+	repo, _, _ := gitRepo(t)
+	other := t.TempDir()
+	if err := os.Mkdir(filepath.Join(other, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []AddFolderOptions{{Path: repo}, {Name: "notes"}, {Path: other}, {Path: filepath.Join(other, "sub")}} {
+		if p, err = mgr.AddFolder(ctx, p.ID, o); err != nil {
+			t.Fatalf("add %+v: %v", o, err)
+		}
+	}
+
+	_, all := harnessExtras(ctx, mgr.store, store.ThreadMeta{ID: "t", ProjectID: p.ID}, home, t.Logf)
+	if want := []string{repo, other}; !slices.Equal(all, want) {
+		t.Fatalf("whole-project thread reaches %v, want %v", all, want)
+	}
+
+	var repoID string
+	for _, f := range p.Folders {
+		if f.Path == repo {
+			repoID = f.ID
+		}
+	}
+	_, one := harnessExtras(ctx, mgr.store, store.ThreadMeta{ID: "t", ProjectID: p.ID, FolderID: repoID}, repo, t.Logf)
+	if want := []string{home}; !slices.Equal(one, want) {
+		t.Fatalf("one-folder thread reaches %v, want %v", one, want)
 	}
 }
