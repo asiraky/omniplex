@@ -62,7 +62,6 @@ func main() {
 		port       = flag.Int("port", envInt("OMNIPLEX_PORT", 8787), "port to listen on")
 		bindPublic = flag.Bool("bind-public", false, "also bind globally routable addresses, exposing omniplex to the internet")
 		dbPath     = flag.String("db", envStr("OMNIPLEX_DB", defaultDB()), "path to the event log database")
-		cwd        = flag.String("cwd", mustCwd(), "default working directory for new threads")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
 		codexBin   = flag.String("codex", "codex", "path to the codex CLI")
 		piBin      = flag.String("pi", "pi", "path to the pi CLI")
@@ -131,13 +130,6 @@ func main() {
 	// unknowable config degrades to defaults; it never stops the server.
 	configureProviders(mgr, logf)
 
-	// The config stored against a project is a cache of the file in the repo,
-	// so the file wins on startup: pulling a branch that changes .omniplex/project.json
-	// should take effect without re-adding the project.
-	if err := mgr.ReloadProjects(context.Background()); err != nil {
-		logf("reload project config: %v", err)
-	}
-
 	// Work that was in flight when the last process stopped comes back now,
 	// rather than when someone opens a browser. A restart should cost an agent
 	// a turn boundary, not its task.
@@ -170,7 +162,6 @@ func main() {
 		Store:          st,
 		Guard:          guard,
 		Endpoints:      access,
-		DefaultCwd:     *cwd,
 		WebFS:          webFS,
 		DevViteURL:     devViteURL,
 		Attachments:    attachments,
@@ -208,7 +199,7 @@ func main() {
 
 	opts := banner.Options{
 		DBPath:    *dbPath,
-		Cwd:       *cwd,
+		Projects:  projectsDir(),
 		Harness:   harnesses,
 		Addrs:     lines,
 		HasUI:     hasUI,
@@ -400,12 +391,13 @@ func defaultDB() string {
 	return filepath.Join(home, ".omniplex", "omniplex.db")
 }
 
-func mustCwd() string {
-	d, err := os.Getwd()
+func projectsDir() string {
+	cfg, _ := userconfig.Load()
+	dir, err := cfg.ProjectsDirOrDefault()
 	if err != nil {
-		return "."
+		return err.Error()
 	}
-	return d
+	return dir
 }
 
 // artefactTools is the MCP server every harness gets: this binary, run as

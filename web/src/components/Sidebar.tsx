@@ -176,7 +176,7 @@ interface SidebarProps {
   projects: Project[];
   projectName: (id?: string) => string | undefined;
   /** The project's own checkout, which is never a worktree omniplex may remove. */
-  projectRoot: (id?: string) => string | undefined;
+  projectFolders: (id?: string) => string[];
   /**
    * The user's label definitions, in their chosen order. Empty means the
    * feature is un-opted-into and the list renders exactly as it always has.
@@ -203,8 +203,8 @@ interface SidebarProps {
 function useDeleteFlow({
   threads,
   onDelete,
-  projectRoot,
-}: Pick<SidebarProps, "threads" | "onDelete" | "projectRoot">) {
+  projectFolders,
+}: Pick<SidebarProps, "threads" | "onDelete" | "projectFolders">) {
   // Two pieces of state, and both are about the *list* — the confirmation, the
   // guards and the wait all live in useDeleteThread, which the transcript's
   // "this landed" prompt opens too.
@@ -222,7 +222,7 @@ function useDeleteFlow({
   const thread = useDeleteThread({
     threads,
     onDelete,
-    projectRoot,
+    projectFolders,
     onStart: () => {
       setFrozen(threads.map((s) => s.id));
       setExiting(null);

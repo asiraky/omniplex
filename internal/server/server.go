@@ -38,16 +38,15 @@ import (
 // mixed-content and CORS problems from another device — and what lets pairing
 // behave the same in development as in production.
 type Server struct {
-	id         string
-	mgr        *thread.Manager
-	store      *store.Store
-	guard      *auth.Guard
-	defaultCwd string
-	webFS      fs.FS
-	web        *webAssets
-	devProxy   http.Handler
-	allowAny   bool
-	endpoints  *endpoints.Builder
+	id        string
+	mgr       *thread.Manager
+	store     *store.Store
+	guard     *auth.Guard
+	webFS     fs.FS
+	web       *webAssets
+	devProxy  http.Handler
+	allowAny  bool
+	endpoints *endpoints.Builder
 	// commit is the git revision this binary was built from, empty when it
 	// was not built from a checkout.
 	commit string
@@ -72,11 +71,10 @@ type Server struct {
 }
 
 type Options struct {
-	Manager    *thread.Manager
-	Store      *store.Store
-	Guard      *auth.Guard
-	Endpoints  *endpoints.Builder
-	DefaultCwd string
+	Manager   *thread.Manager
+	Store     *store.Store
+	Guard     *auth.Guard
+	Endpoints *endpoints.Builder
 	// WebFS serves the built UI when non-nil.
 	WebFS fs.FS
 	// DevViteURL turns on development mode: the UI is proxied to the Vite dev
@@ -109,7 +107,6 @@ func New(o Options) *Server {
 		store:       o.Store,
 		guard:       o.Guard,
 		endpoints:   o.Endpoints,
-		defaultCwd:  o.DefaultCwd,
 		webFS:       o.WebFS,
 		allowAny:    o.AllowAnyOrigin,
 		attachments: o.Attachments,
@@ -256,7 +253,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/fs", func(w http.ResponseWriter, r *http.Request) {
 		dir := r.URL.Query().Get("path")
 		if dir == "" {
-			dir = s.defaultCwd
+			dir, _ = os.UserHomeDir()
 		}
 		if strings.HasPrefix(dir, "~") {
 			home, _ := os.UserHomeDir()

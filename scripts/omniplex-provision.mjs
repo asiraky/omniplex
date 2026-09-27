@@ -173,7 +173,7 @@ const seedReferenceData = (source, target) => {
     dst.exec(`ATTACH DATABASE '${source.replaceAll("'", "''")}' AS src`);
     const tables = dst
       .prepare(
-        "SELECT name, sql FROM src.sqlite_master WHERE type = 'table' AND name IN ('projects', 'labels')",
+        "SELECT name, sql FROM src.sqlite_master WHERE type = 'table' AND name IN ('projects', 'folders', 'labels')",
       )
       .all();
     for (const { name, sql } of tables) {

@@ -139,7 +139,7 @@ export function NewThread({
   const remembered = preferences[project?.id ?? ""];
   const fallbackHarness =
     (harnesses.some((h) => h.id === remembered?.harness) ? remembered?.harness : "") ||
-    project?.config.defaults.harness ||
+    project?.defaults.harness ||
     harnesses.find((h) => h.availability.state === "ready")?.id ||
     harnesses[0]?.id ||
     "";
@@ -152,7 +152,7 @@ export function NewThread({
   const selected = harnesses.find((h) => h.id === harnessId);
   const chosen = remembered?.byHarness[harnessId];
   const want1m = chosen?.want1m ?? false;
-  const harnessDefaults = project?.config.defaults.harnesses?.[harnessId];
+  const harnessDefaults = project?.defaults.harnesses?.[harnessId];
   // A model the account no longer offers is not sent: the harness's own
   // default is a better answer than a name it has stopped serving.
   const preferred = chosen?.model ?? harnessDefaults?.model ?? "";
@@ -189,7 +189,7 @@ export function NewThread({
   // the attach picker would be a second door to the same room.
   const attachable = workspaces.filter((w) => !w.isRoot);
   const kind: WorkspaceKind =
-    chosenKind || (project?.config.defaults.workspace === "managed" ? "branch" : "main");
+    chosenKind || (project?.defaults.workspace === "managed" ? "branch" : "main");
 
   // Each choice answers all three questions at once, which is the point of
   // making them separate choices: nothing is inferred from an empty field.
@@ -204,7 +204,7 @@ export function NewThread({
   // here to avoid listing it twice.
   const baseChoices = Array.from(
     new Set(workspaces.map((w) => w.branch).filter((b): b is string => !!b)),
-  ).filter((b) => b !== project?.config.defaults.baseBranch);
+  ).filter((b) => b !== project?.folders[0]?.baseBranch);
   // "branch" can start with an empty name: that is the scratch case, and omniplex
   // makes the name up. Only attach needs a concrete answer before it can go.
   const canStart = kind === "attach" ? !!choice.attachPath : true;
@@ -240,7 +240,7 @@ export function NewThread({
   };
   const selectModel = (next: ModelSelection) => {
     const previous = remembered?.byHarness[next.harness];
-    const seed = project?.config.defaults.harnesses?.[next.harness];
+    const seed = project?.defaults.harnesses?.[next.harness];
     remember(next.harness, {
       instance: next.instance,
       model: next.model,
@@ -377,7 +377,7 @@ export function NewThread({
                   <SelectContent>
                     {projects.map((p) => (
                       <SelectItem key={p.id} value={p.id}>
-                        {p.config.name}
+                        {p.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -431,7 +431,7 @@ export function NewThread({
                   if (target.id === instance?.id) return;
                   const previous = remembered?.byHarness[target.driver];
                   const preferred =
-                    previous?.model ?? project?.config.defaults.harnesses?.[target.driver]?.model;
+                    previous?.model ?? project?.defaults.harnesses?.[target.driver]?.model;
                   const restored =
                     target.models.find((m) => m.id === preferred) ?? defaultModel(target);
                   selectModel({
@@ -570,7 +570,7 @@ export function NewThread({
                     >
                       <span className="text-[13px] leading-tight">{k.label}</span>
                       <span className="text-muted-foreground truncate text-[11px] leading-tight">
-                        {k.id === "main" ? (project?.root ?? k.hint) : k.hint}
+                        {k.id === "main" ? (project?.folders[0]?.path ?? k.hint) : k.hint}
                       </span>
                     </button>
                   );
@@ -633,8 +633,8 @@ export function NewThread({
                     <SelectContent>
                       <SelectItem value={BASE_DEFAULT}>
                         Project default
-                        {project?.config.defaults.baseBranch
-                          ? ` (${project.config.defaults.baseBranch})`
+                        {project?.folders[0]?.baseBranch
+                          ? ` (${project.folders[0]?.baseBranch})`
                           : ""}
                       </SelectItem>
                       {baseChoices.map((b) => (

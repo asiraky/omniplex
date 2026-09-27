@@ -96,7 +96,7 @@ export function ProjectFilter({
             onCheckedChange={(show) => onToggle(p.id, show)}
             className="gap-2 text-[13px]"
           >
-            <span className="truncate">{p.config.name}</span>
+            <span className="truncate">{p.name}</span>
           </DropdownMenuCheckboxItem>
         ))}
       </DropdownMenuContent>

@@ -8,21 +8,25 @@ import type { Project } from "~/protocol";
 
 const project = {
   id: "p1",
-  root: "/tmp/wrong-path",
-  config: {
-    version: 1,
-    name: "wrong-path",
-    defaults: { harness: "claude", workspace: "local" },
-    workspace: {},
-  },
+  name: "wrong-path",
+  defaults: { harness: "claude", workspace: "local" },
+  folders: [
+    {
+      id: "f1",
+      path: "/tmp/wrong-path",
+      git: true,
+      copiesDir: ".worktrees",
+      provisionTimeoutSeconds: 1800,
+      deprovisionTimeoutSeconds: 600,
+    },
+  ],
   createdAt: 0,
   updatedAt: 0,
-} as unknown as Project;
+} satisfies Project;
 
 function open(over: Partial<React.ComponentProps<typeof ProjectSettings>> = {}) {
   const props = {
     project,
-    defaultRoot: "/tmp",
     harnesses: [],
     userConfig: null,
     onAdd: vi.fn(async () => {}),

@@ -461,7 +461,8 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
-	root := t.TempDir()
+	// Copies are git's, so only a git folder provisions one.
+	root, _, _ := gitRepo(t)
 	hook := filepath.Join(root, "provision")
 	cleanupHook := filepath.Join(root, "deprovision")
 	script := "#!/bin/sh\ntest \"$OMNIPLEX_LIFECYCLE_VERSION\" = 2\necho preparing-test-workspace\nsleep 0.1\nprintf '{\"cwd\":\"%s\"}' \"$OMNIPLEX_PROJECT_ROOT\" > \"$OMNIPLEX_RESULT_FILE\"\n"
@@ -477,15 +478,15 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 	}
 	defer st.Close()
 	now := proto.NowMillis()
-	p := project.Project{ID: "p1", Root: root, CreatedAt: now, UpdatedAt: now, Config: project.DefaultConfig(root)}
-	p.Config.Defaults.Harness = "fake"
+	p := project.Project{ID: "p1", Name: "p1", Defaults: project.NormalizeDefaults(project.Defaults{}), Folders: []project.Folder{project.NewFolder("f-p1", root)}, CreatedAt: now, UpdatedAt: now}
+	p.Defaults.Harness = "fake"
 	// Hooks belong to provisioning, so the thread has to be one that
 	// provisions: a local thread runs in a checkout that already exists and
 	// deliberately skips them.
-	p.Config.Defaults.Workspace = "managed"
-	p.Config.Workspace.Provision = "provision"
-	p.Config.Workspace.Deprovision = "deprovision"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p.Defaults.Workspace = "managed"
+	p.Folders[0].Provision = "provision"
+	p.Folders[0].Deprovision = "deprovision"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
@@ -558,12 +559,12 @@ func TestClawdCompatibilityHookGetsBranchAndNeedsNoResultFile(t *testing.T) {
 	}
 	defer st.Close()
 	now := proto.NowMillis()
-	p := project.Project{ID: "compat", Root: root, CreatedAt: now, UpdatedAt: now, Config: project.DefaultConfig(root)}
-	p.Config.Defaults.Harness = "fake"
-	p.Config.Defaults.Workspace = "managed"
-	p.Config.Workspace.Provision = "worktree-setup.sh"
-	p.Config.Workspace.Deprovision = "worktree-teardown.sh"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p := project.Project{ID: "compat", Name: "compat", Defaults: project.NormalizeDefaults(project.Defaults{}), Folders: []project.Folder{project.NewFolder("f-compat", root)}, CreatedAt: now, UpdatedAt: now}
+	p.Defaults.Harness = "fake"
+	p.Defaults.Workspace = "managed"
+	p.Folders[0].Provision = "worktree-setup.sh"
+	p.Folders[0].Deprovision = "worktree-teardown.sh"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}

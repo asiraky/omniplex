@@ -39,12 +39,9 @@ const { App } = await import("./App");
 
 const project = {
   id: "p1",
-  root: "/tmp/repo",
-  config: {
-    name: "repo",
-    defaults: { harness: "claude", harnesses: {}, workspace: "local" },
-    workspace: {},
-  },
+  name: "repo",
+  defaults: { harness: "claude", harnesses: {}, workspace: "local" },
+  folders: [{ id: "f1", path: "/tmp/repo", git: true, copiesDir: ".worktrees", provisionTimeoutSeconds: 1800, deprovisionTimeoutSeconds: 600 }],
 } as any;
 
 const harness = {
@@ -121,8 +118,8 @@ describe("new thread project", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     render(<App />);
     await act(async () => {
-      events.onProjects([project, { ...project, id: "p2", config: { ...project.config, name: "other" } }]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onProjects([project, { ...project, id: "p2", name: "other" }]);
+      events.onHarnesses([harness]);
       events.onThreads([thread("a"), { ...thread("b"), projectId: "p2" }]);
     });
     fireEvent.click(screen.getByText("Thread b"));
@@ -139,7 +136,7 @@ describe("copying a transcript", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a")]);
     });
     fireEvent.click(screen.getByText("Thread a"));
@@ -170,7 +167,7 @@ describe("thread actions on a phone", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a")]);
     });
     await act(async () => {
@@ -209,7 +206,7 @@ describe("thread actions on a phone", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a")]);
     });
 
@@ -260,7 +257,6 @@ describe("a bypass thread is just a thread", () => {
             ],
           },
         ],
-        "/tmp/repo",
       );
       events.onThreads([thread("a")]);
       events.onState("a", state("a", "bypassPermissions"));
@@ -371,7 +367,7 @@ describe("composer drafts", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a"), thread("b")]);
     });
   };
@@ -787,7 +783,7 @@ describe("losing the attached thread", () => {
     await act(async () => {
       events.onThreads([thread("a")]);
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
     });
 
     await act(async () => {
@@ -894,7 +890,7 @@ describe("transcript scroll position", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a"), thread("b")]);
     });
   };
@@ -955,7 +951,7 @@ describe("transcript scroll position", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("b")]);
     });
     await act(async () => events.onThreads([thread("a"), thread("b")]));
@@ -1011,7 +1007,7 @@ describe("recent skills on an empty transcript", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a")]);
     });
     await act(async () => {
@@ -1067,7 +1063,7 @@ describe("recent skills on an empty transcript", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("fresh")]);
     });
     fireEvent.click(screen.getByText("Thread fresh"));
@@ -1095,7 +1091,7 @@ describe("attaching to a thread", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
       events.onThreads([thread("a")]);
     });
 

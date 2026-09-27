@@ -8,12 +8,9 @@ import type { HarnessMeta, Project, Workspace } from "~/protocol";
 
 const project = {
   id: "p1",
-  root: "/tmp/repo",
-  config: {
-    name: "repo",
-    defaults: { harness: "claude", harnesses: {}, workspace: "managed" },
-    workspace: {},
-  },
+  name: "repo",
+  defaults: { harness: "claude", harnesses: {}, workspace: "managed" },
+  folders: [{ id: "f1", path: "/tmp/repo", git: true, copiesDir: ".worktrees", provisionTimeoutSeconds: 1800, deprovisionTimeoutSeconds: 600 }],
 } as unknown as Project;
 
 const harness = {
@@ -122,16 +119,13 @@ describe("NewThread", () => {
       projects: [
         {
           ...project,
-          config: {
-            ...project.config,
-            // "local" keeps the workspace choice out of it: this test is about
-            // the permission mode, and the main checkout is the one choice
-            // that needs nothing else named before Start is live.
-            defaults: {
-              ...project.config.defaults,
-              harnesses: { claude: { mode: "bypassPermissions" } },
-              workspace: "local",
-            },
+          // "local" keeps the workspace choice out of it: this test is about
+          // the permission mode, and the main checkout is the one choice
+          // that needs nothing else named before Start is live.
+          defaults: {
+            ...project.defaults,
+            harnesses: { claude: { mode: "bypassPermissions" } },
+            workspace: "local",
           },
         } as unknown as Project,
       ],
@@ -211,17 +205,14 @@ describe("NewThread", () => {
       projects: [
         {
           ...project,
-          config: {
-            ...project.config,
-            defaults: {
-              ...project.config.defaults,
-              harness: "claude",
-              harnesses: {
-                claude: { mode: "bypassPermissions" },
-                codex: { model: "gpt-5.6-sol", mode: "full-access", effort: "xhigh" },
-              },
-              workspace: "local",
+          defaults: {
+            ...project.defaults,
+            harness: "claude",
+            harnesses: {
+              claude: { mode: "bypassPermissions" },
+              codex: { model: "gpt-5.6-sol", mode: "full-access", effort: "xhigh" },
             },
+            workspace: "local",
           },
         } as unknown as Project,
       ],
@@ -306,12 +297,9 @@ describe("NewThread", () => {
     const withDefault = (mode: string) =>
       ({
         ...project,
-        config: {
-          ...project.config,
-          defaults: {
-            ...project.config.defaults,
-            harnesses: { claude: { mode } },
-          },
+        defaults: {
+          ...project.defaults,
+          harnesses: { claude: { mode } },
         },
       }) as unknown as Project;
 
@@ -487,7 +475,7 @@ describe("the remembered project", () => {
   const other = {
     ...project,
     id: "p2",
-    config: { ...project.config, name: "other" },
+    name: "other",
   } as unknown as Project;
 
   afterEach(() => localStorage.clear());
@@ -711,12 +699,12 @@ describe("remembered thread choices", () => {
   it("keeps explicit Auto over a project seed and keeps another project's choices separate", async () => {
     const seeded = {
       ...project,
-      config: { ...project.config, defaults: {
-        ...project.config.defaults, harness: "codex",
+      defaults: {
+        ...project.defaults, harness: "codex",
         harnesses: { codex: { effort: "high" } },
-      } },
+      },
     } as Project;
-    const other = { ...project, id: "p2", config: { ...project.config, name: "other" } };
+    const other = { ...project, id: "p2", name: "other" };
     const props = { projects: [seeded, other], harnesses: agents };
     open(props);
     fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));

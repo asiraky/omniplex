@@ -3,7 +3,7 @@ import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useThreadPR } from "./useThreadPR";
-import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, ThreadSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
+import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Folder, Project, ProjectDefaults, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, ThreadSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -107,7 +107,6 @@ export function App() {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [threads, setThreads] = useState<ThreadMeta[]>([]);
   const [harnesses, setHarnesses] = useState<HarnessMeta[]>([]);
-  const [defaultCwd, setDefaultCwd] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   // The user's label definitions, server-owned: every mutation round-trips
   // and comes back as a broadcast, so paired devices all render the same set.
@@ -343,12 +342,7 @@ export function App() {
         setThreads(list);
         setThreadsLoaded(true);
       },
-      onHarnesses: (h, cwd) => {
-        setHarnesses(h);
-        // A harness-only push carries no cwd; keep the one the welcome frame
-        // established rather than blanking it.
-        if (cwd) setDefaultCwd(cwd);
-      },
+      onHarnesses: setHarnesses,
       onComposerItemsChanged: (id) => {
         if (id === activeRef.current) setComposerRevision((revision) => revision + 1);
       },
@@ -617,8 +611,17 @@ export function App() {
   }, []);
   const openLabelManager = useCallback(() => setManageLabels(true), []);
 
-  const addProject = useCallback(async (root: string) => { const res=await clientRef.current!.command("add_project",{root}); setProjects(p=>[res.project,...p.filter(x=>x.id!==res.project.id)]); },[]);
-  const saveProject = useCallback(async (projectId:string,config:ProjectConfig) => { const res=await clientRef.current!.command("save_project",{projectId,config}); setProjects(p=>p.map(x=>x.id===projectId?res.project:x)); },[]);
+  const addProject = useCallback(async (path: string) => {
+    const res = await clientRef.current!.command("add_project", { path });
+    setProjects((p) => [res.project, ...p.filter((x) => x.id !== res.project.id)]);
+  }, []);
+  // A project's own settings and each changed folder's are separate saves; the
+  // last answer carries every one of them.
+  const saveProject = useCallback(async (projectId: string, name: string, defaults: ProjectDefaults, folders: Folder[]) => {
+    let res = await clientRef.current!.command("save_project", { projectId, name, defaults });
+    for (const folder of folders) res = await clientRef.current!.command("save_folder", { projectId, folder });
+    setProjects((p) => p.map((x) => (x.id === projectId ? res.project : x)));
+  }, []);
   // Forgetting a project touches nothing on disk, so the only thing to undo
   // locally is the list. The server broadcasts the new one to every other
   // device anyway; dropping it here just means this one does not wait for it.
@@ -964,7 +967,7 @@ export function App() {
   const deleteFlow = useDeleteThread({
     threads,
     onDelete: remove,
-    projectRoot: (id) => projects.find((p) => p.id === id)?.root,
+    projectFolders: (id) => projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [],
   });
   const fetchPR = useCallback(async (threadId: string): Promise<PullRequest | null> => {
     const res = await clientRef.current!.command("thread_pr", { threadId });
@@ -1257,8 +1260,8 @@ export function App() {
         onShowProviders={() => setShowProviders(true)}
         accentOf={accentOf}
         projects={projects}
-        projectName={(id)=>projects.find(p=>p.id===id)?.config.name}
-        projectRoot={(id)=>projects.find(p=>p.id===id)?.root}
+        projectName={(id)=>projects.find(p=>p.id===id)?.name}
+        projectFolders={(id)=>projects.find(p=>p.id===id)?.folders.map((f)=>f.path) ?? []}
         labels={labels}
         onSetLabel={setThreadLabel}
         onManageLabels={openLabelManager}
@@ -1376,7 +1379,7 @@ export function App() {
 
                   {activeProject && (
                     <IconButton
-                      label={`${activeProject.config.name} settings`}
+                      label={`${activeProject.name} settings`}
                       onClick={() => setProjectSettings(activeProject)}
                     >
                       <SettingsIcon />
@@ -1437,7 +1440,7 @@ export function App() {
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onSelect={() => setProjectSettings(activeProject)}>
-                          <SettingsIcon /> {activeProject.config.name} settings
+                          <SettingsIcon /> {activeProject.name} settings
                         </DropdownMenuItem>
                       </>
                     )}
@@ -1709,7 +1712,6 @@ export function App() {
         <Suspense fallback={null}>
           <ProjectSettings
           project={projectSettings === "add" ? null : projectSettings}
-          defaultRoot={defaultCwd}
           harnesses={harnesses}
           userConfig={userConfig}
           onAdd={addProject}

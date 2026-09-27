@@ -48,10 +48,10 @@ func lifecycleDir(threadID string) (string, error) {
 	return dir, os.MkdirAll(dir, 0o700)
 }
 
-func (m *Manager) provision(meta store.ThreadMeta, p project.Project, a *Actor) {
+func (m *Manager) provision(meta store.ThreadMeta, f project.Folder, a *Actor) {
 	ctx := context.Background()
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceRequested, proto.WorkspaceRequestedPayload{
-		ProjectID: p.ID, ProjectRoot: p.Root, Mode: meta.WorkspaceMode, Branch: meta.Branch, BaseRef: baseRefFor(meta, p),
+		ProjectID: meta.ProjectID, ProjectRoot: f.Path, Mode: meta.WorkspaceMode, Branch: meta.Branch, BaseRef: baseRefFor(meta, f),
 	}))
 	_ = m.store.SetPhase(ctx, meta.ID, "provisioning")
 	m.notifyList()
@@ -61,19 +61,19 @@ func (m *Manager) provision(meta store.ThreadMeta, p project.Project, a *Actor) 
 	// nothing has to be provisioned.
 	base := meta.Cwd
 	if base == "" {
-		base = p.Root
+		base = f.Path
 	}
 	result := provisionResult{Cwd: base, Branch: meta.Branch}
 	if meta.ProvisionScript != "" {
 		var err error
-		result, err = m.runProvisionHook(ctx, meta, p, a)
+		result, err = m.runProvisionHook(ctx, meta, f, a)
 		if err != nil {
 			m.provisionFailed(meta.ID, a, err)
 			return
 		}
 	} else if meta.WorkspaceMode == "managed" {
 		var err error
-		result, err = m.createWorktree(ctx, meta, p, a)
+		result, err = m.createWorktree(ctx, meta, f, a)
 		if err != nil {
 			m.provisionFailed(meta.ID, a, err)
 			return
@@ -106,22 +106,22 @@ func (m *Manager) provisionFailed(id string, a *Actor, err error) {
 	m.notifyList()
 }
 
-func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) (provisionResult, error) {
+func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) (provisionResult, error) {
 	stateDir, err := lifecycleDir(meta.ID)
 	if err != nil {
 		return provisionResult{}, err
 	}
-	hook, err := project.ResolveHook(p.Root, meta.ProvisionScript)
+	hook, err := project.ResolveHook(f.Path, meta.ProvisionScript)
 	if err != nil {
 		return provisionResult{}, err
 	}
-	branch, suggested := workspaceTarget(meta, p)
+	branch, suggested := workspaceTarget(meta, f)
 	meta.Branch = branch
 	compatibility := isCompatibilityHook(hook, "setup")
 	var hookArgs []string
 	var compatibleResult provisionResult
 	if compatibility {
-		compatibleResult, err = m.createWorktree(ctx, meta, p, a)
+		compatibleResult, err = m.createWorktree(ctx, meta, f, a)
 		if err != nil {
 			return provisionResult{}, err
 		}
@@ -130,17 +130,17 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, p
 			return provisionResult{}, err
 		}
 		hookArgs = []string{compatibleResult.Branch}
-		if base := baseRefFor(meta, p); base != "" {
+		if base := baseRefFor(meta, f); base != "" {
 			hookArgs = []string{"--base", base, compatibleResult.Branch}
 		}
 	}
-	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), SuggestedWorktreePath: suggested}
+	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: f.Path, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, f), SuggestedWorktreePath: suggested}
 	contextPath, resultPath := filepath.Join(stateDir, "context.json"), filepath.Join(stateDir, "result.json")
 	if err := writeJSON(contextPath, input); err != nil {
 		return provisionResult{}, err
 	}
 	_ = os.Remove(resultPath)
-	if err := m.runHook(ctx, a, meta, p.Root, hook, hookArgs, "provision", contextPath, resultPath, stateDir, p.Config.Workspace.ProvisionTimeoutSeconds); err != nil {
+	if err := m.runHook(ctx, a, meta, f.Path, hook, hookArgs, "provision", contextPath, resultPath, stateDir, f.ProvisionTimeoutSeconds); err != nil {
 		return provisionResult{}, err
 	}
 	b, err := os.ReadFile(resultPath)
@@ -158,7 +158,7 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, p
 		return result, errors.New("provision result must contain cwd")
 	}
 	if !filepath.IsAbs(result.Cwd) {
-		result.Cwd = filepath.Join(p.Root, result.Cwd)
+		result.Cwd = filepath.Join(f.Path, result.Cwd)
 	}
 	return result, nil
 }
@@ -269,11 +269,11 @@ func isCompatibilityHook(path, kind string) bool {
 // where it made one, and the project default otherwise. Empty means neither
 // was set, which each caller reads its own way — the hooks omit --base, and
 // `git worktree add` falls back to HEAD.
-func baseRefFor(meta store.ThreadMeta, p project.Project) string {
+func baseRefFor(meta store.ThreadMeta, f project.Folder) string {
 	if base := strings.TrimSpace(meta.BaseRef); base != "" {
 		return base
 	}
-	return strings.TrimSpace(p.Config.Defaults.BaseBranch)
+	return strings.TrimSpace(f.BaseBranch)
 }
 
 // checkBaseRef refuses a base that Git cannot resolve to a commit, so a typo
@@ -292,13 +292,13 @@ func checkBaseRef(ctx context.Context, root, base string) error {
 	return nil
 }
 
-func workspaceTarget(meta store.ThreadMeta, p project.Project) (string, string) {
+func workspaceTarget(meta store.ThreadMeta, f project.Folder) (string, string) {
 	branch := meta.Branch
 	if branch == "" {
 		branch = "feature/omniplex-" + strings.ReplaceAll(meta.ID, "-", "")[:8]
 	}
 	dir := strings.ReplaceAll(branch, "/", "-")
-	return branch, filepath.Join(p.Root, p.Config.Workspace.SuggestedRoot, dir)
+	return branch, filepath.Join(f.Path, f.CopiesDir, dir)
 }
 
 func redactHookOutput(value string) string {
@@ -313,12 +313,12 @@ func redactHookOutput(value string) string {
 	return value
 }
 
-func (m *Manager) createWorktree(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) (provisionResult, error) {
-	branch, path := workspaceTarget(meta, p)
+func (m *Manager) createWorktree(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) (provisionResult, error) {
+	branch, path := workspaceTarget(meta, f)
 	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 		return provisionResult{Cwd: path, Branch: branch}, nil
 	}
-	base := baseRefFor(meta, p)
+	base := baseRefFor(meta, f)
 	if base == "" {
 		base = "HEAD"
 	}
@@ -328,15 +328,15 @@ func (m *Manager) createWorktree(ctx context.Context, meta store.ThreadMeta, p p
 	// consults it, so only the create case has to be able to resolve it.
 	args := []string{"worktree", "add", path, branch}
 	branchCheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	branchCheck.Dir = p.Root
+	branchCheck.Dir = f.Path
 	if branchCheck.Run() != nil {
-		if err := checkBaseRef(ctx, p.Root, base); err != nil {
+		if err := checkBaseRef(ctx, f.Path, base); err != nil {
 			return provisionResult{}, err
 		}
 		args = []string{"worktree", "add", path, "-b", branch, base}
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = p.Root
+	cmd.Dir = f.Path
 	b, err := cmd.CombinedOutput()
 	if len(b) > 0 && a != nil {
 		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stdout", Chunk: string(b)}))
@@ -359,7 +359,7 @@ func writeJSON(path string, v any) error {
 // disk goes with it; nothing infers that from the workspace mode any more,
 // because the mode says who created the directory and not whether the user
 // wants it gone.
-func (m *Manager) cleanup(meta store.ThreadMeta, p project.Project, a *Actor, purge, removeWorktree bool) {
+func (m *Manager) cleanup(meta store.ThreadMeta, f project.Folder, a *Actor, purge, removeWorktree bool) {
 	ctx := context.Background()
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupStarted, map[string]any{"purge": purge, "removeWorktree": removeWorktree}))
 	_ = m.store.SetPhase(ctx, meta.ID, "cleaning")
@@ -391,10 +391,10 @@ func (m *Manager) cleanup(meta store.ThreadMeta, p project.Project, a *Actor, pu
 	stage := "deprovision"
 	if removeWorktree && meta.WorkspaceMode != "local" {
 		if meta.DeprovisionScript != "" {
-			err = m.runDeprovisionHook(ctx, meta, p, a)
+			err = m.runDeprovisionHook(ctx, meta, f, a)
 		} else {
 			stage = "worktree-remove"
-			err = m.removeWorktree(ctx, meta, p, a)
+			err = m.removeWorktree(ctx, meta, f, a)
 		}
 	}
 	if err != nil {
@@ -432,16 +432,16 @@ func (m *Manager) cleanup(meta store.ThreadMeta, p project.Project, a *Actor, pu
 	m.notifyList()
 }
 
-func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) error {
+func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) error {
 	stateDir, err := lifecycleDir(meta.ID)
 	if err != nil {
 		return err
 	}
-	hook, err := project.ResolveHook(p.Root, meta.DeprovisionScript)
+	hook, err := project.ResolveHook(f.Path, meta.DeprovisionScript)
 	if err != nil {
 		return err
 	}
-	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), ProvisionResult: meta.ProvisionResult}
+	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: f.Path, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, f), ProvisionResult: meta.ProvisionResult}
 	contextPath, resultPath := filepath.Join(stateDir, "deprovision-context.json"), filepath.Join(stateDir, "deprovision-result.json")
 	if err := writeJSON(contextPath, input); err != nil {
 		return err
@@ -454,19 +454,19 @@ func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.ThreadMeta,
 		}
 		hookArgs = []string{identity}
 	}
-	return m.runHook(ctx, a, meta, p.Root, hook, hookArgs, "deprovision", contextPath, resultPath, stateDir, p.Config.Workspace.DeprovisionTimeoutSeconds)
+	return m.runHook(ctx, a, meta, f.Path, hook, hookArgs, "deprovision", contextPath, resultPath, stateDir, f.DeprovisionTimeoutSeconds)
 }
 
-func (m *Manager) removeWorktree(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) error {
-	return m.removeGitWorktree(ctx, meta, p, a, false)
+func (m *Manager) removeWorktree(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) error {
+	return m.removeGitWorktree(ctx, meta, f, a, false)
 }
 
-func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor, allowMissingLease bool) error {
+func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor, allowMissingLease bool) error {
 	target, err := filepath.Abs(meta.Cwd)
 	if err != nil {
 		return err
 	}
-	root, err := filepath.Abs(p.Root)
+	root, err := filepath.Abs(f.Path)
 	if err != nil {
 		return err
 	}
@@ -568,7 +568,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 		}
 	}
 	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", target)
-	cmd.Dir = p.Root
+	cmd.Dir = f.Path
 	b, err := cmd.CombinedOutput()
 	if len(b) > 0 {
 		// Git's own diagnosis is the only useful thing in a failure, so it is
@@ -593,7 +593,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 		return nil
 	}
 	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
-	prune.Dir = p.Root
+	prune.Dir = f.Path
 	return prune.Run()
 }
 

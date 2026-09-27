@@ -19,7 +19,7 @@ interface Pending {
 export interface ClientEvents {
   onStatus(status: ConnectionStatus): void;
   onThreads(threads: ThreadMeta[]): void;
-  onHarnesses(harnesses: HarnessMeta[], defaultCwd: string): void;
+  onHarnesses(harnesses: HarnessMeta[]): void;
   onComposerItemsChanged(threadId: string): void;
   onProjects(projects: Project[]): void;
   onLabels(labels: Label[]): void;
@@ -289,7 +289,7 @@ export class Client {
         // replaced, nothing else it reports is worth acting on.
         checkBuild(f.build);
         this.events.onThreads(f.threads ?? []);
-        this.events.onHarnesses(f.harnesses ?? [], f.cwd ?? "");
+        this.events.onHarnesses(f.harnesses ?? []);
         this.events.onProjects(f.projects ?? []);
         this.events.onLabels(f.labels ?? []);
         this.events.onQuotas(f.quotas ?? []);
@@ -306,7 +306,7 @@ export class Client {
       // from the harness in the background and lands seconds later. Without
       // this the picker would show the fallback list until a reconnect.
       case "harnesses":
-        this.events.onHarnesses(f.harnesses ?? [], f.cwd ?? "");
+        this.events.onHarnesses(f.harnesses ?? []);
         break;
 
       // The project registry changed somewhere — this device or a paired one.

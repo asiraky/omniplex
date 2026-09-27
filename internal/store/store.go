@@ -13,7 +13,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/usage"
 )
@@ -34,14 +33,7 @@ CREATE TABLE IF NOT EXISTS threads (
   phase         TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS projects (
-  id            TEXT PRIMARY KEY,
-  root          TEXT NOT NULL UNIQUE,
-  config        BLOB NOT NULL,
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
-);
-
+` + projectsDDL + `
 CREATE TABLE IF NOT EXISTS events (
   thread_id    TEXT NOT NULL,
   seq           INTEGER NOT NULL,
@@ -113,8 +105,11 @@ type ThreadMeta struct {
 	// from the live projection (or from Phase for a thread with no running
 	// actor) when it serves a list. The stored row never holds it, so it can
 	// never go stale in the database.
-	Attention     string `json:"attention,omitempty"`
-	ProjectID     string `json:"projectId,omitempty"`
+	Attention string `json:"attention,omitempty"`
+	ProjectID string `json:"projectId,omitempty"`
+	// FolderID is the project folder the thread works in. Empty in a project
+	// means the thread's scope is everything: it starts in the home folder.
+	FolderID      string `json:"folderId,omitempty"`
 	Branch        string `json:"branch,omitempty"`
 	Model         string `json:"model,omitempty"`
 	Mode          string `json:"mode,omitempty"`
@@ -173,6 +168,7 @@ func Open(path string) (*Store, error) {
 		`ALTER TABLE threads ADD COLUMN provider_instance TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN label_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN home TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -198,6 +194,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("backfill last_viewed_seq: %w", err)
 	} else if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	if err := importProjects(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("move projects to folders: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.initAuth(); err != nil {
@@ -271,9 +271,9 @@ func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
-		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)`,
-		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript); err != nil {
+		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
+		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)`,
+		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -420,8 +420,8 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
-		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
+		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
@@ -437,7 +437,7 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 // created in the same millisecond in one stable order.
 func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq
 		 FROM threads ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
@@ -447,7 +447,7 @@ func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	out := []ThreadMeta{}
 	for rows.Next() {
 		var m ThreadMeta
-		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq); err != nil {
+		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -460,136 +460,6 @@ func (s *Store) UpdateWorkspace(ctx context.Context, id, cwd, branch, phase stri
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `UPDATE threads SET cwd=?, branch=?, phase=?, provision_result=?, updated_at=? WHERE id=?`, cwd, branch, phase, []byte(result), proto.NowMillis(), id)
 	return err
-}
-
-func (s *Store) PutProject(ctx context.Context, p project.Project) error {
-	b, err := json.Marshal(p.Config)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO projects(id,root,config,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,config=excluded.config,updated_at=excluded.updated_at`, p.ID, p.Root, b, p.CreatedAt, p.UpdatedAt)
-	return err
-}
-
-// UpdateProject writes back a project that must already exist. PutProject is
-// an upsert, which is right for adding one and wrong for saving one: a save
-// racing a delete would read the row, lose the race, and then insert the stale
-// copy straight back. This updates or reports ErrNotFound, so the delete wins.
-func (s *Store) UpdateProject(ctx context.Context, p project.Project) error {
-	b, err := json.Marshal(p.Config)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.ExecContext(ctx, `UPDATE projects SET root=?, config=?, updated_at=? WHERE id=?`, p.Root, b, p.UpdatedAt, p.ID)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// SetProjectHome records the folder Omniplex puts new things in for a
-// project. Written once, the first time it is needed.
-func (s *Store) SetProjectHome(ctx context.Context, id, home string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.ExecContext(ctx, `UPDATE projects SET home=? WHERE id=?`, home, id)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func (s *Store) Project(ctx context.Context, id string) (project.Project, error) {
-	var p project.Project
-	var b []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,root,home,config,created_at,updated_at FROM projects WHERE id=?`, id).Scan(&p.ID, &p.Root, &p.Home, &b, &p.CreatedAt, &p.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return p, ErrNotFound
-	}
-	if err == nil {
-		err = json.Unmarshal(b, &p.Config)
-	}
-	if err == nil {
-		p.Config, err = project.Normalize(p.Root, p.Config)
-	}
-	return p, err
-}
-
-func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,root,home,config,created_at,updated_at FROM projects ORDER BY updated_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []project.Project{}
-	for rows.Next() {
-		var p project.Project
-		var b []byte
-		if err := rows.Scan(&p.ID, &p.Root, &p.Home, &b, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(b, &p.Config); err != nil {
-			return nil, err
-		}
-		p.Config, err = project.Normalize(p.Root, p.Config)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// ErrProjectInUse is returned when a project still owns threads. Deleting it
-// anyway would leave those threads pointing at a project that no longer
-// exists, and the threads are the thing with a transcript and a checkout
-// behind them — so the threads go first, deliberately, and the project after.
-var ErrProjectInUse = errors.New("project still has threads")
-
-// DeleteProject forgets a project. Nothing on disk is touched: the project
-// directory is the user's, not omniplex's, and .omniplex/project.json stays
-// where it is so re-adding the directory restores its settings.
-func (s *Store) DeleteProject(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Counted inside the transaction, so a thread created between the check
-	// and the delete cannot be orphaned by it.
-	var threads int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE project_id = ?`, id).Scan(&threads); err != nil {
-		return err
-	}
-	if threads > 0 {
-		noun := "threads"
-		if threads == 1 {
-			noun = "thread"
-		}
-		return fmt.Errorf("%w: delete its %d %s first", ErrProjectInUse, threads, noun)
-	}
-
-	res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrNotFound
-	}
-	return tx.Commit()
 }
 
 func (s *Store) DeleteThread(ctx context.Context, id string) error {

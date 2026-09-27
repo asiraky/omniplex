@@ -378,19 +378,37 @@ export interface WorkspaceState {
   deleteAfterCleanup?: boolean;
 }
 
-export interface ProjectConfig {
-  version: number;
-  name: string;
-  defaults: {
-    harness?: string;
-    harnesses?: Record<string, { model?: string; effort?: string; mode?: string }>;
-    workspace?: string;
-    baseBranch?: string;
-  };
-  workspace: { suggestedRoot?: string; provision?: string; deprovision?: string; provisionTimeoutSeconds?: number; deprovisionTimeoutSeconds?: number };
+/** What a new thread in a project starts with. */
+export interface ProjectDefaults {
+  harness?: string;
+  harnesses?: Record<string, { model?: string; effort?: string; mode?: string }>;
+  workspace?: string;
 }
 
-export interface Project { id: string; root: string; config: ProjectConfig; createdAt: number; updatedAt: number }
+/** One directory a project points at. `git` is worked out by the server, by looking. */
+export interface Folder {
+  id: string;
+  path: string;
+  git: boolean;
+  baseBranch?: string;
+  /** Where copies (worktrees) of this folder go, relative to it. */
+  copiesDir: string;
+  provision?: string;
+  deprovision?: string;
+  provisionTimeoutSeconds: number;
+  deprovisionTimeoutSeconds: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  /** Where Omniplex puts new things for the project; empty until first needed. */
+  home?: string;
+  defaults: ProjectDefaults;
+  folders: Folder[];
+  createdAt: number;
+  updatedAt: number;
+}
 
 /** One checkout a thread could run in: the project root, or any worktree Git knows about. */
 export interface Workspace {
@@ -502,6 +520,8 @@ export interface ThreadMeta {
    */
   lastViewedSeq?: number;
   projectId?: string;
+  /** The folder the thread is scoped to; absent means the whole project. */
+  folderId?: string;
   branch?: string;
   model?: string;
   mode?: string;

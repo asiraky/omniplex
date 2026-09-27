@@ -31,7 +31,7 @@ const STUCK_MS = 10_000;
 export function useDeleteThread({
   threads,
   onDelete,
-  projectRoot,
+  projectFolders,
   onStart,
   onRefused,
   onDeparted,
@@ -42,7 +42,7 @@ export function useDeleteThread({
   /** removeWorktree is the user's answer to the checkbox, never inferred. */
   onDelete: (id: string, removeWorktree: boolean) => void | Promise<unknown>;
   /** The project's own checkout, which is never a worktree omniplex may remove. */
-  projectRoot: (id?: string) => string | undefined;
+  projectFolders: (id?: string) => string[];
   /** Fired as the request goes, for a caller that must pin a list first. */
   onStart?: (target: ThreadMeta) => void;
   /** Fired when the server would not take the request after all. */
@@ -83,12 +83,12 @@ export function useDeleteThread({
   // the user's own checkout, and a thread with no project has no lease at all
   // — offering a checkbox for either would be offering an action the server
   // will not perform. Nor does a managed thread whose provisioning failed
-  // before it got a directory: its cwd is still the project root, and the
+  // before it got a directory: its cwd is still the project folder, and the
   // server refuses to remove that whatever the dialog asked for.
   const hasWorktree =
     (mode === "managed" || mode === "borrowed") &&
     !!confirming?.cwd &&
-    confirming.cwd !== projectRoot(confirming.projectId);
+    !projectFolders(confirming.projectId).includes(confirming.cwd);
   const removable = hasWorktree && sharers.length === 0;
   // A turn open, or agents and shells running beside one that is over: the
   // delete cuts them off, which is worth a line before the button.

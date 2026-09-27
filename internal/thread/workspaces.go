@@ -32,15 +32,15 @@ type Workspace struct {
 	Locked bool `json:"locked,omitempty"`
 }
 
-// ListWorkspaces enumerates attachable checkouts for a project. A failure to
-// run Git is not fatal: the project root is always attachable, so a non-repo
-// directory still yields one usable entry.
-func (m *Manager) ListWorkspaces(ctx context.Context, projectID string) ([]Workspace, error) {
-	p, err := m.store.Project(ctx, projectID)
+// ListWorkspaces enumerates attachable checkouts of a project folder. A
+// failure to run Git is not fatal: the folder itself is always attachable, so
+// a non-repo directory still yields one usable entry.
+func (m *Manager) ListWorkspaces(ctx context.Context, projectID, folderID string) ([]Workspace, error) {
+	_, f, err := m.folder(ctx, projectID, folderID)
 	if err != nil {
 		return nil, err
 	}
-	root, err := filepath.Abs(p.Root)
+	root, err := filepath.Abs(f.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -188,11 +188,11 @@ func parseWorktreeList(porcelain, root string) []Workspace {
 // deliberately not "run the agent anywhere": the path must be a checkout Git
 // reports for this project, which keeps a stale or hostile client from pointing
 // a harness at an arbitrary directory.
-func (m *Manager) ResolveWorkspace(ctx context.Context, projectID, path string) (Workspace, error) {
+func (m *Manager) ResolveWorkspace(ctx context.Context, projectID, folderID, path string) (Workspace, error) {
 	if strings.TrimSpace(path) == "" {
 		return Workspace{}, errors.New("workspace path is empty")
 	}
-	spaces, err := m.ListWorkspaces(ctx, projectID)
+	spaces, err := m.ListWorkspaces(ctx, projectID, folderID)
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -236,8 +236,8 @@ const issueLookupTimeout = 12 * time.Second
 // suggestions. Every failure here is soft: gh missing, unauthenticated, or the
 // project simply not being a GitHub repo are all ordinary, and none of them
 // should stop someone typing a branch name by hand.
-func (m *Manager) ListIssues(ctx context.Context, projectID string) ([]Issue, string) {
-	p, err := m.store.Project(ctx, projectID)
+func (m *Manager) ListIssues(ctx context.Context, projectID, folderID string) ([]Issue, string) {
+	_, f, err := m.folder(ctx, projectID, folderID)
 	if err != nil {
 		return nil, err.Error()
 	}
@@ -248,7 +248,7 @@ func (m *Manager) ListIssues(ctx context.Context, projectID string) ([]Issue, st
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "issue", "list",
 		"--state", "open", "--limit", "30", "--json", "number,title,url,labels,assignees")
-	cmd.Dir = p.Root
+	cmd.Dir = f.Path
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

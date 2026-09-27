@@ -47,9 +47,9 @@ func testProject(t *testing.T, root string) (*store.Store, project.Project) {
 	}
 	t.Cleanup(func() { st.Close() })
 	now := proto.NowMillis()
-	p := project.Project{ID: "p1", Root: root, CreatedAt: now, UpdatedAt: now, Config: project.DefaultConfig(root)}
-	p.Config.Defaults.Harness = "fake"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p := project.Project{ID: "p1", Name: "p1", Defaults: project.NormalizeDefaults(project.Defaults{}), Folders: []project.Folder{project.NewFolder("f-p1", root)}, CreatedAt: now, UpdatedAt: now}
+	p.Defaults.Harness = "fake"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	return st, p
@@ -77,7 +77,7 @@ func TestListWorkspacesReportsRootAndWorktrees(t *testing.T) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
-	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
+	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestListWorkspacesMarksCheckoutsHeldByLiveThreads(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
+	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestListWorkspacesMarksCheckoutsHeldByLiveThreads(t *testing.T) {
 	}
 	// Busy is advice, not a lock: nothing about Git stops two threads sharing
 	// a checkout, so attaching still succeeds and the presenter warns.
-	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, worktree); err != nil {
+	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, "", worktree); err != nil {
 		t.Fatalf("attaching to a busy workspace should be allowed: %v", err)
 	}
 }
@@ -127,10 +127,10 @@ func TestResolveWorkspaceRejectsDirectoriesOutsideTheProject(t *testing.T) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
-	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, t.TempDir()); err == nil {
+	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, "", t.TempDir()); err == nil {
 		t.Fatal("a directory that is not a worktree of this project must be refused")
 	}
-	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, worktree); err != nil {
+	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, "", worktree); err != nil {
 		t.Fatalf("a real worktree should resolve: %v", err)
 	}
 }
@@ -198,8 +198,8 @@ func TestParseWorktreeListReadsDetachedHeads(t *testing.T) {
 func TestTypedBranchCreatesWorktreeEvenWhenProjectDefaultIsLocal(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	if p.Config.Defaults.Workspace != "local" {
-		t.Fatalf("precondition: default workspace is %q", p.Config.Defaults.Workspace)
+	if p.Defaults.Workspace != "local" {
+		t.Fatalf("precondition: default workspace is %q", p.Defaults.Workspace)
 	}
 	fa := &fakeAdapter{}
 	mgr := NewManager(st, func(string, ...any) {}, fa)
@@ -238,8 +238,8 @@ func TestTypedBranchCreatesWorktreeEvenWhenProjectDefaultIsLocal(t *testing.T) {
 func TestSuggestedRootMayLiveOutsideTheProject(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	p.Config.Workspace.SuggestedRoot = "../sibling-worktrees"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p.Folders[0].CopiesDir = "../sibling-worktrees"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -281,10 +281,10 @@ func TestLocalThreadRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	p.Config.Defaults.Workspace = "local"
-	p.Config.Workspace.Provision = "provision"
-	p.Config.Workspace.Deprovision = "deprovision"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p.Defaults.Workspace = "local"
+	p.Folders[0].Provision = "provision"
+	p.Folders[0].Deprovision = "deprovision"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
@@ -364,7 +364,7 @@ func TestSecondLocalThreadIsAllowedWhileTheFirstIsLive(t *testing.T) {
 
 	// The warning the presenter shows is this flag, and it has to be set
 	// before the second thread can be warned about anything.
-	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
+	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,8 +422,8 @@ func TestCleanupIgnoresADeprovisionScriptLeftOnALocalThread(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "deprovision"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p.Config.Workspace.Deprovision = "deprovision"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p.Folders[0].Deprovision = "deprovision"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -486,7 +486,7 @@ func TestAFailedManagedThreadStillHoldsTheWorktreeItCreated(t *testing.T) {
 	if err := st.CreateThread(context.Background(), failed); err != nil {
 		t.Fatal(err)
 	}
-	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
+	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestAFailedManagedThreadStillHoldsTheWorktreeItCreated(t *testing.T) {
 	if err := st.CreateThread(context.Background(), placeholder); err != nil {
 		t.Fatal(err)
 	}
-	spaces, err = mgr.ListWorkspaces(context.Background(), p.ID)
+	spaces, err = mgr.ListWorkspaces(context.Background(), p.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +523,7 @@ func TestProjectRootInsideARepositoryIsStillAttachable(t *testing.T) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
-	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
+	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,4 +575,20 @@ func TestConcurrentLocalThreadsAllShareTheRoot(t *testing.T) {
 	if won != racers {
 		t.Fatalf("%d of %d concurrent local threads started, want all of them", won, racers)
 	}
+}
+
+// putProject stores p, creating it or saving its defaults and folders.
+func putProject(ctx context.Context, st *store.Store, p project.Project) error {
+	if _, err := st.Project(ctx, p.ID); err != nil {
+		return st.CreateProject(ctx, p)
+	}
+	if err := st.UpdateProject(ctx, p); err != nil {
+		return err
+	}
+	for _, f := range p.Folders {
+		if err := st.UpdateFolder(ctx, p.ID, f); err != nil {
+			return err
+		}
+	}
+	return nil
 }

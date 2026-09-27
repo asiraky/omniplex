@@ -39,8 +39,8 @@ func TestRunRepairsDatabaseLifecycleGitAndClaudeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	if err := st.PutProject(ctx, p); err != nil {
+	p := project.Project{ID: "p1", Name: "p1", Folders: []project.Folder{project.NewFolder("f-p1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	if err := putProject(ctx, st, p); err != nil {
 		t.Fatal(err)
 	}
 	meta := store.ThreadMeta{ID: "s1", Cwd: worktree, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
@@ -111,8 +111,8 @@ func TestRunRefusesTranscriptCollisionBeforeChangingState(t *testing.T) {
 	}
 	dbPath := filepath.Join(top, "hy.db")
 	st, _ := store.Open(dbPath)
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	_ = st.PutProject(ctx, p)
+	p := project.Project{ID: "p1", Name: "p1", Folders: []project.Folder{project.NewFolder("f-p1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	_ = putProject(ctx, st, p)
 	meta := store.ThreadMeta{ID: "s1", Cwd: oldRoot, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
 	_ = st.CreateThread(ctx, meta)
 	_ = st.Close()
@@ -127,8 +127,8 @@ func TestRunRefusesTranscriptCollisionBeforeChangingState(t *testing.T) {
 	st, _ = store.Open(dbPath)
 	defer st.Close()
 	got, _ := st.Project(ctx, p.ID)
-	if got.Root != oldRoot {
-		t.Fatalf("database changed despite preflight failure: %s", got.Root)
+	if got.Folders[0].Path != oldRoot {
+		t.Fatalf("database changed despite preflight failure: %s", got.Folders[0].Path)
 	}
 }
 
@@ -150,8 +150,8 @@ func TestRunRelocatesCanonicalizedThreadPath(t *testing.T) {
 	}
 	dbPath := filepath.Join(top, "hy.db")
 	st, _ := store.Open(dbPath)
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	_ = st.PutProject(ctx, p)
+	p := project.Project{ID: "p1", Name: "p1", Folders: []project.Folder{project.NewFolder("f-p1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	_ = putProject(ctx, st, p)
 	canonicalWorktree, err := filepath.EvalSymlinks(filepath.Join(oldRoot, "worktree"))
 	if err != nil {
 		t.Fatal(err)
@@ -192,4 +192,8 @@ func git(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+func putProject(ctx context.Context, st *store.Store, p project.Project) error {
+	return st.CreateProject(ctx, p)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -60,10 +59,10 @@ func ThreadHome(ctx context.Context, st *store.Store, projectID, cwd string) (st
 var homeMu sync.Mutex
 
 // ProjectHome returns the project's home folder, choosing and creating it the
-// first time it is asked for. A project whose root is a plain folder works in
-// it directly. A git project gets <projects folder>/<name>, because the home
-// is never inside a repo: a second repo cloned there would otherwise show up
-// as the first one's untracked files.
+// first time it is asked for. A project whose one folder is plain works in it
+// directly. Any other gets <projects folder>/<name>, because the home is never
+// inside a repo: a second repo cloned there would otherwise show up as the
+// first one's untracked files.
 func ProjectHome(ctx context.Context, st *store.Store, projectID string) (string, error) {
 	homeMu.Lock()
 	defer homeMu.Unlock()
@@ -73,12 +72,10 @@ func ProjectHome(ctx context.Context, st *store.Store, projectID string) (string
 	}
 	home := p.Home
 	if home == "" {
-		if !insideGit(ctx, p.Root) {
-			home = p.Root
-		} else {
-			if home, err = newHome(ctx, st, p.Config.Name, p.Root); err != nil {
-				return "", err
-			}
+		if len(p.Folders) == 1 && !p.Folders[0].Git {
+			home = p.Folders[0].Path
+		} else if home, err = newHome(ctx, st, p.Name); err != nil {
+			return "", err
 		}
 		if err := st.SetProjectHome(ctx, projectID, home); err != nil {
 			return "", err
@@ -89,7 +86,7 @@ func ProjectHome(ctx context.Context, st *store.Store, projectID string) (string
 
 // newHome picks a folder in the projects folder no other project uses and
 // nothing already occupies, numbering the name when it is taken.
-func newHome(ctx context.Context, st *store.Store, name, root string) (string, error) {
+func newHome(ctx context.Context, st *store.Store, name string) (string, error) {
 	cfg, _ := userconfig.Load()
 	dir, err := cfg.ProjectsDirOrDefault()
 	if err != nil {
@@ -106,9 +103,6 @@ func newHome(ctx context.Context, st *store.Store, name, root string) (string, e
 		}
 	}
 	base := slug(name)
-	if base == "" {
-		base = slug(filepath.Base(root))
-	}
 	if base == "" {
 		base = "project"
 	}
@@ -132,10 +126,6 @@ var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 func slug(s string) string {
 	return strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(s), "-"), "-")
-}
-
-func insideGit(ctx context.Context, dir string) bool {
-	return exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-dir").Run() == nil
 }
 
 // Show is a request to put a file or folder in front of the user.
@@ -197,7 +187,7 @@ func (a *Actor) handleShow(s *Show) (proto.ArtefactShownPayload, error) {
 }
 
 // ArtefactRoots is where a thread may show files from: its home folder, its
-// working directory and its project's root. Home comes first; it is where
+// working directory and its project's folders. Home comes first; it is where
 // uploads go.
 func (m *Manager) ArtefactRoots(ctx context.Context, threadID string) (home string, roots []string, err error) {
 	meta, err := m.store.Thread(ctx, threadID)
@@ -214,7 +204,9 @@ func (m *Manager) ArtefactRoots(ctx context.Context, threadID string) (home stri
 	}
 	if meta.ProjectID != "" {
 		if p, err := m.store.Project(ctx, meta.ProjectID); err == nil {
-			roots = append(roots, p.Root)
+			for _, f := range p.Folders {
+				roots = append(roots, f.Path)
+			}
 		}
 	}
 	return home, roots, nil

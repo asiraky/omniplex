@@ -1,7 +1,6 @@
-// Package userconfig holds per-machine preferences that deliberately do not
-// belong in a repo. Project settings live in .omniplex/project.json and are shared
-// with whoever clones the project; the things here are the operator's own
-// habits, so they live beside the database in ~/.omniplex instead.
+// Package userconfig holds per-machine preferences that are not about any one
+// project: the operator's own habits, and where new projects go. They live
+// beside the database in ~/.omniplex.
 package userconfig
 
 import (
@@ -61,13 +60,26 @@ type Config struct {
 // ProjectsDirOrDefault is the folder project home folders go in.
 func (c Config) ProjectsDirOrDefault() (string, error) {
 	if c.ProjectsDir != "" {
-		return c.ProjectsDir, nil
+		return ExpandHome(c.ProjectsDir)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, "Omniplex"), nil
+}
+
+// ExpandHome turns a leading ~ into the user's home folder and makes the
+// path absolute. People type ~/code, not /home/them/code.
+func ExpandHome(path string) (string, error) {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[1:])
+	}
+	return filepath.Abs(path)
 }
 
 func Default() Config {

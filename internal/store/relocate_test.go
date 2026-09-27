@@ -10,7 +10,7 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
-func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
+func TestRelocateFolderRewritesEveryDurablePath(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "hy.db"))
 	if err != nil {
@@ -20,8 +20,8 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 
 	oldRoot := filepath.Join(t.TempDir(), "before")
 	newRoot := filepath.Join(t.TempDir(), "after")
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	if err := st.PutProject(ctx, p); err != nil {
+	p := project.Project{ID: "p1", Name: "p", Folders: []project.Folder{project.NewFolder("f1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.CreateProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
 	meta := ThreadMeta{ID: "s1", Cwd: filepath.Join(oldRoot, ".worktrees", "one"), Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
@@ -59,7 +59,7 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := st.RelocateProject(ctx, oldRoot, newRoot)
+	stats, err := st.RelocateFolder(ctx, oldRoot, newRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 	}
 
 	gotProject, err := st.Project(ctx, p.ID)
-	if err != nil || gotProject.Root != newRoot {
+	if err != nil || gotProject.Folders[0].Path != newRoot {
 		t.Fatalf("project = %+v, %v", gotProject, err)
 	}
 	got, err := st.Thread(ctx, meta.ID)
@@ -105,7 +105,7 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 	}
 }
 
-func TestRelocateProjectRewritesCanonicalAlias(t *testing.T) {
+func TestRelocateFolderRewritesCanonicalAlias(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "hy.db"))
 	if err != nil {
@@ -113,11 +113,11 @@ func TestRelocateProjectRewritesCanonicalAlias(t *testing.T) {
 	}
 	defer st.Close()
 	oldRoot, newRoot := "/alias/project-old", "/alias/project-new"
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	_ = st.PutProject(ctx, p)
+	p := project.Project{ID: "p1", Name: "p", Folders: []project.Folder{project.NewFolder("f1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	_ = st.CreateProject(ctx, p)
 	meta := ThreadMeta{ID: "s1", Cwd: "/canonical/project-old/worktree", Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
 	_ = st.CreateThread(ctx, meta)
-	stats, err := st.RelocateProject(ctx, oldRoot, newRoot, RelocationPath{Old: "/canonical/project-old", New: "/canonical/project-new"})
+	stats, err := st.RelocateFolder(ctx, oldRoot, newRoot, RelocationPath{Old: "/canonical/project-old", New: "/canonical/project-new"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestRelocateProjectRewritesCanonicalAlias(t *testing.T) {
 	}
 }
 
-func TestRelocateProjectRollsBackMalformedJSON(t *testing.T) {
+func TestRelocateFolderRollsBackMalformedJSON(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "hy.db"))
 	if err != nil {
@@ -135,19 +135,19 @@ func TestRelocateProjectRollsBackMalformedJSON(t *testing.T) {
 	}
 	defer st.Close()
 	oldRoot, newRoot := filepath.Join(t.TempDir(), "old"), filepath.Join(t.TempDir(), "new")
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	_ = st.PutProject(ctx, p)
+	p := project.Project{ID: "p1", Name: "p", Folders: []project.Folder{project.NewFolder("f1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	_ = st.CreateProject(ctx, p)
 	meta := ThreadMeta{ID: "s1", Cwd: oldRoot, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
 	_ = st.CreateThread(ctx, meta)
 	if _, err := st.db.Exec(`INSERT INTO snapshots(thread_id,seq,state) VALUES(?,?,?)`, meta.ID, 1, []byte(`not-json`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.RelocateProject(ctx, oldRoot, newRoot); err == nil {
+	if _, err := st.RelocateFolder(ctx, oldRoot, newRoot); err == nil {
 		t.Fatal("malformed JSON did not abort relocation")
 	}
 	got, _ := st.Project(ctx, p.ID)
-	if got.Root != oldRoot {
-		t.Fatalf("project root committed despite rollback: %s", got.Root)
+	if got.Folders[0].Path != oldRoot {
+		t.Fatalf("folder path committed despite rollback: %s", got.Folders[0].Path)
 	}
 }
 
@@ -179,7 +179,7 @@ func containsValue(value any, path string) bool {
 	return false
 }
 
-func TestRelocateProjectMovesAHomeInsideTheRootAndNoOther(t *testing.T) {
+func TestRelocateFolderMovesAHomeInsideTheRootAndNoOther(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "hy.db"))
 	if err != nil {
@@ -188,7 +188,7 @@ func TestRelocateProjectMovesAHomeInsideTheRootAndNoOther(t *testing.T) {
 	defer st.Close()
 	for id, home := range map[string]string{"plain": "/old/plain", "git": "/home/me/Omniplex/git", "unset": ""} {
 		root := "/old/" + id
-		if err := st.PutProject(ctx, project.Project{ID: id, Root: root, Config: project.DefaultConfig(root), CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		if err := st.CreateProject(ctx, project.Project{ID: id, Name: id, Folders: []project.Folder{project.NewFolder(id, root)}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 		if home != "" {
@@ -196,7 +196,7 @@ func TestRelocateProjectMovesAHomeInsideTheRootAndNoOther(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := st.RelocateProject(ctx, root, "/new/"+id); err != nil {
+		if _, err := st.RelocateFolder(ctx, root, "/new/"+id); err != nil {
 			t.Fatal(err)
 		}
 	}

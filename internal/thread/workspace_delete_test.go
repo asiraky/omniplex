@@ -62,7 +62,7 @@ func TestRemoveGitWorktreeRemovesARegisteredWorktree(t *testing.T) {
 	root, worktree := repoWithWorktree(t)
 	mgr, meta, p := deleteFixture(t, root, worktree)
 
-	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, false); err != nil {
+	if err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, false); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
@@ -81,7 +81,7 @@ func TestForceDeleteRecoversAWorktreeGitHasForgotten(t *testing.T) {
 	mgr, meta, p := deleteFixture(t, root, worktree)
 	forgetWorktree(t, root, worktree)
 
-	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, true); err != nil {
+	if err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, true); err != nil {
 		t.Fatalf("force delete of an orphaned worktree failed: %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
@@ -94,7 +94,7 @@ func TestOrdinaryCleanupStillRefusesAWorktreeGitHasForgotten(t *testing.T) {
 	mgr, meta, p := deleteFixture(t, root, worktree)
 	forgetWorktree(t, root, worktree)
 
-	err := mgr.removeGitWorktree(context.Background(), meta, p, nil, false)
+	err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, false)
 	if err == nil {
 		t.Fatal("an unregistered directory was removed without force")
 	}
@@ -122,7 +122,7 @@ func TestForceDeleteWillNotRemoveADirectoryThatWasNeverOurWorktree(t *testing.T)
 	}
 	meta := store.ThreadMeta{ID: "s2", Cwd: stranger, WorkspaceMode: "managed", ProjectID: p.ID}
 
-	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, true); err == nil {
+	if err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, true); err == nil {
 		t.Fatal("force delete removed a directory that was not a worktree of this repository")
 	}
 	if _, err := os.Stat(filepath.Join(stranger, "keep")); err != nil {
@@ -137,7 +137,7 @@ func TestCleanupRefusesWhileSomethingIsStillRunningInTheWorktree(t *testing.T) {
 	mgr, meta, p := deleteFixture(t, root, worktree)
 	startIn(t, worktree)
 
-	err := mgr.removeGitWorktree(context.Background(), meta, p, nil, false)
+	err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, false)
 	if err == nil {
 		t.Fatal("cleanup proceeded with a process still inside the worktree")
 	}
@@ -159,7 +159,7 @@ func TestForceDeleteProceedsDespiteARunningProcess(t *testing.T) {
 	mgr, meta, p := deleteFixture(t, root, worktree)
 	startIn(t, worktree)
 
-	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, true); err != nil {
+	if err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, true); err != nil {
 		t.Fatalf("force delete refused a busy worktree: %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
@@ -207,7 +207,7 @@ func TestRemoveGitWorktreePrunesWhenTheDirectoryIsAlreadyGone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, false); err != nil {
+	if err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, false); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".git", "worktrees", "wt")); !os.IsNotExist(err) {
@@ -220,7 +220,7 @@ func TestRemoveGitWorktreeRefusesTheProjectRoot(t *testing.T) {
 	mgr, _, p := deleteFixture(t, root, worktree)
 	meta := store.ThreadMeta{ID: "s3", Cwd: root, WorkspaceMode: "managed", ProjectID: p.ID}
 
-	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, false); err == nil {
+	if err := mgr.removeGitWorktree(context.Background(), meta, p.Folders[0], nil, false); err == nil {
 		t.Fatal("the project root was accepted for removal")
 	}
 	if _, err := os.Stat(filepath.Join(root, "README")); err != nil {

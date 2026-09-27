@@ -36,7 +36,7 @@ function Standalone({
   const flow = useDeleteThread({
     threads,
     onDelete,
-    projectRoot: () => "/tmp/repo",
+    projectFolders: () => ["/tmp/repo"],
   });
   return (
     <>

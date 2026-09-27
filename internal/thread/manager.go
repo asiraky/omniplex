@@ -20,6 +20,7 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
 // registered pairs a provider instance with the adapter that serves its
@@ -777,13 +778,47 @@ type CreateProjectOptions struct {
 	AgentSettingsExplicit bool
 	Branch                string
 	Workspace             string
+	// FolderID scopes the thread to one folder of the project. Empty means
+	// the project's only folder, or the whole project when it has several.
+	FolderID string
 	// BaseRef is the ref a new worktree is branched from, chosen per thread.
-	// Empty defers to the project's default base branch.
+	// Empty defers to the folder's base branch.
 	BaseRef string
 	// WorkspacePath attaches the thread to a checkout that already exists
 	// instead of provisioning one. It is the minority case, so it overrides
 	// Workspace rather than being another value of it.
 	WorkspacePath string
+}
+
+// folder finds one folder of a project. An empty id means the project's only
+// folder, and is refused when there is more than one to choose from.
+func (m *Manager) folder(ctx context.Context, projectID, folderID string) (project.Project, project.Folder, error) {
+	p, err := m.store.Project(ctx, projectID)
+	if err != nil {
+		return p, project.Folder{}, err
+	}
+	if folderID == "" {
+		if len(p.Folders) == 1 {
+			return p, p.Folders[0], nil
+		}
+		return p, project.Folder{}, fmt.Errorf("%s has %d folders; choose one", p.Name, len(p.Folders))
+	}
+	f, ok := p.Folder(folderID)
+	if !ok {
+		return p, f, fmt.Errorf("folder %s is not part of %s: %w", folderID, p.Name, store.ErrNotFound)
+	}
+	return p, f, nil
+}
+
+// threadFolder is the folder a thread's workspace lifecycle runs against. A
+// thread scoped to the whole project has no folder of its own: it works where
+// it started, with no hooks and no copy, which a bare folder at its cwd says.
+func (m *Manager) threadFolder(ctx context.Context, meta store.ThreadMeta) (project.Folder, error) {
+	if meta.FolderID == "" {
+		return project.Folder{Path: meta.Cwd}, nil
+	}
+	_, f, err := m.folder(ctx, meta.ProjectID, meta.FolderID)
+	return f, err
 }
 
 // CreateProject persists and returns an attachable thread immediately. Its
@@ -793,14 +828,15 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 	if err != nil {
 		return nil, err
 	}
+	d := project.NormalizeDefaults(p.Defaults)
 	if o.Harness == "" {
-		o.Harness = p.Config.Defaults.Harness
+		o.Harness = d.Harness
 	}
 	// Agent settings belong to the selected harness, not only to the project's
 	// default harness. Switching from Claude to Codex therefore restores this
 	// project's Codex profile without leaking Claude values across.
 	if !o.AgentSettingsExplicit {
-		harnessDefaults := p.Config.Defaults.Harnesses[o.Harness]
+		harnessDefaults := d.Harnesses[o.Harness]
 		if o.Model == "" {
 			o.Model = harnessDefaults.Model
 		}
@@ -812,18 +848,44 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 	if o.Workspace == "" {
-		o.Workspace = p.Config.Defaults.Workspace
-	}
-	if o.Workspace == "" {
-		o.Workspace = "local"
+		o.Workspace = d.Workspace
 	}
 	// Attaching is what produces a borrowed lease; it is not something a
 	// client may ask for by name. Anything else unrecognised would fall
-	// through every guard below and land a harness in the project root with
-	// the hooks still attached, so it is refused rather than interpreted.
+	// through every guard below and land a harness in the folder with the
+	// hooks still attached, so it is refused rather than interpreted.
 	if o.Workspace != "local" && o.Workspace != "managed" {
 		return nil, fmt.Errorf("unknown workspace mode %q", o.Workspace)
 	}
+
+	// The scope. A project with one folder has nothing to choose, so an empty
+	// folder id there is that folder. With more, empty is the whole project:
+	// the thread starts in the home folder and works directly in every folder.
+	var f project.Folder
+	scoped := o.FolderID != "" || len(p.Folders) == 1
+	if scoped {
+		if _, f, err = m.folder(ctx, p.ID, o.FolderID); err != nil {
+			return nil, err
+		}
+		// A copy is a git worktree, and attaching lists git worktrees. A plain
+		// folder has neither, whatever the project defaults say.
+		if !f.Git {
+			if strings.TrimSpace(o.WorkspacePath) != "" {
+				return nil, fmt.Errorf("%s is not a git folder, so it has no copies to attach to", filepath.Base(f.Path))
+			}
+			o.Workspace = "local"
+		}
+	} else {
+		if o.Workspace == "managed" || strings.TrimSpace(o.WorkspacePath) != "" {
+			return nil, errors.New("a thread across the whole project works in its folders directly; choose one folder to work on a copy")
+		}
+		home, homeErr := ProjectHome(ctx, m.store, p.ID)
+		if homeErr != nil {
+			return nil, homeErr
+		}
+		f = project.Folder{Path: home}
+	}
+
 	reg, err := m.resolveInstance(o.Instance, o.Harness)
 	if err != nil {
 		return nil, err
@@ -843,10 +905,11 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 	m.leases.Lock()
 	defer m.leases.Unlock()
 
-	cwd := p.Root
+	cwd := f.Path
 	switch {
+	case !scoped:
 	case strings.TrimSpace(o.WorkspacePath) != "":
-		w, resolveErr := m.ResolveWorkspace(ctx, p.ID, o.WorkspacePath)
+		w, resolveErr := m.ResolveWorkspace(ctx, p.ID, f.ID, o.WorkspacePath)
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
@@ -863,12 +926,11 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 			o.Branch = w.Branch
 		}
 	case o.Workspace == "local":
-		// The main checkout, which omniplex did not create and must not clean up.
-		// Resolving it as a workspace still reuses the attach guard — the path
-		// has to be a checkout Git reports for this project — but a checkout
-		// another thread already holds is no longer refused. The presenter
+		// The folder itself, which omniplex did not create and must not clean
+		// up. Resolving it as a workspace still reuses the attach guard, but a
+		// checkout another thread already holds is not refused. The presenter
 		// warns; the user decides.
-		w, resolveErr := m.ResolveWorkspace(ctx, p.ID, p.Root)
+		w, resolveErr := m.ResolveWorkspace(ctx, p.ID, f.ID, f.Path)
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
@@ -885,22 +947,22 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 	// one mode that would never have run it.
 	var provision, deprovision string
 	if o.Workspace == "managed" {
-		if provision, err = project.ResolveHook(p.Root, p.Config.Workspace.Provision); err != nil && p.Config.Workspace.Provision != "" {
+		if provision, err = project.ResolveHook(f.Path, f.Provision); err != nil && f.Provision != "" {
 			return nil, fmt.Errorf("provision hook: %w", err)
 		}
-		if deprovision, err = project.ResolveHook(p.Root, p.Config.Workspace.Deprovision); err != nil && p.Config.Workspace.Deprovision != "" {
+		if deprovision, err = project.ResolveHook(f.Path, f.Deprovision); err != nil && f.Deprovision != "" {
 			return nil, fmt.Errorf("deprovision hook: %w", err)
 		}
 	}
 
-	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(p.Root, provision), DeprovisionScript: relHook(p.Root, deprovision)}
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision)}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
 	a := StartPending(m.store, reg.ad, meta, env, m.logf)
 	m.adopt(a)
 	m.notifyList()
-	go m.provision(meta, p, a)
+	go m.provision(meta, f, a)
 	return a, nil
 }
 
@@ -915,78 +977,67 @@ func relHook(root, path string) string {
 	return rel
 }
 
-func (m *Manager) AddProject(ctx context.Context, root string) (project.Project, error) {
-	abs, err := filepath.Abs(root)
+// AddProject registers a folder already on disk as a project of its own. A
+// plain folder is the project's home, so what Omniplex makes for it lands
+// there; a git folder is pointed at, and the home waits until it is needed.
+func (m *Manager) AddProject(ctx context.Context, path string) (project.Project, error) {
+	abs, err := userconfig.ExpandHome(strings.TrimSpace(path))
 	if err != nil {
 		return project.Project{}, err
 	}
-	cfg, err := project.Load(abs)
-	if err != nil {
-		return project.Project{}, err
+	if info, statErr := os.Stat(abs); statErr != nil {
+		return project.Project{}, statErr
+	} else if !info.IsDir() {
+		return project.Project{}, fmt.Errorf("%s is not a folder", abs)
 	}
 	now := proto.NowMillis()
-	p := project.Project{ID: uuid.NewString(), Root: abs, Config: cfg, CreatedAt: now, UpdatedAt: now}
-	if err := m.store.PutProject(ctx, p); err != nil {
+	f := project.NewFolder(uuid.NewString(), abs)
+	p := project.Project{ID: uuid.NewString(), Name: filepath.Base(abs), Defaults: project.NormalizeDefaults(project.Defaults{}), Folders: []project.Folder{f}, CreatedAt: now, UpdatedAt: now}
+	if !project.IsGit(abs) {
+		p.Home = abs
+	}
+	if err := m.store.CreateProject(ctx, p); err != nil {
 		return p, err
 	}
 	m.notifyProjects()
-	return p, nil
+	return m.store.Project(ctx, p.ID)
 }
 
-func (m *Manager) SaveProject(ctx context.Context, id string, cfg project.Config) (project.Project, error) {
+// SaveProject saves a project's name and thread defaults.
+func (m *Manager) SaveProject(ctx context.Context, id, name string, d project.Defaults) (project.Project, error) {
 	p, err := m.store.Project(ctx, id)
 	if err != nil {
 		return p, err
 	}
-	cfg, err = project.Save(p.Root, cfg)
-	if err != nil {
-		return p, err
+	if name = strings.TrimSpace(name); name != "" {
+		p.Name = name
 	}
-	p.Config = cfg
+	p.Defaults = project.NormalizeDefaults(d)
 	p.UpdatedAt = proto.NowMillis()
 	if err := m.store.UpdateProject(ctx, p); err != nil {
 		return p, err
 	}
 	m.notifyProjects()
-	return p, nil
+	return m.store.Project(ctx, id)
 }
 
-// ReloadProjects re-reads each project's on-disk config, which is the source
-// of truth; the copy in the database is a cache that a pull can make stale. A
-// project whose file has gone is left as it is: a missing file means the
-// checkout moved or is mid-checkout, not that its settings were cleared.
-func (m *Manager) ReloadProjects(ctx context.Context) error {
-	projects, err := m.store.ListProjects(ctx)
+// SaveFolder saves one folder's settings. Its path is fixed; a folder that
+// moved is relocated offline with `omniplex relocate`.
+func (m *Manager) SaveFolder(ctx context.Context, projectID string, f project.Folder) (project.Project, error) {
+	_, current, err := m.folder(ctx, projectID, f.ID)
 	if err != nil {
-		return err
+		return project.Project{}, err
 	}
-	changed := false
-	for _, p := range projects {
-		if _, statErr := os.Stat(filepath.Join(p.Root, project.ConfigPath)); statErr != nil {
-			continue
-		}
-		cfg, loadErr := project.Load(p.Root)
-		if loadErr != nil {
-			m.logf("project %s: %v", p.Config.Name, loadErr)
-			continue
-		}
-		if reflect.DeepEqual(cfg, p.Config) {
-			continue
-		}
-		p.Config, p.UpdatedAt = cfg, proto.NowMillis()
-		// Not an upsert: a project deleted while this sweep was reading the
-		// disk must stay deleted, not be written back from the cache.
-		if err := m.store.UpdateProject(ctx, p); errors.Is(err, store.ErrNotFound) {
-			continue
-		} else if err != nil {
-			return err
-		}
-		changed = true
+	f.Path = current.Path
+	f = project.NormalizeFolder(f)
+	if err := project.ValidateFolder(f); err != nil {
+		return project.Project{}, err
 	}
-	if changed {
-		m.notifyProjects()
+	if err := m.store.UpdateFolder(ctx, projectID, f); err != nil {
+		return project.Project{}, err
 	}
-	return nil
+	m.notifyProjects()
+	return m.store.Project(ctx, projectID)
 }
 
 // DeleteProject removes a project from the registry. It is a registry
@@ -1028,14 +1079,14 @@ func (m *Manager) RetryProvision(ctx context.Context, id string) error {
 	if meta.Phase != "provision_failed" {
 		return fmt.Errorf("thread is not awaiting provisioning")
 	}
-	p, err := m.store.Project(ctx, meta.ProjectID)
+	f, err := m.threadFolder(ctx, meta)
 	if err != nil {
 		return err
 	}
 	if err := m.store.SetPhase(ctx, id, "provisioning"); err != nil {
 		return err
 	}
-	go m.provision(meta, p, a)
+	go m.provision(meta, f, a)
 	return nil
 }
 
@@ -1055,7 +1106,7 @@ func (m *Manager) Cleanup(ctx context.Context, id string) error {
 	if meta.Phase == "closed" {
 		return nil
 	}
-	p, err := m.store.Project(ctx, meta.ProjectID)
+	f, err := m.threadFolder(ctx, meta)
 	if err != nil {
 		return err
 	}
@@ -1072,7 +1123,7 @@ func (m *Manager) Cleanup(ctx context.Context, id string) error {
 	m.adopt(a)
 	// "Clean up workspace" asks for exactly that, so a lease omniplex provisioned is
 	// released; a checkout it merely borrowed still is not omniplex's to delete.
-	go m.cleanup(meta, p, a, false, meta.WorkspaceMode == "managed")
+	go m.cleanup(meta, f, a, false, meta.WorkspaceMode == "managed")
 	return nil
 }
 
@@ -1350,11 +1401,11 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		// for it to go. Removing it here rather than falling through keeps the
 		// checkbox meaning the same thing whatever phase the row is in.
 		if removeWorktree && meta.WorkspaceMode != "local" {
-			p, projectErr := m.store.Project(ctx, meta.ProjectID)
-			if projectErr != nil {
-				return projectErr
+			f, folderErr := m.threadFolder(ctx, meta)
+			if folderErr != nil {
+				return folderErr
 			}
-			if err := m.removeGitWorktree(ctx, meta, p, nil, true); err != nil {
+			if err := m.removeGitWorktree(ctx, meta, f, nil, true); err != nil {
 				return err
 			}
 		}
@@ -1379,7 +1430,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 	if meta.Phase == "cleaning" {
 		return errors.New("workspace cleanup is already running")
 	}
-	p, err := m.store.Project(ctx, meta.ProjectID)
+	f, err := m.threadFolder(ctx, meta)
 	if err != nil {
 		return err
 	}
@@ -1398,7 +1449,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		return err
 	}
 	m.adopt(a)
-	go m.cleanup(meta, p, a, true, removeWorktree)
+	go m.cleanup(meta, f, a, true, removeWorktree)
 	return nil
 }
 
@@ -1465,7 +1516,7 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	if meta.Phase != "cleanup_failed" {
 		return errors.New("force delete is only available after teardown fails")
 	}
-	p, err := m.store.Project(ctx, meta.ProjectID)
+	f, err := m.threadFolder(ctx, meta)
 	if err != nil {
 		return err
 	}
@@ -1476,7 +1527,7 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 		if holder, shared := m.otherThreadIn(ctx, id, meta.Cwd); shared {
 			return fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder)
 		}
-		if err := m.removeGitWorktree(ctx, meta, p, nil, true); err != nil {
+		if err := m.removeGitWorktree(ctx, meta, f, nil, true); err != nil {
 			return err
 		}
 	}

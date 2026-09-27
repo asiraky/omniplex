@@ -11,7 +11,7 @@ import (
 // project. A thread's are what its harness actually sees: its provider
 // instance's config dirs (an instance can point Claude at a config dir of its
 // own) and its checkout. A project alone has only the ambient config dirs and
-// its root. Neither gives the user-level roots on their own.
+// its folder. Neither gives the user-level roots on their own.
 func (m *Manager) SkillRoots(ctx context.Context, threadID, projectID string) (skills.Roots, error) {
 	home, _ := os.UserHomeDir()
 	switch {
@@ -34,7 +34,11 @@ func (m *Manager) SkillRoots(ctx context.Context, threadID, projectID string) (s
 		if err != nil {
 			return skills.Roots{}, err
 		}
-		return skills.DefaultRoots(home, nil, p.Root), nil
+		root := p.Home
+		if len(p.Folders) == 1 {
+			root = p.Folders[0].Path
+		}
+		return skills.DefaultRoots(home, nil, root), nil
 	default:
 		return skills.DefaultRoots(home, nil, ""), nil
 	}

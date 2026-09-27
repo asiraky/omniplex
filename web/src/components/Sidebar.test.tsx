@@ -40,7 +40,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     accentOf: () => undefined,
     projects: [] as Project[],
     projectName: () => "repo",
-    projectRoot: () => "/tmp/repo",
+    projectFolders: () => ["/tmp/repo"],
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
@@ -72,7 +72,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     accentOf: () => undefined,
     projects: [] as Project[],
     projectName: () => "repo",
-    projectRoot: () => "/tmp/repo",
+    projectFolders: () => ["/tmp/repo"],
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
@@ -457,8 +457,8 @@ describe("Sidebar", () => {
   });
   describe("projects", () => {
     const projects = [
-      { id: "p1", root: "/src/omniplex", config: { name: "omniplex" }, createdAt: 1, updatedAt: 1 },
-      { id: "p2", root: "/src/worksauce", config: { name: "worksauce" }, createdAt: 1, updatedAt: 1 },
+      { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+      { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
     ] as Project[];
     // Most recently updated first, the way the server sends them.
     const mixed = [

@@ -142,7 +142,6 @@ func (c *conn) dispatch(f clientFrame) {
 			Projects:  projects,
 			Labels:    labels,
 			Quotas:    c.srv.mgr.Quotas(),
-			Cwd:       c.srv.defaultCwd,
 			Access:    c.srv.access(c.ctx),
 		})
 
@@ -458,17 +457,10 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		if a.ProjectID != "" {
-			actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, BaseRef: a.BaseRef})
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"threadId": actor.ID}, nil
+		if a.ProjectID == "" {
+			return nil, errors.New("a thread belongs to a project; choose one")
 		}
-		if a.Cwd == "" {
-			a.Cwd = c.srv.defaultCwd
-		}
-		actor, err := c.srv.mgr.Create(ctx, a.Harness, a.Instance, a.Cwd, a.Model, a.Mode)
+		actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef})
 		if err != nil {
 			return nil, err
 		}
@@ -825,7 +817,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		spaces, err := c.srv.mgr.ListWorkspaces(ctx, a.ProjectID)
+		spaces, err := c.srv.mgr.ListWorkspaces(ctx, a.ProjectID, a.FolderID)
 		if err != nil {
 			return nil, err
 		}
@@ -841,7 +833,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		issues, issuesErr := c.srv.mgr.ListIssues(ctx, a.ProjectID)
+		issues, issuesErr := c.srv.mgr.ListIssues(ctx, a.ProjectID, a.FolderID)
 		return map[string]any{"issues": issues, "issuesError": issuesErr}, nil
 
 	case "thread_pr":
@@ -1113,7 +1105,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		p, err := c.srv.mgr.AddProject(ctx, a.Root)
+		p, err := c.srv.mgr.AddProject(ctx, a.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -1124,7 +1116,18 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		p, err := c.srv.mgr.SaveProject(ctx, a.ProjectID, a.Config)
+		p, err := c.srv.mgr.SaveProject(ctx, a.ProjectID, a.Name, a.Defaults)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"project": p}, nil
+
+	case "save_folder":
+		var a saveFolderArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		p, err := c.srv.mgr.SaveFolder(ctx, a.ProjectID, a.Folder)
 		if err != nil {
 			return nil, err
 		}

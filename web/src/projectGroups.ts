@@ -84,7 +84,7 @@ export function groupThreads(threads: ThreadMeta[], projects: Project[]): Projec
     // First appearance sets the order, and the list arrives newest-created
     // first, so the project holding the youngest thread leads — and holds
     // that position: activity reorders neither the list nor the groups.
-    groups.set(key, { key, name: project ? project.config.name : cwdName(s), threads: [s] });
+    groups.set(key, { key, name: project ? project.name : cwdName(s), threads: [s] });
   }
 
   return [...groups.values()];

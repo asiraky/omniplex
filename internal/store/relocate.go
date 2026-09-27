@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// RelocateStats describes the durable records changed by RelocateProject.
+// RelocateStats describes the durable records changed by RelocateFolder.
 type RelocateStats struct {
 	Threads   int
 	Events    int
@@ -28,10 +28,12 @@ type RelocationPath struct {
 	New string
 }
 
-// RelocateProject atomically rewrites the path-bearing records for one project.
-// Callers are expected to run this offline: a live manager would retain the old
-// paths in its in-memory actors even though the database had changed beneath it.
-func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, aliases ...RelocationPath) (RelocateStats, error) {
+// RelocateFolder atomically rewrites the path-bearing records for a folder
+// that moved on disk: every project folder at that path, a project home inside
+// it, and the threads of those projects. Callers are expected to run this
+// offline: a live manager would retain the old paths in its in-memory actors
+// even though the database had changed beneath it.
+func (s *Store) RelocateFolder(ctx context.Context, oldRoot, newRoot string, aliases ...RelocationPath) (RelocateStats, error) {
 	mappings := append([]RelocationPath{{Old: oldRoot, New: newRoot}}, aliases...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,20 +44,38 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 	}
 	defer tx.Rollback()
 
-	var projectID, home string
-	if err := tx.QueryRowContext(ctx, `SELECT id, home FROM projects WHERE root = ?`, oldRoot).Scan(&projectID, &home); err != nil {
-		if err == sql.ErrNoRows {
-			return RelocateStats{}, fmt.Errorf("project rooted at %s: %w", oldRoot, ErrNotFound)
-		}
+	projects := map[string]bool{}
+	frows, err := tx.QueryContext(ctx, `SELECT f.project_id, p.home FROM folders f JOIN projects p ON p.id = f.project_id WHERE f.path = ?`, oldRoot)
+	if err != nil {
 		return RelocateStats{}, err
 	}
-	// A plain-folder project's home is its root, and a home inside the root
-	// moves with it. One elsewhere (a git project's) stays where it is.
-	if home != "" {
-		home, _ = relocatePath(home, mappings)
+	homes := map[string]string{}
+	for frows.Next() {
+		var id, home string
+		if err := frows.Scan(&id, &home); err != nil {
+			frows.Close()
+			return RelocateStats{}, err
+		}
+		projects[id], homes[id] = true, home
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE projects SET root = ?, home = ? WHERE id = ?`, newRoot, home, projectID); err != nil {
-		return RelocateStats{}, fmt.Errorf("update project root: %w", err)
+	frows.Close()
+	if len(projects) == 0 {
+		return RelocateStats{}, fmt.Errorf("folder %s: %w", oldRoot, ErrNotFound)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE folders SET path = ? WHERE path = ?`, newRoot, oldRoot); err != nil {
+		return RelocateStats{}, fmt.Errorf("update folder path: %w", err)
+	}
+	// A plain-folder project's home is its folder, and a home inside the
+	// folder moves with it. One elsewhere stays where it is.
+	for id, home := range homes {
+		if home == "" {
+			continue
+		}
+		if next, ok := relocatePath(home, mappings); ok {
+			if _, err := tx.ExecContext(ctx, `UPDATE projects SET home = ? WHERE id = ?`, next, id); err != nil {
+				return RelocateStats{}, err
+			}
+		}
 	}
 
 	type threadPath struct {
@@ -80,7 +100,7 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 			item.changed = true
 			changedThreads++
 		}
-		if item.projectID == projectID || pathChanged {
+		if projects[item.projectID] || pathChanged {
 			projectThreads = append(projectThreads, item)
 		}
 	}

@@ -44,7 +44,7 @@ func testServerWithStore(t *testing.T) (http.Handler, *auth.Guard, *store.Store)
 	mgr := thread.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
-	srv := New(Options{Manager: mgr, Store: st, Guard: guard, DefaultCwd: t.TempDir()})
+	srv := New(Options{Manager: mgr, Store: st, Guard: guard})
 	return srv.Handler(), guard, st
 }
 
@@ -315,11 +315,10 @@ func TestHealthWithholdsCommitFromUnpairedDevices(t *testing.T) {
 	t.Cleanup(mgr.Shutdown)
 
 	handler := New(Options{
-		Manager:    mgr,
-		Store:      st,
-		Guard:      guard,
-		DefaultCwd: t.TempDir(),
-		Commit:     "deadbeef",
+		Manager: mgr,
+		Store:   st,
+		Guard:   guard,
+		Commit:  "deadbeef",
 	}).Handler()
 
 	read := func(h http.Handler) map[string]any {
@@ -367,11 +366,10 @@ func TestHealthGivesCommitToTheBoxEvenBehindAProxy(t *testing.T) {
 	t.Cleanup(mgr.Shutdown)
 
 	handler := New(Options{
-		Manager:    mgr,
-		Store:      st,
-		Guard:      guard,
-		DefaultCwd: t.TempDir(),
-		Commit:     "deadbeef",
+		Manager: mgr,
+		Store:   st,
+		Guard:   guard,
+		Commit:  "deadbeef",
 	}).Handler()
 
 	read := func(h http.Handler) map[string]any {

@@ -284,7 +284,7 @@ func (m *Manager) diffScope(ctx context.Context, threadID, mode string) (diffSco
 }
 
 // baseCandidates is what a branch might have been cut from, best guess first:
-// the project's configured base branch, then the remote's default, then the
+// the folder's configured base branch, then the remote's default, then the
 // conventional names.
 func (m *Manager) baseCandidates(ctx context.Context, meta store.ThreadMeta) []string {
 	var out []string
@@ -301,8 +301,8 @@ func (m *Manager) baseCandidates(ctx context.Context, meta store.ThreadMeta) []s
 	}
 
 	if meta.ProjectID != "" {
-		if p, err := m.store.Project(ctx, meta.ProjectID); err == nil {
-			add(p.Config.Defaults.BaseBranch)
+		if _, f, err := m.folder(ctx, meta.ProjectID, meta.FolderID); err == nil {
+			add(f.BaseBranch)
 		}
 	}
 	if head, err := runGit(ctx, meta.Cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {

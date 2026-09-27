@@ -14,68 +14,6 @@ import (
 	"github.com/asiraky/omniplex/internal/store"
 )
 
-// The config held against a project is a cache of the file in the repo, so a
-// pull that changes .omniplex/project.json has to take effect without the operator
-// removing and re-adding the project.
-func TestReloadProjectsTakesTheFileOverTheCache(t *testing.T) {
-	root, _, _ := gitRepo(t)
-	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
-	defer mgr.Shutdown()
-
-	if err := os.MkdirAll(filepath.Join(root, ".omniplex"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := project.DefaultConfig(root)
-	cfg.Workspace.Provision = "scripts/omniplex-provision.mjs"
-	cfg.Defaults.BaseBranch = "main"
-	if err := os.WriteFile(filepath.Join(root, project.ConfigPath), mustJSON(t, cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := mgr.ReloadProjects(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	got, err := st.Project(context.Background(), p.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Config.Workspace.Provision != "scripts/omniplex-provision.mjs" {
-		t.Fatalf("provision hook is %q, want the one from the file", got.Config.Workspace.Provision)
-	}
-	if got.Config.Defaults.BaseBranch != "main" {
-		t.Fatalf("base branch is %q, want main", got.Config.Defaults.BaseBranch)
-	}
-}
-
-// A missing file means the checkout moved or is mid-checkout, not that the
-// project's settings were cleared.
-func TestReloadProjectsLeavesAProjectWithNoFileAlone(t *testing.T) {
-	root, _, _ := gitRepo(t)
-	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
-	defer mgr.Shutdown()
-
-	before, err := st.Project(context.Background(), p.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before.Config.Workspace.Provision = "scripts/set-by-hand"
-	if err := st.PutProject(context.Background(), before); err != nil {
-		t.Fatal(err)
-	}
-	if err := mgr.ReloadProjects(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	after, err := st.Project(context.Background(), p.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Config.Workspace.Provision != "scripts/set-by-hand" {
-		t.Fatalf("provision hook became %q; a missing file must not clear settings", after.Config.Workspace.Provision)
-	}
-}
-
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -95,13 +33,13 @@ func (a *harnessNamedAdapter) ID() string { return a.id }
 func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	p.Config.Defaults.Harness = "claude"
-	p.Config.Defaults.Harnesses = map[string]project.HarnessDefaults{
+	p.Defaults.Harness = "claude"
+	p.Defaults.Harnesses = map[string]project.HarnessDefaults{
 		"claude": {Model: "opus", Mode: "bypassPermissions", Effort: "high"},
 		"codex":  {Model: "gpt-5.6-sol", Mode: "full-access", Effort: "xhigh"},
 	}
-	p.Config.Defaults.Workspace = "local"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p.Defaults.Workspace = "local"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	mgr := NewManager(st, func(string, ...any) {},
@@ -131,12 +69,12 @@ func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 func TestExplicitHarnessDefaultsAreNotReplacedByProjectProfile(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	p.Config.Defaults.Harness = "codex"
-	p.Config.Defaults.Harnesses = map[string]project.HarnessDefaults{
+	p.Defaults.Harness = "codex"
+	p.Defaults.Harnesses = map[string]project.HarnessDefaults{
 		"codex": {Model: "stale-model", Mode: "stale-mode", Effort: "stale-effort"},
 	}
-	p.Config.Defaults.Workspace = "local"
-	if err := st.PutProject(context.Background(), p); err != nil {
+	p.Defaults.Workspace = "local"
+	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
 	mgr := NewManager(st, func(string, ...any) {}, &harnessNamedAdapter{id: "codex"})
@@ -155,37 +93,6 @@ func TestExplicitHarnessDefaultsAreNotReplacedByProjectProfile(t *testing.T) {
 	}
 	if meta.Model != "" || meta.Mode != "" || meta.Effort != "" {
 		t.Fatalf("explicit harness defaults were replaced: model=%q mode=%q effort=%q", meta.Model, meta.Mode, meta.Effort)
-	}
-}
-
-func TestCachedLegacyDefaultsAreNormalizedWithoutAProjectFile(t *testing.T) {
-	root, _, _ := gitRepo(t)
-	st, p := testProject(t, root)
-	p.Config.Defaults.Harness = "claude"
-	p.Config.Defaults.Model = "opus"
-	p.Config.Defaults.Mode = "bypassPermissions"
-	p.Config.Defaults.Effort = "high"
-	p.Config.Defaults.Harnesses = nil
-	p.Config.Defaults.Workspace = "local"
-	if err := st.PutProject(context.Background(), p); err != nil {
-		t.Fatal(err)
-	}
-	mgr := NewManager(st, func(string, ...any) {}, &harnessNamedAdapter{id: "claude"})
-	defer mgr.Shutdown()
-
-	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
-		ProjectID: p.ID, Harness: "claude", Workspace: "local",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Dispose("test done")
-	meta, err := st.Thread(context.Background(), a.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Model != "opus" || meta.Mode != "bypassPermissions" || meta.Effort != "high" {
-		t.Fatalf("cached legacy defaults not normalized: model=%q mode=%q effort=%q", meta.Model, meta.Mode, meta.Effort)
 	}
 }
 
@@ -213,17 +120,10 @@ func TestDeleteProjectRemovesItFromTheRegistry(t *testing.T) {
 }
 
 // Deleting a project is a registry edit. The checkout it points at is the
-// user's own directory, and its config file is what makes re-adding it
-// restore everything — neither is omniplex's to remove.
+// user's own directory, and not omniplex's to remove.
 func TestDeleteProjectLeavesTheCheckoutAlone(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	if err := os.MkdirAll(filepath.Join(root, ".omniplex"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, project.ConfigPath), mustJSON(t, project.DefaultConfig(root)), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
@@ -232,9 +132,6 @@ func TestDeleteProjectLeavesTheCheckoutAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "README")); err != nil {
 		t.Fatalf("the checkout is gone: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, project.ConfigPath)); err != nil {
-		t.Fatalf("the project config is gone: %v", err)
 	}
 }
 
@@ -335,7 +232,7 @@ func TestSaveProjectCannotResurrectADeletedOne(t *testing.T) {
 	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.SaveProject(context.Background(), p.ID, p.Config); !errors.Is(err, store.ErrNotFound) {
+	if _, err := mgr.SaveProject(context.Background(), p.ID, p.Name, p.Defaults); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("saving a deleted project gave %v, want ErrNotFound", err)
 	}
 	projects, err := mgr.Projects(context.Background())
@@ -365,5 +262,89 @@ func TestProjectChangesReachEveryConnection(t *testing.T) {
 	case <-ch:
 	default:
 		t.Fatal("deleting a project woke no project subscriber, so other devices keep showing it")
+	}
+}
+
+// Copies and attaching are git's. A plain folder has neither, so a thread
+// there works in the folder whatever the project defaults to.
+func TestAPlainFolderThreadWorksInTheFolder(t *testing.T) {
+	root := t.TempDir()
+	st, p := testProject(t, root)
+	p.Defaults.Workspace = "managed"
+	if err := putProject(context.Background(), st, p); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Dispose("test done")
+	meta, _ := st.Thread(context.Background(), a.ID)
+	if meta.WorkspaceMode != "local" || meta.Cwd != root || meta.FolderID != p.Folders[0].ID {
+		t.Fatalf("thread = mode %q cwd %q folder %q", meta.WorkspaceMode, meta.Cwd, meta.FolderID)
+	}
+	if _, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: root}); err == nil {
+		t.Fatal("attached to a copy of a plain folder")
+	}
+}
+
+// With several folders and none chosen, the thread is the whole project's:
+// it starts in the home folder and never works on a copy.
+func TestAThreadAcrossTheProjectStartsInTheHomeFolder(t *testing.T) {
+	t.Setenv("OMNIPLEX_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	repo, _, _ := gitRepo(t)
+	st, p := testProject(t, repo)
+	home := t.TempDir()
+	if err := st.SetProjectHome(context.Background(), p.ID, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddFolder(context.Background(), p.ID, project.NewFolder("f2", t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	if _, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "managed"}); err == nil {
+		t.Fatal("made a copy for a thread across several folders")
+	}
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Dispose("test done")
+	meta, _ := st.Thread(context.Background(), a.ID)
+	if meta.Cwd != home || meta.FolderID != "" {
+		t.Fatalf("thread cwd %q folder %q, want the home folder and no folder", meta.Cwd, meta.FolderID)
+	}
+	b, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, FolderID: p.Folders[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Dispose("test done")
+	if meta, _ := st.Thread(context.Background(), b.ID); meta.Cwd != canonicalPath(repo) && meta.Cwd != repo {
+		t.Fatalf("a thread in one folder started in %q", meta.Cwd)
+	}
+}
+
+// A plain folder added as a project is its home; a repo waits for one.
+func TestAddProjectMakesAPlainFolderTheHome(t *testing.T) {
+	st, _ := testProject(t, t.TempDir())
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+	plain := t.TempDir()
+	repo, _, _ := gitRepo(t)
+	pp, err := mgr.AddProject(context.Background(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gp, err := mgr.AddProject(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pp.Home != plain || pp.Folders[0].Git || gp.Home != "" || !gp.Folders[0].Git {
+		t.Fatalf("plain home %q git %v; repo home %q git %v", pp.Home, pp.Folders[0].Git, gp.Home, gp.Folders[0].Git)
 	}
 }

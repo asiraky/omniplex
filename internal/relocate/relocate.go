@@ -100,15 +100,16 @@ func Run(ctx context.Context, oldRoot, newRoot string, options Options) (Report,
 	if err != nil {
 		return Report{}, fmt.Errorf("list projects: %w", err)
 	}
-	projectID := ""
+	projectIDs := map[string]bool{}
 	for _, project := range projects {
-		if filepath.Clean(project.Root) == oldRoot {
-			projectID = project.ID
-			break
+		for _, folder := range project.Folders {
+			if filepath.Clean(folder.Path) == oldRoot {
+				projectIDs[project.ID] = true
+			}
 		}
 	}
-	if projectID == "" {
-		return Report{}, fmt.Errorf("no project is rooted at %s", oldRoot)
+	if len(projectIDs) == 0 {
+		return Report{}, fmt.Errorf("no project has the folder %s", oldRoot)
 	}
 
 	threads, err := st.ListThreads(ctx)
@@ -118,7 +119,7 @@ func Run(ctx context.Context, oldRoot, newRoot string, options Options) (Report,
 	var projectThreads []store.ThreadMeta
 	for _, thread := range threads {
 		_, underOldRoot := replacePath(thread.Cwd, mappings)
-		if thread.ProjectID == projectID || underOldRoot {
+		if projectIDs[thread.ProjectID] || underOldRoot {
 			projectThreads = append(projectThreads, thread)
 		}
 	}
@@ -166,7 +167,7 @@ func Run(ctx context.Context, oldRoot, newRoot string, options Options) (Report,
 		moved = append(moved, change)
 	}
 
-	report.Database, err = st.RelocateProject(ctx, oldRoot, newRoot, mappings[1:]...)
+	report.Database, err = st.RelocateFolder(ctx, oldRoot, newRoot, mappings[1:]...)
 	if err != nil {
 		rollback()
 		return Report{}, fmt.Errorf("rewrite database: %w", err)

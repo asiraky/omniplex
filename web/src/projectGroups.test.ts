@@ -4,7 +4,7 @@ import { groupThreads, visibleByProject } from "./projectGroups";
 import type { Project, ThreadMeta } from "~/protocol";
 
 const project = (id: string, name: string): Project =>
-  ({ id, root: `/src/${name}`, config: { name } }) as Project;
+  ({ id, name, defaults: {}, folders: [] }) as unknown as Project;
 
 const thread = (id: string, projectId?: string, cwd = "/src/somewhere/here") =>
   ({ id, projectId, cwd }) as ThreadMeta;

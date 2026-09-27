@@ -41,7 +41,7 @@ func newArtefactRig(t *testing.T) *artefactRig {
 	arts := artefact.New(filepath.Join(dir, "artefacts"))
 	mgr.SetArtefacts(arts)
 	signer := artefact.NewSigner([]byte("0123456789abcdef0123456789abcdef"))
-	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), DefaultCwd: dir, Artefacts: arts, ArtefactSigner: signer})
+	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), Artefacts: arts, ArtefactSigner: signer})
 	a, err := mgr.Create(context.Background(), fa.ID(), "", dir, "test-model", "default")
 	if err != nil {
 		t.Fatal(err)

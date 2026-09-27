@@ -65,7 +65,6 @@ type serverFrame struct {
 	// welcome and re-sent whole whenever a live push or a refresh changes one
 	// — the whole list, because one provider moving must never blank another.
 	Quotas []thread.QuotaStatus `json:"quotas,omitempty"`
-	Cwd    string               `json:"cwd,omitempty"`
 	// Access travels on welcome, after the gate, so an unpaired caller
 	// learns nothing about how else this machine can be reached.
 	Access *endpoints.Set `json:"access,omitempty"`
@@ -91,15 +90,17 @@ type createArgs struct {
 	// Instance names the provider instance to run under; empty means the
 	// harness's default instance, which is today's behaviour.
 	Instance  string `json:"instance"`
-	Cwd       string `json:"cwd"`
 	ProjectID string `json:"projectId"`
 	Branch    string `json:"branch"`
 	Workspace string `json:"workspace"`
 	// WorkspacePath attaches to a checkout that already exists rather than
 	// provisioning one; empty means the usual create-a-worktree path.
 	WorkspacePath string `json:"workspacePath"`
+	// FolderID scopes the thread to one folder; empty is the project's only
+	// folder, or the whole project when it has several.
+	FolderID string `json:"folderId"`
 	// BaseRef is the ref a new worktree branches from; empty defers to the
-	// project's default base branch.
+	// folder's base branch.
 	BaseRef string `json:"baseRef"`
 	Model   string `json:"model"`
 	Mode    string `json:"mode"`
@@ -120,6 +121,7 @@ type deleteThreadArgs struct {
 
 type listWorkspacesArgs struct {
 	ProjectID string `json:"projectId"`
+	FolderID  string `json:"folderId"`
 }
 
 type saveUserConfigArgs struct {
@@ -127,11 +129,16 @@ type saveUserConfigArgs struct {
 }
 
 type addProjectArgs struct {
-	Root string `json:"root"`
+	Path string `json:"path"`
 }
 type saveProjectArgs struct {
+	ProjectID string           `json:"projectId"`
+	Name      string           `json:"name"`
+	Defaults  project.Defaults `json:"defaults"`
+}
+type saveFolderArgs struct {
 	ProjectID string         `json:"projectId"`
-	Config    project.Config `json:"config"`
+	Folder    project.Folder `json:"folder"`
 }
 
 // deleteProjectArgs carries only the id: deleting a project removes the
