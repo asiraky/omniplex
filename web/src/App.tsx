@@ -72,6 +72,7 @@ const NEW_THREAD = "new-thread";
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const ThreadSummaryPanel = lazy(() => import("./components/ThreadSummary").then((m) => ({ default: m.ThreadSummaryPanel })));
 const NewProject = lazy(() => import("./components/NewProject").then((m) => ({ default: m.NewProject })));
+const Settings = lazy(() => import("./components/Settings").then((m) => ({ default: m.Settings })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
 // The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
 const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
@@ -902,6 +903,7 @@ export function App() {
   const [loginInstance, setLoginInstance] = useState<string | null>(null);
   // The providers screen, and the structured sign-in dialog for one instance.
   const [showProviders, setShowProviders] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [authInstance, setAuthInstance] = useState<string | null>(null);
 
   const recheck = useCallback(() => {
@@ -1303,6 +1305,9 @@ export function App() {
         onShowAccess={() => setShowAccess(true)}
         onShowUsage={() => setShowUsage(true)}
         onShowProviders={() => setShowProviders(true)}
+        onShowSettings={() =>
+          userConfig ? setShowSettings(true) : toast("Settings are still loading, try again in a moment")
+        }
         accentOf={accentOf}
         projects={projects}
         projectName={(id)=>projects.find(p=>p.id===id)?.name}
@@ -1772,15 +1777,23 @@ export function App() {
           <ProjectSettings
           project={projectSettings}
           harnesses={harnesses}
-          userConfig={userConfig}
           onSave={saveProject}
           onAddFolder={addFolder}
           onRemoveFolder={removeFolder}
           listRepos={listRepos}
           onDelete={deleteProject}
           threadCount={threads.filter((s) => s.projectId === projectSettings.id).length}
-          onSaveUserConfig={saveUserConfig}
           onClose={() => setProjectSettings(null)}
+          />
+        </Suspense>
+      )}
+      {showSettings && userConfig && (
+        <Suspense fallback={null}>
+          <Settings
+            userConfig={userConfig}
+            harnesses={harnesses}
+            onSave={saveUserConfig}
+            onClose={() => setShowSettings(false)}
           />
         </Suspense>
       )}

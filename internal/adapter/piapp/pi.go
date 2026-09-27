@@ -84,6 +84,7 @@ func (a *Adapter) PermissionModes() []adapter.PermissionModeMeta {
 			Label:       "Full access",
 			Description: "Pi runs read, edit, and shell tools without asking. It has no approval prompts.",
 			Default:     true,
+			Level:       adapter.LevelAll,
 		},
 	}
 }

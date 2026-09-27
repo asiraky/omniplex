@@ -28,14 +28,12 @@ function open(over: Partial<React.ComponentProps<typeof ProjectSettings>> = {}) 
   const props = {
     project,
     harnesses: [],
-    userConfig: null,
     onAddFolder: vi.fn(async () => project),
     onRemoveFolder: vi.fn(async () => project),
     listRepos: vi.fn(async () => []),
     onSave: vi.fn(async () => {}),
     onDelete: vi.fn(async () => {}),
     threadCount: 0,
-    onSaveUserConfig: vi.fn(async () => {}),
     onClose: vi.fn(),
     ...over,
   } satisfies React.ComponentProps<typeof ProjectSettings>;

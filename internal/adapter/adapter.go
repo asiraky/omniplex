@@ -162,7 +162,18 @@ type PermissionModeMeta struct {
 	// Default marks the mode selected when the user has expressed no
 	// preference. It matches what an empty CreateOptions.Mode does.
 	Default bool `json:"default,omitempty"`
+	// Level places the mode on the scale every harness shares, so a person can
+	// pick how much the agent may do without learning each harness's names.
+	// Empty for the modes that fit none of them; those stay under Advanced.
+	Level string `json:"level,omitempty"`
 }
+
+// The permission levels, least trusting first.
+const (
+	LevelAsk   = "ask"   // ask before changing anything
+	LevelEdits = "edits" // edit files, ask before commands
+	LevelAll   = "all"   // do everything without asking
+)
 
 // Availability states.
 const (

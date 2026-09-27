@@ -1,6 +1,9 @@
 package userconfig
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestExpandHomeResolvesTildeAndRefusesRelativePaths(t *testing.T) {
 	t.Setenv("HOME", "/home/someone")
@@ -11,5 +14,39 @@ func TestExpandHomeResolvesTildeAndRefusesRelativePaths(t *testing.T) {
 	}
 	if got, err := ExpandHome("code/app"); err == nil {
 		t.Errorf("relative path accepted as %q", got)
+	}
+}
+
+func TestSavingRefusesSettingsItCouldNotUse(t *testing.T) {
+	t.Setenv("OMNIPLEX_CONFIG", t.TempDir()+"/config.json")
+	for name, cfg := range map[string]Config{
+		"relative projects folder": {ProjectsDir: "code/projects"},
+		"unknown level":            {DefaultLevel: "yolo"},
+	} {
+		if _, err := Save(cfg); err == nil {
+			t.Errorf("%s: saved", name)
+		}
+	}
+	saved, err := Save(Config{ProjectsDir: " ~/work ", DefaultLevel: "edits"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.ProjectsDir != "~/work" {
+		t.Errorf("projects folder kept as %q", saved.ProjectsDir)
+	}
+}
+
+func TestABadValueOnDiskStillLoads(t *testing.T) {
+	path := t.TempDir() + "/config.json"
+	t.Setenv("OMNIPLEX_CONFIG", path)
+	if err := os.WriteFile(path, []byte(`{"version":1,"projectsDir":"relative","defaultLevel":"yolo"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// And the settings screen can put it right.
+	if _, err := Update(func(c *Config) error { c.ProjectsDir, c.DefaultLevel = "", ""; return nil }); err != nil {
+		t.Fatalf("fix: %v", err)
 	}
 }

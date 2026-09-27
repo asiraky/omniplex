@@ -7,7 +7,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useState } from "react";
 
 import { FolderBrowser, GitHubPicker } from "~/components/FolderSources";
 import { Alert, AlertDescription } from "~/components/ui/alert";
@@ -32,27 +32,15 @@ import {
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import { Spinner } from "~/components/ui/spinner";
-import { Textarea } from "~/components/ui/textarea";
 import { formatEffort } from "~/lib/efforts";
 import { cn } from "~/lib/utils";
 import type {
   Folder,
   GitHubRepo,
   HarnessMeta,
-  Issue,
   Project,
   ProjectDefaults,
-  UserConfig,
 } from "~/protocol";
-import { makeFormatter } from "./WorkspacePicker";
-
-// A stand-in issue, so the preview shows a real answer rather than describing one.
-const sampleIssue: Issue = {
-  number: 482,
-  title: "Token refresh 500s after 24h",
-  url: "",
-  labels: [{ name: "bug" }],
-};
 
 /**
  * The effort levels to offer when no model says. Harnesses report their own —
@@ -92,48 +80,6 @@ function SectionHeading({ children, note }: { children: React.ReactNode; note?: 
       {children}
       {note && <span className="text-muted-foreground font-normal"> · {note}</span>}
     </h3>
-  );
-}
-
-/**
- * The branch-name function is the operator's own habit, not the project's, so
- * it saves to ~/.omniplex/config.json even though it is edited on this screen.
- */
-function BranchFormatField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const id = useId();
-  const preview = useMemo(() => {
-    const { format, error } = makeFormatter(value);
-    if (error) return { text: error, bad: true };
-    const out = format(sampleIssue);
-    return out
-      ? { text: out, bad: false }
-      : { text: "function returned nothing for the sample issue", bad: true };
-  }, [value]);
-
-  return (
-    <div className="space-y-1.5">
-      <SectionHeading note="this machine only">Branch names from issues</SectionHeading>
-      <p className="text-muted-foreground text-[11px]">
-        A JavaScript function, issue in and branch name out. It names the worktrees suggested from
-        your open GitHub issues.
-      </p>
-      <Textarea
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        rows={4}
-        className="scroll-thin font-mono md:text-[11px]"
-      />
-      <p
-        className={cn(
-          "font-mono text-[11px] break-all",
-          preview.bad ? "text-attention-foreground" : "text-muted-foreground",
-        )}
-      >
-        #{sampleIssue.number} → {preview.text}
-      </p>
-    </div>
   );
 }
 
@@ -458,19 +404,16 @@ function DeleteProjectSection({
 export function ProjectSettings({
   project,
   harnesses,
-  userConfig,
   onSave,
   onAddFolder,
   onRemoveFolder,
   listRepos,
   onDelete,
   threadCount,
-  onSaveUserConfig,
   onClose,
 }: {
   project: Project;
   harnesses: HarnessMeta[];
-  userConfig: UserConfig | null;
   onAddFolder: (projectId: string, req: AddFolderRequest) => Promise<Project>;
   onRemoveFolder: (projectId: string, folderId: string) => Promise<Project>;
   listRepos: () => Promise<GitHubRepo[]>;
@@ -479,14 +422,12 @@ export function ProjectSettings({
   /** How many threads still belong to this project; a project with any is
       not deletable, and the screen says so before the button is pressed. */
   threadCount: number;
-  onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(project.name);
   const [defs, setDefs] = useState<ProjectDefaults>(project.defaults);
   const [folders, setFolders] = useState<Folder[]>(project.folders);
   const [settingsHarness, setSettingsHarness] = useState(project.defaults.harness ?? "codex");
-  const [user, setUser] = useState<UserConfig>(userConfig ?? { version: 1 });
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -496,7 +437,6 @@ export function ProjectSettings({
     setError(null);
     try {
       await onSave(project.id, name, defs, folders);
-      await onSaveUserConfig(user);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -730,13 +670,6 @@ export function ProjectSettings({
               ))}
 
               {gitFolders.length > 0 && <Separator />}
-
-              <BranchFormatField
-                value={user.branchFormat ?? ""}
-                onChange={(v) => setUser({ ...user, branchFormat: v })}
-              />
-
-              <Separator />
 
               <DeleteProjectSection
                 name={name}

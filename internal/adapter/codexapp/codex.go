@@ -106,12 +106,12 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 // point, so each preset pins every axis explicitly.
 func (a *Adapter) PermissionModes() []adapter.PermissionModeMeta {
 	return []adapter.PermissionModeMeta{
-		{ID: "untrusted", Label: "Manual", Description: "Ask before all but trusted read-only commands"},
+		{ID: "untrusted", Label: "Manual", Description: "Ask before all but trusted read-only commands", Level: adapter.LevelAsk},
 		{ID: "read-only", Label: "Plan", Description: "Read and analyze only; ask to go further"},
-		{ID: "on-request", Label: "Ask when needed", Description: "Write in the workspace; the model asks when it needs more", Default: true},
+		{ID: "on-request", Label: "Ask when needed", Description: "Write in the workspace; the model asks when it needs more", Default: true, Level: adapter.LevelEdits},
 		{ID: "auto-review", Label: "Auto", Description: "A reviewer subagent approves or denies escalations"},
 		{ID: "sandboxed-auto", Label: "No prompts (sandboxed)", Description: "Never ask; the sandbox contains the damage"},
-		{ID: "full-access", Label: "Bypass", Description: "Never ask and no sandbox"},
+		{ID: "full-access", Label: "Bypass", Description: "Never ask and no sandbox", Level: adapter.LevelAll},
 	}
 }
 

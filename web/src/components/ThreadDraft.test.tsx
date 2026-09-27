@@ -618,6 +618,8 @@ describe("remembered thread choices", () => {
   }
   async function bypass() {
     menu("Permissions");
+    const advanced = await screen.findByRole("menuitem", { name: "Advanced" });
+    if (advanced.getAttribute("aria-expanded") !== "true") fireEvent.click(advanced);
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Bypass/ }));
   }
   async function highEffort() {
@@ -717,4 +719,124 @@ describe("remembered thread choices", () => {
   });
 
 
+});
+
+describe("permission levels", () => {
+  const claude = {
+    ...harness,
+    permissionModes: [
+      { id: "default", label: "Manual", default: true, level: "ask" },
+      { id: "plan", label: "Plan" },
+      { id: "acceptEdits", label: "Accept edits", level: "edits" },
+      { id: "bypassPermissions", label: "Bypass", level: "all" },
+    ],
+  } as unknown as HarnessMeta;
+  const plain = { ...project, folders: [] } as unknown as Project;
+
+  const send = async () => {
+    const button = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+  };
+
+  it("offers the three levels and sends the harness's mode for the one picked", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({ projects: [plain], harnesses: [claude], onCreate });
+    expect(chip("Permissions").textContent).toBe("Ask first");
+    menu("Permissions");
+    const levels = await screen.findAllByRole("menuitemradio");
+    expect(levels.map((l) => l.textContent?.split(":")[0])).toEqual([
+      "Ask before changing anythingClaude Code",
+      "Edit files, ask before commandsClaude Code",
+      "Do everythingClaude Code",
+    ]);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^Do everything/ }));
+    expect(chip("Permissions").textContent).toBe("Do everything");
+    await send();
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ mode: "bypassPermissions" });
+  });
+
+  it("keeps a mode outside the levels under Advanced", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({ projects: [plain], harnesses: [claude], onCreate });
+    menu("Permissions");
+    expect(screen.queryByRole("menuitemradio", { name: /^Plan/ })).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Advanced" }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Plan/ }));
+    expect(chip("Permissions").textContent).toBe("Plan");
+    await send();
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ mode: "plan" });
+  });
+
+  it("starts a project's first thread on the default level from settings", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({
+      projects: [plain],
+      harnesses: [claude],
+      userConfig: { version: 1, defaultLevel: "edits" },
+      onCreate,
+    });
+    expect(chip("Permissions").textContent).toBe("Edit files");
+    await send();
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ mode: "acceptEdits" });
+  });
+
+  it("lets the project's own last choice win over the default from settings", async () => {
+    open({ projects: [plain], harnesses: [claude], userConfig: { version: 1, defaultLevel: "edits" } });
+    menu("Permissions");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Ask before/ }));
+    cleanup();
+    open({ projects: [plain], harnesses: [claude], userConfig: { version: 1, defaultLevel: "edits" } });
+    expect(chip("Permissions").textContent).toBe("Ask first");
+  });
+});
+
+describe("the default model from settings", () => {
+  const ready = { state: "ready" } as const;
+  const agents = ["claude", "codex"].map((id) => ({
+    id,
+    name: id,
+    availability: ready,
+    permissionModes: [],
+    instances: [
+      {
+        id,
+        driver: id,
+        displayName: id,
+        enabled: true,
+        availability: ready,
+        models: [
+          { id: `${id}-basic`, label: `${id} Basic`, default: true },
+          { id: `${id}-advanced`, label: `${id} Advanced` },
+        ],
+      },
+    ],
+  })) as unknown as HarnessMeta[];
+  const fresh = {
+    ...project,
+    defaults: { workspace: "local", harnesses: {} },
+    folders: [],
+  } as unknown as Project;
+
+  it("starts a project with no habit of its own on the default model", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({
+      projects: [fresh],
+      harnesses: agents,
+      userConfig: { version: 1, defaultInstance: "codex", defaultModel: "codex-advanced" },
+      onCreate,
+    });
+    const button = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({
+      harness: "codex",
+      instance: "codex",
+      model: "codex-advanced",
+    });
+  });
 });

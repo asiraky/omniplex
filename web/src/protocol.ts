@@ -469,6 +469,11 @@ export interface UserConfig {
   summaryPrompt?: string;
   /** Where new projects' home folders go. Empty means ~/Omniplex. */
   projectsDir?: string;
+  /** What a project's first thread runs on; empty defers to a ready account. */
+  defaultInstance?: string;
+  defaultModel?: string;
+  /** The permission level a project's first thread starts on. */
+  defaultLevel?: PermissionLevel | "";
 }
 
 /** One of the signed-in user's GitHub repositories, from `gh repo list`. */
@@ -600,7 +605,12 @@ export interface PermissionModeMeta {
   description?: string;
   /** Selected when the user has expressed no preference. */
   default?: boolean;
+  /** Where the mode sits on the scale every harness shares; absent for the
+      modes that fit none of it. */
+  level?: PermissionLevel;
 }
+
+export type PermissionLevel = "ask" | "edits" | "all";
 
 export interface Remedy {
   text: string;

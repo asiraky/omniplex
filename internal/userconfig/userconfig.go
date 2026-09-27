@@ -55,6 +55,14 @@ type Config struct {
 	// ProjectsDir is where a project's home folder is made. Empty means
 	// ~/Omniplex.
 	ProjectsDir string `json:"projectsDir,omitempty"`
+	// DefaultInstance and DefaultModel are what a project's first thread runs
+	// on, before the project has a habit of its own. Empty defers to whichever
+	// account is ready.
+	DefaultInstance string `json:"defaultInstance,omitempty"`
+	DefaultModel    string `json:"defaultModel,omitempty"`
+	// DefaultLevel is the permission level a project's first thread starts
+	// on: "ask", "edits" or "all". Empty defers to each harness's default.
+	DefaultLevel string `json:"defaultLevel,omitempty"`
 }
 
 // ProjectsDirOrDefault is the folder project home folders go in.
@@ -118,6 +126,7 @@ func Normalize(cfg Config) (Config, error) {
 	if strings.TrimSpace(cfg.SummaryPrompt) == "" {
 		cfg.SummaryPrompt = DefaultSummaryPrompt
 	}
+	cfg.ProjectsDir = strings.TrimSpace(cfg.ProjectsDir)
 	return cfg, nil
 }
 
@@ -171,6 +180,9 @@ func Save(cfg Config) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	if err := validate(cfg); err != nil {
+		return cfg, err
+	}
 	path, err := Path()
 	if err != nil {
 		return cfg, err
@@ -200,4 +212,20 @@ func Save(cfg Config) (Config, error) {
 		return cfg, err
 	}
 	return cfg, os.Rename(name, path)
+}
+
+// validate refuses what a settings screen could get wrong. It runs on save,
+// not load: a bad value already on disk must not lock out the screen that
+// fixes it.
+func validate(cfg Config) error {
+	if cfg.ProjectsDir != "" {
+		if _, err := ExpandHome(cfg.ProjectsDir); err != nil {
+			return fmt.Errorf("projects folder: %w", err)
+		}
+	}
+	switch cfg.DefaultLevel {
+	case "", "ask", "edits", "all":
+		return nil
+	}
+	return fmt.Errorf("unknown permission level %q", cfg.DefaultLevel)
 }

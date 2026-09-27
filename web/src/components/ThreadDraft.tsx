@@ -26,11 +26,7 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Label } from "~/components/ui/label";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "~/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -40,19 +36,10 @@ import {
 } from "~/components/ui/select";
 import { initialProject, saveLastProject } from "~/lib/lastProject";
 import { defaultModel, pickerInstances, resolveInstance } from "~/lib/models";
-import {
-  loadThreadPrefs,
-  saveThreadPrefs,
-  type HarnessPrefs,
-} from "~/lib/threadPrefs";
+import { LEVELS, modeForLevel } from "~/lib/permissions";
+import { loadThreadPrefs, saveThreadPrefs, type HarnessPrefs } from "~/lib/threadPrefs";
 import { cn } from "~/lib/utils";
-import type {
-  HarnessMeta,
-  Issue,
-  Project,
-  UserConfig,
-  Workspace,
-} from "~/protocol";
+import type { HarnessMeta, Issue, Project, UserConfig, Workspace } from "~/protocol";
 import { WorkspacePicker, type WorkspaceChoice } from "./WorkspacePicker";
 
 export interface NewThreadInput {
@@ -131,10 +118,7 @@ export function ThreadDraft({
   draft: string;
   onDraftChange: (text: string) => void;
   onStart: (input: NewThreadInput) => Promise<void>;
-  onListWorkspaces: (
-    projectId: string,
-    folderId: string,
-  ) => Promise<Workspace[]>;
+  onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
   onAddProject: () => void;
@@ -145,9 +129,7 @@ export function ThreadDraft({
   /** Open the providers screen, for when signing in is not the fix. */
   onManageProviders?: () => void;
 }) {
-  const [projectId, setProjectId] = useState(() =>
-    initialProject(projects, activeProjectId),
-  );
+  const [projectId, setProjectId] = useState(() => initialProject(projects, activeProjectId));
   const [preferences, setPreferences] = useState(loadThreadPrefs);
   const [choice, setChoice] = useState<WorkspaceChoice>({
     branch: "",
@@ -167,6 +149,8 @@ export function ThreadDraft({
   const [loadingSpaces, setLoadingSpaces] = useState(false);
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [starting, setStarting] = useState(false);
+  // The harness's own permission modes, folded away behind the levels.
+  const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const project = projects.find((p) => p.id === projectId) ?? projects[0];
@@ -175,24 +159,20 @@ export function ThreadDraft({
   const wantedFolder = folderId ?? remembered?.folderId ?? "";
   // One folder is the scope with nothing to choose. With several, none chosen
   // is the whole project, which asks no git questions.
-  const scope =
-    folders.length === 1
-      ? folders[0]
-      : folders.find((f) => f.id === wantedFolder);
+  const scope = folders.length === 1 ? folders[0] : folders.find((f) => f.id === wantedFolder);
   const gitScope = scope?.git ? scope : undefined;
 
   const instances = pickerInstances(harnesses);
   const fallbackHarness =
-    (harnesses.some((h) => h.id === remembered?.harness)
-      ? remembered?.harness
-      : "") ||
+    (harnesses.some((h) => h.id === remembered?.harness) ? remembered?.harness : "") ||
     project?.defaults.harness ||
+    instances.find((i) => i.id === userConfig?.defaultInstance)?.driver ||
     harnesses.find((h) => h.availability.state === "ready")?.id ||
     harnesses[0]?.id ||
     "";
   const instance = resolveInstance(
     instances,
-    remembered?.byHarness[fallbackHarness]?.instance ?? "",
+    remembered?.byHarness[fallbackHarness]?.instance ?? userConfig?.defaultInstance ?? "",
     fallbackHarness,
   );
   const harnessId = instance?.driver ?? fallbackHarness;
@@ -202,7 +182,11 @@ export function ThreadDraft({
   const harnessDefaults = project?.defaults.harnesses?.[harnessId];
   // A model the account no longer offers is not sent: the harness's own
   // default is a better answer than a name it has stopped serving.
-  const preferred = chosen?.model ?? harnessDefaults?.model ?? "";
+  const preferred =
+    chosen?.model ??
+    harnessDefaults?.model ??
+    (instance && instance.id === userConfig?.defaultInstance ? userConfig.defaultModel : "") ??
+    "";
   const model = instance?.models.some((m) => m.id === preferred)
     ? preferred
     : (defaultModel(instance)?.id ?? "");
@@ -217,22 +201,18 @@ export function ThreadDraft({
   // Only an expressed preference is sent; otherwise the harness's own
   // configured default wins.
   const modes = selected?.permissionModes ?? [];
-  const preferredMode = chosen?.mode ?? harnessDefaults?.mode ?? "";
+  const preferredMode =
+    chosen?.mode ?? harnessDefaults?.mode ?? modeForLevel(modes, userConfig?.defaultLevel);
   const mode = modes.some((m) => m.id === preferredMode) ? preferredMode : "";
-  const displayModeId =
-    mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
+  const displayModeId = mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
   const modeMeta = modes.find((m) => m.id === displayModeId);
 
   // The folder itself is its own choice, so it is not offered again as a copy.
   const attachable = workspaces.filter((w) => !w.isRoot);
-  const lastCopy =
-    remembered?.copy ?? project?.defaults.workspace === "managed";
-  const kind: WorkspaceKind = !gitScope
-    ? "main"
-    : chosenKind || (lastCopy ? "branch" : "main");
+  const lastCopy = remembered?.copy ?? project?.defaults.workspace === "managed";
+  const kind: WorkspaceKind = !gitScope ? "main" : chosenKind || (lastCopy ? "branch" : "main");
   const branch = kind === "branch" ? choice.branch.trim() : "";
-  const workspace =
-    kind === "main" ? "local" : kind === "attach" ? "" : "managed";
+  const workspace = kind === "main" ? "local" : kind === "attach" ? "" : "managed";
   const workspacePath = kind === "attach" ? choice.attachPath : "";
   // A base only means anything where Omniplex is the one creating the branch.
   const sentBase = kind === "branch" ? baseRef.trim() : "";
@@ -331,9 +311,7 @@ export function ThreadDraft({
           harness: harnessId,
           byHarness: remembered?.byHarness ?? {},
           folderId: scope?.id ?? "",
-          ...(gitScope
-            ? { copy: kind !== "main" }
-            : { copy: remembered?.copy }),
+          ...(gitScope ? { copy: kind !== "main" } : { copy: remembered?.copy }),
         },
       };
       saveThreadPrefs(next);
@@ -347,8 +325,7 @@ export function ThreadDraft({
 
   // The draft can mount before the project list has landed.
   useEffect(() => {
-    if (!projectId && projects.length > 0)
-      setProjectId(initialProject(projects, activeProjectId));
+    if (!projectId && projects.length > 0) setProjectId(initialProject(projects, activeProjectId));
   }, [projectId, projects]);
 
   // A folder id means nothing in another project.
@@ -431,8 +408,8 @@ export function ThreadDraft({
       <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-6 pb-6 text-center">
         <p className="text-[15px] font-medium">What are we working on?</p>
         <p className="text-muted-foreground max-w-sm text-[13px] leading-relaxed">
-          Sending starts the thread. Omniplex prepares the workspace, then hands
-          the agent your message.
+          Sending starts the thread. Omniplex prepares the workspace, then hands the agent your
+          message.
         </p>
       </div>
 
@@ -446,31 +423,22 @@ export function ThreadDraft({
             <Alert key={i.id}>
               <AlertDescription>
                 <span>
-                  {instances.length > 1 && (
-                    <span className="font-medium">{i.name}: </span>
-                  )}
+                  {instances.length > 1 && <span className="font-medium">{i.name}: </span>}
                   {i.availability?.reason}
                 </span>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {onLogin &&
-                    i.availability?.remedy?.some(
-                      (r) => r.action === "login",
-                    ) && (
-                      <Button size="sm" onClick={() => onLogin(i.id)}>
-                        <LogInIcon />
-                        Sign in
-                      </Button>
-                    )}
+                  {onLogin && i.availability?.remedy?.some((r) => r.action === "login") && (
+                    <Button size="sm" onClick={() => onLogin(i.id)}>
+                      <LogInIcon />
+                      Sign in
+                    </Button>
+                  )}
                   <Button variant="outline" size="sm" onClick={onRecheck}>
                     <RefreshCwIcon />
                     Check again
                   </Button>
                   {onManageProviders && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={onManageProviders}
-                    >
+                    <Button variant="outline" size="sm" onClick={onManageProviders}>
                       Providers…
                     </Button>
                   )}
@@ -481,17 +449,11 @@ export function ThreadDraft({
 
         {error && (
           <Alert variant="destructive">
-            <AlertDescription className="text-[12px] break-words">
-              {error}
-            </AlertDescription>
+            <AlertDescription className="text-[12px] break-words">{error}</AlertDescription>
           </Alert>
         )}
 
-        <div
-          className="flex flex-wrap gap-1.5"
-          role="group"
-          aria-label="Thread options"
-        >
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Thread options">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Chip label="Project" icon={<FolderIcon />}>
@@ -499,10 +461,7 @@ export function ThreadDraft({
               </Chip>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-52">
-              <DropdownMenuRadioGroup
-                value={project?.id}
-                onValueChange={setProjectId}
-              >
+              <DropdownMenuRadioGroup value={project?.id} onValueChange={setProjectId}>
                 {projects.map((p) => (
                   <DropdownMenuRadioItem key={p.id} value={p.id}>
                     {p.name}
@@ -526,19 +485,13 @@ export function ThreadDraft({
                   {scope ? folderName(scope.path) : "Everything"}
                 </Chip>
               </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="max-w-[min(22rem,calc(100vw-2rem))]"
-              >
+              <DropdownMenuContent align="start" className="max-w-[min(22rem,calc(100vw-2rem))]">
                 <DropdownMenuRadioGroup
                   value={scope?.id ?? ""}
                   onValueChange={(v) => setFolderId(v)}
                 >
                   <DropdownMenuRadioItem value="">
-                    <Described
-                      title="Everything"
-                      hint="Every folder, worked on directly"
-                    />
+                    <Described title="Everything" hint="Every folder, worked on directly" />
                   </DropdownMenuRadioItem>
                   {folders.map((f) => (
                     <DropdownMenuRadioItem key={f.id} value={f.id}>
@@ -557,15 +510,8 @@ export function ThreadDraft({
                   {gitLabel}
                 </Chip>
               </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                className="w-[min(22rem,calc(100vw-2rem))] space-y-2"
-              >
-                <div
-                  role="radiogroup"
-                  aria-label="Git"
-                  className="flex flex-col gap-1.5"
-                >
+              <PopoverContent align="start" className="w-[min(22rem,calc(100vw-2rem))] space-y-2">
+                <div role="radiogroup" aria-label="Git" className="flex flex-col gap-1.5">
                   {(
                     [
                       {
@@ -580,8 +526,7 @@ export function ThreadDraft({
                       },
                     ] as const
                   ).map((k) => {
-                    const picked =
-                      k.id === "main" ? kind === "main" : kind !== "main";
+                    const picked = k.id === "main" ? kind === "main" : kind !== "main";
                     return (
                       <button
                         key={k.id}
@@ -595,14 +540,10 @@ export function ThreadDraft({
                         }}
                         className={cn(
                           "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
-                          picked
-                            ? "border-primary/60 bg-primary/10"
-                            : "hover:bg-accent/50",
+                          picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
                         )}
                       >
-                        <span className="text-[13px] leading-tight">
-                          {k.label}
-                        </span>
+                        <span className="text-[13px] leading-tight">{k.label}</span>
                         <span className="text-muted-foreground truncate text-[11px] leading-tight">
                           {k.hint}
                         </span>
@@ -621,9 +562,7 @@ export function ThreadDraft({
                       className="h-8 px-0 text-[12px]"
                       onClick={() => setNaming(!naming)}
                     >
-                      {naming
-                        ? "Let Omniplex name the branch"
-                        : "Name the branch"}
+                      {naming ? "Let Omniplex name the branch" : "Name the branch"}
                     </Button>
                     {attachable.length > 0 && (
                       <Button
@@ -663,9 +602,7 @@ export function ThreadDraft({
                       <Label htmlFor="new-thread-base">Base</Label>
                       <Select
                         value={baseRef || BASE_DEFAULT}
-                        onValueChange={(v) =>
-                          setBaseRef(v === BASE_DEFAULT ? "" : v)
-                        }
+                        onValueChange={(v) => setBaseRef(v === BASE_DEFAULT ? "" : v)}
                       >
                         <SelectTrigger id="new-thread-base" className="w-full">
                           <SelectValue />
@@ -673,9 +610,7 @@ export function ThreadDraft({
                         <SelectContent>
                           <SelectItem value={BASE_DEFAULT}>
                             Folder default
-                            {gitScope.baseBranch
-                              ? ` (${gitScope.baseBranch})`
-                              : ""}
+                            {gitScope.baseBranch ? ` (${gitScope.baseBranch})` : ""}
                           </SelectItem>
                           {baseChoices.map((b) => (
                             <SelectItem key={b} value={b}>
@@ -724,26 +659,59 @@ export function ThreadDraft({
           )}
 
           {modes.length > 0 && (
-            <DropdownMenu>
+            <DropdownMenu
+              // Opens on the levels unless the current mode is not one of them.
+              onOpenChange={(open) => open && setAdvanced(!!modeMeta && !modeMeta.level)}
+            >
               <DropdownMenuTrigger asChild>
                 <Chip label="Permissions" icon={<ShieldIcon />}>
-                  {modeMeta?.label}
+                  {LEVELS.find((l) => l.id === modeMeta?.level)?.short ?? modeMeta?.label}
                 </Chip>
               </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="max-w-[min(22rem,calc(100vw-2rem))]"
-              >
+              <DropdownMenuContent align="start" className="max-w-[min(22rem,calc(100vw-2rem))]">
+                {/* The three levels mean the same on every harness. Its own
+                    modes, Plan among them, wait under Advanced. */}
                 <DropdownMenuRadioGroup
                   value={displayModeId}
                   onValueChange={(mode) => remember(harnessId, { mode })}
                 >
-                  {modes.map((m) => (
-                    <DropdownMenuRadioItem key={m.id} value={m.id}>
-                      <Described title={m.label} hint={m.description} />
-                    </DropdownMenuRadioItem>
-                  ))}
+                  {LEVELS.map((l) => {
+                    const m = modes.find((x) => x.level === l.id);
+                    return (
+                      m && (
+                        <DropdownMenuRadioItem key={l.id} value={m.id}>
+                          <Described title={l.label} hint={`${selected?.name}: ${m.label}`} />
+                        </DropdownMenuRadioItem>
+                      )
+                    );
+                  })}
                 </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  aria-expanded={advanced}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setAdvanced(!advanced);
+                  }}
+                  className="text-muted-foreground text-[12px]"
+                >
+                  <ChevronDownIcon
+                    className={cn("transition-transform", !advanced && "-rotate-90")}
+                  />
+                  Advanced
+                </DropdownMenuItem>
+                {advanced && (
+                  <DropdownMenuRadioGroup
+                    value={displayModeId}
+                    onValueChange={(mode) => remember(harnessId, { mode })}
+                  >
+                    {modes.map((m) => (
+                      <DropdownMenuRadioItem key={m.id} value={m.id}>
+                        <Described title={m.label} hint={m.description} />
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -794,12 +762,8 @@ export function ThreadDraft({
           onPickInstance={(target) => {
             if (target.id === instance?.id) return;
             const previous = remembered?.byHarness[target.driver];
-            const wanted =
-              previous?.model ??
-              project?.defaults.harnesses?.[target.driver]?.model;
-            const restored =
-              target.models.find((m) => m.id === wanted) ??
-              defaultModel(target);
+            const wanted = previous?.model ?? project?.defaults.harnesses?.[target.driver]?.model;
+            const restored = target.models.find((m) => m.id === wanted) ?? defaultModel(target);
             selectModel({
               harness: target.driver,
               instance: target.id,
@@ -854,11 +818,7 @@ function Described({ title, hint }: { title: string; hint?: string }) {
   return (
     <span className="flex min-w-0 flex-col">
       <span className="text-[13px]">{title}</span>
-      {hint && (
-        <span className="text-muted-foreground truncate text-[11px]">
-          {hint}
-        </span>
-      )}
+      {hint && <span className="text-muted-foreground truncate text-[11px]">{hint}</span>}
     </span>
   );
 }

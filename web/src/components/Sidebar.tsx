@@ -4,6 +4,7 @@ import {
   CircleAlertIcon,
   FolderIcon,
   KeyRoundIcon,
+  SettingsIcon,
   GitBranchIcon,
   PanelLeftIcon,
   PlusIcon,
@@ -167,6 +168,8 @@ interface SidebarProps {
   onShowUsage: () => void;
   /** Opens the providers screen — agents, accounts and their sign-ins. */
   onShowProviders: () => void;
+  /** Opens the operator's own settings: projects folder, defaults, branch names. */
+  onShowSettings: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
   /**
@@ -838,6 +841,9 @@ function SidebarPanel({
         </Tooltip>
         <IconButton label="Providers" onClick={props.onShowProviders}>
           <KeyRoundIcon />
+        </IconButton>
+        <IconButton label="Settings" onClick={props.onShowSettings}>
+          <SettingsIcon />
         </IconButton>
         <ThemeToggle />
       </div>
