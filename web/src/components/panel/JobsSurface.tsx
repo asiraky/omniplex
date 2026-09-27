@@ -5,14 +5,14 @@ import { Markdown } from "~/components/Markdown";
 import { fmtTokens } from "~/lib/format";
 import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
-import type { Item, Job, JobKind, SessionState } from "~/protocol";
+import type { Item, Job, JobKind, ThreadState } from "~/protocol";
 import { formatDuration } from "~/rows";
 
 export interface JobsSurfaceProps {
-  sessionId: string;
-  /** The session: `jobs` is the roster, `items` feeds an agent's transcript pane. */
-  state: SessionState;
-  /** A ws command: `stop_job` and `session_job_output`. */
+  threadId: string;
+  /** The thread: `jobs` is the roster, `items` feeds an agent's transcript pane. */
+  state: ThreadState;
+  /** A ws command: `stop_job` and `thread_job_output`. */
   command: (command: string, args: unknown) => Promise<any>;
 }
 
@@ -136,11 +136,11 @@ const TAIL_CAP = 200_000;
 
 /** A live tail of a shell job's output file, polled by offset while it runs. */
 function ShellPane({
-  sessionId,
+  threadId,
   job,
   command,
 }: {
-  sessionId: string;
+  threadId: string;
   job: Job;
   command: JobsSurfaceProps["command"];
 }) {
@@ -168,8 +168,8 @@ function ShellPane({
     let timer = 0;
     const poll = async () => {
       try {
-        const res = (await commandRef.current("session_job_output", {
-          sessionId,
+        const res = (await commandRef.current("thread_job_output", {
+          threadId,
           jobId: job.id,
           offset: offsetRef.current,
         })) as {
@@ -201,7 +201,7 @@ function ShellPane({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [sessionId, job.id, job.outputFile]);
+  }, [threadId, job.id, job.outputFile]);
 
   useEffect(() => {
     const el = preRef.current;
@@ -299,12 +299,12 @@ function AgentPane({
 }
 
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({ sessionId, state, command }: JobsSurfaceProps) {
+export function JobsSurface({ threadId, state, command }: JobsSurfaceProps) {
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = openId ? state.jobs.find((j) => j.id === openId) : undefined;
 
-  const stop = (j: Job) => void command("stop_job", { sessionId, jobId: j.id }).catch(() => {});
+  const stop = (j: Job) => void command("stop_job", { threadId, jobId: j.id }).catch(() => {});
 
   if (open) {
     return (
@@ -336,7 +336,7 @@ export function JobsSurface({ sessionId, state, command }: JobsSurfaceProps) {
         </div>
         <div className="min-h-0 flex-1">
           {open.kind === "shell" ? (
-            <ShellPane key={open.id} sessionId={sessionId} job={open} command={command} />
+            <ShellPane key={open.id} threadId={threadId} job={open} command={command} />
           ) : (
             <AgentPane job={open} jobs={state.jobs} items={state.items} onOpen={(j) => setOpenId(j.id)} onStop={stop} />
           )}

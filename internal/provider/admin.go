@@ -131,8 +131,8 @@ func AddInstance(spec Spec, secrets *SecretStore, logf func(string, ...any)) ([]
 }
 
 // SaveInstance replaces an existing instance's entry. Driver and id are
-// immutable — sessions route on both — so a save that changes the driver is
-// refused rather than silently rebinding old sessions.
+// immutable — threads route on both — so a save that changes the driver is
+// refused rather than silently rebinding old threads.
 func SaveInstance(spec Spec, secrets *SecretStore, logf func(string, ...any)) ([]Instance, error) {
 	if err := spec.validate(); err != nil {
 		return nil, err

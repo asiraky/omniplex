@@ -3,7 +3,7 @@
 //
 // Why: a harness session is not one process. Claude Code forks shells, the
 // shells start dev servers and headless browsers, and those double-fork and
-// setsid until nothing links them to the session that started them. Killing
+// setsid until nothing links them to the thread that started them. Killing
 // the harness left every one of them behind, inside the server's cgroup, and
 // on the always-on box they accumulated until the machine ran out of memory.
 //

@@ -46,7 +46,7 @@ import {
 } from "~/lib/panel";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
-import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, SessionChanges, SessionState } from "~/protocol";
+import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, ThreadChanges, ThreadState } from "~/protocol";
 import { useDocksPanel } from "~/useMediaQuery";
 
 const NO_ARTEFACTS: Artefact[] = [];
@@ -65,9 +65,9 @@ export interface PanelRequest {
 }
 
 export interface PanelProps {
-  sessionId: string;
-  /** The session, for the jobs surface (jobs + items) and its badge. */
-  state: SessionState;
+  threadId: string;
+  /** The thread, for the jobs surface (jobs + items) and its badge. */
+  state: ThreadState;
   /** A ws command, for stopping a job and tailing a shell's output. */
   command: (command: string, args: unknown) => Promise<any>;
   open: boolean;
@@ -77,8 +77,8 @@ export interface PanelProps {
   onToggleExpanded?: () => void;
   /** Data is re-read when this changes — when a turn ends, in practice. */
   revision: string;
-  loadChanges: (comparison: DiffComparison) => Promise<SessionChanges>;
-  loadDiff: (path: string, changes: SessionChanges) => Promise<FileDiff>;
+  loadChanges: (comparison: DiffComparison) => Promise<ThreadChanges>;
+  loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
   loadTree: (includeIgnored: boolean) => Promise<FileTree>;
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
@@ -130,7 +130,7 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
 }
 
 function PanelBody({
-  sessionId,
+  threadId,
   state,
   command,
   open,
@@ -146,14 +146,14 @@ function PanelBody({
   pr,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
-  // The tab model, persisted per session so the panel reopens as it was left.
-  const [panel, setPanel] = useState<PanelState>(() => loadPanel(sessionId));
-  useEffect(() => savePanel(sessionId, panel), [sessionId, panel]);
+  // The tab model, persisted per thread so the panel reopens as it was left.
+  const [panel, setPanel] = useState<PanelState>(() => loadPanel(threadId));
+  useEffect(() => savePanel(threadId, panel), [threadId, panel]);
 
   // ---- the change list, owned here because routing needs it too ----
-  const [changes, setChanges] = useState<SessionChanges | null>(null);
+  const [changes, setChanges] = useState<ThreadChanges | null>(null);
   const [comparison, setComparison] = useState<DiffComparison>(() => {
-    const stored = localStorage.getItem(`omniplex.diffComparison:${sessionId}`);
+    const stored = localStorage.getItem(`omniplex.diffComparison:${threadId}`);
     return stored === "branch" || stored === "pull_request" ? stored : "uncommitted";
   });
   const [changesLoading, setChangesLoading] = useState(false);
@@ -183,11 +183,11 @@ function PanelBody({
   }, [comparison]);
 
   const changeComparison = useCallback((next: DiffComparison) => {
-    localStorage.setItem(`omniplex.diffComparison:${sessionId}`, next);
+    localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
     setChanges(null);
     setChangesError("");
     setComparison(next);
-  }, [sessionId]);
+  }, [threadId]);
 
   // Opening reads the worktree, and so does the end of a turn: the agent has
   // just stopped writing, which is exactly when the data is worth re-reading.
@@ -279,7 +279,7 @@ function PanelBody({
     if (changes === null && !changesError) return;
     routedNonce.current = request.nonce;
     // A path in the change list opens as its diff; anything else opens as the
-    // file itself — including files the session never touched.
+    // file itself — including files the thread never touched.
     if (changedPaths.has(request.path) && request.line === undefined) {
       setPanel((p) => openSurface(p, { id: "diff", kind: "diff" }));
       setReveal({ path: request.path, nonce: request.nonce });
@@ -454,28 +454,28 @@ function PanelBody({
             loadFile={loadFile}
           />
         )}
-        {active?.kind === "jobs" && <JobsSurface sessionId={sessionId} state={state} command={command} />}
+        {active?.kind === "jobs" && <JobsSurface threadId={threadId} state={state} command={command} />}
         {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
         {active?.kind === "artefact" &&
           (shownArtefact ? (
             <ArtefactSurface
               key={shownArtefact.id}
-              sessionId={sessionId}
+              threadId={threadId}
               artefact={shownArtefact}
             />
           ) : (
             <div className="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-[13px]">
-              This artefact is not in this session.
+              This artefact is not in this thread.
             </div>
           ))}
-        {active?.kind === "skills" && <SkillsSurface command={command} sessionId={sessionId} />}
+        {active?.kind === "skills" && <SkillsSurface command={command} threadId={threadId} />}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces
           .filter((s) => s.kind === "terminal")
           .map((s) => (
             <div key={s.id} className={cn("h-full", s.id !== panel.active && "hidden")}>
-              <TerminalSurface target={{ session: sessionId }} />
+              <TerminalSurface target={{ thread: threadId }} />
             </div>
           ))}
       </div>
@@ -553,7 +553,7 @@ export function Panel(props: PanelProps) {
             (e.currentTarget as HTMLElement | null)?.focus();
           }}
         >
-          <SheetTitle className="sr-only">Session panel</SheetTitle>
+          <SheetTitle className="sr-only">Thread panel</SheetTitle>
           <PanelBody {...props} inSheet />
         </SheetContent>
       </Sheet>
@@ -572,7 +572,7 @@ export function Panel(props: PanelProps) {
         // shell, and hiding the panel is not closing its tabs.
         !props.open && "hidden",
       )}
-      aria-label="Session panel"
+      aria-label="Thread panel"
     >
       {!props.expanded && (
         <div

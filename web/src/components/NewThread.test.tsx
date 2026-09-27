@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { render, viewport } from "~/test/harness";
-import { NewSession, type NewSessionInput } from "./NewSession";
+import { NewThread, type NewThreadInput } from "./NewThread";
 import type { HarnessMeta, Project, Workspace } from "~/protocol";
 
 const project = {
@@ -24,9 +24,9 @@ const harness = {
   availability: { state: "ready" },
 } as unknown as HarnessMeta;
 
-function open(over: Partial<React.ComponentProps<typeof NewSession>> = {}) {
+function open(over: Partial<React.ComponentProps<typeof NewThread>> = {}) {
   render(
-    <NewSession
+    <NewThread
       projects={[project]}
       harnesses={[harness]}
       userConfig={null}
@@ -59,7 +59,7 @@ beforeAll(() => {
   proto.scrollIntoView ??= () => {};
 });
 
-describe("NewSession", () => {
+describe("NewThread", () => {
   it("takes the whole screen on a phone rather than floating as a card", () => {
     viewport("phone");
     open();
@@ -112,7 +112,7 @@ describe("NewSession", () => {
     }
   });
 
-  it("starts a bypass session with no confirmation of any kind", async () => {
+  it("starts a bypass thread with no confirmation of any kind", async () => {
     // Bypass is a value in a dropdown, not a decision to re-litigate: picking
     // it once (here, as the project default) is the whole opt-in.
     const confirm = vi.fn(() => true);
@@ -161,7 +161,7 @@ describe("NewSession", () => {
   });
 
   it("restores this project's settings for the harness selected", async () => {
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     const ready = { state: "ready" } as const;
     const claude = {
       ...harness,
@@ -250,7 +250,7 @@ describe("NewSession", () => {
   // Opus gets it whenever the CLI offers a "[1m]" alias for it — and picking
   // 1M is sent as that tag on the model id, which is the whole mechanism.
   it("offers the 1M window for any model the harness flags, not just Opus", async () => {
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     const claude = {
       ...harness,
       instances: [
@@ -352,7 +352,7 @@ describe("NewSession", () => {
     expect(screen.queryByRole("radio", { name: /New scratch worktree/ })).toBeNull();
   });
 
-  it("still offers the main checkout when another session is on it", async () => {
+  it("still offers the main checkout when another thread is on it", async () => {
     const root = {
       path: "/tmp/repo",
       isRoot: true,
@@ -361,7 +361,7 @@ describe("NewSession", () => {
     } as Workspace;
     const confirm = vi.fn(() => true);
     vi.stubGlobal("confirm", confirm);
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({
       onCreate,
       onListWorkspaces: vi.fn(async () => [root]),
@@ -380,7 +380,7 @@ describe("NewSession", () => {
   });
 
   it("creates a scratch worktree by leaving the branch name blank", async () => {
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({ onCreate });
 
     // The managed default lands on the "New worktree" tile; leaving its name
@@ -399,8 +399,8 @@ describe("NewSession", () => {
     });
   });
 
-  it("sends a per-session base ref picked from the branches on disk", async () => {
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+  it("sends a per-thread base ref picked from the branches on disk", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     // The Base dropdown offers the branches already checked out; stacking on
     // one of them is exactly what it exists for.
     const under = {
@@ -428,14 +428,14 @@ describe("NewSession", () => {
     });
   });
 
-  it("attaches to a worktree another session is already in", async () => {
+  it("attaches to a worktree another thread is already in", async () => {
     const side = {
       path: "/tmp/repo/.worktrees/side",
       branch: "issue/1-side",
       busy: true,
       busyTitle: "the other one",
     } as Workspace;
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({
       onCreate,
       onListWorkspaces: vi.fn(async () => [side]),
@@ -480,7 +480,7 @@ describe("NewSession", () => {
   });
 });
 
-// A signed-out harness is the commonest way a session refuses to start, and
+// A signed-out harness is the commonest way a thread refuses to start, and
 // the fix is the harness's own login. When the server can run that, the alert
 // offers it; when it cannot, only "Check again" remains.
 describe("the remembered project", () => {
@@ -492,9 +492,9 @@ describe("the remembered project", () => {
 
   afterEach(() => localStorage.clear());
 
-  it("prefers the open session's project over the remembered project", async () => {
+  it("prefers the open thread's project over the remembered project", async () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {});
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({ projects: [project, other], activeProjectId: "p1", onCreate });
     expect(screen.getByLabelText("Project").textContent).toBe("repo");
     const start = screen.getByRole("button", { name: "Start" });
@@ -509,7 +509,7 @@ describe("the remembered project", () => {
     expect(screen.getByLabelText("Project").textContent).toBe("other");
   });
 
-  it("opens on the project the last session was started from", () => {
+  it("opens on the project the last thread was started from", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     open({ projects: [project, other] });
     expect(screen.getByLabelText("Project").textContent).toBe("other");
@@ -521,8 +521,8 @@ describe("the remembered project", () => {
     expect(screen.getByLabelText("Project").textContent).toBe("repo");
   });
 
-  it("remembers only a session that actually started", async () => {
-    const onCreate = vi.fn(async (_input: NewSessionInput) => {
+  it("remembers only a thread that actually started", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {
       throw new Error("no");
     });
     open({ projects: [project, other], onCreate });
@@ -534,7 +534,7 @@ describe("the remembered project", () => {
     expect(localStorage.getItem("omniplex.lastProject.v1")).toBeNull();
 
     cleanup();
-    const ok = vi.fn(async (_input: NewSessionInput) => {});
+    const ok = vi.fn(async (_input: NewThreadInput) => {});
     open({ projects: [project, other], onCreate: ok });
     const go = await waitFor(() => screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect((go as HTMLButtonElement).disabled).toBe(false));
@@ -607,7 +607,7 @@ describe("an interactive-login harness", () => {
   });
 });
 
-describe("remembered session choices", () => {
+describe("remembered thread choices", () => {
   const ready = { state: "ready" } as const;
   const agents = ["claude", "codex"].map((id) => ({
     id,
@@ -737,7 +737,7 @@ describe("remembered session choices", () => {
   });
 
 
-  it("keeps an unsupported effort preference while validating the session request", async () => {
+  it("keeps an unsupported effort preference while validating the thread request", async () => {
     const onCreate = vi.fn(async () => {});
     open({ harnesses: agents, onCreate });
     await pickModel("codex Advanced");

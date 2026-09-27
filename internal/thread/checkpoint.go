@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// What one turn changed is a different question from what the session changed,
+// What one turn changed is a different question from what the thread changed,
 // and Git cannot answer it after the fact: by the time a turn ends, the only
 // record of where it started is gone. So each turn is bracketed by a snapshot.
 //
@@ -38,8 +38,8 @@ type TurnChanges struct {
 
 // checkpointRef names the snapshot bounding one end of a turn. The turn id is
 // already unique, so no counter has to be kept in step with the log.
-func checkpointRef(sessionID, turnID, edge string) string {
-	return fmt.Sprintf("%s/%s/%s/%s", checkpointRefPrefix, sessionID, turnID, edge)
+func checkpointRef(threadID, turnID, edge string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", checkpointRefPrefix, threadID, turnID, edge)
 }
 
 // captureCheckpoint writes the worktree — tracked, staged, unstaged and
@@ -136,11 +136,11 @@ func diffCheckpoints(ctx context.Context, root, from, to string) (TurnChanges, e
 	return out, nil
 }
 
-// dropCheckpoints deletes every snapshot belonging to a session. Refs are cheap
-// but they are not free, and a session that has been closed will never be
+// dropCheckpoints deletes every snapshot belonging to a thread. Refs are cheap
+// but they are not free, and a thread that has been closed will never be
 // diffed again.
-func dropCheckpoints(ctx context.Context, root, sessionID string) error {
-	prefix := fmt.Sprintf("%s/%s/", checkpointRefPrefix, sessionID)
+func dropCheckpoints(ctx context.Context, root, threadID string) error {
+	prefix := fmt.Sprintf("%s/%s/", checkpointRefPrefix, threadID)
 	listed, err := runGit(ctx, root, "for-each-ref", "--format=%(refname)", prefix)
 	if err != nil {
 		return err
@@ -154,22 +154,22 @@ func dropCheckpoints(ctx context.Context, root, sessionID string) error {
 	return failed
 }
 
-// purgeCheckpoints removes a session's snapshots when there is no checkpointer
-// to do it — a workspace being cleaned up, or a session closed while nothing
+// purgeCheckpoints removes a thread's snapshots when there is no checkpointer
+// to do it — a workspace being cleaned up, or a thread closed while nothing
 // was running. It has to happen while the checkout still exists: the refs live
 // in the repository the worktree belongs to, and they outlive the worktree.
-func purgeCheckpoints(ctx context.Context, cwd, sessionID string, logf func(string, ...any)) {
+func purgeCheckpoints(ctx context.Context, cwd, threadID string, logf func(string, ...any)) {
 	root := repoRoot(ctx, cwd)
 	if root == "" {
 		return
 	}
-	if err := dropCheckpoints(ctx, root, sessionID); err != nil {
-		logf("dropping checkpoints for %s: %v", sessionID, err)
+	if err := dropCheckpoints(ctx, root, threadID); err != nil {
+		logf("dropping checkpoints for %s: %v", threadID, err)
 	}
 }
 
-// repoRoot is the top of the checkout a session works in, or "" when it is not
-// a repository at all — which is not a failure, only a session that will have
+// repoRoot is the top of the checkout a thread works in, or "" when it is not
+// a repository at all — which is not a failure, only a thread that will have
 // no turn cards.
 func repoRoot(ctx context.Context, cwd string) string {
 	if cwd == "" {

@@ -15,11 +15,11 @@ import (
 
 // CreateOptions configures a new harness session.
 type CreateOptions struct {
-	SessionID string // caller-owned identity; the harness is told to use it where it can
-	Cwd       string
-	Model     string
-	Mode      string
-	Effort    string
+	ThreadID string // omniplex thread id, caller-owned; the harness is told to use it where it can
+	Cwd      string
+	Model    string
+	Mode     string
+	Effort   string
 
 	// Env is the provider instance's credential overlay, applied over the
 	// ambient environment when the harness process spawns. It is the entire

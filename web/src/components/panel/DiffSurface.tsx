@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~
 import { Spinner } from "~/components/ui/spinner";
 import { useDiffWrap } from "~/lib/diffWrap";
 import { cn } from "~/lib/utils";
-import type { ChangedFile, DiffComparison, FileDiff, PullRequest, SessionChanges } from "~/protocol";
+import type { ChangedFile, DiffComparison, FileDiff, PullRequest, ThreadChanges } from "~/protocol";
 
 const STATUS_LABEL: Record<string, string> = {
   added: "A",
@@ -140,11 +140,11 @@ export function DiffSurface({
   onComparisonChange,
   pr,
 }: {
-  changes: SessionChanges | null;
+  changes: ThreadChanges | null;
   loading: boolean;
   error: string;
   onRefresh: () => void;
-  loadDiff: (path: string, changes: SessionChanges) => Promise<FileDiff>;
+  loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
   reveal?: { path: string; nonce: number } | null;
   comparison: DiffComparison;
   onComparisonChange: (comparison: DiffComparison) => void;
@@ -283,7 +283,7 @@ export function DiffSurface({
         ))}
         {changes?.truncated && (
           <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
-            Only the first files are listed; this session changed more than the panel will show.
+            Only the first files are listed; this thread changed more than the panel will show.
           </p>
         )}
       </div>

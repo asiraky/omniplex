@@ -28,11 +28,11 @@ import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import { useCopy } from "~/lib/clipboard";
 import { cn } from "~/lib/utils";
-import type { SessionSummary, UserConfig } from "~/protocol";
+import type { ThreadSummary, UserConfig } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
 /**
- * What a summary is for: you opened a session you started days ago and cannot
+ * What a summary is for: you opened a thread you started days ago and cannot
  * remember what you asked it. Scrolling to the top of the transcript to reread
  * your own rambling prompt, then to the bottom to find out how it ended, is
  * the thing this replaces.
@@ -42,7 +42,7 @@ import { useIsDesktop } from "~/useMediaQuery";
  * question is the only reason to change it, and the fix is one panel away
  * instead of behind a project you may not even have.
  */
-export function SessionSummaryPanel({
+export function ThreadSummaryPanel({
   summary,
   loading,
   error,
@@ -52,10 +52,10 @@ export function SessionSummaryPanel({
   onSavePrompt,
   onClose,
 }: {
-  summary: SessionSummary | null;
+  summary: ThreadSummary | null;
   loading: boolean;
   error: string | null;
-  /** True when the session has moved on since this summary was made. */
+  /** True when the thread has moved on since this summary was made. */
   stale: boolean;
   userConfig: UserConfig | null;
   onRegenerate: () => void;
@@ -63,7 +63,7 @@ export function SessionSummaryPanel({
   onClose: () => void;
 }) {
   const isDesktop = useIsDesktop();
-  const title = "Session summary";
+  const title = "Thread summary";
   const description = "What you asked for, what the agent did, and what is left.";
   const onOpenChange = (open: boolean) => !open && onClose();
 
@@ -120,7 +120,7 @@ function SummaryBody({
   onRegenerate,
   onSavePrompt,
 }: {
-  summary: SessionSummary | null;
+  summary: ThreadSummary | null;
   loading: boolean;
   error: string | null;
   stale: boolean;
@@ -151,7 +151,7 @@ function SummaryBody({
         <>
           {stale && (
             <p className="text-muted-foreground text-[11px]">
-              The session has moved on since this was written.
+              The thread has moved on since this was written.
             </p>
           )}
           <Markdown text={summary.text} className="text-[13px] leading-relaxed" />
@@ -241,7 +241,7 @@ function PromptEditor({
       <CollapsibleContent className="space-y-2 pt-2">
         <p className="text-muted-foreground text-[11px]" id={`${id}-hint`}>
           The instructions the summariser follows. Saved for this machine, and used
-          for every session.
+          for every thread.
         </p>
         <Textarea
           id={id}

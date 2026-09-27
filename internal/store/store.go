@@ -23,7 +23,7 @@ PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
 PRAGMA synchronous=NORMAL;
 
-CREATE TABLE IF NOT EXISTS sessions (
+CREATE TABLE IF NOT EXISTS threads (
   id            TEXT PRIMARY KEY,
   cwd           TEXT NOT NULL,
   harness       TEXT NOT NULL,
@@ -43,41 +43,41 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE TABLE IF NOT EXISTS events (
-  session_id    TEXT NOT NULL,
+  thread_id    TEXT NOT NULL,
   seq           INTEGER NOT NULL,
   type          TEXT NOT NULL,
   payload       BLOB NOT NULL,
   created_at    INTEGER NOT NULL,
-  PRIMARY KEY (session_id, seq)
+  PRIMARY KEY (thread_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS usage_pricing (
- session_id TEXT NOT NULL,
+ thread_id TEXT NOT NULL,
  seq INTEGER NOT NULL,
  pricing BLOB NOT NULL,
- PRIMARY KEY(session_id, seq)
+ PRIMARY KEY(thread_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
-  session_id    TEXT NOT NULL,
+  thread_id    TEXT NOT NULL,
   seq           INTEGER NOT NULL,
   state         BLOB NOT NULL,
-  PRIMARY KEY (session_id, seq)
+  PRIMARY KEY (thread_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS commands (
   command_id    TEXT PRIMARY KEY,
-  session_id    TEXT NOT NULL,
+  thread_id    TEXT NOT NULL,
   result        BLOB,
   created_at    INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS scheduled_prompts (
- session_id TEXT NOT NULL,
+ thread_id TEXT NOT NULL,
  schedule_id TEXT NOT NULL,
  due_at INTEGER NOT NULL,
  status TEXT NOT NULL,
- PRIMARY KEY (session_id, schedule_id)
+ PRIMARY KEY (thread_id, schedule_id)
 );
 CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
 
@@ -92,13 +92,13 @@ CREATE TABLE IF NOT EXISTS labels (
 );
 `
 
-// SessionMeta is the row-level view of a session, enough for a session list.
-type SessionMeta struct {
+// ThreadMeta is the row-level view of a thread, enough for a thread list.
+type ThreadMeta struct {
 	ScheduledCount int    `json:"scheduledCount,omitempty"`
 	ID             string `json:"id"`
 	Cwd            string `json:"cwd"`
 	Harness        string `json:"harness"`
-	// ProviderInstance is the provider instance the session was created under.
+	// ProviderInstance is the provider instance the thread was created under.
 	// It sits alongside Harness rather than repurposing it, so existing rows
 	// keep meaning what they say; empty resolves to the default instance for
 	// Harness, which is the migration.
@@ -109,8 +109,8 @@ type SessionMeta struct {
 	HeadSeq          int64  `json:"headSeq"`
 	Phase            string `json:"phase"`
 	// Attention is the derived whose-turn-is-it signal — see
-	// projection.Attention. It is not a column: the session manager fills it
-	// from the live projection (or from Phase for a session with no running
+	// projection.Attention. It is not a column: the thread manager fills it
+	// from the live projection (or from Phase for a thread with no running
 	// actor) when it serves a list. The stored row never holds it, so it can
 	// never go stale in the database.
 	Attention     string `json:"attention,omitempty"`
@@ -121,19 +121,19 @@ type SessionMeta struct {
 	Effort        string `json:"effort,omitempty"`
 	WorkspaceMode string `json:"workspaceMode,omitempty"`
 	// BaseRef is the ref a managed worktree was branched from, chosen per
-	// session. Empty falls back to the project's default base branch, which is
-	// what every session created before this field existed did.
+	// thread. Empty falls back to the project's default base branch, which is
+	// what every thread created before this field existed did.
 	BaseRef string `json:"baseRef,omitempty"`
-	// LabelID is the user-defined label this session sits under, or "" for
+	// LabelID is the user-defined label this thread sits under, or "" for
 	// unlabelled. It is the user's own workflow marker, not lifecycle: nothing
 	// in the server reads it, and the sidebar groups by it.
 	LabelID string `json:"labelId,omitempty"`
 	// LastViewedSeq is the head the user had seen when they last looked at the
-	// session, on any paired device. HeadSeq beyond it means something happened
+	// thread, on any paired device. HeadSeq beyond it means something happened
 	// that nobody has read — the sidebar's unread signal. Stored, unlike
 	// attention, because "seen" is a fact about the user, not derivable from
 	// the log. Never omitted: zero is a meaning ("nothing read" — a fresh
-	// session, or an explicit mark-unread), not an absence.
+	// thread, or an explicit mark-unread), not an absence.
 	LastViewedSeq     int64           `json:"lastViewedSeq"`
 	ProvisionScript   string          `json:"-"`
 	DeprovisionScript string          `json:"-"`
@@ -141,8 +141,8 @@ type SessionMeta struct {
 }
 
 // Store wraps the database. Writes are serialised through a single mutex-held
-// connection; reads use the pool. The session actor is the only writer per
-// session in-process, and this guards the cross-session case.
+// connection; reads use the pool. The thread actor is the only writer per
+// thread in-process, and this guards the cross-thread case.
 type Store struct {
 	db *sql.DB
 	mu sync.Mutex
@@ -153,22 +153,26 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := renameSessionsToThreads(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("rename sessions to threads: %w", err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	for _, migration := range []string{
-		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'local'`,
-		`ALTER TABLE sessions ADD COLUMN provision_script TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN deprovision_script TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN provision_result BLOB`,
-		`ALTER TABLE sessions ADD COLUMN provider_instance TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN label_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN mode TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN effort TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'local'`,
+		`ALTER TABLE threads ADD COLUMN provision_script TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN deprovision_script TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN provision_result BLOB`,
+		`ALTER TABLE threads ADD COLUMN provider_instance TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN label_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN home TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -184,12 +188,12 @@ func Open(path string) (*Store, error) {
 	// duplicate and skip the backfill forever.
 	if tx, err := db.Begin(); err != nil {
 		return nil, fmt.Errorf("migrate schema: %w", err)
-	} else if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN last_viewed_seq INTEGER NOT NULL DEFAULT 0`); err != nil {
+	} else if _, err := tx.Exec(`ALTER TABLE threads ADD COLUMN last_viewed_seq INTEGER NOT NULL DEFAULT 0`); err != nil {
 		tx.Rollback()
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate schema: %w", err)
 		}
-	} else if _, err := tx.Exec(`UPDATE sessions SET last_viewed_seq = head_seq`); err != nil {
+	} else if _, err := tx.Exec(`UPDATE threads SET last_viewed_seq = head_seq`); err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("backfill last_viewed_seq: %w", err)
 	} else if err := tx.Commit(); err != nil {
@@ -206,15 +210,46 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// renameSessionsToThreads moves a database from before sessions were called
+// threads: the table, every session_id column, and the event types. Snapshots
+// are a cache holding the old field names, so they go and rebuild from the
+// log. A database with no sessions table is new or already moved.
+func renameSessionsToThreads(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'`).Scan(&n); err != nil || n == 0 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		`ALTER TABLE sessions RENAME TO threads`,
+		`ALTER TABLE events RENAME COLUMN session_id TO thread_id`,
+		`ALTER TABLE usage_pricing RENAME COLUMN session_id TO thread_id`,
+		`ALTER TABLE snapshots RENAME COLUMN session_id TO thread_id`,
+		`ALTER TABLE commands RENAME COLUMN session_id TO thread_id`,
+		`ALTER TABLE scheduled_prompts RENAME COLUMN session_id TO thread_id`,
+		`UPDATE events SET type = 'thread.' || substr(type, 9) WHERE type LIKE 'session.%'`,
+		`DELETE FROM snapshots`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil && !strings.Contains(err.Error(), "no such table") {
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
-// CreateSession inserts the session, checking in the same transaction that its
+// CreateThread inserts the thread, checking in the same transaction that its
 // project is still there. That check is what makes DeleteProject's refusal
-// hold: creating a session reads the project long before it writes the row —
+// hold: creating a thread reads the project long before it writes the row —
 // probing the harness and resolving a workspace happen in between — and a
-// delete landing in that gap would otherwise count zero sessions, commit, and
+// delete landing in that gap would otherwise count zero threads, commit, and
 // leave this insert to succeed against a project that no longer exists.
-func (s *Store) CreateSession(ctx context.Context, m SessionMeta) error {
+func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -223,7 +258,7 @@ func (s *Store) CreateSession(ctx context.Context, m SessionMeta) error {
 	}
 	defer tx.Rollback()
 
-	// A session with no project is the pre-project shape and still legal;
+	// A thread with no project is the pre-project shape and still legal;
 	// there is nothing to check for one.
 	if m.ProjectID != "" {
 		var n int
@@ -236,7 +271,7 @@ func (s *Store) CreateSession(ctx context.Context, m SessionMeta) error {
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO sessions (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
+		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
 		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)`,
 		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript); err != nil {
 		return err
@@ -246,7 +281,7 @@ func (s *Store) CreateSession(ctx context.Context, m SessionMeta) error {
 
 // Append writes one event at seq = head_seq+1 and bumps head_seq in the same
 // transaction. Returns the sequenced event.
-func (s *Store) Append(ctx context.Context, sessionID string, em proto.Emission) (proto.Event, error) {
+func (s *Store) Append(ctx context.Context, threadID string, em proto.Emission) (proto.Event, error) {
 	payload, err := json.Marshal(em.Payload)
 	if err != nil {
 		return proto.Event{}, err
@@ -262,66 +297,66 @@ func (s *Store) Append(ctx context.Context, sessionID string, em proto.Emission)
 	defer tx.Rollback()
 
 	var head int64
-	if err := tx.QueryRowContext(ctx, `SELECT head_seq FROM sessions WHERE id = ?`, sessionID).Scan(&head); err != nil {
-		return proto.Event{}, fmt.Errorf("load head_seq for %s: %w", sessionID, err)
+	if err := tx.QueryRowContext(ctx, `SELECT head_seq FROM threads WHERE id = ?`, threadID).Scan(&head); err != nil {
+		return proto.Event{}, fmt.Errorf("load head_seq for %s: %w", threadID, err)
 	}
 	seq := head + 1
 	ts := proto.NowMillis()
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO events (session_id, seq, type, payload, created_at) VALUES (?,?,?,?,?)`,
-		sessionID, seq, em.Type, payload, ts); err != nil {
+		`INSERT INTO events (thread_id, seq, type, payload, created_at) VALUES (?,?,?,?,?)`,
+		threadID, seq, em.Type, payload, ts); err != nil {
 		return proto.Event{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE sessions SET head_seq = ?, updated_at = ? WHERE id = ?`, seq, ts, sessionID); err != nil {
+		`UPDATE threads SET head_seq = ?, updated_at = ? WHERE id = ?`, seq, ts, threadID); err != nil {
 		return proto.Event{}, err
 	}
 	if em.Type == proto.UsageUpdated {
-		if err := recordUsagePricing(ctx, tx, sessionID, seq); err != nil {
+		if err := recordUsagePricing(ctx, tx, threadID, seq); err != nil {
 			return proto.Event{}, err
 		}
 	}
-	if err := updateScheduleIndex(ctx, tx, sessionID, em, payload); err != nil {
+	if err := updateScheduleIndex(ctx, tx, threadID, em, payload); err != nil {
 		return proto.Event{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return proto.Event{}, err
 	}
 
-	return proto.Event{SessionID: sessionID, Seq: seq, Timestamp: ts, Type: em.Type, Payload: payload}, nil
+	return proto.Event{ThreadID: threadID, Seq: seq, Timestamp: ts, Type: em.Type, Payload: payload}, nil
 }
 
 // SetPhase records idle | turn | closing.
-func (s *Store) SetPhase(ctx context.Context, sessionID, phase string) error {
+func (s *Store) SetPhase(ctx context.Context, threadID, phase string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET phase = ?, updated_at = ? WHERE id = ?`,
-		phase, proto.NowMillis(), sessionID)
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET phase = ?, updated_at = ? WHERE id = ?`,
+		phase, proto.NowMillis(), threadID)
 	return err
 }
 
-// SetProviderInstance moves a session to another account of its harness.
-func (s *Store) SetProviderInstance(ctx context.Context, sessionID, instance string) error {
+// SetProviderInstance moves a thread to another account of its harness.
+func (s *Store) SetProviderInstance(ctx context.Context, threadID, instance string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET provider_instance = ?, updated_at = ? WHERE id = ?`,
-		instance, proto.NowMillis(), sessionID)
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET provider_instance = ?, updated_at = ? WHERE id = ?`,
+		instance, proto.NowMillis(), threadID)
 	return err
 }
 
-func (s *Store) SetTitle(ctx context.Context, sessionID, title string) error {
+func (s *Store) SetTitle(ctx context.Context, threadID, title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET title = ? WHERE id = ? AND title = ''`, title, sessionID)
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET title = ? WHERE id = ? AND title = ''`, title, threadID)
 	return err
 }
 
 // ReadEvents returns events in (afterSeq, afterSeq+limit], ordered by seq.
-func (s *Store) ReadEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]proto.Event, error) {
+func (s *Store) ReadEvents(ctx context.Context, threadID string, afterSeq int64, limit int) ([]proto.Event, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT seq, type, payload, created_at FROM events
-		 WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`, sessionID, afterSeq, limit)
+		 WHERE thread_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`, threadID, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +364,7 @@ func (s *Store) ReadEvents(ctx context.Context, sessionID string, afterSeq int64
 
 	var out []proto.Event
 	for rows.Next() {
-		ev := proto.Event{SessionID: sessionID}
+		ev := proto.Event{ThreadID: threadID}
 		var payload []byte
 		if err := rows.Scan(&ev.Seq, &ev.Type, &payload, &ev.Timestamp); err != nil {
 			return nil, err
@@ -341,23 +376,23 @@ func (s *Store) ReadEvents(ctx context.Context, sessionID string, afterSeq int64
 }
 
 // UsageEvents feeds the account-level usage aggregation: every
-// usage.updated, session.created, and session.config_changed event of each
-// session that used tokens in the window, ordered for a per-session walk.
+// usage.updated, thread.created, and thread.config_changed event of each
+// thread that used tokens in the window, ordered for a per-thread walk.
 // Only the latest pre-window usage and model events travel alongside the
 // selected window: enough to establish cumulative baselines and attribution
-// without loading the full lifetime history of a long-running session.
+// without loading the full lifetime history of a long-running thread.
 func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT e.session_id, s.harness, e.type, e.payload, e.created_at, p.pricing
-		 FROM events e JOIN sessions s ON s.id = e.session_id
- LEFT JOIN usage_pricing p ON p.session_id=e.session_id AND p.seq=e.seq
-		 WHERE e.session_id IN (SELECT DISTINCT session_id FROM events WHERE type = 'usage.updated' AND created_at >= ?)
-		   AND e.type IN ('usage.updated', 'session.created', 'session.config_changed')
+		`SELECT e.thread_id, s.harness, e.type, e.payload, e.created_at, p.pricing
+		 FROM events e JOIN threads s ON s.id = e.thread_id
+ LEFT JOIN usage_pricing p ON p.thread_id=e.thread_id AND p.seq=e.seq
+		 WHERE e.thread_id IN (SELECT DISTINCT thread_id FROM events WHERE type = 'usage.updated' AND created_at >= ?)
+		   AND e.type IN ('usage.updated', 'thread.created', 'thread.config_changed')
  AND (e.created_at >= ? OR e.seq = (
- SELECT MAX(b.seq) FROM events b WHERE b.session_id=e.session_id AND b.type=e.type AND b.created_at < ?
+ SELECT MAX(b.seq) FROM events b WHERE b.thread_id=e.thread_id AND b.type=e.type AND b.created_at < ?
  AND (b.type='usage.updated' OR COALESCE(json_extract(b.payload, '$.model'), '') <> '')
  ))
- ORDER BY e.session_id, e.seq`, from, from, from)
+ ORDER BY e.thread_id, e.seq`, from, from, from)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +402,7 @@ func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, 
 	for rows.Next() {
 		var r usage.EventRow
 		var payload, pricing []byte
-		if err := rows.Scan(&r.SessionID, &r.Harness, &r.Type, &payload, &r.Timestamp, &pricing); err != nil {
+		if err := rows.Scan(&r.ThreadID, &r.Harness, &r.Type, &payload, &r.Timestamp, &pricing); err != nil {
 			return nil, err
 		}
 		r.Payload = json.RawMessage(payload)
@@ -381,11 +416,11 @@ func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, 
 	return out, rows.Err()
 }
 
-func (s *Store) Session(ctx context.Context, id string) (SessionMeta, error) {
-	var m SessionMeta
+func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
+	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, provision_script, deprovision_script, provision_result FROM sessions WHERE id = ?`, id).
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
 		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -394,24 +429,24 @@ func (s *Store) Session(ctx context.Context, id string) (SessionMeta, error) {
 	return m, err
 }
 
-// ListSessions returns every session, newest anchor first. The anchor is
+// ListThreads returns every thread, newest anchor first. The anchor is
 // created_at on purpose (T3 Code's rule): activity must never reorder the
-// list. A session emitting an event bumps updated_at but holds its position,
-// so the sidebar only moves when a session enters or leaves the list — the
-// sort a user can keep a mental map of. The id tie-break keeps two sessions
+// list. A thread emitting an event bumps updated_at but holds its position,
+// so the sidebar only moves when a thread enters or leaves the list — the
+// sort a user can keep a mental map of. The id tie-break keeps two threads
 // created in the same millisecond in one stable order.
-func (s *Store) ListSessions(ctx context.Context) ([]SessionMeta, error) {
+func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq
-		 FROM sessions ORDER BY created_at DESC, id DESC`)
+		 FROM threads ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := []SessionMeta{}
+	out := []ThreadMeta{}
 	for rows.Next() {
-		var m SessionMeta
+		var m ThreadMeta
 		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq); err != nil {
 			return nil, err
 		}
@@ -423,7 +458,7 @@ func (s *Store) ListSessions(ctx context.Context) ([]SessionMeta, error) {
 func (s *Store) UpdateWorkspace(ctx context.Context, id, cwd, branch, phase string, result json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET cwd=?, branch=?, phase=?, provision_result=?, updated_at=? WHERE id=?`, cwd, branch, phase, []byte(result), proto.NowMillis(), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET cwd=?, branch=?, phase=?, provision_result=?, updated_at=? WHERE id=?`, cwd, branch, phase, []byte(result), proto.NowMillis(), id)
 	return err
 }
 
@@ -515,11 +550,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]project.Project, error) {
 	return out, rows.Err()
 }
 
-// ErrProjectInUse is returned when a project still owns sessions. Deleting it
-// anyway would leave those sessions pointing at a project that no longer
-// exists, and the sessions are the thing with a transcript and a checkout
-// behind them — so the sessions go first, deliberately, and the project after.
-var ErrProjectInUse = errors.New("project still has sessions")
+// ErrProjectInUse is returned when a project still owns threads. Deleting it
+// anyway would leave those threads pointing at a project that no longer
+// exists, and the threads are the thing with a transcript and a checkout
+// behind them — so the threads go first, deliberately, and the project after.
+var ErrProjectInUse = errors.New("project still has threads")
 
 // DeleteProject forgets a project. Nothing on disk is touched: the project
 // directory is the user's, not omniplex's, and .omniplex/project.json stays
@@ -533,18 +568,18 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
-	// Counted inside the transaction, so a session created between the check
+	// Counted inside the transaction, so a thread created between the check
 	// and the delete cannot be orphaned by it.
-	var sessions int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, id).Scan(&sessions); err != nil {
+	var threads int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE project_id = ?`, id).Scan(&threads); err != nil {
 		return err
 	}
-	if sessions > 0 {
-		noun := "sessions"
-		if sessions == 1 {
-			noun = "session"
+	if threads > 0 {
+		noun := "threads"
+		if threads == 1 {
+			noun = "thread"
 		}
-		return fmt.Errorf("%w: delete its %d %s first", ErrProjectInUse, sessions, noun)
+		return fmt.Errorf("%w: delete its %d %s first", ErrProjectInUse, threads, noun)
 	}
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
@@ -557,7 +592,7 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func (s *Store) DeleteSession(ctx context.Context, id string) error {
+func (s *Store) DeleteThread(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -566,12 +601,12 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	for _, q := range []string{
-		`DELETE FROM scheduled_prompts WHERE session_id = ?`,
-		`DELETE FROM events WHERE session_id = ?`,
-		`DELETE FROM usage_pricing WHERE session_id = ?`,
-		`DELETE FROM snapshots WHERE session_id = ?`,
-		`DELETE FROM commands WHERE session_id = ?`,
-		`DELETE FROM sessions WHERE id = ?`,
+		`DELETE FROM scheduled_prompts WHERE thread_id = ?`,
+		`DELETE FROM events WHERE thread_id = ?`,
+		`DELETE FROM usage_pricing WHERE thread_id = ?`,
+		`DELETE FROM snapshots WHERE thread_id = ?`,
+		`DELETE FROM commands WHERE thread_id = ?`,
+		`DELETE FROM threads WHERE id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
 			return err
@@ -580,7 +615,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-// ---- Labels (user-defined session groupings) ----
+// ---- Labels (user-defined thread groupings) ----
 
 // Label is one user-defined grouping. Labels are user-level, not per-project:
 // definitions live here so ordering and assignment survive restarts and fan
@@ -656,8 +691,8 @@ func (s *Store) SaveLabel(ctx context.Context, l Label) error {
 	return nil
 }
 
-// DeleteLabel removes a definition and unlabels every session carrying it, in
-// one transaction. It never deletes a session.
+// DeleteLabel removes a definition and unlabels every thread carrying it, in
+// one transaction. It never deletes a thread.
 func (s *Store) DeleteLabel(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -666,7 +701,7 @@ func (s *Store) DeleteLabel(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET label_id='' WHERE label_id=?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET label_id='' WHERE label_id=?`, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM labels WHERE id=?`, id); err != nil {
@@ -675,10 +710,10 @@ func (s *Store) DeleteLabel(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-// SetSessionLabel points a session at a label, or "" to clear it. It leaves
-// updated_at alone on purpose: filing a session is not activity, and bumping
+// SetThreadLabel points a thread at a label, or "" to clear it. It leaves
+// updated_at alone on purpose: filing a thread is not activity, and bumping
 // the stamp would shuffle a most-recent-first list the user was just reading.
-func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) error {
+func (s *Store) SetThreadLabel(ctx context.Context, threadID, labelID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if labelID != "" {
@@ -690,7 +725,7 @@ func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) 
 			return ErrNotFound
 		}
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET label_id=? WHERE id=?`, labelID, sessionID)
+	res, err := s.db.ExecContext(ctx, `UPDATE threads SET label_id=? WHERE id=?`, labelID, threadID)
 	if err != nil {
 		return err
 	}
@@ -704,7 +739,7 @@ func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) 
 	return nil
 }
 
-// MarkSessionViewed records that the user has seen the session up to seq, on
+// MarkThreadViewed records that the user has seen the thread up to seq, on
 // whatever device they were looking from. MAX keeps it monotonic: a stale
 // client reporting an old head must not un-read events a fresher device has
 // already seen. MIN caps it at the head: nobody has seen events that do not
@@ -712,11 +747,11 @@ func (s *Store) SetSessionLabel(ctx context.Context, sessionID, labelID string) 
 // the log caught up to a number a buggy client invented. updated_at is left
 // alone — looking is not activity, and the stamp no longer orders the list
 // anyway.
-func (s *Store) MarkSessionViewed(ctx context.Context, sessionID string, seq int64) error {
+func (s *Store) MarkThreadViewed(ctx context.Context, threadID string, seq int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_viewed_seq = MAX(last_viewed_seq, MIN(?, head_seq)) WHERE id = ?`, seq, sessionID)
+		`UPDATE threads SET last_viewed_seq = MAX(last_viewed_seq, MIN(?, head_seq)) WHERE id = ?`, seq, threadID)
 	if err != nil {
 		return err
 	}
@@ -730,13 +765,13 @@ func (s *Store) MarkSessionViewed(ctx context.Context, sessionID string, seq int
 	return nil
 }
 
-// MarkSessionUnread drops the viewed cursor to zero — the explicit "come back
+// MarkThreadUnread drops the viewed cursor to zero — the explicit "come back
 // to this" action, the one legal way the cursor moves backwards.
-func (s *Store) MarkSessionUnread(ctx context.Context, sessionID string) error {
+func (s *Store) MarkThreadUnread(ctx context.Context, threadID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_viewed_seq = 0 WHERE id = ?`, sessionID)
+		`UPDATE threads SET last_viewed_seq = 0 WHERE id = ?`, threadID)
 	if err != nil {
 		return err
 	}
@@ -752,7 +787,7 @@ func (s *Store) MarkSessionUnread(ctx context.Context, sessionID string) error {
 
 // ---- Snapshots (a cache; deleting the table changes only latency) ----
 
-func (s *Store) PutSnapshot(ctx context.Context, sessionID string, seq int64, state any) error {
+func (s *Store) PutSnapshot(ctx context.Context, threadID string, seq int64, state any) error {
 	blob, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -760,20 +795,20 @@ func (s *Store) PutSnapshot(ctx context.Context, sessionID string, seq int64, st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO snapshots (session_id, seq, state) VALUES (?,?,?)`, sessionID, seq, blob); err != nil {
+		`INSERT OR REPLACE INTO snapshots (thread_id, seq, state) VALUES (?,?,?)`, threadID, seq, blob); err != nil {
 		return err
 	}
-	// Keep only the newest snapshot per session.
-	_, err = s.db.ExecContext(ctx, `DELETE FROM snapshots WHERE session_id = ? AND seq < ?`, sessionID, seq)
+	// Keep only the newest snapshot per thread.
+	_, err = s.db.ExecContext(ctx, `DELETE FROM snapshots WHERE thread_id = ? AND seq < ?`, threadID, seq)
 	return err
 }
 
 // LatestSnapshot returns the newest snapshot, or (0, nil, nil) if none exists.
-func (s *Store) LatestSnapshot(ctx context.Context, sessionID string) (int64, json.RawMessage, error) {
+func (s *Store) LatestSnapshot(ctx context.Context, threadID string) (int64, json.RawMessage, error) {
 	var seq int64
 	var blob []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT seq, state FROM snapshots WHERE session_id = ? ORDER BY seq DESC LIMIT 1`, sessionID).Scan(&seq, &blob)
+		`SELECT seq, state FROM snapshots WHERE thread_id = ? ORDER BY seq DESC LIMIT 1`, threadID).Scan(&seq, &blob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil, nil
 	}
@@ -792,17 +827,17 @@ var ErrCommandInProgress = errors.New("command is still in progress")
 // completed commands always carry their JSON result. This distinction is what
 // keeps a concurrent retry from mistaking a placeholder for a successful null
 // result.
-func (s *Store) ClaimCommand(ctx context.Context, commandID, sessionID string) (json.RawMessage, bool, error) {
+func (s *Store) ClaimCommand(ctx context.Context, commandID, threadID string) (json.RawMessage, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var existingSession string
+	var existingThread string
 	var result []byte
-	err := s.db.QueryRowContext(ctx, `SELECT session_id, result FROM commands WHERE command_id = ?`, commandID).
-		Scan(&existingSession, &result)
+	err := s.db.QueryRowContext(ctx, `SELECT thread_id, result FROM commands WHERE command_id = ?`, commandID).
+		Scan(&existingThread, &result)
 	if err == nil {
-		if existingSession != sessionID {
-			return nil, false, fmt.Errorf("command id already belongs to another session")
+		if existingThread != threadID {
+			return nil, false, fmt.Errorf("command id already belongs to another thread")
 		}
 		if result == nil {
 			return nil, false, ErrCommandInProgress
@@ -813,8 +848,8 @@ func (s *Store) ClaimCommand(ctx context.Context, commandID, sessionID string) (
 		return nil, false, err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO commands (command_id, session_id, result, created_at) VALUES (?,?,NULL,?)`,
-		commandID, sessionID, proto.NowMillis())
+		`INSERT INTO commands (command_id, thread_id, result, created_at) VALUES (?,?,NULL,?)`,
+		commandID, threadID, proto.NowMillis())
 	return nil, false, err
 }
 

@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -13,21 +13,21 @@ import (
 	"github.com/asiraky/omniplex/internal/store"
 )
 
-// quotaAdapter is a fakeAdapter whose sessions answer quota reads and whose
+// quotaAdapter is a fakeAdapter whose threads answer quota reads and whose
 // out-of-band read is scriptable, so both refresh paths are testable.
 type quotaAdapter struct {
 	fakeAdapter
-	readMu     chan struct{} // guards the fields below
-	readErr    error
-	readSnap   adapter.QuotaSnapshot
-	sessionErr error
+	readMu    chan struct{} // guards the fields below
+	readErr   error
+	readSnap  adapter.QuotaSnapshot
+	threadErr error
 }
 
 func (f *quotaAdapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
-	s := &quotaFakeSession{fakeSession: &fakeSession{host: host, events: make(chan proto.Emission, 64), prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16)}}
+	s := &quotaFakeThread{fakeThread: &fakeThread{host: host, events: make(chan proto.Emission, 64), prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16)}}
 	f.mu.Lock()
-	s.err = f.sessionErr
-	f.last = s.fakeSession
+	s.err = f.threadErr
+	f.last = s.fakeThread
 	f.mu.Unlock()
 	return s, nil
 }
@@ -41,18 +41,18 @@ func (f *quotaAdapter) ReadQuota(ctx context.Context, env map[string]string) (ad
 	return f.readSnap, nil
 }
 
-type quotaFakeSession struct {
-	*fakeSession
+type quotaFakeThread struct {
+	*fakeThread
 	err error
 }
 
-func (s *quotaFakeSession) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
+func (s *quotaFakeThread) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
 	if s.err != nil {
 		return adapter.QuotaSnapshot{}, s.err
 	}
 	return adapter.QuotaSnapshot{
 		CheckedAt: time.Now().UnixMilli(),
-		Windows:   []adapter.QuotaWindow{{ID: "five_hour", Kind: adapter.QuotaSession, Label: "Session", UsedPercent: pct(30)}},
+		Windows:   []adapter.QuotaWindow{{ID: "five_hour", Kind: adapter.QuotaSession, Label: "Thread", UsedPercent: pct(30)}},
 	}, nil
 }
 
@@ -74,14 +74,14 @@ func TestQuotaSparseMergeKeepsUnmentionedWindows(t *testing.T) {
 	full := adapter.QuotaSnapshot{
 		CheckedAt: 1000,
 		Windows: []adapter.QuotaWindow{
-			{ID: "five_hour", Kind: adapter.QuotaSession, Label: "Session", UsedPercent: pct(40), ResetsAt: 5000},
+			{ID: "five_hour", Kind: adapter.QuotaSession, Label: "Thread", UsedPercent: pct(40), ResetsAt: 5000},
 			{ID: "seven_day", Kind: adapter.QuotaWeekly, Label: "Weekly", UsedPercent: pct(70), ResetsAt: 9000},
 		},
 	}
 	mgr.reportQuota("fake", "fake", full, true)
 
-	// A live push that names only the session window, and only its new
-	// reading: the weekly window survives untouched, and the session
+	// A live push that names only the thread window, and only its new
+	// reading: the weekly window survives untouched, and the thread
 	// window's reset time survives because the update did not carry one.
 	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{
 		CheckedAt: 2000,
@@ -97,10 +97,10 @@ func TestQuotaSparseMergeKeepsUnmentionedWindows(t *testing.T) {
 		t.Fatalf("windows = %+v, want both after a sparse merge", status.Snapshot.Windows)
 	}
 	if got := *windows["five_hour"].UsedPercent; got != 55 {
-		t.Fatalf("session used = %v, want the sparse update's 55", got)
+		t.Fatalf("thread used = %v, want the sparse update's 55", got)
 	}
 	if windows["five_hour"].ResetsAt != 5000 {
-		t.Fatalf("session reset = %v, want the read's value preserved", windows["five_hour"].ResetsAt)
+		t.Fatalf("thread reset = %v, want the read's value preserved", windows["five_hour"].ResetsAt)
 	}
 	if got := *windows["seven_day"].UsedPercent; got != 70 {
 		t.Fatalf("weekly used = %v, want the untouched 70", got)
@@ -219,7 +219,7 @@ func TestQuotaAccountIsolation(t *testing.T) {
 	}
 }
 
-func TestLiveSessionQuotaPushRoutesToInstance(t *testing.T) {
+func TestLiveThreadQuotaPushRoutesToInstance(t *testing.T) {
 	mgr, fa, _ := quotaTestManager(t)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
@@ -227,15 +227,15 @@ func TestLiveSessionQuotaPushRoutesToInstance(t *testing.T) {
 	}
 	_ = actor
 
-	// The session pushes a quota update through its host services; the
-	// manager's cache must file it under the instance the session runs
+	// The thread pushes a quota update through its host services; the
+	// manager's cache must file it under the instance the thread runs
 	// under — the default one here.
 	fa.mu.Lock()
 	s := fa.last
 	fa.mu.Unlock()
 	reporter := s.host.(adapter.QuotaReporter)
 	reporter.ReportQuota(adapter.QuotaSnapshot{CheckedAt: time.Now().UnixMilli(), Windows: []adapter.QuotaWindow{
-		{ID: "five_hour", Kind: adapter.QuotaSession, Label: "Session", UsedPercent: pct(20)},
+		{ID: "five_hour", Kind: adapter.QuotaSession, Label: "Thread", UsedPercent: pct(20)},
 	}})
 
 	status := mgr.Quotas()[0]
@@ -247,22 +247,22 @@ func TestLiveSessionQuotaPushRoutesToInstance(t *testing.T) {
 	}
 }
 
-func TestRefreshQuotaPrefersLiveSession(t *testing.T) {
+func TestRefreshQuotaPrefersLiveThread(t *testing.T) {
 	mgr, fa, _ := quotaTestManager(t)
 	if _, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", ""); err != nil {
 		t.Fatal(err)
 	}
-	// The adapter's out-of-band read is scripted to fail; a live session
+	// The adapter's out-of-band read is scripted to fail; a live thread
 	// answering must win over it.
 	fa.mu.Lock()
 	fa.readErr = errors.New("out-of-band read should not have run")
 	fa.mu.Unlock()
 	status, err := mgr.RefreshQuota(context.Background(), "fake")
 	if err != nil {
-		t.Fatalf("the live session should have answered: %v", err)
+		t.Fatalf("the live thread should have answered: %v", err)
 	}
 	if len(status.Snapshot.Windows) != 1 || status.Snapshot.Windows[0].ID != "five_hour" {
-		t.Fatalf("snapshot = %+v, want the live session's answer", status.Snapshot)
+		t.Fatalf("snapshot = %+v, want the live thread's answer", status.Snapshot)
 	}
 }
 
@@ -280,11 +280,11 @@ func TestQuotaSubscribeNotifiesOnChange(t *testing.T) {
 
 func TestUsageReportFromDurableLog(t *testing.T) {
 	mgr, _, st := quotaTestManager(t)
-	meta := store.SessionMeta{ID: "s1", Cwd: t.TempDir(), Harness: "claude", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "idle"}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
+	meta := store.ThreadMeta{ID: "s1", Cwd: t.TempDir(), Harness: "claude", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "idle"}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Append(context.Background(), "s1", proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: "claude", Model: "claude-opus-5"})); err != nil {
+	if _, err := st.Append(context.Background(), "s1", proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: "claude", Model: "claude-opus-5"})); err != nil {
 		t.Fatal(err)
 	}
 	// A claude turn: the accounting result, then the occupancy re-emission.
@@ -323,7 +323,7 @@ func TestQuotaPublishedSnapshotIsImmutable(t *testing.T) {
 	}
 }
 
-func TestQuotaAccountSwitchRejectsOldSessionAndDropsWindows(t *testing.T) {
+func TestQuotaAccountSwitchRejectsOldThreadAndDropsWindows(t *testing.T) {
 	mgr, fa, _ := quotaTestManager(t)
 	if _, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", ""); err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestQuotaAccountSwitchRejectsOldSessionAndDropsWindows(t *testing.T) {
 	mgr.forgetQuota("fake")
 	reporter.ReportQuota(adapter.QuotaSnapshot{AccountID: "a", Windows: []adapter.QuotaWindow{{ID: "old"}}})
 	if len(mgr.Quotas()[0].Snapshot.Windows) != 0 {
-		t.Fatal("old session repopulated new account")
+		t.Fatal("old thread repopulated new account")
 	}
 	fa.mu.Lock()
 	fa.readSnap = adapter.QuotaSnapshot{AccountID: "b", Windows: []adapter.QuotaWindow{{ID: "new"}}}
@@ -345,7 +345,7 @@ func TestQuotaAccountSwitchRejectsOldSessionAndDropsWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status.Snapshot.AccountID != "b" {
-		t.Fatalf("read old live session: %+v", status)
+		t.Fatalf("read old live thread: %+v", status)
 	}
 	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{AccountID: "c", Windows: []adapter.QuotaWindow{{ID: "third"}}}, false)
 	if got := mgr.Quotas()[0].Snapshot.Windows; len(got) != 1 || got[0].ID != "third" {

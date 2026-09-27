@@ -163,9 +163,9 @@ func readShared(t *testing.T, s *Store, rel string) string {
 func TestShareRefusesBadIDs(t *testing.T) {
 	s := New(t.TempDir())
 	if _, err := s.Snapshot("../s", "a", t.TempDir(), time.Now()); !errors.Is(err, ErrBadPath) {
-		t.Fatalf("bad session id: %v", err)
+		t.Fatalf("bad thread id: %v", err)
 	}
-	if err := s.PurgeSession(".."); !errors.Is(err, ErrBadPath) {
+	if err := s.PurgeThread(".."); !errors.Is(err, ErrBadPath) {
 		t.Fatalf("purge ..: %v", err)
 	}
 }
@@ -216,9 +216,9 @@ func TestPickEntry(t *testing.T) {
 func TestTokensRoundTripAndRefuseTampering(t *testing.T) {
 	now := time.UnixMilli(1_000_000)
 	s := NewSigner([]byte("0123456789abcdef0123456789abcdef"))
-	tok := s.Mint(Claims{Kind: KindShare, Session: "s", Artefact: "a", Nonce: "n1", ExpiresAt: 2_000_000})
+	tok := s.Mint(Claims{Kind: KindShare, Thread: "s", Artefact: "a", Nonce: "n1", ExpiresAt: 2_000_000})
 	c, err := s.Check(tok, KindShare, now)
-	if err != nil || c.Session != "s" || c.Artefact != "a" || c.Nonce != "n1" {
+	if err != nil || c.Thread != "s" || c.Artefact != "a" || c.Nonce != "n1" {
 		t.Fatalf("claims = %+v, %v", c, err)
 	}
 	if _, err := s.Check(tok, KindPreview, now); err == nil {
@@ -231,13 +231,13 @@ func TestTokensRoundTripAndRefuseTampering(t *testing.T) {
 	if _, err := other.Check(tok, KindShare, now); err == nil {
 		t.Fatal("token accepted under another key")
 	}
-	forged := s.Mint(Claims{Kind: KindShare, Session: "t", Artefact: "a", ExpiresAt: 2_000_000})
+	forged := s.Mint(Claims{Kind: KindShare, Thread: "t", Artefact: "a", ExpiresAt: 2_000_000})
 	enc, _, _ := strings.Cut(forged, ".")
 	_, sig, _ := strings.Cut(tok, ".")
 	if _, err := s.Check(enc+"."+sig, KindShare, now); err == nil {
 		t.Fatal("payload swap accepted")
 	}
-	never := s.Mint(Claims{Kind: KindAgent, Session: "s"})
+	never := s.Mint(Claims{Kind: KindAgent, Thread: "s"})
 	if _, err := s.Check(never, KindAgent, time.UnixMilli(1<<50)); err != nil {
 		t.Fatalf("non-expiring token: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestLoadSignerPersistsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := LoadSigner(dir)
-	tok := a.Mint(Claims{Kind: KindAgent, Session: "s"})
+	tok := a.Mint(Claims{Kind: KindAgent, Thread: "s"})
 	if _, err := b.Check(tok, KindAgent, time.Now()); err != nil {
 		t.Fatalf("reloaded key rejected token: %v", err)
 	}

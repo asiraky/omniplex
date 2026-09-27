@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 /**
  * Whether the diff viewer soft-wraps long lines. Global on purpose: it is a
- * property of the screen you are reading on, not of a session or a project, so
+ * property of the screen you are reading on, not of a thread or a project, so
  * ticking it once should hold everywhere — the same call theme and sidebar
  * width already make.
  */
@@ -17,7 +17,7 @@ export function readDiffWrap(): boolean {
     return localStorage.getItem(KEY) === "1";
   } catch {
     // Storage blocked (Safari private mode). The preference is not worth
-    // failing a render over — this session just gets the default.
+    // failing a render over — this thread just gets the default.
     return DEFAULT;
   }
 }

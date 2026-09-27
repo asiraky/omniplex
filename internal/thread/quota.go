@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -174,7 +174,7 @@ func (m *Manager) forgetQuota(instanceID string) {
 	}
 }
 
-// RefreshQuota re-reads one instance's usage limits: from a live session of
+// RefreshQuota re-reads one instance's usage limits: from a live thread of
 // that instance when one is running, else by asking the harness out-of-band.
 // A failure keeps the last good snapshot and records the error against it, so
 // one provider failing never blanks the other.
@@ -218,11 +218,11 @@ func (m *Manager) RefreshQuota(ctx context.Context, instanceID string) (QuotaSta
 	return out, err
 }
 
-// ErrNoLiveQuota says there is no live session to ask, which is a routing
+// ErrNoLiveQuota says there is no live thread to ask, which is a routing
 // outcome rather than a failure: the caller falls back to the adapter.
-var ErrNoLiveQuota = errors.New("no live session for this instance")
+var ErrNoLiveQuota = errors.New("no live thread for this instance")
 
-// readQuota performs one quota read, preferring a live session of the
+// readQuota performs one quota read, preferring a live thread of the
 // instance — the process is already authenticated as the account the quota
 // belongs to — and falling back to the adapter's out-of-band read.
 func (m *Manager) readQuota(ctx context.Context, reg registered) (adapter.QuotaSnapshot, error) {
@@ -255,7 +255,7 @@ func (m *Manager) readQuotaFromLive(ctx context.Context, reg registered) (adapte
 	m.mu.RUnlock()
 
 	for _, a := range actors {
-		meta, err := m.store.Session(ctx, a.ID)
+		meta, err := m.store.Thread(ctx, a.ID)
 		if err != nil {
 			continue
 		}
@@ -276,7 +276,7 @@ func (m *Manager) readQuotaFromLive(ctx context.Context, reg registered) (adapte
 			return snap, nil
 		}
 		if errors.Is(err, ErrNotReady) || errors.Is(err, ErrClosed) {
-			continue // this process is not live; try the next session
+			continue // this process is not live; try the next thread
 		}
 		return adapter.QuotaSnapshot{}, err
 	}

@@ -228,14 +228,14 @@ function HookField({
  */
 function DeleteProjectSection({
   name,
-  sessionCount,
+  threadCount,
   onDelete,
   onError,
   busy,
   setBusy,
 }: {
   name: string;
-  sessionCount: number;
+  threadCount: number;
   onDelete: () => Promise<void>;
   onError: (message: string | null) => void;
   /** Owned by the screen, not this section: Save has to go dead while a
@@ -246,10 +246,10 @@ function DeleteProjectSection({
 }) {
   const [confirming, setConfirming] = useState(false);
 
-  // Sessions have transcripts, and often a worktree, behind them. The server
+  // Threads have transcripts, and often a worktree, behind them. The server
   // refuses this outright; saying so here means the user learns it before
   // pressing rather than from an error afterwards.
-  const blocked = sessionCount > 0;
+  const blocked = threadCount > 0;
 
   const run = async () => {
     setBusy(true);
@@ -268,7 +268,7 @@ function DeleteProjectSection({
       <SectionHeading note="cannot be undone">Remove project</SectionHeading>
       <p className="text-muted-foreground text-[11px]">
         {blocked
-          ? `${sessionCount} session${sessionCount === 1 ? "" : "s"} still belong${sessionCount === 1 ? "s" : ""} to this project. Delete ${sessionCount === 1 ? "it" : "them"} first.`
+          ? `${threadCount} thread${threadCount === 1 ? "" : "s"} still belong${threadCount === 1 ? "s" : ""} to this project. Delete ${threadCount === 1 ? "it" : "them"} first.`
           : "Takes it out of Omniplex only. The checkout, its worktrees and its project.json are left exactly as they are, so adding the directory again restores these settings."}
       </p>
       {confirming && !blocked ? (
@@ -314,7 +314,7 @@ export function ProjectSettings({
   onAdd,
   onSave,
   onDelete,
-  sessionCount,
+  threadCount,
   onSaveUserConfig,
   onClose,
 }: {
@@ -325,9 +325,9 @@ export function ProjectSettings({
   onAdd: (root: string) => Promise<void>;
   onSave: (id: string, cfg: ProjectConfig) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  /** How many sessions still belong to this project; a project with any is
+  /** How many threads still belong to this project; a project with any is
       not deletable, and the screen says so before the button is pressed. */
-  sessionCount: number;
+  threadCount: number;
   onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
   onClose: () => void;
 }) {
@@ -390,8 +390,8 @@ export function ProjectSettings({
           <DialogTitle>{project ? `${cfg.name} settings` : "Add project"}</DialogTitle>
           <DialogDescription>
             {project
-              ? "Defaults every new session in this project starts from."
-              : "Point Omniplex at a Git checkout to start creating sessions in it."}
+              ? "Defaults every new thread in this project starts from."
+              : "Point Omniplex at a Git checkout to start creating threads in it."}
           </DialogDescription>
         </DialogHeader>
 
@@ -601,7 +601,7 @@ export function ProjectSettings({
 
               <DeleteProjectSection
                 name={cfg.name}
-                sessionCount={sessionCount}
+                threadCount={threadCount}
                 busy={deleting}
                 setBusy={setDeleting}
                 onError={setError}

@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -150,7 +150,7 @@ func (a *Actor) dispatchScheduled(now int64) error {
 			}
 		}
 		// Restore this instruction's saved settings before sending. They become the
-		// session's active settings, visibly, just like a manual settings change.
+		// thread's active settings, visibly, just like a manual settings change.
 		if err := a.scheduleSettings(p); err != nil {
 			return a.failSchedule(p, err)
 		}
@@ -185,7 +185,7 @@ func (a *Actor) scheduleSettings(p proto.ScheduledPrompt) error {
 		if err := s.SetModel(ctx, p.Model); err != nil {
 			return err
 		}
-		if err := a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{ReplaceSettings: true, Model: p.Model, Mode: a.state.Mode})); err != nil {
+		if err := a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{ReplaceSettings: true, Model: p.Model, Mode: a.state.Mode})); err != nil {
 			return err
 		}
 	}
@@ -197,7 +197,7 @@ func (a *Actor) scheduleSettings(p proto.ScheduledPrompt) error {
 		if err := s.SetMode(ctx, p.Mode); err != nil {
 			return err
 		}
-		if err := a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{ReplaceSettings: true, Model: a.state.Model, Mode: p.Mode})); err != nil {
+		if err := a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{ReplaceSettings: true, Model: a.state.Model, Mode: p.Mode})); err != nil {
 			return err
 		}
 	}
@@ -209,7 +209,7 @@ func (a *Actor) scheduleSettings(p proto.ScheduledPrompt) error {
 		if err := s.SetEffort(ctx, p.Effort); err != nil {
 			return err
 		}
-		if err := a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Effort: &p.Effort})); err != nil {
+		if err := a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &p.Effort})); err != nil {
 			return err
 		}
 	}
@@ -218,7 +218,7 @@ func (a *Actor) scheduleSettings(p proto.ScheduledPrompt) error {
 
 // StartScheduler is called once after providers and attachments are configured.
 // The indexed lookup is cheap; no transcript needs to be attached or replayed
-// until its schedule is due. Slow providers do not delay other sessions.
+// until its schedule is due. Slow providers do not delay other threads.
 func (m *Manager) StartScheduler() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.schedulerCancel = cancel
@@ -231,7 +231,7 @@ func (m *Manager) StartScheduler() {
 		defer workers.Wait()
 		var active sync.Map
 		for {
-			ids, err := m.store.DueScheduleSessions(ctx, time.Now().UnixMilli())
+			ids, err := m.store.DueScheduleThreads(ctx, time.Now().UnixMilli())
 			if err != nil && ctx.Err() == nil {
 				m.logf("schedule lookup: %v", err)
 			}

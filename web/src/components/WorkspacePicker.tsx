@@ -140,7 +140,7 @@ export function WorkspacePicker({
   }, [mode, value.branch, value.attachPath, issues, workspaces, formatter, userConfig?.suggestIssues]);
 
   // Every row is selectable. A checkout somebody else is in is a warning the
-  // caller renders, not a door omniplex locks: nothing about Git stops two sessions
+  // caller renders, not a door omniplex locks: nothing about Git stops two threads
   // sharing one, only their own edits do.
   useEffect(() => {
     setActive(0);
@@ -176,7 +176,7 @@ export function WorkspacePicker({
       return;
     }
     // Enter picks the highlighted row only while the list is open; otherwise it
-    // falls through to the dialog, where it starts the session.
+    // falls through to the dialog, where it starts the thread.
     if (e.key === "Enter" && open && rows[active]) {
       e.preventDefault();
       choose(rows[active]);

@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -23,10 +23,10 @@ import (
 // Snapshots all happen on one goroutine, in the order the jobs arrive, which is
 // what lets the baseline pass from job to job without a lock.
 type checkpointer struct {
-	sessionID string
-	root      string
-	emit      func(proto.Emission)
-	logf      func(string, ...any)
+	threadID string
+	root     string
+	emit     func(proto.Emission)
+	logf     func(string, ...any)
 
 	jobs chan checkpointJob
 	// ctx is cancelled by stop, which kills any Git process still running.
@@ -62,10 +62,10 @@ const checkpointQueue = 16
 // Cancelling kills the Git process, so this is a backstop, not the usual path.
 const checkpointStopGrace = 5 * time.Second
 
-// newCheckpointer starts the snapshot goroutine for a session, or answers nil
-// when the session has no Git checkout to snapshot — which is not a failure,
-// only a session whose turns will carry no cards.
-func newCheckpointer(cwd, sessionID string, emit func(proto.Emission), logf func(string, ...any)) *checkpointer {
+// newCheckpointer starts the snapshot goroutine for a thread, or answers nil
+// when the thread has no Git checkout to snapshot — which is not a failure,
+// only a thread whose turns will carry no cards.
+func newCheckpointer(cwd, threadID string, emit func(proto.Emission), logf func(string, ...any)) *checkpointer {
 	probe, cancelProbe := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelProbe()
 
@@ -76,14 +76,14 @@ func newCheckpointer(cwd, sessionID string, emit func(proto.Emission), logf func
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &checkpointer{
-		sessionID: sessionID,
-		root:      root,
-		emit:      emit,
-		logf:      logf,
-		jobs:      make(chan checkpointJob, checkpointQueue),
-		ctx:       ctx,
-		cancel:    cancel,
-		finished:  make(chan struct{}),
+		threadID: threadID,
+		root:     root,
+		emit:     emit,
+		logf:     logf,
+		jobs:     make(chan checkpointJob, checkpointQueue),
+		ctx:      ctx,
+		cancel:   cancel,
+		finished: make(chan struct{}),
 	}
 	go c.run()
 	return c
@@ -113,7 +113,7 @@ func (c *checkpointer) baseline(ctx context.Context, turnID string) bool {
 	case <-ctx.Done():
 		// The turn goes ahead regardless: a prompt that never reaches the
 		// harness costs far more than a missing card.
-		c.logf("baseline for %s did not settle in time; this turn gets no file list", c.sessionID)
+		c.logf("baseline for %s did not settle in time; this turn gets no file list", c.threadID)
 		return false
 	case <-c.ctx.Done():
 		return false
@@ -130,7 +130,7 @@ func (c *checkpointer) turnEnded(turnID string) {
 }
 
 // submit drops the job rather than blocking the actor loop. A missing card is a
-// far smaller problem than a session that stops answering. It reports whether
+// far smaller problem than a thread that stops answering. It reports whether
 // the job was taken, so a caller waiting on an ack does not wait for one that
 // will never come.
 func (c *checkpointer) submit(job checkpointJob) bool {
@@ -140,7 +140,7 @@ func (c *checkpointer) submit(job checkpointJob) bool {
 	case <-c.ctx.Done():
 		return false
 	default:
-		c.logf("checkpoint queue full on %s; skipping a turn's file list", c.sessionID)
+		c.logf("checkpoint queue full on %s; skipping a turn's file list", c.threadID)
 		return false
 	}
 }
@@ -157,12 +157,12 @@ func (c *checkpointer) stop() {
 		select {
 		case <-c.finished:
 		case <-time.After(checkpointStopGrace):
-			c.logf("checkpoint worker for %s did not stop in time", c.sessionID)
+			c.logf("checkpoint worker for %s did not stop in time", c.threadID)
 		}
 	})
 }
 
-// drop removes every snapshot this session took. It must be called after stop,
+// drop removes every snapshot this thread took. It must be called after stop,
 // so that nothing is still writing refs.
 func (c *checkpointer) drop() {
 	if c == nil {
@@ -170,8 +170,8 @@ func (c *checkpointer) drop() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := dropCheckpoints(ctx, c.root, c.sessionID); err != nil {
-		c.logf("dropping checkpoints for %s: %v", c.sessionID, err)
+	if err := dropCheckpoints(ctx, c.root, c.threadID); err != nil {
+		c.logf("dropping checkpoints for %s: %v", c.threadID, err)
 	}
 }
 
@@ -201,11 +201,11 @@ func (c *checkpointer) handle(job checkpointJob, base string) string {
 	ctx, cancel := context.WithTimeout(c.ctx, checkpointTimeout)
 	defer cancel()
 
-	oid, err := captureCheckpoint(ctx, c.root, checkpointRef(c.sessionID, job.turnID, edgeFor(job.kind)))
+	oid, err := captureCheckpoint(ctx, c.root, checkpointRef(c.threadID, job.turnID, edgeFor(job.kind)))
 	if err != nil {
 		// Cancellation is a shutdown, not a fault worth telling a reader about.
 		if c.ctx.Err() == nil {
-			c.logf("checkpoint for %s: %v", c.sessionID, err)
+			c.logf("checkpoint for %s: %v", c.threadID, err)
 			if job.kind == jobTurn {
 				c.report(job.turnID, TurnChanges{}, err)
 			}
@@ -228,7 +228,7 @@ func (c *checkpointer) handle(job checkpointJob, base string) string {
 	case c.ctx.Err() != nil:
 		// Shutting down; reporting now would race the log closing behind us.
 	case err != nil:
-		c.logf("turn diff for %s: %v", c.sessionID, err)
+		c.logf("turn diff for %s: %v", c.threadID, err)
 		c.report(job.turnID, TurnChanges{}, err)
 	case len(changes.Files) > 0:
 		c.report(job.turnID, changes, nil)

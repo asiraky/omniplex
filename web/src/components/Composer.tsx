@@ -66,9 +66,9 @@ export function Composer({
 }: {
   ref?: Ref<ComposerHandle>;
   /**
-   * The in-progress message. Owned by the parent and keyed per session there,
+   * The in-progress message. Owned by the parent and keyed per thread there,
    * so it survives this component being unmounted and remounted across a
-   * session switch — the draft is not this component's to lose.
+   * thread switch — the draft is not this component's to lose.
    */
   draft: string;
   onDraftChange: (text: string) => void;
@@ -82,7 +82,7 @@ export function Composer({
   onSchedule?: () => void;
   onCancel: () => void;
   /** Images and files staged for the next message. Owned by the parent for
-      the same reason the draft is: a session switch unmounts this component. */
+      the same reason the draft is: a thread switch unmounts this component. */
   attachments?: Attachment[];
   /** Hands picked, dropped, or pasted files of any type to the parent, which
       uploads them — images on the image path, everything else as artefacts.
@@ -90,9 +90,9 @@ export function Composer({
   onAttachImages?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
   disabledPlaceholder?: string;
-  /** Every harness the server reports; the picker reads this session's out. */
+  /** Every harness the server reports; the picker reads this thread's out. */
   harnesses?: HarnessMeta[];
-  /** The attached session's harness, which it cannot change, and account,
+  /** The attached thread's harness, which it cannot change, and account,
       which it can — to another account of the same harness. */
   harness?: string;
   instance?: string;
@@ -100,11 +100,11 @@ export function Composer({
   effort?: string;
   onSwitchModel?: (id: string) => void;
   onSwitchEffort?: (effort: string) => void;
-  /** Moves the session to another account of its harness, then runs `model`
+  /** Moves the thread to another account of its harness, then runs `model`
       there. Omitted, the picker still offers other accounts but choosing one
       does nothing. */
   onSwitchAccount?: (instance: string, model: string) => void;
-  /** The session's token usage, source of the context meter. */
+  /** The thread's token usage, source of the context meter. */
   usage?: Usage;
   loadComposerItems?: () => Promise<ComposerItem[]>;
   onRunClientAction?: (action: string) => void;
@@ -161,7 +161,7 @@ export function Composer({
       {
         id: "client:model",
         name: "model",
-        description: "Switch response model for this session",
+        description: "Switch response model for this thread",
         kind: "command",
         trigger: "/",
         insertText: "/model",
@@ -203,7 +203,7 @@ export function Composer({
   }, [loadComposerItems]);
 
   // The catalogue cannot load while the workspace is still being prepared: the
-  // actor has no session to ask, so the request fails and `catalogueReady`
+  // actor has no thread to ask, so the request fails and `catalogueReady`
   // stays false. Retry on the edge where sending becomes possible, or a slash
   // command written during the wait would be silently refused afterwards.
   const wasSendBlocked = useRef(sendDisabled);
@@ -263,7 +263,7 @@ export function Composer({
     [draft, cursor, items],
   );
 
-  // Provider catalogues can change while a session is open. Refresh at the
+  // Provider catalogues can change while a thread is open. Refresh at the
   // start of each completion interaction; native adapters remain authoritative
   // without making the core subscribe to provider-specific invalidations.
   useEffect(() => {
@@ -298,7 +298,7 @@ export function Composer({
       }
       if (item.behavior === "adapter-action" && item.action) {
         // An adapter action is a turn by another name: it goes to the same
-        // session the send button is waiting on, so it waits with it.
+        // thread the send button is waiting on, so it waits with it.
         if (sendDisabled) return;
         const next = replaceComposerTrigger(draft, trigger, "");
         setDismissedTrigger(triggerKey);
@@ -405,7 +405,7 @@ export function Composer({
       aria-label="Message"
       placeholder={
         disabled || sendDisabled
-          ? (disabledPlaceholder ?? "Session closed")
+          ? (disabledPlaceholder ?? "Thread closed")
           : isDesktop
             ? "Ask anything…  (↵ to send · ⇧↵ for newline)"
             : "Ask anything…"

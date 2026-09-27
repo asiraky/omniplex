@@ -14,7 +14,7 @@ import (
 
 // RelocateStats describes the durable records changed by RelocateProject.
 type RelocateStats struct {
-	Sessions  int
+	Threads   int
 	Events    int
 	Snapshots int
 	Commands  int
@@ -58,18 +58,18 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 		return RelocateStats{}, fmt.Errorf("update project root: %w", err)
 	}
 
-	type sessionPath struct {
+	type threadPath struct {
 		id, cwd, projectID string
 		changed            bool
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, cwd, project_id FROM sessions`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, cwd, project_id FROM threads`)
 	if err != nil {
 		return RelocateStats{}, err
 	}
-	var projectSessions []sessionPath
-	changedSessions := 0
+	var projectThreads []threadPath
+	changedThreads := 0
 	for rows.Next() {
-		var item sessionPath
+		var item threadPath
 		if err := rows.Scan(&item.id, &item.cwd, &item.projectID); err != nil {
 			rows.Close()
 			return RelocateStats{}, err
@@ -78,10 +78,10 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 		if pathChanged {
 			item.cwd = next
 			item.changed = true
-			changedSessions++
+			changedThreads++
 		}
 		if item.projectID == projectID || pathChanged {
-			projectSessions = append(projectSessions, item)
+			projectThreads = append(projectThreads, item)
 		}
 	}
 	if err := rows.Close(); err != nil {
@@ -91,32 +91,32 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 		return RelocateStats{}, err
 	}
 
-	stats := RelocateStats{Sessions: changedSessions}
-	for _, item := range projectSessions {
+	stats := RelocateStats{Threads: changedThreads}
+	for _, item := range projectThreads {
 		if item.changed {
 			// item.cwd was rewritten above. Rows outside the old prefix retain
 			// their cwd but still participate in the JSON migration below.
-			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET cwd = ? WHERE id = ?`, item.cwd, item.id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE threads SET cwd = ? WHERE id = ?`, item.cwd, item.id); err != nil {
 				return RelocateStats{}, err
 			}
 		}
 	}
 
-	ids := make([]string, 0, len(projectSessions))
-	for _, item := range projectSessions {
+	ids := make([]string, 0, len(projectThreads))
+	for _, item := range projectThreads {
 		ids = append(ids, item.id)
 	}
 	if len(ids) > 0 {
-		if stats.Events, err = relocateJSONRows(ctx, tx, "events", "payload", "session_id", ids, mappings); err != nil {
+		if stats.Events, err = relocateJSONRows(ctx, tx, "events", "payload", "thread_id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
-		if stats.Snapshots, err = relocateJSONRows(ctx, tx, "snapshots", "state", "session_id", ids, mappings); err != nil {
+		if stats.Snapshots, err = relocateJSONRows(ctx, tx, "snapshots", "state", "thread_id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
-		if stats.Commands, err = relocateJSONRows(ctx, tx, "commands", "result", "session_id", ids, mappings); err != nil {
+		if stats.Commands, err = relocateJSONRows(ctx, tx, "commands", "result", "thread_id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
-		if _, err := relocateJSONRows(ctx, tx, "sessions", "provision_result", "id", ids, mappings); err != nil {
+		if _, err := relocateJSONRows(ctx, tx, "threads", "provision_result", "id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
 	}

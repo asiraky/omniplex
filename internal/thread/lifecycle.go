@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"bufio"
@@ -25,7 +25,7 @@ const maxHookOutput = 4 << 20
 
 type provisionContext struct {
 	Version               int             `json:"version"`
-	SessionID             string          `json:"sessionId"`
+	ThreadID              string          `json:"threadId"`
 	ProjectRoot           string          `json:"projectRoot"`
 	RequestedBranch       string          `json:"requestedBranch,omitempty"`
 	BaseRef               string          `json:"baseRef,omitempty"`
@@ -39,16 +39,16 @@ type provisionResult struct {
 	Resources map[string]any `json:"resources,omitempty"`
 }
 
-func lifecycleDir(sessionID string) (string, error) {
+func lifecycleDir(threadID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".omniplex", "workspaces", sessionID)
+	dir := filepath.Join(home, ".omniplex", "workspaces", threadID)
 	return dir, os.MkdirAll(dir, 0o700)
 }
 
-func (m *Manager) provision(meta store.SessionMeta, p project.Project, a *Actor) {
+func (m *Manager) provision(meta store.ThreadMeta, p project.Project, a *Actor) {
 	ctx := context.Background()
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceRequested, proto.WorkspaceRequestedPayload{
 		ProjectID: p.ID, ProjectRoot: p.Root, Mode: meta.WorkspaceMode, Branch: meta.Branch, BaseRef: baseRefFor(meta, p),
@@ -56,7 +56,7 @@ func (m *Manager) provision(meta store.SessionMeta, p project.Project, a *Actor)
 	_ = m.store.SetPhase(ctx, meta.ID, "provisioning")
 	m.notifyList()
 
-	// meta.Cwd is the project root for a local session and the borrowed
+	// meta.Cwd is the project root for a local thread and the borrowed
 	// checkout for an attached one; either way it is already the answer when
 	// nothing has to be provisioned.
 	base := meta.Cwd
@@ -106,7 +106,7 @@ func (m *Manager) provisionFailed(id string, a *Actor, err error) {
 	m.notifyList()
 }
 
-func (m *Manager) runProvisionHook(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) (provisionResult, error) {
+func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) (provisionResult, error) {
 	stateDir, err := lifecycleDir(meta.ID)
 	if err != nil {
 		return provisionResult{}, err
@@ -134,7 +134,7 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.SessionMeta, 
 			hookArgs = []string{"--base", base, compatibleResult.Branch}
 		}
 	}
-	input := provisionContext{Version: 1, SessionID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), SuggestedWorktreePath: suggested}
+	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), SuggestedWorktreePath: suggested}
 	contextPath, resultPath := filepath.Join(stateDir, "context.json"), filepath.Join(stateDir, "result.json")
 	if err := writeJSON(contextPath, input); err != nil {
 		return provisionResult{}, err
@@ -163,7 +163,7 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.SessionMeta, 
 	return result, nil
 }
 
-func (m *Manager) runHook(parent context.Context, a *Actor, meta store.SessionMeta, cwd, hook string, hookArgs []string, kind, contextPath, resultPath, stateDir string, seconds int) error {
+func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMeta, cwd, hook string, hookArgs []string, kind, contextPath, resultPath, stateDir string, seconds int) error {
 	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds)*time.Second)
 	defer cancel()
 	runID, started := uuid.NewString(), time.Now()
@@ -177,7 +177,7 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.SessionMe
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "OMNIPLEX_LIFECYCLE_VERSION=2", "OMNIPLEX_HOOK="+kind, "OMNIPLEX_SESSION_ID="+meta.ID, "OMNIPLEX_PROJECT_ROOT="+cwd, "OMNIPLEX_CONTEXT_FILE="+contextPath, "OMNIPLEX_RESULT_FILE="+resultPath, "OMNIPLEX_STATE_DIR="+stateDir)
+	cmd.Env = append(os.Environ(), "OMNIPLEX_LIFECYCLE_VERSION=2", "OMNIPLEX_HOOK="+kind, "OMNIPLEX_THREAD_ID="+meta.ID, "OMNIPLEX_PROJECT_ROOT="+cwd, "OMNIPLEX_CONTEXT_FILE="+contextPath, "OMNIPLEX_RESULT_FILE="+resultPath, "OMNIPLEX_STATE_DIR="+stateDir)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -265,11 +265,11 @@ func isCompatibilityHook(path, kind string) bool {
 	return base == kind && filepath.Base(filepath.Dir(path)) == "worktree" && filepath.Base(filepath.Dir(filepath.Dir(path))) == ".claude"
 }
 
-// baseRefFor is the ref a new worktree branches from: the session's own choice
+// baseRefFor is the ref a new worktree branches from: the thread's own choice
 // where it made one, and the project default otherwise. Empty means neither
 // was set, which each caller reads its own way — the hooks omit --base, and
 // `git worktree add` falls back to HEAD.
-func baseRefFor(meta store.SessionMeta, p project.Project) string {
+func baseRefFor(meta store.ThreadMeta, p project.Project) string {
 	if base := strings.TrimSpace(meta.BaseRef); base != "" {
 		return base
 	}
@@ -292,7 +292,7 @@ func checkBaseRef(ctx context.Context, root, base string) error {
 	return nil
 }
 
-func workspaceTarget(meta store.SessionMeta, p project.Project) (string, string) {
+func workspaceTarget(meta store.ThreadMeta, p project.Project) (string, string) {
 	branch := meta.Branch
 	if branch == "" {
 		branch = "feature/omniplex-" + strings.ReplaceAll(meta.ID, "-", "")[:8]
@@ -313,7 +313,7 @@ func redactHookOutput(value string) string {
 	return value
 }
 
-func (m *Manager) createWorktree(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) (provisionResult, error) {
+func (m *Manager) createWorktree(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) (provisionResult, error) {
 	branch, path := workspaceTarget(meta, p)
 	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 		return provisionResult{Cwd: path, Branch: branch}, nil
@@ -355,11 +355,11 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, append(b, '\n'), 0o600)
 }
 
-// cleanup releases a session. removeWorktree decides whether the checkout on
+// cleanup releases a thread. removeWorktree decides whether the checkout on
 // disk goes with it; nothing infers that from the workspace mode any more,
 // because the mode says who created the directory and not whether the user
 // wants it gone.
-func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, purge, removeWorktree bool) {
+func (m *Manager) cleanup(meta store.ThreadMeta, p project.Project, a *Actor, purge, removeWorktree bool) {
 	ctx := context.Background()
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupStarted, map[string]any{"purge": purge, "removeWorktree": removeWorktree}))
 	_ = m.store.SetPhase(ctx, meta.ID, "cleaning")
@@ -369,21 +369,21 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 	// repository this worktree belongs to, so removing the worktree strands
 	// them — along with every blob they hold, including the contents of files
 	// Git was otherwise never tracking. This is not conditional on the
-	// workspace mode: a local session's snapshots are just as much ours to
+	// workspace mode: a local thread's snapshots are just as much ours to
 	// clean up, and its checkout is the one the user keeps.
 	purgeCheckpoints(ctx, meta.Cwd, meta.ID, m.logf)
 
 	// The main checkout is never omniplex's to remove however the caller asks, and
-	// the mode is checked before the script rather than after it. A session
+	// the mode is checked before the script rather than after it. A thread
 	// created by an earlier build can be local and still carry a deprovision
 	// script; running that script would be running a worktree-teardown hook
 	// over the directory the user works in.
 	var err error
 	// The caller checked this before starting; teardown runs outside its lock,
-	// so it is checked again here, as late as it can be. A session that moved
+	// so it is checked again here, as late as it can be. A thread that moved
 	// in while this one was shutting down keeps its files.
 	if removeWorktree && meta.WorkspaceMode != "local" {
-		if holder, shared := m.otherSessionIn(ctx, meta.ID, meta.Cwd); shared {
+		if holder, shared := m.otherThreadIn(ctx, meta.ID, meta.Cwd); shared {
 			m.logf("keeping %s: %q is still there", meta.Cwd, holder)
 			removeWorktree = false
 		}
@@ -400,7 +400,7 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 	if err != nil {
 		// Teardown runs in a goroutine, long after the client was told the
 		// delete had been accepted, so this log line is the only place the
-		// reason is recorded outside that one session's event stream.
+		// reason is recorded outside that one thread's event stream.
 		m.logf("workspace cleanup failed for %s (%s): %v", meta.ID, stage, err)
 		if phaseErr := m.store.SetPhase(ctx, meta.ID, "cleanup_failed"); phaseErr != nil {
 			m.logf("marking %s cleanup_failed: %v", meta.ID, phaseErr)
@@ -419,11 +419,11 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 	m.lifecycle.Lock()
 	a.Close("workspace released")
 	if purge {
-		// Only once the session is actually gone: a failed delete leaves the
+		// Only once the thread is actually gone: a failed delete leaves the
 		// transcript in place, and a transcript whose pictures were thrown away
 		// is worse than one that is simply still there.
-		if err := m.store.DeleteSession(ctx, meta.ID); err != nil {
-			m.logf("delete cleaned session %s: %v", meta.ID, err)
+		if err := m.store.DeleteThread(ctx, meta.ID); err != nil {
+			m.logf("delete cleaned thread %s: %v", meta.ID, err)
 		} else {
 			m.purgeAttachments(meta.ID)
 		}
@@ -432,7 +432,7 @@ func (m *Manager) cleanup(meta store.SessionMeta, p project.Project, a *Actor, p
 	m.notifyList()
 }
 
-func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) error {
+func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) error {
 	stateDir, err := lifecycleDir(meta.ID)
 	if err != nil {
 		return err
@@ -441,7 +441,7 @@ func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.SessionMeta
 	if err != nil {
 		return err
 	}
-	input := provisionContext{Version: 1, SessionID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), ProvisionResult: meta.ProvisionResult}
+	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: p.Root, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, p), ProvisionResult: meta.ProvisionResult}
 	contextPath, resultPath := filepath.Join(stateDir, "deprovision-context.json"), filepath.Join(stateDir, "deprovision-result.json")
 	if err := writeJSON(contextPath, input); err != nil {
 		return err
@@ -457,11 +457,11 @@ func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.SessionMeta
 	return m.runHook(ctx, a, meta, p.Root, hook, hookArgs, "deprovision", contextPath, resultPath, stateDir, p.Config.Workspace.DeprovisionTimeoutSeconds)
 }
 
-func (m *Manager) removeWorktree(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor) error {
+func (m *Manager) removeWorktree(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor) error {
 	return m.removeGitWorktree(ctx, meta, p, a, false)
 }
 
-func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta, p project.Project, a *Actor, allowMissingLease bool) error {
+func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, p project.Project, a *Actor, allowMissingLease bool) error {
 	target, err := filepath.Abs(meta.Cwd)
 	if err != nil {
 		return err
@@ -573,7 +573,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.SessionMeta,
 	if len(b) > 0 {
 		// Git's own diagnosis is the only useful thing in a failure, so it is
 		// logged whether or not there is an actor to narrate it to. Without
-		// this the closed-session and force-delete paths report a bare "exit
+		// this the closed-thread and force-delete paths report a bare "exit
 		// status 128" and nothing anywhere records why.
 		m.logf("git worktree remove %s: %s", target, strings.TrimSpace(string(b)))
 		if a != nil {
@@ -619,7 +619,7 @@ func (m *Manager) deleteWorktreeDir(ctx context.Context, root, target string) er
 		// it finished. Force delete deliberately runs with a writer still
 		// active, and that writer can recreate the directory immediately
 		// afterwards. Reporting success here would let the caller purge the
-		// session, leaving a directory on disk that no session names any more
+		// thread, leaving a directory on disk that no thread names any more
 		// and nothing in the UI can ever offer to clean up again — a worse
 		// version of the state this whole change exists to prevent.
 		if _, statErr := os.Lstat(target); statErr == nil {

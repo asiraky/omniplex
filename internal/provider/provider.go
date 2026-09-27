@@ -28,7 +28,7 @@ type EnvVar struct {
 
 // Instance is one configured account for one adapter.
 //
-// ID is the routing key: sessions, the wire protocol, and the secret store
+// ID is the routing key: threads, the wire protocol, and the secret store
 // reference instance ids, never driver kinds. Driver selects which adapter
 // implementation serves the instance; it is an open slug, not a closed enum,
 // because a persisted config may name a driver this build has never heard of.
@@ -175,7 +175,7 @@ func sweepSecrets(inst *Instance, secrets *SecretStore) (json.RawMessage, bool, 
 // config, sensitive values from the secret store. A sensitive variable whose
 // secret is missing is an error, and the caller must fail closed: omitting it
 // would let the spawn fall through to the ambient credential, silently running
-// this instance's session under a different account.
+// this instance's thread under a different account.
 func (i Instance) EnvOverlay(secrets *SecretStore) (map[string]string, error) {
 	if len(i.Env) == 0 {
 		return nil, nil

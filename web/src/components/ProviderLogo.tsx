@@ -3,7 +3,7 @@ import { cn } from "~/lib/utils";
 /**
  * The one place a provider's mark lives. Everywhere the UI used to print a
  * text badge for a harness it now looks the logo up here — the sidebar rows,
- * the session header, the new-session picker — so a new provider is added by
+ * the thread header, the new-thread picker — so a new provider is added by
  * adding one entry, not by editing every call site.
  *
  * A harness with no entry falls back to the text badge, which is what keeps

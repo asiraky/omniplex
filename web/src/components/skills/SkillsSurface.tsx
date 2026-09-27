@@ -26,7 +26,7 @@ export type { SkillsCommand } from "./parts";
 export interface SkillsSurfaceProps {
   /** A ws command: list_skills, read_skill, read_skill_file, save_skill, create_skill. */
   command: SkillsCommand;
-  sessionId?: string;
+  threadId?: string;
   projectId?: string;
 }
 
@@ -75,17 +75,17 @@ function SubagentRow({ agent }: { agent: Subagent }) {
 
 /**
  * The skills browser: every Agent Skill the harnesses can see for this
- * session's project and for the user, which harness sees which, and an editor
+ * thread's project and for the user, which harness sees which, and an editor
  * for the ones that are ours to edit. Fetched once on open and again only on
  * an explicit refresh — nothing here changes often enough to poll for.
  */
-export function SkillsSurface({ command, sessionId, projectId }: SkillsSurfaceProps) {
+export function SkillsSurface({ command, threadId, projectId }: SkillsSurfaceProps) {
   const scopeArgs = useMemo(() => {
     const args: Record<string, unknown> = {};
-    if (sessionId) args.sessionId = sessionId;
+    if (threadId) args.threadId = threadId;
     if (projectId) args.projectId = projectId;
     return args;
-  }, [sessionId, projectId]);
+  }, [threadId, projectId]);
 
   const [list, setList] = useState<SkillsList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -141,7 +141,7 @@ export function SkillsSurface({ command, sessionId, projectId }: SkillsSurfacePr
     [searched, filter],
   );
   const subagents = list?.subagents ?? [];
-  const projectAvailable = Boolean(sessionId || projectId);
+  const projectAvailable = Boolean(threadId || projectId);
 
   const openSkill = (skill: Skill, edit = false) => {
     savedScroll.current = listScrollRef.current?.scrollTop ?? 0;

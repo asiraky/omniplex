@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func TestScheduledDispatchIsDueOnceAndIndependentOfStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-fa.session().prompts:
+	case <-fa.thread().prompts:
 		t.Fatal("sent early")
 	default:
 	}
@@ -54,7 +54,7 @@ func TestScheduledDispatchIsDueOnceAndIndependentOfStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case got := <-fa.session().prompts:
+	case got := <-fa.thread().prompts:
 		if got.Text != p.Prompt {
 			t.Fatal(got)
 		}
@@ -65,14 +65,14 @@ func TestScheduledDispatchIsDueOnceAndIndependentOfStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-fa.session().prompts:
+	case <-fa.thread().prompts:
 		t.Fatal("sent twice")
 	default:
 	}
 	if scheduled(t, a, p.ID).Status != "sent" {
 		t.Fatal("not sent")
 	}
-	ids, err := st.DueScheduleSessions(ctx, p.DueAt)
+	ids, err := st.DueScheduleThreads(ctx, p.DueAt)
 	if err != nil || len(ids) != 0 {
 		t.Fatalf("index still due: %v %v", ids, err)
 	}
@@ -88,20 +88,20 @@ func TestScheduledBusyWaitDoesNotExpireAndNormalQueueIsNotBlocked(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
 		t.Fatal(err)
 	}
 	if scheduled(t, a, p.ID).Status != "ready" {
 		t.Fatal("not waiting")
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.TurnID, StopReason: proto.StopEndTurn}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.TurnID, StopReason: proto.StopEndTurn}))
 	waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
 	if err := a.scheduleTick(ctx, p.DueAt+2*scheduleGrace); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case <-fa.session().prompts:
+	case <-fa.thread().prompts:
 	case <-time.After(time.Second):
 		t.Fatal("busy wait expired")
 	}
@@ -133,7 +133,7 @@ func TestScheduledCatchUpBoundaryAndRestart(t *testing.T) {
 			fa := &fakeAdapter{}
 			m = NewManager(st, t.Logf, fa)
 			defer m.Shutdown()
-			ids, err := st.DueScheduleSessions(ctx, p.DueAt+tc.late)
+			ids, err := st.DueScheduleThreads(ctx, p.DueAt+tc.late)
 			if err != nil || len(ids) != 1 {
 				t.Fatalf("lost schedule %v %v", ids, err)
 			}
@@ -147,7 +147,7 @@ func TestScheduledCatchUpBoundaryAndRestart(t *testing.T) {
 			if got := scheduled(t, a, p.ID).Status; got != tc.status {
 				t.Fatalf("got %s want %s", got, tc.status)
 			}
-			if tc.status == "missed" && fa.session() != nil {
+			if tc.status == "missed" && fa.thread() != nil {
 				t.Fatal("missed message started provider")
 			}
 		})
@@ -181,7 +181,7 @@ func TestScheduledEditCancelAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-fa.session().prompts:
+	case <-fa.thread().prompts:
 		t.Fatal("cancelled prompt sent")
 	default:
 	}
@@ -190,9 +190,9 @@ func TestScheduledFailureDoesNotRetry(t *testing.T) {
 	a, fa, _ := newTestActor(t)
 	ctx := context.Background()
 	p := scheduleInput("fail")
-	fa.session().mu.Lock()
-	fa.session().refuse = errors.New("out of tokens")
-	fa.session().mu.Unlock()
+	fa.thread().mu.Lock()
+	fa.thread().refuse = errors.New("out of tokens")
+	fa.thread().mu.Unlock()
 	if err := a.Schedule(ctx, p); err != nil {
 		t.Fatal(err)
 	}
@@ -201,12 +201,12 @@ func TestScheduledFailureDoesNotRetry(t *testing.T) {
 	if got.Status != "failed" || got.Error != "out of tokens" {
 		t.Fatal(got)
 	}
-	fa.session().mu.Lock()
-	fa.session().refuse = nil
-	fa.session().mu.Unlock()
+	fa.thread().mu.Lock()
+	fa.thread().refuse = nil
+	fa.thread().mu.Unlock()
 	_ = a.scheduleTick(ctx, p.DueAt+1)
 	select {
-	case <-fa.session().prompts:
+	case <-fa.thread().prompts:
 		t.Fatal("failure retried automatically")
 	default:
 	}
@@ -217,7 +217,7 @@ func TestScheduledFailureDoesNotRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-fa.session().prompts:
+	case <-fa.thread().prompts:
 	case <-time.After(time.Second):
 		t.Fatal("explicit retry did not send")
 	}
@@ -244,14 +244,14 @@ func TestScheduledBusyWaitSurvivesHarnessExit(t *testing.T) {
 	if _, err := a.Prompt(ctx, "busy", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
 		t.Fatal(err)
 	}
 	if scheduled(t, a, p.ID).Status != "ready" {
 		t.Fatal("not picked up")
 	}
-	if err := fa.session().Close(); err != nil {
+	if err := fa.thread().Close(); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { _, ok := m.Peek(a.ID); return !ok })
@@ -266,7 +266,7 @@ func TestScheduledBusyWaitSurvivesHarnessExit(t *testing.T) {
 		t.Fatalf("host stayed up but lost busy wait: %+v", got)
 	}
 	select {
-	case got := <-fa.session().prompts:
+	case got := <-fa.thread().prompts:
 		if got.Text != p.Prompt {
 			t.Fatal(got)
 		}
@@ -317,16 +317,16 @@ func TestScheduledRestoreClearsStaleRequestsAndDrainsQueue(t *testing.T) {
 			if err := a.scheduleTick(ctx, p.DueAt); err != nil {
 				t.Fatal(err)
 			}
-			if fa.session() == nil {
+			if fa.thread() == nil {
 				t.Fatal("stale request prevented activation")
 			}
 			if kind == "queue" {
 				select {
-				case got := <-fa.session().prompts:
+				case got := <-fa.thread().prompts:
 					if got.Text != "ordinary queued work" {
 						t.Fatal(got)
 					}
-					fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: got.TurnID, StopReason: proto.StopEndTurn}))
+					fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: got.TurnID, StopReason: proto.StopEndTurn}))
 				case <-time.After(time.Second):
 					t.Fatal("queue never drained")
 				}
@@ -336,7 +336,7 @@ func TestScheduledRestoreClearsStaleRequestsAndDrainsQueue(t *testing.T) {
 				}
 			}
 			select {
-			case got := <-fa.session().prompts:
+			case got := <-fa.thread().prompts:
 				if got.Text != p.Prompt {
 					t.Fatal(got)
 				}
@@ -383,7 +383,7 @@ func TestScheduledReadyExpiresAcrossHostRestart(t *testing.T) {
 	if got := scheduled(t, a, p.ID).Status; got != "missed" {
 		t.Fatalf("got %s", got)
 	}
-	if fa.session() != nil {
+	if fa.thread() != nil {
 		t.Fatal("expired schedule started provider")
 	}
 }

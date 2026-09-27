@@ -189,7 +189,7 @@ func contains(pids []int, pid int) bool {
 	return false
 }
 
-func TestPgidAttachStartsASessionLeader(t *testing.T) {
+func TestPgidAttachStartsAThreadLeader(t *testing.T) {
 	cmd := exec.Command("sleep", "300")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	g := attachPgid(cmd)

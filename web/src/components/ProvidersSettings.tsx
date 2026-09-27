@@ -169,7 +169,7 @@ function InstanceList({
 
 /**
  * The add wizard: pick a harness, name the account, fill its fields. The id is
- * derived from the name and fixed at creation — it is the routing key sessions
+ * derived from the name and fixed at creation — it is the routing key threads
  * record, so it must not drift when the account is later renamed.
  */
 function AddInstance({
@@ -460,7 +460,7 @@ function InstanceView({
       <div className="space-y-2">
         <SectionHeading note="cannot be undone">Remove account</SectionHeading>
         <p className="text-muted-foreground text-[11px]">
-          Takes the account out of the config. Sessions that used it keep their transcripts.
+          Takes the account out of the config. Threads that used it keep their transcripts.
         </p>
         {confirming ? (
           <div className="flex flex-wrap items-center gap-2">

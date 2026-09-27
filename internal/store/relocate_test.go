@@ -24,14 +24,14 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 	if err := st.PutProject(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	meta := SessionMeta{ID: "s1", Cwd: filepath.Join(oldRoot, ".worktrees", "one"), Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	if err := st.CreateSession(ctx, meta); err != nil {
+	meta := ThreadMeta{ID: "s1", Cwd: filepath.Join(oldRoot, ".worktrees", "one"), Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpdateWorkspace(ctx, meta.ID, meta.Cwd, "one", "idle", json.RawMessage(`{"cwd":"`+meta.Cwd+`","resources":{"root":"`+oldRoot+`"}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Append(ctx, meta.ID, proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: "claude"})); err != nil {
+	if _, err := st.Append(ctx, meta.ID, proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: "claude"})); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PutSnapshot(ctx, meta.ID, 1, map[string]any{"cwd": meta.Cwd, "workspace": map[string]any{"projectRoot": oldRoot}}); err != nil {
@@ -44,18 +44,18 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	outside := SessionMeta{ID: "outside", Cwd: oldRoot + "-archive", Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	if err := st.CreateSession(ctx, outside); err != nil {
+	outside := ThreadMeta{ID: "outside", Cwd: oldRoot + "-archive", Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.CreateThread(ctx, outside); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Append(ctx, outside.ID, proto.Emit(proto.WorkspaceRequested, proto.WorkspaceRequestedPayload{ProjectID: p.ID, ProjectRoot: oldRoot})); err != nil {
 		t.Fatal(err)
 	}
-	legacy := SessionMeta{ID: "legacy", Cwd: filepath.Join(oldRoot, "legacy"), Harness: "codex", Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	if err := st.CreateSession(ctx, legacy); err != nil {
+	legacy := ThreadMeta{ID: "legacy", Cwd: filepath.Join(oldRoot, "legacy"), Harness: "codex", Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.CreateThread(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Append(ctx, legacy.ID, proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: legacy.Cwd, Harness: "codex"})); err != nil {
+	if _, err := st.Append(ctx, legacy.ID, proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: legacy.Cwd, Harness: "codex"})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,7 +63,7 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Sessions != 2 || stats.Events != 3 || stats.Snapshots != 1 || stats.Commands != 1 {
+	if stats.Threads != 2 || stats.Events != 3 || stats.Snapshots != 1 || stats.Commands != 1 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 
@@ -71,13 +71,13 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 	if err != nil || gotProject.Root != newRoot {
 		t.Fatalf("project = %+v, %v", gotProject, err)
 	}
-	got, err := st.Session(ctx, meta.ID)
+	got, err := st.Thread(ctx, meta.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantCwd := filepath.Join(newRoot, ".worktrees", "one")
 	if got.Cwd != wantCwd || !containsJSONPath(got.ProvisionResult, wantCwd) || !containsJSONPath(got.ProvisionResult, newRoot) {
-		t.Fatalf("session was not fully relocated: %+v provision=%s", got, got.ProvisionResult)
+		t.Fatalf("thread was not fully relocated: %+v provision=%s", got, got.ProvisionResult)
 	}
 	events, err := st.ReadEvents(ctx, meta.ID, 0, 10)
 	if err != nil || len(events) != 1 || !containsJSONPath(events[0].Payload, wantCwd) {
@@ -91,17 +91,17 @@ func TestRelocateProjectRewritesEveryDurablePath(t *testing.T) {
 	if err != nil || !done || !containsJSONPath(result, wantCwd) {
 		t.Fatalf("command = %s, done=%v err=%v", result, done, err)
 	}
-	unchanged, _ := st.Session(ctx, outside.ID)
+	unchanged, _ := st.Thread(ctx, outside.ID)
 	if unchanged.Cwd != outside.Cwd {
 		t.Fatalf("prefix lookalike changed to %q", unchanged.Cwd)
 	}
 	outsideEvents, _ := st.ReadEvents(ctx, outside.ID, 0, 10)
 	if len(outsideEvents) != 1 || !containsJSONPath(outsideEvents[0].Payload, newRoot) {
-		t.Fatalf("outside-cwd session retained stale project state: %+v", outsideEvents)
+		t.Fatalf("outside-cwd thread retained stale project state: %+v", outsideEvents)
 	}
-	legacySession, _ := st.Session(ctx, legacy.ID)
-	if legacySession.Cwd != filepath.Join(newRoot, "legacy") {
-		t.Fatalf("legacy session cwd = %q", legacySession.Cwd)
+	legacyThread, _ := st.Thread(ctx, legacy.ID)
+	if legacyThread.Cwd != filepath.Join(newRoot, "legacy") {
+		t.Fatalf("legacy thread cwd = %q", legacyThread.Cwd)
 	}
 }
 
@@ -115,14 +115,14 @@ func TestRelocateProjectRewritesCanonicalAlias(t *testing.T) {
 	oldRoot, newRoot := "/alias/project-old", "/alias/project-new"
 	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
 	_ = st.PutProject(ctx, p)
-	meta := SessionMeta{ID: "s1", Cwd: "/canonical/project-old/worktree", Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	_ = st.CreateSession(ctx, meta)
+	meta := ThreadMeta{ID: "s1", Cwd: "/canonical/project-old/worktree", Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	_ = st.CreateThread(ctx, meta)
 	stats, err := st.RelocateProject(ctx, oldRoot, newRoot, RelocationPath{Old: "/canonical/project-old", New: "/canonical/project-new"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := st.Session(ctx, meta.ID)
-	if stats.Sessions != 1 || got.Cwd != "/canonical/project-new/worktree" {
+	got, _ := st.Thread(ctx, meta.ID)
+	if stats.Threads != 1 || got.Cwd != "/canonical/project-new/worktree" {
 		t.Fatalf("stats=%+v cwd=%q", stats, got.Cwd)
 	}
 }
@@ -137,9 +137,9 @@ func TestRelocateProjectRollsBackMalformedJSON(t *testing.T) {
 	oldRoot, newRoot := filepath.Join(t.TempDir(), "old"), filepath.Join(t.TempDir(), "new")
 	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
 	_ = st.PutProject(ctx, p)
-	meta := SessionMeta{ID: "s1", Cwd: oldRoot, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	_ = st.CreateSession(ctx, meta)
-	if _, err := st.db.Exec(`INSERT INTO snapshots(session_id,seq,state) VALUES(?,?,?)`, meta.ID, 1, []byte(`not-json`)); err != nil {
+	meta := ThreadMeta{ID: "s1", Cwd: oldRoot, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	_ = st.CreateThread(ctx, meta)
+	if _, err := st.db.Exec(`INSERT INTO snapshots(thread_id,seq,state) VALUES(?,?,?)`, meta.ID, 1, []byte(`not-json`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RelocateProject(ctx, oldRoot, newRoot); err == nil {

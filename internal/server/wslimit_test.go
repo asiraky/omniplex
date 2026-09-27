@@ -73,8 +73,8 @@ func TestLargePromptIsDispatchedRatherThanClosingTheSocket(t *testing.T) {
 	// stray envelope byte cannot be what makes this pass.
 	const promptBytes = 512 * 1024
 	args, err := json.Marshal(map[string]any{
-		"sessionId": "no-such-session",
-		"text":      strings.Repeat("x", promptBytes),
+		"threadId": "no-such-thread",
+		"text":     strings.Repeat("x", promptBytes),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestLargePromptIsDispatchedRatherThanClosingTheSocket(t *testing.T) {
 		t.Fatalf("writing a %d-byte prompt failed: %v", len(frame), err)
 	}
 
-	// The session does not exist, so the command fails — that is fine and not
+	// The thread does not exist, so the command fails — that is fine and not
 	// what is being checked. What matters is that it was dispatched at all and
 	// answered by its command id, which can only happen on a live socket.
 	for {
@@ -127,11 +127,11 @@ func TestLargeTerminalPasteDoesNotCloseTheSocket(t *testing.T) {
 	ts := httptest.NewServer(asRemote(handler))
 	defer ts.Close()
 
-	// A terminal needs a session with a real checkout to root the shell in.
+	// A terminal needs a thread with a real checkout to root the shell in.
 	dir := t.TempDir()
 	now := time.Now().UnixMilli()
-	if err := st.CreateSession(context.Background(), store.SessionMeta{
-		ID: "term-session", Cwd: dir, Harness: "claudecode",
+	if err := st.CreateThread(context.Background(), store.ThreadMeta{
+		ID: "term-thread", Cwd: dir, Harness: "claudecode",
 		Title: "terminal paste", CreatedAt: now, UpdatedAt: now, Phase: "idle",
 	}); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestLargeTerminalPasteDoesNotCloseTheSocket(t *testing.T) {
 	defer cancel()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	conn, res, err := websocket.Dial(ctx, wsURL+"/api/term?session=term-session", &websocket.DialOptions{HTTPClient: client})
+	conn, res, err := websocket.Dial(ctx, wsURL+"/api/term?thread=term-thread", &websocket.DialOptions{HTTPClient: client})
 	if err != nil {
 		code := 0
 		if res != nil {

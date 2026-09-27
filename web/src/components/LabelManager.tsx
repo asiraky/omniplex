@@ -155,8 +155,8 @@ export function LabelManager({
         <DialogHeader>
           <DialogTitle>Labels</DialogTitle>
           <DialogDescription>
-            File sessions your way. A label shows in the sidebar as its colour, and the filter
-            beside it decides which ones you see. Deleting a label never deletes a session.
+            File threads your way. A label shows in the sidebar as its colour, and the filter
+            beside it decides which ones you see. Deleting a label never deletes a thread.
           </DialogDescription>
         </DialogHeader>
 
@@ -196,7 +196,7 @@ export function LabelManager({
           ))}
           {labels.length === 0 && (
             <p className="text-muted-foreground py-2 text-[13px]">
-              No labels yet. Create one below and it becomes a dot on the sessions you file
+              No labels yet. Create one below and it becomes a dot on the threads you file
               under it.
             </p>
           )}

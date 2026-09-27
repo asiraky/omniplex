@@ -12,7 +12,7 @@ export function currentBuild(): string {
 }
 
 // Records which server build we last reloaded for. Keyed by build rather than
-// set once, so a second rebuild in the same session still reloads, while a
+// set once, so a second rebuild in the same thread still reloads, while a
 // reload that fails to resolve a given build is never retried for it.
 const RELOADED_FOR = "omniplex.reloadedFor";
 

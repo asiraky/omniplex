@@ -39,8 +39,8 @@ func runRelocateCommand(ctx context.Context, args []string, out io.Writer) error
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Relocated %d sessions; rewrote %d events, %d snapshots, %d command results, %d workspace files, and moved %d Claude transcript directories.\n",
-		report.Database.Sessions, report.Database.Events, report.Database.Snapshots,
+	fmt.Fprintf(out, "Relocated %d threads; rewrote %d events, %d snapshots, %d command results, %d workspace files, and moved %d Claude transcript directories.\n",
+		report.Database.Threads, report.Database.Events, report.Database.Snapshots,
 		report.Database.Commands, report.WorkspaceFiles, report.ClaudeTranscripts)
 	if report.GitRepaired {
 		fmt.Fprintln(out, "Repaired Git worktree links.")

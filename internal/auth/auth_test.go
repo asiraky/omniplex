@@ -111,7 +111,7 @@ func TestRedeemIssuesAWorkingToken(t *testing.T) {
 		t.Fatal("redeem returned an empty token or device")
 	}
 
-	r := remoteRequest("/api/sessions")
+	r := remoteRequest("/api/threads")
 	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: token})
 	got, ok := g.Authorize(r)
 	if !ok {
@@ -166,7 +166,7 @@ func TestPairingCodeIsSingleUseUnderConcurrency(t *testing.T) {
 	}
 
 	// And the winner's token really works.
-	r := remoteRequest("/api/sessions")
+	r := remoteRequest("/api/threads")
 	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: tokens[0]})
 	if _, ok := g.Authorize(r); !ok {
 		t.Fatal("the winning token was refused")
@@ -203,7 +203,7 @@ func TestRevokedDeviceLosesAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := remoteRequest("/api/sessions")
+	r := remoteRequest("/api/threads")
 	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: token})
 	if _, ok := g.Authorize(r); ok {
 		t.Fatal("a revoked device still authorised")
@@ -231,14 +231,14 @@ func TestRateLimitStopsGuessing(t *testing.T) {
 func TestUnauthorisedRemoteIsRefused(t *testing.T) {
 	g, _ := testGuard(t, true)
 
-	for _, path := range []string{"/api/sessions", "/ws"} {
+	for _, path := range []string{"/api/threads", "/ws"} {
 		if _, ok := g.Authorize(remoteRequest(path)); ok {
 			t.Fatalf("%s was authorised without a token", path)
 		}
 	}
 
 	// A wrong token is refused just as a missing one is.
-	r := remoteRequest("/api/sessions")
+	r := remoteRequest("/api/threads")
 	r.AddCookie(&http.Cookie{Name: cookiePrefix, Value: "not-a-real-token"})
 	if _, ok := g.Authorize(r); ok {
 		t.Fatal("an invented token authorised")
@@ -248,7 +248,7 @@ func TestUnauthorisedRemoteIsRefused(t *testing.T) {
 func TestLoopbackIsTrusted(t *testing.T) {
 	for _, reachable := range []bool{false, true} {
 		g, _ := testGuard(t, reachable)
-		r := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+		r := httptest.NewRequest(http.MethodGet, "/api/threads", nil)
 		r.RemoteAddr = "127.0.0.1:51000"
 		device, ok := g.Authorize(r)
 		if !ok {
@@ -261,7 +261,7 @@ func TestLoopbackIsTrusted(t *testing.T) {
 
 	// IPv6 loopback counts too.
 	g, _ := testGuard(t, true)
-	r := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	r := httptest.NewRequest(http.MethodGet, "/api/threads", nil)
 	r.RemoteAddr = "[::1]:51000"
 	if _, ok := g.Authorize(r); !ok {
 		t.Fatal("an IPv6 loopback request was refused")
@@ -273,7 +273,7 @@ func TestLoopbackIsTrusted(t *testing.T) {
 func TestForwardedHeadersCannotForgeLocality(t *testing.T) {
 	g, _ := testGuard(t, true)
 
-	r := remoteRequest("/api/sessions")
+	r := remoteRequest("/api/threads")
 	r.Header.Set("X-Forwarded-For", "127.0.0.1")
 	r.Header.Set("X-Real-IP", "127.0.0.1")
 	r.Header.Set("Forwarded", "for=127.0.0.1")
@@ -293,7 +293,7 @@ func TestTokenTransports(t *testing.T) {
 	}
 
 	t.Run("bearer", func(t *testing.T) {
-		r := remoteRequest("/api/sessions")
+		r := remoteRequest("/api/threads")
 		r.Header.Set("Authorization", "Bearer "+token)
 		if _, ok := g.Authorize(r); !ok {
 			t.Fatal("a bearer token was refused")
@@ -342,7 +342,7 @@ func remoteRequest(path string) *http.Request {
 func TestProxiedLoopbackIsNotTrusted(t *testing.T) {
 	g, _ := testGuard(t, true)
 
-	local := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	local := httptest.NewRequest(http.MethodGet, "/api/threads", nil)
 	local.RemoteAddr = "127.0.0.1:54321"
 
 	if _, ok := g.Authorize(local); !ok {
@@ -363,7 +363,7 @@ func TestProxiedLoopbackIsNotTrusted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	withToken := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	withToken := httptest.NewRequest(http.MethodGet, "/api/threads", nil)
 	withToken.RemoteAddr = "127.0.0.1:54322"
 	withToken.Header.Set("Authorization", "Bearer "+token)
 	if _, ok := g.Authorize(withToken); !ok {
@@ -389,7 +389,7 @@ func TestRelayHeadersDefeatLocalTrust(t *testing.T) {
 		"X-Forwarded-For",
 		"X-Forwarded-Proto",
 	} {
-		r := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+		r := httptest.NewRequest(http.MethodGet, "/api/threads", nil)
 		r.RemoteAddr = "127.0.0.1:54321"
 		r.Header.Set(h, "someone@example.com")
 
@@ -472,7 +472,7 @@ func TestInstancesOnDifferentPortsDoNotShareACookie(t *testing.T) {
 	}
 	worktree := New(st, true, 8800)
 
-	r := httptest.NewRequest("GET", "/api/sessions", nil)
+	r := httptest.NewRequest("GET", "/api/threads", nil)
 	r.RemoteAddr = "10.0.0.9:1234"
 	r.AddCookie(&http.Cookie{Name: primary.CookieName(), Value: token})
 	if _, ok := worktree.Authorize(r); ok {

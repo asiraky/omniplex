@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -203,7 +203,7 @@ func TestDiffCheckpointsWithNoChanges(t *testing.T) {
 	}
 }
 
-func TestDropCheckpointsRemovesOnlyThisSession(t *testing.T) {
+func TestDropCheckpointsRemovesOnlyThisThread(t *testing.T) {
 	ctx := context.Background()
 	_, worktree, _ := gitRepo(t)
 	for _, ref := range []string{
@@ -246,7 +246,7 @@ func TestCaptureCheckpointCleansUpItsScratchIndex(t *testing.T) {
 	}
 }
 
-// The whole seam, end to end: a session in a real checkout, a turn that writes
+// The whole seam, end to end: a thread in a real checkout, a turn that writes
 // files, and a card on the turn that says what it changed.
 func TestTurnDiffLandsOnTheTurnItMeasured(t *testing.T) {
 	ctx := context.Background()
@@ -272,14 +272,14 @@ func TestTurnDiffLandsOnTheTurnItMeasured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 
 	// What the harness does to the checkout, done directly: the point of
 	// snapshots is that they see changes no tool call reported.
 	write(t, worktree, "written.txt", "one\ntwo\n")
 	write(t, worktree, "README", "replaced\n")
 
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: turnID, StopReason: proto.StopEndTurn,
 	}))
 
@@ -361,9 +361,9 @@ func TestTurnDiffIgnoresChangesMadeBetweenTurns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		<-fa.session().prompts
+		<-fa.thread().prompts
 		work()
-		fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 			TurnID: turnID, StopReason: proto.StopEndTurn,
 		}))
 		waitFor(t, func() bool {
@@ -414,7 +414,7 @@ func turnDiffOf(t *testing.T, actor *Actor, turnID string) *proto.TurnDiffPayloa
 
 // Snapshots are refs in the repository the worktree belongs to, so they outlive
 // the worktree. Cleanup has to take them with it.
-func TestPurgeCheckpointsClearsASessionsRefs(t *testing.T) {
+func TestPurgeCheckpointsClearsAThreadsRefs(t *testing.T) {
 	ctx := context.Background()
 	_, worktree, _ := gitRepo(t)
 	if _, err := captureCheckpoint(ctx, worktree, checkpointRef("gone", "t1", "base")); err != nil {
@@ -428,7 +428,7 @@ func TestPurgeCheckpointsClearsASessionsRefs(t *testing.T) {
 	}
 }
 
-// A session that is not in a repository still runs; it just has no cards.
+// A thread that is not in a repository still runs; it just has no cards.
 func TestNoCheckpointsOutsideARepository(t *testing.T) {
 	ctx := context.Background()
 	actor, fa, _ := newTestActor(t) // cwd is a bare temp dir
@@ -441,8 +441,8 @@ func TestNoCheckpointsOutsideARepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+	<-fa.thread().prompts
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: turnID, StopReason: proto.StopEndTurn,
 	}))
 

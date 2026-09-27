@@ -1,9 +1,9 @@
-// Repeatable browser-side session-load probe with no npm dependency.
+// Repeatable browser-side thread-load probe with no npm dependency.
 // Start Chrome with --remote-debugging-port and a fresh --user-data-dir, then:
-// node scripts/profile-session-load.mjs <port> <app-url> <session-title-prefix> [width] [cpu] [latency-ms] [down-kib-s]
+// node scripts/profile-thread-load.mjs <port> <app-url> <thread-title-prefix> [width] [cpu] [latency-ms] [down-kib-s]
 
 const [port, appURL, titlePrefix, widthArg = "1440", cpuArg = "1", latencyArg = "0", downArg = "0"] = process.argv.slice(2);
-if (!port || !appURL || !titlePrefix) throw new Error("missing port, app URL, or session title prefix");
+if (!port || !appURL || !titlePrefix) throw new Error("missing port, app URL, or thread title prefix");
 
 const pages = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json());
 const page = pages.find((p) => p.type === "page");
@@ -18,7 +18,7 @@ await new Promise((resolve, reject) => {
 let nextID = 1;
 const pending = new Map();
 const responses = new Map();
-const sessionRequests = new Map();
+const threadRequests = new Map();
 const wire = { httpBytes: 0, wsSnapshotBytes: 0 };
 
 ws.addEventListener("message", (message) => {
@@ -34,8 +34,8 @@ ws.addEventListener("message", (message) => {
     responses.set(event.params.requestId, event.params.response.url);
   } else if (event.method === "Network.loadingFinished") {
     const url = responses.get(event.params.requestId);
-    if (url?.includes("/api/sessions/")) {
-      sessionRequests.set(url, event.params.encodedDataLength);
+    if (url?.includes("/api/threads/")) {
+      threadRequests.set(url, event.params.encodedDataLength);
       wire.httpBytes += event.params.encodedDataLength;
     }
   } else if (event.method === "Network.webSocketFrameReceived") {
@@ -93,24 +93,24 @@ await call("Page.navigate", { url: appURL });
 await until(() => evaluate(`document.readyState === "complete" && [...document.querySelectorAll("button")].some((b) => b.innerText.includes(${JSON.stringify(titlePrefix)}))`));
 
 responses.clear();
-sessionRequests.clear();
+threadRequests.clear();
 wire.httpBytes = 0;
 wire.wsSnapshotBytes = 0;
 
 const clicked = await evaluate(`(() => {
   const button = [...document.querySelectorAll("button")].find((b) => b.innerText.includes(${JSON.stringify(titlePrefix)}));
   if (!button) return false;
-  performance.clearMeasures("omniplex.session_snapshot");
+  performance.clearMeasures("omniplex.thread_snapshot");
   window.__omniplexProfileClick = performance.now();
   button.click();
   return true;
 })()`);
-if (!clicked) throw new Error("session button disappeared before click");
+if (!clicked) throw new Error("thread button disappeared before click");
 
 await until(() => evaluate(`!!document.querySelector("textarea") && !document.body.innerText.includes("Attaching…")`), 30_000);
 const result = await evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
   clickToPaintMs: performance.now() - window.__omniplexProfileClick,
-  snapshotMs: performance.getEntriesByName("omniplex.session_snapshot").at(-1)?.duration ?? null,
+  snapshotMs: performance.getEntriesByName("omniplex.thread_snapshot").at(-1)?.duration ?? null,
 }))))`, true);
 
 await new Promise((resolve) => setTimeout(resolve, 100));
@@ -122,6 +122,6 @@ console.log(JSON.stringify({
   downKiBps: Number(downArg),
   httpSnapshotBytes: wire.httpBytes,
   wsSnapshotBytes: wire.wsSnapshotBytes,
-  sessionRequests: Object.fromEntries(sessionRequests),
+  threadRequests: Object.fromEntries(threadRequests),
 }));
 ws.close();

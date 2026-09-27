@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -24,24 +24,24 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// ready waits for a session to finish provisioning and returns its row.
-func ready(t *testing.T, st *store.Store, id string) store.SessionMeta {
+// ready waits for a thread to finish provisioning and returns its row.
+func ready(t *testing.T, st *store.Store, id string) store.ThreadMeta {
 	t.Helper()
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), id)
+		m, e := st.Thread(context.Background(), id)
 		return e == nil && m.Phase == "ready"
 	})
-	m, err := st.Session(context.Background(), id)
+	m, err := st.Thread(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return m
 }
 
-// A session may stack itself on any ref, not only the project's default base
+// A thread may stack itself on any ref, not only the project's default base
 // branch: that is the whole point of being able to build on another worktree's
 // work before it has merged.
-func TestManagedWorktreeBranchesFromTheSessionsOwnBase(t *testing.T) {
+func TestManagedWorktreeBranchesFromTheThreadsOwnBase(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -88,12 +88,12 @@ func TestUnknownBaseRefFailsProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), a.ID)
+		m, e := st.Thread(context.Background(), a.ID)
 		return e == nil && m.Phase == "provision_failed"
 	})
 }
 
-// Deleting a session is deleting a session. Removing the checkout it ran in is
+// Deleting a thread is deleting a thread. Removing the checkout it ran in is
 // a separate, explicit answer, and its absence means no.
 func TestDeleteLeavesTheWorktreeUnlessAsked(t *testing.T) {
 	root, _, _ := gitRepo(t)
@@ -113,11 +113,11 @@ func TestDeleteLeavesTheWorktreeUnlessAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		_, e := st.Session(context.Background(), a.ID)
+		_, e := st.Thread(context.Background(), a.ID)
 		return errors.Is(e, store.ErrNotFound)
 	})
 	if _, err := os.Stat(meta.Cwd); err != nil {
-		t.Fatalf("deleting the session removed the worktree nobody asked to remove: %v", err)
+		t.Fatalf("deleting the thread removed the worktree nobody asked to remove: %v", err)
 	}
 	if !strings.Contains(git(t, root, "worktree", "list", "--porcelain"), resolve(meta.Cwd)) {
 		t.Fatal("the worktree was unregistered from Git")
@@ -151,7 +151,7 @@ func TestDeleteRemovesTheWorktreeWhenAsked(t *testing.T) {
 	}
 }
 
-// Now that two sessions may share one checkout, the last one out is the only
+// Now that two threads may share one checkout, the last one out is the only
 // one allowed to take it with them.
 func TestDeleteRefusesToRemoveASharedWorktree(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
@@ -166,12 +166,12 @@ func TestDeleteRefusesToRemoveASharedWorktree(t *testing.T) {
 	ready(t, st, first.ID)
 	second, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
 	if err != nil {
-		t.Fatalf("a second session should be able to share a worktree: %v", err)
+		t.Fatalf("a second thread should be able to share a worktree: %v", err)
 	}
 	ready(t, st, second.ID)
 
 	if err := mgr.Delete(context.Background(), first.ID, true); err == nil {
-		t.Fatal("removing a worktree another session is still in should be refused")
+		t.Fatal("removing a worktree another thread is still in should be refused")
 	}
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("the shared worktree was removed anyway: %v", err)
@@ -204,9 +204,9 @@ func TestDeleteNeverRemovesTheMainCheckout(t *testing.T) {
 	}
 }
 
-// A closed session still has a checkout on disk, and the checkbox has to mean
+// A closed thread still has a checkout on disk, and the checkbox has to mean
 // the same thing whatever phase the row is in.
-func TestDeletingAClosedSessionStillHonoursTheCheckbox(t *testing.T) {
+func TestDeletingAClosedThreadStillHonoursTheCheckbox(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -224,7 +224,7 @@ func TestDeletingAClosedSessionStillHonoursTheCheckbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), a.ID)
+		m, e := st.Thread(context.Background(), a.ID)
 		return e == nil && m.Phase == "closed"
 	})
 
@@ -232,11 +232,11 @@ func TestDeletingAClosedSessionStillHonoursTheCheckbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, statErr := os.Stat(meta.Cwd); !os.IsNotExist(statErr) {
-		t.Fatalf("a closed session's worktree survived a ticked delete: %v", statErr)
+		t.Fatalf("a closed thread's worktree survived a ticked delete: %v", statErr)
 	}
 }
 
-// A closed sibling is still a session omniplex knows of, and it still names the
+// A closed sibling is still a thread omniplex knows of, and it still names the
 // directory somebody is about to delete.
 func TestAClosedSiblingStillProtectsTheWorktree(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
@@ -258,12 +258,12 @@ func TestAClosedSiblingStillProtectsTheWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), second.ID)
+		m, e := st.Thread(context.Background(), second.ID)
 		return e == nil && m.Phase == "closed"
 	})
 
 	if err := mgr.Delete(context.Background(), first.ID, true); err == nil {
-		t.Fatal("a worktree a closed session still names should not be removable")
+		t.Fatal("a worktree a closed thread still names should not be removable")
 	}
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("the worktree was removed anyway: %v", err)

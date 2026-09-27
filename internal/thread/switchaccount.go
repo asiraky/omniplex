@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -9,20 +9,20 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
-// SwitchAccount moves a session to another account of the same harness —
+// SwitchAccount moves a thread to another account of the same harness —
 // the way out when one account hits its usage limit. The conversation goes
 // with it: the harness's own record is moved to where the new account keeps
 // conversations, and the next turn resumes it there. Another harness is a
 // different agent, not another login, so that is refused.
-func (m *Manager) SwitchAccount(ctx context.Context, sessionID, instanceID string) error {
+func (m *Manager) SwitchAccount(ctx context.Context, threadID, instanceID string) error {
 	m.switchMu.Lock()
 	defer m.switchMu.Unlock()
-	meta, err := m.store.Session(ctx, sessionID)
+	meta, err := m.store.Thread(ctx, threadID)
 	if err != nil {
 		return err
 	}
 	if meta.Phase != "idle" {
-		return fmt.Errorf("a session can only switch account while idle (it is %s)", meta.Phase)
+		return fmt.Errorf("a thread can only switch account while idle (it is %s)", meta.Phase)
 	}
 	from, err := m.instanceFor(meta)
 	if err != nil {
@@ -36,7 +36,7 @@ func (m *Manager) SwitchAccount(ctx context.Context, sessionID, instanceID strin
 	case !ok:
 		return fmt.Errorf("unknown account %q", instanceID)
 	case to.inst.Driver != meta.Harness:
-		return fmt.Errorf("%s is not a %s account; a session can only switch between accounts of its own harness", to.inst.DisplayName, meta.Harness)
+		return fmt.Errorf("%s is not a %s account; a thread can only switch between accounts of its own harness", to.inst.DisplayName, meta.Harness)
 	case !to.inst.Enabled:
 		return fmt.Errorf("%s is disabled", to.inst.DisplayName)
 	case to.ad == nil:
@@ -54,7 +54,7 @@ func (m *Manager) SwitchAccount(ctx context.Context, sessionID, instanceID strin
 	if err != nil {
 		return err
 	}
-	a, err := m.View(ctx, sessionID)
+	a, err := m.View(ctx, threadID)
 	if err != nil {
 		return err
 	}
@@ -65,17 +65,17 @@ func (m *Manager) SwitchAccount(ctx context.Context, sessionID, instanceID strin
 			if err := mover.MoveConversation(fromEnv, toEnv, meta.Cwd, harnessID); err != nil {
 				return err
 			}
-			if err := m.store.SetProviderInstance(context.Background(), sessionID, to.inst.ID); err != nil {
-				// Put the conversation back where the account the session
+			if err := m.store.SetProviderInstance(context.Background(), threadID, to.inst.ID); err != nil {
+				// Put the conversation back where the account the thread
 				// still has will look for it.
 				if back := mover.MoveConversation(toEnv, fromEnv, meta.Cwd, harnessID); back != nil {
-					m.logf("switch account %s: moving the conversation back failed: %v", sessionID, back)
+					m.logf("switch account %s: moving the conversation back failed: %v", threadID, back)
 				}
 				return err
 			}
 			return nil
 		},
-		changed: proto.SessionAccountChangedPayload{
+		changed: proto.ThreadAccountChangedPayload{
 			From: from.inst.ID, To: to.inst.ID,
 			FromName: from.inst.DisplayName, ToName: to.inst.DisplayName,
 		},

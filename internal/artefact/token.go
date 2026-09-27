@@ -24,7 +24,7 @@ const (
 	// snapshot while the share exists and its nonce matches.
 	KindShare = "s"
 	// KindAgent lets the omniplex MCP server a harness runs show files in its
-	// own session, and nothing else.
+	// own thread, and nothing else.
 	KindAgent = "a"
 )
 
@@ -33,7 +33,7 @@ var ErrBadToken = errors.New("bad or expired token")
 // Claims is what a token grants.
 type Claims struct {
 	Kind     string
-	Session  string
+	Thread   string
 	Artefact string
 	// Nonce ties a share link to one share, so stopping it kills the link.
 	Nonce     string
@@ -89,7 +89,7 @@ var b64 = base64.RawURLEncoding
 
 // Mint signs claims into a token safe to put in a URL path segment.
 func (s *Signer) Mint(c Claims) string {
-	payload := strings.Join([]string{c.Kind, c.Session, c.Artefact, c.Nonce, strconv.FormatInt(c.ExpiresAt, 10)}, "|")
+	payload := strings.Join([]string{c.Kind, c.Thread, c.Artefact, c.Nonce, strconv.FormatInt(c.ExpiresAt, 10)}, "|")
 	return b64.EncodeToString([]byte(payload)) + "." + b64.EncodeToString(s.mac(payload))
 }
 
@@ -118,5 +118,5 @@ func (s *Signer) Check(token, kind string, now time.Time) (Claims, error) {
 	if exp != 0 && now.UnixMilli() > exp {
 		return Claims{}, ErrBadToken
 	}
-	return Claims{Kind: parts[0], Session: parts[1], Artefact: parts[2], Nonce: parts[3], ExpiresAt: exp}, nil
+	return Claims{Kind: parts[0], Thread: parts[1], Artefact: parts[2], Nonce: parts[3], ExpiresAt: exp}, nil
 }

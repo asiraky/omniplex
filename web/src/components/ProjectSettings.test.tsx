@@ -28,7 +28,7 @@ function open(over: Partial<React.ComponentProps<typeof ProjectSettings>> = {}) 
     onAdd: vi.fn(async () => {}),
     onSave: vi.fn(async () => {}),
     onDelete: vi.fn(async () => {}),
-    sessionCount: 0,
+    threadCount: 0,
     onSaveUserConfig: vi.fn(async () => {}),
     onClose: vi.fn(),
     ...over,
@@ -57,12 +57,12 @@ describe("removing a project", () => {
 
   // The button is not the only place this is enforced — the server refuses it
   // too — but being told before pressing beats an error afterwards.
-  it("refuses while the project still owns sessions, and says how many", () => {
-    const props = open({ sessionCount: 2 });
+  it("refuses while the project still owns threads, and says how many", () => {
+    const props = open({ threadCount: 2 });
 
     const button = screen.getByRole("button", { name: /remove project/i }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByText(/2 sessions still belong to this project/i)).toBeTruthy();
+    expect(screen.getByText(/2 threads still belong to this project/i)).toBeTruthy();
 
     fireEvent.click(button);
     expect(props.onDelete).not.toHaveBeenCalled();
@@ -73,14 +73,14 @@ describe("removing a project", () => {
   it("keeps the dialog open and shows the reason when the server refuses", async () => {
     const props = open({
       onDelete: vi.fn(async () => {
-        throw new Error("project still has sessions: delete its 1 session first");
+        throw new Error("project still has threads: delete its 1 thread first");
       }),
     });
 
     fireEvent.click(screen.getByRole("button", { name: /remove project/i }));
     fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
 
-    await waitFor(() => expect(screen.getByText(/delete its 1 session first/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/delete its 1 thread first/i)).toBeTruthy());
     expect(props.onClose).not.toHaveBeenCalled();
     // And it is back to offering the action, not stuck mid-confirmation.
     expect(screen.getByRole("button", { name: /remove project/i })).toBeTruthy();

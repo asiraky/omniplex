@@ -49,7 +49,7 @@ function Notice({ notice }: { notice: AuthFlowNotice }) {
                 Open sign-in page
               </a>
             </Button>
-            {/* The device this UI is on may not be where the browser session
+            {/* The device this UI is on may not be where the browser thread
                 lives; the raw URL travels by copy for that case. */}
             <Button variant="outline" size="sm" onClick={() => void copy(notice.url ?? "")}>
               {copied ? <CheckIcon /> : <CopyIcon />}
@@ -441,7 +441,7 @@ export function AuthMethods({
 }
 
 /**
- * The standalone sign-in dialog — what the header key icon and the in-session
+ * The standalone sign-in dialog — what the header key icon and the in-thread
  * recovery card open for a flows-capable instance, so signing back in does not
  * require finding the instance in the providers screen first.
  */
@@ -464,7 +464,7 @@ export default function InstanceAuthDialog({
         <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
           <DialogTitle>Sign in — {instanceName}</DialogTitle>
           <DialogDescription>
-            Connect a credential for this account. Sessions pick the change up as soon as it lands.
+            Connect a credential for this account. Threads pick the change up as soon as it lands.
           </DialogDescription>
         </DialogHeader>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 py-5">

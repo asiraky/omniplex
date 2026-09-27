@@ -14,10 +14,10 @@ func TestUsagePricingSurvivesReopenAndQueryIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := st.CreateSession(ctx, SessionMeta{ID: "s", Harness: "codex", Phase: "idle"}); err != nil {
+	if err := st.CreateThread(ctx, ThreadMeta{ID: "s", Harness: "codex", Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Append(ctx, "s", proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Model: "gpt-5.4"})); err != nil {
+	if _, err := st.Append(ctx, "s", proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "gpt-5.4"})); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 20; i++ {

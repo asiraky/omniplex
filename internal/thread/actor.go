@@ -1,8 +1,8 @@
-// Package session owns the running sessions: one goroutine per session, which
-// is the only thing that mutates that session's state. Fanout to presenters is
+// Package thread owns the running threads: one goroutine per thread, which
+// is the only thing that mutates that thread's state. Fanout to presenters is
 // non-blocking; a slow consumer is dropped and resynced, never buffered without
 // limit and never allowed to stall a turn.
-package session
+package thread
 
 import (
 	"context"
@@ -28,7 +28,7 @@ const (
 	SnapshotEvery   = 200  // snapshot cadence, a latency cache only
 )
 
-// Subscriber receives live events for one session. Ch is closed when the
+// Subscriber receives live events for one thread. Ch is closed when the
 // subscription ends. Resync is closed if the server dropped the queue.
 type Subscriber struct {
 	ID              string
@@ -39,7 +39,7 @@ type Subscriber struct {
 	dropped bool
 }
 
-// Actor is one live session.
+// Actor is one live thread.
 type Actor struct {
 	scheduleReady   *sync.Map
 	activationError error
@@ -76,35 +76,35 @@ type Actor struct {
 	subs map[string]*Subscriber
 	head int64
 	// attention caches state.Attention() for readers outside the loop — the
-	// session list wants it without a round trip through the inbox. Written
+	// thread list wants it without a round trip through the inbox. Written
 	// only by the actor goroutine; the projection stays the source of truth.
 	attention string
 
 	// onExit lets the manager forget a disposed actor, so the next attach
-	// resumes the session from the log instead of finding a dead one.
+	// resumes the thread from the log instead of finding a dead one.
 	onExit func()
-	// onPhase fires when the session moves between idle and turn, so a
-	// session list rendered elsewhere can follow along.
+	// onPhase fires when the thread moves between idle and turn, so a
+	// thread list rendered elsewhere can follow along.
 	onPhase func()
 
 	// recovery is set by Resume when the log shows a turn the server died in
 	// the middle of. Recover consumes it; see recovery.go.
 	recovery *proto.TurnRecovery
 
-	// imagePath finds the host path of a stored image by session and id,
+	// imagePath finds the host path of a stored image by thread and id,
 	// for queued prompts whose images came back out of the log without one.
-	imagePath func(sessionID, imageID string) (string, error)
+	imagePath func(threadID, imageID string) (string, error)
 
 	// quotaSink receives the account-level usage-limit pushes the harness
 	// streams (Claude rate-limit events, Codex rateLimits notifications). Set
-	// by the manager at adopt time, bound to the instance the session runs
-	// under; nil means the pushes go nowhere, which is what a session without
+	// by the manager at adopt time, bound to the instance the thread runs
+	// under; nil means the pushes go nowhere, which is what a thread without
 	// a manager (tests) wants.
 	quotaSink       func(adapter.QuotaSnapshot)
 	quotaGeneration uint64
 
 	// checkpoints snapshots the checkout around each turn, so a finished turn
-	// can say which files it changed. Nil when the session has no Git checkout
+	// can say which files it changed. Nil when the thread has no Git checkout
 	// to snapshot.
 	checkpoints *checkpointer
 	// measuring is the turn whose baseline was taken before the harness was
@@ -127,7 +127,7 @@ type command struct {
 	elicit       elicitAsk
 	elicitResult adapter.ElicitationResult
 	emission     *proto.Emission
-	hard         bool // close: append session.closed, rather than just disposing
+	hard         bool // close: append thread.closed, rather than just disposing
 	resume       bool // activate: resume an existing harness conversation
 	reply        chan cmdResult
 	model        string
@@ -142,7 +142,7 @@ type command struct {
 	show    *Show
 }
 
-// accountSwitch is what the manager hands the actor to move the session to
+// accountSwitch is what the manager hands the actor to move the thread to
 // another account: the new account's adapter and env, and move, which carries
 // the harness's own record of the conversation across and records the new
 // account durably. move runs with no harness process alive.
@@ -150,7 +150,7 @@ type accountSwitch struct {
 	ad      adapter.Adapter
 	env     map[string]string
 	move    func(harnessSessionID string) error
-	changed proto.SessionAccountChangedPayload
+	changed proto.ThreadAccountChangedPayload
 }
 
 type permAsk struct {
@@ -206,7 +206,7 @@ var ErrAlreadySent = errors.New("the harness already has that prompt")
 var ErrNotQueued = errors.New("that prompt is no longer queued")
 
 // ErrClosed is returned when a command tries to mutate a closed transcript.
-var ErrClosed = errors.New("session is closed")
+var ErrClosed = errors.New("thread is closed")
 var ErrNotReady = errors.New("workspace is not ready")
 
 // ErrAlreadyResolved is returned to the loser of a permission race. It is an
@@ -215,7 +215,7 @@ var ErrAlreadyResolved = errors.New("already_resolved")
 
 // Start creates a harness session and its actor goroutine. env is the
 // provider instance's credential overlay; nil means ambient credentials.
-func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.SessionMeta, model, mode string, env map[string]string, logf func(string, ...any)) (*Actor, error) {
+func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, model, mode string, env map[string]string, logf func(string, ...any)) (*Actor, error) {
 	a := &Actor{
 		ID:            meta.ID,
 		Harness:       meta.Harness,
@@ -234,7 +234,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 
 	mcp, extraDirs := harnessExtras(ctx, st, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
-		SessionID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
+		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
 		MCPServers: mcp, ExtraDirs: extraDirs,
 	})
 	if err != nil {
@@ -248,8 +248,8 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	go a.run()
 	a.pump(sess)
 
-	// session.created is the first event in every session's log.
-	a.enqueueEmission(proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{
+	// thread.created is the first event in every thread's log.
+	a.enqueueEmission(proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{
 		Cwd: meta.Cwd, Harness: meta.Harness, Model: model, Mode: mode, Effort: meta.Effort, Title: meta.Title,
 	}))
 	return a, nil
@@ -257,20 +257,20 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 
 // StartPending creates an attachable actor without starting a harness. The
 // lifecycle runner activates it only after provisioning has completed.
-func StartPending(st *store.Store, ad adapter.Adapter, meta store.SessionMeta, env map[string]string, logf func(string, ...any)) *Actor {
+func StartPending(st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) *Actor {
 	a := &Actor{ID: meta.ID, Harness: meta.Harness, Cwd: meta.Cwd, store: st, adapter: ad, env: env,
 		inbox: make(chan command, 64), quit: make(chan struct{}), state: projection.New(meta.ID),
 		pendingPerm: map[string]chan adapter.PermissionOutcome{}, pendingElicit: map[string]chan adapter.ElicitationResult{},
 		subs: map[string]*Subscriber{}, logf: logf}
 	a.wg.Add(1)
 	go a.run()
-	a.enqueueEmission(proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness, Model: meta.Model, Mode: meta.Mode, Effort: meta.Effort, Title: meta.Title}))
+	a.enqueueEmission(proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness, Model: meta.Model, Mode: meta.Mode, Effort: meta.Effort, Title: meta.Title}))
 	return a
 }
 
-// Resume rebuilds an actor for an existing session id, replaying its log into
+// Resume rebuilds an actor for an existing thread id, replaying its log into
 // the projection before starting a fresh harness process.
-func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.SessionMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
+func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
 	state, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
@@ -302,7 +302,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 
 	mcp, extraDirs := harnessExtras(ctx, st, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
-		SessionID:        meta.ID,
+		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
 		Model:            state.Model,
 		Mode:             state.Mode,
@@ -355,7 +355,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 // RestoreIdle rebuilds the projection and actor surface without starting the
 // provider process. It is used by read-only attachment; ActivateResume pays
 // the process cost only when a later command actually needs the harness.
-func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.SessionMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
+func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
 	state, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
@@ -379,14 +379,14 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 
 // RestoreClosed creates a read-only actor for a closed transcript. It has no
 // harness process, but retains the same attach/state/fanout surface so closed
-// sessions remain inspectable by presenters.
-func RestoreClosed(ctx context.Context, st *store.Store, meta store.SessionMeta, logf func(string, ...any)) (*Actor, error) {
+// threads remain inspectable by presenters.
+func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, logf func(string, ...any)) (*Actor, error) {
 	state, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
 	if !state.Closed {
-		ev, err := st.Append(ctx, meta.ID, proto.Emit(proto.SessionClosed, proto.SessionClosedPayload{Reason: "closed"}))
+		ev, err := st.Append(ctx, meta.ID, proto.Emit(proto.ThreadClosed, proto.ThreadClosedPayload{Reason: "closed"}))
 		if err != nil {
 			return nil, err
 		}
@@ -404,7 +404,7 @@ func RestoreClosed(ctx context.Context, st *store.Store, meta store.SessionMeta,
 	return a, nil
 }
 
-func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.SessionMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
+func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
 	state, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
@@ -445,7 +445,7 @@ func (a *Actor) Head() int64 {
 	return a.head
 }
 
-// Attention returns the session's derived attention state — see
+// Attention returns the thread's derived attention state — see
 // projection.Attention. Safe from any goroutine.
 func (a *Actor) Attention() string {
 	a.mu.Lock()
@@ -534,7 +534,7 @@ type PromptResult struct {
 func (r PromptResult) Queued() bool { return r.QueueID != "" }
 
 // Prompt starts a turn, or queues one if a turn is already running: the
-// queued prompt starts its own turn once the session is idle. Images are
+// queued prompt starts its own turn once the thread is idle. Images are
 // already stored on this host; each carries the path the harness reads it
 // from.
 func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage) (PromptResult, error) {
@@ -580,28 +580,28 @@ func (a *Actor) ActivateResume(ctx context.Context) error {
 	return err
 }
 
-// SetMode switches the harness's permission mode mid-session and records the
-// change as a session.config_changed event, so every presenter sees it.
+// SetMode switches the harness's permission mode mid-thread and records the
+// change as a thread.config_changed event, so every presenter sees it.
 func (a *Actor) SetMode(ctx context.Context, mode string) error {
 	_, err := a.call(ctx, command{kind: cmdSetMode, mode: mode})
 	return err
 }
 
-// SetModel switches the harness's model mid-session and records the change as
-// a session.config_changed event, so every presenter sees it.
+// SetModel switches the harness's model mid-thread and records the change as
+// a thread.config_changed event, so every presenter sees it.
 func (a *Actor) SetModel(ctx context.Context, model string) error {
 	_, err := a.call(ctx, command{kind: cmdSetModel, model: model})
 	return err
 }
 
-// SetEffort switches the harness's reasoning effort mid-session and records the
-// change as a session.config_changed event, so every presenter sees it.
+// SetEffort switches the harness's reasoning effort mid-thread and records the
+// change as a thread.config_changed event, so every presenter sees it.
 func (a *Actor) SetEffort(ctx context.Context, effort string) error {
 	_, err := a.call(ctx, command{kind: cmdSetEffort, effort: effort})
 	return err
 }
 
-// ComposerItems asks the live adapter what this exact session can invoke.
+// ComposerItems asks the live adapter what this exact thread can invoke.
 func (a *Actor) ComposerItems(ctx context.Context) ([]adapter.ComposerItem, error) {
 	v, err := a.call(ctx, command{kind: cmdListComposer})
 	if err != nil {
@@ -649,7 +649,7 @@ func (a *Actor) JobOutput(ctx context.Context, jobID string, offset int64) (text
 		}
 	}
 	if job == nil {
-		return "", 0, false, fmt.Errorf("no job %q in this session", jobID)
+		return "", 0, false, fmt.Errorf("no job %q in this thread", jobID)
 	}
 	if job.OutputFile == "" {
 		return "", 0, false, fmt.Errorf("job %q has no output file", jobID)
@@ -713,7 +713,7 @@ func (a *Actor) ResolveElicitation(ctx context.Context, requestID string, result
 	return err
 }
 
-// Close ends the session for good: session.closed is appended and the session
+// Close ends the thread for good: thread.closed is appended and the thread
 // can no longer be resumed.
 func (a *Actor) Close(reason string) {
 	select {
@@ -723,7 +723,7 @@ func (a *Actor) Close(reason string) {
 	a.wg.Wait()
 }
 
-// Dispose tears down the harness process without ending the session. The log
+// Dispose tears down the harness process without ending the thread. The log
 // is untouched and the next attach resumes it, so restarting the server does
 // not throw away conversations.
 func (a *Actor) Dispose(reason string) {
@@ -758,7 +758,7 @@ func (a *Actor) pump(sess adapter.Session) {
 	}()
 }
 
-// SwitchAccount moves the session to another account of the same harness. The
+// SwitchAccount moves the thread to another account of the same harness. The
 // running harness process is stopped, the conversation moved, and the next
 // command that needs a harness resumes it under the new account. Refused while
 // anything is in flight: a turn, a job, or a question waiting on a human all
@@ -850,7 +850,7 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdHarnessExit:
 		if c.from != a.sess {
 			// The process an account switch replaced. Its going is expected
-			// and says nothing about this session.
+			// and says nothing about this thread.
 			return false
 		}
 		// A harness that dies without closing its turn leaves the log saying
@@ -893,21 +893,21 @@ func (a *Actor) handle(c command) (stop bool) {
 				c.reply <- cmdResult{err: a.activationError}
 				return false
 			}
-			c.reply <- cmdResult{err: errors.New("this session's provider instance is no longer configured")}
+			c.reply <- cmdResult{err: errors.New("this thread's provider instance is no longer configured")}
 			return false
 		}
 		cwd, model, mode, effort := c.prompt, c.model, c.mode, c.effort
 		if c.resume {
 			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
 		}
-		meta, err := a.store.Session(ctx, a.ID)
+		meta, err := a.store.Thread(ctx, a.ID)
 		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
 		mcp, extraDirs := harnessExtras(ctx, a.store, meta, cwd, a.logf)
 		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
-			SessionID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
+			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
 			MCPServers: mcp, ExtraDirs: extraDirs,
 		})
@@ -987,7 +987,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		switcher, ok := a.sess.(adapter.ModeSwitcher)
 		if !ok {
-			c.reply <- cmdResult{err: errors.New("this harness cannot change permission mode mid-session")}
+			c.reply <- cmdResult{err: errors.New("this harness cannot change permission mode mid-thread")}
 			return false
 		}
 		// Bounded: this is a round-trip to the harness from inside the actor
@@ -1001,7 +1001,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		// Durable and fanned out, so the change lands in the log and every
 		// connected presenter follows — same requirement as permission.resolved.
-		a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Mode: c.mode}))
+		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Mode: c.mode}))
 		c.reply <- cmdResult{}
 
 	case cmdSwitchAccount:
@@ -1018,7 +1018,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		switcher, ok := a.sess.(adapter.ModelSwitcher)
 		if !ok {
-			c.reply <- cmdResult{err: errors.New("this harness cannot change model mid-session")}
+			c.reply <- cmdResult{err: errors.New("this harness cannot change model mid-thread")}
 			return false
 		}
 		// Bounded for the same reason as cmdSetMode: a wedged harness must
@@ -1030,7 +1030,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Model: c.model}))
+		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: c.model}))
 		c.reply <- cmdResult{}
 
 	case cmdSetEffort:
@@ -1044,7 +1044,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		switcher, ok := a.sess.(adapter.EffortSwitcher)
 		if !ok {
-			c.reply <- cmdResult{err: errors.New("this harness cannot change reasoning effort mid-session")}
+			c.reply <- cmdResult{err: errors.New("this harness cannot change reasoning effort mid-thread")}
 			return false
 		}
 		// Bounded for the same reason as cmdSetModel: a wedged harness must
@@ -1056,7 +1056,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		a.append(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Effort: &c.effort}))
+		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &c.effort}))
 		c.reply <- cmdResult{}
 
 	case cmdListComposer:
@@ -1211,7 +1211,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		// Bounded for the same reason as the settings RPCs above: Cancel runs on
 		// the actor goroutine, so an interrupt promise the harness never settles
-		// must not wedge every later command for this session.
+		// must not wedge every later command for this thread.
 		cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := a.sess.Cancel(cancelCtx)
 		cancel()
@@ -1283,7 +1283,7 @@ func (a *Actor) handle(c command) (stop bool) {
 
 	case cmdClose:
 		if c.hard {
-			a.append(proto.Emit(proto.SessionClosed, proto.SessionClosedPayload{Reason: c.prompt}))
+			a.append(proto.Emit(proto.ThreadClosed, proto.ThreadClosedPayload{Reason: c.prompt}))
 		}
 		a.shutdown(c.hard)
 		return true
@@ -1312,16 +1312,16 @@ func (a *Actor) switchAccount(sw *accountSwitch) error {
 	id := a.state.HarnessSessionID
 	if id == "" {
 		// Named at start by omniplex and reported back only once the harness
-		// runs; a session that never ran has nothing to move.
+		// runs; a thread that never ran has nothing to move.
 		id = a.ID
 	}
 	if err := sw.move(id); err != nil {
 		// Nothing changed but the process, which the next command restarts
-		// under the account the session still has.
+		// under the account the thread still has.
 		return err
 	}
 	a.adapter, a.env, a.activationError = sw.ad, sw.env, nil
-	a.append(proto.Emit(proto.SessionAccountChanged, sw.changed))
+	a.append(proto.Emit(proto.ThreadAccountChanged, sw.changed))
 	return nil
 }
 
@@ -1333,7 +1333,7 @@ func (a *Actor) shutdown(hard bool) {
 		phase = "closed"
 	case a.turnActive != "":
 		// Disposed mid-turn. The row keeps saying "turn" so the next start can
-		// find this session and finish what it was doing; recording idle here
+		// find this thread and finish what it was doing; recording idle here
 		// would erase the only cheap evidence that work was in flight. A kill
 		// -9 leaves the same value behind, so both deaths look alike.
 		phase = "turn"
@@ -1359,8 +1359,8 @@ func (a *Actor) shutdown(hard bool) {
 	if a.sess != nil {
 		_ = a.sess.Close()
 	}
-	// A session that is merely disposed will be resumed from the log, and its
-	// snapshots are the baseline the next turn needs. Only a session closed for
+	// A thread that is merely disposed will be resumed from the log, and its
+	// snapshots are the baseline the next turn needs. Only a thread closed for
 	// good is done with them.
 	a.checkpoints.stop()
 	if phase == "closed" {
@@ -1399,7 +1399,7 @@ func (a *Actor) startCheckpoints() {
 }
 
 // startTurn opens a turn for a prompt and sends it to the harness. The caller
-// has already checked that the session is open, activated, and idle.
+// has already checked that the thread is open, activated, and idle.
 func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.PromptImage, recovery *proto.TurnRecovery, queueID string) (string, error) {
 	turnID := uuid.NewString()
 	a.turnActive = turnID
@@ -1419,7 +1419,7 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 		a.turnActive = ""
 		return "", err
 	}
-	// A recovery prompt is the server talking to itself; naming a session
+	// A recovery prompt is the server talking to itself; naming a thread
 	// after it would bury what the human actually asked for.
 	if recovery == nil {
 		title := truncate(prompt, 60)
@@ -1456,7 +1456,7 @@ func (a *Actor) isQueued(queueID string) bool {
 	return false
 }
 
-// dispatchQueued starts the oldest queued prompt if the session is idle and
+// dispatchQueued starts the oldest queued prompt if the thread is idle and
 // able to run one. A prompt that fails on the way out ends as an errored turn
 // like any other; the rest of the queue stays, each to be tried in its turn.
 func (a *Actor) dispatchQueued(ctx context.Context) {
@@ -1589,14 +1589,14 @@ func (a *Actor) append(em proto.Emission) error {
 	}
 
 	// The stored phase column is a cache of the projection, kept for the
-	// session list and for restart recovery, which scans rows without folding
+	// thread list and for restart recovery, which scans rows without folding
 	// logs. Syncing it on every turn-shaped transition — not just on turn
 	// events — is what lets activity-promoted turns (streaming or a tool
 	// going active while the log said idle) survive a restart. Workspace
 	// events are excluded: the lifecycle runner owns those writes, and its
 	// vocabulary (ready, provisioning, …) is wider than the projection's.
 	switch em.Type {
-	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.SessionClosed:
+	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.ThreadClosed:
 		if phase := a.state.Phase; phase != prevPhase && (phase == "turn" || phase == "idle" || phase == "closed") {
 			if err := a.store.SetPhase(ctx, a.ID, phase); err != nil {
 				a.logf("set phase %s on %s: %v", phase, a.ID, err)
@@ -1606,7 +1606,7 @@ func (a *Actor) append(em proto.Emission) error {
 
 	// Attention is the derived whose-turn-is-it signal. Any event that moves
 	// it — turn boundaries, a permission being asked or answered, activity
-	// while idle — re-notifies the session list.
+	// while idle — re-notifies the thread list.
 	if att := a.state.Attention(); att != a.Attention() {
 		a.mu.Lock()
 		a.attention = att

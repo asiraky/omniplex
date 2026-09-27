@@ -1,7 +1,7 @@
 {
   "name": "Omniplex",
   "short_name": "Omniplex",
-  "description": "Drive coding sessions from any device.",
+  "description": "Drive coding threads from any device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

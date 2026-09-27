@@ -276,7 +276,7 @@ describe("a workspace that is still being prepared", () => {
   });
 
   it("reloads the command catalogue once the workspace can take commands", async () => {
-    // The first load fails the way the actor fails before it has a session.
+    // The first load fails the way the actor fails before it has a thread.
     const loadComposerItems = vi
       .fn()
       .mockRejectedValueOnce(new Error("workspace is not ready"))

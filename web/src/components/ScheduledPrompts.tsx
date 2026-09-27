@@ -246,7 +246,7 @@ export function ScheduleDialog({
           <p className="text-xs text-muted-foreground">
             Your phone can be closed. The host must be awake. If offline, it
             catches up within one hour; later messages are marked missed. Busy
-            sessions wait until free.
+            threads wait until free.
           </p>
           <Button
             disabled={saving || !!error || (!text.trim() && !imageCount)}
@@ -315,7 +315,7 @@ export function ScheduledPrompts({
               : p.status === "failed"
                 ? "Failed"
                 : p.status === "ready"
-                  ? "Due — waiting for session"
+                  ? "Due — waiting for thread"
                   : "Scheduled"}{" "}
             · {scheduleLabel(p.dueAt, p.timeZone)}
           </div>

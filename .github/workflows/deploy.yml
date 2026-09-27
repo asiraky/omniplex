@@ -32,8 +32,8 @@ jobs:
     env:
       ROOT: /opt/omniplex
       HEALTH: http://127.0.0.1:8787/api/health
-      # The runner is a system service with no login session, so it has no user
-      # D-Bus and `systemctl --user` fails with "$DBUS_SESSION_BUS_ADDRESS and
+      # The runner is a system service with no login thread, so it has no user
+      # D-Bus and `systemctl --user` fails with "$DBUS_THREAD_BUS_ADDRESS and
       # $XDG_RUNTIME_DIR not defined". Naming the runtime dir is what connects
       # it to the user manager that linger keeps alive.
       XDG_RUNTIME_DIR: /run/user/1000

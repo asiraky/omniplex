@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSessionPrefs, saveSessionPrefs } from "./sessionPrefs";
+import { loadThreadPrefs, saveThreadPrefs } from "./threadPrefs";
 
 beforeEach(() => localStorage.clear());
 
-describe("session preference storage", () => {
+describe("thread preference storage", () => {
   it("round trips independent projects and harnesses, including an explicit default effort", () => {
     const codex = {
       instance: "codex",
@@ -26,8 +26,8 @@ describe("session preference storage", () => {
         byHarness: { codex: { ...codex, mode: "ask" } },
       },
     };
-    saveSessionPrefs(choices);
-    expect(loadSessionPrefs()).toEqual(choices);
+    saveThreadPrefs(choices);
+    expect(loadThreadPrefs()).toEqual(choices);
   });
 
   it("ignores corrupt storage", () => {
@@ -39,7 +39,7 @@ describe("session preference storage", () => {
       '{"p":{"harness":"codex","byHarness":{"codex":{"model":3}}}}',
     ]) {
       get.mockReturnValue(raw);
-      const result = loadSessionPrefs();
+      const result = loadThreadPrefs();
       expect(result.p?.byHarness.codex).toBeUndefined();
     }
     get.mockRestore();
@@ -49,12 +49,12 @@ describe("session preference storage", () => {
     const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("denied");
     });
-    expect(loadSessionPrefs()).toEqual({});
+    expect(loadThreadPrefs()).toEqual({});
     get.mockRestore();
     const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("quota");
     });
-    expect(() => saveSessionPrefs({})).not.toThrow();
+    expect(() => saveThreadPrefs({})).not.toThrow();
     set.mockRestore();
   });
 });

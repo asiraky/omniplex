@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 const summaryTimeout = 3 * time.Minute
 
 // transcriptBudget caps the rendered transcript handed to the model, in bytes.
-// A long session can be megabytes of tool output, and a fast model has a small
+// A long thread can be megabytes of tool output, and a fast model has a small
 // context window; renderTranscript keeps the two ends and drops the middle,
 // which is exactly the part a "what was this about, what happened" summary
 // needs least.
@@ -30,34 +30,34 @@ const transcriptBudget = 60_000
 // output otherwise crowd out the conversation itself.
 const toolContentBudget = 800
 
-// SessionSummary is one generated summary, with enough provenance for a UI to
+// ThreadSummary is one generated summary, with enough provenance for a UI to
 // say where it came from and to know when it has gone stale.
-type SessionSummary struct {
+type ThreadSummary struct {
 	// Text is the model's answer, as Markdown.
 	Text string `json:"text"`
 	// Harness and Model name what produced it, so the summary can be
 	// attributed rather than appearing from nowhere.
 	Harness string `json:"harness"`
 	Model   string `json:"model"`
-	// Seq is the session head the summary was made from. A client caches
-	// against it and knows the summary is stale once the session moves on.
+	// Seq is the thread head the summary was made from. A client caches
+	// against it and knows the summary is stale once the thread moves on.
 	Seq int64 `json:"seq"`
 	// GeneratedAt is millis, matching every other timestamp on the wire.
 	GeneratedAt int64 `json:"generatedAt"`
 }
 
-// SummarizeSession asks the session's own harness to compress its transcript,
+// SummarizeThread asks the thread's own harness to compress its transcript,
 // under the operator's editable prompt.
 //
-// It runs against the harness that did the work, under that session's provider
+// It runs against the harness that did the work, under that thread's provider
 // instance, so the summary is billed to the account that owns the conversation
 // and needs no credential omniplex does not already hold. The adapter picks the
 // model: "fastest thing this harness offers" is knowledge that belongs beside
 // the harness, not here.
-func (m *Manager) SummarizeSession(ctx context.Context, sessionID string) (SessionSummary, error) {
-	var out SessionSummary
+func (m *Manager) SummarizeThread(ctx context.Context, threadID string) (ThreadSummary, error) {
+	var out ThreadSummary
 
-	meta, err := m.store.Session(ctx, sessionID)
+	meta, err := m.store.Thread(ctx, threadID)
 	if err != nil {
 		return out, err
 	}
@@ -68,28 +68,28 @@ func (m *Manager) SummarizeSession(ctx context.Context, sessionID string) (Sessi
 	}
 	sum, ok := reg.ad.(adapter.Summarizer)
 	if !ok {
-		return out, fmt.Errorf("%s cannot summarise a session", reg.ad.Meta().Name)
+		return out, fmt.Errorf("%s cannot summarise a thread", reg.ad.Meta().Name)
 	}
 
 	// A live actor answers from inside its loop, so the projection is never
-	// observed half-applied. An idle or closed session is folded straight out
+	// observed half-applied. An idle or closed thread is folded straight out
 	// of the log instead of through Get: summarising is a read, and it must
 	// not be the thing that starts a harness process.
 	var state *projection.State
-	if actor, live := m.Peek(sessionID); live {
+	if actor, live := m.Peek(threadID); live {
 		state, err = actor.State(ctx)
 	} else {
-		state, err = loadState(ctx, m.store, sessionID)
+		state, err = loadState(ctx, m.store, threadID)
 	}
 	if err != nil {
 		return out, err
 	}
 
 	// Guard on the conversation, not on the rendered string: renderTranscript
-	// always emits a header block, so a session that has never been prompted
+	// always emits a header block, so a thread that has never been prompted
 	// would otherwise be sent to the model as four lines of metadata.
 	if len(state.Turns) == 0 && len(state.Items) == 0 {
-		return out, errors.New("this session has no transcript to summarise yet")
+		return out, errors.New("this thread has no transcript to summarise yet")
 	}
 	transcript := renderTranscript(state)
 
@@ -122,7 +122,7 @@ func (m *Manager) SummarizeSession(ctx context.Context, sessionID string) (Sessi
 		return out, errors.New("the summariser returned nothing")
 	}
 
-	return SessionSummary{
+	return ThreadSummary{
 		Text:        text,
 		Harness:     reg.ad.Meta().Name,
 		Model:       res.Model,
@@ -147,7 +147,7 @@ func renderTranscript(state *projection.State) string {
 	var b strings.Builder
 
 	if state.Title != "" {
-		fmt.Fprintf(&b, "Session title: %s\n", state.Title)
+		fmt.Fprintf(&b, "Thread title: %s\n", state.Title)
 	}
 	if state.Cwd != "" {
 		fmt.Fprintf(&b, "Working directory: %s\n", state.Cwd)
@@ -303,7 +303,7 @@ func clip(s string, budget int) string {
 
 // clipMiddle keeps the head and the tail of an over-long transcript. The
 // opening turn holds the request and the closing turns hold the outcome; the
-// middle is where a long session repeats itself, so that is what goes.
+// middle is where a long thread repeats itself, so that is what goes.
 func clipMiddle(s string, budget int) string {
 	if len(s) <= budget {
 		return s

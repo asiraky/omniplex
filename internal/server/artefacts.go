@@ -17,7 +17,7 @@ import (
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
-	"github.com/asiraky/omniplex/internal/session"
+	"github.com/asiraky/omniplex/internal/thread"
 )
 
 const (
@@ -31,12 +31,12 @@ const (
 )
 
 func (s *Server) routeArtefacts(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/sessions/{id}/artefacts", s.handleUploadArtefact)
-	mux.HandleFunc("GET /api/sessions/{id}/artefacts/{aid}/f/{path...}", s.handleRawArtefact)
-	mux.HandleFunc("POST /api/sessions/{id}/artefacts/{aid}/preview", s.handlePreviewArtefact)
-	mux.HandleFunc("GET /api/sessions/{id}/artefacts/{aid}/share", s.handleShareStatus)
-	mux.HandleFunc("POST /api/sessions/{id}/artefacts/{aid}/share", s.handleShareArtefact)
-	mux.HandleFunc("DELETE /api/sessions/{id}/artefacts/{aid}/share", s.handleUnshareArtefact)
+	mux.HandleFunc("POST /api/threads/{id}/artefacts", s.handleUploadArtefact)
+	mux.HandleFunc("GET /api/threads/{id}/artefacts/{aid}/f/{path...}", s.handleRawArtefact)
+	mux.HandleFunc("POST /api/threads/{id}/artefacts/{aid}/preview", s.handlePreviewArtefact)
+	mux.HandleFunc("GET /api/threads/{id}/artefacts/{aid}/share", s.handleShareStatus)
+	mux.HandleFunc("POST /api/threads/{id}/artefacts/{aid}/share", s.handleShareArtefact)
+	mux.HandleFunc("DELETE /api/threads/{id}/artefacts/{aid}/share", s.handleUnshareArtefact)
 	// Public: each carries its own signed token, checked by its handler.
 	mux.HandleFunc("GET /p/{token}/{path...}", s.handlePreviewToken)
 	mux.HandleFunc("GET /s/{token}/{path...}", s.handleShareToken)
@@ -65,18 +65,18 @@ func writeArtefactError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusRequestEntityTooLarge, "too large: at most 200 MB and 2000 files")
 	case errors.Is(err, artefact.ErrEmpty), errors.Is(err, artefact.ErrBadPath):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, artefact.ErrNotFound), errors.Is(err, session.ErrNoArtefact):
+	case errors.Is(err, artefact.ErrNotFound), errors.Is(err, thread.ErrNoArtefact):
 		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
 }
 
-// sessionArtefact finds an artefact a session has shown.
-func (s *Server) sessionArtefact(r *http.Request, sessionID, id string) (projection.Artefact, error) {
-	actor, err := s.mgr.View(r.Context(), sessionID)
+// threadArtefact finds an artefact a thread has shown.
+func (s *Server) threadArtefact(r *http.Request, threadID, id string) (projection.Artefact, error) {
+	actor, err := s.mgr.View(r.Context(), threadID)
 	if err != nil {
-		return projection.Artefact{}, session.ErrNoArtefact
+		return projection.Artefact{}, thread.ErrNoArtefact
 	}
 	return actor.Artefact(r.Context(), id)
 }
@@ -97,15 +97,15 @@ func (s *Server) handleUploadArtefact(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
-	sessionID := r.PathValue("id")
-	actor, err := s.mgr.View(r.Context(), sessionID)
+	threadID := r.PathValue("id")
+	actor, err := s.mgr.View(r.Context(), threadID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "no such session")
+		writeError(w, http.StatusNotFound, "no such thread")
 		return
 	}
-	home, _, err := s.mgr.ArtefactRoots(r.Context(), sessionID)
+	home, _, err := s.mgr.ArtefactRoots(r.Context(), threadID)
 	if err != nil || home == "" {
-		writeError(w, http.StatusConflict, "this session has no folder to save uploads in")
+		writeError(w, http.StatusConflict, "this thread has no folder to save uploads in")
 		return
 	}
 	p, err := artefact.SaveUpload(filepath.Join(home, "uploads"), r.URL.Query().Get("name"), http.MaxBytesReader(w, r.Body, artefact.MaxBytes+1))
@@ -118,7 +118,7 @@ func (s *Server) handleUploadArtefact(w http.ResponseWriter, r *http.Request) {
 		writeArtefactError(w, err)
 		return
 	}
-	shown, err := actor.ShowArtefact(r.Context(), session.Show{Path: p, Info: info, Source: proto.ArtefactFromUpload})
+	shown, err := actor.ShowArtefact(r.Context(), thread.Show{Path: p, Info: info, Source: proto.ArtefactFromUpload})
 	if err != nil {
 		writeArtefactError(w, err)
 		return
@@ -130,7 +130,7 @@ func (s *Server) handleUploadArtefact(w http.ResponseWriter, r *http.Request) {
 // device gate, so an <img>, <audio> or fetch gets it with the cookie and
 // nothing else.
 func (s *Server) handleRawArtefact(w http.ResponseWriter, r *http.Request) {
-	a, err := s.sessionArtefact(r, r.PathValue("id"), r.PathValue("aid"))
+	a, err := s.threadArtefact(r, r.PathValue("id"), r.PathValue("aid"))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -151,8 +151,8 @@ func (s *Server) handlePreviewArtefact(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
-	sessionID, id := r.PathValue("id"), r.PathValue("aid")
-	a, err := s.sessionArtefact(r, sessionID, id)
+	threadID, id := r.PathValue("id"), r.PathValue("aid")
+	a, err := s.threadArtefact(r, threadID, id)
 	if err != nil {
 		writeArtefactError(w, err)
 		return
@@ -163,7 +163,7 @@ func (s *Server) handlePreviewArtefact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	exp := time.Now().Add(previewTTL).UnixMilli()
-	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindPreview, Session: sessionID, Artefact: id, ExpiresAt: exp})
+	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindPreview, Thread: threadID, Artefact: id, ExpiresAt: exp})
 	writeJSON(w, map[string]any{"url": "/p/" + tok + "/" + escapePath(info.Entry), "expiresAt": exp})
 }
 
@@ -174,8 +174,8 @@ type shareStatus struct {
 	ExpiresAt int64  `json:"expiresAt"`
 }
 
-func (s *Server) shareStatusOf(r *http.Request, sessionID, id string, sh artefact.Share) shareStatus {
-	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindShare, Session: sessionID, Artefact: id, Nonce: sh.Nonce})
+func (s *Server) shareStatusOf(r *http.Request, threadID, id string, sh artefact.Share) shareStatus {
+	tok := s.signer.Mint(artefact.Claims{Kind: artefact.KindShare, Thread: threadID, Artefact: id, Nonce: sh.Nonce})
 	return shareStatus{URL: requestOrigin(r) + "/s/" + tok, SharedAt: sh.SharedAt, ExpiresAt: sh.ExpiresAt}
 }
 
@@ -185,13 +185,13 @@ func (s *Server) handleShareStatus(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
-	sessionID, id := r.PathValue("id"), r.PathValue("aid")
-	sh, err := s.artefacts.Share(sessionID, id)
+	threadID, id := r.PathValue("id"), r.PathValue("aid")
+	sh, err := s.artefacts.Share(threadID, id)
 	if err != nil || sh.Expired(time.Now()) {
 		writeJSON(w, map[string]any{"share": nil})
 		return
 	}
-	writeJSON(w, map[string]any{"share": s.shareStatusOf(r, sessionID, id, sh)})
+	writeJSON(w, map[string]any{"share": s.shareStatusOf(r, threadID, id, sh)})
 }
 
 // handleShareArtefact copies the artefact as it is now and returns a link to
@@ -202,18 +202,18 @@ func (s *Server) handleShareArtefact(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
 		return
 	}
-	sessionID, id := r.PathValue("id"), r.PathValue("aid")
-	a, err := s.sessionArtefact(r, sessionID, id)
+	threadID, id := r.PathValue("id"), r.PathValue("aid")
+	a, err := s.threadArtefact(r, threadID, id)
 	if err != nil {
 		writeArtefactError(w, err)
 		return
 	}
-	sh, err := s.artefacts.Snapshot(sessionID, id, a.Path, time.Now())
+	sh, err := s.artefacts.Snapshot(threadID, id, a.Path, time.Now())
 	if err != nil {
 		writeArtefactError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"share": s.shareStatusOf(r, sessionID, id, sh)})
+	writeJSON(w, map[string]any{"share": s.shareStatusOf(r, threadID, id, sh)})
 }
 
 // handleUnshareArtefact deletes the copy. The link stops working at once.
@@ -241,7 +241,7 @@ func (s *Server) handlePreviewToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, deadLink, http.StatusNotFound)
 		return
 	}
-	a, err := s.sessionArtefact(r, c.Session, c.Artefact)
+	a, err := s.threadArtefact(r, c.Thread, c.Artefact)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -265,7 +265,7 @@ func (s *Server) handleShareToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, deadLink, http.StatusNotFound)
 		return
 	}
-	sh, err := s.artefacts.Share(c.Session, c.Artefact)
+	sh, err := s.artefacts.Share(c.Thread, c.Artefact)
 	if err != nil || sh.Nonce != c.Nonce || sh.Expired(time.Now()) {
 		http.Error(w, deadLink, http.StatusNotFound)
 		return
@@ -277,7 +277,7 @@ func (s *Server) handleShareToken(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/s/"+r.PathValue("token")+"/"+escapePath(sh.Entry), http.StatusFound)
 		return
 	}
-	p, err := s.artefacts.OpenShared(c.Session, c.Artefact, rel)
+	p, err := s.artefacts.OpenShared(c.Thread, c.Artefact, rel)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -433,7 +433,7 @@ func requestOrigin(r *http.Request) string {
 }
 
 // handleAgentShow is where the omniplex MCP server a harness runs sends a
-// file the agent wants to show. The path has to be inside the session's
+// file the agent wants to show. The path has to be inside the thread's
 // project: its home folder, its working directory or the project's root.
 func (s *Server) handleAgentShow(w http.ResponseWriter, r *http.Request) {
 	if s.artefactsOff(w) {
@@ -454,12 +454,12 @@ func (s *Server) handleAgentShow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	actor, err := s.mgr.View(r.Context(), c.Session)
+	actor, err := s.mgr.View(r.Context(), c.Thread)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "no such session")
+		writeError(w, http.StatusNotFound, "no such thread")
 		return
 	}
-	home, roots, err := s.mgr.ArtefactRoots(r.Context(), c.Session)
+	home, roots, err := s.mgr.ArtefactRoots(r.Context(), c.Thread)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -482,7 +482,7 @@ func (s *Server) handleAgentShow(w http.ResponseWriter, r *http.Request) {
 		writeArtefactError(w, err)
 		return
 	}
-	shown, err := actor.ShowArtefact(r.Context(), session.Show{
+	shown, err := actor.ShowArtefact(r.Context(), thread.Show{
 		Path: p, Name: strings.TrimSpace(body.Title), Note: strings.TrimSpace(body.Note), Info: info, Source: proto.ArtefactFromAgent,
 	})
 	if err != nil {

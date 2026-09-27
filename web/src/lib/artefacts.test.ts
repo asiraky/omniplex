@@ -148,8 +148,8 @@ describe("typeFamily and badgeLabel", () => {
 
 describe("urls", () => {
   it("encodes each path segment but keeps a folder's directories", () => {
-    expect(rawUrl("s 1", "a/1", "sub dir/p#1.html")).toBe("/api/sessions/s%201/artefacts/a%2F1/f/sub%20dir/p%231.html");
-    expect(rawUrl("s", "a", "x.pdf", { rev: 5, download: true })).toBe("/api/sessions/s/artefacts/a/f/x.pdf?m=5&download=1");
+    expect(rawUrl("s 1", "a/1", "sub dir/p#1.html")).toBe("/api/threads/s%201/artefacts/a%2F1/f/sub%20dir/p%231.html");
+    expect(rawUrl("s", "a", "x.pdf", { rev: 5, download: true })).toBe("/api/threads/s/artefacts/a/f/x.pdf?m=5&download=1");
   });
 
   it("moves a page onto a fresh token and keeps where the reader was", () => {

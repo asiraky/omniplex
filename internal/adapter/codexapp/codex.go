@@ -250,7 +250,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 	// The whole tree, not just app-server: shells, dev servers and browsers
 	// the agent starts must end with the session.
-	tree := procgroup.Attach(cmd, "codex-"+o.SessionID)
+	tree := procgroup.Attach(cmd, "codex-"+o.ThreadID)
 	if err := cmd.Start(); err != nil {
 		tree.Kill()
 		return nil, fmt.Errorf("start %s app-server: %w", a.Bin, err)
@@ -338,7 +338,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		s.model = startRes.Thread.Model
 		s.mu.Unlock()
 	}
-	s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
+	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 		HarnessSessionID: s.threadID,
 		Model:            s.model,
 	}))

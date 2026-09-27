@@ -5,10 +5,10 @@
 
 A Go server that drives multiple coding harnesses (Claude Code, Codex) behind one
 canonical event protocol, plus a standalone web UI that attaches to live or
-closed session transcripts from another paired device.
+closed thread transcripts from another paired device.
 
 This implements the architecture in `omniplex-spec.md`, milestones 1–5
-and 9: the event log, the session actor and fanout, the sync protocol, the Claude
+and 9: the event log, the thread actor and fanout, the sync protocol, the Claude
 adapter, the web UI, and the Codex adapter.
 
 The core workflow from [`workspace-lifecycle-spec.md`](workspace-lifecycle-spec.md)
@@ -65,7 +65,7 @@ way to emit a single-file executable carrying its own JS runtime, which is what
 the optional bundled build needs. Dependencies there are installed with npm like
 everywhere else. Nothing else in the repo requires Bun.
 
-Open the URL, click **New session**, choose Claude or Codex, and prompt. The
+Open the URL, click **New thread**, choose Claude or Codex, and prompt. The
 harness runs as a subprocess of the server and uses the auth you already have
 locally (`claude` and `codex` login state); Omniplex never sees a token.
 
@@ -127,7 +127,7 @@ weakened.
 | `-port` | `8787` | Port used for automatically selected addresses |
 | `-bind-public` | off | Also bind globally routable addresses; explicit because this exposes Omniplex to the internet |
 | `-db` | `~/.omniplex/omniplex.db` | Event log |
-| `-cwd` | current directory | Default working directory for new sessions |
+| `-cwd` | current directory | Default working directory for new threads |
 | `-claude-path` | discovered | Claude Code executable to drive |
 | `-codex` | `codex` | Codex CLI |
 | `-dev` | off | Serve the UI from the Vite dev server instead of the embedded bundle |
@@ -286,12 +286,12 @@ the box, including the rollback and pruning old releases. It is
 on the machine holding your harness credentials and Tailscale identity must
 never be triggerable by a pull request from a fork.
 
-### Restarts and sessions
+### Restarts and threads
 
-Restarting the server does not destroy a session. The event log is authoritative,
-so sessions come back and an in-flight turn is recorded as interrupted, then
+Restarting the server does not destroy a thread. The event log is authoritative,
+so threads come back and an in-flight turn is recorded as interrupted, then
 resumed on the next prompt. Worth knowing if you deploy from inside Omniplex
-itself, which drops the session you are sitting in. It restores itself and nudges
+itself, which drops the thread you are sitting in. It restores itself and nudges
 the agent. Do not deploy a second time while that is happening.
 
 ## Relocating a project
@@ -303,7 +303,7 @@ omniplex relocate <old-root> <new-root>
 ```
 
 Use `-db path` after `relocate` when the server uses a non-default database.
-The command repairs stored project and session paths, lifecycle state, Git
+The command repairs stored project and thread paths, lifecycle state, Git
 worktree links, and Claude Code transcript directories. It refuses to overwrite
 an existing transcript directory.
 
@@ -330,27 +330,27 @@ running it needs neither.
 ## How it works
 
 ```
-browser ──ws──▶ transport ──▶ fanout ──▶ session actor ──▶ event log (sqlite)
+browser ──ws──▶ transport ──▶ fanout ──▶ thread actor ──▶ event log (sqlite)
                                               │                   │
                                               ▼                   ▼
                                           adapter            projection
                                         (subprocess)         (rendered state)
 ```
 
-**The log is the session.** Every fact — each streamed token, tool call,
+**The log is the thread.** Every fact — each streamed token, tool call,
 permission request and its resolution — is an append-only event with a
-per-session sequence number. State is a fold over that log; snapshots are a
+per-thread sequence number. State is a fold over that log; snapshots are a
 latency cache you can delete without changing behaviour.
 
 **Nothing lives in a connection.** A permission or elicitation request is a durable event, not
 a promise held in a socket handler, so the laptop can answer a prompt the phone
 triggered. Disconnecting does not cancel a turn; only an explicit cancel does.
-Restarting the server preserves the session and its harness context. An active
+Restarting the server preserves the thread and its harness context. An active
 turn is recorded as interrupted (server death cannot preserve its process), then
 the harness is respawned with `claude --resume` / codex `thread/resume` for the
 next turn.
 
-**One goroutine owns each session.** All mutation happens in its select loop.
+**One goroutine owns each thread.** All mutation happens in its select loop.
 Fanout is non-blocking: a presenter that stops draining is dropped and told to
 resync rather than growing server memory or stalling the turn.
 
@@ -406,7 +406,7 @@ It also enforces the architecture rather than trusting it:
   or a connection.
 - **Lifecycle tests** SIGKILL a stand-in host and assert the Claude bridge and
   the harness process it spawned both die. Without that, killing the server
-  orphans a several-hundred-megabyte process holding a live session.
+  orphans a several-hundred-megabyte process holding a live thread.
 - **Framing tests** assert that nothing but framed JSON reaches the bridge's
   stdout, including when a dependency logs at import time, and that payloads
   containing newlines cannot split a frame.

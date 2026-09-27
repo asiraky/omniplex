@@ -19,7 +19,7 @@ const (
 	// prefix marks the cgroups this package owns, so Sweep can tell them from
 	// anything else that might appear under the server's cgroup. The owner's
 	// pid follows it: two servers sharing a cgroup (the tests, a dev server
-	// started beside another) must not sweep each other's live sessions.
+	// started beside another) must not sweep each other's live threads.
 	prefix = "omniplex-"
 )
 
@@ -56,7 +56,7 @@ func attachCgroupOwned(cmd *exec.Cmd, owner int, name string) (Group, bool) {
 	if !ok {
 		return nil, false
 	}
-	// A suffix keeps a fresh session from colliding with the cgroup of one
+	// A suffix keeps a fresh thread from colliding with the cgroup of one
 	// with the same name that is still being torn down.
 	var suffix [4]byte
 	_, _ = rand.Read(suffix[:])

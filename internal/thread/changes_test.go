@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -33,7 +33,7 @@ func write(t *testing.T, dir, name, body string) {
 	}
 }
 
-// changesFixture is a session working in a worktree cut from main, with one
+// changesFixture is a thread working in a worktree cut from main, with one
 // committed edit, one uncommitted edit, one delete, one rename and one
 // untracked file — every status the file list has to name.
 func changesFixture(t *testing.T) (*Manager, string) {
@@ -59,8 +59,8 @@ func changesFixture(t *testing.T) (*Manager, string) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
-	meta := store.SessionMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID, Branch: branch, WorkspaceMode: "borrowed"}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
+	meta := store.ThreadMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID, Branch: branch, WorkspaceMode: "borrowed"}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
 	return mgr, "s1"
@@ -77,9 +77,9 @@ func fileNamed(t *testing.T, files []ChangedFile, path string) ChangedFile {
 	return ChangedFile{}
 }
 
-func TestSessionChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
+func TestThreadChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.SessionChanges(context.Background(), id, DiffBranch)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffBranch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestSessionChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 		t.Fatalf("base branch not found: %+v", changes)
 	}
 
-	// A committed edit counts as much as an uncommitted one: the session made
+	// A committed edit counts as much as an uncommitted one: the thread made
 	// both, and a reviewer wants to see them together.
 	if got := fileNamed(t, changes.Files, "keep.txt"); got.Status != "modified" || got.Additions != 1 || got.Deletions != 0 {
 		t.Fatalf("committed edit mis-measured: %+v", got)
@@ -113,9 +113,9 @@ func TestSessionChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 	}
 }
 
-func TestSessionChangesDefaultsToUncommittedWork(t *testing.T) {
+func TestThreadChangesDefaultsToUncommittedWork(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.SessionChanges(context.Background(), id, "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestSessionChangesDefaultsToUncommittedWork(t *testing.T) {
 
 func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
 	mgr, id := changesFixture(t)
-	meta, err := mgr.store.Session(context.Background(), id)
+	meta, err := mgr.store.Thread(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,41 +145,41 @@ func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
 	base, head := strings.TrimSpace(string(baseRaw)), strings.TrimSpace(string(headRaw))
 	fakeGh(t, prJSON(`{"number":7,"state":"OPEN","baseRefName":"main","baseRefOid":"`+base+`","headRefOid":"`+head+`"}`), "", 0)
 
-	changes, err := mgr.SessionChanges(context.Background(), id, DiffPullRequest)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffPullRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(changes.Files) != 1 || changes.Files[0].Path != "keep.txt" {
 		t.Fatalf("PR files include dirty worktree changes: %+v", changes.Files)
 	}
-	if _, err := mgr.SessionFileDiff(context.Background(), id, "keep.txt", DiffPullRequest, base, base); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffPullRequest, base, base); err == nil {
 		t.Fatal("a client-supplied range must not replace the attached PR range")
 	}
-	if diff := sessionFileDiff(t, mgr, id, "keep.txt", DiffPullRequest); !strings.Contains(diff.Patch, "+four") {
+	if diff := threadFileDiff(t, mgr, id, "keep.txt", DiffPullRequest); !strings.Contains(diff.Patch, "+four") {
 		t.Fatalf("PR patch missing committed change: %q", diff.Patch)
 	}
 }
 
-func sessionFileDiff(t *testing.T, mgr *Manager, id, path, mode string) FileDiff {
+func threadFileDiff(t *testing.T, mgr *Manager, id, path, mode string) FileDiff {
 	t.Helper()
-	changes, err := mgr.SessionChanges(context.Background(), id, mode)
+	changes, err := mgr.ThreadChanges(context.Background(), id, mode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff, err := mgr.SessionFileDiff(context.Background(), id, path, mode, changes.Base, changes.Head)
+	diff, err := mgr.ThreadFileDiff(context.Background(), id, path, mode, changes.Base, changes.Head)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return diff
 }
 
-func TestSessionFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
+func TestThreadFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
 	mgr, id := changesFixture(t)
-	tracked := sessionFileDiff(t, mgr, id, "keep.txt", DiffBranch)
+	tracked := threadFileDiff(t, mgr, id, "keep.txt", DiffBranch)
 	if !strings.Contains(tracked.Patch, "+four") {
 		t.Fatalf("tracked patch missing its edit: %q", tracked.Patch)
 	}
-	untracked := sessionFileDiff(t, mgr, id, "untracked.txt", DiffBranch)
+	untracked := threadFileDiff(t, mgr, id, "untracked.txt", DiffBranch)
 	if !strings.Contains(untracked.Patch, "+a") {
 		t.Fatalf("untracked patch missing its content: %q", untracked.Patch)
 	}
@@ -187,16 +187,16 @@ func TestSessionFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
 
 // The checkout is not a file server: only paths the change list reported can
 // be read back through the diff command.
-func TestSessionFileDiffRefusesPathsThatDidNotChange(t *testing.T) {
+func TestThreadFileDiffRefusesPathsThatDidNotChange(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.SessionChanges(context.Background(), id, DiffUncommitted)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffUncommitted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.SessionFileDiff(context.Background(), id, "../../etc/passwd", DiffUncommitted, changes.Base, changes.Head); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "../../etc/passwd", DiffUncommitted, changes.Base, changes.Head); err == nil {
 		t.Fatal("an unrelated path must be refused")
 	}
-	if _, err := mgr.SessionFileDiff(context.Background(), id, "README", DiffUncommitted, changes.Base, changes.Head); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "README", DiffUncommitted, changes.Base, changes.Head); err == nil {
 		t.Fatal("an unchanged path must be refused")
 	}
 }
@@ -227,7 +227,7 @@ func TestNewFileLineCounting(t *testing.T) {
 	}
 }
 
-func TestSessionChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
+func TestThreadChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -236,10 +236,10 @@ func TestSessionChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
-	if err := st.CreateSession(context.Background(), store.SessionMeta{ID: "s2", Cwd: t.TempDir(), Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
+	if err := st.CreateThread(context.Background(), store.ThreadMeta{ID: "s2", Cwd: t.TempDir(), Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	changes, err := mgr.SessionChanges(context.Background(), "s2", DiffUncommitted)
+	changes, err := mgr.ThreadChanges(context.Background(), "s2", DiffUncommitted)
 	if err != nil {
 		t.Fatalf("a plain directory must not be an error: %v", err)
 	}

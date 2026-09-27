@@ -1,4 +1,4 @@
-// Browser-local choices, saved as they are selected rather than on session start.
+// Browser-local choices, saved as they are selected rather than on thread start.
 export interface HarnessPrefs {
   instance: string;
   model: string;
@@ -10,14 +10,14 @@ export interface ProjectPrefs {
   harness: string;
   byHarness: Record<string, HarnessPrefs>;
 }
-export type SessionPrefs = Record<string, ProjectPrefs>;
-const KEY = "omniplex.sessionChoices.v1";
+export type ThreadPrefs = Record<string, ProjectPrefs>;
+const KEY = "omniplex.threadChoices.v1";
 
-export function loadSessionPrefs(): SessionPrefs {
+export function loadThreadPrefs(): ThreadPrefs {
   try {
     const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? "{}");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const result: SessionPrefs = {};
+    const result: ThreadPrefs = {};
     for (const [project, value] of Object.entries(raw)) {
       if (!value || typeof value !== "object" || typeof value.harness !== "string") continue;
       const byHarness: Record<string, HarnessPrefs> = {};
@@ -41,7 +41,7 @@ export function loadSessionPrefs(): SessionPrefs {
   }
 }
 
-export function saveSessionPrefs(prefs: SessionPrefs) {
+export function saveThreadPrefs(prefs: ThreadPrefs) {
   try {
     localStorage.setItem(KEY, JSON.stringify(prefs));
   } catch {

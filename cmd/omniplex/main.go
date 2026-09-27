@@ -33,8 +33,8 @@ import (
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/server"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
@@ -62,7 +62,7 @@ func main() {
 		port       = flag.Int("port", envInt("OMNIPLEX_PORT", 8787), "port to listen on")
 		bindPublic = flag.Bool("bind-public", false, "also bind globally routable addresses, exposing omniplex to the internet")
 		dbPath     = flag.String("db", envStr("OMNIPLEX_DB", defaultDB()), "path to the event log database")
-		cwd        = flag.String("cwd", mustCwd(), "default working directory for new sessions")
+		cwd        = flag.String("cwd", mustCwd(), "default working directory for new threads")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
 		codexBin   = flag.String("codex", "codex", "path to the codex CLI")
 		piBin      = flag.String("pi", "pi", "path to the pi CLI")
@@ -104,18 +104,18 @@ func main() {
 	// before this one starts any of its own.
 	procgroup.Sweep()
 
-	mgr := session.NewManager(st, logf,
+	mgr := thread.NewManager(st, logf,
 		claudecode.New(*claudePath),
 		codexapp.New(*codexBin),
 		piapp.New(*piBin),
 	)
 
 	// Images attached to prompts live beside the event log, not inside it, and
-	// go away with the session that collected them.
+	// go away with the thread that collected them.
 	attachments := attachment.New(filepath.Join(filepath.Dir(*dbPath), "attachments"))
 	mgr.SetAttachments(attachments)
 
-	// What sessions produce lives beside the attachments, outside every
+	// What threads produce lives beside the attachments, outside every
 	// worktree, so it outlives the checkout it was made in.
 	artefacts := artefact.New(filepath.Join(filepath.Dir(*dbPath), "artefacts"))
 	signer, err := artefact.LoadSigner(artefacts.Dir())
@@ -123,7 +123,7 @@ func main() {
 		log.Fatalf("artefact key: %v", err)
 	}
 	mgr.SetArtefacts(artefacts)
-	session.ToolServers = artefactTools(signer, plan.Port)
+	thread.ToolServers = artefactTools(signer, plan.Port)
 	defer mgr.Shutdown()
 
 	// Provider instances: configured accounts layered over the default
@@ -266,7 +266,7 @@ func main() {
 // configureProviders loads provider instances from the user config, sweeping
 // any literal sensitive values into the secret store (and rewriting the config
 // so no secret stays on disk in it), then installs them on the manager.
-func configureProviders(mgr *session.Manager, logf func(string, ...any)) {
+func configureProviders(mgr *thread.Manager, logf func(string, ...any)) {
 	cfg, err := userconfig.Load()
 	if err != nil {
 		logf("load user config: %v (provider instances skipped)", err)
@@ -410,21 +410,21 @@ func mustCwd() string {
 
 // artefactTools is the MCP server every harness gets: this binary, run as
 // `omniplex mcp`, pointed back at this server over loopback with a token for
-// its one session.
-func artefactTools(signer *artefact.Signer, port int) func(sessionID, home string) []adapter.MCPServer {
+// its one thread.
+func artefactTools(signer *artefact.Signer, port int) func(threadID, home string) []adapter.MCPServer {
 	exe, err := os.Executable()
 	if err != nil {
 		log.Printf("artefact tools off: %v", err)
 		return nil
 	}
-	return func(sessionID, home string) []adapter.MCPServer {
+	return func(threadID, home string) []adapter.MCPServer {
 		return []adapter.MCPServer{{
 			Name:    "omniplex",
 			Command: exe,
 			Args:    []string{"mcp"},
 			Env: map[string]string{
 				"OMNIPLEX_URL":         fmt.Sprintf("http://127.0.0.1:%d", port),
-				"OMNIPLEX_AGENT_TOKEN": signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Session: sessionID}),
+				"OMNIPLEX_AGENT_TOKEN": signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Thread: threadID}),
 				"OMNIPLEX_HOME":        home,
 			},
 			Tools: []string{mcpShowTool},

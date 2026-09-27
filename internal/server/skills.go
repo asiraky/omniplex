@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/skills"
+	"github.com/asiraky/omniplex/internal/thread"
 )
 
 func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) (any, error) {
-	roots, err := s.mgr.SkillRoots(ctx, a.SessionID, a.ProjectID)
+	roots, err := s.mgr.SkillRoots(ctx, a.ThreadID, a.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 // attached: what each is and where it is on this host, so the agent can read
 // it. The web client parses the same block back out to draw the files as
 // cards on the message.
-func (s *Server) attachedFiles(ctx context.Context, actor *session.Actor, files []promptFile) (string, error) {
+func (s *Server) attachedFiles(ctx context.Context, actor *thread.Actor, files []promptFile) (string, error) {
 	var b strings.Builder
 	b.WriteString("\n\n<attached-files>\n")
 	for _, f := range files {

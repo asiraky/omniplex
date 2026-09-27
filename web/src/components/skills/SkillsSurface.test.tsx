@@ -50,7 +50,7 @@ function mockCommand(overrides: Record<string, (args: Record<string, unknown>) =
   return fn as typeof fn & SkillsCommand;
 }
 
-async function renderSurface(command = mockCommand(), props: { sessionId?: string; projectId?: string } = { sessionId: "s1" }) {
+async function renderSurface(command = mockCommand(), props: { threadId?: string; projectId?: string } = { threadId: "s1" }) {
   render(<SkillsSurface command={command} {...props} />);
   await screen.findByRole("button", { name: /grilling/ });
   return command;
@@ -59,7 +59,7 @@ async function renderSurface(command = mockCommand(), props: { sessionId?: strin
 describe("SkillsSurface list", () => {
   it("groups skills by scope with counts and filters by segment", async () => {
     const command = await renderSurface();
-    expect(command).toHaveBeenCalledWith("list_skills", { sessionId: "s1" });
+    expect(command).toHaveBeenCalledWith("list_skills", { threadId: "s1" });
 
     const project = screen.getByRole("region", { name: "Project" });
     expect(within(project).getByRole("button", { name: /dev/ })).toBeTruthy();
@@ -100,7 +100,7 @@ describe("SkillsSurface detail", () => {
     fireEvent.click(screen.getByRole("button", { name: /grilling/ }));
 
     expect(await screen.findByRole("heading", { name: "Grilling" })).toBeTruthy();
-    expect(command).toHaveBeenCalledWith("read_skill", { sessionId: "s1", dir: "/real/grilling" });
+    expect(command).toHaveBeenCalledWith("read_skill", { threadId: "s1", dir: "/real/grilling" });
     // The frontmatter is a key/value block, not part of the markdown body.
     expect(screen.getByText("Grill the plan")).toBeTruthy();
 
@@ -109,7 +109,7 @@ describe("SkillsSurface detail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /notes\.md/ }));
     expect(await screen.findByText(/file body/)).toBeTruthy();
-    expect(command).toHaveBeenCalledWith("read_skill_file", { sessionId: "s1", dir: "/real/grilling", path: "notes.md" });
+    expect(command).toHaveBeenCalledWith("read_skill_file", { threadId: "s1", dir: "/real/grilling", path: "notes.md" });
 
     fireEvent.click(screen.getByRole("button", { name: "Back to skills" }));
     expect(screen.getByRole("button", { name: /grilling/ })).toBeTruthy();
@@ -126,7 +126,7 @@ describe("SkillsSurface detail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "SKILL.md source" })).toBeNull());
-    expect(command).toHaveBeenCalledWith("save_skill", { sessionId: "s1", dir: "/real/grilling", content: edited });
+    expect(command).toHaveBeenCalledWith("save_skill", { threadId: "s1", dir: "/real/grilling", content: edited });
     expect(command.mock.calls.filter(([name]) => name === "read_skill")).toHaveLength(2);
     expect(screen.getByText("Ask harder questions.")).toBeTruthy();
   });
@@ -184,14 +184,14 @@ describe("SkillsSurface new skill", () => {
 
     expect(await screen.findByRole("textbox", { name: "SKILL.md source" })).toBeTruthy();
     expect(command).toHaveBeenCalledWith("create_skill", {
-      sessionId: "s1",
+      threadId: "s1",
       scope: "project",
       name: "my-skill",
       description: "Does a thing",
     });
   });
 
-  it("only offers personal scope without a session or project", async () => {
+  it("only offers personal scope without a thread or project", async () => {
     render(<SkillsSurface command={mockCommand()} />);
     await screen.findByRole("button", { name: /grilling/ });
     fireEvent.click(screen.getByRole("button", { name: /New skill/ }));

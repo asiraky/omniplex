@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"bytes"
@@ -13,8 +13,8 @@ import (
 )
 
 // The panel's file surfaces read the real filesystem, not git: git is the diff
-// surface, and a file the session never touched is exactly what the diff
-// cannot show. Everything here is scoped to the session's checkout, and the
+// surface, and a file the thread never touched is exactly what the diff
+// cannot show. Everything here is scoped to the thread's checkout, and the
 // scoping is genuine — symlinks are resolved on both the root and the target
 // and compared, rather than prefix-matching strings a symlink can lie about.
 
@@ -26,7 +26,7 @@ const (
 	maxTreeEntries = 20000
 )
 
-// FileTree is every path under a session's checkout, relative to its root.
+// FileTree is every path under a thread's checkout, relative to its root.
 type FileTree struct {
 	Root  string   `json:"root"`
 	Files []string `json:"files"`
@@ -47,12 +47,12 @@ type FileContent struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
-// SessionFileTree lists the session's checkout. Inside a git repository the
+// ThreadFileTree lists the thread's checkout. Inside a git repository the
 // list respects .gitignore (tracked plus untracked-but-not-ignored, which is
 // what a human means by "the files"); includeIgnored turns the filter off.
 // Outside a repository it walks the directory with the same caps.
-func (m *Manager) SessionFileTree(ctx context.Context, sessionID string, includeIgnored bool) (FileTree, error) {
-	root, warning, err := m.workspaceRoot(ctx, sessionID)
+func (m *Manager) ThreadFileTree(ctx context.Context, threadID string, includeIgnored bool) (FileTree, error) {
+	root, warning, err := m.workspaceRoot(ctx, threadID)
 	if err != nil {
 		return FileTree{}, err
 	}
@@ -67,11 +67,11 @@ func (m *Manager) SessionFileTree(ctx context.Context, sessionID string, include
 	return FileTree{Root: root, Files: files, Truncated: truncated}, nil
 }
 
-// SessionReadFile reads one file inside the session's checkout. The path must
+// ThreadReadFile reads one file inside the thread's checkout. The path must
 // resolve — through any symlinks — to somewhere under the checkout's own
 // resolved root; anything else is refused.
-func (m *Manager) SessionReadFile(ctx context.Context, sessionID, path string) (FileContent, error) {
-	root, warning, err := m.workspaceRoot(ctx, sessionID)
+func (m *Manager) ThreadReadFile(ctx context.Context, threadID, path string) (FileContent, error) {
+	root, warning, err := m.workspaceRoot(ctx, threadID)
 	if err != nil {
 		return FileContent{}, err
 	}
@@ -90,14 +90,14 @@ func (m *Manager) SessionReadFile(ctx context.Context, sessionID, path string) (
 	// swapped in between.
 	rootFS, err := os.OpenRoot(realRoot)
 	if err != nil {
-		return FileContent{}, fmt.Errorf("the session workspace could not be opened: %w", err)
+		return FileContent{}, fmt.Errorf("the thread workspace could not be opened: %w", err)
 	}
 	defer rootFS.Close()
 
 	info, err := rootFS.Stat(rel)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return FileContent{}, fmt.Errorf("%q does not exist in this session's workspace", path)
+			return FileContent{}, fmt.Errorf("%q does not exist in this thread's workspace", path)
 		}
 		return FileContent{}, fmt.Errorf("%q could not be read: %w", path, err)
 	}
@@ -138,11 +138,11 @@ func (m *Manager) SessionReadFile(ctx context.Context, sessionID, path string) (
 	return out, nil
 }
 
-// SessionWorkspaceRoot is the directory a session's terminal (and any other
+// ThreadWorkspaceRoot is the directory a thread's terminal (and any other
 // workspace-scoped surface) starts in. Unlike the file surfaces it has no
 // warning channel: a terminal with nowhere to run is an error.
-func (m *Manager) SessionWorkspaceRoot(ctx context.Context, sessionID string) (string, error) {
-	root, warning, err := m.workspaceRoot(ctx, sessionID)
+func (m *Manager) ThreadWorkspaceRoot(ctx context.Context, threadID string) (string, error) {
+	root, warning, err := m.workspaceRoot(ctx, threadID)
 	if err != nil {
 		return "", err
 	}
@@ -152,22 +152,22 @@ func (m *Manager) SessionWorkspaceRoot(ctx context.Context, sessionID string) (s
 	return root, nil
 }
 
-// workspaceRoot is where a session's file surface is rooted: the git toplevel
+// workspaceRoot is where a thread's file surface is rooted: the git toplevel
 // of its checkout when there is one, else the checkout directory itself. The
 // warning mirrors diffScope's: an unusable root is an answer, not an error.
-func (m *Manager) workspaceRoot(ctx context.Context, sessionID string) (root, warning string, err error) {
-	meta, err := m.store.Session(ctx, sessionID)
+func (m *Manager) workspaceRoot(ctx context.Context, threadID string) (root, warning string, err error) {
+	meta, err := m.store.Thread(ctx, threadID)
 	if err != nil {
 		return "", "", err
 	}
 	if meta.Cwd == "" {
-		return "", "this session has no checkout", nil
+		return "", "this thread has no checkout", nil
 	}
 	if top, gitErr := runGit(ctx, meta.Cwd, "rev-parse", "--show-toplevel"); gitErr == nil {
 		return strings.TrimSpace(string(top)), "", nil
 	}
 	if _, statErr := os.Stat(meta.Cwd); statErr != nil {
-		return "", "this session's directory does not exist", nil
+		return "", "this thread's directory does not exist", nil
 	}
 	return meta.Cwd, "", nil
 }
@@ -185,7 +185,7 @@ func workspaceRelative(root, path string) (rel, realRoot string, err error) {
 	}
 	realRoot, err = filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", "", fmt.Errorf("the session workspace could not be resolved: %w", err)
+		return "", "", fmt.Errorf("the thread workspace could not be resolved: %w", err)
 	}
 
 	outside := func(r string) bool {
@@ -208,12 +208,12 @@ func workspaceRelative(root, path string) (rel, realRoot string, err error) {
 				}
 			}
 		}
-		return "", "", fmt.Errorf("%q is not a path inside this session's workspace", path)
+		return "", "", fmt.Errorf("%q is not a path inside this thread's workspace", path)
 	}
 
 	rel = filepath.Clean(filepath.FromSlash(path))
 	if outside(rel) {
-		return "", "", fmt.Errorf("%q is not a path inside this session's workspace", path)
+		return "", "", fmt.Errorf("%q is not a path inside this thread's workspace", path)
 	}
 	return rel, realRoot, nil
 }

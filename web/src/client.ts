@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, AuthFlowEvent, HarnessMeta, Item, Label, Project, QuotaStatus, ServerFrame, SessionMeta, SessionState } from "./protocol";
+import type { Access, AuthFlowEvent, HarnessMeta, Item, Label, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -18,13 +18,13 @@ interface Pending {
 
 export interface ClientEvents {
   onStatus(status: ConnectionStatus): void;
-  onSessions(sessions: SessionMeta[]): void;
+  onThreads(threads: ThreadMeta[]): void;
   onHarnesses(harnesses: HarnessMeta[], defaultCwd: string): void;
-  onComposerItemsChanged(sessionId: string): void;
+  onComposerItemsChanged(threadId: string): void;
   onProjects(projects: Project[]): void;
   onLabels(labels: Label[]): void;
   onQuotas(quotas: QuotaStatus[]): void;
-  onState(sessionId: string, state: SessionState): void;
+  onState(threadId: string, state: ThreadState): void;
   onAccess(access: Access): void;
 }
 
@@ -39,19 +39,19 @@ export class Client {
   private pending = new Map<string, Pending>();
 
   // Auth flows are ephemeral narration bound to this one connection, so they
-  // deliberately bypass the session reducer and any persisted state: a dialog
+  // deliberately bypass the thread reducer and any persisted state: a dialog
   // subscribes by flowId and the frames go straight to it. Events can start
   // arriving before the auth_begin ack resolves (and thus before the dialog
   // knows its flowId), so unclaimed frames wait in a small backlog.
   private authFlowListeners = new Map<string, (ev: AuthFlowEvent) => void>();
   private authFlowBacklog = new Map<string, AuthFlowEvent[]>();
 
-  // The attached session and its applied cursor. Reconnecting to a different
+  // The attached thread and its applied cursor. Reconnecting to a different
   // address is the same operation as reconnecting to the same one: attach with
   // afterSeq and receive the gap.
-  private sessionId: string | null = null;
+  private threadId: string | null = null;
   private cursor = 0;
-  private state: SessionState | null = null;
+  private state: ThreadState | null = null;
   private snapshotRequest: AbortController | null = null;
 
   constructor(private url: string, private events: ClientEvents) {}
@@ -72,8 +72,8 @@ export class Client {
         this.raw({ type: "hello", protocolVersion: 1, clientId: clientId() });
 
         // Re-attach where we left off; the server sends only what we missed.
-        if (this.sessionId && !this.snapshotRequest) {
-          this.raw({ type: "attach", sessionId: this.sessionId, afterSeq: this.cursor });
+        if (this.threadId && !this.snapshotRequest) {
+          this.raw({ type: "attach", threadId: this.threadId, afterSeq: this.cursor });
         }
         // Re-send in-flight commands with their original ids. The server
         // replays stored results rather than executing twice.
@@ -115,43 +115,43 @@ export class Client {
    * replaces the cache wholesale. Either way the reader starts on the cached
    * transcript instead of "Attaching…".
    */
-  prime(state: SessionState) {
-    this.sessionId = state.sessionId;
+  prime(state: ThreadState) {
+    this.threadId = state.threadId;
     this.cursor = state.seq;
     this.state = state;
   }
 
-  /** Attach to a session, replacing any current attachment. */
-  attach(sessionId: string) {
+  /** Attach to a thread, replacing any current attachment. */
+  attach(threadId: string) {
     this.snapshotRequest?.abort();
-    if (this.sessionId && this.sessionId !== sessionId) {
-      this.raw({ type: "detach", sessionId: this.sessionId });
+    if (this.threadId && this.threadId !== threadId) {
+      this.raw({ type: "detach", threadId: this.threadId });
     }
-    this.sessionId = sessionId;
+    this.threadId = threadId;
     this.cursor = 0;
     this.state = null;
     const request = new AbortController();
     this.snapshotRequest = request;
     const started = performance.now();
-    fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
       signal: request.signal,
     })
       .then(async (response) => {
         if (!response.ok) throw new Error(`snapshot failed (${response.status})`);
-        return (await response.json()) as SessionState;
+        return (await response.json()) as ThreadState;
       })
       .then((state) => {
-        if (request.signal.aborted || this.sessionId !== sessionId) return;
+        if (request.signal.aborted || this.threadId !== threadId) return;
         this.state = state;
         this.cursor = state.seq;
-        this.events.onState(sessionId, state);
-        performance.measure("omniplex.session_snapshot", { start: started });
-        this.raw({ type: "attach", sessionId, afterSeq: state.seq });
+        this.events.onState(threadId, state);
+        performance.measure("omniplex.thread_snapshot", { start: started });
+        this.raw({ type: "attach", threadId, afterSeq: state.seq });
       })
       .catch((error) => {
-        if (request.signal.aborted || this.sessionId !== sessionId) return;
+        if (request.signal.aborted || this.threadId !== threadId) return;
         console.warn("HTTP snapshot failed; falling back to WebSocket", error);
-        this.raw({ type: "attach", sessionId });
+        this.raw({ type: "attach", threadId });
       })
       .finally(() => {
         if (this.snapshotRequest === request) this.snapshotRequest = null;
@@ -169,7 +169,7 @@ export class Client {
    * replaces the state (resync, reattach) — and a page fetched against the old
    * cursor must then be dropped rather than spliced into the wrong place.
    */
-  loadOlder(count?: "all"): Promise<SessionState | null> {
+  loadOlder(count?: "all"): Promise<ThreadState | null> {
     if (this.olderInFlight) return count === "all" ? this.olderInFlight : Promise.resolve(null);
     const request = this.fetchOlder(count).finally(() => (this.olderInFlight = null));
     this.olderInFlight = request;
@@ -181,7 +181,7 @@ export class Client {
    * timeline at once (copying it out). Resolves null on failure — the caller
    * must not pretend a truncated timeline is the whole thing.
    */
-  async loadAll(): Promise<SessionState | null> {
+  async loadAll(): Promise<ThreadState | null> {
     // Loop rather than trusting one round trip: an ordinary scroll page may be
     // in flight when this starts, and loadOlder then resolves with *that*
     // page's merge, which is not yet everything.
@@ -191,14 +191,14 @@ export class Client {
     return this.state;
   }
 
-  private async fetchOlder(count?: "all"): Promise<SessionState | null> {
+  private async fetchOlder(count?: "all"): Promise<ThreadState | null> {
     const s = this.state;
     const before = s?.itemsBefore ?? 0;
     if (!s || before === 0) return null;
     try {
       const query = count === "all" ? `before=${before}&count=all` : `before=${before}`;
       const response = await fetch(
-        `/api/sessions/${encodeURIComponent(s.sessionId)}/items?${query}`,
+        `/api/threads/${encodeURIComponent(s.threadId)}/items?${query}`,
       );
       if (!response.ok) throw new Error(`items page failed (${response.status})`);
       const page = (await response.json()) as { items: Item[]; itemsBefore: number };
@@ -206,31 +206,31 @@ export class Client {
       // The cursor is the contiguity check: live events only append, so it
       // moves only when a snapshot replaced the state (resync, reattach) — and
       // a page fetched against the old cursor would splice in the wrong place.
-      if (!cur || cur.sessionId !== s.sessionId || (cur.itemsBefore ?? 0) !== before) return null;
+      if (!cur || cur.threadId !== s.threadId || (cur.itemsBefore ?? 0) !== before) return null;
       // A straggling event for a trimmed item is dropped rather than applied
       // (see apply.ts), but belt and braces: never prepend an id the window
       // already holds — duplicate ids break rendering outright.
       const have = new Set(cur.items.map((it) => it.id));
-      const next: SessionState = {
+      const next: ThreadState = {
         ...cur,
         items: [...(page.items ?? []).filter((it) => !have.has(it.id)), ...cur.items],
         itemsBefore: page.itemsBefore,
       };
       this.state = next;
-      this.events.onState(next.sessionId, next);
+      this.events.onState(next.threadId, next);
       return next;
     } catch (error) {
       console.warn("loading older items failed", error);
       return null;
     }
   }
-  private olderInFlight: Promise<SessionState | null> | null = null;
+  private olderInFlight: Promise<ThreadState | null> | null = null;
 
   detach() {
     this.snapshotRequest?.abort();
     this.snapshotRequest = null;
-    if (this.sessionId) this.raw({ type: "detach", sessionId: this.sessionId });
-    this.sessionId = null;
+    if (this.threadId) this.raw({ type: "detach", threadId: this.threadId });
+    this.threadId = null;
     this.cursor = 0;
     this.state = null;
   }
@@ -288,7 +288,7 @@ export class Client {
         // Checked first: if this page is running a bundle the server has
         // replaced, nothing else it reports is worth acting on.
         checkBuild(f.build);
-        this.events.onSessions(f.sessions ?? []);
+        this.events.onThreads(f.threads ?? []);
         this.events.onHarnesses(f.harnesses ?? [], f.cwd ?? "");
         this.events.onProjects(f.projects ?? []);
         this.events.onLabels(f.labels ?? []);
@@ -298,8 +298,8 @@ export class Client {
         }
         break;
 
-      case "sessions":
-        this.events.onSessions(f.sessions ?? []);
+      case "threads":
+        this.events.onThreads(f.threads ?? []);
         break;
 
       // Harnesses can change after the welcome frame: a model list is read
@@ -323,45 +323,45 @@ export class Client {
         break;
 
       // Usage limits changed somewhere: a live rate-limit push from a
-      // running session, or a refresh any device asked for. The whole list,
+      // running thread, or a refresh any device asked for. The whole list,
       // so one provider moving never blanks another.
       case "quotas":
         this.events.onQuotas(f.quotas ?? []);
         break;
 
       case "composer_items_changed":
-        if (f.sessionId === this.sessionId) this.events.onComposerItemsChanged(f.sessionId);
+        if (f.threadId === this.threadId) this.events.onComposerItemsChanged(f.threadId);
         break;
 
       case "snapshot":
-        if (f.sessionId !== this.sessionId || !f.state) return;
+        if (f.threadId !== this.threadId || !f.state) return;
         this.state = f.state;
         this.cursor = f.state.seq;
-        this.events.onState(f.sessionId, this.state);
+        this.events.onState(f.threadId, this.state);
         break;
 
       case "event": {
-        if (f.sessionId !== this.sessionId || !f.event) return;
-        const base = this.state ?? emptyState(f.sessionId);
+        if (f.threadId !== this.threadId || !f.event) return;
+        const base = this.state ?? emptyState(f.threadId);
         const next = applyEvent(base, f.event);
         if (next === base) return; // duplicate; already applied
         this.state = next;
         this.cursor = next.seq;
-        this.events.onState(f.sessionId, next);
+        this.events.onState(f.threadId, next);
         break;
       }
 
       case "synchronized":
-        if (f.sessionId === this.sessionId && this.state) {
-          this.events.onState(f.sessionId, this.state);
+        if (f.threadId === this.threadId && this.state) {
+          this.events.onState(f.threadId, this.state);
         }
         break;
 
       case "resync":
         // The server dropped our queue. Reattach from the applied cursor; if
         // we have fallen far enough behind it answers with a snapshot.
-        if (f.sessionId === this.sessionId) {
-          this.raw({ type: "attach", sessionId: f.sessionId, afterSeq: this.cursor });
+        if (f.threadId === this.threadId) {
+          this.raw({ type: "attach", threadId: f.threadId, afterSeq: this.cursor });
         }
         break;
 
@@ -375,7 +375,7 @@ export class Client {
       }
 
       // A sign-in flow narrating. Routed straight to the dialog that began it,
-      // never through the reducer: nothing about a flow belongs in session
+      // never through the reducer: nothing about a flow belongs in thread
       // state, and secrets must never end up anywhere persistable.
       case "auth_event": {
         const ev = f.authFlow;

@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -22,11 +22,11 @@ import (
 // fakeAdapter emits scripted events, so the seam can be tested without a real
 // harness process.
 type fakeAdapter struct {
-	// steer makes every session a Steerer; steerRefuse is what Steer returns.
+	// steer makes every thread a Steerer; steerRefuse is what Steer returns.
 	steer       bool
 	steerRefuse error
 	mu          sync.Mutex
-	last        *fakeSession
+	last        *fakeThread
 	live        []adapter.ModelMeta
 	liveErr     error
 	listCalls   int
@@ -44,11 +44,11 @@ func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
 	}
 	defer st.Close()
 	ctx := context.Background()
-	meta := store.SessionMeta{ID: "viewed", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
-	if err := st.CreateSession(ctx, meta); err != nil {
+	meta := store.ThreadMeta{ID: "viewed", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
+	if err := st.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Append(ctx, meta.ID, proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness})); err != nil {
+	if _, err := st.Append(ctx, meta.ID, proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness})); err != nil {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
@@ -59,17 +59,17 @@ func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fa.session() != nil {
+	if fa.thread() != nil {
 		t.Fatal("view started a harness")
 	}
 	state, err := actor.State(ctx)
-	if err != nil || state.SessionID != meta.ID {
+	if err != nil || state.ThreadID != meta.ID {
 		t.Fatalf("viewed state = %+v, err = %v", state, err)
 	}
 	if _, err := mgr.Get(ctx, meta.ID); err != nil {
 		t.Fatal(err)
 	}
-	if fa.session() == nil {
+	if fa.thread() == nil {
 		t.Fatal("command path did not activate the harness")
 	}
 }
@@ -90,7 +90,7 @@ func TestViewedInterruptedTurnRecoversWhenActivated(t *testing.T) {
 	if _, err := actor.Prompt(ctx, "keep going", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-first.session().prompts
+	<-first.thread().prompts
 	waitFor(t, func() bool {
 		state, _ := actor.State(ctx)
 		return state.Phase == "turn"
@@ -104,19 +104,19 @@ func TestViewedInterruptedTurnRecoversWhenActivated(t *testing.T) {
 	if _, err := mgr.View(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if resumed.session() != nil {
+	if resumed.thread() != nil {
 		t.Fatal("view of interrupted turn started a harness")
 	}
 	if _, err := mgr.Get(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		session := resumed.session()
-		if session == nil {
+		thread := resumed.thread()
+		if thread == nil {
 			return false
 		}
 		select {
-		case prompt := <-session.prompts:
+		case prompt := <-thread.prompts:
 			return strings.Contains(prompt.Text, "restarted")
 		default:
 			return false
@@ -131,12 +131,12 @@ func TestCancelProcesslessInterruptedTurn(t *testing.T) {
 	}
 	defer st.Close()
 	ctx := context.Background()
-	meta := store.SessionMeta{ID: "interrupted", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "turn"}
-	if err := st.CreateSession(ctx, meta); err != nil {
+	meta := store.ThreadMeta{ID: "interrupted", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "turn"}
+	if err := st.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
 	for _, emission := range []proto.Emission{
-		proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness}),
+		proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness}),
 		proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "work"}),
 	} {
 		if _, err := st.Append(ctx, meta.ID, emission); err != nil {
@@ -166,11 +166,11 @@ func TestHarnessActivationDoesNotBlockUnrelatedView(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	for _, id := range []string{"slow", "reader"} {
-		meta := store.SessionMeta{ID: id, Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
-		if err := st.CreateSession(ctx, meta); err != nil {
+		meta := store.ThreadMeta{ID: id, Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
+		if err := st.CreateThread(ctx, meta); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.Append(ctx, id, proto.Emit(proto.SessionCreated, proto.SessionCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness})); err != nil {
+		if _, err := st.Append(ctx, id, proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -266,7 +266,7 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 			return nil, ctx.Err()
 		}
 	}
-	s := &fakeSession{
+	s := &fakeThread{
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
 		steerRefuse: f.steerRefuse,
@@ -275,17 +275,17 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	f.last = s
 	f.mu.Unlock()
 	if f.steer {
-		return steerSession{s}, nil
+		return steerThread{s}, nil
 	}
 	return s, nil
 }
 
-// steerSession is a fakeSession that can take a prompt mid-turn. Steered
+// steerThread is a fakeThread that can take a prompt mid-turn. Steered
 // prompts land on the same channel as prompted ones, distinguished by
 // carrying a queue id and no turn id.
-type steerSession struct{ *fakeSession }
+type steerThread struct{ *fakeThread }
 
-func (s steerSession) Steer(ctx context.Context, in adapter.PromptInput) error {
+func (s steerThread) Steer(ctx context.Context, in adapter.PromptInput) error {
 	if s.steerRefuse != nil {
 		return s.steerRefuse
 	}
@@ -293,13 +293,13 @@ func (s steerSession) Steer(ctx context.Context, in adapter.PromptInput) error {
 	return nil
 }
 
-func (f *fakeAdapter) session() *fakeSession {
+func (f *fakeAdapter) thread() *fakeThread {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.last
 }
 
-type fakeSession struct {
+type fakeThread struct {
 	host         adapter.HostServices
 	events       chan proto.Emission
 	prompts      chan adapter.PromptInput
@@ -314,7 +314,7 @@ type fakeSession struct {
 	steerRefuse error
 }
 
-func (s *fakeSession) Prompt(ctx context.Context, in adapter.PromptInput) error {
+func (s *fakeThread) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.mu.Lock()
 	refuse := s.refuse
 	s.mu.Unlock()
@@ -324,12 +324,12 @@ func (s *fakeSession) Prompt(ctx context.Context, in adapter.PromptInput) error 
 	s.prompts <- in
 	return nil
 }
-func (s *fakeSession) Cancel(ctx context.Context) error { return nil }
-func (s *fakeSession) RunComposerAction(ctx context.Context, in adapter.ComposerActionInput) (any, error) {
+func (s *fakeThread) Cancel(ctx context.Context) error { return nil }
+func (s *fakeThread) RunComposerAction(ctx context.Context, in adapter.ComposerActionInput) (any, error) {
 	s.actions <- in
 	return map[string]any{}, nil
 }
-func (s *fakeSession) SetMode(ctx context.Context, mode string) error {
+func (s *fakeThread) SetMode(ctx context.Context, mode string) error {
 	if mode == "rejected" {
 		return errors.New("the harness refused this mode")
 	}
@@ -338,13 +338,13 @@ func (s *fakeSession) SetMode(ctx context.Context, mode string) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *fakeSession) currentMode() string {
+func (s *fakeThread) currentMode() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.mode
 }
-func (s *fakeSession) Events() <-chan proto.Emission { return s.events }
-func (s *fakeSession) Close() error {
+func (s *fakeThread) Events() <-chan proto.Emission { return s.events }
+func (s *fakeThread) Close() error {
 	s.closeOnce.Do(func() {
 		if s.closeStarted != nil {
 			close(s.closeStarted)
@@ -356,7 +356,7 @@ func (s *fakeSession) Close() error {
 	})
 	return nil
 }
-func (s *fakeSession) emit(e proto.Emission) { s.events <- e }
+func (s *fakeThread) emit(e proto.Emission) { s.events <- e }
 
 func newTestActor(t *testing.T) (*Actor, *fakeAdapter, *store.Store) {
 	t.Helper()
@@ -364,7 +364,7 @@ func newTestActor(t *testing.T) (*Actor, *fakeAdapter, *store.Store) {
 }
 
 // newTestActorWith starts an actor on a fake configured by the caller; the
-// session is created here, so the fake's settings must be in place first.
+// thread is created here, so the fake's settings must be in place first.
 func newTestActorWith(t *testing.T, fa *fakeAdapter) (*Actor, *fakeAdapter, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -380,7 +380,7 @@ func newTestActorWith(t *testing.T, fa *fakeAdapter) (*Actor, *fakeAdapter, *sto
 	}
 	t.Cleanup(func() { mgr.Shutdown() })
 
-	waitFor(t, func() bool { return actor.Head() >= 1 }) // session.created landed
+	waitFor(t, func() bool { return actor.Head() >= 1 }) // thread.created landed
 	return actor, fa, st
 }
 
@@ -391,7 +391,7 @@ func TestComposerActionReservesTheTurnBeforeCallingHarness(t *testing.T) {
 	if _, err := actor.RunComposerAction(ctx, "review", "focus on races", "/review focus on races"); err != nil {
 		t.Fatal(err)
 	}
-	in := <-fa.session().actions
+	in := <-fa.thread().actions
 	if in.Action != "review" || in.Args != "focus on races" || in.TurnID == "" {
 		t.Fatalf("action input = %+v", in)
 	}
@@ -407,15 +407,15 @@ func TestComposerActionReservesTheTurnBeforeCallingHarness(t *testing.T) {
 		t.Fatalf("concurrent prompt = %+v, %v; want queued", res, err)
 	}
 
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: in.TurnID, StopReason: proto.StopEndTurn}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: in.TurnID, StopReason: proto.StopEndTurn}))
 	// The action's turn ending releases the queued prompt.
-	if next := <-fa.session().prompts; next.Text != "must wait" {
+	if next := <-fa.thread().prompts; next.Text != "must wait" {
 		t.Fatalf("queued prompt after action = %+v", next)
 	}
 }
 
-// TestSetModeSwitchesHarnessAndRecordsEvent covers the mid-session switch: the
-// harness is told, and the change lands in the log as session.config_changed
+// TestSetModeSwitchesHarnessAndRecordsEvent covers the mid-thread switch: the
+// harness is told, and the change lands in the log as thread.config_changed
 // so every presenter's projection follows.
 func TestSetModeSwitchesHarnessAndRecordsEvent(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
@@ -424,7 +424,7 @@ func TestSetModeSwitchesHarnessAndRecordsEvent(t *testing.T) {
 	if err := actor.SetMode(ctx, "acceptEdits"); err != nil {
 		t.Fatal(err)
 	}
-	if got := fa.session().currentMode(); got != "acceptEdits" {
+	if got := fa.thread().currentMode(); got != "acceptEdits" {
 		t.Fatalf("harness mode = %q, want acceptEdits", got)
 	}
 	state, err := actor.State(ctx)
@@ -479,8 +479,8 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 	now := proto.NowMillis()
 	p := project.Project{ID: "p1", Root: root, CreatedAt: now, UpdatedAt: now, Config: project.DefaultConfig(root)}
 	p.Config.Defaults.Harness = "fake"
-	// Hooks belong to provisioning, so the session has to be one that
-	// provisions: a local session runs in a checkout that already exists and
+	// Hooks belong to provisioning, so the thread has to be one that
+	// provisions: a local thread runs in a checkout that already exists and
 	// deliberately skips them.
 	p.Config.Defaults.Workspace = "managed"
 	p.Config.Workspace.Provision = "provision"
@@ -495,14 +495,14 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fa.session() != nil {
+	if fa.thread() != nil {
 		t.Fatal("harness started before provision hook completed")
 	}
 	waitFor(t, func() bool {
 		state, e := a.State(context.Background())
 		return e == nil && state.Workspace.Phase == "ready"
 	})
-	if fa.session() == nil {
+	if fa.thread() == nil {
 		t.Fatal("harness was not started after provision")
 	}
 	state, err := a.State(context.Background())
@@ -516,7 +516,7 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		meta, e := st.Session(context.Background(), a.ID)
+		meta, e := st.Thread(context.Background(), a.ID)
 		if e == nil && meta.Phase == "cleanup_failed" {
 			t.Fatalf("cleanup failed: %+v", meta)
 		}
@@ -592,7 +592,7 @@ func TestClawdCompatibilityHookGetsBranchAndNeedsNoResultFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		meta, e := st.Session(context.Background(), a.ID)
+		meta, e := st.Thread(context.Background(), a.ID)
 		return e == nil && meta.Phase == "cleanup_failed"
 	})
 	if _, err := os.Stat(s.Cwd); err != nil {
@@ -602,7 +602,7 @@ func TestClawdCompatibilityHookGetsBranchAndNeedsNoResultFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		_, e := st.Session(context.Background(), a.ID)
+		_, e := st.Thread(context.Background(), a.ID)
 		return errors.Is(e, store.ErrNotFound)
 	})
 	if _, err := os.Stat(s.Cwd); !os.IsNotExist(err) {
@@ -618,7 +618,7 @@ func TestClawdCompatibilityHookGetsBranchAndNeedsNoResultFile(t *testing.T) {
 // Invariant 1: seq is gapless and strictly increasing.
 func TestSeqIsGaplessAndMonotonic(t *testing.T) {
 	actor, fa, st := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	for i := 0; i < 50; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
@@ -641,7 +641,7 @@ func TestSeqIsGaplessAndMonotonic(t *testing.T) {
 // Invariant 2: rebuilding from the log alone yields identical state.
 func TestRebuildFromLogMatchesLiveState(t *testing.T) {
 	actor, fa, st := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	for i := 0; i < 20; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
@@ -675,7 +675,7 @@ func TestRebuildFromLogMatchesLiveState(t *testing.T) {
 // the same event is delivered twice.
 func TestDuplicateApplyIsIdempotent(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		Role: "agent", Kind: "text", BlockID: "b1", Delta: "hello",
@@ -701,7 +701,7 @@ func TestDuplicateApplyIsIdempotent(t *testing.T) {
 // when events land while the attach is in flight.
 func TestAttachCompletenessUnderConcurrentAppends(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	// Background writer, so events land during the attach.
 	stop := make(chan struct{})
@@ -766,7 +766,7 @@ collect:
 // and the loser gets an ack rather than an error.
 func TestPermissionIsFungibleAndFirstResolutionWins(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	outcomes := make(chan adapter.PermissionOutcome, 1)
 	go func() {
@@ -843,7 +843,7 @@ func TestElicitationIsDurableAndFungible(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	resultCh := make(chan adapter.ElicitationResult, 1)
 	go func() {
-		result, err := fa.session().host.Elicit(context.Background(), adapter.ElicitationRequest{
+		result, err := fa.thread().host.Elicit(context.Background(), adapter.ElicitationRequest{
 			Prompt: "Choose", Schema: json.RawMessage(`{"type":"object"}`),
 		})
 		if err != nil {
@@ -882,10 +882,10 @@ func TestElicitationIsDurableAndFungible(t *testing.T) {
 }
 
 // Invariant 12: a stalled consumer is dropped and resynced. Its queue never
-// grows and the session actor never blocks on it.
+// grows and the thread actor never blocks on it.
 func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	slow := actor.Subscribe() // never drained
 	fast := actor.Subscribe()
@@ -924,7 +924,7 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 // Invariant 8: losing every client does not interrupt a turn.
 func TestDisconnectIsNotCancel(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
-	sess := fa.session()
+	sess := fa.thread()
 
 	res, err := actor.Prompt(context.Background(), "do a thing", nil)
 	turnID := res.TurnID
@@ -1012,7 +1012,7 @@ func TestResumeFinishesInterruptedTurnAndCancelsPendingPermission(t *testing.T) 
 
 	permissionDone := make(chan adapter.PermissionOutcome, 1)
 	go func() {
-		out, _ := fa.session().host.RequestPermission(context.Background(), adapter.PermissionRequest{Title: "approve"})
+		out, _ := fa.thread().host.RequestPermission(context.Background(), adapter.PermissionRequest{Title: "approve"})
 		permissionDone <- out
 	}()
 	waitFor(t, func() bool {
@@ -1059,7 +1059,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 	if _, err := actor.Prompt(context.Background(), "do the long thing", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	waitFor(t, func() bool {
 		s, _ := actor.State(context.Background())
 		return s.Phase == "turn"
@@ -1068,9 +1068,9 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 	id := actor.ID
 	mgr.Shutdown()
 
-	// A session killed mid-turn stays marked as such, so the next start can
+	// A thread killed mid-turn stays marked as such, so the next start can
 	// find it without folding every log in the database.
-	meta, err := st.Session(context.Background(), id)
+	meta, err := st.Thread(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1085,7 +1085,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	in := <-fa.session().prompts
+	in := <-fa.thread().prompts
 	if !strings.Contains(in.Text, "restarted") {
 		t.Fatalf("recovery prompt = %q; want it to explain the restart", in.Text)
 	}
@@ -1103,7 +1103,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 	if state.Turns[1].Recovery.ResumeOf != state.Turns[0].ID {
 		t.Fatalf("continuation resumes %q; want %q", state.Turns[1].Recovery.ResumeOf, state.Turns[0].ID)
 	}
-	// The session is named after what the human asked for, never after the
+	// The thread is named after what the human asked for, never after the
 	// prompt the server wrote to itself.
 	if state.Title != "do the long thing" {
 		t.Fatalf("title = %q; want the human prompt", state.Title)
@@ -1125,16 +1125,16 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 	}
 	waitFor(t, func() bool { return actor.Head() >= 1 })
 
-	// A session whose last turn ended cleanly has nothing to continue, so the
+	// A thread whose last turn ended cleanly has nothing to continue, so the
 	// button cannot start a turn out of nowhere.
 	if _, err := actor.Continue(context.Background()); !errors.Is(err, ErrNothingToContinue) {
-		t.Fatalf("continue on a fresh session: %v; want ErrNothingToContinue", err)
+		t.Fatalf("continue on a fresh thread: %v; want ErrNothingToContinue", err)
 	}
 
 	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	waitFor(t, func() bool {
 		s, _ := actor.State(context.Background())
 		return s.Phase == "turn"
@@ -1142,14 +1142,14 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 	id := actor.ID
 	mgr.Shutdown()
 
-	// Burn every automatic attempt, so the session is left for a human.
+	// Burn every automatic attempt, so the thread is left for a human.
 	for attempt := 1; attempt <= maxRecoveryAttempts; attempt++ {
 		m := NewManager(st, func(string, ...any) {}, fa)
 		a, err := m.Get(context.Background(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		<-fa.session().prompts
+		<-fa.thread().prompts
 		waitFor(t, func() bool {
 			s, _ := a.State(context.Background())
 			return s.Phase == "turn"
@@ -1178,7 +1178,7 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := <-fa.session().prompts
+	in := <-fa.thread().prompts
 	// A human continuing a failed turn is not a restart, and must not be
 	// described as one — to the agent or on the screen.
 	if strings.Contains(in.Text, "restarted") {
@@ -1226,7 +1226,7 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 	if _, err := actor.Prompt(context.Background(), "long job", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	waitFor(t, func() bool {
 		s, _ := actor.State(context.Background())
 		return s.Phase == "turn"
@@ -1239,13 +1239,13 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 	defer mgr2.Shutdown()
 	mgr2.recoverAll(context.Background())
 
-	in := <-fa.session().prompts
+	in := <-fa.thread().prompts
 	if !strings.Contains(in.Text, "restarted") {
 		t.Fatalf("recovery prompt = %q; want it to explain the restart", in.Text)
 	}
 	resumed, ok := mgr2.Peek(id)
 	if !ok {
-		t.Fatal("session was not brought back")
+		t.Fatal("thread was not brought back")
 	}
 	waitFor(t, func() bool {
 		s, _ := resumed.State(context.Background())
@@ -1276,7 +1276,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	waitFor(t, func() bool {
 		s, _ := actor.State(context.Background())
 		return s.Phase == "turn"
@@ -1291,7 +1291,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		<-fa.session().prompts
+		<-fa.thread().prompts
 		waitFor(t, func() bool {
 			s, _ := a.State(context.Background())
 			return s.Phase == "turn"
@@ -1304,7 +1304,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 		m.Shutdown()
 	}
 
-	// The cap is reached: this resume closes the turn and leaves the session
+	// The cap is reached: this resume closes the turn and leaves the thread
 	// alone rather than starting a fourth continuation.
 	m := NewManager(st, func(string, ...any) {}, fa)
 	defer m.Shutdown()
@@ -1327,7 +1327,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 	}
 }
 
-func TestClosedSessionRemainsAttachableWithoutHarness(t *testing.T) {
+func TestClosedThreadRemainsAttachableWithoutHarness(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "closed.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -1367,8 +1367,8 @@ func TestStoppedActorCallsReturnInsteadOfWaitingOnUnreadInbox(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	fa.session().closeStarted = started
-	fa.session().closeRelease = release
+	fa.thread().closeStarted = started
+	fa.thread().closeRelease = release
 	closeDone := make(chan struct{})
 	go func() {
 		actor.Close("test")
@@ -1423,8 +1423,8 @@ func TestGetCannotResumeWhileCloseIsInProgress(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	fa.session().closeStarted = started
-	fa.session().closeRelease = release
+	fa.thread().closeStarted = started
+	fa.thread().closeRelease = release
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- mgr.Close(context.Background(), actor.ID, "test") }()
 	<-started
@@ -1466,8 +1466,8 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 	ctx := context.Background()
 
 	// The harness resumes work on its own: turn.started with no prompt.
-	fa.session().emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "harness-turn"}))
-	fa.session().emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
+	fa.thread().emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "harness-turn"}))
+	fa.thread().emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: "harness-turn", Role: "agent", Kind: "text", BlockID: "b1", Delta: "The web",
 	}))
 
@@ -1482,8 +1482,8 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 		t.Fatalf("prompt during harness-initiated turn = %+v, %v; want queued", res, err)
 	}
 
-	// The store's phase follows too, so the session list agrees.
-	meta, err := st.Session(ctx, actor.ID)
+	// The store's phase follows too, so the thread list agrees.
+	meta, err := st.Thread(ctx, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1491,11 +1491,11 @@ func TestHarnessInitiatedTurnIsTracked(t *testing.T) {
 		t.Fatalf("stored phase = %q, want turn", meta.Phase)
 	}
 
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: "harness-turn", StopReason: proto.StopEndTurn,
 	}))
 	// The harness's turn ending releases the queued prompt as a turn of its own.
-	if in := <-fa.session().prompts; in.Text != "hello" {
+	if in := <-fa.thread().prompts; in.Text != "hello" {
 		t.Fatalf("queued prompt after harness-initiated turn = %+v", in)
 	}
 	waitFor(t, func() bool {
@@ -1519,10 +1519,10 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 
 	// The harness dies without ever reporting a result: its event stream ends.
-	_ = fa.session().Close()
+	_ = fa.thread().Close()
 
 	waitFor(t, func() bool {
 		state, err := loadState(ctx, st, actor.ID)
@@ -1547,12 +1547,12 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 		t.Fatal("the turn was closed without saying why")
 	}
 
-	// The session row must not claim work is still in flight either; that is
+	// The thread row must not claim work is still in flight either; that is
 	// what makes the next start treat it as an interrupted turn and resume it.
 	// The row is written when the actor shuts down, a moment after the closing
 	// event reaches the log, so it is waited for rather than read once.
 	waitFor(t, func() bool {
-		metas, err := st.ListSessions(ctx)
+		metas, err := st.ListThreads(ctx)
 		if err != nil {
 			return false
 		}
@@ -1573,9 +1573,9 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	ctx := context.Background()
 
-	// Make the session refuse, the way the Claude bridge does once it has
+	// Make the thread refuse, the way the Claude bridge does once it has
 	// died on a login failure.
-	sess := fa.session()
+	sess := fa.thread()
 	sess.mu.Lock()
 	sess.refuse = &adapter.FailureError{Kind: proto.FailureAuth, Err: errors.New("claude needs you to sign in again")}
 	sess.mu.Unlock()
@@ -1600,16 +1600,16 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 }
 
 // A job the harness was running dies with the harness. Leaving it live would
-// keep the session in "background" attention forever, with nothing left to
+// keep the thread in "background" attention forever, with nothing left to
 // finish it.
 func TestHarnessDeathInterruptsLiveJobs(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	ctx := context.Background()
 
-	fa.session().emit(proto.Emit(proto.JobStarted, proto.JobPayload{
+	fa.thread().emit(proto.Emit(proto.JobStarted, proto.JobPayload{
 		JobID: "j1", ToolCallID: "tu1", Kind: proto.JobAgent, Name: "explore", Status: proto.JobRunning,
 	}))
-	fa.session().emit(proto.Emit(proto.JobFinished, proto.JobPayload{JobID: "j0", Status: proto.JobCompleted}))
+	fa.thread().emit(proto.Emit(proto.JobFinished, proto.JobPayload{JobID: "j0", Status: proto.JobCompleted}))
 	waitFor(t, func() bool {
 		state, err := actor.State(ctx)
 		return err == nil && len(state.Jobs) == 2
@@ -1618,7 +1618,7 @@ func TestHarnessDeathInterruptsLiveJobs(t *testing.T) {
 		t.Fatalf("attention with a live job = %q, want background", actor.Attention())
 	}
 
-	_ = fa.session().Close()
+	_ = fa.thread().Close()
 
 	waitFor(t, func() bool {
 		state, err := loadState(ctx, st, actor.ID)
@@ -1652,8 +1652,8 @@ func TestJobOutputReadsInChunks(t *testing.T) {
 	if err := os.WriteFile(out, []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fa.session().emit(proto.Emit(proto.JobStarted, proto.JobPayload{JobID: "sh", Kind: proto.JobShell, OutputFile: out}))
-	fa.session().emit(proto.Emit(proto.JobStarted, proto.JobPayload{JobID: "nofile", Kind: proto.JobShell}))
+	fa.thread().emit(proto.Emit(proto.JobStarted, proto.JobPayload{JobID: "sh", Kind: proto.JobShell, OutputFile: out}))
+	fa.thread().emit(proto.Emit(proto.JobStarted, proto.JobPayload{JobID: "nofile", Kind: proto.JobShell}))
 	waitFor(t, func() bool {
 		state, err := actor.State(ctx)
 		return err == nil && len(state.Jobs) == 2
@@ -1670,7 +1670,7 @@ func TestJobOutputReadsInChunks(t *testing.T) {
 		t.Fatal("an unknown job was readable")
 	}
 
-	fa.session().emit(proto.Emit(proto.JobFinished, proto.JobPayload{JobID: "sh", Status: proto.JobCompleted}))
+	fa.thread().emit(proto.Emit(proto.JobFinished, proto.JobPayload{JobID: "sh", Status: proto.JobCompleted}))
 	waitFor(t, func() bool {
 		state, err := actor.State(ctx)
 		return err == nil && proto.JobDone(state.Jobs[0].Status)
@@ -1692,7 +1692,7 @@ func TestPromptQueuesBehindRunningTurn(t *testing.T) {
 	if err != nil || first.Queued() {
 		t.Fatalf("first prompt = %+v, %v", first, err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 
 	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
 	if err != nil || !second.Queued() {
@@ -1703,8 +1703,8 @@ func TestPromptQueuesBehindRunningTurn(t *testing.T) {
 		t.Fatalf("queued state = %+v", state.Queued)
 	}
 
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
-	in := <-fa.session().prompts
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.thread().prompts
 	if in.Text != "second" || len(in.Images) != 1 || in.TurnID == "" || in.TurnID == first.TurnID {
 		t.Fatalf("dispatched prompt = %+v", in)
 	}
@@ -1721,7 +1721,7 @@ func TestDequeuePromptTakesItBack(t *testing.T) {
 	ctx := context.Background()
 
 	first, _ := actor.Prompt(ctx, "first", nil)
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	queued, _ := actor.Prompt(ctx, "later", nil)
 	if err := actor.DequeuePrompt(ctx, queued.QueueID); err != nil {
 		t.Fatal(err)
@@ -1729,13 +1729,13 @@ func TestDequeuePromptTakesItBack(t *testing.T) {
 	if err := actor.DequeuePrompt(ctx, queued.QueueID); !errors.Is(err, ErrNotQueued) {
 		t.Fatalf("second dequeue err = %v, want ErrNotQueued", err)
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return next.Phase == "idle"
 	})
 	select {
-	case in := <-fa.session().prompts:
+	case in := <-fa.thread().prompts:
 		t.Fatalf("removed prompt still ran: %+v", in)
 	default:
 	}
@@ -1752,20 +1752,20 @@ func TestCancelDropsQueuedPrompts(t *testing.T) {
 	ctx := context.Background()
 
 	first, _ := actor.Prompt(ctx, "first", nil)
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if _, err := actor.Prompt(ctx, "later", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := actor.Cancel(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return next.Phase == "idle"
 	})
 	select {
-	case in := <-fa.session().prompts:
+	case in := <-fa.thread().prompts:
 		t.Fatalf("cancelled queue still ran: %+v", in)
 	default:
 	}
@@ -1794,7 +1794,7 @@ func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if res, err := actor.Prompt(context.Background(), "after", nil); err != nil || !res.Queued() {
 		t.Fatalf("queued prompt = %+v, %v", res, err)
 	}
@@ -1807,15 +1807,15 @@ func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := <-fa.session().prompts
+	first := <-fa.thread().prompts
 	if first.Text != restartPrompt {
 		t.Fatalf("first prompt after restart = %q, want the continuation", first.Text)
 	}
 	if s, _ := a.State(context.Background()); len(s.Queued) != 1 {
 		t.Fatalf("queue after restart = %+v, want the queued prompt still waiting", s.Queued)
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
-	if next := <-fa.session().prompts; next.Text != "after" {
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	if next := <-fa.thread().prompts; next.Text != "after" {
 		t.Fatalf("prompt after continuation = %q, want the queued one", next.Text)
 	}
 }
@@ -1827,8 +1827,8 @@ func TestQueuedImagesGetTheirPathBack(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	ctx := context.Background()
 	actor.mu.Lock()
-	actor.imagePath = func(sessionID, id string) (string, error) {
-		if sessionID != actor.ID || id != "img" {
+	actor.imagePath = func(threadID, id string) (string, error) {
+		if threadID != actor.ID || id != "img" {
 			return "", errors.New("unknown image")
 		}
 		return "/stored/img.png", nil
@@ -1836,12 +1836,12 @@ func TestQueuedImagesGetTheirPathBack(t *testing.T) {
 	actor.mu.Unlock()
 
 	first, _ := actor.Prompt(ctx, "first", nil)
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if _, err := actor.Prompt(ctx, "look", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/upload/img.png"}}); err != nil {
 		t.Fatal(err)
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
-	in := <-fa.session().prompts
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.thread().prompts
 	if len(in.Images) != 1 || in.Images[0].Path != "/stored/img.png" || in.Images[0].ID != "img" {
 		t.Fatalf("dispatched images = %+v, want the stored path restored", in.Images)
 	}
@@ -1859,13 +1859,13 @@ func TestPromptSteersIntoRunningTurn(t *testing.T) {
 	if err != nil || first.Queued() {
 		t.Fatalf("first prompt = %+v, %v", first, err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 
 	second, err := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
 	if err != nil || !second.Queued() {
 		t.Fatalf("second prompt = %+v, %v; want queued", second, err)
 	}
-	in := <-fa.session().prompts
+	in := <-fa.thread().prompts
 	if in.QueueID != second.QueueID || in.TurnID != "" || in.Text != "second" || len(in.Images) != 1 {
 		t.Fatalf("steered prompt = %+v", in)
 	}
@@ -1877,7 +1877,7 @@ func TestPromptSteersIntoRunningTurn(t *testing.T) {
 		t.Fatalf("dequeue of a sent prompt err = %v, want ErrAlreadySent", err)
 	}
 
-	fa.session().emit(proto.Emit(proto.PromptInjected, proto.PromptInjectedPayload{QueueID: second.QueueID, TurnID: first.TurnID}))
+	fa.thread().emit(proto.Emit(proto.PromptInjected, proto.PromptInjectedPayload{QueueID: second.QueueID, TurnID: first.TurnID}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return len(next.Queued) == 0
@@ -1893,13 +1893,13 @@ func TestPromptSteersIntoRunningTurn(t *testing.T) {
 		t.Fatalf("injected prompt not in the turn: items=%+v turns=%d", state.Items, len(state.Turns))
 	}
 
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return next.Phase == "idle"
 	})
 	select {
-	case in := <-fa.session().prompts:
+	case in := <-fa.thread().prompts:
 		t.Fatalf("a prompt the harness already read was started again: %+v", in)
 	default:
 	}
@@ -1913,22 +1913,22 @@ func TestHarnessStartsTurnFromHeldPrompt(t *testing.T) {
 	ctx := context.Background()
 
 	first, _ := actor.Prompt(ctx, "first", nil)
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	second, _ := actor.Prompt(ctx, "second", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
-	<-fa.session().prompts
+	<-fa.thread().prompts
 
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return next.Phase == "idle"
 	})
 	select {
-	case in := <-fa.session().prompts:
+	case in := <-fa.thread().prompts:
 		t.Fatalf("held prompt was dispatched by the actor: %+v", in)
 	default:
 	}
 
-	fa.session().emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "harness-turn", Prompt: "second", QueueID: second.QueueID}))
+	fa.thread().emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "harness-turn", Prompt: "second", QueueID: second.QueueID}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return next.Phase == "turn" && len(next.Queued) == 0
@@ -1949,21 +1949,21 @@ func TestCancelDiscardsSentPrompts(t *testing.T) {
 	ctx := context.Background()
 
 	first, _ := actor.Prompt(ctx, "first", nil)
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if _, err := actor.Prompt(ctx, "later", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	if err := actor.Cancel(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
 	waitFor(t, func() bool {
 		next, _ := actor.State(ctx)
 		return next.Phase == "idle"
 	})
 	select {
-	case in := <-fa.session().prompts:
+	case in := <-fa.thread().prompts:
 		t.Fatalf("cancelled prompt still ran: %+v", in)
 	default:
 	}
@@ -1979,14 +1979,14 @@ func TestSteerRefusedFallsBackToQueue(t *testing.T) {
 	ctx := context.Background()
 
 	first, _ := actor.Prompt(ctx, "first", nil)
-	<-fa.session().prompts
+	<-fa.thread().prompts
 	second, _ := actor.Prompt(ctx, "second", nil)
 	state, _ := actor.State(ctx)
 	if len(state.Queued) != 1 || state.Queued[0].Sent {
 		t.Fatalf("queued state = %+v, want one unsent entry", state.Queued)
 	}
-	fa.session().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
-	in := <-fa.session().prompts
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	in := <-fa.thread().prompts
 	if in.Text != "second" || in.TurnID == "" || in.QueueID != "" {
 		t.Fatalf("dispatched prompt = %+v", in)
 	}

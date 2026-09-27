@@ -55,7 +55,7 @@ export function wrap(ui: ReactElement) {
  * Answer the `md` media query the way a phone or a desktop would.
  *
  * The layout reads this query in JS as well as in CSS — which shape the
- * sidebar takes, whether the new-session screen is a card or a page — so
+ * sidebar takes, whether the new-thread screen is a card or a page — so
  * "what size is the screen" is set here rather than by prop.
  */
 export function viewport(kind: "phone" | "desktop") {

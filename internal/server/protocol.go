@@ -10,8 +10,8 @@ import (
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
@@ -21,7 +21,7 @@ const ProtocolVersion = 1
 // How much of the timeline travels at once. A snapshot carries the newest
 // SnapshotItems top-level items — a few screenfuls past the fold — and each
 // scroll-up fetch adds PageItems more. Sized for a phone on flaky 4G: big
-// enough that paging is rare, small enough that opening a monster session is
+// enough that paging is rare, small enough that opening a monster thread is
 // not a multi-second download.
 const (
 	SnapshotItems = 100
@@ -37,8 +37,8 @@ type clientFrame struct {
 	ClientID        string `json:"clientId,omitempty"`
 
 	// attach / detach
-	SessionID string `json:"sessionId,omitempty"`
-	AfterSeq  *int64 `json:"afterSeq,omitempty"`
+	ThreadID string `json:"threadId,omitempty"`
+	AfterSeq *int64 `json:"afterSeq,omitempty"`
 
 	// command
 	CommandID string          `json:"commandId,omitempty"`
@@ -53,10 +53,10 @@ type serverFrame struct {
 	ServerID string `json:"serverId,omitempty"`
 	// Build identifies the UI bundle this server holds. A client running a
 	// different one is stale and reloads itself.
-	Build     string              `json:"build,omitempty"`
-	Sessions  []store.SessionMeta `json:"sessions,omitempty"`
-	Harnesses []session.Harness   `json:"harnesses,omitempty"`
-	Projects  []project.Project   `json:"projects,omitempty"`
+	Build     string             `json:"build,omitempty"`
+	Threads   []store.ThreadMeta `json:"threads,omitempty"`
+	Harnesses []thread.Harness   `json:"harnesses,omitempty"`
+	Projects  []project.Project  `json:"projects,omitempty"`
 	// Labels is the user's label definitions, sent on welcome and re-sent
 	// whole on every change; a client treats an absent field on a labels
 	// frame as "none defined".
@@ -64,16 +64,16 @@ type serverFrame struct {
 	// Quotas is every provider instance's cached usage limits, sent on
 	// welcome and re-sent whole whenever a live push or a refresh changes one
 	// — the whole list, because one provider moving must never blank another.
-	Quotas []session.QuotaStatus `json:"quotas,omitempty"`
-	Cwd    string                `json:"cwd,omitempty"`
+	Quotas []thread.QuotaStatus `json:"quotas,omitempty"`
+	Cwd    string               `json:"cwd,omitempty"`
 	// Access travels on welcome, after the gate, so an unpaired caller
 	// learns nothing about how else this machine can be reached.
 	Access *endpoints.Set `json:"access,omitempty"`
 
-	SessionID string            `json:"sessionId,omitempty"`
-	Seq       int64             `json:"seq,omitempty"`
-	State     *projection.State `json:"state,omitempty"`
-	Event     *proto.Event      `json:"event,omitempty"`
+	ThreadID string            `json:"threadId,omitempty"`
+	Seq      int64             `json:"seq,omitempty"`
+	State    *projection.State `json:"state,omitempty"`
+	Event    *proto.Event      `json:"event,omitempty"`
 
 	CommandID string          `json:"commandId,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`
@@ -82,7 +82,7 @@ type serverFrame struct {
 	// AuthFlow narrates a running authentication flow ("auth_event" frames).
 	// These travel only to the connection that began the flow and are never
 	// persisted: their traffic sits next to secrets.
-	AuthFlow *session.AuthFlowEvent `json:"authFlow,omitempty"`
+	AuthFlow *thread.AuthFlowEvent `json:"authFlow,omitempty"`
 }
 
 // Command argument shapes.
@@ -110,11 +110,11 @@ type createArgs struct {
 	AgentSettingsExplicit bool `json:"agentSettingsExplicit"`
 }
 
-// deleteSessionArgs carries the user's answer to the confirmation dialog's
+// deleteThreadArgs carries the user's answer to the confirmation dialog's
 // checkbox. Absent — an older client — means false, which is the safe reading:
 // nothing on disk is removed unless somebody asked for it.
-type deleteSessionArgs struct {
-	SessionID      string `json:"sessionId"`
+type deleteThreadArgs struct {
+	ThreadID       string `json:"threadId"`
 	RemoveWorktree bool   `json:"removeWorktree"`
 }
 
@@ -136,24 +136,24 @@ type saveProjectArgs struct {
 
 // deleteProjectArgs carries only the id: deleting a project removes the
 // registry entry and nothing else, so there is no "and also remove…" to ask
-// about the way a session delete has one.
+// about the way a thread delete has one.
 type deleteProjectArgs struct {
 	ProjectID string `json:"projectId"`
 }
 
 type promptArgs struct {
-	ID        string `json:"id"`
-	Revision  int    `json:"revision"`
-	DueAt     int64  `json:"dueAt"`
-	TimeZone  string `json:"timeZone"`
-	SessionID string `json:"sessionId"`
-	Text      string `json:"text"`
-	// ImageIDs names images already uploaded to this session, in the order
+	ID       string `json:"id"`
+	Revision int    `json:"revision"`
+	DueAt    int64  `json:"dueAt"`
+	TimeZone string `json:"timeZone"`
+	ThreadID string `json:"threadId"`
+	Text     string `json:"text"`
+	// ImageIDs names images already uploaded to this thread, in the order
 	// they were attached. The bytes are not on this path: a prompt frame is
 	// stored for idempotent retry, and inlining a screenshot would put a
 	// megabyte in the command log and on every reconnect that replays it.
 	ImageIDs []string `json:"imageIds,omitempty"`
-	// Files names artefacts uploaded to this session that the message
+	// Files names artefacts uploaded to this thread that the message
 	// carries. The agent is told where each one is on disk.
 	Files []promptFile `json:"files,omitempty"`
 }
@@ -163,7 +163,7 @@ type promptFile struct {
 }
 
 type skillArgs struct {
-	SessionID   string `json:"sessionId"`
+	ThreadID    string `json:"threadId"`
 	ProjectID   string `json:"projectId"`
 	Dir         string `json:"dir"`
 	Path        string `json:"path"`
@@ -173,20 +173,20 @@ type skillArgs struct {
 	Description string `json:"description"`
 }
 
-type sessionArgs struct {
-	SessionID  string `json:"sessionId"`
+type threadArgs struct {
+	ThreadID   string `json:"threadId"`
 	Comparison string `json:"comparison,omitempty"`
 }
 
-// summarizeArgs asks for a fresh summary of one session. There is no "use the
+// summarizeArgs asks for a fresh summary of one thread. There is no "use the
 // cached one" flag: the command is only sent when a client wants a new answer,
 // and the client holds the last one it was given.
 type summarizeArgs struct {
-	SessionID string `json:"sessionId"`
+	ThreadID string `json:"threadId"`
 }
 
 type fileDiffArgs struct {
-	SessionID  string `json:"sessionId"`
+	ThreadID   string `json:"threadId"`
 	Path       string `json:"path"`
 	Comparison string `json:"comparison,omitempty"`
 	Base       string `json:"base,omitempty"`
@@ -194,47 +194,47 @@ type fileDiffArgs struct {
 }
 
 type fileTreeArgs struct {
-	SessionID string `json:"sessionId"`
+	ThreadID string `json:"threadId"`
 	// IncludeIgnored turns the .gitignore filter off for the listing.
 	IncludeIgnored bool `json:"includeIgnored"`
 }
 
 type readFileArgs struct {
-	SessionID string `json:"sessionId"`
-	Path      string `json:"path"`
+	ThreadID string `json:"threadId"`
+	Path     string `json:"path"`
 }
 
 type jobArgs struct {
-	SessionID string `json:"sessionId"`
-	JobID     string `json:"jobId"`
+	ThreadID string `json:"threadId"`
+	JobID    string `json:"jobId"`
 }
 
 // jobOutputArgs reads a job's output file from Offset; the reply's offset is
 // where to read from next, so a client polls a growing file in small chunks.
 type jobOutputArgs struct {
-	SessionID string `json:"sessionId"`
-	JobID     string `json:"jobId"`
-	Offset    int64  `json:"offset"`
+	ThreadID string `json:"threadId"`
+	JobID    string `json:"jobId"`
+	Offset   int64  `json:"offset"`
 }
 
 type setModeArgs struct {
-	SessionID string `json:"sessionId"`
-	Mode      string `json:"mode"`
+	ThreadID string `json:"threadId"`
+	Mode     string `json:"mode"`
 }
 
 type switchAccountArgs struct {
-	SessionID string `json:"sessionId"`
-	Instance  string `json:"instance"`
+	ThreadID string `json:"threadId"`
+	Instance string `json:"instance"`
 }
 
 type setModelArgs struct {
-	SessionID string `json:"sessionId"`
-	Model     string `json:"model"`
+	ThreadID string `json:"threadId"`
+	Model    string `json:"model"`
 }
 
 type setEffortArgs struct {
-	SessionID string `json:"sessionId"`
-	Effort    string `json:"effort"`
+	ThreadID string `json:"threadId"`
+	Effort   string `json:"effort"`
 }
 
 type createLabelArgs struct {
@@ -255,38 +255,38 @@ type deleteLabelArgs struct {
 	LabelID string `json:"labelId"`
 }
 
-// setSessionLabelArgs files a session under a label; an empty labelId clears
-// it. One label per session — a status, not a tag set — so this is the whole
+// setThreadLabelArgs files a thread under a label; an empty labelId clears
+// it. One label per thread — a status, not a tag set — so this is the whole
 // assignment surface.
-type setSessionLabelArgs struct {
-	SessionID string `json:"sessionId"`
-	LabelID   string `json:"labelId"`
+type setThreadLabelArgs struct {
+	ThreadID string `json:"threadId"`
+	LabelID  string `json:"labelId"`
 }
 
 // markViewedArgs records how far the user has actually read: seq is the head
 // the client had rendered when it reported, not the server's — events landing
 // mid-report stay unread.
 type markViewedArgs struct {
-	SessionID string `json:"sessionId"`
-	Seq       int64  `json:"seq"`
+	ThreadID string `json:"threadId"`
+	Seq      int64  `json:"seq"`
 }
 
 type runComposerActionArgs struct {
-	SessionID  string `json:"sessionId"`
+	ThreadID   string `json:"threadId"`
 	Action     string `json:"action"`
 	Args       string `json:"args"`
 	Invocation string `json:"invocation"`
 }
 
 type resolveArgs struct {
-	SessionID string `json:"sessionId"`
+	ThreadID  string `json:"threadId"`
 	RequestID string `json:"requestId"`
 	Outcome   string `json:"outcome"`
 	OptionID  string `json:"optionId"`
 }
 
 type resolveElicitationArgs struct {
-	SessionID string          `json:"sessionId"`
+	ThreadID  string          `json:"threadId"`
 	RequestID string          `json:"requestId"`
 	Action    string          `json:"action"`
 	Value     json.RawMessage `json:"value"`

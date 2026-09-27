@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"github.com/asiraky/omniplex/internal/store"
 )
 
-// filesFixture is a session in a git worktree holding a committed file, an
+// filesFixture is a thread in a git worktree holding a committed file, an
 // untracked file, and an ignored one — the three visibilities the tree has to
 // decide between — plus a secret outside the workspace for the escape tests.
 func filesFixture(t *testing.T) (mgr *Manager, id, worktree, outside string) {
@@ -36,16 +36,16 @@ func filesFixture(t *testing.T) (mgr *Manager, id, worktree, outside string) {
 	mgr = NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
-	meta := store.SessionMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
+	meta := store.ThreadMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
 	return mgr, "s1", worktree, outside
 }
 
-func TestSessionFileTreeRespectsGitignore(t *testing.T) {
+func TestThreadFileTreeRespectsGitignore(t *testing.T) {
 	mgr, id, _, _ := filesFixture(t)
-	tree, err := mgr.SessionFileTree(context.Background(), id, false)
+	tree, err := mgr.ThreadFileTree(context.Background(), id, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestSessionFileTreeRespectsGitignore(t *testing.T) {
 	}
 
 	// With the filter off, the ignored file is part of the answer.
-	tree, err = mgr.SessionFileTree(context.Background(), id, true)
+	tree, err = mgr.ThreadFileTree(context.Background(), id, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestSessionFileTreeRespectsGitignore(t *testing.T) {
 	}
 }
 
-func TestSessionFileTreeOutsideGitStillLists(t *testing.T) {
+func TestThreadFileTreeOutsideGitStillLists(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.txt", "a\n")
 	write(t, dir, "nested/b.txt", "b\n")
@@ -81,11 +81,11 @@ func TestSessionFileTreeOutsideGitStillLists(t *testing.T) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
-	if err := st.CreateSession(context.Background(), store.SessionMeta{ID: "s2", Cwd: dir, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
+	if err := st.CreateThread(context.Background(), store.ThreadMeta{ID: "s2", Cwd: dir, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
 
-	tree, err := mgr.SessionFileTree(context.Background(), "s2", false)
+	tree, err := mgr.ThreadFileTree(context.Background(), "s2", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,9 +94,9 @@ func TestSessionFileTreeOutsideGitStillLists(t *testing.T) {
 	}
 }
 
-func TestSessionReadFileReadsInsideTheWorkspace(t *testing.T) {
+func TestThreadReadFileReadsInsideTheWorkspace(t *testing.T) {
 	mgr, id, _, _ := filesFixture(t)
-	file, err := mgr.SessionReadFile(context.Background(), id, "sub/deep.txt")
+	file, err := mgr.ThreadReadFile(context.Background(), id, "sub/deep.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,13 +105,13 @@ func TestSessionReadFileReadsInsideTheWorkspace(t *testing.T) {
 	}
 }
 
-func TestSessionReadFileRefusesEscapes(t *testing.T) {
+func TestThreadReadFileRefusesEscapes(t *testing.T) {
 	mgr, id, worktree, outside := filesFixture(t)
 	ctx := context.Background()
 
 	// A dot-dot path, however it is dressed.
 	for _, p := range []string{"../secret.txt", "sub/../../secret.txt", "/etc/passwd"} {
-		if _, err := mgr.SessionReadFile(ctx, id, p); err == nil {
+		if _, err := mgr.ThreadReadFile(ctx, id, p); err == nil {
 			t.Fatalf("%q was allowed out of the workspace", p)
 		}
 	}
@@ -121,21 +121,21 @@ func TestSessionReadFileRefusesEscapes(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(worktree, "innocent.txt")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := mgr.SessionReadFile(ctx, id, "innocent.txt"); err == nil {
+	if _, err := mgr.ThreadReadFile(ctx, id, "innocent.txt"); err == nil {
 		t.Fatal("a symlink escape was followed")
 	}
 	// And a symlinked directory, which escapes on a parent rather than the leaf.
 	if err := os.Symlink(outside, filepath.Join(worktree, "door")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := mgr.SessionReadFile(ctx, id, "door/secret.txt"); err == nil {
+	if _, err := mgr.ThreadReadFile(ctx, id, "door/secret.txt"); err == nil {
 		t.Fatal("a symlinked directory escape was followed")
 	}
 }
 
-func TestSessionReadFileAcceptsAbsolutePathsUnderTheRoot(t *testing.T) {
+func TestThreadReadFileAcceptsAbsolutePathsUnderTheRoot(t *testing.T) {
 	mgr, id, worktree, _ := filesFixture(t)
-	file, err := mgr.SessionReadFile(context.Background(), id, filepath.Join(worktree, "sub", "deep.txt"))
+	file, err := mgr.ThreadReadFile(context.Background(), id, filepath.Join(worktree, "sub", "deep.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,25 +144,25 @@ func TestSessionReadFileAcceptsAbsolutePathsUnderTheRoot(t *testing.T) {
 	}
 }
 
-func TestSessionReadFileRefusesSpecialFiles(t *testing.T) {
+func TestThreadReadFileRefusesSpecialFiles(t *testing.T) {
 	mgr, id, worktree, _ := filesFixture(t)
 	if err := syscall.Mkfifo(filepath.Join(worktree, "pipe"), 0o644); err != nil {
 		t.Skipf("mkfifo unavailable: %v", err)
 	}
 	// A FIFO would block the open forever; it must be refused, not waited on.
-	if _, err := mgr.SessionReadFile(context.Background(), id, "pipe"); err == nil {
+	if _, err := mgr.ThreadReadFile(context.Background(), id, "pipe"); err == nil {
 		t.Fatal("a FIFO was opened")
 	}
 }
 
-func TestSessionReadFileDetectsBinaryAndTruncates(t *testing.T) {
+func TestThreadReadFileDetectsBinaryAndTruncates(t *testing.T) {
 	mgr, id, worktree, _ := filesFixture(t)
 	ctx := context.Background()
 
 	if err := os.WriteFile(filepath.Join(worktree, "blob.bin"), []byte{0x89, 'P', 'N', 'G', 0, 1, 2}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	file, err := mgr.SessionReadFile(ctx, id, "blob.bin")
+	file, err := mgr.ThreadReadFile(ctx, id, "blob.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestSessionReadFileDetectsBinaryAndTruncates(t *testing.T) {
 	}
 
 	write(t, worktree, "big.txt", strings.Repeat("x", maxFileReadBytes+10))
-	file, err = mgr.SessionReadFile(ctx, id, "big.txt")
+	file, err = mgr.ThreadReadFile(ctx, id, "big.txt")
 	if err != nil {
 		t.Fatal(err)
 	}

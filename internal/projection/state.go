@@ -11,7 +11,7 @@ import (
 )
 
 // Attention is the derived answer to "whose turn is it?" — the one signal a
-// session list, a notifier, or any future routing system should read. It is a
+// thread list, a notifier, or any future routing system should read. It is a
 // pure function of projected state, never stored: the log stays authoritative.
 //
 // The user's-turn states are deliberately split three ways. "Waiting for a
@@ -35,14 +35,14 @@ const (
 	AttentionBackground = "background"
 	// AttentionNeedsPrompt: idle — the conversation is with the user.
 	AttentionNeedsPrompt = "needs_prompt"
-	// AttentionFailed: workspace provisioning or cleanup failed; the session
+	// AttentionFailed: workspace provisioning or cleanup failed; the thread
 	// needs a human decision before anything else can happen.
 	AttentionFailed = "failed"
-	// AttentionClosed: the session is a closed transcript.
+	// AttentionClosed: the thread is a closed transcript.
 	AttentionClosed = "closed"
 )
 
-// Attention derives the session's attention state from the projection. Pending
+// Attention derives the thread's attention state from the projection. Pending
 // human requests outrank the running turn on purpose: a turn that is blocked
 // on a permission is the user's turn, not the agent's.
 func (s *State) Attention() string {
@@ -95,7 +95,7 @@ func (s *State) LiveJobs() JobCounts {
 	return c
 }
 
-// AttentionForPhase derives attention for a session with no live projection —
+// AttentionForPhase derives attention for a thread with no live projection —
 // a row in the store whose actor is not running. A dead actor cancels its
 // pending permissions on the way down, so the phase alone is enough.
 func AttentionForPhase(phase string) string {
@@ -125,7 +125,7 @@ const (
 	ItemArtefact = "artefact"
 )
 
-// Item is one entry in the session timeline, in the order it first appeared.
+// Item is one entry in the thread timeline, in the order it first appeared.
 type Item struct {
 	ID     string `json:"id"`
 	Kind   string `json:"kind"`
@@ -166,7 +166,7 @@ type Item struct {
 	Size       int64  `json:"size,omitempty"`
 }
 
-// Artefact is a file or folder the session has shown, as it was the last time
+// Artefact is a file or folder the thread has shown, as it was the last time
 // it was shown. The file itself is live on disk and may have moved on.
 type Artefact struct {
 	ID         string `json:"id"`
@@ -281,10 +281,10 @@ type WorkspaceState struct {
 	DeleteAfterCleanup bool           `json:"deleteAfterCleanup,omitempty"`
 }
 
-// State is the complete renderable state of a session as of Seq.
+// State is the complete renderable state of a thread as of Seq.
 type State struct {
 	Scheduled []proto.ScheduledPrompt `json:"scheduledPrompts,omitempty"`
-	SessionID string                  `json:"sessionId"`
+	ThreadID  string                  `json:"threadId"`
 	Seq       int64                   `json:"seq"`
 	Cwd       string                  `json:"cwd"`
 	Harness   string                  `json:"harness"`
@@ -319,9 +319,9 @@ type State struct {
 	itemIndex map[string]int `json:"-"`
 }
 
-func New(sessionID string) *State {
+func New(threadID string) *State {
 	return &State{
-		SessionID:    sessionID,
+		ThreadID:     threadID,
 		Phase:        "idle",
 		Items:        []Item{},
 		Turns:        []Turn{},
@@ -356,7 +356,7 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	return &s, nil
 }
 
-// jobIndex is a linear scan: a session has a handful of jobs, not thousands,
+// jobIndex is a linear scan: a thread has a handful of jobs, not thousands,
 // and an index would be one more thing to rebuild after a snapshot.
 func (s *State) job(id string) *Job {
 	for i := range s.Jobs {
@@ -499,13 +499,13 @@ func (s *State) Apply(ev proto.Event) {
 	s.Seq = ev.Seq
 
 	switch ev.Type {
-	case proto.SessionCreated:
-		var p proto.SessionCreatedPayload
+	case proto.ThreadCreated:
+		var p proto.ThreadCreatedPayload
 		decode(ev.Payload, &p)
 		s.Cwd, s.Harness, s.Model, s.Mode, s.Effort, s.Title = p.Cwd, p.Harness, p.Model, p.Mode, p.Effort, p.Title
 
-	case proto.SessionConfigChanged:
-		var p proto.SessionConfigChangedPayload
+	case proto.ThreadConfigChanged:
+		var p proto.ThreadConfigChangedPayload
 		decode(ev.Payload, &p)
 		if p.ReplaceSettings || p.Model != "" {
 			s.Model = p.Model
@@ -526,7 +526,7 @@ func (s *State) Apply(ev proto.Event) {
 			s.HarnessSessionID = p.HarnessSessionID
 		}
 
-	case proto.SessionClosed:
+	case proto.ThreadClosed:
 		s.Closed = true
 		s.Phase = "closed"
 
@@ -707,7 +707,7 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 		// Only the finish of the turn that is actually open may take the
-		// session idle. A stale finish — an adapter closing a turn the log
+		// thread idle. A stale finish — an adapter closing a turn the log
 		// never opened, or a duplicate for a turn already superseded — must
 		// not report "user's turn" while different work is running. This is
 		// the projection's twin of the actor's turnActive guard; without it
@@ -869,8 +869,8 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		s.applyArtefact(p, ev)
 
-	case proto.SessionAccountChanged:
-		var p proto.SessionAccountChangedPayload
+	case proto.ThreadAccountChanged:
+		var p proto.ThreadAccountChangedPayload
 		decode(ev.Payload, &p)
 		// A line in the timeline where the account changed, anchored to the
 		// sequence like a compaction so replays land the same item.

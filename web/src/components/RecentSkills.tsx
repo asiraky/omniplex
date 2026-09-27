@@ -1,6 +1,6 @@
 import type { ComposerItem } from "~/protocol";
 
-// The first-run-of-the-session affordance: an empty transcript is exactly the
+// The first-run-of-the-thread affordance: an empty transcript is exactly the
 // moment the user needs a nudge, and the middle of it is where they are
 // already looking. It is not a launcher — clicking only writes the token into
 // the composer, so the next move (arguments, or just submit) stays theirs.

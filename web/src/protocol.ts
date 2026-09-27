@@ -79,7 +79,7 @@ export interface Item {
   size?: number;
 }
 
-/** One file the session changed, aggregated across the whole session. */
+/** One file the thread changed, aggregated across the whole thread. */
 export interface ChangedFile {
   path: string;
   /** The name the file had at the base, for a rename. */
@@ -91,8 +91,8 @@ export interface ChangedFile {
   untracked?: boolean;
 }
 
-/** The PR-style file list for a session's checkout, measured by Git itself. */
-export interface SessionChanges {
+/** The PR-style file list for a thread's checkout, measured by Git itself. */
+export interface ThreadChanges {
   root: string;
   branch?: string;
   mode: DiffComparison;
@@ -109,7 +109,7 @@ export interface SessionChanges {
 
 export type DiffComparison = "uncommitted" | "branch" | "pull_request";
 
-/** Every path under a session's checkout, relative to its root. */
+/** Every path under a thread's checkout, relative to its root. */
 export interface FileTree {
   root: string;
   files: string[];
@@ -262,8 +262,8 @@ export interface PlanEntry {
   priority?: string;
 }
 
-export interface SessionState {
-  sessionId: string;
+export interface ThreadState {
+  threadId: string;
   seq: number;
   cwd: string;
   harness: string;
@@ -277,7 +277,7 @@ export interface SessionState {
   items: Item[];
   /** How many items sit above `items` on the server: snapshots carry only the
       tail of a long timeline, and this doubles as the cursor for fetching the
-      page above (GET /api/sessions/{id}/items?before=N). Zero or absent means
+      page above (GET /api/threads/{id}/items?before=N). Zero or absent means
       the timeline is complete. */
   itemsBefore?: number;
   turns: Turn[];
@@ -287,10 +287,10 @@ export interface SessionState {
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];
   /** Prompts sent while a turn was running, oldest first. Each starts its own
-      turn once the session is idle; until then it can be taken back. */
+      turn once the thread is idle; until then it can be taken back. */
   queuedPrompts: QueuedPrompt[];
   scheduledPrompts?: ScheduledPrompt[];
-  /** Everything the session produced or was given, never windowed. Absent
+  /** Everything the thread produced or was given, never windowed. Absent
       on states from before artefacts existed. */
   artefacts?: Artefact[];
 }
@@ -392,16 +392,16 @@ export interface ProjectConfig {
 
 export interface Project { id: string; root: string; config: ProjectConfig; createdAt: number; updatedAt: number }
 
-/** One checkout a session could run in: the project root, or any worktree Git knows about. */
+/** One checkout a thread could run in: the project root, or any worktree Git knows about. */
 export interface Workspace {
   path: string;
   branch?: string;
   /** Short commit, for a detached worktree that has no branch. */
   head?: string;
   isRoot?: boolean;
-  /** A live session already holds this checkout. Selectable anyway; the picker warns. */
+  /** A live thread already holds this checkout. Selectable anyway; the picker warns. */
   busy?: boolean;
-  busySessionId?: string;
+  busyThreadId?: string;
   busyTitle?: string;
   locked?: boolean;
 }
@@ -416,7 +416,7 @@ export interface Issue {
 }
 
 /**
- * The pull request for a session's branch, as `gh pr view` reports it. Fetched
+ * The pull request for a thread's branch, as `gh pr view` reports it. Fetched
  * on demand and never stored: it stops being true the moment someone merges.
  */
 export interface PullRequest {
@@ -445,18 +445,18 @@ export interface UserConfig {
   branchFormat?: string;
   suggestIssues?: boolean;
   /**
-   * The system prompt the session summariser runs under. Empty means the
+   * The system prompt the thread summariser runs under. Empty means the
    * server's default, so clearing the box is how you go back to it.
    */
   summaryPrompt?: string;
 }
 
 /**
- * One generated session summary. `seq` is the session head it was made from,
- * so a client can tell a summary that still describes the session from one the
- * session has since moved past.
+ * One generated thread summary. `seq` is the thread head it was made from,
+ * so a client can tell a summary that still describes the thread from one the
+ * thread has since moved past.
  */
-export interface SessionSummary {
+export interface ThreadSummary {
   text: string;
   harness: string;
   model: string;
@@ -464,14 +464,14 @@ export interface SessionSummary {
   generatedAt: number;
 }
 
-export interface SessionMeta {
+export interface ThreadMeta {
   scheduledCount?: number;
   id: string;
   cwd: string;
   harness: string;
   /**
-   * The provider instance (account) the session was created under. Absent on
-   * sessions from before instances existed; those resolve to the default
+   * The provider instance (account) the thread was created under. Absent on
+   * threads from before instances existed; those resolve to the default
    * instance of their harness.
    */
   providerInstance?: string;
@@ -484,7 +484,7 @@ export interface SessionMeta {
    * The derived whose-turn-is-it signal, filled by the server from the live
    * projection: working | needs_permission | needs_answer | needs_prompt |
    * failed | background | closed. This — not phase — is what the sidebar
-   * indicators and anything routing on session state should read.
+   * indicators and anything routing on thread state should read.
    * `background`: no turn open, but jobs (agents, shells, monitors) still run.
    */
   attention?:
@@ -507,8 +507,8 @@ export interface SessionMeta {
   mode?: string;
   workspaceMode?: string;
   /**
-   * The user-defined label this session is filed under, or absent for
-   * unlabelled. One label per session — a status, not a tag set.
+   * The user-defined label this thread is filed under, or absent for
+   * unlabelled. One label per thread — a status, not a tag set.
    */
   labelId?: string;
 }
@@ -593,7 +593,7 @@ export interface Availability {
  * no client change.
  */
 /**
- * One configured account for a harness. The id is the routing key — sessions
+ * One configured account for a harness. The id is the routing key — threads
  * and create commands name instances, never drivers — while driver selects the
  * logo and accent, so two Codex accounts look like the same product under
  * different names. Availability and models are per instance: one account being
@@ -781,7 +781,7 @@ export interface Access {
 }
 
 export interface Event {
-  sessionId: string;
+  threadId: string;
   seq: number;
   timestamp: number;
   type: string;
@@ -791,7 +791,7 @@ export interface Event {
 export interface ServerFrame {
   type:
     | "welcome"
-    | "sessions"
+    | "threads"
     | "harnesses"
     | "labels"
     | "projects"
@@ -808,7 +808,7 @@ export interface ServerFrame {
   serverId?: string;
   /** Content hash of the server's UI bundle; a mismatch means we are stale. */
   build?: string;
-  sessions?: SessionMeta[];
+  threads?: ThreadMeta[];
   harnesses?: HarnessMeta[];
   projects?: Project[];
   /** Absent means none defined: an empty list is omitted from the frame. */
@@ -817,9 +817,9 @@ export interface ServerFrame {
   quotas?: QuotaStatus[];
   cwd?: string;
   access?: Access;
-  sessionId?: string;
+  threadId?: string;
   seq?: number;
-  state?: SessionState;
+  state?: ThreadState;
   event?: Event;
   commandId?: string;
   result?: any;
@@ -849,7 +849,7 @@ export interface ScheduledPrompt {
 export interface QuotaWindow {
   checkedAt?: number;
   id: string;
-  kind: "session" | "weekly" | "monthly" | "credits";
+  kind: "thread" | "weekly" | "monthly" | "credits";
   label: string;
   /** 0–100 as the provider reports it; undefined when a sparse update omitted it. */
   usedPercent?: number;

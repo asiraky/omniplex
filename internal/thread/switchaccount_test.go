@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -67,7 +67,7 @@ func accountNotices(state *projection.State) []string {
 
 // The switch stops the running harness, moves the conversation, and the next
 // command resumes it under the other account's credentials — on the same
-// actor, so every presenter attached to the session stays attached.
+// actor, so every presenter attached to the thread stays attached.
 func TestSwitchAccountResumesUnderTheNewAccount(t *testing.T) {
 	mgr, fa, st := switchTestManager(t)
 	ctx := context.Background()
@@ -77,7 +77,7 @@ func TestSwitchAccountResumesUnderTheNewAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Dispose("test done")
-	old := fa.session()
+	old := fa.thread()
 
 	if err := mgr.SwitchAccount(ctx, a.ID, "fake-work"); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestSwitchAccountResumesUnderTheNewAccount(t *testing.T) {
 	if _, open := <-old.events; open {
 		t.Error("the old account's harness process was left running")
 	}
-	meta, _ := st.Session(ctx, a.ID)
+	meta, _ := st.Thread(ctx, a.ID)
 	if meta.ProviderInstance != "fake-work" {
 		t.Errorf("ProviderInstance = %q, want fake-work", meta.ProviderInstance)
 	}
@@ -105,10 +105,10 @@ func TestSwitchAccountResumesUnderTheNewAccount(t *testing.T) {
 	if got != a {
 		t.Error("the switch replaced the actor; attached presenters would be orphaned")
 	}
-	if fa.session() == old {
+	if fa.thread() == old {
 		t.Fatal("no new harness process was started")
 	}
-	if env := fa.sessionEnv(); env["FAKE_HOME"] != "/work" {
+	if env := fa.threadEnv(); env["FAKE_HOME"] != "/work" {
 		t.Errorf("resumed with env %v, want the work account's", env)
 	}
 	state, _ := a.State(ctx)
@@ -117,7 +117,7 @@ func TestSwitchAccountResumesUnderTheNewAccount(t *testing.T) {
 	}
 }
 
-// A failed move leaves the session on the account it had: the next turn must
+// A failed move leaves the thread on the account it had: the next turn must
 // find the conversation where that account keeps it.
 func TestSwitchAccountFailedMoveKeepsTheOldAccount(t *testing.T) {
 	mgr, fa, st := switchTestManager(t)
@@ -132,14 +132,14 @@ func TestSwitchAccountFailedMoveKeepsTheOldAccount(t *testing.T) {
 	if err := mgr.SwitchAccount(ctx, a.ID, "fake-work"); err == nil {
 		t.Fatal("switch succeeded although the conversation could not move")
 	}
-	meta, _ := st.Session(ctx, a.ID)
+	meta, _ := st.Thread(ctx, a.ID)
 	if meta.ProviderInstance != "" && meta.ProviderInstance != "fake" {
 		t.Errorf("ProviderInstance = %q, want the default account still", meta.ProviderInstance)
 	}
 	if _, err := mgr.Get(ctx, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	if env := fa.sessionEnv(); env["FAKE_HOME"] != "" {
+	if env := fa.threadEnv(); env["FAKE_HOME"] != "" {
 		t.Errorf("resumed with env %v, want the old account's", env)
 	}
 	state, _ := a.State(ctx)
@@ -192,7 +192,7 @@ func TestSwitchAccountRefusesUnknownAccount(t *testing.T) {
 }
 
 // Two switches at once must chain: each moves the conversation from wherever
-// the one before left it, and the session ends on the account that holds it.
+// the one before left it, and the thread ends on the account that holds it.
 func TestConcurrentSwitchesChain(t *testing.T) {
 	mgr, fa, st := switchTestManager(t)
 	mgr.ConfigureInstances([]provider.Instance{workInstance(), {
@@ -224,7 +224,7 @@ func TestConcurrentSwitchesChain(t *testing.T) {
 		t.Errorf("second move came from %q, but the first left the conversation in %q",
 			moves[1].from["FAKE_HOME"], moves[0].to["FAKE_HOME"])
 	}
-	meta, _ := st.Session(ctx, a.ID)
+	meta, _ := st.Thread(ctx, a.ID)
 	want := map[string]string{"/work": "fake-work", "/spare": "fake-spare"}[moves[1].to["FAKE_HOME"]]
 	if meta.ProviderInstance != want {
 		t.Errorf("ProviderInstance = %q, but the conversation is with %q", meta.ProviderInstance, want)

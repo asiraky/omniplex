@@ -8,9 +8,9 @@
  * That needs three things this hook provides: dependencies, a port pair
  * nothing else has, and a database of its own.
  *
- * The contract (see internal/session/lifecycle.go):
+ * The contract (see internal/thread/lifecycle.go):
  *   - cwd is the project root, and OMNIPLEX_CONTEXT_FILE holds the request
- *   - stdout and stderr stream into the session transcript as they arrive
+ *   - stdout and stderr stream into the thread transcript as they arrive
  *   - OMNIPLEX_RESULT_FILE must come back holding {cwd, branch, resources}
  *
  * Naming matters here: omniplex provisions the worktree itself only for hooks called
@@ -104,7 +104,7 @@ step(`ports: server ${serverPort}, vite ${vitePort}`);
 
 // A fresh database rather than a copy of the main one. omniplex's store applies its
 // whole schema on open, so an empty file is fully migrated; and the log holds
-// live sessions, so a copy would offer this worktree's own session for resume
+// live threads, so a copy would offer this worktree's own thread for resume
 // and end up with two harnesses writing two divergent copies of one log.
 // Reference data is seeded into it below.
 const db = join(worktree, ".omniplex", "dev.db");
@@ -133,11 +133,11 @@ This is a worktree of \`${projectRoot}\`, on branch \`${branch}\`.
 Run the app with \`npm run dev\` as usual. It picks up \`.omniplex/worktree.env\` and
 starts on **http://127.0.0.1:${serverPort}** with its own database at
 \`.omniplex/dev.db\` — so it will not collide with the checkout this came from, and
-nothing you do here touches its sessions. That database is seeded with the
-projects and labels of the one it came from; sessions are not copied.
+nothing you do here touches its threads. That database is seeded with the
+projects and labels of the one it came from; threads are not copied.
 
 Both files are generated and ignored by Git. Delete the worktree with the
-session; do not \`git worktree remove\` it by hand while a session holds it.
+thread; do not \`git worktree remove\` it by hand while a thread holds it.
 `,
 );
 
@@ -146,11 +146,11 @@ session; do not \`git worktree remove\` it by hand while a session holds it.
 /**
  * Copies the projects and labels of the database this server runs on into the
  * worktree's own, so the app there opens on something usable instead of an
- * empty sidebar — the projects you can start a session in, and the labels the
+ * empty sidebar — the projects you can start a thread in, and the labels the
  * list is organised by.
  *
- * Only those two tables. Sessions, events and snapshots are deliberately left
- * behind: a copied session is a live session whose harness process belongs to
+ * Only those two tables. Threads, events and snapshots are deliberately left
+ * behind: a copied thread is a live thread whose harness process belongs to
  * the other server, and resuming it from here would put two harnesses on one
  * transcript. Devices are left behind too — a pairing token belongs to the
  * origin it was issued for, and this worktree is a different port.

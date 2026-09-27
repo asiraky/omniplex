@@ -14,12 +14,12 @@ import (
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/proto"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
-// conn is one presenter connection. It holds no session state of its own —
+// conn is one presenter connection. It holds no thread state of its own —
 // everything a UI needs is reconstructible from the log.
 type conn struct {
 	srv *Server
@@ -63,7 +63,7 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	s.register(c)
 	defer s.unregister(c)
 
-	// Session-list changes push a fresh welcome-shaped frame.
+	// Thread-list changes push a fresh welcome-shaped frame.
 	listID, listCh := s.mgr.SubscribeList()
 	defer s.mgr.UnsubscribeList(listID)
 
@@ -86,7 +86,7 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	defer s.mgr.UnsubscribeProjects(projectsID)
 
 	// Quota changes push the whole cached list the same way: a live
-	// rate-limit event from a running session lands on the Limits page of
+	// rate-limit event from a running thread lands on the Limits page of
 	// every paired device, not just the one that asked.
 	quotaID, quotaCh := s.mgr.SubscribeQuota()
 	defer s.mgr.UnsubscribeQuota(quotaID)
@@ -97,7 +97,7 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 			case <-ctx.Done():
 				return
 			case <-listCh:
-				c.sendSessions()
+				c.sendThreads()
 			case <-harnessCh:
 				c.send(serverFrame{Type: "harnesses", Harnesses: s.mgr.Harnesses(ctx)})
 			case <-labelsCh:
@@ -130,14 +130,14 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 func (c *conn) dispatch(f clientFrame) {
 	switch f.Type {
 	case "hello":
-		sessions, _ := c.srv.mgr.List(c.ctx)
+		threads, _ := c.srv.mgr.List(c.ctx)
 		projects, _ := c.srv.mgr.Projects(c.ctx)
 		labels, _ := c.srv.mgr.Labels(c.ctx)
 		c.send(serverFrame{
 			Type:      "welcome",
 			ServerID:  c.srv.id,
 			Build:     c.srv.web.BuildID(),
-			Sessions:  sessions,
+			Threads:   threads,
 			Harnesses: c.srv.mgr.Harnesses(c.ctx),
 			Projects:  projects,
 			Labels:    labels,
@@ -150,10 +150,10 @@ func (c *conn) dispatch(f clientFrame) {
 		c.attach(f)
 
 	case "detach":
-		c.detach(f.SessionID)
+		c.detach(f.ThreadID)
 
 	case "command":
-		// Off the read loop: creating a session spawns a harness process and
+		// Off the read loop: creating a thread spawns a harness process and
 		// a prompt can wait on the actor, neither of which may stall the
 		// connection's other frames. Acks carry their commandId, so order
 		// does not matter.
@@ -164,12 +164,12 @@ func (c *conn) dispatch(f clientFrame) {
 	}
 }
 
-func (c *conn) sendSessions() {
-	sessions, err := c.srv.mgr.List(c.ctx)
+func (c *conn) sendThreads() {
+	threads, err := c.srv.mgr.List(c.ctx)
 	if err != nil {
 		return
 	}
-	c.send(serverFrame{Type: "sessions", Sessions: sessions})
+	c.send(serverFrame{Type: "threads", Threads: threads})
 }
 
 func (c *conn) sendProjects() {
@@ -192,15 +192,15 @@ func (c *conn) sendLabels() {
 // then read history, then mark synchronized, then drain what buffered.
 func (c *conn) attach(f clientFrame) {
 	started := time.Now()
-	if f.SessionID == "" {
-		c.send(serverFrame{Type: "error", Error: "attach requires sessionId"})
+	if f.ThreadID == "" {
+		c.send(serverFrame{Type: "error", Error: "attach requires threadId"})
 		return
 	}
-	c.detach(f.SessionID) // re-attach is idempotent
+	c.detach(f.ThreadID) // re-attach is idempotent
 
-	actor, err := c.srv.mgr.View(c.ctx, f.SessionID)
+	actor, err := c.srv.mgr.View(c.ctx, f.ThreadID)
 	if err != nil {
-		c.send(serverFrame{Type: "error", SessionID: f.SessionID, Error: err.Error()})
+		c.send(serverFrame{Type: "error", ThreadID: f.ThreadID, Error: err.Error()})
 		return
 	}
 	restoreDuration := time.Since(started)
@@ -218,33 +218,33 @@ func (c *conn) attach(f clientFrame) {
 	res, err := actor.Attach(c.ctx, after, hasCursor)
 	if err != nil {
 		actor.Unsubscribe(sub)
-		c.send(serverFrame{Type: "error", SessionID: f.SessionID, Error: err.Error()})
+		c.send(serverFrame{Type: "error", ThreadID: f.ThreadID, Error: err.Error()})
 		return
 	}
 
 	payloadBytes := 0
 	switch res.Kind {
-	case session.AttachSnapshot:
+	case thread.AttachSnapshot:
 		state := res.Snapshot
 		// Same window as the HTTP snapshot: this branch is the fallback for
-		// exactly the sessions too big to replay, so sending the whole
+		// exactly the threads too big to replay, so sending the whole
 		// timeline here would undo the trim where it matters most. The
 		// snapshot is a clone; windowing it touches nobody else's state.
 		state.Window(SnapshotItems)
-		payloadBytes += c.send(serverFrame{Type: "snapshot", SessionID: f.SessionID, Seq: res.Seq, State: state})
+		payloadBytes += c.send(serverFrame{Type: "snapshot", ThreadID: f.ThreadID, Seq: res.Seq, State: state})
 	default:
 		for i := range res.Events {
 			ev := res.Events[i]
-			payloadBytes += c.send(serverFrame{Type: "event", SessionID: f.SessionID, Seq: ev.Seq, Event: &ev})
+			payloadBytes += c.send(serverFrame{Type: "event", ThreadID: f.ThreadID, Seq: ev.Seq, Event: &ev})
 		}
 	}
-	payloadBytes += c.send(serverFrame{Type: "synchronized", SessionID: f.SessionID, Seq: res.Seq})
-	c.srv.logf("session_attach session=%s duration_ms=%d restore_ms=%d payload_bytes=%d kind=%s seq=%d",
-		f.SessionID, time.Since(started).Milliseconds(), restoreDuration.Milliseconds(), payloadBytes, res.Kind, res.Seq)
+	payloadBytes += c.send(serverFrame{Type: "synchronized", ThreadID: f.ThreadID, Seq: res.Seq})
+	c.srv.logf("thread_attach thread=%s duration_ms=%d restore_ms=%d payload_bytes=%d kind=%s seq=%d",
+		f.ThreadID, time.Since(started).Milliseconds(), restoreDuration.Milliseconds(), payloadBytes, res.Kind, res.Seq)
 
 	ctx, cancel := context.WithCancel(c.ctx)
 	c.amu.Lock()
-	c.attached[f.SessionID] = func() {
+	c.attached[f.ThreadID] = func() {
 		cancel()
 		actor.Unsubscribe(sub)
 	}
@@ -259,10 +259,10 @@ func (c *conn) attach(f clientFrame) {
 			case <-ctx.Done():
 				return
 			case <-sub.Resync:
-				c.send(serverFrame{Type: "resync", SessionID: f.SessionID})
+				c.send(serverFrame{Type: "resync", ThreadID: f.ThreadID})
 				return
 			case <-sub.ComposerChanged:
-				c.send(serverFrame{Type: "composer_items_changed", SessionID: f.SessionID})
+				c.send(serverFrame{Type: "composer_items_changed", ThreadID: f.ThreadID})
 			case ev, ok := <-sub.Ch:
 				if !ok {
 					return
@@ -270,16 +270,16 @@ func (c *conn) attach(f clientFrame) {
 				if ev.Seq <= res.Seq {
 					continue
 				}
-				c.send(serverFrame{Type: "event", SessionID: f.SessionID, Seq: ev.Seq, Event: &ev})
+				c.send(serverFrame{Type: "event", ThreadID: f.ThreadID, Seq: ev.Seq, Event: &ev})
 			}
 		}
 	}()
 }
 
-func (c *conn) detach(sessionID string) {
+func (c *conn) detach(threadID string) {
 	c.amu.Lock()
-	cancel, ok := c.attached[sessionID]
-	delete(c.attached, sessionID)
+	cancel, ok := c.attached[threadID]
+	delete(c.attached, threadID)
 	c.amu.Unlock()
 	if ok {
 		cancel()
@@ -324,33 +324,33 @@ func (c *conn) detachAll() {
 //
 // Summarising is the exception, and honestly so. It starts a cold harness
 // against a model and waits for prose, which on a slow machine or a long
-// transcript is minutes rather than seconds — and the session-level timeout it
+// transcript is minutes rather than seconds — and the thread-level timeout it
 // runs under is shorter than this, so the harness still gets the last word on
 // giving up.
 func commandTimeout(command string) time.Duration {
-	if command == "summarize_session" {
+	if command == "summarize_thread" {
 		return 5 * time.Minute
 	}
 	return 60 * time.Second
 }
 
-// sessionOfArgs reads the session a command is about out of its arguments.
+// threadOfArgs reads the thread a command is about out of its arguments.
 //
-// Clients address a session inside args rather than on the frame, so the
-// stored command row would otherwise have no session and survive that
-// session's deletion. That matters most for a summary, whose stored result is
+// Clients address a thread inside args rather than on the frame, so the
+// stored command row would otherwise have no thread and survive that
+// thread's deletion. That matters most for a summary, whose stored result is
 // model-written prose about the transcript.
-func sessionOfArgs(args json.RawMessage) string {
+func threadOfArgs(args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
 	}
 	var a struct {
-		SessionID string `json:"sessionId"`
+		ThreadID string `json:"threadId"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return ""
 	}
-	return a.SessionID
+	return a.ThreadID
 }
 
 // command executes an idempotent command. A repeated commandId replays the
@@ -360,8 +360,8 @@ func (c *conn) command(f clientFrame) {
 	if f.CommandID == "" {
 		f.CommandID = uuid.NewString()
 	}
-	if f.SessionID == "" {
-		f.SessionID = sessionOfArgs(f.Args)
+	if f.ThreadID == "" {
+		f.ThreadID = threadOfArgs(f.Args)
 	}
 
 	// The command ledger exists so that retrying a dropped mutation cannot
@@ -384,7 +384,7 @@ func (c *conn) command(f clientFrame) {
 	defer cancel()
 
 	for {
-		stored, done, err := c.srv.store.ClaimCommand(ctx, f.CommandID, f.SessionID)
+		stored, done, err := c.srv.store.ClaimCommand(ctx, f.CommandID, f.ThreadID)
 		switch {
 		case errors.Is(err, store.ErrCommandInProgress):
 			select {
@@ -429,7 +429,7 @@ claimed:
 // so replaying a stored one would answer yesterday's question, and a ledger
 // row per view switch would grow the table for as long as the page was open.
 func pollingCommand(name string) bool {
-	return name == "session_pr" || name == "usage_report" || name == "quota_refresh"
+	return name == "thread_pr" || name == "usage_report" || name == "quota_refresh"
 }
 
 // ephemeralCommand reports whether a command must bypass the command ledger.
@@ -453,17 +453,17 @@ func ephemeralCommand(name string) bool {
 
 func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 	switch f.Command {
-	case "create_session":
+	case "create_thread":
 		var a createArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
 		if a.ProjectID != "" {
-			actor, err := c.srv.mgr.CreateProject(ctx, session.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, BaseRef: a.BaseRef})
+			actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, BaseRef: a.BaseRef})
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"sessionId": actor.ID}, nil
+			return map[string]any{"threadId": actor.ID}, nil
 		}
 		if a.Cwd == "" {
 			a.Cwd = c.srv.defaultCwd
@@ -472,19 +472,19 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"sessionId": actor.ID}, nil
+		return map[string]any{"threadId": actor.ID}, nil
 
 	case "prompt", "schedule_prompt":
 		var a promptArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		var actor *session.Actor
+		var actor *thread.Actor
 		var err error
 		if f.Command == "schedule_prompt" {
-			actor, err = c.srv.mgr.View(ctx, a.SessionID)
+			actor, err = c.srv.mgr.View(ctx, a.ThreadID)
 		} else {
-			actor, err = c.srv.mgr.Get(ctx, a.SessionID)
+			actor, err = c.srv.mgr.Get(ctx, a.ThreadID)
 		}
 		if err != nil {
 			return nil, err
@@ -497,7 +497,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			if len(a.ImageIDs) > attachment.MaxPerPrompt {
 				return nil, fmt.Errorf("a message may carry at most %d images", attachment.MaxPerPrompt)
 			}
-			metas, paths, resolveErr := c.srv.attachments.Resolve(a.SessionID, a.ImageIDs)
+			metas, paths, resolveErr := c.srv.attachments.Resolve(a.ThreadID, a.ImageIDs)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -532,14 +532,14 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 
 	case "cancel_schedule", "send_schedule":
 		var a struct {
-			SessionID string `json:"sessionId"`
-			ID        string `json:"id"`
-			Revision  int    `json:"revision"`
+			ThreadID string `json:"threadId"`
+			ID       string `json:"id"`
+			Revision int    `json:"revision"`
 		}
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.View(ctx, a.SessionID)
+		actor, err := c.srv.mgr.View(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -550,15 +550,15 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		return nil, nil
 	case "dequeue_prompt":
 		var a struct {
-			SessionID string `json:"sessionId"`
-			QueueID   string `json:"queueId"`
+			ThreadID string `json:"threadId"`
+			QueueID  string `json:"queueId"`
 		}
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
 		// View, not Get: taking a prompt back needs no harness, and activating
 		// one would start the head of the queue before this could remove it.
-		actor, err := c.srv.mgr.View(ctx, a.SessionID)
+		actor, err := c.srv.mgr.View(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -567,12 +567,12 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"status": "removed"}, nil
 
-	case "continue_session":
-		var a sessionArgs
+	case "continue_thread":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -584,11 +584,11 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		return map[string]any{"turnId": turnID}, nil
 
 	case "cancel":
-		var a sessionArgs
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, ok := c.srv.mgr.Peek(a.SessionID)
+		actor, ok := c.srv.mgr.Peek(a.ThreadID)
 		if !ok {
 			return map[string]any{"status": "idle"}, nil
 		}
@@ -602,21 +602,21 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, ok := c.srv.mgr.Peek(a.SessionID)
+		actor, ok := c.srv.mgr.Peek(a.ThreadID)
 		if !ok {
-			return nil, errors.New("this session's harness is not running")
+			return nil, errors.New("this thread's harness is not running")
 		}
 		if err := actor.StopJob(ctx, a.JobID); err != nil {
 			return nil, err
 		}
 		return map[string]any{"status": "stopping"}, nil
 
-	case "session_job_output":
+	case "thread_job_output":
 		var a jobOutputArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.View(ctx, a.SessionID)
+		actor, err := c.srv.mgr.View(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -631,7 +631,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -645,7 +645,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -659,7 +659,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		if err := c.srv.mgr.SwitchAccount(ctx, a.SessionID, a.Instance); err != nil {
+		if err := c.srv.mgr.SwitchAccount(ctx, a.ThreadID, a.Instance); err != nil {
 			return nil, err
 		}
 		return map[string]any{"instance": a.Instance}, nil
@@ -669,7 +669,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -712,42 +712,42 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"status": "deleted"}, nil
 
-	case "set_session_label":
-		var a setSessionLabelArgs
+	case "set_thread_label":
+		var a setThreadLabelArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		if err := c.srv.mgr.SetSessionLabel(ctx, a.SessionID, a.LabelID); err != nil {
+		if err := c.srv.mgr.SetThreadLabel(ctx, a.ThreadID, a.LabelID); err != nil {
 			return nil, err
 		}
 		return map[string]any{"labelId": a.LabelID}, nil
 
-	case "mark_session_viewed":
+	case "mark_thread_viewed":
 		var a markViewedArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		if err := c.srv.mgr.MarkSessionViewed(ctx, a.SessionID, a.Seq); err != nil {
+		if err := c.srv.mgr.MarkThreadViewed(ctx, a.ThreadID, a.Seq); err != nil {
 			return nil, err
 		}
 		return map[string]any{"status": "viewed"}, nil
 
-	case "mark_session_unread":
-		var a sessionArgs
+	case "mark_thread_unread":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		if err := c.srv.mgr.MarkSessionUnread(ctx, a.SessionID); err != nil {
+		if err := c.srv.mgr.MarkThreadUnread(ctx, a.ThreadID); err != nil {
 			return nil, err
 		}
 		return map[string]any{"status": "unread"}, nil
 
 	case "list_composer_items":
-		var a sessionArgs
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -762,7 +762,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, err := c.srv.mgr.Get(ctx, a.SessionID)
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -773,14 +773,14 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, ok := c.srv.mgr.Peek(a.SessionID)
+		actor, ok := c.srv.mgr.Peek(a.ThreadID)
 		if !ok {
-			return nil, errors.New("session is not live")
+			return nil, errors.New("thread is not live")
 		}
 		err := actor.ResolvePermission(ctx, a.RequestID, adapter.PermissionOutcome{
 			Outcome: normaliseOutcome(a.Outcome), OptionID: a.OptionID,
 		})
-		if errors.Is(err, session.ErrAlreadyResolved) {
+		if errors.Is(err, thread.ErrAlreadyResolved) {
 			return map[string]any{"status": "already_resolved"}, nil
 		}
 		if err != nil {
@@ -793,16 +793,16 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		actor, ok := c.srv.mgr.Peek(a.SessionID)
+		actor, ok := c.srv.mgr.Peek(a.ThreadID)
 		if !ok {
-			return nil, errors.New("session is not live")
+			return nil, errors.New("thread is not live")
 		}
 		action := a.Action
 		if action != "accept" && action != "decline" && action != "cancel" {
 			action = "cancel"
 		}
 		err := actor.ResolveElicitation(ctx, a.RequestID, adapter.ElicitationResult{Action: action, Value: a.Value})
-		if errors.Is(err, session.ErrAlreadyResolved) {
+		if errors.Is(err, thread.ErrAlreadyResolved) {
 			return map[string]any{"status": "already_resolved"}, nil
 		}
 		if err != nil {
@@ -831,7 +831,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		// Issues are fetched separately. They are advisory — they seed
 		// branch-name suggestions — but `gh` can take twelve seconds to answer,
-		// and the workspace list carries the warning that another session is
+		// and the workspace list carries the warning that another thread is
 		// already in a checkout. Making that warning wait on a network call is
 		// making it arrive after the decision it exists to inform.
 		return map[string]any{"workspaces": spaces}, nil
@@ -844,45 +844,45 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		issues, issuesErr := c.srv.mgr.ListIssues(ctx, a.ProjectID)
 		return map[string]any{"issues": issues, "issuesError": issuesErr}, nil
 
-	case "session_pr":
-		var a sessionArgs
+	case "thread_pr":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
 		// Shaped like list_issues: the pull request is advisory, `gh` can take
 		// seconds to answer, and not knowing is an ordinary answer rather than
 		// a failure — so the reason travels beside the result, not as an error.
-		pr, prErr := c.srv.mgr.SessionPR(ctx, a.SessionID)
+		pr, prErr := c.srv.mgr.ThreadPR(ctx, a.ThreadID)
 		return map[string]any{"pr": pr, "prError": prErr}, nil
 
-	case "session_changes":
-		var a sessionArgs
+	case "thread_changes":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		changes, err := c.srv.mgr.SessionChanges(ctx, a.SessionID, a.Comparison)
+		changes, err := c.srv.mgr.ThreadChanges(ctx, a.ThreadID, a.Comparison)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"changes": changes}, nil
 
-	case "session_file_diff":
+	case "thread_file_diff":
 		var a fileDiffArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		diff, err := c.srv.mgr.SessionFileDiff(ctx, a.SessionID, a.Path, a.Comparison, a.Base, a.Head)
+		diff, err := c.srv.mgr.ThreadFileDiff(ctx, a.ThreadID, a.Path, a.Comparison, a.Base, a.Head)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"diff": diff}, nil
 
-	case "session_file_tree":
+	case "thread_file_tree":
 		var a fileTreeArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		tree, err := c.srv.mgr.SessionFileTree(ctx, a.SessionID, a.IncludeIgnored)
+		tree, err := c.srv.mgr.ThreadFileTree(ctx, a.ThreadID, a.IncludeIgnored)
 		if err != nil {
 			return nil, err
 		}
@@ -895,12 +895,12 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return c.srv.skillCommand(ctx, f.Command, a)
 
-	case "session_read_file":
+	case "thread_read_file":
 		var a readFileArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		file, err := c.srv.mgr.SessionReadFile(ctx, a.SessionID, a.Path)
+		file, err := c.srv.mgr.ThreadReadFile(ctx, a.ThreadID, a.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -930,19 +930,19 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"quotas": []session.QuotaStatus{status}}, nil
+			return map[string]any{"quotas": []thread.QuotaStatus{status}}, nil
 		}
 		for _, status := range c.srv.mgr.Quotas() {
 			_, _ = c.srv.mgr.RefreshQuota(ctx, status.Instance)
 		}
 		return map[string]any{"quotas": c.srv.mgr.Quotas()}, nil
 
-	case "summarize_session":
+	case "summarize_thread":
 		var a summarizeArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		summary, err := c.srv.mgr.SummarizeSession(ctx, a.SessionID)
+		summary, err := c.srv.mgr.SummarizeThread(ctx, a.ThreadID)
 		if err != nil {
 			return nil, err
 		}
@@ -1141,39 +1141,39 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		return map[string]any{"status": "deleted"}, nil
 
 	case "retry_provision":
-		var a sessionArgs
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "provisioning"}, c.srv.mgr.RetryProvision(ctx, a.SessionID)
+		return map[string]any{"status": "provisioning"}, c.srv.mgr.RetryProvision(ctx, a.ThreadID)
 
-	case "cleanup_session":
-		var a sessionArgs
+	case "cleanup_thread":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "cleaning"}, c.srv.mgr.Cleanup(ctx, a.SessionID)
+		return map[string]any{"status": "cleaning"}, c.srv.mgr.Cleanup(ctx, a.ThreadID)
 
-	case "close_session":
-		var a sessionArgs
+	case "close_thread":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "cleaning"}, c.srv.mgr.Cleanup(ctx, a.SessionID)
+		return map[string]any{"status": "cleaning"}, c.srv.mgr.Cleanup(ctx, a.ThreadID)
 
-	case "delete_session":
-		var a deleteSessionArgs
+	case "delete_thread":
+		var a deleteThreadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "deleting"}, c.srv.mgr.Delete(ctx, a.SessionID, a.RemoveWorktree)
+		return map[string]any{"status": "deleting"}, c.srv.mgr.Delete(ctx, a.ThreadID, a.RemoveWorktree)
 
-	case "force_delete_session":
-		var a sessionArgs
+	case "force_delete_thread":
+		var a threadArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": "deleted"}, c.srv.mgr.ForceDelete(ctx, a.SessionID)
+		return map[string]any{"status": "deleted"}, c.srv.mgr.ForceDelete(ctx, a.ThreadID)
 
 	default:
 		return nil, fmt.Errorf("unknown command %q", f.Command)

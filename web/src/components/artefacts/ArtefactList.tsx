@@ -22,7 +22,7 @@ export function listArtefacts(artefacts: Artefact[], filter: ArtefactFilter): Ar
 }
 
 /**
- * The "Artefacts" panel surface: everything the session has produced or been
+ * The "Artefacts" panel surface: everything the thread has produced or been
  * handed, newest first. A grid when the panel is wide, one column when it is
  * not — decided by the panel's width, not the screen's, since a docked panel on
  * a desktop can be as narrow as a phone.

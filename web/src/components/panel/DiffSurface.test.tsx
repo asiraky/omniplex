@@ -4,13 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DiffSurface } from "./DiffSurface";
 import { render } from "~/test/harness";
-import type { FileDiff, SessionChanges } from "~/protocol";
+import type { FileDiff, ThreadChanges } from "~/protocol";
 
 // Long enough that no container holds it: this is the line the wrap toggle exists for.
 const LONG = "x".repeat(400);
 const TEXT = `const a = "${LONG}";`;
 
-const CHANGES: SessionChanges = {
+const CHANGES: ThreadChanges = {
   root: "/tmp/wt",
   branch: "feature/wrap",
   mode: "branch",

@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"encoding/json"
@@ -9,19 +9,19 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
-// summaryFixture is a two-turn session covering everything renderTranscript
+// summaryFixture is a two-turn thread covering everything renderTranscript
 // has to make a decision about: a prompt, agent prose, a private thought, a
 // tool call with output, a subagent item, an empty message, and a recorded
 // diff.
 func summaryFixture() *projection.State {
 	return &projection.State{
-		SessionID: "s1",
-		Seq:       42,
-		Title:     "Fix the login redirect",
-		Cwd:       "/repo",
-		Harness:   "claude",
-		Model:     "opus",
-		Phase:     "idle",
+		ThreadID: "s1",
+		Seq:      42,
+		Title:    "Fix the login redirect",
+		Cwd:      "/repo",
+		Harness:  "claude",
+		Model:    "opus",
+		Phase:    "idle",
 		Turns: []projection.Turn{
 			{
 				ID:         "t1",
@@ -30,7 +30,7 @@ func summaryFixture() *projection.State {
 				StopReason: proto.StopEndTurn,
 				Diff: &proto.TurnDiffPayload{
 					TurnID:    "t1",
-					Files:     []proto.ChangedFile{{Path: "auth/session.go", Status: "modified", Additions: 12, Deletions: 3}},
+					Files:     []proto.ChangedFile{{Path: "auth/thread.go", Status: "modified", Additions: 12, Deletions: 3}},
 					Additions: 12,
 					Deletions: 3,
 				},
@@ -43,8 +43,8 @@ func summaryFixture() *projection.State {
 			{ID: "prompt:t1", Kind: projection.ItemMessage, TurnID: "t1", Role: "user", ContentKind: "text", Text: "the login page bounces me back, please fix it"},
 			{ID: "i1", Kind: projection.ItemMessage, TurnID: "t1", Role: "agent", ContentKind: "thought", Text: "PRIVATE REASONING"},
 			{ID: "i2", Kind: projection.ItemMessage, TurnID: "t1", Role: "agent", ContentKind: "text", Text: "Found it — the cookie was scoped wrong."},
-			{ID: "i3", Kind: projection.ItemTool, TurnID: "t1", ToolKind: proto.KindEdit, Status: proto.StatusCompleted, Title: "Edit auth/session.go",
-				Content: []proto.ToolContent{{Type: "diff", Path: "auth/session.go", Text: "@@ -1 +1 @@"}}},
+			{ID: "i3", Kind: projection.ItemTool, TurnID: "t1", ToolKind: proto.KindEdit, Status: proto.StatusCompleted, Title: "Edit auth/thread.go",
+				Content: []proto.ToolContent{{Type: "diff", Path: "auth/thread.go", Text: "@@ -1 +1 @@"}}},
 			{ID: "i4", Kind: projection.ItemMessage, TurnID: "t1", ParentID: "i3", Role: "agent", ContentKind: "text", Text: "SUBAGENT CHATTER"},
 			{ID: "i5", Kind: projection.ItemMessage, TurnID: "t1", Role: "agent", ContentKind: "text", Text: "   "},
 			{ID: "prompt:t2", Kind: projection.ItemMessage, TurnID: "t2", Role: "user", ContentKind: "text", Text: "now add a test"},
@@ -62,8 +62,8 @@ func TestRenderTranscriptKeepsWhatASummaryNeeds(t *testing.T) {
 		"the login page bounces me back, please fix it",
 		"now add a test",
 		"Found it — the cookie was scoped wrong.",
-		"Edit auth/session.go",
-		"auth/session.go (modified +12/-3)",
+		"Edit auth/thread.go",
+		"auth/thread.go (modified +12/-3)",
 		"Turn 2: still running",
 	} {
 		if !strings.Contains(got, want) {
@@ -96,10 +96,10 @@ func TestRenderTranscriptPrintsEachPromptOnce(t *testing.T) {
 
 func TestRenderTranscriptReportsATurnThatChangedNothing(t *testing.T) {
 	state := &projection.State{
-		SessionID: "s1",
-		Harness:   "codex",
-		Turns:     []projection.Turn{{ID: "t1", Prompt: "look around", Done: true, Diff: &proto.TurnDiffPayload{TurnID: "t1"}}},
-		Items:     []projection.Item{{ID: "i1", Kind: projection.ItemMessage, TurnID: "t1", Role: "agent", ContentKind: "text", Text: "Nothing to change."}},
+		ThreadID: "s1",
+		Harness:  "codex",
+		Turns:    []projection.Turn{{ID: "t1", Prompt: "look around", Done: true, Diff: &proto.TurnDiffPayload{TurnID: "t1"}}},
+		Items:    []projection.Item{{ID: "i1", Kind: projection.ItemMessage, TurnID: "t1", Role: "agent", ContentKind: "text", Text: "Nothing to change."}},
 	}
 	if got := renderTranscript(state); !strings.Contains(got, "changed no files") {
 		t.Errorf("a measured turn with no files must say so\n\n%s", got)
@@ -109,9 +109,9 @@ func TestRenderTranscriptReportsATurnThatChangedNothing(t *testing.T) {
 func TestRenderTranscriptClipsALongToolResult(t *testing.T) {
 	huge := strings.Repeat("x", toolContentBudget*3)
 	state := &projection.State{
-		SessionID: "s1",
-		Harness:   "claude",
-		Turns:     []projection.Turn{{ID: "t1", Prompt: "read it", Done: true}},
+		ThreadID: "s1",
+		Harness:  "claude",
+		Turns:    []projection.Turn{{ID: "t1", Prompt: "read it", Done: true}},
 		Items: []projection.Item{{
 			ID: "i1", Kind: projection.ItemTool, TurnID: "t1", ToolKind: proto.KindRead,
 			Status: proto.StatusCompleted, Title: "Read big.txt",
@@ -169,8 +169,8 @@ func TestRenderTranscriptOfNothingIsEmpty(t *testing.T) {
 // file list carrying an error — when a snapshot fails.
 func TestRenderTranscriptDoesNotCallAFailedMeasurementACleanTurn(t *testing.T) {
 	state := &projection.State{
-		SessionID: "s1",
-		Harness:   "claude",
+		ThreadID: "s1",
+		Harness:  "claude",
 		Turns: []projection.Turn{{
 			ID: "t1", Prompt: "refactor it", Done: true,
 			Diff: &proto.TurnDiffPayload{TurnID: "t1", Files: []proto.ChangedFile{}, Error: "git snapshot failed"},
@@ -190,9 +190,9 @@ func TestRenderTranscriptDoesNotCallAFailedMeasurementACleanTurn(t *testing.T) {
 // still worth carrying; only the duplicate of the prompt is dropped.
 func TestRenderTranscriptKeepsUserMessagesThatAreNotThePrompt(t *testing.T) {
 	state := &projection.State{
-		SessionID: "s1",
-		Harness:   "claude",
-		Turns:     []projection.Turn{{ID: "t1", Prompt: "fix the bug", Done: true}},
+		ThreadID: "s1",
+		Harness:  "claude",
+		Turns:    []projection.Turn{{ID: "t1", Prompt: "fix the bug", Done: true}},
 		Items: []projection.Item{
 			{ID: "prompt:t1", Kind: projection.ItemMessage, TurnID: "t1", Role: "user", ContentKind: "text", Text: "fix the bug"},
 			{ID: "i2", Kind: projection.ItemMessage, TurnID: "t1", Role: "user", ContentKind: "text", Text: "actually, do it in the other file"},

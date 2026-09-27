@@ -12,7 +12,7 @@ function renderPanel(onClose: () => void) {
   render(
     <>
       <Panel
-        sessionId="s1"
+        threadId="s1"
         state={emptyState("s1")}
         command={never}
         open

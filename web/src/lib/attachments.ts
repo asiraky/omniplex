@@ -73,18 +73,18 @@ export function isSupportedImage(file: File): boolean {
 
 /** Where a stored image is read back from. The device cookie rides the
     request, so this works straight from an `<img src>`. */
-export function attachmentUrl(sessionId: string, id: string): string {
-  return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(id)}`;
+export function attachmentUrl(threadId: string, id: string): string {
+  return `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(id)}`;
 }
 
 /** Uploads one image and returns how the prompt will refer to it. */
 export async function uploadAttachment(
-  sessionId: string,
+  threadId: string,
   file: File,
   signal?: AbortSignal,
 ): Promise<UploadedImage> {
   const res = await fetch(
-    `/api/sessions/${encodeURIComponent(sessionId)}/attachments`,
+    `/api/threads/${encodeURIComponent(threadId)}/attachments`,
     {
       method: "POST",
       headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -191,9 +191,9 @@ export function stageFile(file: File, key: string): Attachment {
 
 export interface UploadDeps {
   prepare: (file: File) => Promise<File>;
-  uploadImage: (sessionId: string, file: File, signal?: AbortSignal) => Promise<UploadedImage>;
+  uploadImage: (threadId: string, file: File, signal?: AbortSignal) => Promise<UploadedImage>;
   uploadFile: (
-    sessionId: string,
+    threadId: string,
     file: File,
     opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void },
   ) => Promise<UploadedArtefact>;
@@ -214,7 +214,7 @@ const defaultDeps: UploadDeps = {
  * refused here, before the upload spends the connection on it.
  */
 export async function uploadStaged(
-  sessionId: string,
+  threadId: string,
   file: File,
   opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
   deps: UploadDeps = defaultDeps,
@@ -222,12 +222,12 @@ export async function uploadStaged(
   if (isImageAttachment(file)) {
     const ready = await deps.prepare(file);
     if (ready.size <= MAX_IMAGE_BYTES) {
-      const up = await deps.uploadImage(sessionId, ready, opts.signal);
+      const up = await deps.uploadImage(threadId, ready, opts.signal);
       return { status: "ready", id: up.id };
     }
   }
   if (file.size > MAX_ARTEFACT_BYTES) throw new Error("This file is too large to send (200 MB at most).");
-  const up = await deps.uploadFile(sessionId, file, opts);
+  const up = await deps.uploadFile(threadId, file, opts);
   return {
     kind: "file",
     status: "ready",

@@ -1,13 +1,13 @@
-// Folding events into SessionState. This mirrors internal/projection exactly:
+// Folding events into ThreadState. This mirrors internal/projection exactly:
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Artefact, Event, Item, Job, JobPayload, SessionState, TurnDiff } from "./protocol";
+import type { Artefact, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 
-export function emptyState(sessionId: string): SessionState {
+export function emptyState(threadId: string): ThreadState {
   return {
-    sessionId,
+    threadId,
     seq: 0,
     cwd: "",
     harness: "",
@@ -29,7 +29,7 @@ export function emptyState(sessionId: string): SessionState {
   };
 }
 
-function upsert(state: SessionState, id: string, mut: (it: Item) => void): Item[] {
+function upsert(state: ThreadState, id: string, mut: (it: Item) => void): Item[] {
   const i = state.items.findIndex((it) => it.id === id);
   if (i >= 0) {
     const next = { ...state.items[i] };
@@ -49,7 +49,7 @@ function upsert(state: SessionState, id: string, mut: (it: Item) => void): Item[
 // carried them. Mirrors State.applyArtefact in internal/projection/state.go.
 type ArtefactShown = Omit<Artefact, "id" | "shownAt"> & { artefactId: string };
 
-function applyArtefact(s: SessionState, ts: number, seq: number, p: ArtefactShown): SessionState {
+function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown): ThreadState {
   const { artefactId, ...rest } = p;
   const artefact: Artefact = { ...rest, id: artefactId, turnId: p.turnId || undefined, shownAt: ts };
   const list = s.artefacts ?? [];
@@ -74,7 +74,7 @@ function applyArtefact(s: SessionState, ts: number, seq: number, p: ArtefactShow
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
-function applyJob(s: SessionState, ts: number, p: JobPayload, finished: boolean): SessionState {
+function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean): ThreadState {
   if (!p.jobId) return s;
   const jobs = [...s.jobs];
   let i = jobs.findIndex((j) => j.id === p.jobId);
@@ -139,23 +139,23 @@ function applyJob(s: SessionState, ts: number, p: JobPayload, finished: boolean)
 
 // applyEvent returns a new state. Events at or below the applied cursor are
 // discarded, which is what makes at-least-once delivery safe.
-/** Names a session whose first prompt was pictures and no words. Mirrors
+/** Names a thread whose first prompt was pictures and no words. Mirrors
     proto.ImageTitle in Go. */
 function imageTitle(n: number): string {
   if (n === 0) return "";
   return n === 1 ? "1 image" : `${n} images`;
 }
 
-export function applyEvent(state: SessionState, ev: Event): SessionState {
+export function applyEvent(state: ThreadState, ev: Event): ThreadState {
   if (ev.seq <= state.seq) return state;
-  const s: SessionState = { ...state, seq: ev.seq };
+  const s: ThreadState = { ...state, seq: ev.seq };
   const p = ev.payload ?? {};
 
   switch (ev.type) {
-    case "session.created":
+    case "thread.created":
       return { ...s, cwd: p.cwd, harness: p.harness, model: p.model ?? "", mode: p.mode ?? "", effort: p.effort ?? "", title: p.title ?? "" };
 
-    case "session.config_changed":
+    case "thread.config_changed":
       return {
         ...s,
         model: p.replaceSettings ? p.model ?? "" : p.model || s.model,
@@ -166,7 +166,7 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         title: p.title || s.title,
       };
 
-    case "session.closed":
+    case "thread.closed":
       return { ...s, closed: true, phase: "closed" };
 
     case "workspace.requested":
@@ -200,7 +200,7 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
         ...s,
         phase: "turn",
         // A recovery prompt is the server talking to itself, so it never
-        // names the session.
+        // names the thread.
         title: s.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
         turns: [...s.turns, { id: p.turnId, prompt, images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
         // Starting is what takes a prompt out of the queue.
@@ -257,7 +257,7 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
 
     case "turn.finished": {
       // Only the finish of the turn that is actually open may take the
-      // session idle: a stale or duplicate finish must not report "user's
+      // thread idle: a stale or duplicate finish must not report "user's
       // turn" while different work is running. Mirrors
       // internal/projection/state.go.
       const open = s.turns.reduce<string>((acc, t) => (t.done ? acc : t.id), "");
@@ -399,8 +399,8 @@ export function applyEvent(state: SessionState, ev: Event): SessionState {
     case "artefact.shown":
       return applyArtefact(s, ev.timestamp, ev.seq, p as ArtefactShown);
 
-    case "session.account_changed":
-      // The line where the session moved to another account. Mirrors
+    case "thread.account_changed":
+      // The line where the thread moved to another account. Mirrors
       // internal/projection/state.go.
       return {
         ...s,

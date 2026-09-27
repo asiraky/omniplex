@@ -45,7 +45,7 @@ function FileRow({
       >
         {node.name}
       </span>
-      {changed && <span className="bg-attention-foreground/70 size-1.5 shrink-0 rounded-full" title="Changed in this session" />}
+      {changed && <span className="bg-attention-foreground/70 size-1.5 shrink-0 rounded-full" title="Changed in this thread" />}
     </button>
   );
 }
@@ -202,7 +202,7 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
 }
 
 /**
- * The worktree browser: the session's real file tree, read-only, with the
+ * The worktree browser: the thread's real file tree, read-only, with the
  * selected file's contents beside it. With nothing selected it is the files
  * tab; with a selection it is a `file:` tab, where the tree shrinks to a side
  * rail and can be hidden entirely.

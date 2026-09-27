@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -40,12 +40,12 @@ type Manager struct {
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
-	// switchMu serialises account switches. A switch reads the session's
+	// switchMu serialises account switches. A switch reads the thread's
 	// account before the actor runs it, so two at once would both move
 	// "from" the same account and the second would record an account the
 	// conversation never reached.
 	switchMu sync.Mutex
-	// instances is keyed by instance id, never by driver: sessions and the
+	// instances is keyed by instance id, never by driver: threads and the
 	// wire protocol route on instance ids. instMu guards the three fields
 	// below it: the registry mutates live now that instances are managed
 	// from the UI, not only at startup.
@@ -62,23 +62,23 @@ type Manager struct {
 
 	mu     sync.RWMutex
 	actors map[string]*Actor
-	// lifecycle serialises resume, close, and delete for a session. Without it,
+	// lifecycle serialises resume, close, and delete for a thread. Without it,
 	// Close could remove an actor before it had marked the row closed and a
 	// concurrent Get could spawn a second writer in that window.
 	lifecycle sync.Mutex
-	// leases serialises the check-then-claim of a checkout when a session is
-	// created. Whether a directory is free is read from the session table, so
+	// leases serialises the check-then-claim of a checkout when a thread is
+	// created. Whether a directory is free is read from the thread table, so
 	// two concurrent creates would otherwise both see it free and both take
 	// it.
 	leases sync.Mutex
 
 	// attachments is where a prompt's images are stored, so deleting a
-	// session takes its pictures with it. Nil in tests and in a server built
+	// thread takes its pictures with it. Nil in tests and in a server built
 	// without the feature.
 	attachments AttachmentPurger
-	// artefacts holds what sessions produced; deleting a session deletes them.
+	// artefacts holds what threads produced; deleting a thread deletes them.
 	artefacts AttachmentPurger
-	imagePath func(sessionID, id string) (string, error)
+	imagePath func(threadID, id string) (string, error)
 
 	probeMu sync.Mutex
 	probes  map[string]probeResult
@@ -90,7 +90,7 @@ type Manager struct {
 	models     map[string]modelResult
 	refreshing map[string]bool
 
-	// diffPR holds only ranges resolved by SessionChanges from an attached PR.
+	// diffPR holds only ranges resolved by ThreadChanges from an attached PR.
 	// Per-file reads reuse them without trusting client-supplied commit ids or
 	// repeating a network lookup for every expanded file.
 	diffMu sync.RWMutex
@@ -100,7 +100,7 @@ type Manager struct {
 	// the user installed whatever they were rechecking for.
 	modelGen int
 
-	// Broadcast of session-list changes, so presenters can refresh the sidebar.
+	// Broadcast of thread-list changes, so presenters can refresh the sidebar.
 	listMu  sync.Mutex
 	listSub map[string]chan struct{}
 	// Broadcast of harness changes — a model list that arrived after the
@@ -111,9 +111,9 @@ type Manager struct {
 	// created, renamed, reordered, or deleted label without reconnecting.
 	labelSub map[string]chan struct{}
 	// Broadcast of project-registry changes. Projects rode on notifyList
-	// before, which only ever sends a session frame — so a project added,
+	// before, which only ever sends a thread frame — so a project added,
 	// edited or removed on the phone stayed on the laptop's screen until it
-	// reconnected, and a removed one could still be picked in new-session.
+	// reconnected, and a removed one could still be picked in new-thread.
 	projectSub map[string]chan struct{}
 
 	// The per-instance usage-limit cache and its broadcast. Cached in memory
@@ -180,46 +180,46 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 	return m
 }
 
-// AttachmentPurger removes the images a session accumulated. Narrow on
+// AttachmentPurger removes the images a thread accumulated. Narrow on
 // purpose: the manager has no business knowing anything else about them.
 type AttachmentPurger interface {
-	PurgeSession(sessionID string) error
+	PurgeThread(threadID string) error
 }
 
-// AttachmentResolver finds a stored image again by session and id. A queued
+// AttachmentResolver finds a stored image again by thread and id. A queued
 // prompt's images come back out of the log without their host path, and the
 // harness needs it when the prompt finally runs.
 type AttachmentResolver interface {
-	Path(sessionID, id string) (path, mediaType string, err error)
+	Path(threadID, id string) (path, mediaType string, err error)
 }
 
-// SetAttachments tells the manager where prompt images live. A session that is
+// SetAttachments tells the manager where prompt images live. A thread that is
 // deleted takes them with it; without this they would outlive it on disk.
 func (m *Manager) SetAttachments(p AttachmentPurger) {
 	m.attachments = p
 	if r, ok := p.(AttachmentResolver); ok {
-		m.imagePath = func(sessionID, id string) (string, error) {
-			path, _, err := r.Path(sessionID, id)
+		m.imagePath = func(threadID, id string) (string, error) {
+			path, _, err := r.Path(threadID, id)
 			return path, err
 		}
 	}
 }
 
-// SetArtefacts tells the manager where session artefacts live.
+// SetArtefacts tells the manager where thread artefacts live.
 func (m *Manager) SetArtefacts(p AttachmentPurger) { m.artefacts = p }
 
 // purgeAttachments is best effort: a picture left behind must never be the
-// reason a session cannot be deleted.
+// reason a thread cannot be deleted.
 func (m *Manager) purgeAttachments(id string) {
 	if m.artefacts != nil {
-		if err := m.artefacts.PurgeSession(id); err != nil {
+		if err := m.artefacts.PurgeThread(id); err != nil {
 			m.logf("purge artefacts for %s: %v", id, err)
 		}
 	}
 	if m.attachments == nil {
 		return
 	}
-	if err := m.attachments.PurgeSession(id); err != nil {
+	if err := m.attachments.PurgeThread(id); err != nil {
 		m.logf("purge attachments for %s: %v", id, err)
 	}
 }
@@ -253,7 +253,7 @@ func (m *Manager) configureLocked(instances []provider.Instance) {
 		// A configured entry may override the same driver's default instance,
 		// but never an instance of a *different* driver: {"id":"codex",
 		// "driver":"claude"} would silently delete the Codex default and break
-		// every session on it. Duplicate ids within the config are a mistake
+		// every thread on it. Duplicate ids within the config are a mistake
 		// too; the first entry wins.
 		if existing, ok := m.instances[inst.ID]; ok && (existing.inst.Driver != inst.Driver || seen[inst.ID]) {
 			m.logf("provider instance %q collides with an existing %q instance; entry skipped", inst.ID, existing.inst.Driver)
@@ -276,13 +276,13 @@ func (m *Manager) envFor(inst provider.Instance) (map[string]string, error) {
 	return inst.EnvOverlay(m.secretStore())
 }
 
-// instanceFor resolves the instance a session runs under. A session created
+// instanceFor resolves the instance a thread runs under. A thread created
 // before instances existed has no ProviderInstance and resolves to the default
-// instance for its harness — that is the whole migration. A session whose
+// instance for its harness — that is the whole migration. A thread whose
 // instance has since vanished, or whose instance now names a different driver,
-// is refused legibly: resuming a work-account session against a personal
+// is refused legibly: resuming a work-account thread against a personal
 // account would silently produce a different agent identity.
-func (m *Manager) instanceFor(meta store.SessionMeta) (registered, error) {
+func (m *Manager) instanceFor(meta store.ThreadMeta) (registered, error) {
 	id := meta.ProviderInstance
 	if id == "" {
 		id = meta.Harness
@@ -292,7 +292,7 @@ func (m *Manager) instanceFor(meta store.SessionMeta) (registered, error) {
 		return registered{}, fmt.Errorf("unknown provider instance %q", id)
 	}
 	if reg.inst.Driver != meta.Harness {
-		return registered{}, fmt.Errorf("provider instance %q now runs driver %q, but this session was created on %q", id, reg.inst.Driver, meta.Harness)
+		return registered{}, fmt.Errorf("provider instance %q now runs driver %q, but this thread was created on %q", id, reg.inst.Driver, meta.Harness)
 	}
 	if reg.ad == nil {
 		return registered{}, fmt.Errorf("no %q driver in this build", reg.inst.Driver)
@@ -301,10 +301,10 @@ func (m *Manager) instanceFor(meta store.SessionMeta) (registered, error) {
 }
 
 // cleanupAdapter is the lenient sibling of instanceFor, for workspace cleanup
-// and pending restores: those paths never spawn a harness, so a session whose
+// and pending restores: those paths never spawn a harness, so a thread whose
 // instance has been removed from the config must still be cleanable — anything
 // stricter strands it in "cleaning" forever. The adapter may be nil.
-func (m *Manager) cleanupAdapter(meta store.SessionMeta) (adapter.Adapter, map[string]string) {
+func (m *Manager) cleanupAdapter(meta store.ThreadMeta) (adapter.Adapter, map[string]string) {
 	if reg, err := m.instanceFor(meta); err == nil {
 		if env, envErr := m.envFor(reg.inst); envErr == nil {
 			return reg.ad, env
@@ -630,7 +630,7 @@ func (m *Manager) expireModelsForTest() {
 // modelsFor serves an instance's model list from cache, falling back to the
 // adapter's built-in list, and refreshes in the background when the cache is
 // missing or stale. It never blocks: asking a harness costs a process start,
-// and this runs on every connection and every session-list push.
+// and this runs on every connection and every thread-list push.
 func (m *Manager) modelsFor(reg registered, avail adapter.Availability) []adapter.ModelMeta {
 	if reg.ad == nil {
 		return nil
@@ -717,7 +717,7 @@ func sameModels(a, b []adapter.ModelMeta) bool {
 	return true
 }
 
-// Create starts a new session on the named harness, under the named provider
+// Create starts a new thread on the named harness, under the named provider
 // instance (empty means the harness's default instance).
 func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mode string) (*Actor, error) {
 	reg, err := m.resolveInstance(instance, harness)
@@ -738,7 +738,7 @@ func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mod
 		return nil, fmt.Errorf("%s is not available: %s", reg.inst.DisplayName, avail.Reason)
 	}
 
-	meta := store.SessionMeta{
+	meta := store.ThreadMeta{
 		ID:               uuid.NewString(),
 		Cwd:              cwd,
 		Harness:          reg.inst.Driver,
@@ -747,13 +747,13 @@ func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mod
 		UpdatedAt:        proto.NowMillis(),
 		Phase:            "idle",
 	}
-	if err := m.store.CreateSession(ctx, meta); err != nil {
+	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
 
 	a, err := Start(ctx, m.store, reg.ad, meta, model, mode, env, m.logf)
 	if err != nil {
-		_ = m.store.DeleteSession(ctx, meta.ID)
+		_ = m.store.DeleteThread(ctx, meta.ID)
 		return nil, err
 	}
 
@@ -777,16 +777,16 @@ type CreateProjectOptions struct {
 	AgentSettingsExplicit bool
 	Branch                string
 	Workspace             string
-	// BaseRef is the ref a new worktree is branched from, chosen per session.
+	// BaseRef is the ref a new worktree is branched from, chosen per thread.
 	// Empty defers to the project's default base branch.
 	BaseRef string
-	// WorkspacePath attaches the session to a checkout that already exists
+	// WorkspacePath attaches the thread to a checkout that already exists
 	// instead of provisioning one. It is the minority case, so it overrides
 	// Workspace rather than being another value of it.
 	WorkspacePath string
 }
 
-// CreateProject persists and returns an attachable session immediately. Its
+// CreateProject persists and returns an attachable thread immediately. Its
 // workspace is prepared in the background; no harness exists before readiness.
 func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*Actor, error) {
 	p, err := m.store.Project(ctx, o.ProjectID)
@@ -836,9 +836,9 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		return nil, fmt.Errorf("%s is not available: %s", reg.inst.DisplayName, avail.Reason)
 	}
 
-	// Two websocket commands are two goroutines, and creating a session reads
+	// Two websocket commands are two goroutines, and creating a thread reads
 	// the workspace list before writing a row that changes it. Serialising the
-	// pair keeps the busy flags a session is created against consistent with
+	// pair keeps the busy flags a thread is created against consistent with
 	// what was on disk a moment earlier.
 	m.leases.Lock()
 	defer m.leases.Unlock()
@@ -851,9 +851,9 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 			return nil, resolveErr
 		}
 		// Sharing a checkout is fine; moving into one that is being deleted is
-		// not. Teardown runs outside this lock, so without this a session
+		// not. Teardown runs outside this lock, so without this a thread
 		// could attach to a directory that is seconds from being removed.
-		if holder, ok := m.cleaningSessionIn(ctx, w.Path); ok {
+		if holder, ok := m.cleaningThreadIn(ctx, w.Path); ok {
 			return nil, fmt.Errorf("%s is being cleaned up by %q", filepath.Base(w.Path), holder)
 		}
 		// omniplex did not create this checkout, so it must never destroy it: the
@@ -866,19 +866,19 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		// The main checkout, which omniplex did not create and must not clean up.
 		// Resolving it as a workspace still reuses the attach guard — the path
 		// has to be a checkout Git reports for this project — but a checkout
-		// another session already holds is no longer refused. The presenter
+		// another thread already holds is no longer refused. The presenter
 		// warns; the user decides.
 		w, resolveErr := m.ResolveWorkspace(ctx, p.ID, p.Root)
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
-		// No branch is created: the session is on whatever the checkout is
+		// No branch is created: the thread is on whatever the checkout is
 		// already on, and reporting that is more honest than reporting a name
 		// nothing acted upon.
 		cwd, o.Branch = w.Path, w.Branch
 	}
 
-	// Hooks belong to provisioning. A local session runs in the directory the
+	// Hooks belong to provisioning. A local thread runs in the directory the
 	// user already works in and a borrowed one in a checkout somebody else
 	// made; neither has anything to prepare, so neither resolves a hook —
 	// which also means a hook that has since been deleted cannot block the
@@ -893,8 +893,8 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 
-	meta := store.SessionMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(p.Root, provision), DeprovisionScript: relHook(p.Root, deprovision)}
-	if err := m.store.CreateSession(ctx, meta); err != nil {
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(p.Root, provision), DeprovisionScript: relHook(p.Root, deprovision)}
+	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
 	a := StartPending(m.store, reg.ad, meta, env, m.logf)
@@ -994,8 +994,8 @@ func (m *Manager) ReloadProjects(ctx context.Context) error {
 // .omniplex/project.json are all left exactly as they are, so a project added
 // with the wrong path can be dropped without putting anything on disk at risk.
 //
-// A project that still owns sessions is refused rather than cascaded. Those
-// sessions have transcripts and, often, worktrees behind them; deleting them
+// A project that still owns threads is refused rather than cascaded. Those
+// threads have transcripts and, often, worktrees behind them; deleting them
 // as a side effect of tidying the project list is not something anybody asked
 // for. The store enforces this, in the same transaction as the delete.
 func (m *Manager) DeleteProject(ctx context.Context, id string) error {
@@ -1021,12 +1021,12 @@ func (m *Manager) RetryProvision(ctx context.Context, id string) error {
 	}
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
-	meta, err := m.store.Session(ctx, id)
+	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return err
 	}
 	if meta.Phase != "provision_failed" {
-		return fmt.Errorf("session is not awaiting provisioning")
+		return fmt.Errorf("thread is not awaiting provisioning")
 	}
 	p, err := m.store.Project(ctx, meta.ProjectID)
 	if err != nil {
@@ -1042,7 +1042,7 @@ func (m *Manager) RetryProvision(ctx context.Context, id string) error {
 func (m *Manager) Cleanup(ctx context.Context, id string) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
-	meta, err := m.store.Session(ctx, id)
+	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1105,7 +1105,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 	a, ok := m.actors[id]
 	m.mu.RUnlock()
 	if ok {
-		meta, err := m.store.Session(ctx, id)
+		meta, err := m.store.Thread(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -1113,7 +1113,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		return m.finishGet(ctx, a, meta, activate)
 	}
 
-	meta, err := m.store.Session(ctx, id)
+	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1127,7 +1127,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 	if meta.Phase == "closed" {
 		a, err = RestoreClosed(ctx, m.store, meta, m.logf)
 	} else if meta.Phase == "creating" || meta.Phase == "provisioning" || meta.Phase == "provision_failed" || meta.Phase == "cleaning" || meta.Phase == "cleanup_failed" {
-		// Lenient on purpose: a pending session must stay attachable (and
+		// Lenient on purpose: a pending thread must stay attachable (and
 		// cleanable) even if its instance has gone from the config. Activation
 		// is where a missing adapter is refused.
 		ad, env := m.cleanupAdapter(meta)
@@ -1171,12 +1171,12 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 	return m.finishGet(ctx, a, meta, activate)
 }
 
-func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.SessionMeta, activate bool) (*Actor, error) {
+func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.ThreadMeta, activate bool) (*Actor, error) {
 	if !activate || (meta.Phase != "idle" && meta.Phase != "turn") {
 		return a, nil
 	}
 	// Process startup is intentionally outside the global lifecycle lock. The
-	// actor serializes duplicate activations for this session; unrelated reads
+	// actor serializes duplicate activations for this thread; unrelated reads
 	// must remain instant while a provider takes seconds to start.
 	if err := a.ActivateResume(ctx); err != nil {
 		return nil, err
@@ -1202,7 +1202,7 @@ func (m *Manager) Peek(id string) (*Actor, bool) {
 }
 
 // adopt registers a live actor and arranges for it to be forgotten when its
-// harness exits, so the next attach resumes the session cleanly.
+// harness exits, so the next attach resumes the thread cleanly.
 func (m *Manager) adopt(a *Actor) {
 	a.scheduleReady = &m.scheduleReady
 	m.mu.Lock()
@@ -1225,12 +1225,12 @@ func (m *Manager) adopt(a *Actor) {
 	}
 }
 
-// bindQuota points a session's usage-limit pushes at the account it runs
+// bindQuota points a thread's usage-limit pushes at the account it runs
 // under, captured here so an adapter's push can never be filed against the
-// wrong account. A session created before instances existed resolves to its
-// harness's default. Rebound when the session switches account.
+// wrong account. A thread created before instances existed resolves to its
+// harness's default. Rebound when the thread switches account.
 func (m *Manager) bindQuota(a *Actor) {
-	if meta, err := m.store.Session(context.Background(), a.ID); err == nil {
+	if meta, err := m.store.Thread(context.Background(), a.ID); err == nil {
 		instance := meta.ProviderInstance
 		if instance == "" {
 			instance = meta.Harness
@@ -1257,14 +1257,14 @@ func (m *Manager) forgetFn(id string, a *Actor) func() {
 	}
 }
 
-func (m *Manager) List(ctx context.Context) ([]store.SessionMeta, error) {
-	metas, err := m.store.ListSessions(ctx)
+func (m *Manager) List(ctx context.Context) ([]store.ThreadMeta, error) {
+	metas, err := m.store.ListThreads(ctx)
 	if err != nil {
 		return nil, err
 	}
 	// Attention is derived, never stored: a live actor answers from its
 	// projection (which knows about pending permissions and questions), and a
-	// session with no actor answers from its phase — a dead actor cancelled
+	// thread with no actor answers from its phase — a dead actor cancelled
 	// its pending requests on the way down, so the phase is the whole story.
 	m.mu.Lock()
 	for i := range metas {
@@ -1285,7 +1285,7 @@ func (m *Manager) List(ctx context.Context) ([]store.SessionMeta, error) {
 	return metas, nil
 }
 
-// Close disposes a session's harness. The log is untouched.
+// Close disposes a thread's harness. The log is untouched.
 func (m *Manager) Close(ctx context.Context, id, reason string) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
@@ -1293,7 +1293,7 @@ func (m *Manager) Close(ctx context.Context, id, reason string) error {
 }
 
 func (m *Manager) closeLocked(ctx context.Context, id, reason string) error {
-	meta, err := m.store.Session(ctx, id)
+	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1309,27 +1309,27 @@ func (m *Manager) closeLocked(ctx context.Context, id, reason string) error {
 		}
 	} else {
 		if meta.Phase != "closed" {
-			if _, err := m.store.Append(ctx, id, proto.Emit(proto.SessionClosed, proto.SessionClosedPayload{Reason: reason})); err != nil {
+			if _, err := m.store.Append(ctx, id, proto.Emit(proto.ThreadClosed, proto.ThreadClosedPayload{Reason: reason})); err != nil {
 				return err
 			}
 			if err := m.store.SetPhase(ctx, id, "closed"); err != nil {
 				return err
 			}
 		}
-		// No actor means no checkpointer to drop this session's snapshots.
+		// No actor means no checkpointer to drop this thread's snapshots.
 		purgeCheckpoints(ctx, meta.Cwd, id, m.logf)
 	}
 	m.notifyList()
 	return nil
 }
 
-// Delete removes a session and its log entirely. removeWorktree is the user's
+// Delete removes a thread and its log entirely. removeWorktree is the user's
 // answer to the checkbox in the confirmation dialog: without it nothing on disk
-// is touched, whatever mode the session ran in.
+// is touched, whatever mode the thread ran in.
 func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
-	meta, err := m.store.Session(ctx, id)
+	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1337,15 +1337,15 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		if meta.WorkspaceMode == "local" {
 			return errors.New("the main checkout is not omniplex's to remove")
 		}
-		// Sessions may share a checkout, so the last one out is the only one
+		// Threads may share a checkout, so the last one out is the only one
 		// that may take it with them. The dialog hides the checkbox in this
 		// case; a stale client could still ask.
-		if holder, shared := m.otherSessionIn(ctx, id, meta.Cwd); shared {
+		if holder, shared := m.otherThreadIn(ctx, id, meta.Cwd); shared {
 			return fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder)
 		}
 	}
 	if meta.Phase == "closed" {
-		// A closed session has no harness and no actor to narrate teardown,
+		// A closed thread has no harness and no actor to narrate teardown,
 		// but its checkout is still on disk and the user may still have asked
 		// for it to go. Removing it here rather than falling through keeps the
 		// checkbox meaning the same thing whatever phase the row is in.
@@ -1358,7 +1358,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 				return err
 			}
 		}
-		if err := m.store.DeleteSession(ctx, id); err != nil {
+		if err := m.store.DeleteThread(ctx, id); err != nil {
 			return err
 		}
 		m.purgeAttachments(id)
@@ -1369,7 +1369,7 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		if err := m.closeLocked(ctx, id, "deleted"); err != nil {
 			return err
 		}
-		if err := m.store.DeleteSession(ctx, id); err != nil {
+		if err := m.store.DeleteThread(ctx, id); err != nil {
 			return err
 		}
 		m.purgeAttachments(id)
@@ -1384,9 +1384,9 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 		return err
 	}
 	if live, ok := m.Peek(id); ok {
-		live.Dispose("deleting session")
+		live.Dispose("deleting thread")
 	}
-	// Disposing keeps the snapshots, because a disposed session is normally
+	// Disposing keeps the snapshots, because a disposed thread is normally
 	// resumed. This one is not coming back.
 	purgeCheckpoints(ctx, meta.Cwd, id, m.logf)
 	if err := m.store.SetPhase(ctx, id, "cleaning"); err != nil {
@@ -1402,23 +1402,23 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 	return nil
 }
 
-// otherSessionIn reports a session other than id whose checkout is the same
+// otherThreadIn reports a thread other than id whose checkout is the same
 // directory. It is the "somebody else is still in here" test that guards
-// worktree removal now that sharing is allowed. A closed session counts: it
+// worktree removal now that sharing is allowed. A closed thread counts: it
 // still names that path, its transcript still refers to it, and it can be
-// resumed — "the last session omniplex knows of" is the question, not "the last one
+// resumed — "the last thread omniplex knows of" is the question, not "the last one
 // still running".
-func (m *Manager) otherSessionIn(ctx context.Context, id, cwd string) (string, bool) {
+func (m *Manager) otherThreadIn(ctx context.Context, id, cwd string) (string, bool) {
 	if strings.TrimSpace(cwd) == "" {
 		return "", false
 	}
 	target := canonicalPath(cwd)
-	sessions, err := m.store.ListSessions(ctx)
+	threads, err := m.store.ListThreads(ctx)
 	if err != nil {
 		// An unreadable list is not permission to delete somebody's checkout.
-		return "another session", true
+		return "another thread", true
 	}
-	for _, s := range sessions {
+	for _, s := range threads {
 		if s.ID == id || s.Cwd == "" {
 			continue
 		}
@@ -1426,26 +1426,26 @@ func (m *Manager) otherSessionIn(ctx context.Context, id, cwd string) (string, b
 			continue
 		}
 		if s.Title == "" {
-			return "untitled session", true
+			return "untitled thread", true
 		}
 		return s.Title, true
 	}
 	return "", false
 }
 
-// cleaningSessionIn reports a session that is tearing down the given checkout.
-func (m *Manager) cleaningSessionIn(ctx context.Context, cwd string) (string, bool) {
+// cleaningThreadIn reports a thread that is tearing down the given checkout.
+func (m *Manager) cleaningThreadIn(ctx context.Context, cwd string) (string, bool) {
 	target := canonicalPath(cwd)
-	sessions, err := m.store.ListSessions(ctx)
+	threads, err := m.store.ListThreads(ctx)
 	if err != nil {
 		return "", false
 	}
-	for _, s := range sessions {
+	for _, s := range threads {
 		if s.Phase != "cleaning" || s.Cwd == "" || canonicalPath(s.Cwd) != target {
 			continue
 		}
 		if s.Title == "" {
-			return "untitled session", true
+			return "untitled thread", true
 		}
 		return s.Title, true
 	}
@@ -1458,7 +1458,7 @@ func (m *Manager) cleaningSessionIn(ctx context.Context, cwd string) (string, bo
 func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
-	meta, err := m.store.Session(ctx, id)
+	meta, err := m.store.Thread(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1470,10 +1470,10 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 		return err
 	}
 	// Only a managed worktree is omniplex's to destroy. A borrowed checkout belongs
-	// to whoever made it and a local session is the user's own working
-	// directory; forcing either session away must not touch their files.
+	// to whoever made it and a local thread is the user's own working
+	// directory; forcing either thread away must not touch their files.
 	if meta.WorkspaceMode == "managed" {
-		if holder, shared := m.otherSessionIn(ctx, id, meta.Cwd); shared {
+		if holder, shared := m.otherThreadIn(ctx, id, meta.Cwd); shared {
 			return fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder)
 		}
 		if err := m.removeGitWorktree(ctx, meta, p, nil, true); err != nil {
@@ -1483,7 +1483,7 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	if live, ok := m.Peek(id); ok {
 		live.Dispose("force deleted")
 	}
-	if err := m.store.DeleteSession(ctx, id); err != nil {
+	if err := m.store.DeleteThread(ctx, id); err != nil {
 		return err
 	}
 	m.purgeAttachments(id)
@@ -1491,8 +1491,8 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Shutdown tears down every harness process. Sessions are left resumable: the
-// log is the session, and a restart reattaches to it.
+// Shutdown tears down every harness process. Threads are left resumable: the
+// log is the thread, and a restart reattaches to it.
 func (m *Manager) Shutdown() {
 	if m.schedulerCancel != nil {
 		m.schedulerCancel()
@@ -1509,7 +1509,7 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// ---- session-list change notifications ----
+// ---- thread-list change notifications ----
 
 func (m *Manager) SubscribeList() (string, chan struct{}) {
 	id := uuid.NewString()
@@ -1555,7 +1555,7 @@ func (m *Manager) notifyHarnesses() {
 }
 
 // SubscribeLabels registers for label-definition changes: create, save,
-// delete. Assignments travel on the session list instead.
+// delete. Assignments travel on the thread list instead.
 func (m *Manager) SubscribeLabels() (string, chan struct{}) {
 	id := uuid.NewString()
 	ch := make(chan struct{}, 1)

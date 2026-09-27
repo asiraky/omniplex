@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -50,12 +50,12 @@ func forgetWorktree(t *testing.T, root, worktree string) {
 	}
 }
 
-func deleteFixture(t *testing.T, root, worktree string) (*Manager, store.SessionMeta, project.Project) {
+func deleteFixture(t *testing.T, root, worktree string) (*Manager, store.ThreadMeta, project.Project) {
 	t.Helper()
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
-	return mgr, store.SessionMeta{ID: "s1", Cwd: worktree, WorkspaceMode: "managed", ProjectID: p.ID}, p
+	return mgr, store.ThreadMeta{ID: "s1", Cwd: worktree, WorkspaceMode: "managed", ProjectID: p.ID}, p
 }
 
 func TestRemoveGitWorktreeRemovesARegisteredWorktree(t *testing.T) {
@@ -108,7 +108,7 @@ func TestOrdinaryCleanupStillRefusesAWorktreeGitHasForgotten(t *testing.T) {
 
 // Force delete may remove a directory Git no longer tracks, so the .git
 // pointer is the only thing proving whose it was. Without that check it would
-// happily delete any directory a session's cwd happened to name.
+// happily delete any directory a thread's cwd happened to name.
 func TestForceDeleteWillNotRemoveADirectoryThatWasNeverOurWorktree(t *testing.T) {
 	root, worktree := repoWithWorktree(t)
 	mgr, _, p := deleteFixture(t, root, worktree)
@@ -120,7 +120,7 @@ func TestForceDeleteWillNotRemoveADirectoryThatWasNeverOurWorktree(t *testing.T)
 	if err := os.WriteFile(filepath.Join(stranger, "keep"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	meta := store.SessionMeta{ID: "s2", Cwd: stranger, WorkspaceMode: "managed", ProjectID: p.ID}
+	meta := store.ThreadMeta{ID: "s2", Cwd: stranger, WorkspaceMode: "managed", ProjectID: p.ID}
 
 	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, true); err == nil {
 		t.Fatal("force delete removed a directory that was not a worktree of this repository")
@@ -169,7 +169,7 @@ func TestForceDeleteProceedsDespiteARunningProcess(t *testing.T) {
 
 // Force delete runs with a writer still active, so the tree can come back the
 // instant it is emptied. Reporting success would let the caller purge the
-// session, leaving a directory nothing names any more and no route in the UI
+// thread, leaving a directory nothing names any more and no route in the UI
 // to clean it up — strictly worse than the wedge this change removes.
 func TestRemovalDoesNotReportSuccessWhenTheDirectoryComesBack(t *testing.T) {
 	root, worktree := repoWithWorktree(t)
@@ -218,7 +218,7 @@ func TestRemoveGitWorktreePrunesWhenTheDirectoryIsAlreadyGone(t *testing.T) {
 func TestRemoveGitWorktreeRefusesTheProjectRoot(t *testing.T) {
 	root, worktree := repoWithWorktree(t)
 	mgr, _, p := deleteFixture(t, root, worktree)
-	meta := store.SessionMeta{ID: "s3", Cwd: root, WorkspaceMode: "managed", ProjectID: p.ID}
+	meta := store.ThreadMeta{ID: "s3", Cwd: root, WorkspaceMode: "managed", ProjectID: p.ID}
 
 	if err := mgr.removeGitWorktree(context.Background(), meta, p, nil, false); err == nil {
 		t.Fatal("the project root was accepted for removal")

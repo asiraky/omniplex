@@ -175,7 +175,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// first real message simply creates afresh — same id, nothing lost.)
 	sid := o.HarnessSessionID
 	if sid == "" {
-		sid = o.SessionID
+		sid = o.ThreadID
 	}
 	// --approve trusts the workspace's project-local resources. Pi never
 	// prompts for trust in rpc mode; without this it falls back to
@@ -260,7 +260,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		s.contextWindow = state.Model.ContextWindow
 		s.mu.Unlock()
 	}
-	s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
+	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 		HarnessSessionID: state.SessionID,
 	}))
 

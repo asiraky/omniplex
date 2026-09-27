@@ -62,7 +62,7 @@ export function ProjectFilter({
               aria-label={name}
               // Matches LabelFilter's square exactly: 44px for a thumb, 32px
               // for a pointer, and accent-coloured while a filter is on so the
-              // header admits that sessions are missing.
+              // header admits that threads are missing.
               className={cn(
                 "size-11 shrink-0 md:size-8",
                 filtering ? "text-primary" : "text-muted-foreground hover:text-foreground",

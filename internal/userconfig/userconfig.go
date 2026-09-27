@@ -20,10 +20,10 @@ const DefaultBranchFormat = "(issue) => `issue/${issue.number}-${issue.title.toL
 
 // DefaultSummaryPrompt is the system prompt the summariser runs under when the
 // operator has not written one. It is deliberately shaped around the question
-// somebody actually has when they reopen a session they have forgotten: what
+// somebody actually has when they reopen a thread they have forgotten: what
 // did I ask for, what happened, and is anything still owed. The transcript
 // arrives as a user turn, so this says nothing about how to parse it.
-const DefaultSummaryPrompt = `You are summarising a coding-agent session for the person who started it. They have forgotten what it was about and do not want to reread it.
+const DefaultSummaryPrompt = `You are summarising a coding-agent thread for the person who started it. They have forgotten what it was about and do not want to reread it.
 
 Write three short sections, using these exact headings:
 
@@ -42,7 +42,7 @@ type Config struct {
 	BranchFormat string `json:"branchFormat,omitempty"`
 	// SuggestIssues disables the `gh` lookup for people who do not use it.
 	SuggestIssues *bool `json:"suggestIssues,omitempty"`
-	// SummaryPrompt is the system prompt the session summariser runs under.
+	// SummaryPrompt is the system prompt the thread summariser runs under.
 	// Empty means DefaultSummaryPrompt, so an operator who has never opened
 	// settings still gets a usable summary — and clearing the box is how you
 	// go back to the default rather than a separate stored flag.
@@ -148,7 +148,7 @@ func Load() (Config, error) {
 }
 
 // Save writes atomically, matching project.Save, so a crash mid-write cannot
-// leave a half-parsed config that breaks every later session.
+// leave a half-parsed config that breaks every later thread.
 func Save(cfg Config) (Config, error) {
 	cfg, err := Normalize(cfg)
 	if err != nil {

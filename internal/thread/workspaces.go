@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Workspace is one checkout a session could run in: the project root, or any
+// Workspace is one checkout a thread could run in: the project root, or any
 // worktree Git already knows about. omniplex does not care who created them — a
 // worktree made by hand months ago is as attachable as one omniplex provisioned.
 type Workspace struct {
@@ -22,12 +22,12 @@ type Workspace struct {
 	Head string `json:"head,omitempty"`
 	// IsRoot marks the project root, which is always attachable and never removed.
 	IsRoot bool `json:"isRoot,omitempty"`
-	// Busy marks a workspace a live session already holds. Sharing one checkout
-	// is allowed — there is no Git reason two sessions cannot — so this is
+	// Busy marks a workspace a live thread already holds. Sharing one checkout
+	// is allowed — there is no Git reason two threads cannot — so this is
 	// advice the presenter warns with, not a lock anything enforces.
-	Busy          bool   `json:"busy,omitempty"`
-	BusySessionID string `json:"busySessionId,omitempty"`
-	BusyTitle     string `json:"busyTitle,omitempty"`
+	Busy         bool   `json:"busy,omitempty"`
+	BusyThreadID string `json:"busyThreadId,omitempty"`
+	BusyTitle    string `json:"busyTitle,omitempty"`
 	// Locked reports Git's own worktree lock, which blocks removal too.
 	Locked bool `json:"locked,omitempty"`
 }
@@ -60,20 +60,20 @@ func (m *Manager) ListWorkspaces(ctx context.Context, projectID string) ([]Works
 	// A project rooted at a subdirectory of a repository — a package inside a
 	// monorepo — is a checkout Git never names, since `worktree list` reports
 	// the repository root instead. Without this the root is missing from the
-	// picker and a main-checkout session cannot be created there at all.
+	// picker and a main-checkout thread cannot be created there at all.
 	if !hasRoot(out) {
 		out = append([]Workspace{{Path: root, IsRoot: true, Branch: currentBranch(ctx, root)}}, out...)
 	}
 
-	sessions, err := m.store.ListSessions(ctx)
+	threads, err := m.store.ListThreads(ctx)
 	if err != nil {
 		return out, nil
 	}
 	holders := map[string]struct {
 		id, title string
 	}{}
-	for _, s := range sessions {
-		// A closed session has released its checkout; anything else may still
+	for _, s := range threads {
+		// A closed thread has released its checkout; anything else may still
 		// have a harness process with files open in it.
 		if s.Phase == "closed" || s.Cwd == "" {
 			continue
@@ -83,14 +83,14 @@ func (m *Manager) ListWorkspaces(ctx context.Context, projectID string) ([]Works
 			continue
 		}
 		abs = canonicalPath(abs)
-		// A managed session's Cwd is the project root only as a placeholder,
+		// A managed thread's Cwd is the project root only as a placeholder,
 		// until provisioning replaces it with the worktree. Counting that
 		// placeholder would report the root busy for the length of every
 		// provision and forever after one that failed. The test is
 		// deliberately narrow: once the row names a worktree of its own, the
-		// session holds it even if it never reached ready, or cleaning up the
+		// thread holds it even if it never reached ready, or cleaning up the
 		// failure would delete a checkout somebody else had since attached
-		// to. Local and borrowed sessions hold their checkout from creation,
+		// to. Local and borrowed threads hold their checkout from creation,
 		// because they never move.
 		if abs == root && s.WorkspaceMode == "managed" && !provisioned(s.Phase) {
 			continue
@@ -100,13 +100,13 @@ func (m *Manager) ListWorkspaces(ctx context.Context, projectID string) ([]Works
 		}
 		title := s.Title
 		if title == "" {
-			title = "untitled session"
+			title = "untitled thread"
 		}
 		holders[abs] = struct{ id, title string }{s.ID, title}
 	}
 	for i := range out {
 		if h, ok := holders[canonicalPath(out[i].Path)]; ok {
-			out[i].Busy, out[i].BusySessionID, out[i].BusyTitle = true, h.id, h.title
+			out[i].Busy, out[i].BusyThreadID, out[i].BusyTitle = true, h.id, h.title
 		}
 	}
 	return out, nil
@@ -136,7 +136,7 @@ func currentBranch(ctx context.Context, dir string) string {
 	return branch
 }
 
-// provisioned reports whether a session has finished preparing its workspace,
+// provisioned reports whether a thread has finished preparing its workspace,
 // and so whether its recorded Cwd is the real one.
 func provisioned(phase string) bool {
 	switch phase {
@@ -209,7 +209,7 @@ func (m *Manager) ResolveWorkspace(ctx context.Context, projectID, path string) 
 			return Workspace{}, fmt.Errorf("%s is no longer a directory", w.Path)
 		}
 		// Busy is deliberately not a refusal: the presenter warns that another
-		// session is already here and the user decides. Nothing about Git
+		// thread is already here and the user decides. Nothing about Git
 		// stops two agents sharing a checkout; only their own edits do.
 		return w, nil
 	}

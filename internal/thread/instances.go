@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"fmt"
@@ -96,7 +96,7 @@ func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 }
 
 // DeleteProviderInstance removes a configured instance and its secrets.
-// Sessions that ran on it keep their history; resuming one reports the
+// Threads that ran on it keep their history; resuming one reports the
 // missing instance legibly rather than falling through to another account.
 func (m *Manager) DeleteProviderInstance(id string) error {
 	instances, err := provider.DeleteInstance(id, m.secretStore(), m.logf)

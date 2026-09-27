@@ -21,14 +21,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { loadSessionPrefs, saveSessionPrefs, type HarnessPrefs } from "~/lib/sessionPrefs";
+import { loadThreadPrefs, saveThreadPrefs, type HarnessPrefs } from "~/lib/threadPrefs";
 import { initialProject, saveLastProject } from "~/lib/lastProject";
 import { defaultModel, pickerInstances, resolveInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Issue, Project, UserConfig, Workspace } from "~/protocol";
 import { WorkspacePicker, type WorkspaceChoice } from "./WorkspacePicker";
 
-export interface NewSessionInput {
+export interface NewThreadInput {
   projectId: string;
   harness: string;
   /** The provider instance to run under; empty means the harness's default. */
@@ -80,7 +80,7 @@ export interface IssueListing {
   issuesError: string;
 }
 
-export function NewSession({
+export function NewThread({
   projects,
   activeProjectId,
   harnesses,
@@ -100,7 +100,7 @@ export function NewSession({
   activeProjectId?: string;
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
-  onCreate: (input: NewSessionInput) => Promise<void>;
+  onCreate: (input: NewThreadInput) => Promise<void>;
   onListWorkspaces: (projectId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot delay the busy warning. */
   onListIssues: (projectId: string) => Promise<IssueListing>;
@@ -115,12 +115,12 @@ export function NewSession({
   status: ConnectionStatus;
 }) {
   const [projectId, setProjectId] = useState(() => initialProject(projects, activeProjectId));
-  const [preferences, setPreferences] = useState(loadSessionPrefs);
+  const [preferences, setPreferences] = useState(loadThreadPrefs);
   const [choice, setChoice] = useState<WorkspaceChoice>({
     branch: "",
     attachPath: "",
   });
-  // "" defers to the project default; picking one pins it for this session
+  // "" defers to the project default; picking one pins it for this thread
   // only.
   const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>("");
   // "" defers to the project's base branch, which is what the placeholder in
@@ -228,7 +228,7 @@ export function NewSession({
       },
     };
     setPreferences(next);
-    saveSessionPrefs(next);
+    saveThreadPrefs(next);
   };
   // Catalogue validation affects what we send, not the preference we keep.
   const currentPrefs: HarnessPrefs = {
@@ -268,7 +268,7 @@ export function NewSession({
         workspacePath,
         baseRef: sentBase,
       });
-      // Remembered on a session that actually started, not on every pick:
+      // Remembered on a thread that actually started, not on every pick:
       // opening the dropdown, looking, and closing is not a choice worth
       // moving the default for, and neither is a start that errored.
       saveLastProject(project.id);
@@ -343,7 +343,7 @@ export function NewSession({
         className="flex max-h-[min(85dvh,44rem)] flex-col gap-0 p-0 md:max-w-md"
       >
         <DialogHeader className="px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
-          <DialogTitle>New session</DialogTitle>
+          <DialogTitle>New thread</DialogTitle>
           <DialogDescription>
             Pick a project. Omniplex prepares its workspace before starting the agent.
           </DialogDescription>
@@ -353,7 +353,7 @@ export function NewSession({
         {projects.length === 0 ? (
           <div className="rounded-xl border border-dashed p-6 text-center">
             <p className="text-muted-foreground text-[13px]">
-              Add a project once, then create every session from here.
+              Add a project once, then create every thread from here.
             </p>
             <Button className="mt-4" onClick={onAddProject}>
               <PlusIcon />
@@ -363,7 +363,7 @@ export function NewSession({
         ) : (
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="new-session-project">Project</Label>
+              <Label htmlFor="new-thread-project">Project</Label>
               <div className="flex gap-2">
                 <Select
                   value={project?.id}
@@ -371,7 +371,7 @@ export function NewSession({
                     setProjectId(v);
                   }}
                 >
-                  <SelectTrigger id="new-session-project" className="min-w-0 flex-1">
+                  <SelectTrigger id="new-thread-project" className="min-w-0 flex-1">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -405,7 +405,7 @@ export function NewSession({
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="new-session-model">Model</Label>
+                <Label htmlFor="new-thread-model">Model</Label>
                 {onLogin && instance?.canLogin && instance.availability.state === "ready" && (
                   <Button
                     type="button"
@@ -420,10 +420,10 @@ export function NewSession({
                 )}
               </div>
               {/* Harness and model in one control: choosing a model already
-                  chooses the account it runs under, and a session cannot have
+                  chooses the account it runs under, and a thread cannot have
                   one without the other. */}
               <ModelPicker
-                id="new-session-model"
+                id="new-thread-model"
                 harnesses={harnesses}
                 value={selection}
                 onChange={selectModel}
@@ -514,7 +514,7 @@ export function NewSession({
 
             {modes.length > 0 && (
               <div className="space-y-1.5">
-                <Label htmlFor="new-session-mode">Permissions</Label>
+                <Label htmlFor="new-thread-mode">Permissions</Label>
                 {/* Modes all render alike: the description below says what each
                     one does. Picking one here is the whole decision — no mode
                     earns a badge, a colour, or a second opt-in. */}
@@ -522,7 +522,7 @@ export function NewSession({
                   value={displayModeId}
                   onValueChange={(mode) => remember(harnessId, { ...currentPrefs, mode })}
                 >
-                  <SelectTrigger id="new-session-mode" className="w-full">
+                  <SelectTrigger id="new-thread-mode" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -582,9 +582,9 @@ export function NewSession({
 
               {kind === "branch" && (
                 <div className="space-y-1.5 pt-1">
-                  <Label htmlFor="new-session-workspace">Branch</Label>
+                  <Label htmlFor="new-thread-workspace">Branch</Label>
                   <WorkspacePicker
-                    id="new-session-workspace"
+                    id="new-thread-workspace"
                     mode="create"
                     value={choice}
                     onChange={setChoice}
@@ -600,9 +600,9 @@ export function NewSession({
 
               {kind === "attach" && (
                 <div className="space-y-1.5 pt-1">
-                  <Label htmlFor="new-session-attach">Worktree</Label>
+                  <Label htmlFor="new-thread-attach">Worktree</Label>
                   <WorkspacePicker
-                    id="new-session-attach"
+                    id="new-thread-attach"
                     mode="attach"
                     value={choice}
                     onChange={setChoice}
@@ -618,8 +618,8 @@ export function NewSession({
 
               {kind === "branch" && (
                 <div className="space-y-1.5 pt-2">
-                  <Label htmlFor="new-session-base">Base</Label>
-                  {/* A per-session base is what makes stacking possible: a
+                  <Label htmlFor="new-thread-base">Base</Label>
+                  {/* A per-thread base is what makes stacking possible: a
                       worktree branched from another branch that has not landed
                       yet. A dropdown of the branches already on disk, with the
                       project default as the first, always-present option. */}
@@ -627,7 +627,7 @@ export function NewSession({
                     value={baseRef || BASE_DEFAULT}
                     onValueChange={(v) => setBaseRef(v === BASE_DEFAULT ? "" : v)}
                   >
-                    <SelectTrigger id="new-session-base" className="w-full">
+                    <SelectTrigger id="new-thread-base" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

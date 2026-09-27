@@ -1,7 +1,7 @@
-// Which project the new-session dialog opens on. Without this it opens on the
+// Which project the new-thread dialog opens on. Without this it opens on the
 // server's first project — most recently updated, which is whichever project
 // an agent last wrote to rather than the one the user last chose, so the pick
-// has to be redone on nearly every session.
+// has to be redone on nearly every thread.
 //
 // Per browser, like sidebar width and panel state: it is a habit, not shared
 // state, and the phone and the laptop are usually mid-different work.
@@ -27,7 +27,7 @@ export function saveLastProject(projectId: string) {
   }
 }
 
-/** Prefer the open session's project, then the remembered project, then the first. */
+/** Prefer the open thread's project, then the remembered project, then the first. */
 export function initialProject(projects: { id: string }[], activeProjectId?: string): string {
   if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return activeProjectId;
   const last = loadLastProject();

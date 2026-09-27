@@ -1,6 +1,6 @@
 // Folding auth_event frames into what the sign-in dialog shows. Deliberately
 // a pure reducer beside the components: a flow is ephemeral narration bound to
-// one connection, so it never touches the session reducer or any persisted
+// one connection, so it never touches the thread reducer or any persisted
 // state — it lives in a dialog's useState and dies with it.
 
 import type { AuthFlowEvent, AuthFlowNotice, AuthFlowPrompt } from "~/protocol";

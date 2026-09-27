@@ -8,7 +8,7 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 )
 
-// handleUploadAttachment takes one image for a session and answers with the id
+// handleUploadAttachment takes one image for a thread and answers with the id
 // the prompt will refer to it by.
 //
 // The body is the file itself rather than a multipart form: there is exactly
@@ -20,15 +20,15 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotImplemented, "this server does not store attachments")
 		return
 	}
-	sessionID := r.PathValue("id")
-	if _, err := s.store.Session(r.Context(), sessionID); err != nil {
-		writeError(w, http.StatusNotFound, "no such session")
+	threadID := r.PathValue("id")
+	if _, err := s.store.Thread(r.Context(), threadID); err != nil {
+		writeError(w, http.StatusNotFound, "no such thread")
 		return
 	}
 	// The store refuses anything past the limit on its own; this stops the
 	// server reading a body that was never going to be accepted.
 	body := http.MaxBytesReader(w, r.Body, attachment.MaxBytes+1)
-	meta, err := s.attachments.Put(sessionID, body)
+	meta, err := s.attachments.Put(threadID, body)
 	switch {
 	case errors.Is(err, attachment.ErrUnsupported):
 		writeError(w, http.StatusUnsupportedMediaType, err.Error())

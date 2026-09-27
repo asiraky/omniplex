@@ -74,27 +74,27 @@ interface PreviewState {
 
 /** A preview URL for an HTML artefact, kept fresh while the surface is open.
     The URL serves the live files, so a revision needs no new one. */
-function usePreview(sessionId: string, artefactId: string, enabled: boolean) {
+function usePreview(threadId: string, artefactId: string, enabled: boolean) {
   const [state, setState] = useState<PreviewState & { key: string }>({ key: "" });
   const [attempt, setAttempt] = useState(0);
-  const key = `${sessionId}/${artefactId}`;
+  const key = `${threadId}/${artefactId}`;
 
   useEffect(() => {
     if (!enabled) return;
     let stale = false;
-    requestPreview(sessionId, artefactId)
+    requestPreview(threadId, artefactId)
       .then((preview) => !stale && setState({ key, preview }))
       .catch((e: unknown) => !stale && setState({ key, error: e instanceof Error ? e.message : String(e) }));
     return () => {
       stale = true;
     };
-  }, [sessionId, artefactId, enabled, attempt, key]);
+  }, [threadId, artefactId, enabled, attempt, key]);
 
   const refresh = useCallback(async () => {
-    const preview = await requestPreview(sessionId, artefactId);
+    const preview = await requestPreview(threadId, artefactId);
     setState({ key, preview });
     return preview;
-  }, [sessionId, artefactId, key]);
+  }, [threadId, artefactId, key]);
 
   const current = state.key === key ? state : { key };
   useEffect(() => {
@@ -125,13 +125,13 @@ function useViewMode(kind: ViewerKind): [ViewMode, (mode: ViewMode) => void] {
  * One artefact in the panel: the file as it is on disk now, the ways out of
  * the app (download, a new tab, a share link), and where it lives.
  */
-export function ArtefactSurface({ sessionId, artefact: a }: { sessionId: string; artefact: Artefact }) {
+export function ArtefactSurface({ threadId, artefact: a }: { threadId: string; artefact: Artefact }) {
   const kind: ViewerKind = viewerFor(a.entry, a.mediaType);
   const [mode, setMode] = useViewMode(kind);
-  const raw = rawUrl(sessionId, a.id, a.entry, { rev: a.modifiedAt });
-  const download = rawUrl(sessionId, a.id, a.entry, { rev: a.modifiedAt, download: true });
+  const raw = rawUrl(threadId, a.id, a.entry, { rev: a.modifiedAt });
+  const download = rawUrl(threadId, a.id, a.entry, { rev: a.modifiedAt, download: true });
   const text = useArtefactText(raw, readsText(kind, mode));
-  const preview = usePreview(sessionId, a.id, kind === "html");
+  const preview = usePreview(threadId, a.id, kind === "html");
   // Where the mini browser is, so a new tab opens the page being looked at.
   // Keyed on the revision: when the agent shows the page again, the browser
   // starts over on it.
@@ -231,7 +231,7 @@ export function ArtefactSurface({ sessionId, artefact: a }: { sessionId: string;
             ))}
           </div>
         )}
-        <SharePopover key={a.id} sessionId={sessionId} artefact={a} />
+        <SharePopover key={a.id} threadId={threadId} artefact={a} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <IconButton label="More" className="size-10 md:size-8">
@@ -316,7 +316,7 @@ function canShareNatively(): boolean {
  * trip has come between the tap and the call. That is why making the link and
  * copying it are two taps.
  */
-function SharePopover({ sessionId, artefact: a }: { sessionId: string; artefact: Artefact }) {
+function SharePopover({ threadId, artefact: a }: { threadId: string; artefact: Artefact }) {
   const [open, setOpen] = useState(false);
   // undefined: not asked yet. null: not shared.
   const [link, setLink] = useState<ShareLink | null | undefined>(undefined);
@@ -327,22 +327,22 @@ function SharePopover({ sessionId, artefact: a }: { sessionId: string; artefact:
   useEffect(() => {
     if (!open) return;
     let stale = false;
-    getShare(sessionId, a.id).then(
+    getShare(threadId, a.id).then(
       (l) => !stale && setLink(l),
       (e: unknown) => !stale && setError(e instanceof Error ? e.message : String(e)),
     );
     return () => {
       stale = true;
     };
-  }, [open, sessionId, a.id]);
+  }, [open, threadId, a.id]);
 
   const run = async (what: "share" | "stop") => {
     setBusy(what);
     setError("");
     try {
-      if (what === "share") setLink(await share(sessionId, a.id));
+      if (what === "share") setLink(await share(threadId, a.id));
       else {
-        await unshare(sessionId, a.id);
+        await unshare(threadId, a.id);
         setLink(null);
       }
     } catch (e) {

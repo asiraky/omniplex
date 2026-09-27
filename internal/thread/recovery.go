@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
-// ErrNothingToContinue is returned when a continue arrives for a session whose
+// ErrNothingToContinue is returned when a continue arrives for a thread whose
 // last turn ended cleanly — a stale button on a screen someone left open.
 var ErrNothingToContinue = errors.New("the last turn did not end in an error")
 
@@ -20,11 +20,11 @@ var ErrNothingToContinue = errors.New("the last turn did not end in an error")
 // not a hung process, an abandoned one.
 //
 // Resume already closes the interrupted turn and any request that was waiting
-// on a human, so the session reopens idle rather than stuck. This file is the
-// other half: the session is prompted to pick the work back up, so a restart
+// on a human, so the thread reopens idle rather than stuck. This file is the
+// other half: the thread is prompted to pick the work back up, so a restart
 // costs a turn boundary rather than the task.
 
-// maxRecoveryAttempts bounds consecutive self-started turns. A session that
+// maxRecoveryAttempts bounds consecutive self-started turns. A thread that
 // takes the server down every time it resumes would otherwise restart itself
 // forever; after this many tries it is left idle for a human to look at.
 const maxRecoveryAttempts = 3
@@ -48,7 +48,7 @@ const continuePrompt = "[omniplex] Your previous turn ended in an error before i
 	"Check the real state of the work first — the files, the diff, whatever you had just run — then continue from where you left off. " +
 	"Do not redo work that is already done, and do not start over."
 
-// planRecovery decides whether a resumed session should continue by itself,
+// planRecovery decides whether a resumed thread should continue by itself,
 // and under which attempt number. It reads the state as of the moment before
 // Resume closed the interrupted turn, so an unfinished turn there is exactly
 // "the server died while this was running".
@@ -75,7 +75,7 @@ func planRecovery(state *projection.State) *proto.TurnRecovery {
 	return nil
 }
 
-// lastTurn is the newest turn, or nil on a session that has never run one.
+// lastTurn is the newest turn, or nil on a thread that has never run one.
 // Actor-loop only, like everything else that touches the projection.
 func (a *Actor) lastTurn() *projection.Turn {
 	if len(a.state.Turns) == 0 {
@@ -100,33 +100,33 @@ func (a *Actor) Recover(ctx context.Context) error {
 	return err
 }
 
-// recoverAll resumes every session that was mid-turn when the server stopped.
+// recoverAll resumes every thread that was mid-turn when the server stopped.
 //
-// Resume is otherwise lazy — idle sessions come back when a command needs the
+// Resume is otherwise lazy — idle threads come back when a command needs the
 // harness, while read-only presenter attachment restores only their projection.
 // Work in flight is different: an agent that was three tool calls into a task
 // should not wait for a command or an open browser tab before it continues.
 func (m *Manager) recoverAll(ctx context.Context) {
-	metas, err := m.store.ListSessions(ctx)
+	metas, err := m.store.ListThreads(ctx)
 	if err != nil {
-		m.logf("recover interrupted sessions: %v", err)
+		m.logf("recover interrupted threads: %v", err)
 		return
 	}
 	for _, meta := range metas {
 		if meta.Phase != "turn" {
 			continue
 		}
-		// Get resumes the session, which closes the interrupted turn and
+		// Get resumes the thread, which closes the interrupted turn and
 		// schedules the continuation prompt.
 		if _, err := m.Get(ctx, meta.ID); err != nil {
 			m.logf("recover %s: %v", meta.ID, err)
 			continue
 		}
-		m.logf("session %s was mid-turn when the server stopped; resumed it", meta.ID)
+		m.logf("thread %s was mid-turn when the server stopped; resumed it", meta.ID)
 	}
 }
 
-// ResumeInterrupted brings back every session that a restart caught mid-turn.
+// ResumeInterrupted brings back every thread that a restart caught mid-turn.
 // It runs in the background: a slow harness start must not hold up the server
 // binding its listeners.
 func (m *Manager) ResumeInterrupted() {

@@ -116,14 +116,14 @@ func startSession(t *testing.T, dir string, o adapter.CreateOptions) adapter.Ses
 func TestCreateSessionHandshake(t *testing.T) {
 	dir := t.TempDir()
 	s := startSession(t, dir, adapter.CreateOptions{
-		SessionID: "sess-1",
-		Model:     "anthropic/claude-x",
-		Effort:    "high",
-		Env:       map[string]string{"PI_TEST_MARKER": "overlay-applied"},
+		ThreadID: "sess-1",
+		Model:    "anthropic/claude-x",
+		Effort:   "high",
+		Env:      map[string]string{"PI_TEST_MARKER": "overlay-applied"},
 	})
 
-	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.SessionConfigChanged) })
-	cfg := got[len(got)-1].Payload.(proto.SessionConfigChangedPayload)
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })
+	cfg := got[len(got)-1].Payload.(proto.ThreadConfigChangedPayload)
 	if cfg.HarnessSessionID != "harness-123" {
 		t.Fatalf("harness session id = %q, want harness-123", cfg.HarnessSessionID)
 	}
@@ -146,7 +146,7 @@ func TestCreateSessionHandshake(t *testing.T) {
 func TestResumePrefersHarnessSessionID(t *testing.T) {
 	dir := t.TempDir()
 	startSession(t, dir, adapter.CreateOptions{
-		SessionID:        "sess-1",
+		ThreadID:         "sess-1",
 		Resume:           true,
 		HarnessSessionID: "harness-old",
 	})
@@ -183,7 +183,7 @@ func TestPromptStreamsTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1"})
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
 	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestRespawnedSessionDoesNotReuseItemIDs(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "events"), []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1", Resume: true, HarnessSessionID: "harness-123"})
+		s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1", Resume: true, HarnessSessionID: "harness-123"})
 		if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: turnID, Text: "hi"}); err != nil {
 			t.Fatalf("Prompt: %v", err)
 		}
@@ -306,7 +306,7 @@ func TestCancelAbortsTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1"})
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
 	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "go"}); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestCancelAbortsTurn(t *testing.T) {
 
 func TestCancelWhenIdleIsNoop(t *testing.T) {
 	dir := t.TempDir()
-	s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1"})
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel while idle: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestPromptAuthRefusal(t *testing.T) {
 	dir := t.TempDir()
 	refusal := `{\"type\":\"response\",\"id\":\"$id\",\"command\":\"prompt\",\"success\":false,\"error\":\"No API key found for anthropic. Run /login or set ANTHROPIC_API_KEY\"}`
 	a := New(fakePi(t, dir, refusal))
-	s, err := a.CreateSession(context.Background(), fakeHost{}, adapter.CreateOptions{SessionID: "sess-1"})
+	s, err := a.CreateSession(context.Background(), fakeHost{}, adapter.CreateOptions{ThreadID: "sess-1"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestPromptAuthRefusal(t *testing.T) {
 
 func TestSetModelAndEffort(t *testing.T) {
 	dir := t.TempDir()
-	s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1"})
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
 
 	ms, ok := s.(adapter.ModelSwitcher)
 	if !ok {

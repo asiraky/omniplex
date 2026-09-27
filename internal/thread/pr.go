@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// PullRequest is the little omniplex knows about the pull request for a session's
+// PullRequest is the little omniplex knows about the pull request for a thread's
 // branch: enough to say "this landed" and link to it, and nothing more. It is
 // never persisted — the answer is only true until someone merges something, so
 // it is fetched on demand and thrown away.
@@ -35,29 +35,29 @@ const prLookupTimeout = 12 * time.Second
 // receives it so the two cannot drift apart unnoticed.
 const prFields = "number,title,url,state,mergedAt,headRefOid,baseRefName,baseRefOid"
 
-// SessionPR reports the pull request for a session's branch, if there is one.
+// ThreadPR reports the pull request for a thread's branch, if there is one.
 //
 // Every failure is soft, and deliberately so: this exists to offer a cleanup
 // affordance, so the cost of not knowing is that the affordance stays hidden.
 // gh missing, gh unauthenticated, no remote, a remote that is not GitHub, or
 // simply no pull request yet are all ordinary states of a perfectly healthy
-// session, and none of them is worth an error in front of the user. The second
+// thread, and none of them is worth an error in front of the user. The second
 // return is a reason, for logs and for anyone debugging why no prompt appeared.
-func (m *Manager) SessionPR(ctx context.Context, sessionID string) (*PullRequest, string) {
-	meta, err := m.store.Session(ctx, sessionID)
+func (m *Manager) ThreadPR(ctx context.Context, threadID string) (*PullRequest, string) {
+	meta, err := m.store.Thread(ctx, threadID)
 	if err != nil {
 		return nil, err.Error()
 	}
-	// A local session runs in the user's own checkout. There is no worktree to
+	// A local thread runs in the user's own checkout. There is no worktree to
 	// reclaim, so a merged pull request tells omniplex nothing it should act on.
 	if meta.WorkspaceMode != "managed" && meta.WorkspaceMode != "borrowed" {
-		return nil, "not a worktree session"
+		return nil, "not a worktree thread"
 	}
 	if meta.Branch == "" {
-		return nil, "session has no branch"
+		return nil, "thread has no branch"
 	}
 	if meta.Cwd == "" {
-		return nil, "session has no working directory"
+		return nil, "thread has no working directory"
 	}
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, "the GitHub CLI (gh) is not installed"

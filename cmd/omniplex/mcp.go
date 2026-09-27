@@ -14,17 +14,17 @@ import (
 )
 
 // The omniplex MCP server: `omniplex mcp`, run by a harness as a stdio MCP
-// server beside each session. It gives the agent omniplex's own tools. Today
+// server beside each thread. It gives the agent omniplex's own tools. Today
 // that is one, show_file.
 //
 // It is configured entirely by environment, set by the server that started
 // the harness: where that server is, a token that lets this process show
-// files in its own session and nowhere else, and the session's home folder.
+// files in its own thread and nowhere else, and the thread's home folder.
 
 const mcpShowTool = "show_file"
 
 // showDescription tells the agent what the tool is for. home is where the
-// session keeps what it makes; cwd is where the agent works.
+// thread keeps what it makes; cwd is where the agent works.
 func showDescription(home, cwd string) string {
 	var b strings.Builder
 	b.WriteString(`Show the user a file or folder you made for them: a report, a write-up, a plan, a mockup, a clickable prototype, a diagram, a chart, a data export. The user may not be at your machine and cannot browse its files, so this is how they see your work. It appears as a card in the conversation and opens in omniplex's viewer: HTML runs in a sandboxed mini browser, markdown renders, and PDF, images, SVG, audio, video, CSV, JSON and code all preview. Other types download.

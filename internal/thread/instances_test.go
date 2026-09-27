@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func (f *instAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	return f.fakeAdapter.CreateSession(ctx, host, o)
 }
 
-func (f *instAdapter) sessionEnv() map[string]string {
+func (f *instAdapter) threadEnv() map[string]string {
 	f.envMu.Lock()
 	defer f.envMu.Unlock()
 	return f.lastEnv
@@ -117,7 +117,7 @@ func TestCreatePersistsInstanceAndAppliesEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Dispose("test done")
-	meta, err := st.Session(ctx, a.ID)
+	meta, err := st.Thread(ctx, a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestCreatePersistsInstanceAndAppliesEnv(t *testing.T) {
 	if meta.Harness != "fake" {
 		t.Errorf("Harness stays the driver id, got %q", meta.Harness)
 	}
-	if env := fa.sessionEnv(); env["FAKE_HOME"] != "/work" {
+	if env := fa.threadEnv(); env["FAKE_HOME"] != "/work" {
 		t.Errorf("adapter did not receive the instance overlay: %v", env)
 	}
 
@@ -137,11 +137,11 @@ func TestCreatePersistsInstanceAndAppliesEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Dispose("test done")
-	metaB, _ := st.Session(ctx, b.ID)
+	metaB, _ := st.Thread(ctx, b.ID)
 	if metaB.ProviderInstance != "fake" {
 		t.Errorf("default create ProviderInstance = %q, want fake", metaB.ProviderInstance)
 	}
-	if env := fa.sessionEnv(); len(env) != 0 {
+	if env := fa.threadEnv(); len(env) != 0 {
 		t.Errorf("default instance must use ambient credentials, got %v", env)
 	}
 }
@@ -164,7 +164,7 @@ func TestCreateMaterialisesSecretsAtSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Dispose("test done")
-	if env := fa.sessionEnv(); env["FAKE_TOKEN"] != "tok-123" {
+	if env := fa.threadEnv(); env["FAKE_TOKEN"] != "tok-123" {
 		t.Errorf("secret not materialised at spawn: %v", env)
 	}
 }
@@ -190,22 +190,22 @@ func TestResumeReusesInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Dispose("test done")
-	if env := fa.sessionEnv(); env["FAKE_HOME"] != "/work" {
+	if env := fa.threadEnv(); env["FAKE_HOME"] != "/work" {
 		t.Errorf("resume must re-materialise the original instance's env, got %v", env)
 	}
 }
 
-func TestLegacySessionResolvesToDefaultInstance(t *testing.T) {
+func TestLegacyThreadResolvesToDefaultInstance(t *testing.T) {
 	mgr, _, st := instTestManager(t)
 	ctx := context.Background()
 	// A row written before provider instances existed: harness only.
-	meta := store.SessionMeta{ID: "legacy-1", Cwd: t.TempDir(), Harness: "fake", Phase: "idle"}
-	if err := st.CreateSession(ctx, meta); err != nil {
+	meta := store.ThreadMeta{ID: "legacy-1", Cwd: t.TempDir(), Harness: "fake", Phase: "idle"}
+	if err := st.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
 	a, err := mgr.Get(ctx, "legacy-1")
 	if err != nil {
-		t.Fatalf("legacy session must resolve to the default instance: %v", err)
+		t.Fatalf("legacy thread must resolve to the default instance: %v", err)
 	}
 	a.Dispose("test done")
 }
@@ -242,7 +242,7 @@ func TestMissingSecretFailsClosed(t *testing.T) {
 	inst := workInstance()
 	inst.Env = append(inst.Env, provider.EnvVar{Name: "FAKE_TOKEN", Sensitive: true})
 	// No secret stored: creating must refuse rather than silently run this
-	// instance's session on the ambient account.
+	// instance's thread on the ambient account.
 	mgr.ConfigureInstances([]provider.Instance{inst}, secrets)
 
 	if _, err := mgr.Create(context.Background(), "fake", "fake-work", t.TempDir(), "", ""); err == nil {
@@ -270,30 +270,30 @@ func TestCrossDriverIDCollisionIsRejected(t *testing.T) {
 	}
 }
 
-func TestVanishedInstanceStillRestoresPendingSessions(t *testing.T) {
+func TestVanishedInstanceStillRestoresPendingThreads(t *testing.T) {
 	mgr, _, st := instTestManager(t)
 	ctx := context.Background()
-	// A session created under an instance that has since been removed from the
+	// A thread created under an instance that has since been removed from the
 	// config, caught mid-provisioning. It must stay attachable so cleanup can
 	// run; requiring the instance would strand it forever.
-	meta := store.SessionMeta{ID: "orphan-1", Cwd: t.TempDir(), Harness: "fake", ProviderInstance: "gone-instance", Phase: "provision_failed"}
-	if err := st.CreateSession(ctx, meta); err != nil {
+	meta := store.ThreadMeta{ID: "orphan-1", Cwd: t.TempDir(), Harness: "fake", ProviderInstance: "gone-instance", Phase: "provision_failed"}
+	if err := st.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
 	a, err := mgr.Get(ctx, "orphan-1")
 	if err != nil {
-		t.Fatalf("pending session with a vanished instance must restore: %v", err)
+		t.Fatalf("pending thread with a vanished instance must restore: %v", err)
 	}
 	a.Dispose("test done")
 
-	// An idle session, by contrast, would spawn a harness on resume, and must
+	// An idle thread, by contrast, would spawn a harness on resume, and must
 	// be refused legibly rather than run under the wrong account.
-	meta2 := store.SessionMeta{ID: "orphan-2", Cwd: t.TempDir(), Harness: "fake", ProviderInstance: "gone-instance", Phase: "idle"}
-	if err := st.CreateSession(ctx, meta2); err != nil {
+	meta2 := store.ThreadMeta{ID: "orphan-2", Cwd: t.TempDir(), Harness: "fake", ProviderInstance: "gone-instance", Phase: "idle"}
+	if err := st.CreateThread(ctx, meta2); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mgr.Get(ctx, "orphan-2"); err == nil {
-		t.Error("resuming a live session on a vanished instance must fail legibly")
+		t.Error("resuming a live thread on a vanished instance must fail legibly")
 	}
 }
 
@@ -304,7 +304,7 @@ func TestDisabledInstanceRefusesCreate(t *testing.T) {
 	mgr.ConfigureInstances([]provider.Instance{inst}, nil)
 
 	if _, err := mgr.Create(context.Background(), "fake", "fake-work", t.TempDir(), "", ""); err == nil {
-		t.Error("a disabled instance must refuse to start sessions")
+		t.Error("a disabled instance must refuse to start threads")
 	}
 	hs := mgr.Harnesses(context.Background())
 	for _, i := range hs[0].Instances {

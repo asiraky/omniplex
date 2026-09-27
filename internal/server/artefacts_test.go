@@ -14,17 +14,17 @@ import (
 
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/auth"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 )
 
 type artefactRig struct {
-	srv     *Server
-	local   *httptest.Server // trusted: the device gate lets it through
-	remote  *httptest.Server // an unpaired device
-	session string
-	dir     string // the session's folder, which is also its home
-	agent   string // agent token for the session
+	srv    *Server
+	local  *httptest.Server // trusted: the device gate lets it through
+	remote *httptest.Server // an unpaired device
+	thread string
+	dir    string // the thread's folder, which is also its home
+	agent  string // agent token for the thread
 }
 
 func newArtefactRig(t *testing.T) *artefactRig {
@@ -36,7 +36,7 @@ func newArtefactRig(t *testing.T) *artefactRig {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &scheduleBrowserAdapter{}
-	mgr := session.NewManager(st, t.Logf, fa)
+	mgr := thread.NewManager(st, t.Logf, fa)
 	t.Cleanup(mgr.Shutdown)
 	arts := artefact.New(filepath.Join(dir, "artefacts"))
 	mgr.SetArtefacts(arts)
@@ -51,11 +51,11 @@ func newArtefactRig(t *testing.T) *artefactRig {
 	remote := httptest.NewServer(asRemote(h))
 	t.Cleanup(local.Close)
 	t.Cleanup(remote.Close)
-	return &artefactRig{srv: srv, local: local, remote: remote, session: a.ID, dir: dir,
-		agent: signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Session: a.ID})}
+	return &artefactRig{srv: srv, local: local, remote: remote, thread: a.ID, dir: dir,
+		agent: signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Thread: a.ID})}
 }
 
-// write puts files under the session's folder and returns the path of name.
+// write puts files under the thread's folder and returns the path of name.
 func (r *artefactRig) write(t *testing.T, name string, files map[string]string) string {
 	t.Helper()
 	for rel, body := range files {
@@ -89,7 +89,7 @@ func (r *artefactRig) show(t *testing.T, token, path string) (*http.Response, ma
 }
 
 func (r *artefactRig) api(id string) string {
-	return r.local.URL + "/api/sessions/" + r.session + "/artefacts/" + id
+	return r.local.URL + "/api/threads/" + r.thread + "/artefacts/" + id
 }
 
 func send(t *testing.T, method, url string) map[string]any {
@@ -136,7 +136,7 @@ func get(t *testing.T, url string) (*http.Response, string) {
 	return res, string(b)
 }
 
-func TestAgentShowNeedsItsTokenAndAPathInTheSession(t *testing.T) {
+func TestAgentShowNeedsItsTokenAndAPathInTheThread(t *testing.T) {
 	r := newArtefactRig(t)
 	proto := r.write(t, "proto", map[string]string{"index.html": "<h1>", "app.js": "1"})
 
@@ -147,7 +147,7 @@ func TestAgentShowNeedsItsTokenAndAPathInTheSession(t *testing.T) {
 	os.WriteFile(outside, []byte("x"), 0o644)
 	res, out := r.show(t, r.agent, outside)
 	if res.StatusCode != http.StatusForbidden || !strings.Contains(out["error"].(string), r.dir) {
-		t.Fatalf("outside the session: %d %v", res.StatusCode, out)
+		t.Fatalf("outside the thread: %d %v", res.StatusCode, out)
 	}
 	if res, _ := r.show(t, r.agent, "proto"); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("relative path: %d", res.StatusCode)
@@ -181,7 +181,7 @@ func TestPreviewServesLiveFilesSandboxedWithBridge(t *testing.T) {
 
 	// The raw route is the app's own origin: behind the gate, and a document
 	// there never gets to run script.
-	raw := "/api/sessions/" + r.session + "/artefacts/" + id + "/f/index.html"
+	raw := "/api/threads/" + r.thread + "/artefacts/" + id + "/f/index.html"
 	if res, _ := get(t, r.remote.URL+raw); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("raw route from an unpaired device: %d", res.StatusCode)
 	}
@@ -288,14 +288,14 @@ func TestShareIsASnapshotUntilUpdatedAndDiesWhenStopped(t *testing.T) {
 func TestUploadsLandInTheUploadsFolderAndTrailerNamesThem(t *testing.T) {
 	r := newArtefactRig(t)
 	upload := func() map[string]any {
-		return post(t, r.local.URL+"/api/sessions/"+r.session+"/artefacts?name=brief.pdf", "%PDF-1.4 x")["artefact"].(map[string]any)
+		return post(t, r.local.URL+"/api/threads/"+r.thread+"/artefacts?name=brief.pdf", "%PDF-1.4 x")["artefact"].(map[string]any)
 	}
 	a1, a2 := upload(), upload()
 	if a1["path"] != filepath.Join(r.dir, "uploads", "brief.pdf") || a2["name"] != "brief (2).pdf" || a1["id"] == a2["id"] {
 		t.Fatalf("uploads: %v / %v", a1, a2)
 	}
 
-	actor, err := r.srv.mgr.View(context.Background(), r.session)
+	actor, err := r.srv.mgr.View(context.Background(), r.thread)
 	if err != nil {
 		t.Fatal(err)
 	}

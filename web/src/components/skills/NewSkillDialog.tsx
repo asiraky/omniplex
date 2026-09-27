@@ -173,7 +173,7 @@ export function NewSkillDialog({
                   >
                     <span className="text-[13px] leading-tight">{s.label}</span>
                     <span className="text-muted-foreground truncate text-[11px] leading-tight">
-                      {disabled ? "Open from a session or project to create one here" : s.hint}
+                      {disabled ? "Open from a thread or project to create one here" : s.hint}
                     </span>
                   </button>
                 );

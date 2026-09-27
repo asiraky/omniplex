@@ -221,14 +221,14 @@ describe("ModelPicker", () => {
     expect(row("GPT-5.6-Sol")).toBeNull();
   });
 
-  it("offers only models mid-session when the harness has one account", () => {
+  it("offers only models mid-thread when the harness has one account", () => {
     open({ lockDriver: true, value: { harness: "claude", instance: "claude", model: "sonnet" } });
 
     expect(screen.queryByText("Codex Work")).toBeNull();
     expect(row("Sonnet")).toBeTruthy();
   });
 
-  it("offers the harness's other accounts mid-session, and no other harness", () => {
+  it("offers the harness's other accounts mid-thread, and no other harness", () => {
     const onChange = open({
       lockDriver: true,
       value: { harness: "codex", instance: "codex", model: "gpt-5.6-sol" },
@@ -241,7 +241,7 @@ describe("ModelPicker", () => {
     expect(onChange).toHaveBeenCalledWith({ harness: "codex", instance: "codex_work", model: "gpt-5.6-terra" });
   });
 
-  it("leaves a disabled account out of a mid-session switch", () => {
+  it("leaves a disabled account out of a mid-thread switch", () => {
     const disabled = {
       ...codex,
       instances: codex.instances!.map((i) => (i.id === "codex_work" ? { ...i, enabled: false } : i)),
@@ -324,7 +324,7 @@ describe("ModelPicker effort", () => {
     expect(menu.getByText("Medium")).toBeTruthy();
   });
 
-  it("badges the row a session gets when no level is chosen", () => {
+  it("badges the row a thread gets when no level is chosen", () => {
     openEfforts({ effort: "low" });
 
     const badges = document.querySelectorAll("[data-slot='badge']");
@@ -336,7 +336,7 @@ describe("ModelPicker effort", () => {
   });
 
   it("names a level the model can no longer switch, rather than dropping it", () => {
-    // A legacy model reports no levels; the session still ran at one, and the
+    // A legacy model reports no levels; the thread still ran at one, and the
     // trigger is where it is said — not in a second control beside it.
     render(
       <ModelPicker

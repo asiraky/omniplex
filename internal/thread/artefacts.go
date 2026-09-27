@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -21,19 +21,19 @@ import (
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
-// ToolServers returns the MCP servers omniplex runs beside a session's
-// harness, given the session's home folder. Set once at startup, before any
-// session starts; nil means none. A package variable rather than a manager
+// ToolServers returns the MCP servers omniplex runs beside a thread's
+// harness, given the thread's home folder. Set once at startup, before any
+// thread starts; nil means none. A package variable rather than a manager
 // field because every path that starts a harness (create, resume, activate)
 // needs it and none of them has the manager.
-var ToolServers func(sessionID, home string) []adapter.MCPServer
+var ToolServers func(threadID, home string) []adapter.MCPServer
 
 // harnessExtras is what every harness gets beside its working directory: the
-// tool servers, and the session's home folder as a folder it may write in
+// tool servers, and the thread's home folder as a folder it may write in
 // when it works somewhere else (a repo, a worktree). That is what lets an
 // agent in a repo put what it makes for you outside the repo.
-func harnessExtras(ctx context.Context, st *store.Store, meta store.SessionMeta, cwd string, logf func(string, ...any)) ([]adapter.MCPServer, []string) {
-	home, err := SessionHome(ctx, st, meta.ProjectID, cwd)
+func harnessExtras(ctx context.Context, st *store.Store, meta store.ThreadMeta, cwd string, logf func(string, ...any)) ([]adapter.MCPServer, []string) {
+	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
 		logf("home folder for %s: %v", meta.ID, err)
 		home = cwd
@@ -48,9 +48,9 @@ func harnessExtras(ctx context.Context, st *store.Store, meta store.SessionMeta,
 	return ToolServers(meta.ID, home), extra
 }
 
-// SessionHome is where a session puts what it makes: its project's home
+// ThreadHome is where a thread puts what it makes: its project's home
 // folder, or its working directory when it has no project.
-func SessionHome(ctx context.Context, st *store.Store, projectID, cwd string) (string, error) {
+func ThreadHome(ctx context.Context, st *store.Store, projectID, cwd string) (string, error) {
 	if projectID == "" {
 		return cwd, nil
 	}
@@ -140,7 +140,7 @@ func insideGit(ctx context.Context, dir string) bool {
 
 // Show is a request to put a file or folder in front of the user.
 type Show struct {
-	// Path is absolute and already checked to be somewhere the session may
+	// Path is absolute and already checked to be somewhere the thread may
 	// show from.
 	Path   string
 	Name   string
@@ -161,10 +161,10 @@ func (a *Actor) ShowArtefact(ctx context.Context, s Show) (proto.ArtefactShownPa
 	return v.(proto.ArtefactShownPayload), nil
 }
 
-// ErrNoArtefact is returned for an artefact id the session has not shown.
+// ErrNoArtefact is returned for an artefact id the thread has not shown.
 var ErrNoArtefact = errors.New("no such artefact")
 
-// Artefact is one artefact the session has shown, without copying the rest
+// Artefact is one artefact the thread has shown, without copying the rest
 // of the state: the file routes ask for it on every request.
 func (a *Actor) Artefact(ctx context.Context, id string) (projection.Artefact, error) {
 	v, err := a.call(ctx, command{kind: cmdArtefact, reqID: id})
@@ -196,15 +196,15 @@ func (a *Actor) handleShow(s *Show) (proto.ArtefactShownPayload, error) {
 	return payload, nil
 }
 
-// ArtefactRoots is where a session may show files from: its home folder, its
+// ArtefactRoots is where a thread may show files from: its home folder, its
 // working directory and its project's root. Home comes first; it is where
 // uploads go.
-func (m *Manager) ArtefactRoots(ctx context.Context, sessionID string) (home string, roots []string, err error) {
-	meta, err := m.store.Session(ctx, sessionID)
+func (m *Manager) ArtefactRoots(ctx context.Context, threadID string) (home string, roots []string, err error) {
+	meta, err := m.store.Thread(ctx, threadID)
 	if err != nil {
 		return "", nil, err
 	}
-	home, err = SessionHome(ctx, m.store, meta.ProjectID, meta.Cwd)
+	home, err = ThreadHome(ctx, m.store, meta.ProjectID, meta.Cwd)
 	if err != nil {
 		return "", nil, err
 	}

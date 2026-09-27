@@ -39,7 +39,7 @@ describe("recentSkills", () => {
     expect(loadRecentSkills("p1")).toEqual([]);
   });
 
-  it("never offers a skill this session's catalogue lacks", () => {
+  it("never offers a skill this thread's catalogue lacks", () => {
     const catalogue = [item("alpha"), item("beta")];
     const resolved = resolveRecentSkills(["/gone", "/beta"], catalogue, 5);
     expect(resolved.map((i) => i.insertText)).toEqual(["/beta", "/alpha"]);

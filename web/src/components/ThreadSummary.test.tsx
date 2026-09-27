@@ -3,10 +3,10 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { render } from "~/test/harness";
-import { SessionSummaryPanel } from "./SessionSummary";
-import type { SessionSummary, UserConfig } from "~/protocol";
+import { ThreadSummaryPanel } from "./ThreadSummary";
+import type { ThreadSummary, UserConfig } from "~/protocol";
 
-const summary: SessionSummary = {
+const summary: ThreadSummary = {
   text: "**Request** — fix the login redirect.\n\n**Follow-ups** — None.",
   harness: "Claude",
   model: "haiku",
@@ -16,9 +16,9 @@ const summary: SessionSummary = {
 
 const config: UserConfig = { version: 1, summaryPrompt: "Summarise it." };
 
-function panel(props: Partial<React.ComponentProps<typeof SessionSummaryPanel>> = {}) {
+function panel(props: Partial<React.ComponentProps<typeof ThreadSummaryPanel>> = {}) {
   return (
-    <SessionSummaryPanel
+    <ThreadSummaryPanel
       summary={summary}
       loading={false}
       error={null}
@@ -32,7 +32,7 @@ function panel(props: Partial<React.ComponentProps<typeof SessionSummaryPanel>> 
   );
 }
 
-describe("the session summary panel", () => {
+describe("the thread summary panel", () => {
   it("renders the summary as markdown and says what wrote it", () => {
     render(panel());
 
@@ -55,7 +55,7 @@ describe("the session summary panel", () => {
 
   // A summary written before the last few turns is still useful; claiming to
   // be current is what would mislead.
-  it("marks a summary the session has moved past", () => {
+  it("marks a summary the thread has moved past", () => {
     render(panel({ stale: true }));
 
     expect(screen.getByText(/moved on since this was written/)).toBeTruthy();

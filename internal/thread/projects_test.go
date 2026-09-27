@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -119,7 +119,7 @@ func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Dispose("test done")
-	meta, err := st.Session(context.Background(), a.ID)
+	meta, err := st.Thread(context.Background(), a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestExplicitHarnessDefaultsAreNotReplacedByProjectProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Dispose("test done")
-	meta, err := st.Session(context.Background(), a.ID)
+	meta, err := st.Thread(context.Background(), a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestCachedLegacyDefaultsAreNormalizedWithoutAProjectFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Dispose("test done")
-	meta, err := st.Session(context.Background(), a.ID)
+	meta, err := st.Thread(context.Background(), a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,17 +238,17 @@ func TestDeleteProjectLeavesTheCheckoutAlone(t *testing.T) {
 	}
 }
 
-// Sessions have transcripts and worktrees behind them. Tidying the project
+// Threads have transcripts and worktrees behind them. Tidying the project
 // list must not take them with it, so a project that still owns one is
 // refused and says why.
-func TestDeleteProjectRefusesWhileSessionsRemain(t *testing.T) {
+func TestDeleteProjectRefusesWhileThreadsRemain(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
-	meta := store.SessionMeta{ID: "s1", Cwd: root, Harness: "fake", ProjectID: p.ID, Phase: "idle", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
+	meta := store.ThreadMeta{ID: "s1", Cwd: root, Harness: "fake", ProjectID: p.ID, Phase: "idle", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,19 +256,19 @@ func TestDeleteProjectRefusesWhileSessionsRemain(t *testing.T) {
 	if !errors.Is(err, store.ErrProjectInUse) {
 		t.Fatalf("delete gave %v, want ErrProjectInUse", err)
 	}
-	if !strings.Contains(err.Error(), "1 session") {
-		t.Fatalf("the refusal does not say how many sessions are in the way: %v", err)
+	if !strings.Contains(err.Error(), "1 thread") {
+		t.Fatalf("the refusal does not say how many threads are in the way: %v", err)
 	}
 	if _, err := st.Project(context.Background(), p.ID); err != nil {
 		t.Fatalf("the refused project was removed anyway: %v", err)
 	}
 
-	// Once the session goes, the project can too.
-	if err := st.DeleteSession(context.Background(), meta.ID); err != nil {
+	// Once the thread goes, the project can too.
+	if err := st.DeleteThread(context.Background(), meta.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
-		t.Fatalf("delete still refused after the session went: %v", err)
+		t.Fatalf("delete still refused after the thread went: %v", err)
 	}
 }
 
@@ -286,11 +286,11 @@ func TestDeleteProjectReportsAnUnknownID(t *testing.T) {
 	}
 }
 
-// The refusal is only as good as the window it covers. Creating a session
+// The refusal is only as good as the window it covers. Creating a thread
 // reads its project long before it writes the row — probing the harness and
 // resolving a workspace happen in between — so the check that matters is the
 // one in the insert's own transaction.
-func TestCreateSessionRefusesADeletedProject(t *testing.T) {
+func TestCreateThreadRefusesADeletedProject(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 
@@ -299,28 +299,28 @@ func TestCreateSessionRefusesADeletedProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta := store.SessionMeta{ID: "s1", Cwd: root, Harness: "fake", ProjectID: p.ID, Phase: "creating", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
-	if err := st.CreateSession(context.Background(), meta); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("creating a session in a deleted project gave %v, want ErrNotFound", err)
+	meta := store.ThreadMeta{ID: "s1", Cwd: root, Harness: "fake", ProjectID: p.ID, Phase: "creating", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
+	if err := st.CreateThread(context.Background(), meta); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("creating a thread in a deleted project gave %v, want ErrNotFound", err)
 	}
-	sessions, err := st.ListSessions(context.Background())
+	threads, err := st.ListThreads(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 0 {
-		t.Fatalf("the orphaned session was written anyway: %d rows", len(sessions))
+	if len(threads) != 0 {
+		t.Fatalf("the orphaned thread was written anyway: %d rows", len(threads))
 	}
 }
 
-// A session with no project at all is the pre-project shape and still legal.
+// A thread with no project at all is the pre-project shape and still legal.
 // The new check must not turn it into an error.
-func TestCreateSessionStillAllowsNoProject(t *testing.T) {
+func TestCreateThreadStillAllowsNoProject(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, _ := testProject(t, root)
 
-	meta := store.SessionMeta{ID: "s1", Cwd: root, Harness: "fake", Phase: "idle", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
-		t.Fatalf("a session with no project was refused: %v", err)
+	meta := store.ThreadMeta{ID: "s1", Cwd: root, Harness: "fake", Phase: "idle", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
+		t.Fatalf("a thread with no project was refused: %v", err)
 	}
 }
 

@@ -17,9 +17,9 @@ import (
 )
 
 // The terminal surface: one WebSocket per open terminal tab, carrying a pty
-// bound to the session's checkout. It is its own endpoint rather than a set of
+// bound to the thread's checkout. It is its own endpoint rather than a set of
 // sync-protocol commands because a terminal is a stream, not a request — and
-// because its lifetime is the tab's, not the session's. The gate covers it
+// because its lifetime is the tab's, not the thread's. The gate covers it
 // like every other route: an unpaired device never reaches the shell.
 //
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
@@ -34,10 +34,10 @@ type termClientFrame struct {
 }
 
 func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
-	// Two things run here: the user's shell in a session's checkout, or a
+	// Two things run here: the user's shell in a thread's checkout, or a
 	// harness's own sign-in flow for one provider instance. Both are a pty the
 	// user types into; only what it runs differs.
-	sessionID, login := r.URL.Query().Get("session"), r.URL.Query().Get("login")
+	threadID, login := r.URL.Query().Get("thread"), r.URL.Query().Get("login")
 	var cmd *exec.Cmd
 	switch {
 	case login != "":
@@ -50,8 +50,8 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		// CLAUDE_CONFIG_DIR lands the credentials where the probe looks.
 		cmd = exec.Command(argv[0], argv[1:]...)
 		cmd.Env = append(env, "TERM=xterm-256color")
-	case sessionID != "":
-		root, err := s.mgr.SessionWorkspaceRoot(r.Context(), sessionID)
+	case threadID != "":
+		root, err := s.mgr.ThreadWorkspaceRoot(r.Context(), threadID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -65,7 +65,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	default:
-		http.Error(w, "session or login is required", http.StatusBadRequest)
+		http.Error(w, "thread or login is required", http.StatusBadRequest)
 		return
 	}
 
@@ -104,11 +104,11 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 
 	// A shell in a checkout starts dev servers and leaves them; end them with
 	// the terminal rather than with the machine.
-	// pty.Start makes the shell a session leader; say so up front so the
+	// pty.Start makes the shell a thread leader; say so up front so the
 	// process-group fallback does not also ask for setpgid, which cannot
 	// combine with setsid.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	tree := procgroup.Attach(cmd, "term-"+sessionID+login)
+	tree := procgroup.Attach(cmd, "term-"+threadID+login)
 	tty, err := pty.Start(cmd)
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "pty failed")

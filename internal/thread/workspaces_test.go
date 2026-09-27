@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -94,15 +94,15 @@ func TestListWorkspacesReportsRootAndWorktrees(t *testing.T) {
 	}
 }
 
-func TestListWorkspacesMarksCheckoutsHeldByLiveSessions(t *testing.T) {
+func TestListWorkspacesMarksCheckoutsHeldByLiveThreads(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	now := proto.NowMillis()
-	meta := store.SessionMeta{ID: "s1", Cwd: worktree, Harness: "fake", Title: "already here", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
+	meta := store.ThreadMeta{ID: "s1", Cwd: worktree, Harness: "fake", Title: "already here", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
 
@@ -111,10 +111,10 @@ func TestListWorkspacesMarksCheckoutsHeldByLiveSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	side, ok := find(spaces, worktree)
-	if !ok || !side.Busy || side.BusySessionID != "s1" || side.BusyTitle != "already here" {
+	if !ok || !side.Busy || side.BusyThreadID != "s1" || side.BusyTitle != "already here" {
 		t.Fatalf("held worktree not reported busy: %+v", side)
 	}
-	// Busy is advice, not a lock: nothing about Git stops two sessions sharing
+	// Busy is advice, not a lock: nothing about Git stops two threads sharing
 	// a checkout, so attaching still succeeds and the presenter warns.
 	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, worktree); err != nil {
 		t.Fatalf("attaching to a busy workspace should be allowed: %v", err)
@@ -147,15 +147,15 @@ func TestCreateProjectAttachesToExistingWorktreeWithoutProvisioning(t *testing.T
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		meta, err := st.Session(context.Background(), a.ID)
+		meta, err := st.Thread(context.Background(), a.ID)
 		return err == nil && meta.Phase == "ready"
 	})
-	meta, err := st.Session(context.Background(), a.ID)
+	meta, err := st.Thread(context.Background(), a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolve(meta.Cwd) != resolve(worktree) {
-		t.Fatalf("session ran in %s, want the borrowed worktree %s", meta.Cwd, worktree)
+		t.Fatalf("thread ran in %s, want the borrowed worktree %s", meta.Cwd, worktree)
 	}
 	if meta.WorkspaceMode != "borrowed" {
 		t.Fatalf("workspace mode is %q, want borrowed", meta.WorkspaceMode)
@@ -165,12 +165,12 @@ func TestCreateProjectAttachesToExistingWorktreeWithoutProvisioning(t *testing.T
 	}
 
 	// The whole point of borrowing: omniplex did not make this checkout, so closing
-	// the session must leave it exactly where it was.
+	// the thread must leave it exactly where it was.
 	if err := mgr.Cleanup(context.Background(), a.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, err := st.Session(context.Background(), a.ID)
+		m, err := st.Thread(context.Background(), a.ID)
 		return err == nil && m.Phase == "closed"
 	})
 	if _, err := os.Stat(worktree); err != nil {
@@ -212,10 +212,10 @@ func TestTypedBranchCreatesWorktreeEvenWhenProjectDefaultIsLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, err := st.Session(context.Background(), a.ID)
+		m, err := st.Thread(context.Background(), a.ID)
 		return err == nil && (m.Phase == "ready" || m.Phase == "provision_failed")
 	})
-	m, _ := st.Session(context.Background(), a.ID)
+	m, _ := st.Thread(context.Background(), a.ID)
 	if m.Phase != "ready" {
 		t.Fatalf("phase %q, want ready", m.Phase)
 	}
@@ -229,7 +229,7 @@ func TestTypedBranchCreatesWorktreeEvenWhenProjectDefaultIsLocal(t *testing.T) {
 	if m.Branch != "issue/42-typed-in" {
 		t.Fatalf("branch %q", m.Branch)
 	}
-	if fa.session() == nil {
+	if fa.thread() == nil {
 		t.Fatal("harness never started in the new worktree")
 	}
 }
@@ -252,10 +252,10 @@ func TestSuggestedRootMayLiveOutsideTheProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, err := st.Session(context.Background(), a.ID)
+		m, err := st.Thread(context.Background(), a.ID)
 		return err == nil && (m.Phase == "ready" || m.Phase == "provision_failed")
 	})
-	m, _ := st.Session(context.Background(), a.ID)
+	m, _ := st.Thread(context.Background(), a.ID)
 	if m.Phase != "ready" {
 		t.Fatalf("phase %q, want ready", m.Phase)
 	}
@@ -268,9 +268,9 @@ func TestSuggestedRootMayLiveOutsideTheProject(t *testing.T) {
 	}
 }
 
-// The "Main checkout" side of the new-session toggle: run where the user
+// The "Main checkout" side of the new-thread toggle: run where the user
 // already works, touch nothing on the way in or out.
-func TestLocalSessionRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
+func TestLocalThreadRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	// A provision hook that would be destructive against a live checkout: if
@@ -296,10 +296,10 @@ func TestLocalSessionRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), a.ID)
+		m, e := st.Thread(context.Background(), a.ID)
 		return e == nil && (m.Phase == "ready" || m.Phase == "provision_failed")
 	})
-	m, err := st.Session(context.Background(), a.ID)
+	m, err := st.Thread(context.Background(), a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestLocalSessionRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 	if m.WorkspaceMode != "local" {
 		t.Fatalf("workspace mode %q, want local", m.WorkspaceMode)
 	}
-	// The session is on whatever the checkout was already on. No branch was
+	// The thread is on whatever the checkout was already on. No branch was
 	// created, so none may be claimed.
 	if m.Branch != "main" {
 		t.Fatalf("branch %q, want the checkout's own branch main", m.Branch)
@@ -320,10 +320,10 @@ func TestLocalSessionRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 	// Cleared at creation, not merely skipped at run time: the record itself
 	// must show there is nothing to run.
 	if m.ProvisionScript != "" || m.DeprovisionScript != "" {
-		t.Fatalf("hooks survived onto a local session: %q / %q", m.ProvisionScript, m.DeprovisionScript)
+		t.Fatalf("hooks survived onto a local thread: %q / %q", m.ProvisionScript, m.DeprovisionScript)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".worktrees")); !os.IsNotExist(err) {
-		t.Fatal("a local session must not create a worktree")
+		t.Fatal("a local thread must not create a worktree")
 	}
 	if _, err := os.Stat(filepath.Join(root, "provision-ran")); !os.IsNotExist(err) {
 		t.Fatal("the provision hook ran against the user's own checkout")
@@ -334,7 +334,7 @@ func TestLocalSessionRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		c, e := st.Session(context.Background(), a.ID)
+		c, e := st.Thread(context.Background(), a.ID)
 		return e == nil && c.Phase == "closed"
 	})
 	if _, err := os.Stat(filepath.Join(root, "README")); err != nil {
@@ -346,8 +346,8 @@ func TestLocalSessionRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 }
 
 // Sharing the main checkout is the user's call: omniplex reports that somebody is
-// already there and starts the session anyway.
-func TestSecondLocalSessionIsAllowedWhileTheFirstIsLive(t *testing.T) {
+// already there and starts the thread anyway.
+func TestSecondLocalThreadIsAllowedWhileTheFirstIsLive(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -358,12 +358,12 @@ func TestSecondLocalSessionIsAllowedWhileTheFirstIsLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), first.ID)
+		m, e := st.Thread(context.Background(), first.ID)
 		return e == nil && m.Phase == "ready"
 	})
 
 	// The warning the presenter shows is this flag, and it has to be set
-	// before the second session can be warned about anything.
+	// before the second thread can be warned about anything.
 	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -374,21 +374,21 @@ func TestSecondLocalSessionIsAllowedWhileTheFirstIsLive(t *testing.T) {
 
 	second, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
 	if err != nil {
-		t.Fatalf("a second local session in the same checkout should be allowed: %v", err)
+		t.Fatalf("a second local thread in the same checkout should be allowed: %v", err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), second.ID)
+		m, e := st.Thread(context.Background(), second.ID)
 		return e == nil && m.Phase == "ready"
 	})
-	m, _ := st.Session(context.Background(), second.ID)
+	m, _ := st.Thread(context.Background(), second.ID)
 	if resolve(m.Cwd) != resolve(root) {
-		t.Fatalf("second session cwd %s, want %s", m.Cwd, root)
+		t.Fatalf("second thread cwd %s, want %s", m.Cwd, root)
 	}
 }
 
 // Force delete is the one path that removes a worktree without a hook, and it
 // must still recognise a checkout that was never omniplex's to remove.
-func TestForceDeleteOfALocalSessionRemovesNothing(t *testing.T) {
+func TestForceDeleteOfALocalThreadRemovesNothing(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -399,7 +399,7 @@ func TestForceDeleteOfALocalSessionRemovesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), a.ID)
+		m, e := st.Thread(context.Background(), a.ID)
 		return e == nil && m.Phase == "ready"
 	})
 	if err := st.SetPhase(context.Background(), a.ID, "cleanup_failed"); err != nil {
@@ -415,7 +415,7 @@ func TestForceDeleteOfALocalSessionRemovesNothing(t *testing.T) {
 
 // An upgrade must not turn a hook that was written to tear down a worktree
 // into one that runs over the user's own files.
-func TestCleanupIgnoresADeprovisionScriptLeftOnALocalSession(t *testing.T) {
+func TestCleanupIgnoresADeprovisionScriptLeftOnALocalThread(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	script := "#!/bin/sh\ntouch \"$OMNIPLEX_PROJECT_ROOT/deprovision-ran\"\n"
@@ -432,11 +432,11 @@ func TestCleanupIgnoresADeprovisionScriptLeftOnALocalSession(t *testing.T) {
 	// The row an older build would have written: local, but carrying a
 	// teardown script because that build attached one regardless of mode.
 	now := proto.NowMillis()
-	meta := store.SessionMeta{
+	meta := store.ThreadMeta{
 		ID: "legacy", Cwd: root, Harness: "fake", CreatedAt: now, UpdatedAt: now,
 		Phase: "idle", ProjectID: p.ID, WorkspaceMode: "local", DeprovisionScript: "deprovision",
 	}
-	if err := st.CreateSession(context.Background(), meta); err != nil {
+	if err := st.CreateThread(context.Background(), meta); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mgr.Get(context.Background(), "legacy"); err != nil {
@@ -446,7 +446,7 @@ func TestCleanupIgnoresADeprovisionScriptLeftOnALocalSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), "legacy")
+		m, e := st.Thread(context.Background(), "legacy")
 		return e == nil && m.Phase == "closed"
 	})
 	if _, err := os.Stat(filepath.Join(root, "deprovision-ran")); !os.IsNotExist(err) {
@@ -469,21 +469,21 @@ func TestUnknownWorkspaceModeIsRefused(t *testing.T) {
 	}
 }
 
-// A managed session that got its worktree but failed afterwards still holds
+// A managed thread that got its worktree but failed afterwards still holds
 // it: offering it again would put two harnesses in it, and cleaning the
 // failure up would delete it underneath the second.
-func TestAFailedManagedSessionStillHoldsTheWorktreeItCreated(t *testing.T) {
+func TestAFailedManagedThreadStillHoldsTheWorktreeItCreated(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	now := proto.NowMillis()
-	failed := store.SessionMeta{
+	failed := store.ThreadMeta{
 		ID: "half-made", Cwd: worktree, Harness: "fake", Title: "half made", CreatedAt: now,
 		UpdatedAt: now, Phase: "provision_failed", ProjectID: p.ID, WorkspaceMode: "managed",
 	}
-	if err := st.CreateSession(context.Background(), failed); err != nil {
+	if err := st.CreateThread(context.Background(), failed); err != nil {
 		t.Fatal(err)
 	}
 	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID)
@@ -491,15 +491,15 @@ func TestAFailedManagedSessionStillHoldsTheWorktreeItCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	if w, ok := find(spaces, worktree); !ok || !w.Busy {
-		t.Fatalf("a worktree held by a failed session must stay busy: %+v", w)
+		t.Fatalf("a worktree held by a failed thread must stay busy: %+v", w)
 	}
 	// The placeholder is the opposite case: it names the root only because
 	// provisioning has not replaced it yet, so the root stays free.
-	placeholder := store.SessionMeta{
+	placeholder := store.ThreadMeta{
 		ID: "not-yet", Cwd: root, Harness: "fake", CreatedAt: now, UpdatedAt: now,
 		Phase: "provisioning", ProjectID: p.ID, WorkspaceMode: "managed",
 	}
-	if err := st.CreateSession(context.Background(), placeholder); err != nil {
+	if err := st.CreateThread(context.Background(), placeholder); err != nil {
 		t.Fatal(err)
 	}
 	spaces, err = mgr.ListWorkspaces(context.Background(), p.ID)
@@ -507,7 +507,7 @@ func TestAFailedManagedSessionStillHoldsTheWorktreeItCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	if w, ok := find(spaces, root); !ok || w.Busy {
-		t.Fatalf("an unprovisioned managed session must not hold the root: %+v", w)
+		t.Fatalf("an unprovisioned managed thread must not hold the root: %+v", w)
 	}
 }
 
@@ -532,22 +532,22 @@ func TestProjectRootInsideARepositoryIsStillAttachable(t *testing.T) {
 	}
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
 	if err != nil {
-		t.Fatalf("a main-checkout session in a subdirectory project should work: %v", err)
+		t.Fatalf("a main-checkout thread in a subdirectory project should work: %v", err)
 	}
 	waitFor(t, func() bool {
-		m, e := st.Session(context.Background(), a.ID)
+		m, e := st.Thread(context.Background(), a.ID)
 		return e == nil && m.Phase == "ready"
 	})
-	m, _ := st.Session(context.Background(), a.ID)
+	m, _ := st.Thread(context.Background(), a.ID)
 	if resolve(m.Cwd) != resolve(sub) {
 		t.Fatalf("cwd %s, want %s", m.Cwd, sub)
 	}
 }
 
-// Creating a session reads the workspace list and then writes a row that
+// Creating a thread reads the workspace list and then writes a row that
 // changes it, so the pair is one critical section — but the outcome is that
-// every caller gets a session, not that one of them wins a lock.
-func TestConcurrentLocalSessionsAllShareTheRoot(t *testing.T) {
+// every caller gets a thread, not that one of them wins a lock.
+func TestConcurrentLocalThreadsAllShareTheRoot(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
@@ -573,6 +573,6 @@ func TestConcurrentLocalSessionsAllShareTheRoot(t *testing.T) {
 	close(start)
 	wg.Wait()
 	if won != racers {
-		t.Fatalf("%d of %d concurrent local sessions started, want all of them", won, racers)
+		t.Fatalf("%d of %d concurrent local threads started, want all of them", won, racers)
 	}
 }

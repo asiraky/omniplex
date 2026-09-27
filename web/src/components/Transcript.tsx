@@ -52,7 +52,7 @@ import type {
   PromptImage,
   PullRequest,
   QueuedPrompt,
-  SessionState,
+  ThreadState,
   ToolStatus,
   Turn,
 } from "~/protocol";
@@ -403,24 +403,24 @@ const COLLAPSED_USER_MESSAGE_MASK = `linear-gradient(to bottom, black calc(100% 
 // hide the overflow behind a soft fade and a toggle. The fade is a CSS mask, not
 // an overlay: it needs no knowledge of the bubble's colour, so it works in both
 // themes for free. Expanded state is per-message and never persisted —
-// reopening the session starts collapsed again.
+// reopening the thread starts collapsed again.
 // The pictures a prompt carried. Read from the attachment endpoint rather than
-// from anything the event carried, so a phone attaching to a session it was not
+// from anything the event carried, so a phone attaching to a thread it was not
 // in the room for sees exactly what was sent. Each thumbnail is also a link: a
 // screenshot cropped to a tile is a reminder of what was sent, not a look at it.
-function PromptImages({ sessionId, images }: { sessionId: string; images: PromptImage[] }) {
+function PromptImages({ threadId, images }: { threadId: string; images: PromptImage[] }) {
   return (
     <div className="mb-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5">
       {images.map((image) => (
         <a
           key={image.id}
-          href={attachmentUrl(sessionId, image.id)}
+          href={attachmentUrl(threadId, image.id)}
           target="_blank"
           rel="noreferrer"
           className="focus-visible:ring-ring rounded-lg outline-none focus-visible:ring-2"
         >
           <img
-            src={attachmentUrl(sessionId, image.id)}
+            src={attachmentUrl(threadId, image.id)}
             alt="Attached image"
             loading="lazy"
             className="max-h-36 max-w-[9rem] rounded-lg border object-cover"
@@ -436,7 +436,7 @@ const NO_ARTEFACTS: Artefact[] = [];
 type OpenArtefact = (id: string) => void;
 
 // The files a prompt carried, parsed back out of the trailer the server wrote
-// for the agent. The tile reads size from the session's artefacts; a file the
+// for the agent. The tile reads size from the thread's artefacts; a file the
 // window has not loaded yet still shows, sized zero, rather than vanishing.
 function PromptFiles({
   files,
@@ -512,12 +512,12 @@ function ArtefactCards({ items, artefacts, onOpen }: { items: Item[]; artefacts:
 
 function UserMessage({
   item,
-  sessionId,
+  threadId,
   artefacts,
   onOpenArtefact,
 }: {
   item: Item;
-  sessionId: string;
+  threadId: string;
   artefacts: Artefact[];
   onOpenArtefact?: OpenArtefact;
 }) {
@@ -562,7 +562,7 @@ function UserMessage({
 
   return (
     <div ref={wrapRef} data-msg-id={item.id} className="group fade-in flex flex-col items-end">
-      {item.images && item.images.length > 0 && <PromptImages sessionId={sessionId} images={item.images} />}
+      {item.images && item.images.length > 0 && <PromptImages threadId={threadId} images={item.images} />}
       {files.length > 0 && <PromptFiles files={files} artefacts={artefacts} onOpen={onOpenArtefact} />}
       {/* An attachment-only message has no bubble to draw: an empty one reads
           as a message that failed to arrive. */}
@@ -605,14 +605,14 @@ function UserMessage({
 
 function Message({
   item,
-  sessionId,
+  threadId,
   streaming,
   recovered,
   artefacts,
   onOpenArtefact,
 }: {
   item: Item;
-  sessionId: string;
+  threadId: string;
   streaming: boolean;
   recovered?: "restart" | "continue";
   artefacts: Artefact[];
@@ -639,7 +639,7 @@ function Message({
   }
 
   if (item.role === "user") {
-    return <UserMessage item={item} sessionId={sessionId} artefacts={artefacts} onOpenArtefact={onOpenArtefact} />;
+    return <UserMessage item={item} threadId={threadId} artefacts={artefacts} onOpenArtefact={onOpenArtefact} />;
   }
 
   if (item.contentKind === "thought") {
@@ -675,7 +675,7 @@ function WorkspaceCard({
   onCleanup,
   onForceDelete,
 }: {
-  state: SessionState;
+  state: ThreadState;
   onRetry: () => void;
   onCleanup: () => void;
   onForceDelete: () => void;
@@ -687,7 +687,7 @@ function WorkspaceCard({
   const [open, setOpen] = useState(active || failed);
   // A receipt is for the reader who watched the work. A workspace that was
   // already ready when this transcript mounted — every reopen of an old
-  // session — has nothing to report, so the card never appears: mounting it
+  // thread — has nothing to report, so the card never appears: mounting it
   // only to auto-dismiss it 2.5s later would play its collapse above a
   // transcript pinned to the tail, and the tail wobbles as the scroller
   // chases the shrinking content a frame behind.
@@ -862,7 +862,7 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
   // label states the fact and the aria-label states the offer, leaving the
   // pill legible without a hover and safe without one too: nothing is
   // destroyed until the confirmation says so.
-  const offer = `Pull request #${pr.number} was merged — finish with this session`;
+  const offer = `Pull request #${pr.number} was merged — finish with this thread`;
   return (
     <div className="fade-in flex justify-center pt-1 pb-2">
       <Tooltip>
@@ -878,7 +878,7 @@ function MergedCard({ pr, onFinish }: { pr: PullRequest; onFinish: () => void })
             PR #{pr.number} merged
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Done with this session? Delete it and its worktree.</TooltipContent>
+        <TooltipContent>Done with this thread? Delete it and its worktree.</TooltipContent>
       </Tooltip>
     </div>
   );
@@ -911,9 +911,9 @@ function InterruptedCard({
   onRetryTurn?: (turn: Turn) => void;
   /** The harness's other ready accounts, offered when this one hit a limit. */
   switchTargets?: { id: string; name: string }[];
-  /** The account the session was moved to since this turn failed, if it was. */
+  /** The account the thread was moved to since this turn failed, if it was. */
   switchedTo?: string;
-  /** Moves the session to another account, then re-sends this turn.
+  /** Moves the thread to another account, then re-sends this turn.
       Resolves false when the switch did not happen, so the card can be used again. */
   onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
 }) {
@@ -953,7 +953,7 @@ function InterruptedCard({
         {switchedTo ? (
           <>
             <p className="text-muted-foreground mt-1.5 text-[12px]">
-              The session is on {switchedTo} now. Retry to run the prompt there.
+              The thread is on {switchedTo} now. Retry to run the prompt there.
             </p>
             <div className="mt-2.5 flex flex-wrap gap-2">{retry}</div>
           </>
@@ -961,7 +961,7 @@ function InterruptedCard({
           <>
             <p className="text-muted-foreground mt-1.5 text-[12px]">
               {switchTargets.length && onSwitchAccount
-                ? "Continue on another account: the conversation moves with the session, and this prompt runs there."
+                ? "Continue on another account: the conversation moves with the thread, and this prompt runs there."
                 : "Wait for the reset, or sign another account in to this harness to continue on it."}
             </p>
             <div className="mt-2.5 flex flex-wrap gap-2">
@@ -996,7 +996,7 @@ function InterruptedCard({
           {providerName ?? "The provider"} needs to sign in again, so this turn could not run.
         </p>
         <p className="text-muted-foreground mt-1.5 text-[12px]">
-          The session and its prompt are safe. Sign in, then retry — the prompt is only ever
+          The thread and its prompt are safe. Sign in, then retry — the prompt is only ever
           re-sent when you press it.
         </p>
         <div className="mt-2.5 flex flex-wrap gap-2">
@@ -1064,12 +1064,12 @@ function InterruptedCard({
 // its next step and cannot be taken back; one still waiting on the server can.
 function QueuedCard({
   queued,
-  sessionId,
+  threadId,
   artefacts,
   onDequeue,
 }: {
   queued: QueuedPrompt;
-  sessionId: string;
+  threadId: string;
   artefacts: Artefact[];
   onDequeue: (queueId: string) => void;
 }) {
@@ -1078,7 +1078,7 @@ function QueuedCard({
     <div data-queue-id={queued.queueId} className="fade-in flex flex-col items-end">
       {queued.images && queued.images.length > 0 && (
         <div className="opacity-60">
-          <PromptImages sessionId={sessionId} images={queued.images} />
+          <PromptImages threadId={threadId} images={queued.images} />
         </div>
       )}
       {files.length > 0 && (
@@ -1139,25 +1139,25 @@ export function Transcript({
   onPickRecent,
   onDequeue,
 }: {
-  state: SessionState;
+  state: ThreadState;
   /** True when the server holds items older than the loaded window. */
   hasOlder?: boolean;
   /** Asks for the page above the window; called as the reader nears the top.
       Idempotent and fire-and-forget — the caller dedups in-flight asks. */
   onLoadOlder?: () => void;
-  /** Where this session was last scrolled — the position the parent kept from
-      the previous time this session was open, or the one a resumed page saved
+  /** Where this thread was last scrolled — the position the parent kept from
+      the previous time this thread was open, or the one a resumed page saved
       as it went to background (resume.ts). Applied once, on mount. */
   initialScroll?: { top: number; atBottom: boolean };
   /** Reports where the reader is, so the parent can hand it back the next time
-      this session is opened. Switching sessions unmounts this component, so a
+      this thread is opened. Switching threads unmounts this component, so a
       position it kept to itself would die with it. */
-  onScrollChange?: (sessionId: string, top: number, atBottom: boolean) => void;
+  onScrollChange?: (threadId: string, top: number, atBottom: boolean) => void;
   onRetryProvision: () => void;
   onCleanup: () => void;
   onForceDelete: () => void;
   onContinue: () => void;
-  /** Opens this session provider's interactive sign-in flow, when it has one. */
+  /** Opens this thread provider's interactive sign-in flow, when it has one. */
   onLogin?: () => void;
   /** The provider instance named in authentication failures. */
   providerName?: string;
@@ -1165,24 +1165,24 @@ export function Transcript({
   providerReady?: boolean;
   /** Re-sends a failed turn's prompt, on explicit request only. */
   onRetryTurn?: (turn: Turn) => void;
-  /** Other accounts of this session's harness, offered on a usage limit. */
+  /** Other accounts of this thread's harness, offered on a usage limit. */
   switchTargets?: { id: string; name: string }[];
-  /** Moves the session to another account and re-sends the given turn;
+  /** Moves the thread to another account and re-sends the given turn;
       resolves false when the switch was refused or failed. */
   onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
   onOpenDiff: (path?: string) => void;
-  /** The session's jobs, for the spawn cards to read live status from. */
+  /** The thread's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
   /** Opens the panel on the jobs surface. */
   onOpenJobs?: () => void;
   /** Opens an artefact in the panel. */
   onOpenArtefact?: OpenArtefact;
-  /** The session branch's pull request, when omniplex could find one. */
+  /** The thread branch's pull request, when omniplex could find one. */
   pr?: PullRequest | null;
-  /** Opens the delete confirmation for this session. */
+  /** Opens the delete confirmation for this thread. */
   onFinish: () => void;
   /** Skills to offer on an empty transcript, already filtered against this
-      session's live catalogue by the parent — never offer what it cannot run. */
+      thread's live catalogue by the parent — never offer what it cannot run. */
   recents?: ComposerItem[];
   /** True when `recents` are catalogue suggestions rather than real history. */
   recentsSeeded?: boolean;
@@ -1329,7 +1329,7 @@ export function Transcript({
   }, []);
 
   // The same idea one scope smaller: where the reader is, reported up as it
-  // moves, so that switching to another session and back returns to the place
+  // moves, so that switching to another thread and back returns to the place
   // they were reading rather than the bottom. Held in a ref so a new callback
   // identity does not re-subscribe the listener.
   const onScrollChangeRef = useRef(onScrollChange);
@@ -1344,7 +1344,7 @@ export function Transcript({
     const el = scrollerRef.current;
     if (!el) return;
     const report = () =>
-      onScrollChangeRef.current?.(latestState.current.sessionId, el.scrollTop, atBottom(el));
+      onScrollChangeRef.current?.(latestState.current.threadId, el.scrollTop, atBottom(el));
     el.addEventListener("scroll", report, { passive: true });
     // Mounting counts as a position too: a transcript left at the tail — or
     // one that just restored an offset above — has somewhere to come back to
@@ -1389,25 +1389,25 @@ export function Transcript({
     return undefined;
   }, [ownItems]);
 
-  // Only a prompt that arrived while this session was already on screen is one
-  // the reader just sent. Opening a session, or switching between two, also
+  // Only a prompt that arrived while this thread was already on screen is one
+  // the reader just sent. Opening a thread, or switching between two, also
   // changes the newest prompt — the whole transcript arrives at once — and
   // yanking the view then would be moving a transcript nobody asked to move.
-  // Which is why the session is remembered separately from the prompt: a
-  // session first seen with no prompt in it at all still anchors the first one
+  // Which is why the thread is remembered separately from the prompt: a
+  // thread first seen with no prompt in it at all still anchors the first one
   // it gets.
-  const seenSession = useRef<string>(undefined);
+  const seenThread = useRef<string>(undefined);
   const seenPrompt = useRef<string>(undefined);
   useLayoutEffect(() => {
-    const fresh = seenSession.current !== state.sessionId;
+    const fresh = seenThread.current !== state.threadId;
     const prev = seenPrompt.current;
-    seenSession.current = state.sessionId;
+    seenThread.current = state.threadId;
     seenPrompt.current = lastPromptID;
     if (fresh || !lastPromptID || lastPromptID === prev) return;
     anchorTo(
       scrollerRef.current?.querySelector<HTMLElement>(`[data-msg-id="${lastPromptID}"]`) ?? null,
     );
-  }, [state.sessionId, lastPromptID, anchorTo, scrollerRef]);
+  }, [state.threadId, lastPromptID, anchorTo, scrollerRef]);
 
   const artefacts = state.artefacts ?? NO_ARTEFACTS;
   const rows = useMemo(
@@ -1538,7 +1538,7 @@ export function Transcript({
                 ) : (
                   <Message
                     item={row.item}
-                    sessionId={state.sessionId}
+                    threadId={state.threadId}
                     streaming={state.phase === "turn" && row.item.id === liveAgentId}
                     artefacts={artefacts}
                     onOpenArtefact={onOpenArtefact}
@@ -1580,7 +1580,7 @@ export function Transcript({
             <QueuedCard
               key={q.queueId}
               queued={q}
-              sessionId={state.sessionId}
+              threadId={state.threadId}
               artefacts={artefacts}
               onDequeue={(id) => onDequeue?.(id)} />
           ))}

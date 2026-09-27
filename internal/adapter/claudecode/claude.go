@@ -291,8 +291,8 @@ func conversationID(o adapter.CreateOptions) string {
 	if o.Resume && o.HarnessSessionID != "" {
 		return o.HarnessSessionID
 	}
-	if o.SessionID != "" {
-		return o.SessionID
+	if o.ThreadID != "" {
+		return o.ThreadID
 	}
 	return uuid.NewString()
 }
@@ -400,7 +400,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	go s.drainStderr(stderr)
 	go s.watchExit()
 
-	s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
+	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 		HarnessSessionID: sessionID,
 	}))
 
@@ -1103,7 +1103,7 @@ func (s *session) trackSessionID(msg map[string]json.RawMessage) {
 	}
 	s.mu.Unlock()
 	if changed {
-		s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
+		s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 			HarnessSessionID: id,
 		}))
 	}
@@ -1154,7 +1154,7 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		model := s.model
 		harnessID := s.harnessSessionID
 		s.mu.Unlock()
-		s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
+		s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 			Model: model, Mode: init.PermissionMode, HarnessSessionID: harnessID,
 		}))
 	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":

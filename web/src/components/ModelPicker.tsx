@@ -31,9 +31,9 @@ import type { HarnessMeta, ModelMeta } from "~/protocol";
 
 /** What the picker returns: choosing a model chooses its account too. */
 export interface ModelSelection {
-  /** The driver, which is what a session records as its harness. */
+  /** The driver, which is what a thread records as its harness. */
   harness: string;
-  /** The provider instance the session runs under. */
+  /** The provider instance the thread runs under. */
   instance: string;
   model: string;
 }
@@ -74,13 +74,13 @@ export function ModelPicker({
   value: ModelSelection;
   onChange: (next: ModelSelection) => void;
   /**
-   * Mid-session the harness is fixed — another one is a different agent — but
+   * Mid-thread the harness is fixed — another one is a different agent — but
    * the account is not: the rail offers only this harness's other enabled
    * accounts, and disappears when there are none. Picking a model under
-   * another account is a request to switch the session to it.
+   * another account is a request to switch the thread to it.
    */
   lockDriver?: boolean;
-  /** New-session preferences can select an account immediately on a rail click. */
+  /** New-thread preferences can select an account immediately on a rail click. */
   onInstanceChange?: (instance: PickerInstance) => void;
   disabled?: boolean;
   /**

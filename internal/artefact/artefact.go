@@ -1,14 +1,14 @@
-// Package artefact deals with the things a session shows you: a report the
+// Package artefact deals with the things a thread shows you: a report the
 // agent wrote, a prototype it built, a PDF someone dropped into the composer.
 // Any file type, a single file or a folder.
 //
 // An artefact is a real file in the project. The agent writes it where it
 // works, revises it in place, and the app reads it live, so there is one copy
-// and no version history. Which files a session has shown is in the event log
+// and no version history. Which files a thread has shown is in the event log
 // (artefact.shown).
 //
 // The only bytes this package keeps are share snapshots. Sharing copies the
-// artefact as it is right now into <dir>/<session>/<artefact>/, so the person
+// artefact as it is right now into <dir>/<thread>/<artefact>/, so the person
 // holding the link never sees a half-edited file and the agent can keep
 // working. Updating the share takes a fresh copy behind the same link.
 package artefact
@@ -259,18 +259,18 @@ func New(dir string) *Store {
 
 func (s *Store) Dir() string { return s.dir }
 
-func (s *Store) shareDir(session, id string) (string, error) {
-	if !safeID.MatchString(session) || !safeID.MatchString(id) {
+func (s *Store) shareDir(thread, id string) (string, error) {
+	if !safeID.MatchString(thread) || !safeID.MatchString(id) {
 		return "", ErrBadPath
 	}
-	return filepath.Join(s.dir, session, id), nil
+	return filepath.Join(s.dir, thread, id), nil
 }
 
-// Snapshot copies the artefact at src into the share for (session, id),
+// Snapshot copies the artefact at src into the share for (thread, id),
 // replacing any earlier copy. The link stays the same when there already is a
 // share; the week it lasts starts again.
-func (s *Store) Snapshot(session, id, src string, now time.Time) (Share, error) {
-	dir, err := s.shareDir(session, id)
+func (s *Store) Snapshot(thread, id, src string, now time.Time) (Share, error) {
+	dir, err := s.shareDir(thread, id)
 	if err != nil {
 		return Share{}, err
 	}
@@ -353,9 +353,9 @@ func copyFile(from, to string) error {
 	return err
 }
 
-// Share reads the share for (session, id), expired or not.
-func (s *Store) Share(session, id string) (Share, error) {
-	dir, err := s.shareDir(session, id)
+// Share reads the share for (thread, id), expired or not.
+func (s *Store) Share(thread, id string) (Share, error) {
+	dir, err := s.shareDir(thread, id)
 	if err != nil {
 		return Share{}, err
 	}
@@ -377,8 +377,8 @@ func (s *Store) readShare(dir string) (Share, error) {
 }
 
 // Unshare deletes the share. Its link stops working at once.
-func (s *Store) Unshare(session, id string) error {
-	dir, err := s.shareDir(session, id)
+func (s *Store) Unshare(thread, id string) error {
+	dir, err := s.shareDir(thread, id)
 	if err != nil {
 		return err
 	}
@@ -388,21 +388,21 @@ func (s *Store) Unshare(session, id string) error {
 }
 
 // OpenShared resolves a file inside a share's snapshot.
-func (s *Store) OpenShared(session, id, rel string) (string, error) {
-	dir, err := s.shareDir(session, id)
+func (s *Store) OpenShared(thread, id, rel string) (string, error) {
+	dir, err := s.shareDir(thread, id)
 	if err != nil {
 		return "", err
 	}
 	return Resolve(filepath.Join(dir, "files"), true, rel)
 }
 
-// PurgeSession deletes every share a session made. The artefacts themselves
+// PurgeThread deletes every share a thread made. The artefacts themselves
 // are the project's files and are left alone.
-func (s *Store) PurgeSession(session string) error {
-	if !safeID.MatchString(session) {
+func (s *Store) PurgeThread(thread string) error {
+	if !safeID.MatchString(thread) {
 		return ErrBadPath
 	}
-	return os.RemoveAll(filepath.Join(s.dir, session))
+	return os.RemoveAll(filepath.Join(s.dir, thread))
 }
 
 func newNonce() string {

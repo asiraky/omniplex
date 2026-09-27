@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -11,12 +11,12 @@ import (
 	"github.com/asiraky/omniplex/internal/store"
 )
 
-// Labels are the user's own workflow markers — pure metadata over sessions.
+// Labels are the user's own workflow markers — pure metadata over threads.
 // None of this goes near an actor: assigning a label needs no harness, must
-// work on a session with no live process, and reaches clients through the
-// session-list broadcast the sidebar already consumes. The definitions have
+// work on a thread with no live process, and reaches clients through the
+// thread-list broadcast the sidebar already consumes. The definitions have
 // their own broadcast (SubscribeLabels) because they are user-level, owned by
-// no one session's log.
+// no one thread's log.
 
 // Labels returns every definition in the user's chosen order.
 func (m *Manager) Labels(ctx context.Context) ([]store.Label, error) {
@@ -58,9 +58,9 @@ func (m *Manager) SaveLabel(ctx context.Context, label store.Label) (store.Label
 	return label, nil
 }
 
-// DeleteLabel removes a definition and unlabels its sessions; the sessions
+// DeleteLabel removes a definition and unlabels its threads; the threads
 // themselves are untouched. Both broadcasts fire: the definition list changed,
-// and so did the labelId on every session that carried it.
+// and so did the labelId on every thread that carried it.
 func (m *Manager) DeleteLabel(ctx context.Context, id string) error {
 	if err := m.store.DeleteLabel(ctx, id); err != nil {
 		return err
@@ -70,12 +70,12 @@ func (m *Manager) DeleteLabel(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetSessionLabel files a session under a label, or "" to clear it. A plain
+// SetThreadLabel files a thread under a label, or "" to clear it. A plain
 // store write plus the list broadcast — deliberately not an actor command:
 // the set_mode path round-trips to the harness and never writes the row the
 // sidebar reads, neither of which fits pure metadata.
-func (m *Manager) SetSessionLabel(ctx context.Context, sessionID, labelID string) error {
-	if err := m.store.SetSessionLabel(ctx, sessionID, labelID); err != nil {
+func (m *Manager) SetThreadLabel(ctx context.Context, threadID, labelID string) error {
+	if err := m.store.SetThreadLabel(ctx, threadID, labelID); err != nil {
 		return err
 	}
 	m.notifyList()

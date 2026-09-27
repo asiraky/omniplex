@@ -2,8 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
-import { useSessionPR } from "./useSessionPR";
-import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
+import { useThreadPR } from "./useThreadPR";
+import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, ThreadSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -12,11 +12,11 @@ import { Composer, type ComposerHandle } from "./components/Composer";
 import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./components/ScheduledPrompts";
 import type { ScheduledPrompt, Turn } from "./protocol";
 import { JobsStrip } from "./components/JobsStrip";
-import { NewSession } from "./components/NewSession";
-import type { NewSessionInput } from "./components/NewSession";
+import { NewThread } from "./components/NewThread";
+import type { NewThreadInput } from "./components/NewThread";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { ElicitationPrompt } from "./components/ElicitationPrompt";
-import { DeleteSessionDialog, useDeleteSession } from "./components/DeleteSessionDialog";
+import { DeleteThreadDialog, useDeleteThread } from "./components/DeleteThreadDialog";
 import { LabelManager } from "./components/LabelManager";
 import { LabelDot, LabelMenu, LabelMenuItems } from "./components/LabelMenu";
 import {
@@ -63,10 +63,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const LAST_SESSION = "omniplex.lastSession";
+const LAST_THREAD = "omniplex.lastThread";
 
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
-const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
+const ThreadSummaryPanel = lazy(() => import("./components/ThreadSummary").then((m) => ({ default: m.ThreadSummaryPanel })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
 // The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
 const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
@@ -81,17 +81,17 @@ const UsagePage = lazy(() => import("./components/Usage").then((m) => ({ default
 const SHOW_MODE_SWITCHER = false;
 
 export function App() {
-  const [scheduleEditor, setScheduleEditor] = useState<{id: string; sessionId: string; text: string; imageIds: string[]; schedule?: ScheduledPrompt} | null>(null);
+  const [scheduleEditor, setScheduleEditor] = useState<{id: string; threadId: string; text: string; imageIds: string[]; schedule?: ScheduledPrompt} | null>(null);
   const { copied: transcriptCopied, copy: copyTranscript } = useCopy();
   // The snapshot a previous page of this tab saved as it went to background
   // (resume.ts). A mobile browser discards a backgrounded tab and reloads it
-  // on return; hydrating from the cache paints the session as it was left —
+  // on return; hydrating from the cache paints the thread as it was left —
   // right frame one, right scroll position — instead of "Attaching…", and the
   // socket then fetches only what the page missed. Cleared once consumed, and
-  // if the session turns out to be gone when the list arrives.
+  // if the thread turns out to be gone when the list arrives.
   const [resume, setResume] = useState(() => {
     try {
-      return loadResume(localStorage.getItem(LAST_SESSION));
+      return loadResume(localStorage.getItem(LAST_THREAD));
     } catch {
       return null;
     }
@@ -100,12 +100,12 @@ export function App() {
   // hydrated with, not what later clearing left behind.
   const resumeRef = useRef(resume);
   // The socket callbacks below outlive any single render, so they read the
-  // attached session from a ref rather than a captured closure. The ref is
+  // attached thread from a ref rather than a captured closure. The ref is
   // written after commit, never during render, so it can only ever hold a
   // value the UI actually rendered.
-  const activeRef = useRef<string | null>(resume?.state.sessionId ?? null);
+  const activeRef = useRef<string | null>(resume?.state.threadId ?? null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [threads, setThreads] = useState<ThreadMeta[]>([]);
   const [harnesses, setHarnesses] = useState<HarnessMeta[]>([]);
   const [defaultCwd, setDefaultCwd] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -113,46 +113,46 @@ export function App() {
   // and comes back as a broadcast, so paired devices all render the same set.
   const [labels, setLabels] = useState<Label[]>([]);
   const [manageLabels, setManageLabels] = useState(false);
-  const [activeId, setActiveId] = useState<string | null>(resume?.state.sessionId ?? null);
-  const [state, setState] = useState<SessionState | null>(resume?.state ?? null);
+  const [activeId, setActiveId] = useState<string | null>(resume?.state.threadId ?? null);
+  const [state, setState] = useState<ThreadState | null>(resume?.state ?? null);
   // Read by long-lived callbacks (openPath) that must see the current state
   // without re-creating themselves on every event.
-  const stateRef = useRef<SessionState | null>(resume?.state ?? null);
+  const stateRef = useRef<ThreadState | null>(resume?.state ?? null);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-  // Composer drafts, kept per session up here rather than inside the Composer.
-  // Switching sessions nulls `state`, which unmounts the whole content subtree
-  // (Composer included) and remounts it for the next session — so a draft owned
+  // Composer drafts, kept per thread up here rather than inside the Composer.
+  // Switching threads nulls `state`, which unmounts the whole content subtree
+  // (Composer included) and remounts it for the next thread — so a draft owned
   // by the Composer would be destroyed on every switch. Holding it in the
-  // parent, keyed by session id, lets a half-typed message survive the swap and
-  // still be there when you come back. Session scope only: no persistence, and
-  // the map is pruned as sessions go away (see below).
+  // parent, keyed by thread id, lets a half-typed message survive the swap and
+  // still be there when you come back. Thread scope only: no persistence, and
+  // the map is pruned as threads go away (see below).
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // Images staged for the next message, per session and for the same reason as
+  // Images staged for the next message, per thread and for the same reason as
   // the drafts: switching away and back must not lose what you attached. The
   // upload starts as soon as a picture is picked, so by send time this is a
   // list of ids the server already holds.
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
   const [composerRevision, setComposerRevision] = useState(0);
-  // Where each session's transcript was scrolled, kept up here for the same
-  // reason as the drafts: switching sessions unmounts the Transcript, so a
+  // Where each thread's transcript was scrolled, kept up here for the same
+  // reason as the drafts: switching threads unmounts the Transcript, so a
   // position it owned would be lost every time — you would come back to a
-  // session you were reading half-way up and find yourself at the bottom.
+  // thread you were reading half-way up and find yourself at the bottom.
   // A ref rather than state: the transcript reports every scroll, and nothing
   // on the page renders from this, so re-rendering the app on each one would
   // be pure cost. Seeded from the resume cache so the boot restore and the
-  // switch restore are one path. Session scope only, pruned with the drafts.
+  // switch restore are one path. Thread scope only, pruned with the drafts.
   const scrollPositions = useRef<Record<string, { top: number; atBottom: boolean }>>(
-    resume ? { [resume.state.sessionId]: { top: resume.scrollTop, atBottom: resume.atBottom } } : {},
+    resume ? { [resume.state.threadId]: { top: resume.scrollTop, atBottom: resume.atBottom } } : {},
   );
-  // Sessions the list has taken away. A deleted session's transcript reports
+  // Threads the list has taken away. A deleted thread's transcript reports
   // one last position as it unmounts, and that unmount happens after the prune
   // below has already dropped it — so the id is refused outright rather than
   // being written straight back in.
-  const goneSessions = useRef<Set<string>>(new Set());
+  const goneThreads = useRef<Set<string>>(new Set());
   const recordScroll = useCallback((id: string, top: number, atBottom: boolean) => {
-    if (goneSessions.current.has(id)) return;
+    if (goneThreads.current.has(id)) return;
     scrollPositions.current[id] = { top, atBottom };
   }, []);
   const setDraft = useCallback(
@@ -160,11 +160,11 @@ export function App() {
       setDrafts((d) => (d[id] === text ? d : { ...d, [id]: text })),
     [],
   );
-  const patchAttachment = useCallback((sessionId: string, key: string, patch: Partial<Attachment>) => {
+  const patchAttachment = useCallback((threadId: string, key: string, patch: Partial<Attachment>) => {
     setAttachments((all) => {
-      const list = all[sessionId];
+      const list = all[threadId];
       if (!list?.some((a) => a.key === key)) return all;
-      return { ...all, [sessionId]: list.map((a) => (a.key === key ? { ...a, ...patch } : a)) };
+      return { ...all, [threadId]: list.map((a) => (a.key === key ? { ...a, ...patch } : a)) };
     });
   }, []);
 
@@ -176,27 +176,27 @@ export function App() {
 
   const attachImages = useCallback(
     (files: File[]) => {
-      const sessionId = activeId;
-      if (!sessionId) return;
+      const threadId = activeId;
+      if (!threadId) return;
       for (const file of files) {
         // Not `crypto.randomUUID`: that exists only in a secure context, and
         // the origins a phone reaches this server on are not one.
         const key = uuid();
         const staged = stageFile(file, key);
-        setAttachments((all) => ({ ...all, [sessionId]: [...(all[sessionId] ?? []), staged] }));
+        setAttachments((all) => ({ ...all, [threadId]: [...(all[threadId] ?? []), staged] }));
         // A picture goes up as an image, shrunk first; anything else goes up
         // as an artefact the agent reads from disk.
         const abort = new AbortController();
         uploadsInFlight.current.set(key, abort);
-        uploadStaged(sessionId, file, {
+        uploadStaged(threadId, file, {
           signal: abort.signal,
-          onProgress: (progress) => patchAttachment(sessionId, key, { progress }),
+          onProgress: (progress) => patchAttachment(threadId, key, { progress }),
         })
-          .then((patch) => patchAttachment(sessionId, key, patch))
+          .then((patch) => patchAttachment(threadId, key, patch))
           .catch((e: Error) => {
             // An abort means the file was taken back; there is nothing left
             // to report it to.
-            if (e.name !== "AbortError") patchAttachment(sessionId, key, { status: "error", error: e.message });
+            if (e.name !== "AbortError") patchAttachment(threadId, key, { status: "error", error: e.message });
           })
           .finally(() => uploadsInFlight.current.delete(key));
       }
@@ -204,37 +204,37 @@ export function App() {
     [activeId, patchAttachment],
   );
 
-  const removeAttachment = useCallback((sessionId: string, key: string) => {
+  const removeAttachment = useCallback((threadId: string, key: string) => {
     uploadsInFlight.current.get(key)?.abort();
     setAttachments((all) => {
-      const list = all[sessionId] ?? [];
+      const list = all[threadId] ?? [];
       const going = list.find((a) => a.key === key);
       if (going?.previewUrl) URL.revokeObjectURL(going.previewUrl);
-      return { ...all, [sessionId]: list.filter((a) => a.key !== key) };
+      return { ...all, [threadId]: list.filter((a) => a.key !== key) };
     });
   }, []);
 
   const isDesktop = useIsDesktop();
-  // Whether the last-session key was set at boot. Read once, before anything
+  // Whether the last-thread key was set at boot. Read once, before anything
   // can write it, because it decides what the very first frame shows. Storage
   // can be denied outright (Safari with cookies blocked), and a throw here
   // would take the whole mount with it.
-  const [hadLastSession] = useState(() => {
+  const [hadLastThread] = useState(() => {
     try {
-      return localStorage.getItem(LAST_SESSION) !== null;
+      return localStorage.getItem(LAST_THREAD) !== null;
     } catch {
       return false;
     }
   });
-  // True until the first session list lands, which is when we know whether
-  // the stored session still exists. Until then a phone must not flash the
+  // True until the first thread list lands, which is when we know whether
+  // the stored thread still exists. Until then a phone must not flash the
   // sidebar open and then shut it again a moment later.
-  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [threadsLoaded, setThreadsLoaded] = useState(false);
   const restoreAttempted = useRef(false);
   // Open is the desktop default. On a phone the sidebar *is* the landing
   // screen: with nothing selected there is nothing behind it to look at, so
-  // it starts open unless we are about to restore straight into a session.
-  const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop || !hadLastSession);
+  // it starts open unless we are about to restore straight into a thread.
+  const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop || !hadLastThread);
   // Crossing the breakpoint resets it — but only on an actual crossing. On
   // mount this must leave the initial choice above alone.
   const wasDesktop = useRef(isDesktop);
@@ -246,14 +246,14 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const [projectSettings, setProjectSettings] = useState<Project | "add" | null>(null);
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
-  // The summary panel. Summaries are held per session so flicking between two
-  // sessions does not re-bill a model for an answer we already have; they are
+  // The summary panel. Summaries are held per thread so flicking between two
+  // threads does not re-bill a model for an answer we already have; they are
   // deliberately not persisted, because a stale summary read as current is
   // worse than no summary at all.
   const [showSummary, setShowSummary] = useState(false);
-  const [summaries, setSummaries] = useState<Record<string, SessionSummary>>({});
-  // Progress and failure are per session too, not global: a summary started
-  // for one session must not clear the spinner — or show its error — in
+  const [summaries, setSummaries] = useState<Record<string, ThreadSummary>>({});
+  // Progress and failure are per thread too, not global: a summary started
+  // for one thread must not clear the spinner — or show its error — in
   // another one the user has since switched to.
   const [summarizing, setSummarizing] = useState<Record<string, boolean>>({});
   const [summaryErrors, setSummaryErrors] = useState<Record<string, string>>({});
@@ -276,7 +276,7 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   // The account-level Usage page: cost history, token history, and the
-  // providers' remaining allowance. A full-page destination, not a session
+  // providers' remaining allowance. A full-page destination, not a thread
   // view — it never needs one attached.
   const [showUsage, setShowUsage] = useState(false);
   // Every provider instance's cached usage limits, pushed by the server on
@@ -295,7 +295,7 @@ export function App() {
   }, []);
 
   // Opening a path clicked in prose. The panel routes it: the diff surface
-  // when the session changed it, the file surface otherwise. An absolute path
+  // when the thread changed it, the file surface otherwise. An absolute path
   // under the checkout is relativised first; the server only serves the
   // workspace.
   // Opening the jobs surface from the strip or a spawn card in the transcript.
@@ -339,9 +339,9 @@ export function App() {
   useEffect(() => {
     const client = new Client(wsURL(), {
       onStatus: setStatus,
-      onSessions: (list) => {
-        setSessions(list);
-        setSessionsLoaded(true);
+      onThreads: (list) => {
+        setThreads(list);
+        setThreadsLoaded(true);
       },
       onHarnesses: (h, cwd) => {
         setHarnesses(h);
@@ -355,7 +355,7 @@ export function App() {
       onProjects: setProjects,
       onLabels: setLabels,
       onQuotas: setQuotas,
-      // State only lands for the session currently attached; the client
+      // State only lands for the thread currently attached; the client
       // discards anything else.
       onState: (id, s) => {
         if (id === activeRef.current) setState(s);
@@ -378,23 +378,23 @@ export function App() {
     clientRef.current?.command("get_user_config", {}).then(res => setUserConfig(res.userConfig)).catch(() => {});
   }, [status, userConfig]);
 
-  // Restore the last session once the list arrives. This runs once: after it,
-  // "no session selected" is a state the user chose, not one we have yet to
+  // Restore the last thread once the list arrives. This runs once: after it,
+  // "no thread selected" is a state the user chose, not one we have yet to
   // resolve, and re-opening the sidebar under them would be wrong.
   useEffect(() => {
-    if (!sessionsLoaded || restoreAttempted.current) return;
+    if (!threadsLoaded || restoreAttempted.current) return;
     restoreAttempted.current = true;
     if (activeId) {
       // Hydrated from the resume cache before the list could say whether the
-      // session still exists. It usually does; when it doesn't — deleted or
+      // thread still exists. It usually does; when it doesn't — deleted or
       // closed from elsewhere while the page was dead — let go the same way
       // a live delete would. The seenActive effect below can't: it only acts
-      // on sessions it saw in a list first.
-      if (sessions.some((s) => s.id === activeId && s.phase !== "closed")) return;
+      // on threads it saw in a list first.
+      if (threads.some((s) => s.id === activeId && s.phase !== "closed")) return;
       // Including the position the cache seeded: the prune below only drops
-      // sessions it saw in a list, and this one never made it into one.
+      // threads it saw in a list, and this one never made it into one.
       delete scrollPositions.current[activeId];
-      goneSessions.current.add(activeId);
+      goneThreads.current.add(activeId);
       setActiveId(null);
       setState(null);
       setResume(null);
@@ -402,17 +402,17 @@ export function App() {
       if (!isDesktop) setSidebarOpen(true);
       return;
     }
-    const last = localStorage.getItem(LAST_SESSION);
-    const pick = sessions.find((s) => s.id === last && s.phase !== "closed") ?? null;
+    const last = localStorage.getItem(LAST_THREAD);
+    const pick = threads.find((s) => s.id === last && s.phase !== "closed") ?? null;
     if (pick) select(pick.id);
     // Nothing to restore into, so the phone lands on the sidebar after all.
     else if (!isDesktop) setSidebarOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionsLoaded, sessions]);
+  }, [threadsLoaded, threads]);
   // Until the first list lands we do not know whether there is anything to
   // show, so the content column holds the space rather than announcing "all
-  // caught up" to someone with six sessions on a slow connection.
-  const restoring = !sessionsLoaded;
+  // caught up" to someone with six threads on a slow connection.
+  const restoring = !threadsLoaded;
 
   const select = useCallback(
     (id: string) => {
@@ -422,27 +422,27 @@ export function App() {
       // different one.
       setShowChanges(false);
       setChangesExpanded(false);
-      // A file asked for in one session means nothing in the next, and another
-      // session holding the same path would otherwise open it unasked.
+      // A file asked for in one thread means nothing in the next, and another
+      // thread holding the same path would otherwise open it unasked.
       setPanelRequest(null);
       setState(null);
-      localStorage.setItem(LAST_SESSION, id);
+      localStorage.setItem(LAST_THREAD, id);
       clientRef.current?.attach(id);
       if (!isDesktop) setSidebarOpen(false);
     },
     [isDesktop],
   );
 
-  // The sidebar stays as it was: on a phone the new-session screen covers it
+  // The sidebar stays as it was: on a phone the new-thread screen covers it
   // completely, so closing it would only mean cancelling drops you onto an
   // empty screen instead of back where you started.
   const startNew = useCallback(() => setCreating(true), []);
 
   const create = useCallback(
-    async (input: NewSessionInput) => {
-      const res = await clientRef.current!.command("create_session", input);
+    async (input: NewThreadInput) => {
+      const res = await clientRef.current!.command("create_thread", input);
       setCreating(false);
-      select(res.sessionId);
+      select(res.threadId);
     },
     [select],
   );
@@ -460,15 +460,15 @@ export function App() {
   const saveUserConfig = useCallback(async (cfg: UserConfig) => { const res=await clientRef.current!.command("save_user_config",{config:cfg}); setUserConfig(res.userConfig); },[]);
 
   // Summarising starts a harness against a small model, so it can take tens of
-  // seconds. The result is keyed by session id: the panel can be closed and
-  // reopened, or another session visited and come back to, without paying for
+  // seconds. The result is keyed by thread id: the panel can be closed and
+  // reopened, or another thread visited and come back to, without paying for
   // the same answer twice.
   const summarize = useCallback(async (id: string) => {
     setSummarizing((prev) => ({ ...prev, [id]: true }));
     setSummaryErrors((prev) => { const { [id]: _gone, ...rest } = prev; return rest; });
     try {
-      const res = await clientRef.current!.command("summarize_session", { sessionId: id });
-      setSummaries((prev) => ({ ...prev, [id]: res.summary as SessionSummary }));
+      const res = await clientRef.current!.command("summarize_thread", { threadId: id });
+      setSummaries((prev) => ({ ...prev, [id]: res.summary as ThreadSummary }));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setSummaryErrors((prev) => ({ ...prev, [id]: message }));
@@ -529,28 +529,28 @@ export function App() {
   // on exactly the connections we care about. The turn finishing flips the
   // phase and sends one report for the whole turn.
   const viewedReported = useRef<Record<string, number>>({});
-  // One chain of read-state commands per session. The server runs each
+  // One chain of read-state commands per thread. The server runs each
   // connection's commands in independent goroutines, so two frames sent
   // back-to-back can execute in either order — and "mark unread" losing to an
   // in-flight read-on-open report would silently undo the user's click.
   // Sending each command only after the previous one's ack pins the order.
   const readStateQueue = useRef<Record<string, Promise<unknown>>>({});
-  const sendReadState = useCallback((sessionId: string, command: string, args: object) => {
-    const next = (readStateQueue.current[sessionId] ?? Promise.resolve()).then(
+  const sendReadState = useCallback((threadId: string, command: string, args: object) => {
+    const next = (readStateQueue.current[threadId] ?? Promise.resolve()).then(
       () => clientRef.current?.command(command, args),
     );
     // Swallowed here so the chain survives a failure; callers hang their own
     // error handling off the returned promise.
-    readStateQueue.current[sessionId] = next.catch(() => {});
+    readStateQueue.current[threadId] = next.catch(() => {});
     return next;
   }, []);
   useEffect(() => {
-    if (!state || state.sessionId !== activeId) return;
+    if (!state || state.threadId !== activeId) return;
     if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning") return;
-    if (state.seq <= (viewedReported.current[state.sessionId] ?? 0)) return;
-    viewedReported.current[state.sessionId] = state.seq;
-    sendReadState(state.sessionId, "mark_session_viewed", {
-      sessionId: state.sessionId,
+    if (state.seq <= (viewedReported.current[state.threadId] ?? 0)) return;
+    viewedReported.current[state.threadId] = state.seq;
+    sendReadState(state.threadId, "mark_thread_viewed", {
+      threadId: state.threadId,
       seq: state.seq,
     }).catch(() => {
       // Nothing to tell the user: the dot clears next time this succeeds.
@@ -558,30 +558,30 @@ export function App() {
   }, [activeId, state, sendReadState]);
 
   // The explicit flag back the other way, from the row's context menu.
-  // Fire-and-forget like the label mutations: the sessions broadcast is the
+  // Fire-and-forget like the label mutations: the threads broadcast is the
   // authoritative answer.
-  const setSessionUnread = useCallback((sessionId: string, unread: boolean) => {
+  const setThreadUnread = useCallback((threadId: string, unread: boolean) => {
     if (unread) {
       // Forget what this page reported, or the effect above would treat the
       // current head as already-sent and never re-mark it read.
-      delete viewedReported.current[sessionId];
-      sendReadState(sessionId, "mark_session_unread", { sessionId }).catch((e) => {
-        toast.error("Could not mark that session unread", { description: e.message });
+      delete viewedReported.current[threadId];
+      sendReadState(threadId, "mark_thread_unread", { threadId }).catch((e) => {
+        toast.error("Could not mark that thread unread", { description: e.message });
       });
       return;
     }
-    const head = sessions.find((s) => s.id === sessionId)?.headSeq ?? 0;
-    sendReadState(sessionId, "mark_session_viewed", { sessionId, seq: head }).catch((e) => {
-      toast.error("Could not mark that session read", { description: e.message });
+    const head = threads.find((s) => s.id === threadId)?.headSeq ?? 0;
+    sendReadState(threadId, "mark_thread_viewed", { threadId, seq: head }).catch((e) => {
+      toast.error("Could not mark that thread read", { description: e.message });
     });
-  }, [sessions, sendReadState]);
+  }, [threads, sendReadState]);
 
   // Label mutations fire and forget: the authoritative answer arrives as a
-  // labels (or sessions) broadcast, the same way it does for a paired device,
+  // labels (or threads) broadcast, the same way it does for a paired device,
   // so there is no local state to reconcile — only failures to report.
-  const setSessionLabel = useCallback((sessionId: string, labelId: string) => {
-    clientRef.current?.command("set_session_label", { sessionId, labelId }).catch((e) => {
-      toast.error("Could not label that session", { description: e.message });
+  const setThreadLabel = useCallback((threadId: string, labelId: string) => {
+    clientRef.current?.command("set_thread_label", { threadId, labelId }).catch((e) => {
+      toast.error("Could not label that thread", { description: e.message });
     });
   }, []);
   const createLabel = useCallback((name: string, color: string) => {
@@ -627,17 +627,17 @@ export function App() {
     setProjects((p) => p.filter((x) => x.id !== projectId));
   }, []);
 
-  // Git is the source of truth for what a session changed: it catches the
+  // Git is the source of truth for what a thread changed: it catches the
   // formatter and the codemod as well as the edits we parsed out of tool calls.
   const loadChanges = useCallback(async (comparison: import("./protocol").DiffComparison) => {
-    const res = await clientRef.current!.command("session_changes", { sessionId: activeId, comparison });
-    return res.changes as SessionChanges;
+    const res = await clientRef.current!.command("thread_changes", { threadId: activeId, comparison });
+    return res.changes as ThreadChanges;
   }, [activeId]);
 
   const loadFileDiff = useCallback(
-    async (path: string, changes: SessionChanges) => {
-      const res = await clientRef.current!.command("session_file_diff", {
-        sessionId: activeId,
+    async (path: string, changes: ThreadChanges) => {
+      const res = await clientRef.current!.command("thread_file_diff", {
+        threadId: activeId,
         path,
         comparison: changes.mode,
         base: changes.base,
@@ -649,10 +649,10 @@ export function App() {
   );
 
   // The real filesystem, for the files and file surfaces: git is the diff
-  // surface, and a file the session never touched is exactly what it can't show.
+  // surface, and a file the thread never touched is exactly what it can't show.
   const loadFileTree = useCallback(
     async (includeIgnored: boolean) => {
-      const res = await clientRef.current!.command("session_file_tree", { sessionId: activeId, includeIgnored });
+      const res = await clientRef.current!.command("thread_file_tree", { threadId: activeId, includeIgnored });
       return res.tree as FileTree;
     },
     [activeId],
@@ -660,7 +660,7 @@ export function App() {
 
   const loadFile = useCallback(
     async (path: string) => {
-      const res = await clientRef.current!.command("session_read_file", { sessionId: activeId, path });
+      const res = await clientRef.current!.command("thread_read_file", { threadId: activeId, path });
       return res.file as FileContent;
     },
     [activeId],
@@ -674,7 +674,7 @@ export function App() {
       // Left out entirely when there are none: the overwhelming majority of
       // prompts carry nothing, and the frame is persisted for retry.
       const args = {
-        sessionId: activeId,
+        threadId: activeId,
         text,
         ...(imageIds.length ? { imageIds } : {}),
         ...(files.length ? { files } : {}),
@@ -693,21 +693,21 @@ export function App() {
   async function saveSchedule(input: ScheduleInput) {
     const editor = scheduleEditor;
     if (!editor || !clientRef.current) throw new Error("Reconnect before scheduling");
-    await clientRef.current.command("schedule_prompt", { sessionId: editor.sessionId, id: editor.schedule?.id ?? editor.id, revision: editor.schedule?.revision ?? 0, ...input, imageIds: editor.imageIds });
+    await clientRef.current.command("schedule_prompt", { threadId: editor.threadId, id: editor.schedule?.id ?? editor.id, revision: editor.schedule?.revision ?? 0, ...input, imageIds: editor.imageIds });
     if (!editor.schedule) {
       // Clear only the draft and images captured when this sheet opened.
-      setDrafts(all => all[editor.sessionId] === editor.text ? {...all, [editor.sessionId]: ""} : all);
+      setDrafts(all => all[editor.threadId] === editor.text ? {...all, [editor.threadId]: ""} : all);
       setAttachments(all => {
-        const staged = all[editor.sessionId] ?? [];
+        const staged = all[editor.threadId] ?? [];
         for (const a of staged) if (a.id && a.previewUrl && editor.imageIds.includes(a.id)) URL.revokeObjectURL(a.previewUrl);
-        return {...all, [editor.sessionId]: staged.filter(a => !a.id || !editor.imageIds.includes(a.id))};
+        return {...all, [editor.threadId]: staged.filter(a => !a.id || !editor.imageIds.includes(a.id))};
       });
     }
   }
 
   const loadComposerItems = useCallback(async (): Promise<ComposerItem[]> => {
     if (!activeId) return [];
-    const result = await clientRef.current!.command("list_composer_items", { sessionId: activeId });
+    const result = await clientRef.current!.command("list_composer_items", { threadId: activeId });
     return result.items ?? [];
   }, [activeId, composerRevision]);
 
@@ -716,7 +716,7 @@ export function App() {
       if (!activeId) return;
       try {
         await clientRef.current!.command("run_composer_action", {
-          sessionId: activeId,
+          threadId: activeId,
           action,
           args,
           invocation,
@@ -747,7 +747,7 @@ export function App() {
           state.mode || "Default approvals",
           used !== undefined ? `${used.toLocaleString()} context tokens` : "Token usage unavailable",
         ];
-        toast.info("Session status", { description: parts.join(" · ") });
+        toast.info("Thread status", { description: parts.join(" · ") });
       }
     },
     [state],
@@ -763,7 +763,7 @@ export function App() {
       const current = drafts[activeId] ?? "";
       setDraft(activeId, [...restored, current].filter(Boolean).join("\n\n"));
     }
-    clientRef.current?.command("cancel", { sessionId: activeId }).catch((e) => {
+    clientRef.current?.command("cancel", { threadId: activeId }).catch((e) => {
       const message = e instanceof Error ? e.message : String(e);
       toast.error("Could not stop the turn", { description: message });
     });
@@ -773,7 +773,7 @@ export function App() {
     (queueId: string) => {
       if (!activeId) return;
       const text = state?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
-      clientRef.current?.command("dequeue_prompt", { sessionId: activeId, queueId }).then(
+      clientRef.current?.command("dequeue_prompt", { threadId: activeId, queueId }).then(
         () => {
           if (!text) return;
           // Against the draft as it is when the reply lands, not as it was
@@ -790,7 +790,7 @@ export function App() {
     (requestId: string, outcome: string, optionId: string) => {
       if (activeId) {
         clientRef.current?.command("resolve_permission", {
-          sessionId: activeId,
+          threadId: activeId,
           requestId,
           outcome,
           optionId,
@@ -804,7 +804,7 @@ export function App() {
     (requestId: string, action: string, value: unknown) => {
       if (activeId) {
         clientRef.current?.command("resolve_elicitation", {
-          sessionId: activeId,
+          threadId: activeId,
           requestId,
           action,
           value,
@@ -815,7 +815,7 @@ export function App() {
   );
 
   // The returned promise settles when the server has *accepted* the delete,
-  // not when it is done — the session is gone when it leaves the list, which
+  // not when it is done — the thread is gone when it leaves the list, which
   // is what the sidebar waits on. Rejecting it is the sidebar's cue to stop
   // waiting, so the error is re-thrown after it has been reported.
   const remove = useCallback(
@@ -823,11 +823,11 @@ export function App() {
       if (id !== activeRef.current) select(id);
       const client = clientRef.current;
       if (!client) {
-        toast.error("Could not delete that session", { description: "Not connected." });
+        toast.error("Could not delete that thread", { description: "Not connected." });
         return Promise.reject(new Error("not connected"));
       }
-      return client.command("delete_session", { sessionId: id, removeWorktree }).catch((e) => {
-        toast.error("Could not delete that session", { description: e.message });
+      return client.command("delete_thread", { threadId: id, removeWorktree }).catch((e) => {
+        toast.error("Could not delete that thread", { description: e.message });
         throw e;
       });
     },
@@ -836,17 +836,17 @@ export function App() {
 
   const forceDelete = useCallback((id: string) => {
     // Only a worktree omniplex provisioned is omniplex's to destroy, so only that case may
-    // promise it. The old copy promised it to every session and kept the
+    // promise it. The old copy promised it to every thread and kept the
     // promise for one of them.
-    const removes = sessions.find((s) => s.id === id)?.workspaceMode === "managed";
+    const removes = threads.find((s) => s.id === id)?.workspaceMode === "managed";
     const accepted = window.confirm(
       removes
-        ? "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script, removes the recorded Git worktree, and permanently deletes the session."
-        : "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script and permanently deletes the session. The checkout is left on disk — omniplex did not create it.",
+        ? "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script, removes the recorded Git worktree, and permanently deletes the thread."
+        : "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script and permanently deletes the thread. The checkout is left on disk — omniplex did not create it.",
     );
     if (!accepted) return;
-    clientRef.current?.command("force_delete_session", { sessionId: id }).catch((e) => toast.error("Force delete failed", { description: e.message }));
-  }, [sessions]);
+    clientRef.current?.command("force_delete_thread", { threadId: id }).catch((e) => toast.error("Force delete failed", { description: e.message }));
+  }, [threads]);
 
   // Ask the server to re-probe, for when the user has just installed something.
   // The instance whose sign-in is open, if any. Closing it rechecks, so the
@@ -875,7 +875,7 @@ export function App() {
     [],
   );
 
-  const meta = useMemo(() => sessions.find((s) => s.id === activeId), [sessions, activeId]);
+  const meta = useMemo(() => threads.find((s) => s.id === activeId), [threads, activeId]);
   const activeProviderInstance = harnesses
     .flatMap((h) => h.instances ?? [])
     .find((i) => i.id === (meta?.providerInstance || meta?.harness));
@@ -893,7 +893,7 @@ export function App() {
 
   // The empty transcript's list of skills to reach for, and the composer it
   // writes into. Both live up here for the same reason the drafts do: the
-  // Transcript and the Composer are siblings remounted per session, and this
+  // Transcript and the Composer are siblings remounted per thread, and this
   // is the one place that can see the catalogue, the project, and the input at
   // once.
   const composerRef = useRef<ComposerHandle>(null);
@@ -903,9 +903,9 @@ export function App() {
   });
   const projectId = meta?.projectId;
   // Only an empty transcript asks for this, so only an empty transcript pays
-  // for the catalogue fetch. A newly provisioned session publishes empty
+  // for the catalogue fetch. A newly provisioned thread publishes empty
   // snapshots before its harness is ready; asking during those snapshots can
-  // produce an empty catalogue that would otherwise stick until a session
+  // produce an empty catalogue that would otherwise stick until a thread
   // switch. Wait for the harness-backed idle/turn phase instead.
   const transcriptEmpty =
     !!state && state.items.length === 0 && (state.phase === "idle" || state.phase === "turn");
@@ -956,27 +956,27 @@ export function App() {
     [projectId],
   );
 
-  // Whether the work in this session has landed, and the confirmation the
+  // Whether the work in this thread has landed, and the confirmation the
   // transcript's prompt opens. The dialog and its guards are the sidebar's
-  // own, so "finish with this session" and the row's X are the same action
+  // own, so "finish with this thread" and the row's X are the same action
   // reached from two places; only the sidebar's row animation is not shared,
   // because the transcript has no row.
-  const deleteFlow = useDeleteSession({
-    sessions,
+  const deleteFlow = useDeleteThread({
+    threads,
     onDelete: remove,
     projectRoot: (id) => projects.find((p) => p.id === id)?.root,
   });
-  const fetchPR = useCallback(async (sessionId: string): Promise<PullRequest | null> => {
-    const res = await clientRef.current!.command("session_pr", { sessionId });
+  const fetchPR = useCallback(async (threadId: string): Promise<PullRequest | null> => {
+    const res = await clientRef.current!.command("thread_pr", { threadId });
     return (res.pr ?? null) as PullRequest | null;
   }, []);
   // The server checks this too and is the authority; asking here only spares
-  // a subprocess for the sessions that plainly have nothing to report.
+  // a subprocess for the threads that plainly have nothing to report.
   const prEligible =
     (meta?.workspaceMode === "managed" || meta?.workspaceMode === "borrowed") && !!meta?.branch;
-  const pr = useSessionPR(activeId, prEligible, fetchPR);
+  const pr = useThreadPR(activeId, prEligible, fetchPR);
 
-  // The permission modes for the attached session's harness. Everything the UI
+  // The permission modes for the attached thread's harness. Everything the UI
   // knows about them came from the adapter via the server; ids stay opaque.
   const modeOptions = useMemo(
     () => harnesses.find((h) => h.id === state?.harness)?.permissionModes ?? [],
@@ -993,7 +993,7 @@ export function App() {
     (modeId: string) => {
       if (!activeId) return;
       // Every mode switches the same way: the picked value is the decision.
-      clientRef.current?.command("set_mode", { sessionId: activeId, mode: modeId }).catch((e) => {
+      clientRef.current?.command("set_mode", { threadId: activeId, mode: modeId }).catch((e) => {
         toast.error("Could not switch permission mode", { description: e.message });
       });
     },
@@ -1007,7 +1007,7 @@ export function App() {
   const switchModel = useCallback(
     (modelId: string) => {
       if (!activeId) return;
-      clientRef.current?.command("set_model", { sessionId: activeId, model: modelId }).catch((e) => {
+      clientRef.current?.command("set_model", { threadId: activeId, model: modelId }).catch((e) => {
         toast.error("Could not switch model", { description: e.message });
       });
     },
@@ -1016,7 +1016,7 @@ export function App() {
   const switchEffort = useCallback(
     (effort: string) => {
       if (!activeId) return;
-      clientRef.current?.command("set_effort", { sessionId: activeId, effort }).catch((e) => {
+      clientRef.current?.command("set_effort", { threadId: activeId, effort }).catch((e) => {
         toast.error("Could not change reasoning effort", { description: e.message });
       });
     },
@@ -1029,7 +1029,7 @@ export function App() {
       if (!activeId) return;
       clientRef.current
         ?.command("prompt", {
-          sessionId: activeId,
+          threadId: activeId,
           text: turn.prompt,
           ...(turn.images?.length ? { imageIds: turn.images.map((i) => i.id) } : {}),
         })
@@ -1037,7 +1037,7 @@ export function App() {
     },
     [activeId],
   );
-  // The session's harness's other accounts that could take the next turn: the
+  // The thread's harness's other accounts that could take the next turn: the
   // way out of a usage limit.
   const activeInstanceId = activeProviderInstance?.id;
   const switchTargets = useMemo(
@@ -1047,7 +1047,7 @@ export function App() {
         .map((i) => ({ id: i.id, name: i.displayName })),
     [harnesses, state?.harness, activeInstanceId],
   );
-  // Moves the session, conversation and all, to another account of its
+  // Moves the thread, conversation and all, to another account of its
   // harness. From the model picker it asks first — a picker row is an easy
   // thing to tap by accident — and may bring a model along; from the limit
   // card, where the button says exactly what it does, it goes straight on to
@@ -1059,12 +1059,12 @@ export function App() {
         harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === instance)?.displayName ?? instance;
       if (
         opts.confirm &&
-        !window.confirm(`Move this session to ${name}?\n\nThe conversation comes with it; the next turn runs on ${name}.`)
+        !window.confirm(`Move this thread to ${name}?\n\nThe conversation comes with it; the next turn runs on ${name}.`)
       ) {
         return false;
       }
       try {
-        await clientRef.current.command("switch_account", { sessionId: activeId, instance });
+        await clientRef.current.command("switch_account", { threadId: activeId, instance });
       } catch (e) {
         toast.error("Could not switch account", { description: (e as Error).message });
         return false;
@@ -1078,9 +1078,9 @@ export function App() {
   const pending = state?.pendingPermissions?.[0];
   const elicitation = state?.pendingElicitations?.[0];
   // The tab is named after whatever is attached, so a phone with several
-  // sessions open in several tabs can tell them apart without switching to
+  // threads open in several tabs can tell them apart without switching to
   // each one.
-  // The list entry, not just the attached state: switching sessions drops
+  // The list entry, not just the attached state: switching threads drops
   // `state` until the snapshot lands, and on a slow connection that would
   // leave every tab called "Omniplex" for exactly as long as it takes to
   // reconnect — which is when telling them apart matters most.
@@ -1106,12 +1106,12 @@ export function App() {
     forceDelete(activeId);
   }, [activeId, state, forceDelete]);
 
-  // The attached session went away (deleted elsewhere, or torn down here).
+  // The attached thread went away (deleted elsewhere, or torn down here).
   //
   // "Absent from the list" only means gone if it was ever in the list: a
-  // session we just created is attached before the broadcast carrying it
+  // thread we just created is attached before the broadcast carrying it
   // arrives, and treating that gap as a disappearance would detach the
-  // session the user is watching being born. So it has to have been seen
+  // thread the user is watching being born. So it has to have been seen
   // first. Waiting for `state` instead would be the wrong test — deleting a
   // row that is not the open one selects it first, which clears state, so a
   // delete landing before the first snapshot would leave the app attached to
@@ -1121,7 +1121,7 @@ export function App() {
   const seenActive = useRef<string | null>(null);
   useEffect(() => {
     if (!activeId) return;
-    if (sessions.some((s) => s.id === activeId)) {
+    if (threads.some((s) => s.id === activeId)) {
       seenActive.current = activeId;
       return;
     }
@@ -1129,44 +1129,44 @@ export function App() {
     seenActive.current = null;
     setActiveId(null); setState(null); clientRef.current?.detach();
     if (!isDesktop) setSidebarOpen(true);
-  }, [sessions, activeId, isDesktop]);
+  }, [threads, activeId, isDesktop]);
 
-  // Drop drafts for sessions that have left the list, so a deleted session does
+  // Drop drafts for threads that have left the list, so a deleted thread does
   // not leave its text behind for the life of the tab. "Absent from the list"
-  // only means gone if the session was ever *in* the list: a freshly created
-  // session is attached — and can be typed into — before the broadcast listing
+  // only means gone if the thread was ever *in* the list: a freshly created
+  // thread is attached — and can be typed into — before the broadcast listing
   // it arrives, and treating that gap as a disappearance would prune its draft.
   // Same reasoning, and the same guard, as `seenActive` above.
-  const seenSessions = useRef<Set<string>>(new Set());
+  const seenThreads = useRef<Set<string>>(new Set());
   useEffect(() => {
-    for (const s of sessions) seenSessions.current.add(s.id);
+    for (const s of threads) seenThreads.current.add(s.id);
     // The scroll positions go the same way, and for the same reason: a
-    // deleted session's offset means nothing, and a new id reusing it would
+    // deleted thread's offset means nothing, and a new id reusing it would
     // be handed a stranger's place in the transcript.
-    for (const s of sessions) goneSessions.current.delete(s.id);
+    for (const s of threads) goneThreads.current.delete(s.id);
     for (const id of Object.keys(scrollPositions.current)) {
-      if (sessions.some((s) => s.id === id) || !seenSessions.current.has(id)) continue;
+      if (threads.some((s) => s.id === id) || !seenThreads.current.has(id)) continue;
       delete scrollPositions.current[id];
-      goneSessions.current.add(id);
+      goneThreads.current.add(id);
     }
     setDrafts((d) => {
-      const live = new Set(sessions.map((s) => s.id));
+      const live = new Set(threads.map((s) => s.id));
       const next: Record<string, string> = {};
       let changed = false;
       for (const [id, text] of Object.entries(d)) {
-        if (live.has(id) || !seenSessions.current.has(id)) next[id] = text;
+        if (live.has(id) || !seenThreads.current.has(id)) next[id] = text;
         else changed = true;
       }
       return changed ? next : d;
     });
     // Staged images go the same way, releasing their preview URLs as they do:
-    // a deleted session must not leak blobs for the life of the tab.
+    // a deleted thread must not leak blobs for the life of the tab.
     setAttachments((all) => {
-      const live = new Set(sessions.map((s) => s.id));
+      const live = new Set(threads.map((s) => s.id));
       const next: Record<string, Attachment[]> = {};
       let changed = false;
       for (const [id, list] of Object.entries(all)) {
-        if (live.has(id) || !seenSessions.current.has(id)) next[id] = list;
+        if (live.has(id) || !seenThreads.current.has(id)) next[id] = list;
         else {
           for (const a of list) URL.revokeObjectURL(a.previewUrl);
           changed = true;
@@ -1174,7 +1174,7 @@ export function App() {
       }
       return changed ? next : all;
     });
-  }, [sessions]);
+  }, [threads]);
 
   // Nothing measures the composer on its own, so a fixed padding could only
   // ever guess at its height — and it grows (a tall draft, a permission prompt
@@ -1183,16 +1183,16 @@ export function App() {
   // `that + headroom` below its tail. Grow the overlay and the content above it
   // visibly rises: it reads as the composer pushing the transcript up, even
   // though it is floating.
-  const hasSession = state != null;
+  const hasThread = state != null;
   // The resume cache is one boot's worth of help. Its scroll position moved
-  // into the per-session map above as the page hydrated, and the transcript
-  // takes over reporting from there, so once a session is on screen the blob
+  // into the per-thread map above as the page hydrated, and the transcript
+  // takes over reporting from there, so once a thread is on screen the blob
   // has done its job.
   useEffect(() => {
-    if (resume && hasSession) setResume(null);
-  }, [resume, hasSession]);
+    if (resume && hasThread) setResume(null);
+  }, [resume, hasThread]);
   useEffect(() => {
-    if (!hasSession || typeof ResizeObserver === "undefined") return;
+    if (!hasThread || typeof ResizeObserver === "undefined") return;
     const overlay = overlayRef.current;
     const layout = chatLayoutRef.current;
     if (!overlay || !layout) return;
@@ -1210,7 +1210,7 @@ export function App() {
     };
     // themePreview toggles the whole main tree in and out below, so the
     // measured elements are remounted under it: re-run to observe the new ones.
-  }, [hasSession, themePreview]);
+  }, [hasThread, themePreview]);
 
   // Historical usage: the server aggregates the event log and prices it, so
   // the phone only ever downloads the bucketed result.
@@ -1226,7 +1226,7 @@ export function App() {
   if (themePreview) return <Suspense fallback={<div className="flex h-dvh items-center justify-center"><Spinner /></div>}><ThemePreview /></Suspense>;
 
   // The Usage page covers the whole viewport, above everything: it answers an
-  // account question, and the session underneath keeps streaming while it is
+  // account question, and the thread underneath keeps streaming while it is
   // up.
   if (showUsage) {
     return (
@@ -1244,7 +1244,7 @@ export function App() {
   return (
     <div className="flex h-full overflow-hidden">
       <Sidebar
-        sessions={sessions}
+        threads={threads}
         activeId={activeId}
         status={status}
         open={sidebarOpen}
@@ -1260,12 +1260,12 @@ export function App() {
         projectName={(id)=>projects.find(p=>p.id===id)?.config.name}
         projectRoot={(id)=>projects.find(p=>p.id===id)?.root}
         labels={labels}
-        onSetLabel={setSessionLabel}
+        onSetLabel={setThreadLabel}
         onManageLabels={openLabelManager}
-        onSetUnread={setSessionUnread}
+        onSetUnread={setThreadUnread}
       />
 
-      <DeleteSessionDialog flow={deleteFlow} />
+      <DeleteThreadDialog flow={deleteFlow} />
 
       <main
         className={cn(
@@ -1279,7 +1279,7 @@ export function App() {
           {/* The open sidebar carries its own collapse button, so this one
               only appears when there is a closed sidebar to reopen. */}
           <IconButton
-            label="Show sessions"
+            label="Show threads"
             onClick={() => setSidebarOpen(true)}
             className={cn(sidebarOpen && "hidden")}
           >
@@ -1289,7 +1289,7 @@ export function App() {
           {state ? (
             <>
               <p className="min-w-0 flex-1 truncate text-[13px] font-medium">
-                {state.title || "Untitled session"}
+                {state.title || "Untitled thread"}
               </p>
 
               {SHOW_MODE_SWITCHER && modeOptions.length > 0 && !state.closed && (
@@ -1313,8 +1313,8 @@ export function App() {
                 </Select>
               )}
 
-              {/* Filing the open session — the same menu the sidebar row
-                  carries, so a session can be labelled from either place.
+              {/* Filing the open thread — the same menu the sidebar row
+                  carries, so a thread can be labelled from either place.
                   Invisible until the user has defined a label. */}
               {isDesktop && labels.length > 0 && activeId && (
                 <DropdownMenu>
@@ -1335,7 +1335,7 @@ export function App() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          aria-label="Label this session"
+                          aria-label="Label this thread"
                           className="size-8"
                         >
                           <TagIcon />
@@ -1346,7 +1346,7 @@ export function App() {
                   <LabelMenu
                     labels={labels}
                     current={meta?.labelId}
-                    onSelect={(labelId) => setSessionLabel(activeId, labelId)}
+                    onSelect={(labelId) => setThreadLabel(activeId, labelId)}
                     onManage={openLabelManager}
                   />
                 </DropdownMenu>
@@ -1354,7 +1354,7 @@ export function App() {
 
               {isDesktop ? (
                 <>
-                  <IconButton label="Summarise this session" onClick={openSummary}>
+                  <IconButton label="Summarise this thread" onClick={openSummary}>
                     <SparklesIcon />
                   </IconButton>
 
@@ -1403,7 +1403,7 @@ export function App() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      aria-label="More session actions"
+                      aria-label="More thread actions"
                       className="relative size-11 shrink-0"
                     >
                       <EllipsisIcon />
@@ -1420,7 +1420,7 @@ export function App() {
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onSelect={openSummary}>
-                      <SparklesIcon /> Summarise session
+                      <SparklesIcon /> Summarise thread
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => void copyFullTranscript()}
@@ -1455,7 +1455,7 @@ export function App() {
                                 </>
                               ) : (
                                 <>
-                                  <TagIcon /> Label session
+                                  <TagIcon /> Label thread
                                 </>
                               );
                             })()}
@@ -1464,7 +1464,7 @@ export function App() {
                             <LabelMenuItems
                               labels={labels}
                               current={meta?.labelId}
-                              onSelect={(labelId) => setSessionLabel(activeId, labelId)}
+                              onSelect={(labelId) => setThreadLabel(activeId, labelId)}
                               onManage={openLabelManager}
                             />
                           </DropdownMenuSubContent>
@@ -1500,7 +1500,7 @@ export function App() {
             <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} onOpenArtefact={openArtefact} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
+              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_thread",{threadId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{threadId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_thread",{threadId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} onOpenArtefact={openArtefact} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
@@ -1534,7 +1534,7 @@ export function App() {
 
               {liveJobCount(state.jobs) > 0 && <JobsStrip jobs={state.jobs} onOpen={openJobs} />}
 
-              <ScheduledPrompts schedules={state.scheduledPrompts ?? []} disabled={state.closed || workspaceBusy || workspaceFailed} onEdit={p => activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:p.prompt,imageIds:(p.images ?? []).map(i=>i.id),schedule:p})} onAction={async (action,p) => {if(!clientRef.current)throw new Error("Reconnect first");await clientRef.current.command(action,{sessionId:activeId,id:p.id,revision:p.revision});}} />
+              <ScheduledPrompts schedules={state.scheduledPrompts ?? []} disabled={state.closed || workspaceBusy || workspaceFailed} onEdit={p => activeId && setScheduleEditor({id:uuid(),threadId:activeId,text:p.prompt,imageIds:(p.images ?? []).map(i=>i.id),schedule:p})} onAction={async (action,p) => {if(!clientRef.current)throw new Error("Reconnect first");await clientRef.current.command(action,{threadId:activeId,id:p.id,revision:p.revision});}} />
               {scheduleEditor && <ScheduleDialog key={`schedule:${scheduleEditor.id}`} initialText={scheduleEditor.text} imageCount={scheduleEditor.imageIds.length} schedule={scheduleEditor.schedule} onClose={()=>setScheduleEditor(null)} onSave={saveSchedule} />}
               <Composer
                 key={activeId}
@@ -1546,7 +1546,7 @@ export function App() {
                 disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
                 busy={state.phase === "turn"}
                 onSend={send}
-                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:sendPayload(attachments[activeId] ?? []).imageIds})}
+                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),threadId:activeId,text:drafts[activeId] ?? "",imageIds:sendPayload(attachments[activeId] ?? []).imageIds})}
                 onCancel={cancel}
                 attachments={activeId ? (attachments[activeId] ?? []) : []}
                 onAttachImages={attachImages}
@@ -1571,7 +1571,7 @@ export function App() {
           <EmptyState
             restoring={restoring}
             attaching={!!activeId}
-            hasSessions={sessions.length > 0}
+            hasThreads={threads.length > 0}
             onNew={startNew}
           />
         )}
@@ -1580,9 +1580,9 @@ export function App() {
       {state && activeId && panelLoaded && (
         <Suspense fallback={null}>
           <Panel
-          // Remounted per session: the tab model is per-session state.
+          // Remounted per thread: the tab model is per-thread state.
           key={activeId}
-          sessionId={activeId}
+          threadId={activeId}
           state={state}
           command={panelCommand}
           open={showChanges}
@@ -1603,7 +1603,7 @@ export function App() {
 
       {showSummary && activeId && (
         <Suspense fallback={null}>
-          <SessionSummaryPanel
+          <ThreadSummaryPanel
           summary={summaries[activeId] ?? null}
           loading={!!summarizing[activeId]}
           error={summaryErrors[activeId] ?? null}
@@ -1644,7 +1644,7 @@ export function App() {
       )}
 
       {creating && (
-        <NewSession
+        <NewThread
           projects={projects}
           activeProjectId={meta?.projectId}
           harnesses={harnesses}
@@ -1715,10 +1715,10 @@ export function App() {
           onAdd={addProject}
           onSave={saveProject}
           onDelete={deleteProject}
-          sessionCount={
+          threadCount={
             projectSettings === "add"
               ? 0
-              : sessions.filter((s) => s.projectId === projectSettings.id).length
+              : threads.filter((s) => s.projectId === projectSettings.id).length
           }
           onSaveUserConfig={saveUserConfig}
           onClose={() => setProjectSettings(null)}
@@ -1733,20 +1733,20 @@ export function App() {
  * What the content column shows with nothing attached.
  *
  * There are three of these and they are genuinely different situations, so
- * they say different things. A single oversized "New session" button was
+ * they say different things. A single oversized "New thread" button was
  * answering all three with a call to action nobody asked for — on a phone it
- * was the whole landing screen, and on a desktop with sessions in the list it
+ * was the whole landing screen, and on a desktop with threads in the list it
  * was pointing away from them.
  */
 function EmptyState({
   restoring,
   attaching,
-  hasSessions,
+  hasThreads,
   onNew,
 }: {
   restoring: boolean;
   attaching: boolean;
-  hasSessions: boolean;
+  hasThreads: boolean;
   onNew: () => void;
 }) {
   // Mid-restore. Saying anything here would only be contradicted a moment
@@ -1754,32 +1754,32 @@ function EmptyState({
   if (restoring) {
     return (
       <div className="flex flex-1 items-center justify-center" aria-busy="true">
-        <span className="sr-only">Reopening your last session…</span>
+        <span className="sr-only">Reopening your last thread…</span>
         <Spinner className="text-muted-foreground/60 size-5" />
       </div>
     );
   }
 
-  // Selecting clears the old snapshot before attaching to the new session.
-  // That gap is loading, not an invitation to create another session.
+  // Selecting clears the old snapshot before attaching to the new thread.
+  // That gap is loading, not an invitation to create another thread.
   if (attaching) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 pb-16" aria-busy="true">
         <Spinner className="text-muted-foreground/60 size-6" />
-        <p className="text-muted-foreground text-[13px]">Attaching to session…</p>
+        <p className="text-muted-foreground text-[13px]">Attaching to thread…</p>
       </div>
     );
   }
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 pb-16 text-center">
-      {hasSessions ? (
+      {hasThreads ? (
         <>
           <MessagesSquareIcon aria-hidden className="text-muted-foreground/40 size-7" />
           <div className="max-w-xs">
             <p className="text-[15px] font-medium">Nothing open</p>
             <p className="text-muted-foreground mt-1.5 text-[13px] leading-relaxed">
-              Pick a session from the list to jump back into it.
+              Pick a thread from the list to jump back into it.
             </p>
           </div>
         </>
@@ -1797,7 +1797,7 @@ function EmptyState({
       {/* Offered, not insisted on — but still a real target for a thumb. */}
       <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={onNew}>
         <PlusIcon />
-        New session
+        New thread
       </Button>
     </div>
   );

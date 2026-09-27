@@ -30,7 +30,7 @@ function serve(routes: Record<string, string | Route>) {
 }
 
 function mount(a: Artefact) {
-  return render(<ArtefactSurface sessionId="s1" artefact={a} />);
+  return render(<ArtefactSurface threadId="s1" artefact={a} />);
 }
 
 const radio = (name: string) => screen.getByRole("radio", { name });
@@ -160,13 +160,13 @@ describe("html", () => {
   it("loads the page from a preview URL, not the raw route", async () => {
     const a = artefact("index.html", "text/html");
     const fetch = serve({
-      [`/api/sessions/s1/artefacts/${a.id}/preview`]: () =>
+      [`/api/threads/s1/artefacts/${a.id}/preview`]: () =>
         new Response(JSON.stringify({ url: "/p/tok1/index.html", expiresAt: Date.now() + 3_600_000 })),
     });
     mount(a);
     await waitFor(() => expect(frame()?.getAttribute("src")).toBe("/p/tok1/index.html"));
     expect(screen.getByTestId("url-pill").textContent).toBe("/index.html");
-    expect(fetch).toHaveBeenCalledWith(`/api/sessions/s1/artefacts/${a.id}/preview`, expect.objectContaining({ method: "POST" }));
+    expect(fetch).toHaveBeenCalledWith(`/api/threads/s1/artefacts/${a.id}/preview`, expect.objectContaining({ method: "POST" }));
     // The new-tab link opens the page in its sandboxed form too.
     fireEvent.pointerDown(screen.getByRole("button", { name: "More" }), { button: 0, ctrlKey: false });
     expect((await screen.findByRole("menuitem", { name: "Open in a new tab" })).getAttribute("href")).toBe("/p/tok1/index.html");
@@ -176,7 +176,7 @@ describe("html", () => {
     const a = artefact("index.html", "text/html");
     let calls = 0;
     serve({
-      [`/api/sessions/s1/artefacts/${a.id}/preview`]: () =>
+      [`/api/threads/s1/artefacts/${a.id}/preview`]: () =>
         ++calls === 1
           ? new Response(JSON.stringify({ error: "preview unavailable" }), { status: 503 })
           : new Response(JSON.stringify({ url: "/p/t2/index.html", expiresAt: Date.now() + 3_600_000 })),
@@ -195,7 +195,7 @@ describe("revisions", () => {
     serve({ [raw(a)]: "first draft", [raw(b)]: "second draft" });
     const view = mount(a);
     expect(await screen.findByText("first draft")).toBeTruthy();
-    view.rerender(wrap(<ArtefactSurface sessionId="s1" artefact={b} />));
+    view.rerender(wrap(<ArtefactSurface threadId="s1" artefact={b} />));
     expect(await screen.findByText("second draft")).toBeTruthy();
   });
 });
@@ -209,7 +209,7 @@ describe("sharing", () => {
     let n = 0;
     serve({
       [raw(a)]: "x",
-      [`/api/sessions/s1/artefacts/${a.id}/share`]: (_url, init) => {
+      [`/api/threads/s1/artefacts/${a.id}/share`]: (_url, init) => {
         const method = init?.method ?? "GET";
         calls.push(method);
         if (method === "POST") link = { url: link?.url ?? `https://h/s/${++n}`, sharedAt: Date.now(), expiresAt: Date.now() + 7 * 86_400_000 };

@@ -1,6 +1,6 @@
 // The right panel's tab model. Surfaces are an ordered array with stable ids —
 // singletons (`diff`, `files`, `jobs`, `artefacts`, `skills`) plus any number
-// of `file:<path>`, `artefact:<id>` and `terminal:<n>` tabs — persisted per session, so the panel a session was left
+// of `file:<path>`, `artefact:<id>` and `terminal:<n>` tabs — persisted per thread, so the panel a thread was left
 // with is the panel it reopens to.
 
 export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact" | "skills";
@@ -28,9 +28,9 @@ export function defaultPanel(): PanelState {
   return { surfaces: [{ id: "diff", kind: "diff" }], active: "diff" };
 }
 
-export function loadPanel(sessionId: string): PanelState {
+export function loadPanel(threadId: string): PanelState {
   try {
-    const raw = localStorage.getItem(KEY_PREFIX + sessionId);
+    const raw = localStorage.getItem(KEY_PREFIX + threadId);
     if (!raw) return defaultPanel();
     const parsed = JSON.parse(raw) as PanelState;
     if (!Array.isArray(parsed.surfaces) || parsed.surfaces.length === 0) return defaultPanel();
@@ -53,9 +53,9 @@ export function loadPanel(sessionId: string): PanelState {
   }
 }
 
-export function savePanel(sessionId: string, state: PanelState) {
+export function savePanel(threadId: string, state: PanelState) {
   try {
-    localStorage.setItem(KEY_PREFIX + sessionId, JSON.stringify(state));
+    localStorage.setItem(KEY_PREFIX + threadId, JSON.stringify(state));
   } catch {
     // Storage can be denied outright; the panel still works, it just forgets.
   }

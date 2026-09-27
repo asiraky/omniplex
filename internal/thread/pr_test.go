@@ -1,4 +1,4 @@
-package session
+package thread
 
 import (
 	"context"
@@ -39,14 +39,14 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 // prJSON wraps one pull request the way `gh pr list --json` returns it.
 func prJSON(body string) string { return "[" + body + "]" }
 
-// prSession registers a session the PR lookup will accept, in a directory that
+// prThread registers a thread the PR lookup will accept, in a directory that
 // exists, so only the thing under test decides the outcome.
-func prSession(t *testing.T, mode, branch string) (*Manager, string) {
+func prThread(t *testing.T, mode, branch string) (*Manager, string) {
 	t.Helper()
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	now := proto.NowMillis()
-	err := st.CreateSession(context.Background(), store.SessionMeta{
+	err := st.CreateThread(context.Background(), store.ThreadMeta{
 		ID: "s1", Cwd: worktree, Harness: "fake", Title: "t",
 		CreatedAt: now, UpdatedAt: now, Phase: "idle",
 		ProjectID: p.ID, Branch: branch, WorkspaceMode: mode,
@@ -108,13 +108,13 @@ func TestParsePRRefusesOutputWithNoPullRequestInIt(t *testing.T) {
 	}
 }
 
-func TestSessionPRAsksGhAboutTheSessionsOwnBranchByName(t *testing.T) {
+func TestThreadPRAsksGhAboutTheThreadsOwnBranchByName(t *testing.T) {
 	// Deliberately a branch that is also a valid pull request number: the
-	// selector must be unambiguous or this session adopts PR #75's fate.
-	mgr, worktree := prSession(t, "managed", "75")
+	// selector must be unambiguous or this thread adopts PR #75's fate.
+	mgr, worktree := prThread(t, "managed", "75")
 	argsFile := fakeGh(t, prJSON(`{"number":9,"title":"Prompt","url":"https://example/9","state":"MERGED","mergedAt":"2026-08-20T01:02:03Z","headRefOid":"`+headOf(t, worktree)+`"}`), "", 0)
 
-	pr, reason := mgr.SessionPR(context.Background(), "s1")
+	pr, reason := mgr.ThreadPR(context.Background(), "s1")
 	if reason != "" {
 		t.Fatalf("unexpected reason %q", reason)
 	}
@@ -130,13 +130,13 @@ func TestSessionPRAsksGhAboutTheSessionsOwnBranchByName(t *testing.T) {
 	}
 }
 
-func TestSessionPRWillNotCallABranchFinishedAfterItHasMovedOn(t *testing.T) {
-	mgr, _ := prSession(t, "managed", "issue/75-prompt")
+func TestThreadPRWillNotCallABranchFinishedAfterItHasMovedOn(t *testing.T) {
+	mgr, _ := prThread(t, "managed", "issue/75-prompt")
 	// The merge happened at a commit the worktree is no longer sitting on:
 	// there is unmerged work here, whatever the pull request says.
 	fakeGh(t, prJSON(`{"number":75,"state":"MERGED","mergedAt":"2026-08-20T01:02:03Z","headRefOid":"0000000000000000000000000000000000000000"}`), "", 0)
 
-	pr, reason := mgr.SessionPR(context.Background(), "s1")
+	pr, reason := mgr.ThreadPR(context.Background(), "s1")
 	if reason != "" {
 		t.Fatalf("unexpected reason %q", reason)
 	}
@@ -148,33 +148,33 @@ func TestSessionPRWillNotCallABranchFinishedAfterItHasMovedOn(t *testing.T) {
 	}
 }
 
-func TestSessionPRSaysNothingForALocalSession(t *testing.T) {
-	mgr, _ := prSession(t, "local", "main")
+func TestThreadPRSaysNothingForALocalThread(t *testing.T) {
+	mgr, _ := prThread(t, "local", "main")
 	fakeGh(t, prJSON(`{"number":75,"state":"MERGED","mergedAt":"2026-08-20T01:02:03Z"}`), "", 0)
 
-	pr, reason := mgr.SessionPR(context.Background(), "s1")
+	pr, reason := mgr.ThreadPR(context.Background(), "s1")
 	if pr != nil {
-		t.Fatalf("a local session has no worktree to reclaim: %+v", pr)
+		t.Fatalf("a local thread has no worktree to reclaim: %+v", pr)
 	}
 	if reason == "" {
 		t.Fatal("the refusal must say why")
 	}
 }
 
-func TestSessionPRSaysNothingForASessionWithNoBranch(t *testing.T) {
-	mgr, _ := prSession(t, "managed", "")
+func TestThreadPRSaysNothingForAThreadWithNoBranch(t *testing.T) {
+	mgr, _ := prThread(t, "managed", "")
 	fakeGh(t, prJSON(`{"number":75,"state":"MERGED","mergedAt":"2026-08-20T01:02:03Z"}`), "", 0)
 
-	if pr, reason := mgr.SessionPR(context.Background(), "s1"); pr != nil || reason == "" {
+	if pr, reason := mgr.ThreadPR(context.Background(), "s1"); pr != nil || reason == "" {
 		t.Fatalf("pr = %+v, reason = %q", pr, reason)
 	}
 }
 
-func TestSessionPRTreatsAGhFailureAsSimplyNotKnowing(t *testing.T) {
-	mgr, _ := prSession(t, "borrowed", "issue/75-prompt")
+func TestThreadPRTreatsAGhFailureAsSimplyNotKnowing(t *testing.T) {
+	mgr, _ := prThread(t, "borrowed", "issue/75-prompt")
 	fakeGh(t, "", "gh: not authenticated", 1)
 
-	pr, reason := mgr.SessionPR(context.Background(), "s1")
+	pr, reason := mgr.ThreadPR(context.Background(), "s1")
 	if pr != nil {
 		t.Fatalf("a failed lookup is not a pull request: %+v", pr)
 	}
@@ -183,11 +183,11 @@ func TestSessionPRTreatsAGhFailureAsSimplyNotKnowing(t *testing.T) {
 	}
 }
 
-func TestSessionPRTreatsAnEmptyListAsNoPullRequestYet(t *testing.T) {
-	mgr, _ := prSession(t, "managed", "issue/75-prompt")
+func TestThreadPRTreatsAnEmptyListAsNoPullRequestYet(t *testing.T) {
+	mgr, _ := prThread(t, "managed", "issue/75-prompt")
 	fakeGh(t, "[]", "", 0)
 
-	if pr, reason := mgr.SessionPR(context.Background(), "s1"); pr != nil || reason == "" {
+	if pr, reason := mgr.ThreadPR(context.Background(), "s1"); pr != nil || reason == "" {
 		t.Fatalf("pr = %+v, reason = %q", pr, reason)
 	}
 }

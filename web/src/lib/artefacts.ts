@@ -1,5 +1,5 @@
 /**
- * Artefacts: files a session shows the user, from the agent or uploaded, a
+ * Artefacts: files a thread shows the user, from the agent or uploaded, a
  * page, a report, a picture, a spreadsheet. They stay where they are on the
  * server and the panel reads them live.
  *
@@ -10,7 +10,7 @@
  */
 
 /**
- * A file or folder the session has shown: a file on the server, read live.
+ * A file or folder the thread has shown: a file on the server, read live.
  * The agent revises it in place and shows it again, which updates this record
  * rather than adding another.
  */
@@ -48,15 +48,15 @@ export const MAX_ARTEFACT_BYTES = 200 * 1024 * 1024;
 
 // ---- URLs and requests ----
 
-const base = (sessionId: string, artefactId: string) =>
-  `/api/sessions/${encodeURIComponent(sessionId)}/artefacts/${encodeURIComponent(artefactId)}`;
+const base = (threadId: string, artefactId: string) =>
+  `/api/threads/${encodeURIComponent(threadId)}/artefacts/${encodeURIComponent(artefactId)}`;
 
 /** Raw bytes of one file, as it is on disk now. Each path segment is encoded
     on its own so a folder's subdirectories survive as directories. `rev` is
     the artefact's modifiedAt: the server ignores it, but it gives each
     revision its own URL, so nothing keyed on the URL shows a stale one. */
 export function rawUrl(
-  sessionId: string,
+  threadId: string,
   artefactId: string,
   path: string,
   opts: { download?: boolean; rev?: number } = {},
@@ -66,7 +66,7 @@ export function rawUrl(
   if (opts.rev !== undefined) q.set("m", String(opts.rev));
   if (opts.download) q.set("download", "1");
   const query = q.toString();
-  return `${base(sessionId, artefactId)}/f/${encoded}${query ? `?${query}` : ""}`;
+  return `${base(threadId, artefactId)}/f/${encoded}${query ? `?${query}` : ""}`;
 }
 
 export interface ExpiringUrl {
@@ -89,8 +89,8 @@ async function errorText(res: Response): Promise<string> {
 
 /** A sandboxed, tokenised URL for an HTML artefact: `/p/<token>/index.html`.
     It serves the live files, so a revision shows on reload. */
-export function requestPreview(sessionId: string, artefactId: string): Promise<ExpiringUrl> {
-  return call<ExpiringUrl>("POST", `${base(sessionId, artefactId)}/preview`);
+export function requestPreview(threadId: string, artefactId: string): Promise<ExpiringUrl> {
+  return call<ExpiringUrl>("POST", `${base(threadId, artefactId)}/preview`);
 }
 
 /** A share link: a copy of the artefact taken when it was shared. */
@@ -103,19 +103,19 @@ export interface ShareLink {
 type ShareReply = { share: ShareLink | null };
 
 /** The artefact's share link, or null when it has none. */
-export function getShare(sessionId: string, artefactId: string): Promise<ShareLink | null> {
-  return call<ShareReply>("GET", `${base(sessionId, artefactId)}/share`).then((r) => r.share);
+export function getShare(threadId: string, artefactId: string): Promise<ShareLink | null> {
+  return call<ShareReply>("GET", `${base(threadId, artefactId)}/share`).then((r) => r.share);
 }
 
 /** Shares the artefact as it is now. When it is already shared, the link stays
     the same and starts showing the files as they are now. */
-export function share(sessionId: string, artefactId: string): Promise<ShareLink> {
-  return call<ShareReply>("POST", `${base(sessionId, artefactId)}/share`).then((r) => r.share!);
+export function share(threadId: string, artefactId: string): Promise<ShareLink> {
+  return call<ShareReply>("POST", `${base(threadId, artefactId)}/share`).then((r) => r.share!);
 }
 
 /** Stops sharing: the link stops working, and sharing again makes a new one. */
-export function unshare(sessionId: string, artefactId: string): Promise<void> {
-  return call<ShareReply>("DELETE", `${base(sessionId, artefactId)}/share`).then(() => undefined);
+export function unshare(threadId: string, artefactId: string): Promise<void> {
+  return call<ShareReply>("DELETE", `${base(threadId, artefactId)}/share`).then(() => undefined);
 }
 
 export interface UploadedArtefact {
@@ -128,7 +128,7 @@ export interface UploadedArtefact {
  * is minutes of nothing without a progress bar.
  */
 export function uploadArtefact(
-  sessionId: string,
+  threadId: string,
   file: File,
   opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
 ): Promise<UploadedArtefact> {
@@ -139,7 +139,7 @@ export function uploadArtefact(
     }
     const xhr = new XMLHttpRequest();
     const name = file.name || "file";
-    xhr.open("POST", `/api/sessions/${encodeURIComponent(sessionId)}/artefacts?name=${encodeURIComponent(name)}`);
+    xhr.open("POST", `/api/threads/${encodeURIComponent(threadId)}/artefacts?name=${encodeURIComponent(name)}`);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     xhr.responseType = "text";
     const onAbort = () => xhr.abort();

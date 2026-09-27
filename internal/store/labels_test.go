@@ -17,10 +17,10 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
-func mustCreateSession(t *testing.T, s *Store, id string) {
+func mustCreateThread(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if err := s.CreateSession(context.Background(), SessionMeta{ID: id, Cwd: "/tmp", Harness: "h", Phase: "idle"}); err != nil {
-		t.Fatalf("create session: %v", err)
+	if err := s.CreateThread(context.Background(), ThreadMeta{ID: id, Cwd: "/tmp", Harness: "h", Phase: "idle"}); err != nil {
+		t.Fatalf("create thread: %v", err)
 	}
 }
 
@@ -63,60 +63,60 @@ func TestLabelsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSessionLabelAssignment(t *testing.T) {
+func TestThreadLabelAssignment(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	mustCreateSession(t, s, "s1")
+	mustCreateThread(t, s, "s1")
 	if _, err := s.CreateLabel(ctx, Label{ID: "l1", Name: "Parked"}); err != nil {
 		t.Fatal(err)
 	}
 
-	// A label must exist to be assigned; a session must exist to be labelled.
-	if err := s.SetSessionLabel(ctx, "s1", "ghost"); !errors.Is(err, ErrNotFound) {
+	// A label must exist to be assigned; a thread must exist to be labelled.
+	if err := s.SetThreadLabel(ctx, "s1", "ghost"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("assigning an unknown label: got %v, want ErrNotFound", err)
 	}
-	if err := s.SetSessionLabel(ctx, "ghost", "l1"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("labelling an unknown session: got %v, want ErrNotFound", err)
+	if err := s.SetThreadLabel(ctx, "ghost", "l1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("labelling an unknown thread: got %v, want ErrNotFound", err)
 	}
 
-	before, _ := s.Session(ctx, "s1")
-	if err := s.SetSessionLabel(ctx, "s1", "l1"); err != nil {
+	before, _ := s.Thread(ctx, "s1")
+	if err := s.SetThreadLabel(ctx, "s1", "l1"); err != nil {
 		t.Fatalf("set label: %v", err)
 	}
-	got, _ := s.Session(ctx, "s1")
+	got, _ := s.Thread(ctx, "s1")
 	if got.LabelID != "l1" {
 		t.Fatalf("label not stored: %+v", got)
 	}
-	// Filing a session is not activity: the most-recent-first list must not
+	// Filing a thread is not activity: the most-recent-first list must not
 	// reshuffle under the user.
 	if got.UpdatedAt != before.UpdatedAt {
 		t.Fatalf("updated_at moved on labelling: %d -> %d", before.UpdatedAt, got.UpdatedAt)
 	}
-	list, _ := s.ListSessions(ctx)
+	list, _ := s.ListThreads(ctx)
 	if len(list) != 1 || list[0].LabelID != "l1" {
 		t.Fatalf("list does not carry the label: %+v", list)
 	}
 
 	// Clearing is an empty id, and always legal.
-	if err := s.SetSessionLabel(ctx, "s1", ""); err != nil {
+	if err := s.SetThreadLabel(ctx, "s1", ""); err != nil {
 		t.Fatalf("clear label: %v", err)
 	}
-	got, _ = s.Session(ctx, "s1")
+	got, _ = s.Thread(ctx, "s1")
 	if got.LabelID != "" {
 		t.Fatalf("label not cleared: %+v", got)
 	}
 }
 
-func TestDeleteLabelUnlabelsButKeepsSessions(t *testing.T) {
+func TestDeleteLabelUnlabelsButKeepsThreads(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	mustCreateSession(t, s, "s1")
-	mustCreateSession(t, s, "s2")
+	mustCreateThread(t, s, "s1")
+	mustCreateThread(t, s, "s2")
 	if _, err := s.CreateLabel(ctx, Label{ID: "l1", Name: "Done"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"s1", "s2"} {
-		if err := s.SetSessionLabel(ctx, id, "l1"); err != nil {
+		if err := s.SetThreadLabel(ctx, id, "l1"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -128,13 +128,13 @@ func TestDeleteLabelUnlabelsButKeepsSessions(t *testing.T) {
 	if len(labels) != 0 {
 		t.Fatalf("label survived deletion: %+v", labels)
 	}
-	list, _ := s.ListSessions(ctx)
+	list, _ := s.ListThreads(ctx)
 	if len(list) != 2 {
-		t.Fatalf("deleting a label must never delete a session: %+v", list)
+		t.Fatalf("deleting a label must never delete a thread: %+v", list)
 	}
 	for _, m := range list {
 		if m.LabelID != "" {
-			t.Fatalf("session %s still labelled: %q", m.ID, m.LabelID)
+			t.Fatalf("thread %s still labelled: %q", m.ID, m.LabelID)
 		}
 	}
 }

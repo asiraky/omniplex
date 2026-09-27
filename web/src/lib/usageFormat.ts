@@ -36,7 +36,7 @@ export function totalTokens(t: UsageTotals): number {
 }
 
 /** USD with the precision the number deserves: whole dollars and cents for
- *  the headline, significant digits for the fractions a small session costs. */
+ *  the headline, significant digits for the fractions a small thread costs. */
 export function formatCost(usd: number): string {
   if (!Number.isFinite(usd)) return "—";
   if (usd === 0) return "$0";
