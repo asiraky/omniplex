@@ -18,7 +18,7 @@ import {
 } from "~/lib/composerItems";
 import { formatContextWindow, pickerInstances, resolveInstance, resolveModel, type PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
-import { dragHasFiles, filesFrom, sendPayload, type Attachment } from "~/lib/attachments";
+import { dragHasFiles, filesFrom, overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
 import { pastedFile } from "~/lib/paste";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
@@ -48,7 +48,7 @@ export function Composer({
   onSchedule,
   onCancel,
   attachments = [],
-  onAttachImages,
+  onAttachFiles,
   onRemoveAttachment,
   disabledPlaceholder,
   harnesses = [],
@@ -92,7 +92,7 @@ export function Composer({
   /** Hands picked, dropped, or pasted files of any type to the parent, which
       uploads them — images on the image path, everything else as artefacts.
       Anything that is not a file is left to the textarea. */
-  onAttachImages?: (files: File[]) => void;
+  onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
   disabledPlaceholder?: string;
   /** Every harness the server reports; the picker reads this thread's out. */
@@ -159,16 +159,20 @@ export function Composer({
   const uploading = attachments.some((a) => a.status === "uploading");
   const sendableAttachments = attachments.filter((a) => a.status === "ready" || a.status === "staged").length;
   const carriesFiles = attachments.some((a) => a.kind === "file" && a.status !== "error");
-  const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableAttachments === 0);
+  // The server would refuse it, and a refused send has already cleared the
+  // composer by the time it says so.
+  const tooMuch = overPromptLimit(attachments);
+  const cannotSend =
+    disabled || sendDisabled || uploading || tooMuch || (!draft.trim() && sendableAttachments === 0);
 
   // Set by ⌘⇧V / Ctrl⇧V between its keydown and the paste it causes.
   const plainPaste = useRef(false);
   const attach = useCallback(
     (files: File[]) => {
       if (disabled || files.length === 0) return;
-      onAttachImages?.(files);
+      onAttachFiles?.(files);
     },
-    [disabled, onAttachImages],
+    [disabled, onAttachFiles],
   );
 
   const items = useMemo<ComposerItem[]>(() => {
@@ -342,7 +346,7 @@ export function Composer({
     if ((!t && sendableAttachments === 0) || disabled || sendDisabled) return;
     // Sending now would send the message without the file still on its way up,
     // which is not what attaching it meant.
-    if (uploading) return;
+    if (uploading || tooMuch) return;
     if (t.startsWith("/") && !catalogueReady) return;
     // Recorded on submit rather than on completion: choosing from the menu is
     // browsing, sending is the use. The token is reported whatever the message
@@ -443,7 +447,7 @@ export function Composer({
         // came with ⇧, the usual "paste it as it is".
         const plain = plainPaste.current;
         plainPaste.current = false;
-        if (plain || disabled || !onAttachImages) return;
+        if (plain || disabled || !onAttachFiles) return;
         const file = pastedFile(e.clipboardData.getData("text/plain"));
         if (!file) return;
         e.preventDefault();
@@ -534,6 +538,9 @@ export function Composer({
           </button>
         </div>
       ))}
+      {tooMuch && (
+        <p className="text-destructive w-full text-xs">Images and PDFs are over 20 MB in total. Remove something to send.</p>
+      )}
     </div>
   );
 
@@ -618,7 +625,7 @@ export function Composer({
               e.target.value = "";
             }}
           />
-          {onAttachImages && (
+          {onAttachFiles && (
             <Button
               type="button"
               variant="ghost"
@@ -762,10 +769,16 @@ export function Composer({
 /** A staged non-image file: its tile, with the upload's progress or failure
     in place of its size until it is ready. */
 function FileChip({ attachment: a }: { attachment: Attachment }) {
-  const pct = Math.round((a.progress ?? 0) * 100);
+  // A PDF goes to the attachment store in one request with nothing to count,
+  // so it has no progress to show; an artefact upload reports as it goes.
+  const pct = a.progress === undefined ? undefined : Math.round(a.progress * 100);
   const detail =
     a.status === "uploading" ? (
-      `Uploading ${pct}%`
+      pct === undefined ? (
+        "Uploading…"
+      ) : (
+        `Uploading ${pct}%`
+      )
     ) : a.status === "error" ? (
       <span className="text-destructive" title={a.error}>
         {a.error ?? "Upload failed"}
@@ -781,7 +794,7 @@ function FileChip({ attachment: a }: { attachment: Attachment }) {
         detail={detail}
         className={cn("pr-4", a.status === "error" && "border-destructive/50")}
       />
-      {a.status === "uploading" && (
+      {a.status === "uploading" && pct !== undefined && (
         <span
           role="progressbar"
           aria-label={`Uploading ${a.name}`}

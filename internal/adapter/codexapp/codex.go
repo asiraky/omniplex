@@ -479,8 +479,11 @@ func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 // promptInput is a turn's input items. Images lead, the way every chat UI
 // orders them: codex reads each path itself, so nothing is copied or
 // re-encoded here. An image-only message is legal, and sends no empty text
-// item.
-func promptInput(text string, images []proto.PromptImage) []map[string]any {
+// item. Codex has no input item for a PDF, so a PDF's path goes in the text
+// and the agent reads it itself.
+func promptInput(text string, attachments []proto.PromptImage) []map[string]any {
+	images, documents := adapter.SplitAttachments(attachments)
+	text = adapter.WithDocumentPaths(text, documents)
 	input := make([]map[string]any, 0, len(images)+1)
 	for _, img := range images {
 		input = append(input, map[string]any{"type": "localImage", "path": img.Path})

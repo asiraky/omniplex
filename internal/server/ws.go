@@ -484,7 +484,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 				return nil, errors.New("this server does not store attachments")
 			}
 			if len(a.ImageIDs) > attachment.MaxPerPrompt {
-				return nil, fmt.Errorf("a message may carry at most %d images", attachment.MaxPerPrompt)
+				return nil, fmt.Errorf("a message may carry at most %d attachments", attachment.MaxPerPrompt)
 			}
 			metas, paths, resolveErr := c.srv.attachments.Resolve(a.ThreadID, a.ImageIDs)
 			if resolveErr != nil {

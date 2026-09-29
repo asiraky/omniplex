@@ -104,7 +104,7 @@ export function ThreadDraft({
   onDraftChange,
   onStart,
   attachments,
-  onAttachImages,
+  onAttachFiles,
   onRemoveAttachment,
   onListWorkspaces,
   onListIssues,
@@ -125,7 +125,7 @@ export function ThreadDraft({
   onStart: (input: NewThreadInput, schedule?: boolean) => Promise<void>;
   /** Files for the first message, held until the thread exists. */
   attachments?: Attachment[];
-  onAttachImages?: (files: File[]) => void;
+  onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
   onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
@@ -778,7 +778,7 @@ export function ThreadDraft({
           onSend={(text) => void start(text)}
           onSchedule={() => void start(draft, true)}
           attachments={attachments}
-          onAttachImages={onAttachImages}
+          onAttachFiles={onAttachFiles}
           onRemoveAttachment={onRemoveAttachment}
           onCancel={() => {}}
           harnesses={harnesses}

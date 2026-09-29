@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 
-import { MAX_IMAGE_BYTES, sendPayload, stageFile, uploadStaged, type Attachment, type UploadDeps } from "~/lib/attachments";
+import { MAX_IMAGE_BYTES, MAX_PDF_BYTES, sendPayload, stageFile, uploadStaged, type Attachment, type UploadDeps } from "~/lib/attachments";
 import { makeArtefact } from "~/test/artefact";
 
 const file = (name: string, type: string, size = 3) => {
@@ -23,7 +23,7 @@ describe("uploadStaged", () => {
   it("sends a picture the model can take down the image path", async () => {
     const d = deps();
     const patch = await uploadStaged("s1", file("shot.png", "image/png"), {}, d);
-    expect(patch).toEqual({ status: "ready", id: "img-1" });
+    expect(patch).toEqual({ status: "ready", id: "img-1", size: 3 });
     expect(d.uploadFile).not.toHaveBeenCalled();
   });
 
@@ -35,10 +35,22 @@ describe("uploadStaged", () => {
         return { artefact: makeArtefact({ id: "art-9", name: "r.pdf", source: "upload" }) };
       }),
     });
-    const patch = await uploadStaged("s1", file("r.pdf", "application/pdf"), { onProgress }, d);
+    const patch = await uploadStaged("s1", file("r.zip", "application/zip"), { onProgress }, d);
     expect(patch).toMatchObject({ kind: "file", status: "ready", artefactId: "art-9" });
     expect(onProgress).toHaveBeenCalledWith(0.5);
     expect(d.uploadImage).not.toHaveBeenCalled();
+  });
+
+  it("sends a PDF to the attachment store untouched, and a too-big one as a file", async () => {
+    const d = deps({ uploadImage: vi.fn(async () => ({ id: "doc-1", mediaType: "application/pdf", size: 9 })) });
+    const doc = file("spec.pdf", "application/pdf", 9);
+    expect(await uploadStaged("s1", doc, {}, d)).toMatchObject({ status: "ready", id: "doc-1", size: 9 });
+    expect(d.prepare).not.toHaveBeenCalled();
+    expect(d.uploadImage).toHaveBeenCalledWith("s1", doc, undefined);
+
+    const big = file("scan.pdf", "application/pdf", MAX_PDF_BYTES + 1);
+    expect(await uploadStaged("s1", big, {}, d)).toMatchObject({ kind: "file", artefactId: "art-1" });
+    expect(d.uploadFile).toHaveBeenCalledWith("s1", big, expect.anything());
   });
 
   it("sends an image type the model cannot take as a file", async () => {
@@ -77,6 +89,10 @@ describe("stageFile", () => {
       expect(img).toMatchObject({ kind: "image", previewUrl: "blob:thumb", status: "uploading" });
       expect(doc).toMatchObject({ kind: "file", previewUrl: "", progress: 0, mediaType: "application/octet-stream" });
       expect(createObjectURL).toHaveBeenCalledTimes(1);
+      // A PDF under its limit goes up in one request with nothing to count.
+      const pdf = stageFile(file("c.pdf", "application/pdf"), "k3");
+      expect(pdf).toMatchObject({ kind: "file", previewUrl: "" });
+      expect(pdf.progress).toBeUndefined();
     } finally {
       URL.createObjectURL = original;
     }

@@ -331,7 +331,7 @@ export function ScheduledPrompts({
             {p.prompt}
           </p>
           {!!p.images?.length && (
-            <p className="text-xs">{p.images.length} image(s) attached</p>
+            <p className="text-xs">{p.images.length} attachment(s)</p>
           )}
           {p.error && (
             <p className="mt-1 text-xs text-destructive">{p.error}</p>

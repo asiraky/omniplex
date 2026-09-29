@@ -168,7 +168,7 @@ export function App() {
     });
   }, []);
 
-  // Picked, dropped, or pasted images. Each is uploaded on its own the moment
+  // Picked, dropped, or pasted images and PDFs. Each is uploaded on its own the moment
   // it arrives: the composer stays usable, and a slow picture on a slow
   // connection never blocks typing the question that goes with it.
   // The in-flight upload behind each staged image, so removing one can stop it.
@@ -199,7 +199,7 @@ export function App() {
     [patchAttachment],
   );
 
-  const attachImages = useCallback(
+  const attachFiles = useCallback(
     (files: File[]) => {
       const threadId = activeId;
       if (!threadId) return;
@@ -1610,7 +1610,7 @@ export function App() {
                 onSchedule={()=>activeId && setScheduleEditor({id:uuid(),threadId:activeId,text:drafts[activeId] ?? "",imageIds:sendPayload(attachments[activeId] ?? []).imageIds})}
                 onCancel={cancel}
                 attachments={activeId ? (attachments[activeId] ?? []) : []}
-                onAttachImages={attachImages}
+                onAttachFiles={attachFiles}
                 onRemoveAttachment={(key) => activeId && removeAttachment(activeId, key)}
                 harnesses={harnesses}
                 harness={state.harness}
@@ -1639,7 +1639,7 @@ export function App() {
             onDraftChange={(text) => setDraft(NEW_THREAD, text)}
             onStart={create}
             attachments={attachments[NEW_THREAD] ?? []}
-            onAttachImages={attachToDraft}
+            onAttachFiles={attachToDraft}
             onRemoveAttachment={(key) => removeAttachment(NEW_THREAD, key)}
             onListWorkspaces={listWorkspaces}
             onListIssues={listIssues}

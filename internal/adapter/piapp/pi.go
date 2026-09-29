@@ -420,11 +420,13 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.turnID = in.TurnID
 	s.mu.Unlock()
 
-	// Pi takes image bytes inline, so each attachment is read from the host
-	// path and base64'd. Failing the prompt beats silently dropping a
-	// screenshot the human is about to ask a question about.
-	images := make([]map[string]any, 0, len(in.Images))
-	for _, img := range in.Images {
+	// Pi takes image bytes inline, so each image is read from the host path
+	// and base64'd. Failing the prompt beats silently dropping a screenshot
+	// the human is about to ask a question about. Pi has no document input,
+	// so a PDF's path goes in the text and the agent reads it itself.
+	attached, documents := adapter.SplitAttachments(in.Images)
+	images := make([]map[string]any, 0, len(attached))
+	for _, img := range attached {
 		data, err := os.ReadFile(img.Path)
 		if err != nil {
 			s.clearTurn(in.TurnID)
@@ -436,7 +438,7 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 			"mimeType": img.MediaType,
 		})
 	}
-	cmd := map[string]any{"type": "prompt", "message": in.Text}
+	cmd := map[string]any{"type": "prompt", "message": adapter.WithDocumentPaths(in.Text, documents)}
 	if len(images) > 0 {
 		cmd["images"] = images
 	}

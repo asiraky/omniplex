@@ -16,6 +16,7 @@ const transfer = (files: File[]) => ({ files, types: ["Files"] });
 const staged = (over: Partial<Attachment> = {}): Attachment => ({
   key: "k1",
   name: "shot.png",
+  mediaType: "image/png",
   previewUrl: "blob:preview",
   status: "ready",
   id: "img-1",
@@ -36,7 +37,7 @@ const stagedFile = (over: Partial<Attachment> = {}): Attachment => ({
 
 function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
   const onSend = vi.fn();
-  const onAttachImages = vi.fn();
+  const onAttachFiles = vi.fn();
   const onRemoveAttachment = vi.fn();
   const view = render(
     <Composer
@@ -46,7 +47,7 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
       busy={false}
       onSend={onSend}
       onCancel={vi.fn()}
-      onAttachImages={onAttachImages}
+      onAttachFiles={onAttachFiles}
       onRemoveAttachment={onRemoveAttachment}
       {...over}
     />,
@@ -61,14 +62,14 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
           busy={false}
           onSend={onSend}
           onCancel={vi.fn()}
-          onAttachImages={onAttachImages}
+          onAttachFiles={onAttachFiles}
           onRemoveAttachment={onRemoveAttachment}
           {...over}
           {...next}
         />,
       ),
     );
-  return { onSend, onAttachImages, onRemoveAttachment, rerender };
+  return { onSend, onAttachFiles, onRemoveAttachment, rerender };
 }
 
 // A clipboard carrying only text, as a paste from another app does.
@@ -85,64 +86,64 @@ const sendButton = () => screen.getByRole("button", { name: "Send" });
 
 describe("attaching images", () => {
   it("takes a picked file and clears the input so the same file can be picked twice", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     const file = png();
     fireEvent.change(fileInput(), { target: { files: [file] } });
-    expect(onAttachImages).toHaveBeenCalledWith([file]);
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
     expect(fileInput().value).toBe("");
   });
 
   it("takes a dropped image", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     const file = png();
     fireEvent.drop(box(), { dataTransfer: transfer([file]) });
-    expect(onAttachImages).toHaveBeenCalledWith([file]);
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
   });
 
   it("takes a pasted screenshot and leaves pasted text to the textarea", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     fireEvent.paste(box(), { clipboardData: text("a sentence") });
-    expect(onAttachImages).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
 
     const file = png("clipboard.png");
     fireEvent.paste(box(), { clipboardData: { files: [file], types: ["Files"] } });
-    expect(onAttachImages).toHaveBeenCalledWith([file]);
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
   });
 
   it("takes any kind of file, however it arrives", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     const picked = pdf("picked.pdf");
     const dropped = new File(["a,b"], "data.csv", { type: "text/csv" });
     const pasted = new File(["x"], "notes", { type: "" });
     fireEvent.change(fileInput(), { target: { files: [picked] } });
     fireEvent.drop(box(), { dataTransfer: transfer([dropped]) });
     fireEvent.paste(box(), { clipboardData: { files: [pasted], types: ["Files"] } });
-    expect(onAttachImages.mock.calls).toEqual([[[picked]], [[dropped]], [[pasted]]]);
+    expect(onAttachFiles.mock.calls).toEqual([[[picked]], [[dropped]], [[pasted]]]);
   });
 
   it("turns a long paste into a file, and leaves it as text with shift", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     const long = "# Plan\n\n" + "- a step\n".repeat(30);
     const plain = fireEvent.paste(box(), { clipboardData: text(long) });
     expect(plain).toBe(false); // handled: the textarea never sees it
-    const [[[file]]] = onAttachImages.mock.calls;
+    const [[[file]]] = onAttachFiles.mock.calls;
     expect(file.name).toBe("plan.md");
 
     fireEvent.keyDown(box(), { key: "V", ctrlKey: true, shiftKey: true });
     expect(fireEvent.paste(box(), { clipboardData: text(long) })).toBe(true);
-    expect(onAttachImages).toHaveBeenCalledTimes(1);
+    expect(onAttachFiles).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a drop that carries no files", () => {
-    const { onAttachImages } = mount();
+    const { onAttachFiles } = mount();
     fireEvent.drop(box(), { dataTransfer: { files: [], types: ["text/uri-list"] } });
-    expect(onAttachImages).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
   });
 
   it("attaches nothing while the composer is disabled", () => {
-    const { onAttachImages } = mount({ disabled: true, disabledPlaceholder: "Reconnecting" });
+    const { onAttachFiles } = mount({ disabled: true, disabledPlaceholder: "Reconnecting" });
     fireEvent.change(fileInput(), { target: { files: [png()] } });
-    expect(onAttachImages).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
   });
 });
 
@@ -218,6 +219,24 @@ describe("sending with images", () => {
     const { onRemoveAttachment } = mount({ attachments: [stagedFile()] });
     fireEvent.click(screen.getByRole("button", { name: "Remove b.pdf" }));
     expect(onRemoveAttachment).toHaveBeenCalledWith("k2");
+  });
+
+  it("holds back a message whose images and PDFs together are more than the server takes", () => {
+    const big = (key: string) =>
+      stagedFile({ key, name: `${key}.pdf`, artefactId: undefined, id: key, size: 9_500_000 });
+    const { onSend, rerender } = mount({ draft: "summarise", attachments: [big("a"), big("b")] });
+    expect(sendButton()).toHaveProperty("disabled", false);
+
+    rerender({ draft: "summarise", attachments: [big("a"), big("b"), big("c")] });
+    expect(sendButton()).toHaveProperty("disabled", true);
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText(/over 20 MB in total/)).toBeTruthy();
+
+    // A file sent as an artefact is a path to the agent, not bytes in the
+    // message, so it does not count.
+    rerender({ draft: "summarise", attachments: [big("a"), big("b"), stagedFile({ size: 9_500_000 })] });
+    expect(sendButton()).toHaveProperty("disabled", false);
   });
 
   it("removes a staged image", () => {

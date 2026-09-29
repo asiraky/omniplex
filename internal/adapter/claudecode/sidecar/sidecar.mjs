@@ -93,24 +93,26 @@ const pushPrompt = (turn) => (waiters.length ? waiters.shift()(turn) : queued.pu
 const nextPrompt = () =>
   new Promise((resolve) => (queued.length ? resolve(queued.shift()) : waiters.push(resolve)));
 
-// The host sends image paths, not bytes; the picture becomes a base64 content
-// block here, at the last possible moment. An image that cannot be read becomes
-// a note in its place rather than failing the turn: losing a screenshot is recoverable,
-// losing the question that came with it is not.
-async function imageBlocks(images) {
+// The host sends attachment paths, not bytes; each file becomes a base64
+// content block here, at the last possible moment — an image block for a
+// picture, a document block for a PDF. A file that cannot be read becomes a
+// note in its place rather than failing the turn: losing a screenshot is
+// recoverable, losing the question that came with it is not.
+async function attachmentBlocks(attachments) {
   const blocks = [];
-  for (const image of images ?? []) {
+  for (const file of attachments ?? []) {
+    const kind = file.mediaType === "application/pdf" ? "document" : "image";
     try {
-      const data = await readFile(image.path);
+      const data = await readFile(file.path);
       blocks.push({
-        type: "image",
-        source: { type: "base64", media_type: image.mediaType, data: data.toString("base64") },
+        type: kind,
+        source: { type: "base64", media_type: file.mediaType, data: data.toString("base64") },
       });
     } catch (e) {
       // Say so in the message rather than inventing an event: the model is
-      // told an image was meant to be here, and the transcript the host
+      // told a file was meant to be here, and the transcript the host
       // renders is untouched.
-      blocks.push({ type: "text", text: `[an attached image could not be read: ${e?.message ?? e}]` });
+      blocks.push({ type: "text", text: `[an attached ${kind} could not be read: ${e?.message ?? e}]` });
     }
   }
   return blocks;
@@ -119,10 +121,11 @@ async function imageBlocks(images) {
 async function* prompts() {
   while (!shuttingDown) {
     const { text, images, uuid } = await nextPrompt();
-    // Images lead: the model is being asked about them, and the question that
-    // follows reads as a caption rather than a preamble. An image-only message
-    // carries no empty text block, which the API rejects.
-    const content = [...(await imageBlocks(images))];
+    // Attachments lead: the model is being asked about them, and the question
+    // that follows reads as a caption rather than a preamble. An
+    // attachment-only message carries no empty text block, which the API
+    // rejects.
+    const content = [...(await attachmentBlocks(images))];
     if (text || content.length === 0) content.push({ type: "text", text });
     // The host's id rides on the message and comes back on the replay the
     // CLI emits when it actually reads it (--replay-user-messages below).
