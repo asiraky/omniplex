@@ -450,6 +450,28 @@ describe("scope", () => {
     expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "f1", workspace: "managed" });
   });
 
+  it("keeps a folder pick with its own project", async () => {
+    const garden = {
+      ...bowerbird,
+      id: "p2",
+      name: "garden",
+      folders: [folder("g1", "/tmp/garden/app", true), folder("g2", "/tmp/garden/docs", false)],
+    } as unknown as Project;
+    open({ projects: [bowerbird, garden] });
+
+    menu("Scope");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
+    expect(chip("Scope").textContent).toBe("site");
+
+    menu("Project");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^garden/ }));
+    expect(chip("Scope").textContent).toBe("Everything");
+
+    menu("Project");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^repo/ }));
+    expect(chip("Scope").textContent).toBe("site");
+  });
+
   it("asks nothing for a project whose one folder is plain", async () => {
     const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     const plain = { ...project, folders: [folder("f2", "/tmp/notes", false)] } as unknown as Project;

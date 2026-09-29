@@ -146,8 +146,9 @@ export function ThreadDraft({
   });
   // "" defers to what the project last used.
   const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>("");
-  // null defers to the folder the project last used; "" is the whole project.
-  const [folderId, setFolderId] = useState<string | null>(null);
+  // A folder picked in this draft, with the project it belongs to: an id
+  // means nothing in another project. "" is the whole project.
+  const [picked, setPicked] = useState<{ projectId: string; folderId: string } | null>(null);
   const [naming, setNaming] = useState(false);
   const [baseRef, setBaseRef] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -165,6 +166,8 @@ export function ThreadDraft({
   const project = projects.find((p) => p.id === projectId) ?? projects[0];
   const remembered = preferences[project?.id ?? ""];
   const folders = project?.folders ?? [];
+  // A pick in this project, else the folder the project last used.
+  const folderId = picked && picked.projectId === project?.id ? picked.folderId : null;
   const wantedFolder = folderId ?? remembered?.folderId ?? "";
   // One folder is the scope with nothing to choose. With several, none chosen
   // is the whole project, which asks no git questions.
@@ -339,11 +342,6 @@ export function ThreadDraft({
   useEffect(() => {
     if (!projectId && projects.length > 0) setProjectId(initialProject(projects, activeProjectId));
   }, [projectId, projects]);
-
-  // A folder id means nothing in another project.
-  useEffect(() => {
-    setFolderId(null);
-  }, [project?.id]);
 
   // Copies and issues belong to a git folder, re-read whenever the scope
   // changes so a stale list cannot offer a copy that has since gone.
@@ -595,7 +593,9 @@ export function ThreadDraft({
                   >
                     <DropdownMenuRadioGroup
                       value={scope?.id ?? ""}
-                      onValueChange={(v) => setFolderId(v)}
+                      onValueChange={(v) =>
+                        project && setPicked({ projectId: project.id, folderId: v })
+                      }
                     >
                       <DropdownMenuRadioItem value="">
                         <Described title="Everything" hint="Every folder, worked on directly" />

@@ -1,5 +1,5 @@
 import { ArrowUpIcon, FolderGit2Icon, FolderIcon, LockIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
@@ -28,14 +28,29 @@ export function FolderBrowser({
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the latest tap counts. Two quick taps on a slow link can answer out
+  // of order, and the older answer landing last would leave you in the wrong
+  // folder with the path saying so.
+  const latest = useRef(0);
   const load = async (path: string) => {
+    const mine = ++latest.current;
     setError(null);
-    const r = await fetch(`/api/fs?path=${encodeURIComponent(path)}`);
-    if (r.ok) setListing((await r.json()) as Listing);
-    else setError((await r.text()).trim());
+    try {
+      const r = await fetch(`/api/fs?path=${encodeURIComponent(path)}`);
+      const body = r.ok ? ((await r.json()) as Listing) : (await r.text()).trim();
+      if (mine !== latest.current) return;
+      if (typeof body === "string") setError(body || `Could not open that folder (${r.status})`);
+      else setListing(body);
+    } catch (e) {
+      if (mine === latest.current) setError(e instanceof Error ? e.message : String(e));
+    }
   };
   useEffect(() => {
     void load("~");
+    // Nothing that lands after unmount should set state.
+    return () => {
+      latest.current++;
+    };
   }, []);
 
   return (
