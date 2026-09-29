@@ -69,7 +69,7 @@ const save = () => fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
 describe("Settings", () => {
   it("saves what was changed and keeps what this screen does not show", async () => {
-    const { onSave, onClose } = open({ version: 1, summaryPrompt: "be brief", suggestIssues: true });
+    const { onSave, onClose } = open({ version: 1, suggestIssues: true });
     fireEvent.change(screen.getByLabelText("Projects folder"), { target: { value: "~/work" } });
     await pickLevel("Do everything");
     fireEvent.change(screen.getByLabelText("Branch names from issues"), {
@@ -79,7 +79,6 @@ describe("Settings", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(onSave).toHaveBeenCalledWith({
       version: 1,
-      summaryPrompt: "be brief",
       suggestIssues: true,
       projectsDir: "~/work",
       defaultLevel: "all",

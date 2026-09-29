@@ -462,11 +462,6 @@ export interface UserConfig {
   /** A JavaScript arrow function, issue in and branch name out, evaluated here. */
   branchFormat?: string;
   suggestIssues?: boolean;
-  /**
-   * The system prompt the thread summariser runs under. Empty means the
-   * server's default, so clearing the box is how you go back to it.
-   */
-  summaryPrompt?: string;
   /** Where new projects' home folders go. Empty means ~/Omniplex. */
   projectsDir?: string;
   /** What a project's first thread runs on; empty defers to a ready account. */
@@ -482,19 +477,6 @@ export interface GitHubRepo {
   name: string;
   description?: string;
   private?: boolean;
-}
-
-/**
- * One generated thread summary. `seq` is the thread head it was made from,
- * so a client can tell a summary that still describes the thread from one the
- * thread has since moved past.
- */
-export interface ThreadSummary {
-  text: string;
-  harness: string;
-  model: string;
-  seq: number;
-  generatedAt: number;
 }
 
 export interface ThreadMeta {

@@ -3,7 +3,7 @@ import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
 import { useIsDesktop } from "./useMediaQuery";
 import { useDocumentTitle } from "./useDocumentTitle";
 import { useThreadPR } from "./useThreadPR";
-import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Folder, GitHubRepo, Project, ProjectDefaults, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, ThreadSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
+import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Folder, GitHubRepo, Project, ProjectDefaults, QuotaStatus, ThreadChanges, ThreadMeta, ThreadState, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
 import { AccessPanel } from "./components/Access";
 import type { PanelRequest } from "./components/panel/Panel";
 import { liveJobCount } from "./lib/jobs";
@@ -54,13 +54,11 @@ import {
   CoffeeIcon,
   CopyIcon,
   EllipsisIcon,
-  LogInIcon,
   MessagesSquareIcon,
   PanelLeftIcon,
   PanelRightIcon,
   PlusIcon,
   SettingsIcon,
-  SparklesIcon,
   TagIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -70,7 +68,6 @@ const LAST_THREAD = "omniplex.lastThread";
 const NEW_THREAD = "new-thread";
 
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
-const ThreadSummaryPanel = lazy(() => import("./components/ThreadSummary").then((m) => ({ default: m.ThreadSummaryPanel })));
 const NewProject = lazy(() => import("./components/NewProject").then((m) => ({ default: m.NewProject })));
 const Settings = lazy(() => import("./components/Settings").then((m) => ({ default: m.Settings })));
 const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
@@ -253,17 +250,6 @@ export function App() {
   const [projectSettings, setProjectSettings] = useState<Project | null>(null);
   const [newProject, setNewProject] = useState(false);
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
-  // The summary panel. Summaries are held per thread so flicking between two
-  // threads does not re-bill a model for an answer we already have; they are
-  // deliberately not persisted, because a stale summary read as current is
-  // worse than no summary at all.
-  const [showSummary, setShowSummary] = useState(false);
-  const [summaries, setSummaries] = useState<Record<string, ThreadSummary>>({});
-  // Progress and failure are per thread too, not global: a summary started
-  // for one thread must not clear the spinner — or show its error — in
-  // another one the user has since switched to.
-  const [summarizing, setSummarizing] = useState<Record<string, boolean>>({});
-  const [summaryErrors, setSummaryErrors] = useState<Record<string, string>>({});
   const [access, setAccess] = useState<Access | null>(null);
   const [showAccess, setShowAccess] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
@@ -480,24 +466,6 @@ export function App() {
   }, []);
   const saveUserConfig = useCallback(async (cfg: UserConfig) => { const res=await clientRef.current!.command("save_user_config",{config:cfg}); setUserConfig(res.userConfig); },[]);
 
-  // Summarising starts a harness against a small model, so it can take tens of
-  // seconds. The result is keyed by thread id: the panel can be closed and
-  // reopened, or another thread visited and come back to, without paying for
-  // the same answer twice.
-  const summarize = useCallback(async (id: string) => {
-    setSummarizing((prev) => ({ ...prev, [id]: true }));
-    setSummaryErrors((prev) => { const { [id]: _gone, ...rest } = prev; return rest; });
-    try {
-      const res = await clientRef.current!.command("summarize_thread", { threadId: id });
-      setSummaries((prev) => ({ ...prev, [id]: res.summary as ThreadSummary }));
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setSummaryErrors((prev) => ({ ...prev, [id]: message }));
-    } finally {
-      setSummarizing((prev) => { const { [id]: _gone, ...rest } = prev; return rest; });
-    }
-  }, []);
-
   // The transcript asking for the page above its window. Fire-and-forget: the
   // client dedups concurrent asks and publishes the merged state through the
   // same onState path every other update takes.
@@ -524,24 +492,6 @@ export function App() {
     await copyTranscript(transcriptMarkdown(s.items, s.turns));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyTranscript]);
-
-  // Opening the panel summarises only if there is nothing to show yet. Asking
-  // again is a button, not a side effect of looking.
-  const openSummary = useCallback(() => {
-    if (!activeId) return;
-    setShowSummary(true);
-    if (!summaries[activeId]) void summarize(activeId);
-  }, [activeId, summaries, summarize]);
-
-  // A saved prompt invalidates every summary: they were all written to
-  // different instructions and would otherwise sit there looking current.
-  const saveSummaryPrompt = useCallback(async (summaryPrompt: string) => {
-    // Refusing loudly rather than returning: a silent no-op here would save
-    // nothing, re-run against the old prompt, and look like it had worked.
-    if (!userConfig) throw new Error("settings are still loading — try again in a moment");
-    await saveUserConfig({ ...userConfig, summaryPrompt });
-    setSummaries({});
-  }, [userConfig, saveUserConfig]);
 
   // Read-on-open, reported to the server so paired devices agree. The report
   // carries the seq this page has actually rendered, not the server's head —
@@ -1408,25 +1358,12 @@ export function App() {
 
               {isDesktop ? (
                 <>
-                  <IconButton label="Summarise this thread" onClick={openSummary}>
-                    <SparklesIcon />
-                  </IconButton>
-
                   <IconButton
                     label={transcriptCopied ? "Transcript copied" : "Copy transcript"}
                     onClick={() => void copyFullTranscript()}
                   >
                     {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                   </IconButton>
-
-                  {activeProviderInstance?.canLogin && (
-                    <IconButton
-                      label={`Sign in again to ${activeProviderInstance.displayName}`}
-                      onClick={() => openInstanceAuth(activeProviderInstance.id)}
-                    >
-                      <LogInIcon />
-                    </IconButton>
-                  )}
 
                   {activeProject && (
                     <IconButton
@@ -1473,20 +1410,12 @@ export function App() {
                       <PanelRightIcon /> Open panel
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={openSummary}>
-                      <SparklesIcon /> Summarise thread
-                    </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => void copyFullTranscript()}
                     >
                       {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                       {transcriptCopied ? "Transcript copied" : "Copy transcript"}
                     </DropdownMenuItem>
-                    {activeProviderInstance?.canLogin && (
-                      <DropdownMenuItem onSelect={() => openInstanceAuth(activeProviderInstance.id)}>
-                        <LogInIcon /> Sign in again to {activeProviderInstance.displayName}
-                      </DropdownMenuItem>
-                    )}
                     {activeProject && (
                       <>
                         <DropdownMenuSeparator />
@@ -1540,14 +1469,6 @@ export function App() {
               >
                 {meta ? "Attaching…" : creating ? "New thread" : ""}
               </span>
-              {activeProviderInstance?.canLogin && (
-                <IconButton
-                  label={`Sign in again to ${activeProviderInstance.displayName}`}
-                  onClick={() => openInstanceAuth(activeProviderInstance.id)}
-                >
-                  <LogInIcon />
-                </IconButton>
-              )}
             </>
           )}
         </header>
@@ -1673,23 +1594,6 @@ export function App() {
           loadFile={loadFile}
           request={panelRequest}
           pr={pr}
-          />
-        </Suspense>
-      )}
-
-      {showSummary && activeId && (
-        <Suspense fallback={null}>
-          <ThreadSummaryPanel
-          summary={summaries[activeId] ?? null}
-          loading={!!summarizing[activeId]}
-          error={summaryErrors[activeId] ?? null}
-          // A summary made before the latest events is still worth reading —
-          // it just should not claim to be the whole story.
-          stale={!!state && !!summaries[activeId] && summaries[activeId].seq < state.seq}
-          userConfig={userConfig}
-          onRegenerate={() => void summarize(activeId)}
-          onSavePrompt={saveSummaryPrompt}
-          onClose={() => setShowSummary(false)}
           />
         </Suspense>
       )}

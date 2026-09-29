@@ -410,41 +410,6 @@ type ComposerCatalogueInvalidator interface {
 	ComposerCatalogueChanged()
 }
 
-// SummaryRequest is one transcript to compress, plus the instructions that say
-// how. System is the operator's editable prompt; Transcript is the rendered
-// session. They are kept apart rather than concatenated so an adapter can put
-// each where its harness expects it — a system prompt slot and a user turn —
-// instead of every adapter re-inventing the same delimiter.
-type SummaryRequest struct {
-	System     string
-	Transcript string
-}
-
-// Summarizer is an optional adapter capability: answer one question about a
-// transcript, cheaply, without starting a session.
-//
-// It is on the Adapter rather than on Session on purpose. A summary is most
-// wanted for a session that finished days ago, and resuming a closed
-// conversation just to ask it what it did would restart a harness, restore its
-// context, and bill for it. This spawns a short-lived process against the
-// harness's fastest model and throws it away.
-//
-// The env overlay is the session's own provider instance, so the summary is
-// billed to the account that did the work. An adapter whose harness cannot do
-// this simply does not implement it, and the host says so.
-type Summarizer interface {
-	Summarize(ctx context.Context, env map[string]string, req SummaryRequest) (SummaryResult, error)
-}
-
-// SummaryResult is the answer plus the model that gave it. The model is
-// reported rather than configured because the adapter chooses it, and a
-// summary that names its author can be judged; one that appears from nowhere
-// cannot.
-type SummaryResult struct {
-	Text  string
-	Model string
-}
-
 // ---- Account-level usage limits ----
 //
 // Quota is separate from the per-session usage.updated payload on purpose:

@@ -8,24 +8,28 @@
    these eight or so variables rather than editing every file. */
 :root {
   --radius: 0.625rem;
+  /* The tint: the hue and strength every grey below leans towards. Light mode
+     reads it at a fraction of dark mode's strength, so both follow one choice. */
+  --tint-h: 265;
+  --tint-c: 0.014;
 
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.21 0.006 285);
+  --background: oklch(0.99 calc(var(--tint-c) * 0.35) var(--tint-h));
+  --foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.006 285);
+  --card-foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.006 285);
+  --popover-foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --primary: oklch(0.52 0.17 275);
   --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.96 0.002 285);
-  --secondary-foreground: oklch(0.28 0.006 285);
-  --muted: oklch(0.96 0.002 285);
-  --muted-foreground: oklch(0.52 0.011 285);
-  --accent: oklch(0.955 0.004 285);
-  --accent-foreground: oklch(0.28 0.006 285);
+  --secondary: oklch(0.96 calc(var(--tint-c) * 0.6) var(--tint-h));
+  --secondary-foreground: oklch(0.28 calc(var(--tint-c) * 0.4) var(--tint-h));
+  --muted: oklch(0.96 calc(var(--tint-c) * 0.6) var(--tint-h));
+  --muted-foreground: oklch(0.52 calc(var(--tint-c) * 0.8) var(--tint-h));
+  --accent: oklch(0.955 calc(var(--tint-c) * 0.7) var(--tint-h));
+  --accent-foreground: oklch(0.28 calc(var(--tint-c) * 0.4) var(--tint-h));
   --destructive: oklch(0.58 0.21 27);
-  --border: oklch(0.9 0.003 285);
-  --input: oklch(0.9 0.003 285);
+  --border: oklch(0.9 calc(var(--tint-c) * 0.45) var(--tint-h));
+  --input: oklch(0.9 calc(var(--tint-c) * 0.45) var(--tint-h));
   --ring: oklch(0.52 0.17 275);
 
   /* The transcript's own roles: the reader's own words, the agent's private
@@ -33,7 +37,7 @@
      part of the theme because both themes have to answer them differently. */
   --user-bubble: oklch(0.94 0.03 275);
   --user-bubble-foreground: oklch(0.28 0.05 275);
-  --thought: oklch(0.55 0.01 285);
+  --thought: oklch(0.55 calc(var(--tint-c) * 0.7) var(--tint-h));
   --attention: oklch(0.62 0.14 70);
   --attention-foreground: oklch(0.42 0.11 70);
   --attention-surface: oklch(0.97 0.03 80);
@@ -45,24 +49,19 @@
   --chart-4: oklch(0.68 0.15 70);
   --chart-5: oklch(0.58 0.2 15);
 
-  --sidebar: oklch(0.975 0.001 285);
-  --sidebar-foreground: oklch(0.21 0.006 285);
+  --sidebar: oklch(0.975 calc(var(--tint-c) * 0.5) var(--tint-h));
+  --sidebar-foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --sidebar-primary: oklch(0.52 0.17 275);
   --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.93 0.003 285);
-  --sidebar-accent-foreground: oklch(0.28 0.006 285);
-  --sidebar-border: oklch(0.9 0.003 285);
+  --sidebar-accent: oklch(0.93 calc(var(--tint-c) * 0.6) var(--tint-h));
+  --sidebar-accent-foreground: oklch(0.28 calc(var(--tint-c) * 0.4) var(--tint-h));
+  --sidebar-border: oklch(0.9 calc(var(--tint-c) * 0.45) var(--tint-h));
   --sidebar-ring: oklch(0.52 0.17 275);
 }
 
-/* Dark mode's greys all lean one way, the tint: a hue and a strength that
-   every surface below reads, so a tint is two numbers rather than a palette.
-   Surfaces step up in lightness from canvas to card to popover to hover; the
+/* Dark mode's greys lean on the same tint, at full strength. Surfaces step up in lightness from canvas to card to popover to hover; the
    indigo accent stays put whatever the tint. */
 .dark {
-  --tint-h: 265;
-  --tint-c: 0.014;
-
   --background: oklch(0.235 var(--tint-c) var(--tint-h));
   --foreground: oklch(0.94 calc(var(--tint-c) * 0.5) var(--tint-h));
   --card: oklch(0.275 var(--tint-c) var(--tint-h));
@@ -107,23 +106,27 @@
 }
 
 /* Set on <html> by applyTint and the boot script in index.html. */
-.dark[data-tint="blue"] {
+[data-tint="blue"] {
   --tint-h: 245;
   --tint-c: 0.03;
 }
-.dark[data-tint="violet"] {
+[data-tint="violet"] {
   --tint-h: 295;
   --tint-c: 0.03;
 }
-.dark[data-tint="green"] {
+[data-tint="green"] {
   --tint-h: 160;
   --tint-c: 0.022;
 }
-.dark[data-tint="warm"] {
+[data-tint="warm"] {
   --tint-h: 55;
   --tint-c: 0.018;
 }
-.dark[data-tint="grey"] {
+[data-tint="red"] {
+  --tint-h: 20;
+  --tint-c: 0.028;
+}
+[data-tint="grey"] {
   --tint-c: 0;
 }
 

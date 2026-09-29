@@ -52,7 +52,7 @@ export function ThemeToggle({ className }: { className?: string }) {
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">
-          Dark mode tint
+          Tint
         </DropdownMenuLabel>
         <DropdownMenuRadioGroup value={tint} onValueChange={(v) => setTint(v as Tint)}>
           {TINTS.map((t) => (

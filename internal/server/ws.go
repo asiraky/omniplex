@@ -317,28 +317,16 @@ func (c *conn) detachAll() {
 	}
 }
 
-// commandTimeout bounds one command. Sixty seconds is the rule: every command
-// here either talks to a local process or reads the log, and one that has not
-// answered in a minute is wedged.
-//
-// Summarising is the exception, and honestly so. It starts a cold harness
-// against a model and waits for prose, which on a slow machine or a long
-// transcript is minutes rather than seconds — and the thread-level timeout it
-// runs under is shorter than this, so the harness still gets the last word on
-// giving up.
-func commandTimeout(command string) time.Duration {
-	if command == "summarize_thread" {
-		return 5 * time.Minute
-	}
-	return 60 * time.Second
-}
+// commandTimeout bounds one command. Every command here either talks to a
+// local process or reads the log, and one that has not answered in a minute is
+// wedged.
+const commandTimeout = 60 * time.Second
 
 // threadOfArgs reads the thread a command is about out of its arguments.
 //
 // Clients address a thread inside args rather than on the frame, so the
 // stored command row would otherwise have no thread and survive that
-// thread's deletion. That matters most for a summary, whose stored result is
-// model-written prose about the transcript.
+// thread's deletion.
 func threadOfArgs(args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
@@ -379,7 +367,7 @@ func (c *conn) command(f clientFrame) {
 	// A command belongs to the user operation, not to the socket that happened
 	// to carry it. Let it finish and persist its result after a disconnect so a
 	// reconnect can recover the acknowledgement with the same command id.
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout(f.Command))
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
 	for {
@@ -937,17 +925,6 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			_, _ = c.srv.mgr.RefreshQuota(ctx, status.Instance)
 		}
 		return map[string]any{"quotas": c.srv.mgr.Quotas()}, nil
-
-	case "summarize_thread":
-		var a summarizeArgs
-		if err := json.Unmarshal(f.Args, &a); err != nil {
-			return nil, err
-		}
-		summary, err := c.srv.mgr.SummarizeThread(ctx, a.ThreadID)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"summary": summary}, nil
 
 	case "get_user_config":
 		cfg, err := userconfig.Load()

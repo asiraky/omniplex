@@ -193,13 +193,6 @@ type threadArgs struct {
 	Comparison string `json:"comparison,omitempty"`
 }
 
-// summarizeArgs asks for a fresh summary of one thread. There is no "use the
-// cached one" flag: the command is only sent when a client wants a new answer,
-// and the client holds the last one it was given.
-type summarizeArgs struct {
-	ThreadID string `json:"threadId"`
-}
-
 type fileDiffArgs struct {
 	ThreadID   string `json:"threadId"`
 	Path       string `json:"path"`

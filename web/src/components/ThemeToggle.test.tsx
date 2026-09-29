@@ -11,7 +11,7 @@ const openMenu = () =>
     ctrlKey: false,
   });
 
-describe("dark mode tint", () => {
+describe("tint", () => {
   beforeEach(() => {
     localStorage.clear();
     delete document.documentElement.dataset.tint;
