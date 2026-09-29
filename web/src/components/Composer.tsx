@@ -19,6 +19,7 @@ import {
 import { formatContextWindow, pickerInstances, resolveInstance, resolveModel, type PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import { dragHasFiles, filesFrom, sendPayload, type Attachment } from "~/lib/attachments";
+import { pastedFile } from "~/lib/paste";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
@@ -160,6 +161,8 @@ export function Composer({
   const carriesFiles = attachments.some((a) => a.kind === "file" && a.status !== "error");
   const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableAttachments === 0);
 
+  // Set by ⌘⇧V / Ctrl⇧V between its keydown and the paste it causes.
+  const plainPaste = useRef(false);
   const attach = useCallback(
     (files: File[]) => {
       if (disabled || files.length === 0) return;
@@ -429,17 +432,32 @@ export function Composer({
       onPaste={(e) => {
         // A screenshot on the clipboard is the fastest way to attach one, and
         // the reason the terminal habit transfers; a copied file comes the same
-        // way. Text pastes are untouched.
+        // way.
         const files = filesFrom(e.clipboardData);
-        if (files.length === 0) return;
+        if (files.length > 0) {
+          e.preventDefault();
+          attach(files);
+          return;
+        }
+        // A long paste goes in as a file rather than a wall of text, unless it
+        // came with ⇧, the usual "paste it as it is".
+        const plain = plainPaste.current;
+        plainPaste.current = false;
+        if (plain || disabled || !onAttachImages) return;
+        const file = pastedFile(e.clipboardData.getData("text/plain"));
+        if (!file) return;
         e.preventDefault();
-        attach(files);
+        attach([file]);
       }}
       onFocus={() => setComposerFocused(true)}
       onBlur={() => setComposerFocused(false)}
       onClick={(e) => setCursor(e.currentTarget.selectionStart)}
-      onKeyUp={(e) => setCursor(e.currentTarget.selectionStart)}
+      onKeyUp={(e) => {
+        plainPaste.current = false;
+        setCursor(e.currentTarget.selectionStart);
+      }}
       onKeyDown={(e) => {
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "v") plainPaste.current = true;
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         if (menuOpen) {
           if (e.key === "ArrowDown" || e.key === "ArrowUp") {

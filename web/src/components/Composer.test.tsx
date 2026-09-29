@@ -71,6 +71,12 @@ function mount(over: Partial<React.ComponentProps<typeof Composer>> = {}) {
   return { onSend, onAttachImages, onRemoveAttachment, rerender };
 }
 
+// A clipboard carrying only text, as a paste from another app does.
+const text = (value: string) => ({
+  files: [],
+  types: ["text/plain"],
+  getData: (type: string) => (type === "text/plain" ? value : ""),
+});
 const fileInput = () => document.querySelector<HTMLInputElement>("input[type=file]")!;
 // Drop and paste are handled on the card around the textarea; React events
 // bubble, so firing on the box a hand would actually be over is enough.
@@ -95,7 +101,7 @@ describe("attaching images", () => {
 
   it("takes a pasted screenshot and leaves pasted text to the textarea", () => {
     const { onAttachImages } = mount();
-    fireEvent.paste(box(), { clipboardData: { files: [], types: ["text/plain"] } });
+    fireEvent.paste(box(), { clipboardData: text("a sentence") });
     expect(onAttachImages).not.toHaveBeenCalled();
 
     const file = png("clipboard.png");
@@ -112,6 +118,19 @@ describe("attaching images", () => {
     fireEvent.drop(box(), { dataTransfer: transfer([dropped]) });
     fireEvent.paste(box(), { clipboardData: { files: [pasted], types: ["Files"] } });
     expect(onAttachImages.mock.calls).toEqual([[[picked]], [[dropped]], [[pasted]]]);
+  });
+
+  it("turns a long paste into a file, and leaves it as text with shift", () => {
+    const { onAttachImages } = mount();
+    const long = "# Plan\n\n" + "- a step\n".repeat(30);
+    const plain = fireEvent.paste(box(), { clipboardData: text(long) });
+    expect(plain).toBe(false); // handled: the textarea never sees it
+    const [[[file]]] = onAttachImages.mock.calls;
+    expect(file.name).toBe("plan.md");
+
+    fireEvent.keyDown(box(), { key: "V", ctrlKey: true, shiftKey: true });
+    expect(fireEvent.paste(box(), { clipboardData: text(long) })).toBe(true);
+    expect(onAttachImages).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a drop that carries no files", () => {
