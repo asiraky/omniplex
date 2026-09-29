@@ -7,20 +7,12 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { FolderBrowser, GitHubPicker } from "~/components/FolderSources";
-import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
+import { SettingsPane } from "~/components/SettingsPane";
 import { Button } from "~/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
@@ -410,7 +402,8 @@ export function ProjectSettings({
   listRepos,
   onDelete,
   threadCount,
-  onClose,
+  onDeleted,
+  onBack,
 }: {
   project: Project;
   harnesses: HarnessMeta[];
@@ -422,24 +415,31 @@ export function ProjectSettings({
   /** How many threads still belong to this project; a project with any is
       not deletable, and the screen says so before the button is pressed. */
   threadCount: number;
-  onClose: () => void;
+  /** After the project is gone; this screen has nothing left to show. */
+  onDeleted: () => void;
+  onBack?: () => void;
 }) {
   const [name, setName] = useState(project.name);
   const [defs, setDefs] = useState<ProjectDefaults>(project.defaults);
   const [folders, setFolders] = useState<Folder[]>(project.folders);
   const [settingsHarness, setSettingsHarness] = useState(project.defaults.harness ?? "codex");
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Any edit makes it saveable again.
+  useEffect(() => setSaved(false), [name, defs, folders]);
 
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
       await onSave(project.id, name, defs, folders);
-      onClose();
+      setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(false);
     }
   };
@@ -463,18 +463,19 @@ export function ProjectSettings({
   const gitFolders = folders.filter((f) => f.git);
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      {/* Header and footer stay put; only the form between them scrolls. */}
-      <DialogContent
-        fullscreenOnMobile
-        className="flex max-h-[min(90dvh,44rem)] flex-col gap-0 p-0 md:max-w-lg"
-      >
-        <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
-          <DialogTitle>{`${name} settings`}</DialogTitle>
-          <DialogDescription>Defaults every new thread in this project starts from.</DialogDescription>
-        </DialogHeader>
-
-        <div className="scroll-thin min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
+    <SettingsPane
+      title={name || project.name}
+      description="Defaults every new thread in this project starts from."
+      onBack={onBack}
+      error={error}
+      footer={
+        // Dead while a delete is in flight: a save landing after the
+        // delete commits would write the project straight back.
+        <Button disabled={busy || deleting || saved} onClick={save}>
+          {busy ? "Saving…" : saved ? "Saved" : "Save"}
+        </Button>
+      }
+    >
           {
             <div className="space-y-5">
               <div className="space-y-1.5">
@@ -679,32 +680,12 @@ export function ProjectSettings({
                 onError={setError}
                 onDelete={async () => {
                   await onDelete(project.id);
-                  onClose();
+                  onDeleted();
                 }}
               />
             </div>
           }
 
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription className="font-mono text-[11px] break-words">
-                {error}
-              </AlertDescription>
-            </Alert>
-          )}
-        </div>
-
-        <DialogFooter className="border-t px-6 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] md:pb-4">
-          <Button variant="ghost" onClick={onClose} disabled={deleting}>
-            Cancel
-          </Button>
-          {/* Dead while a delete is in flight: a save landing after the
-              delete commits would write the project straight back. */}
-          <Button disabled={busy || deleting} onClick={save}>
-            {busy ? "Saving…" : "Save"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </SettingsPane>
   );
 }

@@ -3,7 +3,6 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   FolderIcon,
-  KeyRoundIcon,
   SettingsIcon,
   GitBranchIcon,
   PanelLeftIcon,
@@ -166,9 +165,7 @@ interface SidebarProps {
   onShowAccess: () => void;
   /** Opens the account-level Usage page: cost history, tokens, limits. */
   onShowUsage: () => void;
-  /** Opens the providers screen — agents, accounts and their sign-ins. */
-  onShowProviders: () => void;
-  /** Opens the operator's own settings: projects folder, defaults, branch names. */
+  /** Opens settings: your defaults, providers and their sign-ins, each project. */
   onShowSettings: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
   accentOf: (harness: string) => string | undefined;
@@ -839,9 +836,6 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
-        <IconButton label="Providers" onClick={props.onShowProviders}>
-          <KeyRoundIcon />
-        </IconButton>
         <IconButton label="Settings" onClick={props.onShowSettings}>
           <SettingsIcon />
         </IconButton>

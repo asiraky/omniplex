@@ -199,7 +199,6 @@ describe("thread actions on a phone", () => {
 
     expect(screen.getByRole("menuitem", { name: "Open panel" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy transcript" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "repo settings" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Label thread" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: /diff/i })).toBeNull();
   });

@@ -34,7 +34,7 @@ function open(over: Partial<React.ComponentProps<typeof ProjectSettings>> = {}) 
     onSave: vi.fn(async () => {}),
     onDelete: vi.fn(async () => {}),
     threadCount: 0,
-    onClose: vi.fn(),
+    onDeleted: vi.fn(),
     ...over,
   } satisfies React.ComponentProps<typeof ProjectSettings>;
   render(<ProjectSettings {...props} />);
@@ -46,7 +46,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("removing a project", () => {
   // The whole point: a project added with the wrong path has to be removable
   // from the screen the user is already on.
-  it("deletes after a confirmation and closes", async () => {
+  it("deletes after a confirmation and says so", async () => {
     const props = open();
 
     fireEvent.click(screen.getByRole("button", { name: /remove project/i }));
@@ -56,7 +56,7 @@ describe("removing a project", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
     await waitFor(() => expect(props.onDelete).toHaveBeenCalledWith("p1"));
-    await waitFor(() => expect(props.onClose).toHaveBeenCalled());
+    await waitFor(() => expect(props.onDeleted).toHaveBeenCalled());
   });
 
   // The button is not the only place this is enforced — the server refuses it
@@ -85,7 +85,7 @@ describe("removing a project", () => {
     fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
 
     await waitFor(() => expect(screen.getByText(/delete its 1 thread first/i)).toBeTruthy());
-    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onDeleted).not.toHaveBeenCalled();
     // And it is back to offering the action, not stuck mid-confirmation.
     expect(screen.getByRole("button", { name: /remove project/i })).toBeTruthy();
   });
@@ -110,7 +110,7 @@ describe("removing a project", () => {
     expect(props.onSave).not.toHaveBeenCalled();
 
     release();
-    await waitFor(() => expect(props.onClose).toHaveBeenCalled());
+    await waitFor(() => expect(props.onDeleted).toHaveBeenCalled());
   });
 });
 
@@ -160,6 +160,6 @@ describe("folders", () => {
     fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
 
     await waitFor(() => expect(screen.getByText(/a git folder of this project/)).toBeTruthy());
-    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onDeleted).not.toHaveBeenCalled();
   });
 });

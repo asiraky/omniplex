@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { HarnessMeta, UserConfig } from "~/protocol";
 import { render } from "~/test/harness";
-import { Settings } from "./Settings";
+import { GeneralSettings } from "./GeneralSettings";
 
 beforeAll(() => {
   vi.stubGlobal(
@@ -45,9 +45,8 @@ const harnesses = ["claude", "codex"].map((id) => ({
 })) as unknown as HarnessMeta[];
 
 function open(userConfig: UserConfig, onSave = vi.fn(async (_cfg: UserConfig) => {})) {
-  const onClose = vi.fn();
-  render(<Settings userConfig={userConfig} harnesses={harnesses} onSave={onSave} onClose={onClose} />);
-  return { onSave, onClose };
+  render(<GeneralSettings userConfig={userConfig} harnesses={harnesses} onSave={onSave} />);
+  return { onSave };
 }
 
 async function pickLevel(name: string | RegExp) {
@@ -67,16 +66,16 @@ async function pickModel(label: string) {
 
 const save = () => fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-describe("Settings", () => {
+describe("GeneralSettings", () => {
   it("saves what was changed and keeps what this screen does not show", async () => {
-    const { onSave, onClose } = open({ version: 1, suggestIssues: true });
+    const { onSave } = open({ version: 1, suggestIssues: true });
     fireEvent.change(screen.getByLabelText("Projects folder"), { target: { value: "~/work" } });
     await pickLevel("Do everything");
     fireEvent.change(screen.getByLabelText("Branch names from issues"), {
       target: { value: "(i) => `fix/${i.number}`" },
     });
     save();
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    await screen.findByRole("button", { name: "Saved" });
     expect(onSave).toHaveBeenCalledWith({
       version: 1,
       suggestIssues: true,
@@ -113,11 +112,10 @@ describe("Settings", () => {
     const onSave = vi.fn(async () => {
       throw new Error("projects folder must be an absolute path or start with ~");
     });
-    const { onClose } = open({ version: 1 }, onSave);
+    open({ version: 1 }, onSave);
     fireEvent.change(screen.getByLabelText("Projects folder"), { target: { value: "work" } });
     save();
     expect(await screen.findByText(/must be an absolute path/)).toBeTruthy();
-    expect(onClose).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 

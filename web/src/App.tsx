@@ -13,6 +13,7 @@ import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./componen
 import type { ScheduledPrompt, Turn } from "./protocol";
 import type { NewProjectRequest } from "./components/NewProject";
 import type { AddFolderRequest } from "./components/ProjectSettings";
+import type { SettingsSection } from "./components/SettingsScreen";
 import { JobsStrip } from "./components/JobsStrip";
 import { ThreadDraft } from "./components/ThreadDraft";
 import type { NewThreadInput } from "./components/ThreadDraft";
@@ -58,7 +59,6 @@ import {
   PanelLeftIcon,
   PanelRightIcon,
   PlusIcon,
-  SettingsIcon,
   TagIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -69,11 +69,9 @@ const NEW_THREAD = "new-thread";
 
 const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
 const NewProject = lazy(() => import("./components/NewProject").then((m) => ({ default: m.NewProject })));
-const Settings = lazy(() => import("./components/Settings").then((m) => ({ default: m.Settings })));
-const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
+const SettingsScreen = lazy(() => import("./components/SettingsScreen").then((m) => ({ default: m.SettingsScreen })));
 // The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
 const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
-const ProvidersSettings = lazy(() => import("./components/ProvidersSettings"));
 const InstanceAuthDialog = lazy(() => import("./components/AuthFlowDialog"));
 const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
 const UsagePage = lazy(() => import("./components/Usage").then((m) => ({ default: m.UsagePage })));
@@ -273,7 +271,8 @@ export function App() {
   }, [isDesktop]);
   // A thread being written but not yet sent, and the project it opened on.
   const [creating, setCreating] = useState<{ projectId?: string } | null>(null);
-  const [projectSettings, setProjectSettings] = useState<Project | null>(null);
+  // Open, and at which section; the sidebar gear opens it at the top.
+  const [settings, setSettings] = useState<{ at?: SettingsSection } | null>(null);
   const [newProject, setNewProject] = useState(false);
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
   const [access, setAccess] = useState<Access | null>(null);
@@ -936,8 +935,6 @@ export function App() {
   // login shows up as "ready" by itself.
   const [loginInstance, setLoginInstance] = useState<string | null>(null);
   // The providers screen, and the structured sign-in dialog for one instance.
-  const [showProviders, setShowProviders] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [authInstance, setAuthInstance] = useState<string | null>(null);
 
   const recheck = useCallback(() => {
@@ -1173,7 +1170,12 @@ export function App() {
       ? { title: state?.title ?? meta?.title, needsAttention: Boolean(pending || elicitation) }
       : null,
   );
-  const activeProject = projects.find((p) => p.id === meta?.projectId);
+  // Only a project with no threads can be deleted; settings says so up front.
+  const threadCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of threads) if (t.projectId) counts[t.projectId] = (counts[t.projectId] ?? 0) + 1;
+    return counts;
+  }, [threads]);
   // Preparing is not closed: the worktree is still being cut, but the user can
   // already write the first message — only sending waits. Cleaning is different:
   // the workspace is going away, so there is nothing left to write to.
@@ -1338,10 +1340,7 @@ export function App() {
         onDelete={remove}
         onShowAccess={() => setShowAccess(true)}
         onShowUsage={() => setShowUsage(true)}
-        onShowProviders={() => setShowProviders(true)}
-        onShowSettings={() =>
-          userConfig ? setShowSettings(true) : toast("Settings are still loading, try again in a moment")
-        }
+        onShowSettings={() => setSettings({})}
         accentOf={accentOf}
         projects={projects}
         projectName={(id)=>projects.find(p=>p.id===id)?.name}
@@ -1449,15 +1448,6 @@ export function App() {
                     {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                   </IconButton>
 
-                  {activeProject && (
-                    <IconButton
-                      label={`${activeProject.name} settings`}
-                      onClick={() => setProjectSettings(activeProject)}
-                    >
-                      <SettingsIcon />
-                    </IconButton>
-                  )}
-
                   <IconButton
                     label={showChanges ? "Hide the panel" : "Show the panel"}
                     onClick={() => setShowChanges((v) => !v)}
@@ -1500,14 +1490,6 @@ export function App() {
                       {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
                       {transcriptCopied ? "Transcript copied" : "Copy transcript"}
                     </DropdownMenuItem>
-                    {activeProject && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => setProjectSettings(activeProject)}>
-                          <SettingsIcon /> {activeProject.name} settings
-                        </DropdownMenuItem>
-                      </>
-                    )}
                     {labels.length > 0 && activeId && (
                       <>
                         <DropdownMenuSeparator />
@@ -1646,10 +1628,10 @@ export function App() {
             onListWorkspaces={listWorkspaces}
             onListIssues={listIssues}
             onAddProject={() => setNewProject(true)}
-            onSettings={setProjectSettings}
+            onSettings={(p) => setSettings({ at: { kind: "project", id: p.id } })}
             onRecheck={recheck}
             onLogin={openInstanceAuth}
-            onManageProviders={() => setShowProviders(true)}
+            onManageProviders={() => setSettings({ at: { kind: "providers" } })}
           />
         ) : (
           <EmptyState
@@ -1710,17 +1692,6 @@ export function App() {
         />
       )}
 
-      {showProviders && (
-        <Suspense fallback={null}>
-          <ProvidersSettings
-            harnesses={harnesses}
-            wires={authWires}
-            onOpenTerminal={(id) => setLoginInstance(id)}
-            onRecheck={recheck}
-            onClose={() => setShowProviders(false)}
-          />
-        </Suspense>
-      )}
       {authInstance && (
         <Suspense fallback={null}>
           <InstanceAuthDialog
@@ -1763,28 +1734,28 @@ export function App() {
           />
         </Suspense>
       )}
-      {projectSettings && (
+      {settings && (
         <Suspense fallback={null}>
-          <ProjectSettings
-          project={projectSettings}
-          harnesses={harnesses}
-          onSave={saveProject}
-          onAddFolder={addFolder}
-          onRemoveFolder={removeFolder}
-          listRepos={listRepos}
-          onDelete={deleteProject}
-          threadCount={threads.filter((s) => s.projectId === projectSettings.id).length}
-          onClose={() => setProjectSettings(null)}
-          />
-        </Suspense>
-      )}
-      {showSettings && userConfig && (
-        <Suspense fallback={null}>
-          <Settings
-            userConfig={userConfig}
+          <SettingsScreen
+            at={settings.at}
+            projects={projects}
             harnesses={harnesses}
-            onSave={saveUserConfig}
-            onClose={() => setShowSettings(false)}
+            userConfig={userConfig}
+            threadCounts={threadCounts}
+            onSaveUserConfig={saveUserConfig}
+            providers={{ wires: authWires, onOpenTerminal: setLoginInstance, onRecheck: recheck }}
+            project={{
+              onSave: saveProject,
+              onAddFolder: addFolder,
+              onRemoveFolder: removeFolder,
+              listRepos,
+              onDelete: deleteProject,
+            }}
+            onAddProject={() => {
+              setSettings(null);
+              setNewProject(true);
+            }}
+            onClose={() => setSettings(null)}
           />
         </Suspense>
       )}
