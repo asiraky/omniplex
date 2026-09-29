@@ -1,5 +1,5 @@
 import { ArrowUpIcon, ChevronDownIcon, ClockIcon, PaperclipIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 
 import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { ContextMeter } from "~/components/ContextMeter";
@@ -65,6 +65,8 @@ export function Composer({
   onRunClientAction,
   onRunComposerAction,
   onCommandUsed,
+  tools,
+  footer,
 }: {
   ref?: Ref<ComposerHandle>;
   /**
@@ -118,6 +120,10 @@ export function Composer({
   /** Reports the leading `/token` of a submitted message, so the parent can
       remember which skills this user actually reaches for. */
   onCommandUsed?: (insertText: string) => void;
+  /** Extra controls in the toolbar, right after the model picker. */
+  tools?: ReactNode;
+  /** A drawer under the box, for context that is usually right already. */
+  footer?: ReactNode;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // There is no ⇧↵ worth advertising on a phone, so keep the hint to desktop.
@@ -465,7 +471,7 @@ export function Composer({
       }}
       // 16px on a phone: anything smaller makes iOS zoom the viewport on
       // focus, which breaks the layout the dvh handling just fixed.
-      className="scroll-thin placeholder:text-muted-foreground max-h-[200px] w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[16px] leading-relaxed focus:outline-none disabled:opacity-60 md:text-[14px]"
+      className="scroll-thin placeholder:text-muted-foreground max-h-[200px] min-h-16 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[16px] leading-relaxed focus:outline-none disabled:opacity-60 md:text-[14px]"
     />
   );
 
@@ -517,7 +523,7 @@ export function Composer({
     <div className="mx-auto max-w-3xl px-4 pb-[calc(0.875rem+env(safe-area-inset-bottom))] md:px-5">
       <div
         className={cn(
-          "bg-card focus-within:border-ring focus-within:ring-ring/50 relative rounded-2xl border shadow-lg transition-[color,box-shadow] focus-within:ring-[3px]",
+          "bg-card focus-within:border-ring focus-within:ring-ring/50 relative z-10 rounded-2xl border shadow-lg transition-[color,box-shadow] focus-within:ring-[3px]",
           dragging && "border-primary ring-primary/50 ring-[3px]",
         )}
         onDragEnter={(e) => {
@@ -609,10 +615,6 @@ export function Composer({
             </Button>
           )}
 
-          {usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />}
-
-          <span className="flex-1" />
-
           {harnesses.length > 0 && (
             // The one control for what runs the next turn: the model, the
             // account it bills to among this harness's own accounts, and
@@ -653,9 +655,15 @@ export function Composer({
               // shrink undoes Button's shrink-0: the picker is the one control
               // in this row that can give up width, so it must, or the send
               // button is what gets pushed off a narrow screen.
-              className="text-muted-foreground hover:text-foreground h-11 w-auto max-w-[55%] min-w-0 shrink border-0 px-2 shadow-none md:h-8 md:min-h-8"
+              className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent h-11 w-auto max-w-[55%] min-w-0 shrink border-0 bg-transparent px-2 shadow-none dark:bg-transparent md:h-8 md:min-h-8"
             />
           )}
+
+          {tools}
+
+          <span className="flex-1" />
+
+          {usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />}
 
           {busy && (
             <Button
@@ -722,6 +730,13 @@ export function Composer({
           )}
         </div>
       </div>
+      {footer && (
+        // A drawer pulled out from under the box: narrower than it, tucked
+        // behind its bottom edge, so it reads as part of the composer.
+        <div className="bg-muted/50 mx-2.5 -mt-3 rounded-b-xl border border-t-0 pt-3">
+          {footer}
+        </div>
+      )}
     </div>
   );
 }

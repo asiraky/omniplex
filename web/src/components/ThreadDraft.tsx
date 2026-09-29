@@ -452,284 +452,6 @@ export function ThreadDraft({
             <AlertDescription className="text-[12px] break-words">{error}</AlertDescription>
           </Alert>
         )}
-
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Thread options">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Chip label="Project" icon={<FolderIcon />}>
-                {project?.name}
-              </Chip>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-52">
-              <DropdownMenuRadioGroup value={project?.id} onValueChange={setProjectId}>
-                {projects.map((p) => (
-                  <DropdownMenuRadioItem key={p.id} value={p.id}>
-                    {p.name}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => project && onSettings(project)}>
-                <SettingsIcon /> Project settings
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onAddProject}>
-                <PlusIcon /> New project…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {folders.length > 1 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Chip label="Scope" icon={<LayersIcon />}>
-                  {scope ? folderName(scope.path) : "Everything"}
-                </Chip>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="max-w-[min(22rem,calc(100vw-2rem))]">
-                <DropdownMenuRadioGroup
-                  value={scope?.id ?? ""}
-                  onValueChange={(v) => setFolderId(v)}
-                >
-                  <DropdownMenuRadioItem value="">
-                    <Described title="Everything" hint="Every folder, worked on directly" />
-                  </DropdownMenuRadioItem>
-                  {folders.map((f) => (
-                    <DropdownMenuRadioItem key={f.id} value={f.id}>
-                      <Described title={folderName(f.path)} hint={f.path} />
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-
-          {gitScope && (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Chip label="Git" icon={<GitBranchIcon />}>
-                  {gitLabel}
-                </Chip>
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-[min(22rem,calc(100vw-2rem))] space-y-2">
-                <div role="radiogroup" aria-label="Git" className="flex flex-col gap-1.5">
-                  {(
-                    [
-                      {
-                        id: "main",
-                        label: "Work in the folder",
-                        hint: gitScope.path,
-                      },
-                      {
-                        id: "branch",
-                        label: "Work on a copy",
-                        hint: "A checkout of its own on a new branch. The folder stays as it is.",
-                      },
-                    ] as const
-                  ).map((k) => {
-                    const picked = k.id === "main" ? kind === "main" : kind !== "main";
-                    return (
-                      <button
-                        key={k.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={picked}
-                        onClick={() => {
-                          if (picked) return;
-                          setChosenKind(k.id);
-                          setChoice({ branch: "", attachPath: "" });
-                        }}
-                        className={cn(
-                          "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
-                          picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
-                        )}
-                      >
-                        <span className="text-[13px] leading-tight">{k.label}</span>
-                        <span className="text-muted-foreground truncate text-[11px] leading-tight">
-                          {k.hint}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {kind === "branch" && (
-                  <div className="flex flex-wrap gap-x-3">
-                    <Button
-                      type="button"
-                      variant="link"
-                      size="sm"
-                      aria-expanded={naming}
-                      className="h-8 px-0 text-[12px]"
-                      onClick={() => setNaming(!naming)}
-                    >
-                      {naming ? "Let Omniplex name the branch" : "Name the branch"}
-                    </Button>
-                    {attachable.length > 0 && (
-                      <Button
-                        type="button"
-                        variant="link"
-                        size="sm"
-                        className="h-8 px-0 text-[12px]"
-                        onClick={() => {
-                          setChosenKind("attach");
-                          setChoice({ branch: "", attachPath: "" });
-                        }}
-                      >
-                        Continue on an existing copy
-                      </Button>
-                    )}
-                  </div>
-                )}
-
-                {kind === "branch" && naming && (
-                  <>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="new-thread-workspace">Branch</Label>
-                      <WorkspacePicker
-                        id="new-thread-workspace"
-                        mode="create"
-                        value={choice}
-                        onChange={setChoice}
-                        workspaces={attachable}
-                        issues={issues.issues}
-                        issuesError={issues.issuesError}
-                        userConfig={userConfig}
-                        loading={loadingIssues}
-                        placeholder="issue/482-fix-login"
-                      />
-                    </div>
-                    <div className="space-y-1.5 pt-1">
-                      <Label htmlFor="new-thread-base">Base</Label>
-                      <Select
-                        value={baseRef || BASE_DEFAULT}
-                        onValueChange={(v) => setBaseRef(v === BASE_DEFAULT ? "" : v)}
-                      >
-                        <SelectTrigger id="new-thread-base" className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={BASE_DEFAULT}>
-                            Folder default
-                            {gitScope.baseBranch ? ` (${gitScope.baseBranch})` : ""}
-                          </SelectItem>
-                          {baseChoices.map((b) => (
-                            <SelectItem key={b} value={b}>
-                              {b}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </>
-                )}
-
-                {kind === "attach" && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <Label htmlFor="new-thread-attach">Existing copy</Label>
-                      <Button
-                        type="button"
-                        variant="link"
-                        size="sm"
-                        className="h-8 px-0 text-[12px]"
-                        onClick={() => {
-                          setChosenKind("branch");
-                          setChoice({ branch: "", attachPath: "" });
-                        }}
-                      >
-                        Start a new copy instead
-                      </Button>
-                    </div>
-                    <WorkspacePicker
-                      id="new-thread-attach"
-                      mode="attach"
-                      value={choice}
-                      onChange={setChoice}
-                      workspaces={attachable}
-                      issues={issues.issues}
-                      issuesError={issues.issuesError}
-                      userConfig={userConfig}
-                      loading={loadingSpaces}
-                      placeholder="Search copies"
-                    />
-                  </div>
-                )}
-              </PopoverContent>
-            </Popover>
-          )}
-
-          {modes.length > 0 && (
-            <DropdownMenu
-              // Opens on the levels unless the current mode is not one of them.
-              onOpenChange={(open) => open && setAdvanced(!!modeMeta && !modeMeta.level)}
-            >
-              <DropdownMenuTrigger asChild>
-                <Chip label="Permissions" icon={<ShieldIcon />}>
-                  {LEVELS.find((l) => l.id === modeMeta?.level)?.short ?? modeMeta?.label}
-                </Chip>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="max-w-[min(22rem,calc(100vw-2rem))]">
-                {/* The three levels mean the same on every harness. Its own
-                    modes, Plan among them, wait under Advanced. */}
-                <DropdownMenuRadioGroup
-                  value={displayModeId}
-                  onValueChange={(mode) => remember(harnessId, { mode })}
-                >
-                  {LEVELS.map((l) => {
-                    const m = modes.find((x) => x.level === l.id);
-                    return (
-                      m && (
-                        <DropdownMenuRadioItem key={l.id} value={m.id}>
-                          <Described title={l.label} hint={`${selected?.name}: ${m.label}`} />
-                        </DropdownMenuRadioItem>
-                      )
-                    );
-                  })}
-                </DropdownMenuRadioGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  aria-expanded={advanced}
-                  onSelect={(e) => {
-                    e.preventDefault();
-                    setAdvanced(!advanced);
-                  }}
-                  className="text-muted-foreground text-[12px]"
-                >
-                  <ChevronDownIcon
-                    className={cn("transition-transform", !advanced && "-rotate-90")}
-                  />
-                  Advanced
-                </DropdownMenuItem>
-                {advanced && (
-                  <DropdownMenuRadioGroup
-                    value={displayModeId}
-                    onValueChange={(mode) => remember(harnessId, { mode })}
-                  >
-                    {modes.map((m) => (
-                      <DropdownMenuRadioItem key={m.id} value={m.id}>
-                        <Described title={m.label} hint={m.description} />
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-
-          {supports1m && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-pressed={want1m}
-              title={want1m ? "Larger window, higher cost" : "Standard window"}
-              onClick={() => remember(harnessId, { want1m: !want1m })}
-              className={cn(chipClass, want1m && "bg-accent")}
-            >
-              1M context
-            </Button>
-          )}
-        </div>
       </div>
 
       {/* A block wrapper: the composer centres itself with auto margins,
@@ -737,6 +459,304 @@ export function ThreadDraft({
       <div>
         <Composer
           key="new-thread"
+          tools={
+            <>
+              {modes.length > 0 && (
+                <DropdownMenu
+                  // Opens on the levels unless the current mode is not one of them.
+                  onOpenChange={(open) => open && setAdvanced(!!modeMeta && !modeMeta.level)}
+                >
+                  <DropdownMenuTrigger asChild>
+                    <Chip label="Permissions" icon={<ShieldIcon />} className={toolClass}>
+                      {LEVELS.find((l) => l.id === modeMeta?.level)?.short ?? modeMeta?.label}
+                    </Chip>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    className="max-w-[min(22rem,calc(100vw-2rem))]"
+                  >
+                    {/* The three levels mean the same on every harness. Its own
+                        modes, Plan among them, wait under Advanced. */}
+                    <DropdownMenuRadioGroup
+                      value={displayModeId}
+                      onValueChange={(mode) => remember(harnessId, { mode })}
+                    >
+                      {LEVELS.map((l) => {
+                        const m = modes.find((x) => x.level === l.id);
+                        return (
+                          m && (
+                            <DropdownMenuRadioItem key={l.id} value={m.id}>
+                              <Described title={l.label} hint={`${selected?.name}: ${m.label}`} />
+                            </DropdownMenuRadioItem>
+                          )
+                        );
+                      })}
+                    </DropdownMenuRadioGroup>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      aria-expanded={advanced}
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        setAdvanced(!advanced);
+                      }}
+                      className="text-muted-foreground text-[12px]"
+                    >
+                      <ChevronDownIcon
+                        className={cn("transition-transform", !advanced && "-rotate-90")}
+                      />
+                      Advanced
+                    </DropdownMenuItem>
+                    {advanced && (
+                      <DropdownMenuRadioGroup
+                        value={displayModeId}
+                        onValueChange={(mode) => remember(harnessId, { mode })}
+                      >
+                        {modes.map((m) => (
+                          <DropdownMenuRadioItem key={m.id} value={m.id}>
+                            <Described title={m.label} hint={m.description} />
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+
+              {supports1m && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="1M context"
+                  aria-pressed={want1m}
+                  title={want1m ? "Larger window, higher cost" : "Standard window"}
+                  onClick={() => remember(harnessId, { want1m: !want1m })}
+                  className={cn(chipClass, toolClass, want1m && "bg-accent text-foreground")}
+                >
+                  1M
+                </Button>
+              )}
+            </>
+          }
+          footer={
+            // Where the thread runs, under the box: quiet, since it is
+            // usually right already.
+            <div
+              role="group"
+              aria-label="Thread options"
+              className="scroll-thin flex gap-0.5 overflow-x-auto py-0.5"
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Chip label="Project" icon={<FolderIcon />}>
+                    {project?.name}
+                  </Chip>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-52">
+                  <DropdownMenuRadioGroup value={project?.id} onValueChange={setProjectId}>
+                    {projects.map((p) => (
+                      <DropdownMenuRadioItem key={p.id} value={p.id}>
+                        {p.name}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => project && onSettings(project)}>
+                    <SettingsIcon /> Project settings
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={onAddProject}>
+                    <PlusIcon /> New project…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              {folders.length > 1 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Chip label="Scope" icon={<LayersIcon />}>
+                      {scope ? folderName(scope.path) : "Everything"}
+                    </Chip>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    className="max-w-[min(22rem,calc(100vw-2rem))]"
+                  >
+                    <DropdownMenuRadioGroup
+                      value={scope?.id ?? ""}
+                      onValueChange={(v) => setFolderId(v)}
+                    >
+                      <DropdownMenuRadioItem value="">
+                        <Described title="Everything" hint="Every folder, worked on directly" />
+                      </DropdownMenuRadioItem>
+                      {folders.map((f) => (
+                        <DropdownMenuRadioItem key={f.id} value={f.id}>
+                          <Described title={folderName(f.path)} hint={f.path} />
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+
+              {gitScope && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Chip label="Git" icon={<GitBranchIcon />}>
+                      {gitLabel}
+                    </Chip>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="start"
+                    className="w-[min(22rem,calc(100vw-2rem))] space-y-2"
+                  >
+                    <div role="radiogroup" aria-label="Git" className="flex flex-col gap-1.5">
+                      {(
+                        [
+                          {
+                            id: "main",
+                            label: "Work in the folder",
+                            hint: gitScope.path,
+                          },
+                          {
+                            id: "branch",
+                            label: "Work on a copy",
+                            hint: "A checkout of its own on a new branch. The folder stays as it is.",
+                          },
+                        ] as const
+                      ).map((k) => {
+                        const picked = k.id === "main" ? kind === "main" : kind !== "main";
+                        return (
+                          <button
+                            key={k.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={picked}
+                            onClick={() => {
+                              if (picked) return;
+                              setChosenKind(k.id);
+                              setChoice({ branch: "", attachPath: "" });
+                            }}
+                            className={cn(
+                              "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2",
+                              picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
+                            )}
+                          >
+                            <span className="text-[13px] leading-tight">{k.label}</span>
+                            <span className="text-muted-foreground truncate text-[11px] leading-tight">
+                              {k.hint}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {kind === "branch" && (
+                      <div className="flex flex-wrap gap-x-3">
+                        <Button
+                          type="button"
+                          variant="link"
+                          size="sm"
+                          aria-expanded={naming}
+                          className="h-8 px-0 text-[12px]"
+                          onClick={() => setNaming(!naming)}
+                        >
+                          {naming ? "Let Omniplex name the branch" : "Name the branch"}
+                        </Button>
+                        {attachable.length > 0 && (
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="sm"
+                            className="h-8 px-0 text-[12px]"
+                            onClick={() => {
+                              setChosenKind("attach");
+                              setChoice({ branch: "", attachPath: "" });
+                            }}
+                          >
+                            Continue on an existing copy
+                          </Button>
+                        )}
+                      </div>
+                    )}
+
+                    {kind === "branch" && naming && (
+                      <>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="new-thread-workspace">Branch</Label>
+                          <WorkspacePicker
+                            id="new-thread-workspace"
+                            mode="create"
+                            value={choice}
+                            onChange={setChoice}
+                            workspaces={attachable}
+                            issues={issues.issues}
+                            issuesError={issues.issuesError}
+                            userConfig={userConfig}
+                            loading={loadingIssues}
+                            placeholder="issue/482-fix-login"
+                          />
+                        </div>
+                        <div className="space-y-1.5 pt-1">
+                          <Label htmlFor="new-thread-base">Base</Label>
+                          <Select
+                            value={baseRef || BASE_DEFAULT}
+                            onValueChange={(v) => setBaseRef(v === BASE_DEFAULT ? "" : v)}
+                          >
+                            <SelectTrigger id="new-thread-base" className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={BASE_DEFAULT}>
+                                Folder default
+                                {gitScope.baseBranch ? ` (${gitScope.baseBranch})` : ""}
+                              </SelectItem>
+                              {baseChoices.map((b) => (
+                                <SelectItem key={b} value={b}>
+                                  {b}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </>
+                    )}
+
+                    {kind === "attach" && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label htmlFor="new-thread-attach">Existing copy</Label>
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="sm"
+                            className="h-8 px-0 text-[12px]"
+                            onClick={() => {
+                              setChosenKind("branch");
+                              setChoice({ branch: "", attachPath: "" });
+                            }}
+                          >
+                            Start a new copy instead
+                          </Button>
+                        </div>
+                        <WorkspacePicker
+                          id="new-thread-attach"
+                          mode="attach"
+                          value={choice}
+                          onChange={setChoice}
+                          workspaces={attachable}
+                          issues={issues.issues}
+                          issuesError={issues.issuesError}
+                          userConfig={userConfig}
+                          loading={loadingSpaces}
+                          placeholder="Search copies"
+                        />
+                      </div>
+                    )}
+                  </PopoverContent>
+                </Popover>
+              )}
+            </div>
+          }
           draft={draft}
           onDraftChange={onDraftChange}
           disabled={false}
@@ -785,13 +805,17 @@ export function ThreadDraft({
   );
 }
 
+// Borderless and muted like the model picker, so the options read as part
+// of the composer rather than a second row of buttons stacked on it.
 const chipClass =
-  "h-9 max-w-full gap-1.5 rounded-full px-3 text-[12px] font-normal md:h-7 [&_svg]:size-3.5";
+  "text-muted-foreground hover:text-foreground h-9 max-w-full shrink-0 gap-1.5 px-2 text-[12px] font-normal md:h-7 [&_svg]:size-3.5";
+const toolClass = "h-11 text-[13px] md:h-8";
 
 function Chip({
   label,
   icon,
   children,
+  className,
   ...props
 }: {
   label: string;
@@ -801,15 +825,14 @@ function Chip({
   return (
     <Button
       type="button"
-      variant="outline"
+      variant="ghost"
       size="sm"
       aria-label={`${label}: ${typeof children === "string" ? children : ""}`.trim()}
-      className={chipClass}
+      className={cn(chipClass, className)}
       {...props}
     >
-      <span className="text-muted-foreground">{icon}</span>
+      {icon}
       <span className="truncate">{children}</span>
-      <ChevronDownIcon className="text-muted-foreground" />
     </Button>
   );
 }

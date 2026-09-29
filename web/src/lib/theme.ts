@@ -9,6 +9,23 @@ export type ResolvedTheme = "light" | "dark";
  * the two are commented as a pair.
  */
 export const THEME_STORAGE_KEY = "omniplex.theme";
+/** Also read by the boot script in index.html. */
+export const TINT_STORAGE_KEY = "omniplex.tint";
+
+/**
+ * The colour dark mode's greys lean towards. index.css turns each into a hue
+ * and a strength; slate is the default and needs no attribute.
+ */
+export type Tint = "slate" | "blue" | "violet" | "green" | "warm" | "grey";
+
+export const TINTS: { value: Tint; label: string; swatch: string }[] = [
+  { value: "slate", label: "Slate", swatch: "oklch(0.42 0.04 265)" },
+  { value: "blue", label: "Blue", swatch: "oklch(0.42 0.08 245)" },
+  { value: "violet", label: "Violet", swatch: "oklch(0.42 0.08 295)" },
+  { value: "green", label: "Green", swatch: "oklch(0.42 0.06 160)" },
+  { value: "warm", label: "Warm", swatch: "oklch(0.42 0.05 55)" },
+  { value: "grey", label: "Grey", swatch: "oklch(0.42 0 0)" },
+];
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
@@ -47,6 +64,24 @@ export function storeTheme(theme: Theme) {
   }
 }
 
+export function readStoredTint(): Tint {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(TINT_STORAGE_KEY);
+  } catch {
+    return "slate";
+  }
+  return TINTS.find((t) => t.value === stored)?.value ?? "slate";
+}
+
+export function storeTint(tint: Tint) {
+  try {
+    localStorage.setItem(TINT_STORAGE_KEY, tint);
+  } catch {
+    /* Not persisted. The choice still applies for this page. */
+  }
+}
+
 export function resolveTheme(theme: Theme): ResolvedTheme {
   return theme === "system" ? (prefersDark() ? "dark" : "light") : theme;
 }
@@ -60,7 +95,18 @@ export function applyTheme(resolved: ResolvedTheme) {
   const root = document.documentElement;
   root.classList.toggle("dark", resolved === "dark");
   root.style.colorScheme = resolved;
+  colourBrowserChrome();
+}
 
+export function applyTint(tint: Tint) {
+  const root = document.documentElement;
+  if (tint === "slate") delete root.dataset.tint;
+  else root.dataset.tint = tint;
+  colourBrowserChrome();
+}
+
+function colourBrowserChrome() {
+  const root = document.documentElement;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     const background = getComputedStyle(root).getPropertyValue("--background").trim();
@@ -72,6 +118,8 @@ export interface ThemeContextValue {
   theme: Theme;
   resolved: ResolvedTheme;
   setTheme: (theme: Theme) => void;
+  tint: Tint;
+  setTint: (tint: Tint) => void;
 }
 
 export const ThemeContext = createContext<ThemeContextValue | null>(null);

@@ -5,9 +5,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
-import { useTheme, type Theme } from "~/lib/theme";
+import { TINTS, useTheme, type Theme, type Tint } from "~/lib/theme";
 import { cn } from "~/lib/utils";
 
 const OPTIONS: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
@@ -17,7 +21,7 @@ const OPTIONS: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
 ];
 
 export function ThemeToggle({ className }: { className?: string }) {
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, tint, setTint } = useTheme();
   const current = OPTIONS.find((o) => o.value === theme) ?? OPTIONS[2];
 
   return (
@@ -46,6 +50,28 @@ export function ThemeToggle({ className }: { className?: string }) {
             {label}
           </DropdownMenuItem>
         ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">
+          Dark mode tint
+        </DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={tint} onValueChange={(v) => setTint(v as Tint)}>
+          {TINTS.map((t) => (
+            <DropdownMenuRadioItem
+              key={t.value}
+              value={t.value}
+              // Stays open, so the tints can be tried one after another.
+              onSelect={(e) => e.preventDefault()}
+              className="min-h-11 md:min-h-0"
+            >
+              <span
+                aria-hidden
+                className="size-3.5 rounded-full border border-white/15"
+                style={{ background: t.swatch }}
+              />
+              {t.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );
