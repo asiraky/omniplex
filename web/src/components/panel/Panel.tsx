@@ -580,7 +580,10 @@ export function Panel(props: PanelProps) {
           aria-orientation="vertical"
           aria-label="Resize the panel"
           onPointerDown={startDrag}
-          className="hover:bg-primary/40 absolute inset-y-0 -left-1 w-2 cursor-col-resize"
+          // z-20: the handle overhangs 4px into <main>, whose fades are z-10;
+          // below them the hover highlight comes out notched, as the
+          // sidebar's did.
+          className="hover:bg-primary/40 absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
         />
       )}
       <PanelBody {...props} />

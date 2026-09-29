@@ -70,6 +70,10 @@ const TAIL_RESERVE = "calc(var(--composer-h, 9rem) + 6rem)";
 // The tail's room plus whatever extra the scroll hook is asking for to lift a
 // just-sent prompt clear of the composer (`--anchor-reserve`, 0 when it is not).
 const CONTENT_RESERVE = `calc(${TAIL_RESERVE} + var(--anchor-reserve, 0px))`;
+// An empty thread has no tail to rest, so it keeps clear of the composer and
+// no more: the headroom on top of a fixed-height empty state was what pushed
+// a thread with nothing in it a few pixels past the screen.
+const EMPTY_RESERVE = "var(--composer-h, 9rem)";
 
 // How long a ready workspace card stays before it collapses on its own: long
 // enough to read "Workspace ready" and reach for the disclosure if the output
@@ -1200,6 +1204,7 @@ export function Transcript({
     state.phase === "cleaning" ||
     state.phase === "provision_failed" ||
     state.phase === "cleanup_failed";
+  const empty = state.items.length === 0 && !workspaceOccupied;
   // Follow the tail unless the reader has scrolled up; the button below is
   // how they get back. A restore that was scrolled up mounts unpinned, or the
   // first stick would snap it to the bottom over the restored position.
@@ -1451,6 +1456,7 @@ export function Transcript({
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollerRef}
+        data-transcript-scroller
         className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
         // So a programmatic scrollIntoView lands the target above the floating
         // composer rather than behind it, matching the padding below.
@@ -1466,8 +1472,8 @@ export function Transcript({
             and rests with breathing space rather than jammed against the input. */}
         <div
           ref={contentRef}
-          className="mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-6 md:px-5"
-          style={{ paddingBottom: CONTENT_RESERVE }}
+          className={cn("mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-6 md:px-5", empty && "min-h-full")}
+          style={{ paddingBottom: empty ? EMPTY_RESERVE : CONTENT_RESERVE }}
         >
           <WorkspaceCard
             state={state}
@@ -1491,8 +1497,10 @@ export function Transcript({
               whatever. It only needs to stand aside while the provisioner is
               still working or is asking for a decision — once the workspace is
               ready, an empty transcript is an empty transcript. */}
-          {state.items.length === 0 && !workspaceOccupied && (
-            <div className="text-muted-foreground flex flex-col items-center gap-2 py-20 text-center">
+          {empty && (
+            // Centred in whatever the composer leaves, rather than a fixed
+            // drop from the top, so it scrolls only when it truly can't fit.
+            <div className="text-muted-foreground my-auto flex flex-col items-center gap-2 py-10 text-center">
               <TerminalIcon className="size-5 opacity-60" />
               <p className="text-sm">Nothing yet.</p>
               <p className="text-[13px]">Send a prompt to start the turn.</p>

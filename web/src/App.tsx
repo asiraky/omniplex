@@ -1277,26 +1277,41 @@ export function App() {
   useEffect(() => {
     if (resume && hasThread) setResume(null);
   }, [resume, hasThread]);
+  //
+  // The same observer publishes the transcript's scrollbar width as
+  // `--scrollbar-w`, so the fades and the composer stop short of the scrollbar
+  // instead of painting over it. It is 0 on a phone, whose scrollbars float, and
+  // whatever the browser makes it on a desktop. Observing the scroller's content
+  // box catches the scrollbar coming and going as the transcript grows.
   useEffect(() => {
     if (!hasThread || typeof ResizeObserver === "undefined") return;
     const overlay = overlayRef.current;
     const layout = chatLayoutRef.current;
+    const scroller = layout?.querySelector<HTMLElement>("[data-transcript-scroller]");
     if (!overlay || !layout) return;
-    const apply = () =>
+    const apply = () => {
       layout.style.setProperty(
         "--composer-h",
         `${Math.ceil(overlay.getBoundingClientRect().height)}px`,
       );
+      layout.style.setProperty(
+        "--scrollbar-w",
+        `${scroller ? scroller.offsetWidth - scroller.clientWidth : 0}px`,
+      );
+    };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(overlay);
+    if (scroller) ro.observe(scroller);
     return () => {
       ro.disconnect();
       layout.style.removeProperty("--composer-h");
+      layout.style.removeProperty("--scrollbar-w");
     };
     // themePreview toggles the whole main tree in and out below, so the
     // measured elements are remounted under it: re-run to observe the new ones.
-  }, [hasThread, themePreview]);
+    // The transcript is keyed by thread, so a new thread is a new scroller.
+  }, [hasThread, themePreview, activeId]);
 
   // Historical usage: the server aggregates the event log and prices it, so
   // the phone only ever downloads the bucketed result.
@@ -1543,25 +1558,26 @@ export function App() {
           <div ref={chatLayoutRef} className="relative flex min-h-0 flex-1 flex-col">
             {/* Content scrolling up dissolves into the header rather than
                 being cut by a border. */}
-            <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
+            <div className="from-background to-background/0 pointer-events-none absolute top-0 right-(--scrollbar-w,0px) left-0 z-10 h-8 bg-gradient-to-b" />
 
             <OpenPathContext.Provider value={openPath}>
               <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_thread",{threadId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{threadId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_thread",{threadId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} onOpenArtefact={openArtefact} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
             </OpenPathContext.Provider>
 
             {/* The mirror of the header fade: content dissolves into the
-                composer instead of sliding under a hard edge, and it hides the
-                seam where text scrolls past the composer's transparent gutters.
-                It sits just above the overlay, tracking its measured height. */}
+                composer instead of sliding under a hard edge. It sits just
+                above the overlay, tracking its measured height. */}
             <div
-              className="from-background to-background/0 pointer-events-none absolute inset-x-0 z-10 h-8 bg-gradient-to-t"
+              className="from-background to-background/0 pointer-events-none absolute right-(--scrollbar-w,0px) left-0 z-10 h-8 bg-gradient-to-t"
               style={{ bottom: "var(--composer-h, 9rem)" }}
             />
 
             {/* The input floats over the transcript's tail instead of sitting
                 in a full-width tray. Anything that blocks the turn — a
-                permission or elicitation — stacks above it. */}
-            <div ref={overlayRef} className="absolute inset-x-0 bottom-0 z-10">
+                permission or elicitation — stacks above it. It is opaque: the
+                fade above ends in solid background, and a see-through overlay
+                let text show again at full strength right under that edge. */}
+            <div ref={overlayRef} className="bg-background absolute right-(--scrollbar-w,0px) bottom-0 left-0 z-10">
               {pending && (
                 <PermissionPrompt
                   request={pending}
