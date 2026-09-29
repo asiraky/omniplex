@@ -1385,7 +1385,7 @@ export function App() {
             onClick={() => setSidebarOpen(true)}
             className={cn(sidebarOpen && "hidden")}
           >
-            <PanelLeftIcon />
+            <PanelLeftIcon className="size-3.5" />
           </IconButton>
 
           {state ? (

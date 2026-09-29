@@ -3,10 +3,11 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   FolderIcon,
+  FolderPlusIcon,
   SettingsIcon,
   GitBranchIcon,
   PanelLeftIcon,
-  PlusIcon,
+  SquarePenIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -25,9 +26,8 @@ import {
 } from "~/components/DeleteThreadDialog";
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { IconButton } from "~/components/IconButton";
-import { LabelFilter } from "~/components/LabelFilter";
 import { LabelDot, LabelMenu } from "~/components/LabelMenu";
-import { ProjectFilter } from "~/components/ProjectFilter";
+import { ThreadFilter } from "~/components/ThreadFilter";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -686,19 +686,20 @@ function ThreadList({
                 aria-label={`${g.name}, ${g.threads.length} thread${
                   g.threads.length === 1 ? "" : "s"
                 }`}
-                className="bg-sidebar text-muted-foreground hover:text-foreground focus-visible:ring-ring sticky top-0 z-10 flex w-full min-w-0 cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 outline-none focus-visible:ring-2"
+                className="bg-sidebar text-muted-foreground hover:text-foreground focus-visible:ring-ring sticky top-0 z-10 flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 outline-none focus-visible:ring-2"
               >
                 <ChevronRightIcon
                   aria-hidden
                   className={cn(
-                    "size-3 shrink-0 transition-transform duration-200 motion-reduce:transition-none",
+                    "size-3.5 shrink-0 transition-transform duration-200 motion-reduce:transition-none",
                     !folded && "rotate-90",
                   )}
                 />
-                <span className="truncate font-mono text-[10px] font-semibold tracking-wide uppercase">
-                  {g.name}
-                </span>
-                <span className="ml-auto shrink-0 pl-1.5 font-mono text-[10px] tabular-nums">
+                {/* The name as the user wrote it: it is a name, not a
+                    category, and a project called "pt-scratch" should not
+                    come back as "PT-SCRATCH". */}
+                <span className="truncate text-[12px] font-semibold">{g.name}</span>
+                <span className="ml-auto shrink-0 pl-1.5 text-[11px] tabular-nums opacity-70">
                   {g.threads.length}
                 </span>
               </button>
@@ -740,43 +741,53 @@ function SidebarPanel({
   ).length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
-      {/* One quiet header row: what the panel is, and the one action it
-          offers. Branding and the status dot earn no space up here — the dot
-          lives in the footer, still one click from the access panel. */}
-      <div className="flex items-center gap-2 px-3 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-1.5">
-        <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
-        {/* One label control, not two: what is showing, and the way to the
-            manager that creates and edits them. */}
-        {/* Project first: it decides the shape of the list, where the label
-            filter only thins it. With one project it is only the way to New
-            project. */}
-        <ProjectFilter
-          projects={props.projects}
-          hidden={projectView.hidden}
-          onToggle={projectView.onToggle}
-          onShowAll={projectView.onShowAll}
-          onHideAll={projectView.onHideAll}
-          onNew={props.onNewProject}
-        />
-        <LabelFilter
-          labels={props.labels}
-          hidden={hidden}
-          onToggle={onToggleLabel}
-          onShowAll={onShowAll}
-          onManage={props.onManageLabels}
-        />
-        <IconButton label="New thread" onClick={props.onNew} className="text-muted-foreground hover:text-foreground">
-          <PlusIcon />
-        </IconButton>
-        {showCollapse && (
+      {/* Two rows. The top is what the panel is and the way to put it away,
+          in the corner it always occupies. The row under it is what you do
+          with the list: start a thread, start a project, choose what shows.
+          Icons only: the list below already says what it is. */}
+      <div className="flex flex-col gap-0.5 px-3 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-1.5">
+        <div className="flex min-h-11 items-center gap-2 md:min-h-8">
+          <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
+          {showCollapse && (
+            <IconButton
+              label="Hide threads"
+              onClick={() => props.onOpenChange(false)}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              {/* A notch under the actions: it is about the panel, not the
+                  list, and should not compete with them. */}
+              <PanelLeftIcon className="size-3.5" />
+            </IconButton>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-1">
           <IconButton
-            label="Hide threads"
-            onClick={() => props.onOpenChange(false)}
+            label="New thread"
+            onClick={props.onNew}
             className="text-muted-foreground hover:text-foreground"
           >
-            <PanelLeftIcon />
+            <SquarePenIcon />
           </IconButton>
-        )}
+          <IconButton
+            label="New project"
+            onClick={props.onNewProject}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <FolderPlusIcon />
+          </IconButton>
+          <ThreadFilter
+            projects={props.projects}
+            hiddenProjects={projectView.hidden}
+            onToggleProject={projectView.onToggle}
+            onShowAllProjects={projectView.onShowAll}
+            onHideAllProjects={projectView.onHideAll}
+            labels={props.labels}
+            hiddenLabels={hidden}
+            onToggleLabel={onToggleLabel}
+            onShowAllLabels={onShowAll}
+            onManageLabels={props.onManageLabels}
+          />
+        </div>
       </div>
 
       <nav aria-label="Threads" className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 py-2">

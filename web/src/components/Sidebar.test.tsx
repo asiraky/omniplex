@@ -159,15 +159,10 @@ describe("Sidebar", () => {
     expect(del.className).toContain("md:after:hidden");
   });
 
-  it("puts the collapse control right after the new-thread button, as when docked", () => {
-    viewport("phone");
-    renderSidebar({ activeId: "a" });
-    const names = Array.from(document.querySelectorAll("[data-slot=sheet-content] button"))
-      .map((b) => b.getAttribute("aria-label"))
-      .filter(Boolean);
-    // Adjacent, in that order — the docked panel's arrangement, not a lone X
-    // floating in the corner above it.
-    expect(names.indexOf("Hide threads")).toBe(names.indexOf("New thread") + 1);
+  it("starts a project from the header", () => {
+    const props = renderSidebar({ activeId: null });
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    expect(props.onNewProject).toHaveBeenCalled();
   });
 
   it("offers the worktree removal as a checkbox, ticked for one omniplex provisioned", () => {
@@ -412,12 +407,35 @@ describe("Sidebar", () => {
       expect(screen.getByRole("button", { name: "Label thread Thread c" })).toBeTruthy();
     });
 
-    it("carries one label control in the header, and it is the filter", () => {
-      renderSidebar({ threads: filed, labels });
-      expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
-      // The old second button — a bare "Labels" that opened the manager — is
-      // gone; the manager is an item inside the filter menu now.
-      expect(screen.queryByRole("button", { name: "Labels" })).toBeNull();
+    it("filters labels and projects from one menu, and clears both at once", async () => {
+      const projects = [
+        { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+        { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+      ] as Project[];
+      const threads = [
+        thread("a", { labelId: "l1", projectId: "p1" }),
+        thread("b", { labelId: "l2", projectId: "p2" }),
+        thread("c", { projectId: "p1" }),
+      ];
+      renderSidebar({ threads, labels, projects });
+      const open = () =>
+        fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+          button: 0,
+          ctrlKey: false,
+        });
+
+      open();
+      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "worksauce" }));
+      fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Parked" }));
+      // The menu stays open between toggles.
+      expect(screen.getByRole("menuitemcheckbox", { name: "No label" })).toBeTruthy();
+      expect(rowOrder()).toEqual(["Thread c"]);
+      // The open menu hides the rest of the page from role queries.
+      expect(screen.getByRole("button", { name: "Filter threads, 2 hidden", hidden: true })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("menuitem", { name: "Show all" }));
+      expect(rowOrder()).toHaveLength(3);
+      expect(screen.getByRole("button", { name: "Filter threads" })).toBeTruthy();
     });
 
     it("hides the threads under a switched-off label, and says so in the footer", () => {
@@ -426,7 +444,7 @@ describe("Sidebar", () => {
 
       expect(rowOrder()).toEqual(["Thread b", "Thread c"]);
       expect(screen.getByText("2 of 3 threads")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Filter by label — 1 hidden" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter threads, 1 hidden" })).toBeTruthy();
     });
 
     it("switches unlabelled threads off on their own", () => {
@@ -454,7 +472,7 @@ describe("Sidebar", () => {
       // "b" was filed under the deleted label, so it is unlabelled now — and
       // unlabelled is showing.
       expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
-      expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter threads" })).toBeTruthy();
     });
   });
   describe("projects", () => {
@@ -495,12 +513,17 @@ describe("Sidebar", () => {
       expect(rowOrder()).toEqual(["Thread b"]);
       expect(header("omniplex", 1)).toBeNull();
       expect(screen.getByText("1 of 3 threads")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Filter by project, 1 hidden" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter threads, 1 hidden" })).toBeTruthy();
     });
 
-    it("offers no project filter when there is nothing to choose between", () => {
+    it("offers no project choices when there is nothing to choose between", async () => {
       renderSidebar({ threads: mixed, projects: [projects[0]] });
-      expect(screen.queryByRole("button", { name: /Filter by project/ })).toBeNull();
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Filter threads" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      await screen.findByRole("menu");
+      expect(screen.queryByRole("menuitemcheckbox", { name: "All projects" })).toBeNull();
     });
 
     it("folds a group shut, and remembers it", () => {
