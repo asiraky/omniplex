@@ -251,8 +251,11 @@ export function ModelPicker({
       {selectedInstance && (
         <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "max-md:hidden")} />
       )}
-      <span className="min-w-0 flex-1 truncate text-left text-[13px]">
-        {selectedModel?.label ?? "No model"}
+      {/* Baseline-aligned: the effort is set smaller, and centring the two
+          boxes left its text sitting higher than the model's. */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="min-w-0 flex-1 truncate text-left text-[13px]">
+          {selectedModel?.label ?? "No model"}
         {/* The generation and the effort compete for one line, and only one of
             them is a knob: when effort is on show, the generation stays in the
             list, where the row that names it also explains it. */}
@@ -268,6 +271,7 @@ export function ModelPicker({
           {formatEffort(effort)}
         </span>
       )}
+      </span>
       <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
     </Button>
   );

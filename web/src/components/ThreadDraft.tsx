@@ -12,6 +12,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { ConnectionStatus } from "~/client";
+import type { Attachment } from "~/lib/attachments";
 import { Composer } from "~/components/Composer";
 import type { ModelSelection } from "~/components/ModelPicker";
 import { Alert, AlertDescription } from "~/components/ui/alert";
@@ -102,6 +103,9 @@ export function ThreadDraft({
   draft,
   onDraftChange,
   onStart,
+  attachments,
+  onAttachImages,
+  onRemoveAttachment,
   onListWorkspaces,
   onListIssues,
   onAddProject,
@@ -117,7 +121,12 @@ export function ThreadDraft({
   status: ConnectionStatus;
   draft: string;
   onDraftChange: (text: string) => void;
-  onStart: (input: NewThreadInput) => Promise<void>;
+  /** `schedule` starts the thread empty and opens a schedule for the message. */
+  onStart: (input: NewThreadInput, schedule?: boolean) => Promise<void>;
+  /** Files for the first message, held until the thread exists. */
+  attachments?: Attachment[];
+  onAttachImages?: (files: File[]) => void;
+  onRemoveAttachment?: (key: string) => void;
   onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
@@ -283,26 +292,29 @@ export function ThreadDraft({
     });
   };
 
-  const start = async (text: string) => {
+  const start = async (text: string, schedule = false) => {
     if (!project || blocker) return;
     setStarting(true);
     setError(null);
     try {
-      await onStart({
-        projectId: project.id,
-        folderId: scope?.id ?? "",
-        harness: harnessId,
-        instance: instance?.id ?? "",
-        model: effectiveModel,
-        mode,
-        effort,
-        agentSettingsExplicit: true,
-        branch,
-        workspace,
-        workspacePath,
-        baseRef: sentBase,
-        text,
-      });
+      await onStart(
+        {
+          projectId: project.id,
+          folderId: scope?.id ?? "",
+          harness: harnessId,
+          instance: instance?.id ?? "",
+          model: effectiveModel,
+          mode,
+          effort,
+          agentSettingsExplicit: true,
+          branch,
+          workspace,
+          workspacePath,
+          baseRef: sentBase,
+          text,
+        },
+        schedule,
+      );
       // Remembered on a thread that actually started, not on every pick.
       saveLastProject(project.id);
       const next = {
@@ -764,6 +776,10 @@ export function ThreadDraft({
           disabledPlaceholder={blocker}
           busy={false}
           onSend={(text) => void start(text)}
+          onSchedule={() => void start(draft, true)}
+          attachments={attachments}
+          onAttachImages={onAttachImages}
+          onRemoveAttachment={onRemoveAttachment}
           onCancel={() => {}}
           harnesses={harnesses}
           anyHarness

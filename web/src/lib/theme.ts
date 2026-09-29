@@ -16,14 +16,13 @@ export const TINT_STORAGE_KEY = "omniplex.tint";
  * The colour dark mode's greys lean towards. index.css turns each into a hue
  * and a strength; slate is the default and needs no attribute.
  */
-export type Tint = "slate" | "blue" | "violet" | "green" | "warm" | "red" | "grey";
+export type Tint = "slate" | "blue" | "violet" | "green" | "red" | "grey";
 
 export const TINTS: { value: Tint; label: string; swatch: string }[] = [
   { value: "slate", label: "Slate", swatch: "oklch(0.42 0.04 265)" },
   { value: "blue", label: "Blue", swatch: "oklch(0.42 0.08 245)" },
   { value: "violet", label: "Violet", swatch: "oklch(0.42 0.08 295)" },
   { value: "green", label: "Green", swatch: "oklch(0.42 0.06 160)" },
-  { value: "warm", label: "Warm", swatch: "oklch(0.42 0.05 55)" },
   { value: "red", label: "Red", swatch: "oklch(0.42 0.08 20)" },
   { value: "grey", label: "Grey", swatch: "oklch(0.42 0 0)" },
 ];

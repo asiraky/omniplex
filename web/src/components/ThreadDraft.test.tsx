@@ -139,7 +139,7 @@ describe("ThreadDraft", () => {
 
     expect(confirm).not.toHaveBeenCalled();
     expect(onCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: "bypassPermissions" }),
+      expect.objectContaining({ mode: "bypassPermissions" }), false,
     );
   });
 
@@ -222,7 +222,7 @@ describe("ThreadDraft", () => {
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ harness: "codex", mode: "full-access", effort: "xhigh" }),
+      expect.objectContaining({ harness: "codex", mode: "full-access", effort: "xhigh" }), false,
     );
   });
 
@@ -251,7 +251,7 @@ describe("ThreadDraft", () => {
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
-    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-sonnet-5[1m]" }));
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-sonnet-5[1m]" }), false);
   });
 
   // The flag is the only thing that decides it: an Opus row the harness did
@@ -483,7 +483,7 @@ describe("the remembered project", () => {
     const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" })));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" }), false));
   });
 
   it("falls back to the remembered project when the active project is unavailable", () => {
@@ -665,7 +665,7 @@ describe("remembered thread choices", () => {
           model: "codex-advanced",
           mode: "codex-bypass",
           effort: "high",
-        }),
+        }), false,
       ),
     );
   });
@@ -713,7 +713,7 @@ describe("remembered thread choices", () => {
     fireEvent.click(send);
     await waitFor(() =>
       expect(onCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ model: "codex-basic", effort: "high" }),
+        expect.objectContaining({ model: "codex-basic", effort: "high" }), false,
       ),
     );
   });

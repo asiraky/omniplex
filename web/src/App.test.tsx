@@ -17,9 +17,15 @@ const prime = vi.fn();
 const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast }));
+const uploadStaged = vi.hoisted(() => vi.fn());
+vi.mock("./lib/attachments", async (actual) => ({
+  ...(await actual<typeof import("./lib/attachments")>()),
+  uploadStaged,
+}));
 
 vi.mock("./client", () => ({
   wsURL: () => "ws://test",
+  uuid: () => Math.random().toString(36).slice(2),
   Client: class {
     constructor(_url: string, e: ClientEvents) {
       events = e;
@@ -1086,5 +1092,105 @@ describe("attaching to a thread", () => {
     expect(screen.getByText("Attaching to thread…").parentElement?.getAttribute("aria-busy")).toBe(
       "true",
     );
+  });
+});
+
+describe("a new thread's first message", () => {
+  const start = async () => {
+    viewport("desktop");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+    });
+    command.mockImplementation(async (name: string) =>
+      name === "create_thread" ? { threadId: "fresh" } : ({} as any),
+    );
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "read this" } });
+  };
+  const pick = (file: File) =>
+    act(async () => {
+      fireEvent.change(document.querySelector('input[type="file"]')!, {
+        target: { files: [file] },
+      });
+    });
+  const report = new File(["numbers"], "report.txt", { type: "text/plain" });
+
+  beforeEach(() => {
+    uploadStaged.mockReset();
+    command.mockReset();
+    command.mockImplementation(async () => ({}) as any);
+  });
+
+  it("starts the thread empty, uploads the files to it, then sends the message with them", async () => {
+    uploadStaged.mockResolvedValue({
+      kind: "file",
+      status: "ready",
+      artefactId: "art-1",
+      progress: 1,
+    });
+    await start();
+    await pick(report);
+    expect(uploadStaged).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+
+    expect(command).toHaveBeenCalledWith("create_thread", expect.objectContaining({ text: "" }));
+    expect(uploadStaged).toHaveBeenCalledWith("fresh", report, expect.anything());
+    await waitFor(() =>
+      expect(command).toHaveBeenCalledWith("prompt", {
+        threadId: "fresh",
+        text: "read this",
+        files: [{ artefactId: "art-1" }],
+      }),
+    );
+  });
+
+  it("leaves the message in the new thread when a file fails to upload", async () => {
+    uploadStaged.mockRejectedValue(new Error("disk full"));
+    await start();
+    await pick(report);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await act(async () => events.onState("fresh", state("fresh", "default")));
+
+    expect(toast.error).toHaveBeenCalled();
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("read this");
+  });
+
+  it("sends a plain message with the thread", async () => {
+    await start();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    expect(command).toHaveBeenCalledWith(
+      "create_thread",
+      expect.objectContaining({ text: "read this" }),
+    );
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+  });
+
+  it("schedules: starts the thread empty and opens the schedule with the message", async () => {
+    await start();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("menuitem", { name: /Schedule send/ }));
+    });
+    await act(async () => events.onState("fresh", state("fresh", "default")));
+
+    expect(command).toHaveBeenCalledWith("create_thread", expect.objectContaining({ text: "" }));
+    expect(await screen.findByRole("dialog", { name: "Schedule message" })).toBeTruthy();
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
   });
 });

@@ -118,10 +118,6 @@
   --tint-h: 160;
   --tint-c: 0.022;
 }
-[data-tint="warm"] {
-  --tint-h: 55;
-  --tint-c: 0.018;
-}
 [data-tint="red"] {
   --tint-h: 20;
   --tint-c: 0.028;

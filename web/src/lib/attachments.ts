@@ -55,7 +55,9 @@ export interface Attachment {
   /** Object URL for an image's thumbnail, shown before the upload finishes.
       Empty for a file, which shows a tile instead. */
   previewUrl: string;
-  status: "uploading" | "ready" | "error";
+  /** "staged" is held in the browser, for a thread that does not exist yet:
+      it goes up once the thread does. */
+  status: "staged" | "uploading" | "ready" | "error";
   /** The image's server id, present once uploaded. */
   id?: string;
   /** The artefact a file became, present once uploaded. */

@@ -176,6 +176,31 @@ export function App() {
   // The in-flight upload behind each staged image, so removing one can stop it.
   const uploadsInFlight = useRef<Map<string, AbortController>>(new Map());
 
+  // One file up to one thread. Resolves to what made it sendable; rejects when
+  // it failed or was taken back, having already marked it in the composer.
+  const uploadInto = useCallback(
+    (threadId: string, key: string, file: File) => {
+      const abort = new AbortController();
+      uploadsInFlight.current.set(key, abort);
+      return uploadStaged(threadId, file, {
+        signal: abort.signal,
+        onProgress: (progress) => patchAttachment(threadId, key, { progress }),
+      })
+        .then((patch) => {
+          patchAttachment(threadId, key, patch);
+          return patch;
+        })
+        .catch((e: Error) => {
+          // An abort means the file was taken back; there is nothing left
+          // to report it to.
+          if (e.name !== "AbortError") patchAttachment(threadId, key, { status: "error", error: e.message });
+          throw e;
+        })
+        .finally(() => uploadsInFlight.current.delete(key));
+    },
+    [patchAttachment],
+  );
+
   const attachImages = useCallback(
     (files: File[]) => {
       const threadId = activeId;
@@ -188,26 +213,27 @@ export function App() {
         setAttachments((all) => ({ ...all, [threadId]: [...(all[threadId] ?? []), staged] }));
         // A picture goes up as an image, shrunk first; anything else goes up
         // as an artefact the agent reads from disk.
-        const abort = new AbortController();
-        uploadsInFlight.current.set(key, abort);
-        uploadStaged(threadId, file, {
-          signal: abort.signal,
-          onProgress: (progress) => patchAttachment(threadId, key, { progress }),
-        })
-          .then((patch) => patchAttachment(threadId, key, patch))
-          .catch((e: Error) => {
-            // An abort means the file was taken back; there is nothing left
-            // to report it to.
-            if (e.name !== "AbortError") patchAttachment(threadId, key, { status: "error", error: e.message });
-          })
-          .finally(() => uploadsInFlight.current.delete(key));
+        uploadInto(threadId, key, file).catch(() => {});
       }
     },
-    [activeId, patchAttachment],
+    [activeId, uploadInto],
   );
+
+  // Files picked for a thread that does not exist yet. Uploads belong to a
+  // thread, so these wait here as they were picked and go up once it does.
+  const draftFiles = useRef<Map<string, File>>(new Map());
+  const attachToDraft = useCallback((files: File[]) => {
+    for (const file of files) {
+      const key = uuid();
+      draftFiles.current.set(key, file);
+      const staged: Attachment = { ...stageFile(file, key), status: "staged", progress: undefined };
+      setAttachments((all) => ({ ...all, [NEW_THREAD]: [...(all[NEW_THREAD] ?? []), staged] }));
+    }
+  }, []);
 
   const removeAttachment = useCallback((threadId: string, key: string) => {
     uploadsInFlight.current.get(key)?.abort();
+    draftFiles.current.delete(key);
     setAttachments((all) => {
       const list = all[threadId] ?? [];
       const going = list.find((a) => a.key === key);
@@ -437,21 +463,79 @@ export function App() {
     if (!isDesktop) setSidebarOpen(false);
   }, [isDesktop, threads]);
 
+  // Starting a thread. A plain message goes with the thread. Files cannot: they
+  // upload to a thread, so the thread starts empty, the message waits in its
+  // composer while they go up, and then it sends. Scheduling starts it empty
+  // too, and opens the schedule on it.
   const create = useCallback(
-    async (input: NewThreadInput) => {
-      const res = await clientRef.current!.command("create_thread", input);
+    async (input: NewThreadInput, schedule = false) => {
+      const pending = (attachments[NEW_THREAD] ?? []).flatMap((a) => {
+        const file = draftFiles.current.get(a.key);
+        return file ? [{ a, file }] : [];
+      });
+      const later = schedule || pending.length > 0;
+      const res = await clientRef.current!.command("create_thread", later ? { ...input, text: "" } : input);
+      const threadId: string = res.threadId;
       setDraft(NEW_THREAD, "");
-      select(res.threadId);
+      for (const { a } of pending) draftFiles.current.delete(a.key);
+      setAttachments((all) => {
+        const next: Record<string, Attachment[]> = { ...all, [NEW_THREAD]: [] };
+        if (pending.length) {
+          next[threadId] = pending.map(({ a }) => ({ ...a, status: "uploading" as const, ...(a.kind === "file" ? { progress: 0 } : {}) }));
+        }
+        return next;
+      });
+      select(threadId);
       // The thread exists but the message did not go: it waits in the new
       // thread's composer rather than being lost.
       if (res.promptError) {
-        setDraft(res.threadId, input.text);
+        setDraft(threadId, input.text);
         toast.error("The thread started, but the message did not send", {
           description: res.promptError,
         });
       }
+      if (!later) return;
+
+      setDraft(threadId, input.text);
+      const results = await Promise.allSettled(pending.map(({ a, file }) => uploadInto(threadId, a.key, file)));
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failed.length) {
+        // Taken back mid-upload is a choice, not a failure; either way the
+        // message stays in the composer for another go.
+        if (failed.some((r) => r.reason?.name !== "AbortError")) {
+          toast.error("The thread started, but a file did not upload", {
+            description: "Your message is waiting in the thread's composer.",
+          });
+        }
+        return;
+      }
+      const payload = sendPayload(
+        pending.map(({ a }, i) => ({ ...a, ...(results[i] as PromiseFulfilledResult<Partial<Attachment>>).value })),
+      );
+      if (schedule) {
+        setScheduleEditor({ id: uuid(), threadId, text: input.text, imageIds: payload.imageIds });
+        return;
+      }
+      try {
+        await clientRef.current!.command("prompt", {
+          threadId,
+          text: input.text,
+          ...(payload.imageIds.length ? { imageIds: payload.imageIds } : {}),
+          ...(payload.files.length ? { files: payload.files } : {}),
+        });
+      } catch (e) {
+        toast.error("The thread started, but the message did not send", {
+          description: e instanceof Error ? e.message : String(e),
+        });
+        return;
+      }
+      setDrafts((all) => (all[threadId] === input.text ? { ...all, [threadId]: "" } : all));
+      setAttachments((all) => {
+        for (const a of all[threadId] ?? []) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+        return { ...all, [threadId]: [] };
+      });
     },
-    [select, setDraft],
+    [attachments, select, setDraft, uploadInto],
   );
 
   const listWorkspaces = useCallback(async (projectId: string, folderId: string) => {
@@ -1556,6 +1640,9 @@ export function App() {
             draft={drafts[NEW_THREAD] ?? ""}
             onDraftChange={(text) => setDraft(NEW_THREAD, text)}
             onStart={create}
+            attachments={attachments[NEW_THREAD] ?? []}
+            onAttachImages={attachToDraft}
+            onRemoveAttachment={(key) => removeAttachment(NEW_THREAD, key)}
             onListWorkspaces={listWorkspaces}
             onListIssues={listIssues}
             onAddProject={() => setNewProject(true)}

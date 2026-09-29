@@ -156,8 +156,8 @@ export function Composer({
   const [dragging, setDragging] = useState(false);
 
   const uploading = attachments.some((a) => a.status === "uploading");
-  const sendableAttachments = attachments.filter((a) => a.status === "ready").length;
-  const carriesFiles = sendPayload(attachments).files.length > 0;
+  const sendableAttachments = attachments.filter((a) => a.status === "ready" || a.status === "staged").length;
+  const carriesFiles = attachments.some((a) => a.kind === "file" && a.status !== "error");
   const cannotSend = disabled || sendDisabled || uploading || (!draft.trim() && sendableAttachments === 0);
 
   const attach = useCallback(
