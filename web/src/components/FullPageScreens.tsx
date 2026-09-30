@@ -1,11 +1,14 @@
-import { lazy, Suspense, useCallback, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useMemo, type RefObject } from "react";
 
+import type { ProviderAuth } from "~/app/useProviderAuth";
 import type { Client } from "~/client";
-import type { QuotaStatus, UsageReport } from "~/protocol";
+import { fetchSetup } from "~/lib/setup";
+import type { HarnessMeta, QuotaStatus, SetupCheck, UsageReport } from "~/protocol";
 
 import { Spinner } from "./ui/spinner";
 
 const UsagePage = lazy(() => import("./Usage").then((m) => ({ default: m.UsagePage })));
+const SetupPage = lazy(() => import("./Setup").then((m) => ({ default: m.SetupPage })));
 const ThemePreview = lazy(() =>
   import("./ThemePreview").then((m) => ({ default: m.ThemePreview })),
 );
@@ -66,6 +69,45 @@ export function ThemePreviewScreen() {
   return (
     <Suspense fallback={<PageSpinner />}>
       <ThemePreview />
+    </Suspense>
+  );
+}
+
+/**
+ * The first-run setup page at /setup. The desktop app opens it on first launch
+ * and whenever the server reports setup incomplete; any browser can visit it.
+ */
+export function SetupScreen({
+  harnesses,
+  auth,
+  onContinue,
+}: {
+  harnesses: HarnessMeta[];
+  auth: ProviderAuth;
+  onContinue: () => void;
+}) {
+  const { openInstanceAuth, recheck } = auth;
+  // A check names a harness; sign-in goes to that harness's default account,
+  // which is its first instance.
+  const onLogin = useCallback(
+    (check: SetupCheck) =>
+      openInstanceAuth(harnesses.find((h) => h.id === check.id)?.instances[0]?.id ?? check.id),
+    [harnesses, openInstanceAuth],
+  );
+  // Reload the report when the server's view of the harnesses changes (a
+  // recheck after sign-in lands here) and when a sign-in dialog opens or
+  // closes, so a finished sign-in shows as ready without a button press.
+  const dialogOpen = !!(auth.loginInstance || auth.authInstance);
+  const refreshKey = useMemo(() => ({ harnesses, dialogOpen }), [harnesses, dialogOpen]);
+  return (
+    <Suspense fallback={<PageSpinner />}>
+      <SetupPage
+        load={fetchSetup}
+        onRecheck={recheck}
+        onLogin={onLogin}
+        onContinue={onContinue}
+        refreshKey={refreshKey}
+      />
     </Suspense>
   );
 }

@@ -1195,3 +1195,63 @@ describe("a new thread's first message", () => {
     expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
   });
 });
+
+describe("the setup page", () => {
+  const setupReport = {
+    platform: "darwin",
+    ready: false,
+    checks: [
+      { id: "git", name: "Git", kind: "tool", availability: { state: "ready" } },
+      {
+        id: "claude",
+        name: "Claude Code",
+        kind: "harness",
+        availability: {
+          state: "unavailable",
+          reason: "Claude is not signed in.",
+          remedy: [{ text: "Sign in", command: "claude auth login", action: "login" }],
+        },
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/setup");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url !== "/api/setup") throw new Error(`unexpected fetch ${url}`);
+        return new Response(JSON.stringify(setupReport));
+      }),
+    );
+  });
+  afterEach(() => window.history.replaceState(null, "", "/"));
+
+  it("opens at /setup and leaves for the app on continue", async () => {
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    await screen.findByRole("article", { name: "Claude Code" });
+    expect(screen.queryByText("Thread a")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+
+    expect(window.location.pathname).toBe("/");
+    expect(screen.getByText("Thread a")).toBeTruthy();
+  });
+
+  it("signs in through the app's own sign-in flow", async () => {
+    render(<App />);
+    await act(async () =>
+      events.onHarnesses([
+        { ...harness, instances: [{ ...harness.instances[0], id: "claude-work", auth: "flows" }] },
+      ]),
+    );
+    const card = await screen.findByRole("article", { name: "Claude Code" });
+
+    fireEvent.click(within(card).getByRole("button"));
+
+    await waitFor(() =>
+      expect(command).toHaveBeenCalledWith("provider_auth_overview", { instanceId: "claude-work" }),
+    );
+  });
+});

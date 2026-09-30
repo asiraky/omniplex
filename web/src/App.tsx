@@ -23,7 +23,7 @@ import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
-import { ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
+import { SetupScreen, ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
@@ -80,6 +80,23 @@ export function App() {
     projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [];
 
   if (screens.themePreview) return <ThemePreviewScreen />;
+
+  // First-run setup covers everything, like Usage, but keeps the app's dialogs
+  // mounted: its "Sign in" opens the same sign-in flow the thread view does.
+  if (screens.setup) {
+    return (
+      <>
+        <SetupScreen harnesses={harnesses} auth={auth} onContinue={screens.leaveSetup} />
+        <AppDialogs
+          wire={wire}
+          screens={screens}
+          labels={labelActions}
+          auth={auth}
+          projects={projectActions}
+        />
+      </>
+    );
+  }
 
   // The Usage page covers the whole viewport, above everything: it answers an
   // account question, and the thread underneath keeps streaming while it is
