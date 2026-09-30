@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Omniplex">
+  <!-- The app mark: the stacked l from the wordmark, three sessions on a pale
+       indigo tile. The tile is opaque on purpose: a bare glyph disappears
+       against a tab strip of the same colour in whichever theme it was not
+       drawn for. -->
+  <rect width="100" height="100" rx="22" fill="#eef2ff" />
+  <rect x="44.3" y="21" width="11.5" height="16.1" rx="4" fill="#6366f1" />
+  <rect x="44.3" y="41.9" width="11.5" height="16.1" rx="4" fill="#a855f7" />
+  <rect x="44.3" y="62.9" width="11.5" height="16.1" rx="4" fill="#ec4899" />
+</svg>

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -35,6 +36,11 @@ func bundledSidecarPath() string {
 		}
 		sum := sha256.Sum256(data)
 		name := "omniplex-claude-sidecar-" + hex.EncodeToString(sum[:8])
+		// Windows runs nothing without an executable extension. The release
+		// build embeds Bun's .exe under the extension-less name.
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
 
 		base, err := os.UserCacheDir()
 		if err != nil {

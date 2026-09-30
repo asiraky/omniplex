@@ -1,0 +1,430 @@
+# Build and publish a release: the desktop app for macOS (and Windows, once it
+# builds), plus bundled server tarballs for terminal installs. docs/release.md
+# covers cutting a release and the one-time secret setup.
+#
+# Pushing a tag vX.Y.Z publishes. Every job uploads into one draft release that
+# `prepare` creates, and `publish` un-drafts it only when every job succeeded,
+# so nobody (and no auto-updater) ever sees a release with half its files.
+#
+# A manual run is a dry run: it builds everything for the version you give it,
+# unsigned if the secrets are absent, and keeps the results as workflow
+# artifacts. It creates no tag and no release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, e.g. 0.3.0-rc.1. Dry run only; nothing is published.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = push ]; then
+            version=${GITHUB_REF_NAME#v}
+            publish=true
+          else
+            version=${INPUT_VERSION#v}
+            publish=false
+          fi
+          # electron-updater compares versions as semver; anything else would
+          # never be offered as an update.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a version like 1.2.3 or 1.2.3-rc.1"
+            exit 1
+          fi
+          case $version in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "publish=$publish"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Omniplex $version (publish: $publish, prerelease: $prerelease)"
+
+      # An unsigned app puts a security warning in front of the people this
+      # release is for. A dry run may build unsigned; a tag may not.
+      - name: Require signing secrets
+        if: steps.version.outputs.publish == 'true'
+        env:
+          RELEASE_WINDOWS: ${{ vars.RELEASE_WINDOWS }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER }}
+        run: |
+          required="CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER"
+          if [ "$RELEASE_WINDOWS" = true ]; then
+            required="$required AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET"
+            required="$required AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_ACCOUNT"
+            required="$required AZURE_TRUSTED_SIGNING_PROFILE AZURE_TRUSTED_SIGNING_PUBLISHER"
+          fi
+          missing=""
+          for name in $required; do
+            [ -n "${!name:-}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::A tagged release must be signed. Missing secrets:$missing. See docs/release.md."
+            exit 1
+          fi
+
+      - name: Create draft release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "::error::$TAG is already published. Tag a new version instead."
+              exit 1
+            fi
+            echo "Reusing the draft for $TAG (a re-run)."
+            exit 0
+          fi
+          flags=""
+          [ "$PRERELEASE" = true ] && flags=--prerelease
+          # shellcheck disable=SC2086
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Omniplex $VERSION" --generate-notes $flags
+
+  # The terminal path: bundled server binaries for macOS and Linux. Go and
+  # `bun build --compile` both cross-compile, so one Linux runner builds all
+  # four. The macOS binaries are not signed; curl and tar do not quarantine
+  # what they fetch, so Gatekeeper never sees them.
+  server:
+    name: server tarballs
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # The desktop workspace pulls in Electron, which this job never runs.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.19
+      - run: npm ci
+      - run: npm run build:web
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="omniplex-$VERSION-$os-$arch"
+            scripts/build-release.sh "$os" "$arch" "$VERSION" "stage/$name/omniplex"
+            cp LICENSE README.md "stage/$name/"
+            tar -C stage -czf "dist/$name.tar.gz" "$name"
+          done
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Smoke test
+        run: |
+          got=$("stage/omniplex-$VERSION-linux-amd64/omniplex" version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::the linux-amd64 build reports '$got', expected '$VERSION'"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload to the draft release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  # One Apple Silicon runner builds both Mac architectures in a single
+  # electron-builder run. That is cheaper than a second (Intel) runner, and it
+  # is also required: each run writes its own latest-mac.yml, and two runs
+  # would overwrite each other's on the release and break auto-update for one
+  # architecture. One run writes one feed listing both zips, and
+  # electron-updater picks the right one per Mac. The Intel server binary is
+  # cross-compiled like the Linux ones.
+  desktop-mac:
+    name: desktop (macOS arm64 + x64)
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.19
+      - run: npm ci
+      - run: npm run build:web
+
+      # electron-builder copies resources/bin/${os}-${arch} into the app, in
+      # its own names (mac/win, arm64/x64), so one run packages each Mac
+      # architecture with its own server. See desktop/electron-builder.config.cjs.
+      - name: Build and stage the server
+        run: |
+          scripts/build-release.sh darwin arm64 "$VERSION" desktop/resources/bin/mac-arm64/omniplex
+          scripts/build-release.sh darwin amd64 "$VERSION" desktop/resources/bin/mac-x64/omniplex
+
+      - name: Set the app version
+        run: npm pkg set version="$VERSION" --workspace desktop
+      - run: npm run build --workspace desktop
+
+      - name: Package, sign, notarize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          if [ -n "$CSC_LINK" ] && [ -n "$CSC_KEY_PASSWORD" ] && [ -n "$APPLE_API_KEY_P8" ] &&
+             [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER" ]; then
+            # electron-builder's notarization wants the key as a file path.
+            export APPLE_API_KEY="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"
+            printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY"
+            echo "Signing with the Developer ID certificate and notarizing."
+          else
+            # prepare has already failed a tag without these, so this is a dry
+            # run. The desktop config signs ad hoc when CSC_LINK is unset.
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER
+            echo "::warning::No Apple signing secrets: this build is ad-hoc signed and Gatekeeper will block it."
+          fi
+          publish=never
+          if [ "$PUBLISH" = true ]; then
+            publish=always
+            # Belt and braces with prepare's check: electron-builder refuses to
+            # produce an unsigned app.
+            export OMNIPLEX_REQUIRE_SIGNING=1
+          fi
+          npm exec --workspace desktop -- electron-builder --config electron-builder.config.cjs \
+            --mac --arm64 --x64 --publish "$publish"
+
+      - uses: actions/upload-artifact@v7
+        if: needs.prepare.outputs.publish != 'true'
+        with:
+          name: desktop-mac
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  # Windows waits on #132: the server does not compile for GOOS=windows yet.
+  # Set the repository variable RELEASE_WINDOWS to "true" once it does; until
+  # then tags ship macOS and the download page says Windows is coming.
+  desktop-windows:
+    name: desktop (Windows x64)
+    needs: prepare
+    if: vars.RELEASE_WINDOWS == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.19
+      - run: npm ci
+      - run: npm run build:web
+
+      - name: Build and stage the server
+        run: scripts/build-release.sh windows amd64 "$VERSION" desktop/resources/bin/win-x64/omniplex.exe
+
+      - name: Set the app version
+        run: npm pkg set version="$VERSION" --workspace desktop
+      - run: npm run build --workspace desktop
+
+      # electron-builder signs through the TrustedSigning PowerShell module.
+      # Installing it up front makes a missing module fail here, by name,
+      # rather than halfway through packaging.
+      - name: Prepare Azure Trusted Signing
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID)) {
+            Write-Host "No Azure signing secrets; skipping."
+            exit 0
+          }
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser
+          Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -AllowClobber -Repository PSGallery -Scope CurrentUser
+          Import-Module TrustedSigning -MinimumVersion 0.5.0 -Force
+
+      # The AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET trio is what the signing
+      # module authenticates with; the AZURE_SIGNING_* names are what
+      # desktop/electron-builder.config.cjs reads to build azureSignOptions.
+      - name: Package and sign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          AZURE_SIGNING_PUBLISHER: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER }}
+        run: |
+          if [ -n "$AZURE_TENANT_ID" ] && [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_CLIENT_SECRET" ] &&
+             [ -n "$AZURE_SIGNING_ENDPOINT" ] && [ -n "$AZURE_SIGNING_ACCOUNT" ] &&
+             [ -n "$AZURE_SIGNING_CERT_PROFILE" ] && [ -n "$AZURE_SIGNING_PUBLISHER" ]; then
+            echo "Signing with Azure Trusted Signing."
+          else
+            # The desktop config signs only when these are set.
+            unset AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPOINT
+            unset AZURE_SIGNING_ACCOUNT AZURE_SIGNING_CERT_PROFILE AZURE_SIGNING_PUBLISHER
+            echo "::warning::No Azure signing secrets: this build is unsigned and SmartScreen will warn."
+          fi
+          publish=never
+          if [ "$PUBLISH" = true ]; then
+            publish=always
+            export OMNIPLEX_REQUIRE_SIGNING=1
+          fi
+          npm exec --workspace desktop -- electron-builder --config electron-builder.config.cjs \
+            --win --x64 --publish "$publish"
+
+      - uses: actions/upload-artifact@v7
+        if: needs.prepare.outputs.publish != 'true'
+        with:
+          name: desktop-windows
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish release
+    needs: [prepare, server, desktop-mac, desktop-windows]
+    # desktop-windows is skipped until RELEASE_WINDOWS is on; skipped is fine,
+    # failed is not.
+    if: >-
+      !cancelled() &&
+      needs.prepare.outputs.publish == 'true' &&
+      needs.server.result == 'success' &&
+      needs.desktop-mac.result == 'success' &&
+      (needs.desktop-windows.result == 'success' || needs.desktop-windows.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      WINDOWS: ${{ needs.desktop-windows.result == 'success' }}
+    steps:
+      # The jobs above succeeding should mean the files are there. Check
+      # anyway: publishing without the updater feed strands every installed
+      # copy on this version.
+      - name: Check the assets
+        run: |
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          echo "$assets"
+          fail=0
+          expect() {
+            if [ "$(printf '%s\n' "$assets" | grep -Ec "$1")" -lt "$2" ]; then
+              echo "::error::expected at least $2 asset(s) matching $1"
+              fail=1
+            fi
+          }
+          expect '^SHA256SUMS$' 1
+          expect '^omniplex-.*\.tar\.gz$' 4
+          expect '^latest-mac\.yml$' 1
+          expect '\.dmg$' 2
+          if [ "$WINDOWS" = true ]; then
+            expect '^latest\.yml$' 1
+            expect '\.exe$' 1
+          fi
+          exit "$fail"
+
+      - name: Publish
+        run: |
+          latest=true
+          [ "$PRERELEASE" = true ] && latest=false
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
+          echo "Published $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url -q .url)"

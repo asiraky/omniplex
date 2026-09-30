@@ -15,6 +15,43 @@ The core workflow from [`workspace-lifecycle-spec.md`](workspace-lifecycle-spec.
 is implemented: projects and defaults, project-owned provision/deprovision
 scripts, the readiness barrier, live setup output, and retryable cleanup.
 
+## Install
+
+### Desktop app (macOS)
+
+Download it from **https://asiraky.github.io/omniplex/**, which picks the right build for your
+machine, or from the [latest release](https://github.com/asiraky/omniplex/releases/latest). Open
+the dmg and drag Omniplex to Applications.
+
+The app runs the server, starts at login, and keeps running in the menu bar when you close the
+window, so your phone can still reach it. It updates itself. On first launch it checks for Claude
+Code, Codex and git and tells you what is missing. Omniplex drives those, it does not install them.
+
+A Windows build follows once the server runs on Windows (#132).
+
+### From a terminal (macOS, Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/asiraky/omniplex/main/scripts/install.sh | sh
+omniplex
+```
+
+This installs the bundled server to `~/.local/bin` after checking it against the release's
+`SHA256SUMS`. Set `OMNIPLEX_VERSION` to pin a version or `OMNIPLEX_INSTALL_DIR` to put it elsewhere.
+There is no app window and nothing starts at login; see
+[Running it on a server over Tailscale](#running-it-on-a-server-over-tailscale) for a service setup.
+
+To do it by hand, download `omniplex-<version>-<os>-<arch>.tar.gz` and `SHA256SUMS` from the
+[latest release](https://github.com/asiraky/omniplex/releases/latest), then:
+
+```bash
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar -xzf omniplex-*.tar.gz
+./omniplex-*/omniplex
+```
+
+Maintainers: [docs/release.md](docs/release.md) covers cutting a release and the signing setup.
+
 ## Quick start
 
 ```bash
