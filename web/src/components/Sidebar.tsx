@@ -32,6 +32,7 @@ import { cn } from "~/lib/utils";
 import { groupThreads, visibleByProject } from "~/projectGroups";
 import type { Label, Project, ThreadMeta } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
+import { Wordmark } from "./Logo";
 import { ProjectGroup } from "./sidebar/ProjectGroup";
 import { ThreadRow } from "./sidebar/ThreadRow";
 import { useStoredKeys, withKey } from "./sidebar/useStoredKeys";
@@ -350,13 +351,15 @@ function SidebarPanel({
   ).length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
-      {/* Two rows. The top is what the panel is and the way to put it away,
+      {/* Two rows. The top is the wordmark and the way to put it away,
           in the corner it always occupies. The row under it is what you do
           with the list: start a thread, start a project, choose what shows.
           Icons only: the list below already says what it is. */}
       <div className="flex flex-col gap-0.5 px-3 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-1.5">
         <div className="flex min-h-11 items-center gap-2 md:min-h-8">
-          <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
+          <span className="flex flex-1 items-center px-1.5">
+            <Wordmark className="h-[18px] w-auto" />
+          </span>
           {showCollapse && (
             <IconButton
               label="Hide threads"
