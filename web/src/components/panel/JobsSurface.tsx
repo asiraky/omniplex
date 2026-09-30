@@ -1,5 +1,5 @@
 import { ArrowLeftIcon, BotIcon, SquareIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Markdown } from "~/components/Markdown";
 import { fmtTokens } from "~/lib/format";
@@ -7,6 +7,7 @@ import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs"
 import { cn } from "~/lib/utils";
 import type { Item, Job, JobKind, ThreadState } from "~/protocol";
 import { formatDuration } from "~/rows";
+import { useLatest } from "~/useLatest";
 
 export interface JobsSurfaceProps {
   threadId: string;
@@ -58,10 +59,10 @@ function fmtCost(c: number): string {
   return c < 0.01 ? "<$0.01" : `$${c.toFixed(2)}`;
 }
 
-function usageParts(job: Job): string[] {
-  const out: string[] = [];
-  if (job.usage?.totalTokens) out.push(`${fmtTokens(job.usage.totalTokens)} tok`);
-  if (job.usage?.cost) out.push(fmtCost(job.usage.cost));
+function usageParts(job: Job): { key: string; part: string }[] {
+  const out: { key: string; part: string }[] = [];
+  if (job.usage?.totalTokens) out.push({ key: "tokens", part: `${fmtTokens(job.usage.totalTokens)} tok` });
+  if (job.usage?.cost) out.push({ key: "cost", part: fmtCost(job.usage.cost) });
   return out;
 }
 
@@ -75,11 +76,11 @@ function JobRow({
   onStop: (j: Job) => void;
 }) {
   const live = isLive(job);
-  const meta = [
-    job.kind === "agent" ? job.taskType : undefined,
-    <Elapsed key="t" since={job.startedAt} finishedAt={job.finishedAt} />,
+  const meta: { key: string; part: ReactNode }[] = [
+    ...(job.kind === "agent" && job.taskType ? [{ key: "type", part: job.taskType }] : []),
+    { key: "elapsed", part: <Elapsed since={job.startedAt} finishedAt={job.finishedAt} /> },
     ...usageParts(job),
-  ].filter(Boolean);
+  ];
   const second = live ? job.activity || "working…" : job.error || job.status;
 
   return (
@@ -101,8 +102,8 @@ function JobRow({
             {second}
           </p>
           <p className="text-muted-foreground truncate text-[10px]">
-            {meta.map((part, i) => (
-              <span key={i}>
+            {meta.map(({ key, part }, i) => (
+              <span key={key}>
                 {i > 0 && " · "}
                 {part}
               </span>
@@ -152,16 +153,10 @@ function ShellPane({
   // The poll must survive re-renders: a restart would re-read from zero and
   // append the file a second time. The command prop is read through a ref so
   // its identity cannot retrigger the effect; the offset lives in a ref so a
-  // remount of the same job continues where it left off.
-  const commandRef = useRef(command);
-  commandRef.current = command;
+  // restarted poll continues where the last one left off. A different job is
+  // a fresh pane: the caller keys this by job id.
+  const commandRef = useLatest(command);
   const offsetRef = useRef(0);
-  useEffect(() => {
-    offsetRef.current = 0;
-    setText("");
-    setDone(false);
-    setError("");
-  }, [job.id]);
   useEffect(() => {
     if (!job.outputFile) return;
     let stopped = false;
@@ -201,7 +196,7 @@ function ShellPane({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [threadId, job.id, job.outputFile]);
+  }, [threadId, job.id, job.outputFile, commandRef]);
 
   useEffect(() => {
     const el = preRef.current;

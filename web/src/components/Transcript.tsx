@@ -432,7 +432,7 @@ function PromptImages({ threadId, images }: { threadId: string; images: PromptIm
           ) : (
             <img
               src={attachmentUrl(threadId, image.id)}
-              alt="Attached image"
+              alt="Attachment"
               loading="lazy"
               className="max-h-36 max-w-[9rem] rounded-lg border object-cover"
             />
@@ -710,13 +710,18 @@ function WorkspaceCard({
   const [leaving, setLeaving] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // The workspace moving on resets the card: going active again reopens it and
+  // cancels any exit, and landing on ready folds it away. Adjusted during
+  // render against the last phase seen, so the stale card never paints.
+  const [seen, setSeen] = useState({ active, failed, phase: ws.phase });
+  if (seen.active !== active || seen.failed !== failed || seen.phase !== ws.phase) {
+    setSeen({ active, failed, phase: ws.phase });
     if (active || failed) {
       setOpen(true);
       setDismissed(false);
       setLeaving(false);
     } else if (ws.phase === "ready") setOpen(false);
-  }, [active, failed, ws.phase]);
+  }
 
   // A finished provisioner is a receipt, not a task: it says its piece and
   // then gets out of the way, rather than holding the top of an empty
@@ -986,7 +991,16 @@ function InterruptedCard({
                     disabled={sending}
                     onClick={async () => {
                       setSending(true);
-                      if (!(await onSwitchAccount(t.id, turn))) setSending(false);
+                      let switched = false;
+                      try {
+                        switched = await onSwitchAccount(t.id, turn);
+                      } finally {
+                        // Refused or failed alike, the card has to be usable
+                        // again. A switch that went through keeps it locked: the
+                        // retry it triggers is already on its way.
+                        // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- the reset is in finally; it skips only the success path, which must stay locked
+                        if (!switched) setSending(false);
+                      }
                     }}
                   >
                     <ArrowRightLeftIcon />
@@ -1124,6 +1138,9 @@ function QueuedCard({
   );
 }
 
+const NO_JOBS: Job[] = [];
+const NO_RECENTS: ComposerItem[] = [];
+
 export function Transcript({
   state,
   hasOlder = false,
@@ -1141,12 +1158,12 @@ export function Transcript({
   switchTargets,
   onSwitchAccount,
   onOpenDiff,
-  jobs = [],
+  jobs = NO_JOBS,
   onOpenJobs,
   onOpenArtefact,
   pr,
   onFinish,
-  recents = [],
+  recents = NO_RECENTS,
   recentsSeeded = false,
   onPickRecent,
   onDequeue,
@@ -1381,13 +1398,15 @@ export function Transcript({
   const ownItems = useMemo(() => state.items.filter((it) => !it.parentId), [state.items]);
 
   const liveAgentId = useMemo(() => {
-    for (let i = ownItems.length - 1; i >= 0; i--) {
+    let newest: (typeof ownItems)[number] | undefined;
+    for (let i = ownItems.length - 1; i >= 0 && !newest; i--) {
       const it = ownItems[i];
-      if (it.kind !== "message" || it.role !== "agent" || (it.text ?? "").trim() === "") continue;
-      const turn = it.turnId ? state.turns.find((t) => t.id === it.turnId) : undefined;
-      return turn?.done ? undefined : it.id;
+      if (it.kind === "message" && it.role === "agent" && (it.text ?? "").trim() !== "") newest = it;
     }
-    return undefined;
+    if (!newest) return undefined;
+    const turnId = newest.turnId;
+    const turn = turnId ? state.turns.find((t) => t.id === turnId) : undefined;
+    return turn?.done ? undefined : newest.id;
   }, [ownItems, state.turns]);
 
   // Sending a prompt should not leave it jammed against the composer with the

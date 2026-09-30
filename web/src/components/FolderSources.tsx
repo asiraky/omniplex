@@ -30,27 +30,29 @@ export function FolderBrowser({
 
   // Only the latest tap counts. Two quick taps on a slow link can answer out
   // of order, and the older answer landing last would leave you in the wrong
-  // folder with the path saying so.
-  const latest = useRef(0);
+  // folder with the path saying so. Each tap cancels the one before it, which
+  // also stops paying for an answer nobody will read.
+  const inflight = useRef<AbortController | null>(null);
   const load = async (path: string) => {
-    const mine = ++latest.current;
+    inflight.current?.abort();
+    const ctl = new AbortController();
+    inflight.current = ctl;
     setError(null);
     try {
-      const r = await fetch(`/api/fs?path=${encodeURIComponent(path)}`);
+      const r = await fetch(`/api/fs?path=${encodeURIComponent(path)}`, { signal: ctl.signal });
       const body = r.ok ? ((await r.json()) as Listing) : (await r.text()).trim();
-      if (mine !== latest.current) return;
+      if (ctl.signal.aborted) return;
       if (typeof body === "string") setError(body || `Could not open that folder (${r.status})`);
       else setListing(body);
     } catch (e) {
-      if (mine === latest.current) setError(e instanceof Error ? e.message : String(e));
+      if (!ctl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
     }
   };
+  // react-doctor-disable-next-line react-doctor/no-fetch-in-effect -- one-shot mount fetch; load() aborts any earlier request and the cleanup aborts this one
   useEffect(() => {
     void load("~");
     // Nothing that lands after unmount should set state.
-    return () => {
-      latest.current++;
-    };
+    return () => inflight.current?.abort();
   }, []);
 
   return (

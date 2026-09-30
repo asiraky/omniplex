@@ -352,6 +352,9 @@ function InstanceView({
       setView({ kind: "list" });
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      // On success this view is already on its way out, so the reset only
+      // matters for a failed delete; here it runs either way.
       setBusy(false);
       setConfirming(false);
     }

@@ -22,6 +22,7 @@ import {
 import { Spinner } from "~/components/ui/spinner";
 import { bundlePath, retoken, type ExpiringUrl } from "~/lib/artefacts";
 import { cn } from "~/lib/utils";
+import { useLatest } from "~/useLatest";
 
 export type Device = "desktop" | "tablet" | "phone";
 
@@ -86,11 +87,12 @@ export function MiniBrowser({
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const previewRef = useRef(preview);
-  previewRef.current = preview;
-  const onLocationRef = useRef(onLocationChange);
-  onLocationRef.current = onLocationChange;
+  const previewRef = useLatest(preview);
+  const onLocationRef = useLatest(onLocationChange);
 
+  // The first URL only: a fresher preview waits for the next reload, and a
+  // new revision remounts this whole view by key.
+  // react-doctor-disable-next-line react-doctor/no-derived-useState -- deliberately captured once; re-syncing would reload the page on every token refresh
   const [src, setSrc] = useState(preview.url);
   const [frameKey, setFrameKey] = useState(0);
   const [location, setLocation] = useState(preview.url);
@@ -153,12 +155,13 @@ export function MiniBrowser({
         const level: ConsoleEntry["level"] =
           d.level === "info" || d.level === "warn" || d.level === "error" ? d.level : "log";
         const text = d.text.length > MAX_TEXT ? `${d.text.slice(0, MAX_TEXT)}…` : d.text;
-        setEntries((all) => [...all, { n: ++seq.current, level, text }].slice(-MAX_ENTRIES));
+        const n = ++seq.current;
+        setEntries((all) => [...all, { n, level, text }].slice(-MAX_ENTRIES));
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [onLocationRef]);
 
   // The frame is opaque-origin, so the only target that reaches it is "*".
   // Nothing sent is secret: it is a request to go back or forward.
@@ -192,7 +195,7 @@ export function MiniBrowser({
     firstPage.current = true;
     lastUrl.current = "";
     setFrameKey((k) => k + 1);
-  }, [location, refreshPreview]);
+  }, [location, previewRef, refreshPreview]);
 
   const chooseDevice = (d: Device) => {
     setDevice(d);

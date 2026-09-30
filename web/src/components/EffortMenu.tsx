@@ -1,5 +1,5 @@
 import { CheckIcon, ChevronRightIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Command, CommandGroup, CommandItem, CommandList } from "~/components/ui/command";
@@ -34,6 +34,10 @@ export function EffortMenu({
 }) {
   const [open, setOpen] = useState(false);
   const isDesktop = useIsDesktop();
+  // Radix would point the trigger at its own content id, but a combobox has to
+  // name its popup explicitly, so the trigger and whichever popup renders share
+  // this one.
+  const popupId = useId();
   // cmdk listens for arrows and Enter on its own root, and a popover opens
   // with focus on its container — a parent, whose key events never reach that
   // root. Focusing the list itself is what makes the submenu keyboard-usable.
@@ -53,6 +57,7 @@ export function EffortMenu({
       type="button"
       role="combobox"
       aria-expanded={open}
+      aria-controls={open ? popupId : undefined}
       aria-label="Reasoning effort"
       className="focus-visible:ring-ring hover:bg-accent hover:text-accent-foreground flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors outline-none focus-visible:ring-2 md:min-h-9"
     >
@@ -104,6 +109,7 @@ export function EffortMenu({
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
+          id={popupId}
           side="bottom"
           onOpenAutoFocus={takeFocus}
           className="p-0 pb-[env(safe-area-inset-bottom)]"
@@ -123,6 +129,7 @@ export function EffortMenu({
       {/* Beside the model menu rather than under it, which is what makes it
           read as a submenu of the row that opened it. */}
       <PopoverContent
+        id={popupId}
         side="right"
         align="end"
         sideOffset={8}

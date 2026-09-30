@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -25,6 +25,8 @@ const SCOPES: { id: CreateScope; label: string; hint: string }[] = [
   { id: "user", label: "Personal", hint: "~/.agents/skills, linked into Claude's skills dir" },
 ];
 
+/** The form is only as fresh as the mount: key it per opening so each one
+    starts blank. */
 export function NewSkillDialog({
   open,
   onOpenChange,
@@ -46,16 +48,6 @@ export function NewSkillDialog({
   const [touched, setTouched] = useState({ name: false, description: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  // Every opening is a fresh form.
-  useEffect(() => {
-    if (!open) return;
-    setName("");
-    setDescription("");
-    setScope(projectAvailable ? "project" : "user");
-    setTouched({ name: false, description: false });
-    setError("");
-  }, [open, projectAvailable]);
 
   const nameError = skillNameError(name);
   const descriptionError = skillDescriptionError(description);

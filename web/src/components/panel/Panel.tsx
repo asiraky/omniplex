@@ -47,6 +47,7 @@ import {
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
 import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, ThreadChanges, ThreadState } from "~/protocol";
+import { useLatest } from "~/useLatest";
 import { useDocksPanel } from "~/useMediaQuery";
 
 const NO_ARTEFACTS: Artefact[] = [];
@@ -106,6 +107,58 @@ function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
   }
 }
 
+/** What routing a request does to the panel. An empty route does nothing. */
+interface Route {
+  update?: (p: PanelState) => PanelState;
+  /** A changed file to open in the diff surface. */
+  reveal?: { path: string; nonce: number };
+  /** Set only when a file tab opens: the line to scroll to, if any. */
+  file?: { line?: number };
+}
+
+/**
+ * Where a request lands, or null while it cannot be judged yet. A path request
+ * routes on the change list, so it waits for the list to settle rather than
+ * judging against the empty one a fresh mount holds.
+ */
+function routeRequest(
+  request: PanelRequest,
+  settled: boolean,
+  changedPaths: Set<string>,
+  tree: FileTree | null,
+): Route | null {
+  const { path, nonce } = request;
+  switch (request.kind) {
+    case "diff":
+      return {
+        update: (p) => openSurface(p, { id: "diff", kind: "diff" }),
+        reveal: path ? { path, nonce } : undefined,
+      };
+    case "jobs":
+    case "artefacts":
+    case "skills": {
+      const kind = request.kind;
+      return { update: (p) => openSurface(p, { id: kind, kind }) };
+    }
+    case "artefact": {
+      const id = request.artefactId;
+      return id ? { update: (p) => putSurface(p, artefactSurface(id)) } : {};
+    }
+  }
+  if (!path) return {};
+  if (!settled) return null;
+  // A path in the change list opens as its diff; anything else opens as the
+  // file itself, including files the thread never touched.
+  if (changedPaths.has(path) && request.line === undefined) {
+    return { update: (p) => openSurface(p, { id: "diff", kind: "diff" }), reveal: { path, nonce } };
+  }
+  // A directory reference opens the tree rather than a file that isn't one.
+  if (tree?.files.some((f) => f.startsWith(path + "/")) && !tree.files.includes(path)) {
+    return { update: (p) => openSurface(p, { id: "files", kind: "files" }) };
+  }
+  return { update: (p) => openSurface(p, fileSurface(path)), file: { line: request.line } };
+}
+
 function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
   switch (s.kind) {
     case "diff":
@@ -158,29 +211,27 @@ function PanelBody({
   });
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState("");
-  const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
   // A refresh that started earlier must not overwrite a later one's answer.
-  const changesGen = useRef(0);
+  const changesGeneration = useRef(0);
   // The loaders are held by ref: a parent that re-creates them on every render
   // must not turn "read the worktree once" into a loop.
-  const loadChangesRef = useRef(loadChanges);
-  loadChangesRef.current = loadChanges;
+  const loadChangesRef = useLatest(loadChanges);
 
   const refreshChanges = useCallback(async () => {
-    const mine = ++changesGen.current;
+    const generation = ++changesGeneration.current;
     setChangesLoading(true);
     setChangesError("");
     try {
       const next = await loadChangesRef.current(comparison);
-      if (mine !== changesGen.current) return;
+      if (generation !== changesGeneration.current) return;
       setChanges(next);
     } catch (e) {
-      if (mine !== changesGen.current) return;
+      if (generation !== changesGeneration.current) return;
       setChangesError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (mine === changesGen.current) setChangesLoading(false);
+      if (generation === changesGeneration.current) setChangesLoading(false);
     }
-  }, [comparison]);
+  }, [comparison, loadChangesRef]);
 
   const changeComparison = useCallback((next: DiffComparison) => {
     localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
@@ -201,27 +252,26 @@ function PanelBody({
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState("");
   const [includeIgnored, setIncludeIgnored] = useState(false);
-  const treeGen = useRef(0);
+  const treeGeneration = useRef(0);
   const treeWanted = useRef(false);
-  const loadTreeRef = useRef(loadTree);
-  loadTreeRef.current = loadTree;
+  const loadTreeRef = useLatest(loadTree);
 
   const refreshTree = useCallback(async (ignored?: boolean) => {
     treeWanted.current = true;
-    const mine = ++treeGen.current;
+    const generation = ++treeGeneration.current;
     setTreeLoading(true);
     setTreeError("");
     try {
       const next = await loadTreeRef.current(ignored ?? false);
-      if (mine !== treeGen.current) return;
+      if (generation !== treeGeneration.current) return;
       setTree(next);
     } catch (e) {
-      if (mine !== treeGen.current) return;
+      if (generation !== treeGeneration.current) return;
       setTreeError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (mine === treeGen.current) setTreeLoading(false);
+      if (generation === treeGeneration.current) setTreeLoading(false);
     }
-  }, []);
+  }, [loadTreeRef]);
 
   // Lazy: the tree is read the first time a surface needs it, then kept fresh
   // on the same cadence as the change list.
@@ -237,63 +287,30 @@ function PanelBody({
   }, [revision]);
 
   const toggleIgnored = useCallback(() => {
-    setIncludeIgnored((v) => {
-      void refreshTree(!v);
-      return !v;
-    });
-  }, [refreshTree]);
+    const next = !includeIgnored;
+    setIncludeIgnored(next);
+    void refreshTree(next);
+  }, [includeIgnored, refreshTree]);
 
   const changedPaths = useMemo(() => new Set((changes?.files ?? []).map((f) => f.path)), [changes]);
 
   // ---- requests from outside ----
+  const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
-  // A path request routes on the change list, so it waits for the list to
-  // settle rather than judging against the empty one a fresh mount holds.
-  // Each nonce is routed exactly once.
-  const routedNonce = useRef(0);
-  useEffect(() => {
-    if (!request || request.nonce === routedNonce.current) return;
-    if (request.kind === "diff") {
-      routedNonce.current = request.nonce;
-      setPanel((p) => openSurface(p, { id: "diff", kind: "diff" }));
-      if (request.path) setReveal({ path: request.path, nonce: request.nonce });
-      return;
+  // Each nonce is routed exactly once, during render, so the tab it opens is
+  // in the same paint as the request rather than one frame behind it.
+  const [routedNonce, setRoutedNonce] = useState(0);
+  if (request && request.nonce !== routedNonce) {
+    const route = routeRequest(request, changes !== null || !!changesError, changedPaths, tree);
+    // Null is "not settled yet": the nonce stays unrouted and the render the
+    // change list arrives in looks again.
+    if (route) {
+      setRoutedNonce(request.nonce);
+      if (route.update) setPanel(route.update);
+      if (route.reveal) setReveal(route.reveal);
+      if (route.file) setFileLine(route.file.line);
     }
-    if (request.kind === "jobs" || request.kind === "artefacts" || request.kind === "skills") {
-      routedNonce.current = request.nonce;
-      const kind = request.kind;
-      setPanel((p) => openSurface(p, { id: kind, kind }));
-      return;
-    }
-    if (request.kind === "artefact") {
-      routedNonce.current = request.nonce;
-      if (request.artefactId) setPanel((p) => putSurface(p, artefactSurface(request.artefactId!)));
-      return;
-    }
-    if (!request.path) {
-      routedNonce.current = request.nonce;
-      return;
-    }
-    // Not settled yet: leave the nonce unrouted and let the next changes
-    // update re-run this effect.
-    if (changes === null && !changesError) return;
-    routedNonce.current = request.nonce;
-    // A path in the change list opens as its diff; anything else opens as the
-    // file itself — including files the thread never touched.
-    if (changedPaths.has(request.path) && request.line === undefined) {
-      setPanel((p) => openSurface(p, { id: "diff", kind: "diff" }));
-      setReveal({ path: request.path, nonce: request.nonce });
-      return;
-    }
-    // A directory reference opens the tree rather than a file that isn't one.
-    if (tree?.files.some((f) => f.startsWith(request.path + "/")) && !tree.files.includes(request.path)) {
-      setPanel((p) => openSurface(p, { id: "files", kind: "files" }));
-      return;
-    }
-    setFileLine(request.line);
-    setPanel((p) => openSurface(p, fileSurface(request.path!)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request?.nonce, changes, changesError]);
+  }
 
   const selectFile = useCallback((path: string) => {
     setFileLine(undefined);
@@ -495,7 +512,6 @@ export function Panel(props: PanelProps) {
     const stored = Number(localStorage.getItem(WIDTH_KEY));
     return Number.isFinite(stored) && stored >= MIN_WIDTH ? stored : DEFAULT_WIDTH;
   });
-  const dragging = useRef(false);
 
   // Escape closes the docked panel. The sheet does this for itself.
   useEffect(() => {
@@ -511,24 +527,19 @@ export function Panel(props: PanelProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [props.open, props.onClose, docked]);
 
-  useEffect(() => {
-    if (!dragging.current) localStorage.setItem(WIDTH_KEY, String(width));
-  }, [width]);
-
   const startDrag = useCallback((e: ReactPointerEvent) => {
     e.preventDefault();
-    dragging.current = true;
+    // Stored once, when the drag ends, not on every pixel of it.
+    let last: number | undefined;
     const max = () => Math.max(MIN_WIDTH, window.innerWidth - 360);
-    const onMove = (m: PointerEvent) =>
-      setWidth(Math.min(max(), Math.max(MIN_WIDTH, window.innerWidth - m.clientX)));
+    const onMove = (m: PointerEvent) => {
+      last = Math.min(max(), Math.max(MIN_WIDTH, window.innerWidth - m.clientX));
+      setWidth(last);
+    };
     const onUp = () => {
-      dragging.current = false;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      setWidth((w) => {
-        localStorage.setItem(WIDTH_KEY, String(w));
-        return w;
-      });
+      if (last !== undefined) localStorage.setItem(WIDTH_KEY, String(last));
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);

@@ -138,19 +138,12 @@ export function useDeleteThread({
   // Teardown failed, so the thread is staying. The wait is just as over as a
   // successful one: whoever asked is already being told what to do about it,
   // and a dialog still claiming to be deleting is in the way of doing it.
-  const failed =
-    deleting && threads.some((s) => s.id === deleting.id && s.phase === "cleanup_failed")
-      ? deleting
-      : null;
-  useEffect(() => {
-    if (!failed) return;
-    settle(failed.id);
-    onFailed?.(failed);
-    // settle and onFailed are recreated each render and only ever act on the
-    // thread they are given, so tracking them here would re-run this for no
-    // change in what it does.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [failed]);
+  // Settled during render for the same reason as the departure above, and
+  // settling clears `deleting`, so this runs once per failure.
+  if (deleting && threads.some((s) => s.id === deleting.id && s.phase === "cleanup_failed")) {
+    settle(deleting.id);
+    onFailed?.(deleting);
+  }
 
   const startDelete = () => {
     if (!confirming || busy) return;

@@ -16,6 +16,7 @@ import {
   type Subagent,
 } from "~/lib/skills";
 import { cn } from "~/lib/utils";
+import { useLatest } from "~/useLatest";
 
 import { NewSkillDialog } from "./NewSkillDialog";
 import { ErrorLine, errorText, HarnessChips, ProblemIcon, Segmented, type SkillsCommand } from "./parts";
@@ -96,12 +97,13 @@ export function SkillsSurface({ command, threadId, projectId }: SkillsSurfacePro
   const [filter, setFilter] = useState<SkillFilter>("all");
   const [open, setOpen] = useState<{ skill: Skill; edit: boolean } | null>(null);
   const [creating, setCreating] = useState(false);
+  // Bumped on every opening, so the dialog mounts with a fresh form.
+  const [createSeq, setCreateSeq] = useState(0);
 
   const listScrollRef = useRef<HTMLDivElement>(null);
   const savedScroll = useRef(0);
 
-  const commandRef = useRef(command);
-  commandRef.current = command;
+  const commandRef = useLatest(command);
 
   useEffect(() => {
     let stale = false;
@@ -122,9 +124,9 @@ export function SkillsSurface({ command, threadId, projectId }: SkillsSurfacePro
     return () => {
       stale = true;
     };
-  }, [scopeArgs, refreshSeq]);
+  }, [scopeArgs, refreshSeq, commandRef]);
 
-  const skills = list?.skills ?? [];
+  const skills = useMemo(() => list?.skills ?? [], [list]);
   const searched = useMemo(() => skills.filter((s) => matchesQuery(s, query)), [skills, query]);
   const counts = useMemo(() => {
     const c: Record<SkillFilter, number> = { all: 0, project: 0, user: 0, plugin: 0 };
@@ -195,7 +197,14 @@ export function SkillsSurface({ command, threadId, projectId }: SkillsSurfacePro
           <IconButton label="Refresh skills" onClick={() => setRefreshSeq((n) => n + 1)} disabled={loading}>
             <RefreshCwIcon className={cn(loading && "animate-spin")} />
           </IconButton>
-          <Button size="sm" className="h-11 shrink-0 text-[12px] md:h-8" onClick={() => setCreating(true)}>
+          <Button
+            size="sm"
+            className="h-11 shrink-0 text-[12px] md:h-8"
+            onClick={() => {
+              setCreateSeq((n) => n + 1);
+              setCreating(true);
+            }}
+          >
             <PlusIcon className="size-3.5" />
             New skill
           </Button>
@@ -284,6 +293,7 @@ export function SkillsSurface({ command, threadId, projectId }: SkillsSurfacePro
       )}
 
       <NewSkillDialog
+        key={`${createSeq}:${projectAvailable}`}
         open={creating}
         onOpenChange={setCreating}
         command={command}

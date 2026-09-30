@@ -28,6 +28,7 @@ export function useThreadPR(
 ): PullRequest | null {
   const [pr, setPR] = useState<PullRequest | null>(null);
 
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup -- the timer is re-armed inside poll() into `timer`, which the returned cleanup clears
   useEffect(() => {
     // A new thread starts with no answer rather than the last one's: the
     // alternative shows one thread's merge under another's transcript.

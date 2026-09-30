@@ -56,13 +56,12 @@ const UNSET = "__omniplex_unset__";
  */
 function effortsOf(harnesses: HarnessMeta[], harnessId: string): string[] {
   const models = harnesses.find((h) => h.id === harnessId)?.models ?? [];
-  const seen: string[] = [];
+  // A Set keeps insertion order, so the harness's own ordering survives.
+  const seen = new Set<string>();
   for (const model of models) {
-    for (const effort of model.efforts ?? []) {
-      if (!seen.includes(effort)) seen.push(effort);
-    }
+    for (const effort of model.efforts ?? []) seen.add(effort);
   }
-  return seen.length > 0 ? seen : FALLBACK_EFFORTS;
+  return seen.size > 0 ? [...seen] : FALLBACK_EFFORTS;
 }
 
 /** A section heading, so every group on this screen has the same weight. */
@@ -136,6 +135,7 @@ function HookField({
           {listing.path !== root && (
             <button
               type="button"
+              aria-label="Parent folder"
               onClick={() => void load(listing.parent)}
               className="hover:bg-accent text-muted-foreground flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[12px]"
             >

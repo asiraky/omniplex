@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { render } from "~/test/harness";
+import { render, wrap } from "~/test/harness";
 import { ThreadDraft, type NewThreadInput } from "./ThreadDraft";
 import type { HarnessMeta, Project, Workspace } from "~/protocol";
 
@@ -33,21 +33,24 @@ function Draft(props: Omit<Props, "draft" | "onDraftChange">) {
 
 function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
   const { onCreate, ...rest } = over;
-  render(
-    <Draft
-      projects={[project]}
-      harnesses={[harness]}
-      userConfig={null}
-      status="online"
-      onStart={onCreate ?? vi.fn(async () => {})}
-      onListWorkspaces={vi.fn(async () => [] as Workspace[])}
-      onListIssues={vi.fn(async () => ({ issues: [], issuesError: "" }))}
-      onAddProject={vi.fn()}
-      onSettings={vi.fn()}
-      onRecheck={vi.fn()}
-      {...rest}
-    />,
-  );
+  // Made once, so a re-render hands the draft the same callbacks the app would.
+  const base: Omit<Props, "draft" | "onDraftChange"> = {
+    projects: [project],
+    harnesses: [harness],
+    userConfig: null,
+    status: "online",
+    onStart: onCreate ?? vi.fn(async () => {}),
+    onListWorkspaces: vi.fn(async () => [] as Workspace[]),
+    onListIssues: vi.fn(async () => ({ issues: [], issuesError: "" })),
+    onAddProject: vi.fn(),
+    onSettings: vi.fn(),
+    onRecheck: vi.fn(),
+    ...rest,
+  };
+  const view = render(<Draft {...base} />);
+  return {
+    rerender: (next: Partial<Props>) => view.rerender(wrap(<Draft {...base} {...next} />)),
+  };
 }
 
 const chip = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
@@ -472,6 +475,33 @@ describe("scope", () => {
     expect(chip("Scope").textContent).toBe("site");
   });
 
+  it("asks for a folder's copies afresh on coming back to it", async () => {
+    const side = { path: "/tmp/bowerbird/.worktrees/side", branch: "issue/1-side" } as Workspace;
+    const onListWorkspaces = vi
+      .fn<Props["onListWorkspaces"]>()
+      .mockResolvedValueOnce([side])
+      .mockReturnValue(new Promise(() => {}));
+    open({ projects: [bowerbird], onListWorkspaces });
+
+    menu("Scope");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
+    await openGit();
+    await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    menu("Scope");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Everything/ }));
+    menu("Scope");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
+
+    // The copy listed last time may have gone since; until the folder
+    // answers again, nothing from the old list is offered or sent on.
+    await openGit();
+    expect(onListWorkspaces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("asks nothing for a project whose one folder is plain", async () => {
     const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     const plain = { ...project, folders: [folder("f2", "/tmp/notes", false)] } as unknown as Project;
@@ -517,6 +547,12 @@ describe("the remembered project", () => {
   it("opens on the project the last thread was started from", () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     open({ projects: [project, other] });
+    expect(chip("Project").textContent).toBe("other");
+  });
+
+  it("opens on the open thread's project when the list lands after the draft", () => {
+    const view = open({ projects: [], activeProjectId: "p2" });
+    view.rerender({ projects: [project, other] });
     expect(chip("Project").textContent).toBe("other");
   });
 

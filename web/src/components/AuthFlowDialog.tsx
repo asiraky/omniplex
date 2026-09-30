@@ -17,6 +17,7 @@ import { answeredPrompt, applyAuthFlowEvent, emptyAuthFlowView } from "~/lib/aut
 import type { AuthFlowView } from "~/lib/authFlow";
 import { useCopy } from "~/lib/clipboard";
 import type { AuthFlowEvent, AuthFlowNotice, AuthMethod, AuthStatus, InstanceAuth } from "~/protocol";
+import { useLatest } from "~/useLatest";
 
 /** The two client capabilities every piece of this surface needs. */
 export interface AuthWires {
@@ -99,6 +100,19 @@ function Notice({ notice }: { notice: AuthFlowNotice }) {
   }
 }
 
+/** Notices carry no id, but the list only ever grows, and the one in-place
+    edit is a trailing progress line taking a new message. Keying each notice
+    by its type and how many of that type came before it is therefore stable,
+    and keeps that progress line mounted while its text changes. */
+function noticeKeys(notices: AuthFlowNotice[]) {
+  const seen = new Map<string, number>();
+  return notices.map((notice) => {
+    const n = seen.get(notice.type) ?? 0;
+    seen.set(notice.type, n + 1);
+    return { key: `${notice.type}-${n}`, notice };
+  });
+}
+
 /** The question the flow is waiting on. Secrets are masked and travel only in
     the auth_respond frame — never into logs, state, or error strings. */
 function PromptField({
@@ -174,11 +188,12 @@ export function AuthFlowRun({
   onClose: () => void;
 }) {
   const [view, setView] = useState<AuthFlowView>(emptyAuthFlowView);
-  const [flowId, setFlowId] = useState<string | null>(null);
+  // Only the answer handler reads it, so it never needs a render of its own.
+  const flowIdRef = useRef<string | null>(null);
   // Read by the unmount cleanup, which must not cancel a finished flow.
-  const doneRef = useRef(false);
-  doneRef.current = view.done;
+  const doneRef = useLatest(view.done);
 
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup, react-doctor/exhaustive-deps -- `cancelled` stops a late ack from subscribing and the cleanup unsubscribes an early one; the cleanup wants the newest doneRef, which is why it is a ref
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
@@ -194,7 +209,7 @@ export function AuthFlowRun({
           return;
         }
         startedFlow = id;
-        setFlowId(id);
+        flowIdRef.current = id;
         unsubscribe = wires.subscribe(id, (ev) => setView((v) => applyAuthFlowEvent(v, ev)));
       })
       .catch((e: unknown) => {
@@ -214,9 +229,10 @@ export function AuthFlowRun({
       }
     };
     // A flow runs once per (instance, method) mount; changing either remounts.
-  }, [wires, instanceId, methodId]);
+  }, [wires, instanceId, methodId, doneRef]);
 
   const answer = (value: string) => {
+    const flowId = flowIdRef.current;
     if (!flowId || !view.prompt) return;
     const promptId = view.prompt.id;
     setView(answeredPrompt);
@@ -238,8 +254,8 @@ export function AuthFlowRun({
             Starting sign-in…
           </p>
         )}
-        {view.notices.map((n, i) => (
-          <Notice key={i} notice={n} />
+        {noticeKeys(view.notices).map(({ key, notice }) => (
+          <Notice key={key} notice={notice} />
         ))}
       </div>
 

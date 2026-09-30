@@ -191,6 +191,21 @@ describe("SkillsSurface new skill", () => {
     });
   });
 
+  it("starts each opening with a blank form", async () => {
+    await renderSurface();
+    fireEvent.click(screen.getByRole("button", { name: /New skill/ }));
+    let dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "half-typed" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Personal/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: /New skill/ }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByLabelText("Name")).toHaveProperty("value", "");
+    expect(within(dialog).getByRole("radio", { name: /Project/ }).getAttribute("aria-checked")).toBe("true");
+  });
+
   it("only offers personal scope without a thread or project", async () => {
     render(<SkillsSurface command={mockCommand()} />);
     await screen.findByRole("button", { name: /grilling/ });

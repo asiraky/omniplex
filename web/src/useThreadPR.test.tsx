@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, render } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PullRequest } from "./protocol";
@@ -24,7 +25,9 @@ function Probe({
   fetchPR: (id: string) => Promise<PullRequest | null>;
   seen: (pr: PullRequest | null) => void;
 }) {
-  seen(useThreadPR(threadId, eligible, fetchPR));
+  const pr = useThreadPR(threadId, eligible, fetchPR);
+  // Reported once per committed answer, which is what a real caller renders.
+  useEffect(() => seen(pr), [seen, pr]);
   return null;
 }
 

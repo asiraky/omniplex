@@ -16,6 +16,7 @@ import { useCopy } from "~/lib/clipboard";
 import { fileIconFor } from "~/lib/fileIcons";
 import { fmtSize, splitFrontmatter, type Skill, type SkillDetail, type SkillFileContent } from "~/lib/skills";
 import { cn } from "~/lib/utils";
+import { useLatest } from "~/useLatest";
 
 import { ErrorLine, errorText, HarnessChips, ProblemIcon, ScopeBadge, Segmented, type SkillsCommand } from "./parts";
 
@@ -102,12 +103,9 @@ export function SkillDetailView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const { copy } = useCopy();
 
-  const commandRef = useRef(command);
-  commandRef.current = command;
-  const argsRef = useRef(scopeArgs);
-  argsRef.current = scopeArgs;
-  const onChangedRef = useRef(onChanged);
-  onChangedRef.current = onChanged;
+  const commandRef = useLatest(command);
+  const argsRef = useLatest(scopeArgs);
+  const onChangedRef = useLatest(onChanged);
 
   useEffect(() => {
     let stale = false;
@@ -133,7 +131,7 @@ export function SkillDetailView({
     return () => {
       stale = true;
     };
-  }, [skill.dir, reloadSeq]);
+  }, [skill.dir, reloadSeq, commandRef, argsRef]);
 
   useEffect(() => {
     if (doc === null) return;
@@ -163,7 +161,7 @@ export function SkillDetailView({
     return () => {
       stale = true;
     };
-  }, [doc, skill.dir]);
+  }, [doc, skill.dir, commandRef, argsRef]);
 
   const openDoc = (next: string | null) => {
     setDoc(next);
@@ -204,7 +202,7 @@ export function SkillDetailView({
     } finally {
       setSaving(false);
     }
-  }, [draft, saving, skill.dir]);
+  }, [draft, saving, skill.dir, commandRef, argsRef, onChangedRef]);
 
   const back = () => {
     if (!confirmDiscard()) return;

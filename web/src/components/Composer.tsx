@@ -22,6 +22,7 @@ import { dragHasFiles, filesFrom, overPromptLimit, sendPayload, type Attachment 
 import { pastedFile } from "~/lib/paste";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
+import { useLatest } from "~/useLatest";
 import { useIsDesktop } from "~/useMediaQuery";
 
 /** What a message carries besides its text: the ready images by id, and the
@@ -37,6 +38,8 @@ export interface ComposerHandle {
   focusEnd: (cursor?: number) => void;
 }
 
+const NO_HARNESSES: HarnessMeta[] = [];
+
 export function Composer({
   ref,
   draft,
@@ -51,7 +54,7 @@ export function Composer({
   onAttachFiles,
   onRemoveAttachment,
   disabledPlaceholder,
-  harnesses = [],
+  harnesses = NO_HARNESSES,
   harness = "",
   instance = "",
   model = "",
@@ -141,7 +144,8 @@ export function Composer({
   const contextLabel = formatContextWindow(usage?.contextWindow);
   const [providerItems, setProviderItems] = useState<ComposerItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
-  const [catalogueReady, setCatalogueReady] = useState(!loadComposerItems);
+  // Only send reads it, so a catalogue landing need not render anything.
+  const catalogueReady = useRef(!loadComposerItems);
   const loadSequence = useRef(0);
   const draftRef = useRef(draft);
   const [cursor, setCursor] = useState(draft.length);
@@ -199,7 +203,7 @@ export function Composer({
   const reloadItems = useCallback(() => {
     if (!loadComposerItems) {
       setProviderItems([]);
-      setCatalogueReady(true);
+      catalogueReady.current = true;
       return;
     }
     const sequence = ++loadSequence.current;
@@ -208,7 +212,7 @@ export function Composer({
       .then((next) => {
         if (sequence === loadSequence.current) {
           setProviderItems(next);
-          setCatalogueReady(true);
+          catalogueReady.current = true;
         }
       })
       .catch(() => {
@@ -285,9 +289,12 @@ export function Composer({
   // Provider catalogues can change while a thread is open. Refresh at the
   // start of each completion interaction; native adapters remain authoritative
   // without making the core subscribe to provider-specific invalidations.
+  // The query is read through a ref so typing after the trigger does not
+  // re-run this: it is once per trigger opening, not once per keystroke.
+  const triggerQuery = useLatest(trigger?.query);
   useEffect(() => {
-    if (trigger?.query === "") reloadItems();
-  }, [reloadItems, trigger?.trigger]); // query deliberately omitted: once per trigger opening
+    if (triggerQuery.current === "") reloadItems();
+  }, [reloadItems, trigger?.trigger, triggerQuery]);
   const triggerKey = trigger ? `${trigger.start}:${trigger.end}:${trigger.trigger}:${trigger.query}` : "";
   const matches = useMemo(
     () => (trigger ? rankComposerItems(items, trigger) : []),
@@ -297,7 +304,12 @@ export function Composer({
     trigger && triggerKey !== dismissedTrigger && !disabled && composerFocused,
   );
 
-  useEffect(() => setActiveIndex(0), [triggerKey]);
+  // A new trigger, or a new query under it, is a new list: start at its top.
+  const [indexedTrigger, setIndexedTrigger] = useState(triggerKey);
+  if (indexedTrigger !== triggerKey) {
+    setIndexedTrigger(triggerKey);
+    setActiveIndex(0);
+  }
 
   const choose = useCallback(
     (item: ComposerItem) => {
@@ -347,7 +359,7 @@ export function Composer({
     // Sending now would send the message without the file still on its way up,
     // which is not what attaching it meant.
     if (uploading || tooMuch) return;
-    if (t.startsWith("/") && !catalogueReady) return;
+    if (t.startsWith("/") && !catalogueReady.current) return;
     // Recorded on submit rather than on completion: choosing from the menu is
     // browsing, sending is the use. The token is reported whatever the message
     // turns out to do — a prompt, a client action, an adapter action — because

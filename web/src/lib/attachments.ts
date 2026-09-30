@@ -203,6 +203,7 @@ export function stageFile(file: File, key: string): Attachment {
     key,
     kind: image ? "image" : "file",
     name: file.name || (image ? "pasted image" : "file"),
+    // react-doctor-disable-next-line react-doctor/no-create-object-url-without-revoke -- the URL lives on the staged attachment; useComposerDrafts revokes it when the attachment is removed, sent, or its thread goes
     previewUrl: image ? URL.createObjectURL(file) : "",
     status: "uploading",
     mediaType: file.type || "application/octet-stream",

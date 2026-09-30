@@ -200,6 +200,23 @@ describe("ModelPicker", () => {
     expect(row("GPT-5.6-Terra")).toBeTruthy();
   });
 
+  it("starts over at the selection with no query each time it opens", () => {
+    open();
+    fireEvent.click(screen.getByText("Codex Work"));
+    fireEvent.change(screen.getByPlaceholderText(/Search models/), {
+      target: { value: "terra" },
+    });
+
+    fireEvent.keyDown(screen.getByPlaceholderText(/Search models/), { key: "Escape" });
+    expect(screen.queryByPlaceholderText(/Search models/)).toBeNull();
+    fireEvent.click(screen.getByRole("combobox"));
+
+    expect((screen.getByPlaceholderText(/Search models/) as HTMLInputElement).value).toBe("");
+    // Back on the selected account's models, not the one browsed last time.
+    expect(row("Sonnet")).toBeTruthy();
+    expect(row("GPT-5.6-Terra")).toBeNull();
+  });
+
   it("selects the harness account and the model in one interaction", () => {
     const onChange = open();
 

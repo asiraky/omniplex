@@ -7,6 +7,7 @@ import { fileIconFor } from "~/lib/fileIcons";
 import { buildTree, type TreeNode } from "~/lib/tree";
 import { cn } from "~/lib/utils";
 import type { FileContent, FileTree } from "~/protocol";
+import { useLatest } from "~/useLatest";
 
 // ---- the worktree tree ----
 
@@ -113,13 +114,35 @@ function DirectoryRow({
 
 // ---- the file content viewer ----
 
+/**
+ * A file's lines, each keyed by its text and how many times that text has come
+ * before it: a stable identity that survives a re-read which shifts lines.
+ */
+function keyedLines(content: string): { key: string; text: string }[] {
+  const lines = content.split("\n");
+  // A trailing newline yields one phantom empty line nobody wrote.
+  if (lines[lines.length - 1] === "") lines.pop();
+  const seen = new Map<string, number>();
+  return lines.map((text) => {
+    const n = (seen.get(text) ?? 0) + 1;
+    seen.set(text, n);
+    return { key: `${n}:${text}`, text };
+  });
+}
+
+/** Every directory above a path, outermost first. */
+function ancestors(path: string | undefined): string[] {
+  if (!path) return [];
+  const segments = path.split("/");
+  return segments.slice(1).map((_, i) => segments.slice(0, i + 1).join("/"));
+}
+
 function FileView({ path, loadFile, line }: { path: string; loadFile: (path: string) => Promise<FileContent>; line?: number }) {
   const [file, setFile] = useState<FileContent | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const lineRefs = useRef(new Map<number, HTMLTableRowElement>());
-  const loadRef = useRef(loadFile);
-  loadRef.current = loadFile;
+  const loadRef = useLatest(loadFile);
 
   useEffect(() => {
     let stale = false;
@@ -139,7 +162,7 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
     return () => {
       stale = true;
     };
-  }, [path]);
+  }, [path, loadRef]);
 
   // Scroll to the requested line once the content is on screen.
   useEffect(() => {
@@ -167,17 +190,15 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
     return <p className="text-muted-foreground px-3 py-4 text-[12px]">Binary file — nothing to show as text.</p>;
   }
 
-  const lines = file.content.split("\n");
-  // A trailing newline yields one phantom empty line nobody wrote.
-  if (lines[lines.length - 1] === "") lines.pop();
+  const lines = keyedLines(file.content);
 
   return (
     <div className="scroll-thin h-full overflow-auto overscroll-contain">
       <table className="w-full border-collapse font-mono text-[11.5px] leading-relaxed">
         <tbody>
-          {lines.map((text, i) => (
+          {lines.map(({ key, text }, i) => (
             <tr
-              key={i}
+              key={key}
               ref={(el) => {
                 if (el) lineRefs.current.set(i + 1, el);
                 else lineRefs.current.delete(i + 1);
@@ -238,19 +259,15 @@ export function FileBrowser({
     [tree],
   );
   // Directories start closed; a worktree is big and the top level is the map.
-  const [openDirs, setOpenDirs] = useState<Set<string>>(new Set());
-
   // A selected file's ancestors open themselves, so the tree shows where the
-  // file lives rather than a closed top level.
-  useEffect(() => {
-    if (!selectedPath) return;
-    setOpenDirs((current) => {
-      const next = new Set(current);
-      const segments = selectedPath.split("/");
-      for (let i = 1; i < segments.length; i++) next.add(segments.slice(0, i).join("/"));
-      return next;
-    });
-  }, [selectedPath]);
+  // file lives rather than a closed top level. That happens during render
+  // when the selection changes, so the tree never paints closed first.
+  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set(ancestors(selectedPath)));
+  const [openedFor, setOpenedFor] = useState(selectedPath);
+  if (openedFor !== selectedPath) {
+    setOpenedFor(selectedPath);
+    if (selectedPath) setOpenDirs((current) => new Set([...current, ...ancestors(selectedPath)]));
+  }
 
   const toggle = (path: string) =>
     setOpenDirs((current) => {

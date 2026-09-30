@@ -95,13 +95,20 @@ export function useArtefactText(url: string, enabled: boolean): TextState & { re
   const [attempt, setAttempt] = useState(0);
   const cached = cache.get(url);
 
+  // Race-safe without a data library: the cleanup aborts the request, and a
+  // read that lands after its effect is gone (a retry, a newer URL, unmount)
+  // is dropped rather than written over the state that replaced it.
+  // react-doctor-disable-next-line react-doctor/no-fetch-in-effect -- one fetch per URL with AbortController cleanup and stale results ignored; the app has no data-fetching library
   useEffect(() => {
     if (!enabled || cache.has(url)) return;
     const ctl = new AbortController();
     setState({ url, value: { status: "loading" } });
     readText(url, ctl.signal)
       .then((read) => {
+        // The text is right for this URL whoever asked, so it is still worth
+        // keeping even when the answer is too late to show.
         remember(url, read);
+        if (ctl.signal.aborted) return;
         setState({ url, value: { status: "ready", ...read } });
       })
       .catch((e: unknown) => {
@@ -395,7 +402,14 @@ export function PdfView({
 }) {
   const desktop = useIsDesktop();
   const coarse = useIsCoarsePointer();
-  if (desktop && !coarse) return <iframe src={src} title={name} className="size-full border-0 bg-white" />;
+  if (desktop && !coarse) {
+    // No sandbox: Chrome shows a blank error page for a PDF in a sandboxed
+    // frame, even one with scripts and popups allowed. The frame only ever
+    // holds the file served as application/pdf with nosniff, so it opens in
+    // the browser's own viewer and never as a page of this origin.
+    // react-doctor-disable-next-line react-doctor/iframe-missing-sandbox -- any sandbox blanks Chrome's PDF viewer; the src is a same-origin PDF served with nosniff
+    return <iframe src={src} title={name} className="size-full border-0 bg-white" />;
+  }
   return (
     <FileCard name={name} mediaType="application/pdf" size={size}>
       <Button asChild className="min-w-32">

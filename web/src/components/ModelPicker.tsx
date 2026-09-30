@@ -38,6 +38,8 @@ export interface ModelSelection {
   model: string;
 }
 
+const NO_EFFORTS: string[] = [];
+
 /**
  * The one control for choosing a harness account and a model.
  *
@@ -60,7 +62,7 @@ export function ModelPicker({
   onInstanceChange,
   lockDriver = false,
   disabled = false,
-  efforts = [],
+  efforts = NO_EFFORTS,
   effort = "",
   contextLabel = "",
   onEffortChange,
@@ -127,13 +129,20 @@ export function ModelPicker({
   // Which instance's models the right pane shows. It follows the selection
   // until the user browses another account, which is a look rather than a
   // choice: nothing changes until a model is picked.
-  const [browsing, setBrowsing] = useState(selectedInstance?.id ?? "");
+  const selectedId = selectedInstance?.id ?? "";
+  const [browsing, setBrowsing] = useState(selectedId);
   const [search, setSearch] = useState("");
-  useEffect(() => {
-    if (!open) return;
-    setBrowsing(selectedInstance?.id ?? "");
-    setSearch("");
-  }, [open, selectedInstance?.id]);
+  // Opening the picker, or the selection moving while it is open, starts it
+  // over at the selection with no query. Adjusted during render so the menu
+  // never paints a stale pane first.
+  const [synced, setSynced] = useState({ open, selectedId });
+  if (synced.open !== open || synced.selectedId !== selectedId) {
+    setSynced({ open, selectedId });
+    if (open) {
+      setBrowsing(selectedId);
+      setSearch("");
+    }
+  }
 
   const shown = instances.find((i) => i.id === browsing) ?? selectedInstance;
 

@@ -11,7 +11,10 @@ export function localDateTime(at: number, timeZone: string): string {
     minute: "2-digit",
     hourCycle: "h23",
   }).formatToParts(at);
-  const value = (type: string) => parts.find((p) => p.type === type)!.value;
+  // Intl always emits these parts for the options above. If an engine ever
+  // left one out, the result fails the wall-clock format check downstream and
+  // reads as "no such time" rather than crashing the dialog.
+  const value = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
   return `${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}`;
 }
 

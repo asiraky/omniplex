@@ -38,7 +38,7 @@ export function ScheduleDialog({
   );
   const [hours, setHours] = useState("1");
   const [minutes, setMinutes] = useState("0");
-  const [wall, setWall] = useState(
+  const [wall, setWall] = useState(() =>
     localDateTime(schedule?.dueAt ?? Date.now() + 3_600_000, zone),
   );
   const [fold, setFold] = useState("");
