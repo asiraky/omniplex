@@ -154,13 +154,17 @@ export function SettingsScreen({
             >
               Settings
             </p>
-            {item(GENERAL, <SlidersHorizontalIcon />, "General")}
-            {item({ kind: "providers" }, <KeyRoundIcon />, "Providers")}
+            <div className="flex flex-col gap-0.5">
+              {item(GENERAL, <SlidersHorizontalIcon />, "General")}
+              {item({ kind: "providers" }, <KeyRoundIcon />, "Providers")}
+            </div>
             <p className="text-muted-foreground px-2.5 pt-4 pb-1 text-[11px] font-medium">
               Projects
             </p>
-            {projects.map((p) => item({ kind: "project", id: p.id }, <FolderIcon />, p.name))}
-            <NavItem icon={<PlusIcon />} label="New project" onClick={onAddProject} muted />
+            <div className="flex flex-col gap-0.5">
+              {projects.map((p) => item({ kind: "project", id: p.id }, <FolderIcon />, p.name))}
+              <NavItem icon={<PlusIcon />} label="New project" onClick={onAddProject} muted />
+            </div>
           </nav>
         )}
 
