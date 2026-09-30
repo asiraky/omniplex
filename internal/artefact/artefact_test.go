@@ -255,3 +255,22 @@ func TestLoadSignerPersistsKey(t *testing.T) {
 		t.Fatalf("reloaded key rejected token: %v", err)
 	}
 }
+
+func TestLoadSignerReplacesAShortKey(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".key"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	forged := NewSigner(nil).Mint(Claims{Kind: KindAgent, Thread: "s"})
+	s, err := LoadSigner(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Check(forged, KindAgent, time.Now()); err == nil {
+		t.Fatal("a token signed with an empty key was accepted")
+	}
+	again, _ := LoadSigner(dir)
+	if _, err := again.Check(s.Mint(Claims{Kind: KindAgent, Thread: "s"}), KindAgent, time.Now()); err != nil {
+		t.Fatalf("the replacement key did not persist: %v", err)
+	}
+}

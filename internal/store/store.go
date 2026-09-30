@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"sync"
 
@@ -148,7 +150,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := renameSessionsToThreads(db); err != nil {
+	if err := renameSessionsToThreads(db, path); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("rename sessions to threads: %w", err)
 	}
@@ -214,10 +216,43 @@ func Open(path string) (*Store, error) {
 // threads: the table, every session_id column, and the event types. Snapshots
 // are a cache holding the old field names, so they go and rebuild from the
 // log. A database with no sessions table is new or already moved.
-func renameSessionsToThreads(db *sql.DB) error {
+//
+// The move is one way, so a copy of the database as it was goes beside it
+// first, at path + ".before-threads". A binary from before the move cannot
+// open a moved database, but trying leaves an empty sessions table behind
+// (its CREATE TABLE IF NOT EXISTS); that one is dropped here, or a rolled
+// back deploy could never roll forward again.
+func renameSessionsToThreads(db *sql.DB, path string) error {
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'`).Scan(&n); err != nil || n == 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('sessions', 'threads')`).Scan(&n); err != nil {
 		return err
+	}
+	var hasSessions int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'`).Scan(&hasSessions); err != nil || hasSessions == 0 {
+		return err
+	}
+	if n == 2 {
+		var rows int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&rows); err != nil {
+			return err
+		}
+		if rows > 0 {
+			return fmt.Errorf("both sessions and threads tables hold rows; a pre-threads binary wrote to a moved database (the copy from before the move is %s.before-threads)", path)
+		}
+		_, err := db.Exec(`DROP TABLE sessions`)
+		return err
+	}
+	// Copied under a temp name and renamed, so a restart that kills the copy
+	// halfway leaves no partial file to be mistaken for a finished one.
+	backup := path + ".before-threads"
+	if _, err := os.Stat(backup); errors.Is(err, fs.ErrNotExist) {
+		os.Remove(backup + ".tmp")
+		if _, err := db.Exec(`VACUUM INTO ?`, backup+".tmp"); err != nil {
+			return fmt.Errorf("copy the database before moving it: %w", err)
+		}
+		if err := os.Rename(backup+".tmp", backup); err != nil {
+			return fmt.Errorf("copy the database before moving it: %w", err)
+		}
 	}
 	tx, err := db.Begin()
 	if err != nil {

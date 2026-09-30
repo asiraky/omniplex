@@ -946,6 +946,9 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		// not be able to erase (or author) them; the on-disk entries win.
 		// Update, not Load-then-Save: provider management writes the same file,
 		// and interleaving would silently drop whichever half wrote first.
+		if err := userconfig.CheckBranchFormat(a.Config.BranchFormat); err != nil {
+			return nil, err
+		}
 		cfg, err := userconfig.Update(func(cur *userconfig.Config) error {
 			a.Config.Providers = cur.Providers
 			*cur = a.Config

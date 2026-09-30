@@ -14,7 +14,7 @@ const command = vi.fn(async (_name: string, _args: unknown) => ({}) as any);
 const attach = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
-const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn() }));
+const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn(), success: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast }));
 const uploadStaged = vi.hoisted(() => vi.fn());
@@ -518,9 +518,11 @@ describe("composer drafts", () => {
 
     fireEvent.change(composer(), { target: { value: "/status", selectionStart: 7 } });
     fireEvent.keyDown(composer(), { key: "Enter" });
-    expect(toast.info).toHaveBeenCalledWith("Thread status", {
-      description: "gpt-test · on-request · 12,345 context tokens",
-    });
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith("Thread status", {
+        description: "gpt-test · on-request · 12,345 context tokens",
+      }),
+    );
 
     fireEvent.focus(composer());
     fireEvent.change(composer(), { target: { value: "/comp", selectionStart: 5 } });
@@ -1160,7 +1162,7 @@ describe("a new thread's first message", () => {
     });
     await act(async () => events.onState("fresh", state("fresh", "default")));
 
-    expect(toast.error).toHaveBeenCalled();
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("read this");
   });

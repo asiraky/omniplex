@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -15,6 +16,20 @@ import (
 // DefaultBranchFormat turns a `gh issue list` row into a branch name. It ships
 // as the default so the suggestion list works before anyone opens settings.
 const DefaultBranchFormat = "issue/{number}-{title}"
+
+var placeholder = regexp.MustCompile(`\{([^{}]*)\}`)
+
+// CheckBranchFormat refuses a template naming a placeholder the UI cannot
+// fill. The UI would fall back to issue/{number} with an error on every
+// suggestion, so the mistake belongs at save time, not in the picker.
+func CheckBranchFormat(format string) error {
+	for _, m := range placeholder.FindAllStringSubmatch(format, -1) {
+		if m[1] != "number" && m[1] != "title" {
+			return fmt.Errorf("branch name template: unknown placeholder {%s}; use {number} and {title}", m[1])
+		}
+	}
+	return nil
+}
 
 type Config struct {
 	Version int `json:"version"`

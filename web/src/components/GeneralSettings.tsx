@@ -30,16 +30,27 @@ const sampleIssue: Issue = {
 // Radix rejects "" as a Select value.
 const UNSET = "__omniplex_unset__";
 
-function BranchFormatField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const preview = useMemo(() => {
-    const { format, error } = branchTemplate(value);
-    if (error) return { text: error, bad: true };
-    const out = format(sampleIssue);
-    return out
-      ? { text: out, bad: false }
-      : { text: "the template makes nothing for the sample issue", bad: true };
-  }, [value]);
+type BranchPreview = { text: string; bad: boolean };
 
+// What the template makes of the sample issue, or why it cannot be saved.
+function branchPreview(value: string): BranchPreview {
+  const { format, error } = branchTemplate(value);
+  if (error) return { text: error, bad: true };
+  const out = format(sampleIssue);
+  return out
+    ? { text: out, bad: false }
+    : { text: "the template makes nothing for the sample issue", bad: true };
+}
+
+function BranchFormatField({
+  value,
+  preview,
+  onChange,
+}: {
+  value: string;
+  preview: BranchPreview;
+  onChange: (v: string) => void;
+}) {
   return (
     <div className="space-y-1.5">
       <Label htmlFor="settings-branch-format">Branch names from issues</Label>
@@ -92,6 +103,7 @@ export function GeneralSettings({
     setCfg((c) => ({ ...c, ...p }));
   };
 
+  const branch = useMemo(() => branchPreview(cfg.branchFormat ?? ""), [cfg.branchFormat]);
   const defaultInstance = pickerInstances(harnesses).find((i) => i.id === cfg.defaultInstance);
 
   const save = async () => {
@@ -114,7 +126,7 @@ export function GeneralSettings({
       onBack={onBack}
       error={error}
       footer={
-        <Button disabled={busy || saved} onClick={save}>
+        <Button disabled={busy || saved || branch.bad} onClick={save}>
           {busy ? "Saving…" : saved ? "Saved" : "Save"}
         </Button>
       }
@@ -191,6 +203,7 @@ export function GeneralSettings({
 
       <BranchFormatField
         value={cfg.branchFormat ?? ""}
+        preview={branch}
         onChange={(v) => patch({ branchFormat: v })}
       />
     </SettingsPane>

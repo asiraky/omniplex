@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
-import { toast } from "sonner";
 
 import { useDeleteThread } from "~/components/DeleteThreadDialog";
+import { toast } from "~/lib/toast";
 
 import type { Wire } from "./useWire";
 

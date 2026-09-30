@@ -57,21 +57,37 @@ func LoadSigner(dir string) (*Signer, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		// Another process won the race; use its key.
+	// Written whole under a temp name, then linked into place, so a crash
+	// mid-write or a racing reader never sees a short key. Link fails if
+	// another process got there first, and then its key wins.
+	tmp, err := os.CreateTemp(dir, ".key-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(key); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmp.Name(), p); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return nil, err
 		}
-		return &Signer{key: b}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if _, err := f.Write(key); err != nil {
-		return nil, err
+		if len(b) >= 32 {
+			return &Signer{key: b}, nil
+		}
+		// A short key is left over from a crash mid-write before this was
+		// atomic. Signing with it would let anyone forge a link, so it goes.
+		if err := os.Rename(tmp.Name(), p); err != nil {
+			return nil, err
+		}
 	}
 	return &Signer{key: key}, nil
 }

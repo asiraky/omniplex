@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 
 import { uuid } from "~/client";
-import type { ScheduleInput } from "~/components/ScheduledPrompts";
+import type { ScheduleInput } from "~/components/ScheduleDialog";
 import { sendPayload } from "~/lib/attachments";
 import type { ScheduledPrompt } from "~/protocol";
 

@@ -6,9 +6,10 @@ import type { ProviderAuth } from "~/app/useProviderAuth";
 import type { Screens } from "~/app/useScreens";
 import type { Wire } from "~/app/useWire";
 
-import { AccessPanel } from "./Access";
-import { LabelManager } from "./LabelManager";
-
+const LabelManager = lazy(() =>
+  import("./LabelManager").then((m) => ({ default: m.LabelManager })),
+);
+const AccessPanel = lazy(() => import("./Access").then((m) => ({ default: m.AccessPanel })));
 const NewProject = lazy(() => import("./NewProject").then((m) => ({ default: m.NewProject })));
 const SettingsScreen = lazy(() =>
   import("./SettingsScreen").then((m) => ({ default: m.SettingsScreen })),
@@ -37,28 +38,32 @@ export function AppDialogs({
   return (
     <>
       {screens.manageLabels && (
-        <LabelManager
-          labels={wire.labels}
-          onCreate={labels.createLabel}
-          onSave={labels.saveLabel}
-          onDelete={labels.deleteLabel}
-          onClose={() => screens.setManageLabels(false)}
-        />
+        <Suspense fallback={null}>
+          <LabelManager
+            labels={wire.labels}
+            onCreate={labels.createLabel}
+            onSave={labels.saveLabel}
+            onDelete={labels.deleteLabel}
+            onClose={() => screens.setManageLabels(false)}
+          />
+        </Suspense>
       )}
 
       {screens.showAccess && access && (
-        <AccessPanel
-          access={access}
-          onEnableHTTPS={async () => {
-            const res = await clientRef.current!.command("enable_https", {});
-            if (res?.access) setAccess(res.access);
-          }}
-          onDisableHTTPS={async () => {
-            const res = await clientRef.current!.command("disable_https", {});
-            if (res?.access) setAccess(res.access);
-          }}
-          onClose={() => screens.setShowAccess(false)}
-        />
+        <Suspense fallback={null}>
+          <AccessPanel
+            access={access}
+            onEnableHTTPS={async () => {
+              const res = await clientRef.current!.command("enable_https", {});
+              if (res?.access) setAccess(res.access);
+            }}
+            onDisableHTTPS={async () => {
+              const res = await clientRef.current!.command("disable_https", {});
+              if (res?.access) setAccess(res.access);
+            }}
+            onClose={() => screens.setShowAccess(false)}
+          />
+        </Suspense>
       )}
 
       {authInstance && (

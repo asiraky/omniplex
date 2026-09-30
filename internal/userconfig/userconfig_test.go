@@ -68,3 +68,20 @@ func TestNormalizeReplacesAnOldFunctionBranchFormatButKeepsATemplate(t *testing.
 		}
 	}
 }
+
+func TestCheckBranchFormat(t *testing.T) {
+	for format, ok := range map[string]bool{
+		"":                       true,
+		"issue/{number}-{title}": true,
+		"fix/{title}":            true,
+		"no-placeholders":        true,
+		"fix/{foo}-{number}":     false,
+		"issue/{}":               false,
+		"issue/{number}/{Title}": false,
+		"{constructor}":          false,
+	} {
+		if err := CheckBranchFormat(format); (err == nil) != ok {
+			t.Errorf("%q: err %v, want ok=%v", format, err, ok)
+		}
+	}
+}

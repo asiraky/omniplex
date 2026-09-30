@@ -1,3 +1,5 @@
+import { lazy, Suspense } from "react";
+
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
 import type { PanelControls } from "~/app/usePanel";
@@ -12,11 +14,19 @@ import type { HarnessMeta, PullRequest, ThreadMeta, ThreadState } from "~/protoc
 
 import { Composer } from "./Composer";
 import { useComposerItems } from "./composer/useComposerItems";
-import { ElicitationPrompt } from "./ElicitationPrompt";
 import { JobsStrip } from "./JobsStrip";
 import { PermissionPrompt } from "./PermissionPrompt";
-import { ScheduleDialog, ScheduledPrompts } from "./ScheduledPrompts";
+import { ScheduledPrompts } from "./ScheduledPrompts";
 import { Transcript } from "./Transcript";
+
+// Both open on something the user or the agent does mid-thread, never on the
+// first paint, so they load on first use and stay out of the initial bundle.
+const ElicitationPrompt = lazy(() =>
+  import("./ElicitationPrompt").then((m) => ({ default: m.ElicitationPrompt })),
+);
+const ScheduleDialog = lazy(() =>
+  import("./ScheduleDialog").then((m) => ({ default: m.ScheduleDialog })),
+);
 
 /**
  * The attached thread: its transcript, and floating over the tail of it the
@@ -189,12 +199,14 @@ function ComposerDock({
       )}
 
       {elicitation && (
-        <ElicitationPrompt
-          request={elicitation}
-          onResolve={(action, value) =>
-            commands.resolveElicitation(elicitation.requestId, action, value)
-          }
-        />
+        <Suspense fallback={null}>
+          <ElicitationPrompt
+            request={elicitation}
+            onResolve={(action, value) =>
+              commands.resolveElicitation(elicitation.requestId, action, value)
+            }
+          />
+        </Suspense>
       )}
 
       {liveJobCount(state.jobs) > 0 && <JobsStrip jobs={state.jobs} onOpen={panel.openJobs} />}
@@ -206,14 +218,16 @@ function ComposerDock({
         onAction={(action, p) => schedule.runAction(activeId, action, p)}
       />
       {editing && (
-        <ScheduleDialog
-          key={`schedule:${editing.id}`}
-          initialText={editing.text}
-          imageCount={editing.imageIds.length}
-          schedule={editing.schedule}
-          onClose={schedule.close}
-          onSave={schedule.save}
-        />
+        <Suspense fallback={null}>
+          <ScheduleDialog
+            key={`schedule:${editing.id}`}
+            initialText={editing.text}
+            imageCount={editing.imageIds.length}
+            schedule={editing.schedule}
+            onClose={schedule.close}
+            onSave={schedule.save}
+          />
+        </Suspense>
       )}
       <ThreadComposer
         key={activeId}

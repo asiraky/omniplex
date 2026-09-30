@@ -1,8 +1,8 @@
 import { useCallback, useMemo, type RefObject } from "react";
-import { toast } from "sonner";
 
 import type { Client } from "~/client";
 import { sendPayload } from "~/lib/attachments";
+import { toast } from "~/lib/toast";
 import type { ComposerItem, ThreadState } from "~/protocol";
 
 import type { ComposerDrafts } from "./useComposerDrafts";

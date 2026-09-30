@@ -119,6 +119,24 @@ describe("GeneralSettings", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("will not save a broken branch template until it is fixed", async () => {
+    const { onSave } = open({ version: 1 });
+    const branch = screen.getByLabelText("Branch names from issues");
+    const saveButton = () => screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+
+    fireEvent.change(branch, { target: { value: "fix/{foo}-{number}" } });
+    expect(saveButton().disabled).toBe(true);
+    save();
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.change(branch, { target: { value: "fix/{title}-{number}" } });
+    expect(saveButton().disabled).toBe(false);
+    save();
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith({ version: 1, branchFormat: "fix/{title}-{number}" }),
+    );
+  });
+
   it("previews the branch a template makes, and says when it is broken", () => {
     open({ version: 1, branchFormat: "fix/{number}-{title}" });
     expect(screen.getByText(/#482 → fix\/482-token-refresh-500s-after-24h/)).toBeTruthy();

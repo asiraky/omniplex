@@ -1,8 +1,8 @@
 import { useCallback } from "react";
-import { toast } from "sonner";
 
 import type { NewThreadInput } from "~/components/ThreadDraft";
 import { sendPayload, type Attachment } from "~/lib/attachments";
+import { toast } from "~/lib/toast";
 
 import { NEW_THREAD } from "./threadKeys";
 import type { ComposerDrafts } from "./useComposerDrafts";
