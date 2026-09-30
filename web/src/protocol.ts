@@ -149,6 +149,9 @@ export interface ComposerItem {
   behavior: "prompt" | "client-action" | "adapter-action";
   action?: string;
   aliases?: string[];
+  /** The harness acts on the token wherever it sits in a prompt, not only as
+      the first thing in it. */
+  inline?: boolean;
 }
 
 /**

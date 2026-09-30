@@ -2,7 +2,14 @@ import { useCallback, useMemo } from "react";
 
 import type { NewProjectRequest } from "~/components/NewProject";
 import type { AddFolderRequest } from "~/components/ProjectSettings";
-import type { Folder, GitHubRepo, Project, ProjectDefaults, Workspace } from "~/protocol";
+import type {
+  ComposerItem,
+  Folder,
+  GitHubRepo,
+  Project,
+  ProjectDefaults,
+  Workspace,
+} from "~/protocol";
 
 import type { Wire } from "./useWire";
 
@@ -86,6 +93,27 @@ export function useProjectActions(wire: Wire) {
     [clientRef],
   );
 
+  // What the composer completes before the thread it is drafting exists.
+  const listDraftComposerItems = useCallback(
+    async (
+      harness: string,
+      instance: string,
+      projectId: string,
+      folderId: string,
+      workspacePath: string,
+    ) => {
+      const res = await clientRef.current!.command("list_draft_composer_items", {
+        harness,
+        instance,
+        projectId,
+        folderId,
+        workspacePath,
+      });
+      return (res.items ?? []) as ComposerItem[];
+    },
+    [clientRef],
+  );
+
   // Only a project with no threads can be deleted; settings says so up front.
   const threadCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -102,6 +130,7 @@ export function useProjectActions(wire: Wire) {
     deleteProject,
     listWorkspaces,
     listIssues,
+    listDraftComposerItems,
     threadCounts,
   };
 }

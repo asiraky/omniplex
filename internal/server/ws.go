@@ -746,6 +746,17 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"items": items}, nil
 
+	case "list_draft_composer_items":
+		var a draftComposerItemsArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		items, err := c.srv.mgr.DraftComposerItems(ctx, a.Harness, a.Instance, a.ProjectID, a.FolderID, a.WorkspacePath)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": items}, nil
+
 	case "run_composer_action":
 		var a runComposerActionArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

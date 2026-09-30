@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/skills"
 )
 
 type codexSkill struct {
@@ -67,18 +69,69 @@ func (s *session) ComposerItems(ctx context.Context) ([]adapter.ComposerItem, er
 		if description == "" {
 			description = strings.TrimSpace(skill.Description)
 		}
-		items = append(items, adapter.ComposerItem{
-			ID:          "skill:" + name,
-			Name:        name,
-			Description: description,
-			Kind:        "skill",
-			Trigger:     "$",
-			InsertText:  "$" + name,
-			Origin:      codexSkillOrigin(skill.Scope, skill.Path),
-			Behavior:    adapter.ComposerPrompt,
-		})
+		items = append(items, codexSkillItem(name, description, codexSkillOrigin(skill.Scope, skill.Path)))
 	}
 	return items, nil
+}
+
+// Codex resolves a $name mention wherever it appears in a prompt, so a skill
+// is always inline.
+func codexSkillItem(name, description, origin string) adapter.ComposerItem {
+	return adapter.ComposerItem{
+		ID:          "skill:" + name,
+		Name:        name,
+		Description: description,
+		Kind:        "skill",
+		Trigger:     "$",
+		InsertText:  "$" + name,
+		Origin:      origin,
+		Behavior:    adapter.ComposerPrompt,
+		Inline:      true,
+	}
+}
+
+// DraftComposerItems answers for a thread that does not exist yet, from the
+// skill directories Codex reads. The slash commands are left out: each is an
+// action on a thread, and there is none.
+func (a *Adapter) DraftComposerItems(_ context.Context, env map[string]string, cwd string) ([]adapter.ComposerItem, error) {
+	home, _ := os.UserHomeDir()
+	found, _ := skills.Discover(skills.DefaultRoots(home, env, cwd))
+	items := make([]adapter.ComposerItem, 0, len(found))
+	seen := make(map[string]bool)
+	for _, skill := range found {
+		if !codexSees(skill) || skill.Name == "" {
+			continue
+		}
+		name, origin := skill.Name, "other"
+		switch skill.Scope {
+		case skills.ScopeProject:
+			origin = "repo"
+		case skills.ScopeUser:
+			origin = "personal"
+		case skills.ScopePlugin:
+			// Codex namespaces a plugin's skills by the plugin.
+			name, origin = skill.Plugin+":"+skill.Name, "plugin"
+		case skills.ScopeSystem:
+			origin = "system"
+		}
+		// Discover lists the narrowest scope first, and that is the one a
+		// name resolves to.
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		items = append(items, codexSkillItem(name, skill.Description, origin))
+	}
+	return items, nil
+}
+
+func codexSees(skill skills.Skill) bool {
+	for _, h := range skill.Harnesses {
+		if h == skills.Codex {
+			return true
+		}
+	}
+	return false
 }
 
 // codexBuiltinComposerItems is deliberately small. Codex app-server does not
