@@ -751,7 +751,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		items, err := c.srv.mgr.DraftComposerItems(ctx, a.Harness, a.Instance, a.ProjectID, a.FolderID)
+		items, err := c.srv.mgr.DraftComposerItems(ctx, a.Harness, a.Instance, a.ProjectID, a.FolderID, a.WorkspacePath)
 		if err != nil {
 			return nil, err
 		}

@@ -31,7 +31,7 @@ func TestDraftComposerItemsAsksAboutWhereTheThreadWouldStart(t *testing.T) {
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
-	items, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "")
+	items, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,24 +48,50 @@ func TestDraftComposerItemsAsksAboutWhereTheThreadWouldStart(t *testing.T) {
 	if err := st.AddFolder(ctx, p.ID, project.NewFolder("f-two", second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "f-two"); err != nil {
+	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "f-two", ""); err != nil {
 		t.Fatal(err)
 	}
 	if ad.cwd != second {
 		t.Fatalf("chosen folder: asked about %q, want %q", ad.cwd, second)
 	}
-	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, ""); err != nil {
+	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if ad.cwd != home {
 		t.Fatalf("whole project: asked about %q, want the project home %q", ad.cwd, home)
 	}
 
-	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "f-gone"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "f-gone", ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown folder gave %v, want ErrNotFound", err)
 	}
-	if _, err := mgr.DraftComposerItems(ctx, "nope", "", p.ID, ""); err == nil {
+	if _, err := mgr.DraftComposerItems(ctx, "nope", "", p.ID, "", ""); err == nil {
 		t.Fatal("unknown harness was answered")
+	}
+}
+
+// An existing copy is on its own branch, with its own project skills; and only
+// a copy of the folder is somewhere the server will read on a client's say-so.
+func TestDraftComposerItemsAsksAboutTheCopyTheThreadWouldAttachTo(t *testing.T) {
+	root, worktree, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	ad := &draftAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, ad)
+	defer mgr.Shutdown()
+	ctx := context.Background()
+
+	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "", worktree); err != nil {
+		t.Fatal(err)
+	}
+	if canonicalPath(ad.cwd) != canonicalPath(worktree) {
+		t.Fatalf("asked about %q, want the copy %q", ad.cwd, worktree)
+	}
+
+	ad.cwd = ""
+	if _, err := mgr.DraftComposerItems(ctx, "fake", "", p.ID, "", t.TempDir()); err == nil {
+		t.Fatal("a directory that is not a copy of the folder was answered")
+	}
+	if ad.cwd != "" {
+		t.Fatalf("the adapter was asked about %q, which is outside the project", ad.cwd)
 	}
 }
 
@@ -76,7 +102,7 @@ func TestDraftComposerItemsIsEmptyForAnAdapterThatCannotSay(t *testing.T) {
 	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
-	items, err := mgr.DraftComposerItems(context.Background(), "fake", "", p.ID, "")
+	items, err := mgr.DraftComposerItems(context.Background(), "fake", "", p.ID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

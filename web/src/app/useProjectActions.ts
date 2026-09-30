@@ -95,12 +95,19 @@ export function useProjectActions(wire: Wire) {
 
   // What the composer completes before the thread it is drafting exists.
   const listDraftComposerItems = useCallback(
-    async (harness: string, instance: string, projectId: string, folderId: string) => {
+    async (
+      harness: string,
+      instance: string,
+      projectId: string,
+      folderId: string,
+      workspacePath: string,
+    ) => {
       const res = await clientRef.current!.command("list_draft_composer_items", {
         harness,
         instance,
         projectId,
         folderId,
+        workspacePath,
       });
       return (res.items ?? []) as ComposerItem[];
     },

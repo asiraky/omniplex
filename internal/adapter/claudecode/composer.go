@@ -43,7 +43,9 @@ func (a *Adapter) DraftComposerItems(_ context.Context, env map[string]string, c
 	known := a.commands.recall(configDir)
 	items := make([]adapter.ComposerItem, 0, len(disk)+len(known.extra))
 	for key, skill := range disk {
-		if known.hidden[key] {
+		// What Claude left out was that account's skill. A project skill of
+		// the same name here is a different skill, and shadows it.
+		if known.hidden[key] && skill.origin != "project" {
 			continue
 		}
 		items = append(items, claudeComposerItem(

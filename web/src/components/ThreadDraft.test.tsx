@@ -545,7 +545,7 @@ describe("the command menu before the thread exists", () => {
     const onListComposerItems = vi.fn<Props["onListComposerItems"]>(async () => [skill("ship")]);
     open({ onListComposerItems });
     await waitFor(() =>
-      expect(onListComposerItems).toHaveBeenCalledWith("claude", expect.any(String), "p1", "f1"),
+      expect(onListComposerItems).toHaveBeenCalledWith("claude", expect.any(String), "p1", "f1", ""),
     );
 
     type("/sh");
@@ -567,8 +567,27 @@ describe("the command menu before the thread exists", () => {
     menu("Scope");
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^notes/ }));
     await waitFor(() =>
-      expect(onListComposerItems).toHaveBeenLastCalledWith("claude", expect.any(String), "p1", "f2"),
+      expect(onListComposerItems).toHaveBeenLastCalledWith("claude", expect.any(String), "p1", "f2", ""),
     );
+    expect(screen.queryByRole("option", { name: /ship/ })).toBeNull();
+  });
+
+  it("asks about the existing copy the thread would continue on", async () => {
+    const side = { path: "/tmp/repo/.worktrees/side", branch: "issue/1-side" } as Workspace;
+    const onListComposerItems = vi.fn<Props["onListComposerItems"]>(async (...asked) =>
+      asked[4] === side.path ? [skill("theirs")] : [skill("ship")],
+    );
+    open({ onListComposerItems, onListWorkspaces: vi.fn(async () => [side]) });
+    type("/");
+    await screen.findByRole("option", { name: /ship/ });
+
+    await openGit();
+    fireEvent.click(await screen.findByRole("button", { name: "Continue on an existing copy" }));
+    fireEvent.click(screen.getByRole("combobox", { name: /Existing copy/ }));
+    fireEvent.click(await screen.findByRole("option", { name: /issue\/1-side/ }));
+
+    type("/");
+    await screen.findByRole("option", { name: /theirs/ });
     expect(screen.queryByRole("option", { name: /ship/ })).toBeNull();
   });
 

@@ -110,13 +110,15 @@ export function ThreadDraft({
   onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
-  /** What the chosen provider completes in the chosen folder, before a thread
-      is there to ask. */
+  /** What the chosen provider completes where the thread would start — the
+      chosen folder, or the existing copy of it — before a thread is there to
+      ask. */
   onListComposerItems: (
     harness: string,
     instance: string,
     projectId: string,
     folderId: string,
+    workspacePath: string,
   ) => Promise<ComposerItem[]>;
   onAddProject: () => void;
   onSettings: (project: Project) => void;
@@ -147,16 +149,18 @@ export function ThreadDraft({
   const instanceId = agent.instance?.id ?? "";
   const projectId = project?.id ?? "";
   const folderId = scope?.id ?? "";
+  // An existing copy is on its own branch, with its own project skills.
+  const copyPath = git.sent.workspacePath;
   const loadComposerItems = useCallback(
     async () =>
       harnessId && projectId
-        ? onListComposerItems(harnessId, instanceId, projectId, folderId)
+        ? onListComposerItems(harnessId, instanceId, projectId, folderId, copyPath)
         : [],
-    [onListComposerItems, harnessId, instanceId, projectId, folderId],
+    [onListComposerItems, harnessId, instanceId, projectId, folderId, copyPath],
   );
   const listed = useComposerItems(
     loadComposerItems,
-    [harnessId, instanceId, projectId, folderId].join("\n"),
+    [harnessId, instanceId, projectId, folderId, copyPath].join("\n"),
   );
   // Every entry listed for a draft is prompt text, so there is nothing a
   // message starting with a slash has to wait to find out.

@@ -143,6 +143,17 @@ func TestDraftComposerItemsAddsWhatALiveSessionReported(t *testing.T) {
 	if got, want := names(cwd, env), []string{"/compact", "/local", "/mine"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after a session = %v, want %v: built-ins carry over, that folder's entries do not, and what Claude left out stays out", got, want)
 	}
+
+	// What Claude left out was the account's skill of that name, not every
+	// skill of that name: a project's own is a different one.
+	namesake := filepath.Join(root, "namesake")
+	writeSkills(t, map[string]string{
+		filepath.Join(namesake, ".claude", "skills", "desktop", "SKILL.md"): "---\nname: desktop\ndescription: This repo's\n---\n",
+	})
+	if got, want := names(namesake, env), []string{"/compact", "/desktop", "/mine"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("a project skill named like a hidden one = %v, want %v", got, want)
+	}
+
 	other := map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(root, "other-account")}
 	if got := names(cwd, other); !reflect.DeepEqual(got, []string{"/local"}) {
 		t.Fatalf("another account = %v, want only /local", got)

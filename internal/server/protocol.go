@@ -134,6 +134,8 @@ type draftComposerItemsArgs struct {
 	Instance  string `json:"instance"`
 	ProjectID string `json:"projectId"`
 	FolderID  string `json:"folderId"`
+	// WorkspacePath is the existing copy the thread would attach to, if any.
+	WorkspacePath string `json:"workspacePath"`
 }
 
 type saveUserConfigArgs struct {
