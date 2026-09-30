@@ -51,6 +51,10 @@ type Adapter struct {
 	once      sync.Once
 	unpacked  string
 	unpackErr error
+
+	// commands is what live sessions have reported that a draft cannot read
+	// off disk.
+	commands commandCache
 }
 
 func New(claudePath string) *Adapter {
@@ -382,6 +386,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		stdin:            stdin,
 		cwd:              o.Cwd,
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		commands:         &a.commands,
 		harnessSessionID: sessionID,
 		model:            o.Model,
 		// The window was fixed above, from this id, when the process booted.
@@ -435,6 +440,8 @@ type session struct {
 	// received, so origin enrichment cannot accidentally inspect another
 	// Claude account's skills.
 	configDir string
+	// commands is the adapter's, shared by every session.
+	commands *commandCache
 
 	harnessSessionID string
 

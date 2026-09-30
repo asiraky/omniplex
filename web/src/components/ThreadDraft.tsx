@@ -1,13 +1,14 @@
 import { PlusIcon } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { ConnectionStatus } from "~/client";
 import type { Attachment } from "~/lib/attachments";
 import { Composer } from "~/components/Composer";
+import { useComposerItems } from "~/components/composer/useComposerItems";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { saveLastProject } from "~/lib/lastProject";
-import type { HarnessMeta, Project, UserConfig, Workspace } from "~/protocol";
+import type { ComposerItem, HarnessMeta, Project, UserConfig, Workspace } from "~/protocol";
 import { AgentTools } from "./threadDraft/AgentTools";
 import { GitChip } from "./threadDraft/GitChip";
 import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
@@ -86,6 +87,7 @@ export function ThreadDraft({
   onRemoveAttachment,
   onListWorkspaces,
   onListIssues,
+  onListComposerItems,
   onAddProject,
   onSettings,
   onRecheck,
@@ -108,6 +110,14 @@ export function ThreadDraft({
   onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
+  /** What the chosen provider completes in the chosen folder, before a thread
+      is there to ask. */
+  onListComposerItems: (
+    harness: string,
+    instance: string,
+    projectId: string,
+    folderId: string,
+  ) => Promise<ComposerItem[]>;
   onAddProject: () => void;
   onSettings: (project: Project) => void;
   onRecheck: () => void;
@@ -132,6 +142,25 @@ export function ThreadDraft({
   });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const harnessId = agent.harnessId;
+  const instanceId = agent.instance?.id ?? "";
+  const projectId = project?.id ?? "";
+  const folderId = scope?.id ?? "";
+  const loadComposerItems = useCallback(
+    async () =>
+      harnessId && projectId
+        ? onListComposerItems(harnessId, instanceId, projectId, folderId)
+        : [],
+    [onListComposerItems, harnessId, instanceId, projectId, folderId],
+  );
+  const listed = useComposerItems(
+    loadComposerItems,
+    [harnessId, instanceId, projectId, folderId].join("\n"),
+  );
+  // Every entry listed for a draft is prompt text, so there is nothing a
+  // message starting with a slash has to wait to find out.
+  const catalogue = useMemo(() => ({ ...listed, ready: true }), [listed]);
 
   const blocker = blockerFor({
     status,
@@ -254,6 +283,7 @@ export function ThreadDraft({
           }
           draft={draft}
           onDraftChange={onDraftChange}
+          catalogue={catalogue}
           disabled={false}
           sendDisabled={!!blocker}
           disabledPlaceholder={blocker}

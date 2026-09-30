@@ -127,6 +127,15 @@ type listWorkspacesArgs struct {
 	FolderID  string `json:"folderId"`
 }
 
+// draftComposerItemsArgs names what a thread would be created with, for the
+// catalogue its composer shows before it exists.
+type draftComposerItemsArgs struct {
+	Harness   string `json:"harness"`
+	Instance  string `json:"instance"`
+	ProjectID string `json:"projectId"`
+	FolderID  string `json:"folderId"`
+}
+
 type saveUserConfigArgs struct {
 	Config userconfig.Config `json:"config"`
 }

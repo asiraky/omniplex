@@ -94,6 +94,10 @@ type Skill struct {
 	Harnesses   []Harness `json:"harnesses"`
 	Editable    bool      `json:"editable"`
 	Problem     string    `json:"problem,omitempty"`
+	// UserOnly is the skill's own disable-model-invocation: the agent is not
+	// told it exists, so only a person naming it at the start of a prompt
+	// runs it.
+	UserOnly bool `json:"userOnly,omitempty"`
 }
 
 type File struct {
@@ -114,7 +118,10 @@ type root struct {
 	plugin    string
 	harnesses []Harness
 	readonly  bool
-	synced    bool // Claude's skills dir: also look in synced/<account>/<skill>
+	// synced also looks in synced/<account>/<skill>, where claude.ai's sync
+	// writes. Claude reads them from its own skills dir; Codex and pi find
+	// them in ~/.agents/skills because they search a skills dir to any depth.
+	synced bool
 }
 
 // roots lists every directory a harness reads skills from, per the research
@@ -135,7 +142,7 @@ func (r Roots) roots() []root {
 		out = append(out, root{path: filepath.Join(r.ClaudeConfigDir, "skills"), scope: ScopeUser, harnesses: []Harness{Claude}, synced: true})
 	}
 	if r.Home != "" {
-		out = append(out, root{path: filepath.Join(r.Home, ".agents", "skills"), scope: ScopeUser, harnesses: []Harness{Codex, Pi}})
+		out = append(out, root{path: filepath.Join(r.Home, ".agents", "skills"), scope: ScopeUser, harnesses: []Harness{Codex, Pi}, synced: true})
 	}
 	if r.CodexHome != "" {
 		out = append(out, root{path: filepath.Join(r.CodexHome, "skills"), scope: ScopeUser, harnesses: []Harness{Codex}})
@@ -370,6 +377,7 @@ func fillMeta(s *Skill, dirName string) {
 		s.Problem = err.Error()
 		return
 	}
+	s.UserOnly = userOnly(fields)
 	var problems []string
 	if name := strings.TrimSpace(fields["name"]); name != "" {
 		s.Name = name
@@ -388,6 +396,22 @@ func fillMeta(s *Skill, dirName string) {
 		problems = append(problems, "description is over 1024 characters")
 	}
 	s.Problem = strings.Join(problems, "; ")
+}
+
+func userOnly(fields map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(fields["disable-model-invocation"]), "true")
+}
+
+// UserOnly reads one SKILL.md for Skill.UserOnly, for a caller that was told
+// where a skill is rather than discovering it. A file that cannot be read or
+// parsed is not user-only: that is what the harness would make of it too.
+func UserOnly(skillFile string) bool {
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		return false
+	}
+	fields, _, err := parseFrontmatter(string(data))
+	return err == nil && userOnly(fields)
 }
 
 func scopeRank(scope string) int {

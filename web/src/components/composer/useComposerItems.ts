@@ -21,28 +21,35 @@ export const NO_CATALOGUE: ComposerCatalogue = {
   reload: () => {},
 };
 
+const NO_ITEMS: ComposerItem[] = [];
+
 /**
  * Fetches the catalogue on mount and whenever `load` changes: a new loader is
  * how the app says the provider's catalogue changed. Owned by whatever renders
  * the composer, keyed per thread there, so a thread switch starts empty. A
  * load that failed is tried again when a trigger opens (the composer calls
  * `reload`), so nothing here retries on its own.
+ *
+ * `scope` names what the catalogue is of, for an owner that is not remounted
+ * when that changes: the draft composer, across its provider and folder
+ * chips. A catalogue loaded under another scope is not shown under this one.
  */
-export function useComposerItems(load: () => Promise<ComposerItem[]>): ComposerCatalogue {
-  const [items, setItems] = useState<ComposerItem[]>([]);
+export function useComposerItems(
+  load: () => Promise<ComposerItem[]>,
+  scope = "",
+): ComposerCatalogue {
+  const [loaded, setLoaded] = useState<{ scope: string; items: ComposerItem[] } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [ready, setReady] = useState(false);
   const loadSequence = useRef(0);
+  const ready = loaded?.scope === scope;
+  const items = ready ? loaded.items : NO_ITEMS;
 
   const reload = useCallback(() => {
     const sequence = ++loadSequence.current;
     setLoading(true);
     load()
       .then((next) => {
-        if (sequence === loadSequence.current) {
-          setItems(next);
-          setReady(true);
-        }
+        if (sequence === loadSequence.current) setLoaded({ scope, items: next });
       })
       .catch(() => {
         // Retain a previously successful catalogue. If the first request
@@ -52,7 +59,7 @@ export function useComposerItems(load: () => Promise<ComposerItem[]>): ComposerC
       .finally(() => {
         if (sequence === loadSequence.current) setLoading(false);
       });
-  }, [load]);
+  }, [load, scope]);
 
   useEffect(() => {
     reload();

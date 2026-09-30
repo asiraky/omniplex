@@ -5,7 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { render, wrap } from "~/test/harness";
 import { ThreadDraft, type NewThreadInput } from "./ThreadDraft";
-import type { HarnessMeta, Project, Workspace } from "~/protocol";
+import type { ComposerItem, HarnessMeta, Project, Workspace } from "~/protocol";
 
 const project = {
   id: "p1",
@@ -42,6 +42,7 @@ function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
     onStart: onCreate ?? vi.fn(async () => {}),
     onListWorkspaces: vi.fn(async () => [] as Workspace[]),
     onListIssues: vi.fn(async () => ({ issues: [], issuesError: "" })),
+    onListComposerItems: vi.fn(async () => [] as ComposerItem[]),
     onAddProject: vi.fn(),
     onSettings: vi.fn(),
     onRecheck: vi.fn(),
@@ -512,6 +513,94 @@ describe("scope", () => {
     await start();
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0][0]).toMatchObject({ folderId: "f2", workspace: "local" });
+  });
+});
+
+// The thread that would answer for its provider's commands does not exist
+// yet, so the draft asks about the provider and folder it is set to.
+describe("the command menu before the thread exists", () => {
+  const skill = (name: string, inline = true): ComposerItem => ({
+    id: `skill:${name}`,
+    name,
+    kind: "skill",
+    trigger: "/",
+    insertText: `/${name}`,
+    behavior: "prompt",
+    inline,
+  });
+  const box = () => document.querySelector("textarea")!;
+  const type = (value: string) => {
+    fireEvent.focus(box());
+    fireEvent.change(box(), { target: { value, selectionStart: value.length } });
+  };
+  const twoFolders = {
+    ...project,
+    folders: [
+      { ...project.folders[0], id: "f1", path: "/tmp/repo/site" },
+      { ...project.folders[0], id: "f2", path: "/tmp/repo/notes", git: false },
+    ],
+  } as unknown as Project;
+
+  it("completes the chosen provider's skills for the chosen folder", async () => {
+    const onListComposerItems = vi.fn<Props["onListComposerItems"]>(async () => [skill("ship")]);
+    open({ onListComposerItems });
+    await waitFor(() =>
+      expect(onListComposerItems).toHaveBeenCalledWith("claude", expect.any(String), "p1", "f1"),
+    );
+
+    type("/sh");
+    await screen.findByRole("option", { name: /ship/ });
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(box().value).toBe("/ship ");
+  });
+
+  it("asks again for another folder and offers nothing of the last one meanwhile", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    const onListComposerItems = vi
+      .fn<Props["onListComposerItems"]>()
+      .mockResolvedValueOnce([skill("ship")])
+      .mockReturnValue(new Promise(() => {}));
+    open({ projects: [twoFolders], onListComposerItems, onCreate });
+    type("then /sh");
+    await screen.findByRole("option", { name: /ship/ });
+
+    menu("Scope");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^notes/ }));
+    await waitFor(() =>
+      expect(onListComposerItems).toHaveBeenLastCalledWith("claude", expect.any(String), "p1", "f2"),
+    );
+    expect(screen.queryByRole("option", { name: /ship/ })).toBeNull();
+  });
+
+  it("completes a skill mid-sentence, replacing only its token", async () => {
+    open({ onListComposerItems: vi.fn(async () => [skill("review")]) });
+    type("do the thing then /");
+    await screen.findByRole("option", { name: /review/ });
+    type("do the thing then /rev");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(box().value).toBe("do the thing then /review ");
+  });
+
+  it("sends a message ending in a path rather than completing it", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    const onListComposerItems = vi.fn(async () => [skill("review"), skill("closed", false)]);
+    open({ onCreate, onListComposerItems, projects: [{ ...project, folders: [] } as unknown as Project] });
+    await waitFor(() => expect(onListComposerItems).toHaveBeenCalled());
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    type("/");
+    await screen.findByRole("option", { name: /closed/ });
+
+    // Nothing the harness acts on mid-prompt is called tmp, or closed.
+    for (const text of ["then run /closed", "see src/foo/bar", "see https://x/y", "clear out /tmp"]) {
+      type(text);
+      expect(screen.queryByRole("option")).toBeNull();
+    }
+    fireEvent.keyDown(box(), { key: "Enter" });
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ text: "clear out /tmp" }), false),
+    );
   });
 });
 

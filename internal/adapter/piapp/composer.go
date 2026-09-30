@@ -2,10 +2,13 @@ package piapp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/skills"
 )
 
 // piSkillPrefix is how pi names a skill command: skills register as
@@ -47,9 +50,47 @@ func (s *session) ComposerItems(ctx context.Context) ([]adapter.ComposerItem, er
 	return piComposerItems(response.Commands), nil
 }
 
+// DraftComposerItems answers for a thread that does not exist yet, from the
+// skill directories pi reads. Prompt templates and extension commands are only
+// known to a running pi, so they arrive with the live catalogue.
+func (a *Adapter) DraftComposerItems(_ context.Context, env map[string]string, cwd string) ([]adapter.ComposerItem, error) {
+	home, _ := os.UserHomeDir()
+	found, _ := skills.Discover(skills.DefaultRoots(home, env, cwd))
+	commands := make([]piCommand, 0, len(found))
+	for _, skill := range found {
+		if !piSees(skill) || skill.Name == "" {
+			continue
+		}
+		// Discover's scopes are pi's own words for them. A name found twice is
+		// dropped by piComposerItems, which keeps the narrower scope: Discover
+		// lists that one first.
+		commands = append(commands, piCommand{
+			Name:        piSkillPrefix + skill.Name,
+			Description: skill.Description,
+			Source:      "skill",
+			SourceInfo:  &piSourceInfo{Path: filepath.Join(skill.Dir, "SKILL.md"), Scope: skill.Scope},
+		})
+	}
+	return piComposerItems(commands), nil
+}
+
+func piSees(skill skills.Skill) bool {
+	for _, h := range skill.Harnesses {
+		if h == skills.Pi {
+			return true
+		}
+	}
+	return false
+}
+
 // piComposerItems maps pi's catalogue onto composer entries. Every entry is
 // prompt text: pi expands /skill:name and /template itself when the prompt
 // arrives, so omniplex sends the line as typed and never interprets it.
+//
+// It expands them only as the first thing in the prompt. Anywhere else the
+// model reads the text as typed, and can act on it only for a skill pi told it
+// about — one that does not disable model invocation. That is what Inline
+// says, and pi's catalogue does not, so it is read from the skill's own file.
 func piComposerItems(commands []piCommand) []adapter.ComposerItem {
 	items := make([]adapter.ComposerItem, 0, len(commands))
 	seen := make(map[string]bool)
@@ -61,9 +102,11 @@ func piComposerItems(commands []piCommand) []adapter.ComposerItem {
 		// What pi accepts is the full name, prefix and all.
 		insert := "/" + name
 		kind := "command"
+		inline := false
 		var aliases []string
 		if strings.EqualFold(strings.TrimSpace(command.Source), "skill") {
 			kind = "skill"
+			inline = command.SourceInfo != nil && command.SourceInfo.Path != "" && !skills.UserOnly(command.SourceInfo.Path)
 			// Display the bare skill name — "merge" reads better in the list
 			// than "skill:merge" — but keep the qualified name as an alias so
 			// typing /skill:merge still finds it.
@@ -88,6 +131,7 @@ func piComposerItems(commands []piCommand) []adapter.ComposerItem {
 			Origin:      piCommandOrigin(command.SourceInfo),
 			Behavior:    adapter.ComposerPrompt,
 			Aliases:     aliases,
+			Inline:      inline,
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Name < items[j].Name })

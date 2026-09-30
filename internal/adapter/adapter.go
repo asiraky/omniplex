@@ -335,6 +335,10 @@ type ComposerItem struct {
 	Behavior    string   `json:"behavior"` // prompt | client-action | adapter-action
 	Action      string   `json:"action,omitempty"`
 	Aliases     []string `json:"aliases,omitempty"`
+	// Inline marks a token the harness acts on wherever it sits in a prompt.
+	// Without it the token only means something as the first thing in one, so
+	// a composer offers it there and nowhere else.
+	Inline bool `json:"inline,omitempty"`
 }
 
 const (
@@ -348,6 +352,16 @@ const (
 // version determine the real answer.
 type ComposerCataloguer interface {
 	ComposerItems(ctx context.Context) ([]ComposerItem, error)
+}
+
+// DraftCataloguer is an optional adapter capability: what a session started in
+// cwd under env would be able to invoke, answered without starting one, for a
+// thread that does not exist yet. It must be cheap — it runs while someone is
+// typing — so it reads what is on disk rather than spawning the harness, and
+// the live session's ComposerItems replaces its answer once there is one.
+// Every entry is ComposerPrompt: there is no thread for an action to act on.
+type DraftCataloguer interface {
+	DraftComposerItems(ctx context.Context, env map[string]string, cwd string) ([]ComposerItem, error)
 }
 
 // ComposerActionRunner handles catalogue entries that map to a provider RPC
