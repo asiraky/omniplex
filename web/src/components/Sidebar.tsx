@@ -49,6 +49,7 @@ import { cn } from "~/lib/utils";
 import { groupSessions, visibleByProject } from "~/projectGroups";
 import type { Label, Project, SessionMeta } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
+import { Wordmark } from "./Logo";
 
 const BUSY_PHASES = ["turn", "provisioning", "creating", "cleaning"];
 // How long a row takes to fold away once it has left the list. Kept in step
@@ -738,11 +739,13 @@ function SidebarPanel({
   ).length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
-      {/* One quiet header row: what the panel is, and the one action it
-          offers. Branding and the status dot earn no space up here — the dot
-          lives in the footer, still one click from the access panel. */}
+      {/* One quiet header row: the wordmark, and the one action it offers.
+          The status dot earns no space up here — it lives in the footer,
+          still one click from the access panel. */}
       <div className="flex items-center gap-2 px-3 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-1.5">
-        <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
+        <span className="flex flex-1 items-center px-1.5">
+          <Wordmark className="h-[18px] w-auto" />
+        </span>
         {/* One label control, not two: what is showing, and the way to the
             manager that creates and edits them. */}
         {/* Project first: it decides the shape of the list, where the label

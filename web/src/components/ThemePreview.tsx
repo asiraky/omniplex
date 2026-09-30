@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from "react";
 
 import { ProviderLogo } from "~/components/ProviderLogo";
 import { cn } from "~/lib/utils";
+import { Wordmark } from "./Logo";
 
 /**
  * The theme sample page, reachable at #themes: a static mock of the dashboard
@@ -293,7 +294,9 @@ export function ThemePreview() {
       {/* ---- Fake sidebar ---- */}
       <aside className="bg-sidebar text-sidebar-foreground flex w-72 shrink-0 flex-col border-r" style={{ borderColor: "var(--sidebar-border)" }}>
         <div className="flex items-center gap-2 px-3 pt-2 pb-1.5">
-          <span className="flex-1 px-1.5 font-mono text-sm font-semibold tracking-tight">Omniplex</span>
+          <span className="flex flex-1 items-center px-1.5">
+            <Wordmark className="h-[18px] w-auto" />
+          </span>
           <span className="text-muted-foreground flex size-8 items-center justify-center">
             <PlusIcon className="size-4" />
           </span>
