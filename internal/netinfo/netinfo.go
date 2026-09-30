@@ -378,3 +378,27 @@ func (p BindPlan) BestPairingURL() string {
 	}
 	return ""
 }
+
+// Missing returns the addresses in want that this plan has not bound: what
+// appeared since the server started, like a tailnet interface that came up
+// after login.
+func (p BindPlan) Missing(want BindPlan) []Addr {
+	have := map[string]bool{}
+	for _, a := range p.Addrs {
+		have[a.IP.String()] = true
+	}
+	var out []Addr
+	for _, a := range want.Addrs {
+		if !have[a.IP.String()] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// With folds more bound addresses into the plan.
+func (p BindPlan) With(more BindPlan) BindPlan {
+	p.Addrs = append(append([]Addr(nil), p.Addrs...), more.Addrs...)
+	p.Reachable = p.Reachable || more.Reachable
+	return p
+}

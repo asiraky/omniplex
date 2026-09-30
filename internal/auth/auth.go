@@ -77,8 +77,10 @@ const (
 
 // Guard applies the policy to requests.
 type Guard struct {
-	store  *store.Store
-	policy Policy
+	store *store.Store
+	// reachable is the policy: true once any bound address can be reached
+	// from another machine. It only ever turns on — see SetReachable.
+	reachable atomic.Bool
 
 	// cookie is this instance's device-token cookie name. See CookieName.
 	cookie string
@@ -96,17 +98,26 @@ type Guard struct {
 // New builds a guard. reachable says whether any bound address can be reached
 // from another machine; the caller works that out when it decides what to bind.
 func New(st *store.Store, reachable bool, port int) *Guard {
-	policy := PolicyLoopback
-	if reachable {
-		policy = PolicyReachable
-	}
-	return &Guard{store: st, policy: policy, limiter: newLimiter(), cookie: CookieName(port)}
+	g := &Guard{store: st, limiter: newLimiter(), cookie: CookieName(port)}
+	g.reachable.Store(reachable)
+	return g
 }
+
+// SetReachable records that another machine can now connect: an address was
+// bound after startup, typically a tailnet interface that came up after the
+// server did. There is no way back to loopback, because a listener that was
+// reachable once is never trusted to have stopped being so.
+func (g *Guard) SetReachable() { g.reachable.Store(true) }
 
 // CookieName is the cookie this guard issues and reads.
 func (g *Guard) CookieName() string { return g.cookie }
 
-func (g *Guard) Policy() Policy { return g.policy }
+func (g *Guard) Policy() Policy {
+	if g.reachable.Load() {
+		return PolicyReachable
+	}
+	return PolicyLoopback
+}
 
 // SetProxied tells the guard whether a reverse proxy is currently forwarding
 // remote traffic to a loopback address of ours.
@@ -368,7 +379,7 @@ func (g *Guard) Authorize(r *http.Request) (store.Device, bool) {
 
 	// Bound only to loopback and not proxied, no other machine can reach us,
 	// so a non-local peer is something unexpected and is not trusted.
-	if !proxied && g.policy == PolicyLoopback {
+	if !proxied && g.Policy() == PolicyLoopback {
 		return store.Device{}, false
 	}
 

@@ -287,3 +287,26 @@ func TestPrivatePlanLeavesOutTheLocalNetwork(t *testing.T) {
 		t.Fatalf("default plan: %+v", plan.Addrs)
 	}
 }
+
+// The tailnet interface often comes up after the server has started at login.
+// Missing is what a later look finds that is not yet bound.
+func TestMissingFindsAddressesThatAppearedLater(t *testing.T) {
+	loop := Addr{IP: net.ParseIP("127.0.0.1"), Kind: KindLoopback}
+	tail := Addr{IP: net.ParseIP("100.101.102.103"), Kind: KindOverlay}
+
+	started := BindPlan{Addrs: []Addr{loop}, Port: 8787}
+	now := BindPlan{Addrs: []Addr{loop, tail}, Port: 8787, Reachable: true}
+
+	missing := started.Missing(now)
+	if len(missing) != 1 || !missing[0].IP.Equal(tail.IP) {
+		t.Fatalf("missing = %+v, want the tailnet address", missing)
+	}
+
+	grown := started.With(BindPlan{Addrs: missing, Reachable: true})
+	if !grown.Reachable || len(grown.Addrs) != 2 || len(grown.Missing(now)) != 0 {
+		t.Fatalf("after binding it: %+v", grown)
+	}
+	if len(started.Addrs) != 1 {
+		t.Fatal("With changed the plan it was called on")
+	}
+}

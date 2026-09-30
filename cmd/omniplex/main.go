@@ -79,12 +79,13 @@ func main() {
 	)
 	flag.Parse()
 
-	plan, err := netinfo.Plan(netinfo.Options{
+	bindOpts := netinfo.Options{
 		Override:      *addr,
 		Port:          *port,
 		IncludePublic: *bindPublic,
 		Private:       *private,
-	})
+	}
+	plan, err := netinfo.Plan(bindOpts)
 	if err != nil {
 		log.Fatalf("choose addresses: %v", err)
 	}
@@ -254,6 +255,14 @@ func main() {
 		}(ln)
 	}
 
+	// Chosen automatically, what to bind can grow after startup: at login the
+	// tailnet (or the wifi) often comes up after this process does, and a
+	// server that only ever bound loopback would never be reachable from the
+	// phone. A named address is exactly that address, so it is left alone.
+	if *addr == "" {
+		go watchAddrs(bindOpts, plan, httpSrv, guard, access)
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
@@ -327,6 +336,54 @@ func watchProxy(guard *auth.Guard, access *endpoints.Builder, port int) {
 			check()
 		}
 	}()
+}
+
+// watchAddrs binds addresses that appear after startup. Addresses that go
+// away keep their listener: it costs nothing idle, and it is back in service
+// if the address returns.
+func watchAddrs(opts netinfo.Options, bound netinfo.BindPlan, srv *http.Server, guard *auth.Guard, access *endpoints.Builder) {
+	// An address that will not bind (a tentative IPv6 address, one taken by
+	// another process) is retried slowly rather than logged every tick.
+	failed := map[string]time.Time{}
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		want, err := netinfo.Plan(opts)
+		if err != nil {
+			continue
+		}
+		var missing []netinfo.Addr
+		for _, a := range bound.Missing(want) {
+			if time.Since(failed[a.IP.String()]) > 5*time.Minute {
+				missing = append(missing, a)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		listeners, more, _ := netinfo.BindPlan{Addrs: missing, Port: bound.Port}.Listen()
+		for _, a := range bound.With(more).Missing(netinfo.BindPlan{Addrs: missing}) {
+			failed[a.IP.String()] = time.Now()
+		}
+		if len(listeners) == 0 {
+			continue
+		}
+		// Reachable before serving: a remote request must never be judged
+		// under the loopback policy.
+		if more.Reachable {
+			guard.SetReachable()
+		}
+		bound = bound.With(more)
+		access.SetPlan(bound)
+		for _, ln := range listeners {
+			log.Printf("now also listening on %s", ln.Addr())
+			go func(l net.Listener) {
+				if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
+					log.Printf("serve on %s stopped: %v", l.Addr(), err)
+				}
+			}(ln)
+		}
+	}
 }
 
 // embeddedUI returns the built bundle, or (nil, false) when only the
