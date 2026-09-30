@@ -100,6 +100,12 @@ export function SkillsSetupDialog({
     <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
       <DialogContent
         fullscreenOnMobile
+        // The dialog, not the first field: focusing a field pops a phone's
+        // keyboard over the page before there is anything to type.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          (e.currentTarget as HTMLElement).focus();
+        }}
         className="max-md:grid-rows-[auto_minmax(0,1fr)_auto] max-md:pt-[calc(1.5rem+env(safe-area-inset-top))] md:max-h-[90dvh] md:max-w-lg md:grid-rows-[auto_minmax(0,1fr)_auto]"
       >
         <DialogHeader>

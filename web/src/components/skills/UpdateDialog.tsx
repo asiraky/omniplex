@@ -132,11 +132,13 @@ function UpdateRow({
     <li className="px-3 py-1">
       <div className="flex min-h-11 items-center gap-2">
         <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1">
-          <span className="min-w-0 font-mono text-[13px] break-all">{skill.name}</span>
+          <span className="min-w-0 font-mono text-[13px] wrap-anywhere">{skill.name}</span>
           {applied ? (
             <Marker>updated</Marker>
           ) : skill.gone ? (
             <Marker tone="attention">gone from the source</Marker>
+          ) : skill.local ? (
+            <Marker tone="attention">edited here</Marker>
           ) : skill.changed ? (
             <Marker tone="attention">changed</Marker>
           ) : (
@@ -157,6 +159,11 @@ function UpdateRow({
           </Button>
         )}
       </div>
+      {skill.local && pending && (
+        <p className="text-muted-foreground pb-1 text-[12px] leading-snug">
+          {repo} has not changed. Updating replaces your edits with its copy.
+        </p>
+      )}
       {skill.gone && !applied && (
         <p className="text-muted-foreground pb-2 text-[12px] leading-snug">
           {repo} no longer has it. Your copy stays as it is.
@@ -280,7 +287,7 @@ export function UpdateDialog({
     : applied.size > 0 && pending.length === 0
       ? `Updated ${applied.size} ${applied.size === 1 ? "skill" : "skills"}.`
       : pending.length === 0
-        ? `Nothing to update. ${total === 1 ? "The skill" : `All ${total} skills`} from this source match it.`
+        ? `Nothing to update. ${total === 1 ? "The skill from this source is" : `All ${total} skills from this source are`} up to date.`
         : `${pending.length} of ${total} ${total === 1 ? "skill" : "skills"} can be updated.`;
 
   return (

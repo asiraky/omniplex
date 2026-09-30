@@ -564,6 +564,8 @@ export interface UpdateSkill {
   changed: boolean;
   /** No longer in the source. */
   gone?: boolean;
+  /** Upstream is what was installed: the difference is edits made here. */
+  local?: boolean;
   files: FileChange[];
 }
 

@@ -384,7 +384,7 @@ export function InstallDialog({
                           className="flex-1"
                         >
                           <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-                            <span className="min-w-0 font-mono text-[13px] break-all">{s.name}</span>
+                            <span className="min-w-0 font-mono text-[13px] wrap-anywhere">{s.name}</span>
                             {s.manual && <Marker>manual</Marker>}
                             {clash && <Marker tone="attention">already installed</Marker>}
                           </span>
@@ -448,6 +448,19 @@ export function InstallDialog({
               </div>
             </section>
 
+            {clashes.length > 0 && (
+              <div className="bg-attention-surface rounded-lg border px-3 py-1">
+                <TickRow checked={replace} onChange={setReplace} disabled={installing}>
+                  <span className="block text-[13px] leading-tight">Replace what is installed</span>
+                  <span className="text-attention-foreground block text-[12px] leading-snug break-words">
+                    {joinWords(clashes)} {clashes.length === 1 ? "is" : "are"} already in{" "}
+                    {where ? <span className="font-mono text-[11.5px] break-all">{where}</span> : "that library"}.
+                    Installing deletes {clashes.length === 1 ? "that copy" : "those copies"} first.
+                  </span>
+                </TickRow>
+              </div>
+            )}
+
             {links.length > 0 && (
               <section aria-label="Harnesses">
                 <SectionHeading>Harnesses that get it</SectionHeading>
@@ -472,22 +485,6 @@ export function InstallDialog({
               </section>
             )}
 
-            {clashes.length > 0 && (
-              // Pinned to the bottom of the scroll: it is why Install is off,
-              // and a long list would otherwise leave it out of sight.
-              <div className="bg-background sticky bottom-0 z-10 pt-1">
-                <div className="bg-attention-surface rounded-lg border px-3 py-1">
-                  <TickRow checked={replace} onChange={setReplace} disabled={installing}>
-                    <span className="block text-[13px] leading-tight">Replace what is installed</span>
-                    <span className="text-attention-foreground block text-[12px] leading-snug break-words">
-                      {joinWords(clashes)} {clashes.length === 1 ? "is" : "are"} already in{" "}
-                      {where ? <span className="font-mono text-[11.5px] break-all">{where}</span> : "that library"}.
-                      Installing deletes {clashes.length === 1 ? "that copy" : "those copies"} first.
-                    </span>
-                  </TickRow>
-                </div>
-              </div>
-            )}
 
             {error && <ErrorLine message={error} />}
           </div>

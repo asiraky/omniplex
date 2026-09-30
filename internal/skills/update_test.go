@@ -110,11 +110,11 @@ func TestStageUpdate(t *testing.T) {
 		t.Errorf("dirs = %q and %q", by["show-me"].Dir, by["quiet"].Dir)
 	}
 
-	// The user's own edits are not an update.
+	// Edits made here are a difference from upstream, and said to be ours.
 	write(t, filepath.Join(show, "notes.md"), "v1, and my own notes")
 	write(t, filepath.Join(show, "mine.md"), "written here")
-	if _, by = u.stageUpdate(r, quiet); by["show-me"].Changed {
-		t.Errorf("local edits were reported as an update: %+v", by["show-me"])
+	if _, by = u.stageUpdate(r, quiet); !by["show-me"].Changed || !by["show-me"].Local {
+		t.Errorf("local edits = %+v, want changed by edits made here", by["show-me"])
 	}
 
 	u.files["show-me/notes.md"] = "v2"
@@ -294,10 +294,17 @@ func TestAnUpdateKeepsTheInvocationChoice(t *testing.T) {
 			next: map[string]string{"show-me/SKILL.md": manualShow},
 			want: choice{true, true}},
 		{name: "manual for Claude and pi only", skill: "show-me",
-			here: func(t *testing.T, dir string) { write(t, filepath.Join(dir, "SKILL.md"), manualShow) },
+			here: func(t *testing.T, dir string) {
+				path := filepath.Join(dir, "SKILL.md")
+				next, err := editFrontmatterManual(read(t, path), true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				write(t, path, next)
+			},
 			want: choice{true, false}},
 		{name: "manual for Codex only", skill: "show-me",
-			here: func(t *testing.T, dir string) { write(t, filepath.Join(dir, "agents", "openai.yaml"), manualOpenAI) },
+			here: func(t *testing.T, dir string) { write(t, filepath.Join(dir, "agents", "openai.yaml"), noImplicit) },
 			next: map[string]string{"show-me/SKILL.md": manualShow},
 			want: choice{false, true}},
 	}
@@ -424,10 +431,40 @@ func TestUpdateAdoptsASkillTheCLIInstalled(t *testing.T) {
 	if read(t, r.CLILock) != lock {
 		t.Error("the CLI's lock was written")
 	}
-	// Adopted: from here a change is told by the record.
-	write(t, filepath.Join(show, "notes.md"), "v2, and my own notes")
+	// Adopted: the record now says what was fetched.
 	if _, by := u.stageUpdate(r, show); by["show-me"].Changed {
 		t.Errorf("still changed after adopting: %+v", by["show-me"])
+	}
+}
+
+func TestAnUpdateShowsEditsMadeHere(t *testing.T) {
+	r, u := installed(t)
+	show := filepath.Join(r.Library, "show-me")
+	setManual(t, show, true)
+	write(t, filepath.Join(show, "notes.md"), "v1, and my own notes")
+
+	// Upstream has not moved: the edit is the whole difference, and the
+	// manual-only choice is not part of it.
+	got, by := u.stageUpdate(r, show)
+	s := by["show-me"]
+	if !s.Changed || !s.Local || !reflect.DeepEqual(s.Files, []FileChange{{Path: "notes.md", Status: ChangeModified}}) {
+		t.Fatalf("show-me = %+v", s)
+	}
+	if _, err := ApplyUpdate(r, got.ID, []string{show}); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(show, "notes.md")) != "v1" {
+		t.Error("applying did not put upstream's copy back")
+	}
+	if f, o := FileManual(show); !f || !o {
+		t.Errorf("the choice was lost: %v, %v", f, o)
+	}
+
+	// Upstream moved as well: changed, but not only by edits made here.
+	write(t, filepath.Join(show, "notes.md"), "v1, and my own notes")
+	u.files["show-me/notes.md"] = "v2"
+	if _, by := u.stageUpdate(r, show); !by["show-me"].Changed || by["show-me"].Local {
+		t.Errorf("show-me = %+v", by["show-me"])
 	}
 }
 

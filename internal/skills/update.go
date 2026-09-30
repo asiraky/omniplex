@@ -21,11 +21,13 @@ type UpdateStage struct {
 }
 
 type UpdateSkill struct {
-	Name    string       `json:"name"`
-	Dir     string       `json:"dir"`
-	Changed bool         `json:"changed"`
-	Gone    bool         `json:"gone,omitempty"` // no longer in the source
-	Files   []FileChange `json:"files"`
+	Name    string `json:"name"`
+	Dir     string `json:"dir"`
+	Changed bool   `json:"changed"`
+	Gone    bool   `json:"gone,omitempty"` // no longer in the source
+	// Local: upstream is what was installed; the difference is edits made here.
+	Local bool         `json:"local,omitempty"`
+	Files []FileChange `json:"files"`
 }
 
 type FileChange struct {
@@ -147,16 +149,16 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 			_ = os.RemoveAll(st.dir)
 			return UpdateStage{}, err
 		}
-		// With a record, changed means upstream moved since the install: the
-		// user's own edits are not an update. Without one there is only the
-		// installed copy to compare with.
-		if e, ok := rec.Get(filepath.Base(inst.Dir)); ok && e.Hash != "" {
-			u.Changed = e.Hash != upstream
-		} else {
-			u.Changed = len(files) > 0
-		}
+		// Changed is by content: a copy edited here differs from upstream as
+		// much as one upstream moved past, and applying puts upstream back.
+		// When the record says upstream has not moved, the difference is
+		// only the edits made here, and the dialog says so.
+		u.Changed = len(files) > 0
 		if u.Changed {
 			u.Files = files
+			if e, ok := rec.Get(filepath.Base(inst.Dir)); ok && e.Hash == upstream {
+				u.Local = true
+			}
 		}
 		st.m.Update.Targets = append(st.m.Update.Targets, updateTarget{Dir: filepath.Base(inst.Dir), Skill: sf.Name, Hash: upstream})
 		out.Skills = append(out.Skills, u)
@@ -191,33 +193,44 @@ func (st *stage) match(inst Skill) (stagedFolder, bool) {
 // each mechanism on its own: an installed copy whose harnesses disagreed
 // keeps disagreeing, and that stays the user's to fix.
 func keepManual(dir string, frontmatter, openai bool) error {
-	nowFrontmatter, nowOpenAI := FileManual(dir)
-	if nowFrontmatter == frontmatter && nowOpenAI == openai {
-		return nil
-	}
-	if err := SetManual(dir, frontmatter); err != nil {
-		return err
-	}
-	if openai == frontmatter {
-		return nil
-	}
-	// SetManual wrote both files one way; Codex's goes back the other.
-	path := filepath.Join(dir, filepath.FromSlash(openaiYAML))
-	data, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	next, err := editOpenAIManual(string(data), openai)
+	skillPath := filepath.Join(dir, "SKILL.md")
+	skill, err := os.ReadFile(skillPath)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if next == string(data) {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return writeAtomic(resolve(path), []byte(next))
+	nextSkill, err := editFrontmatterManual(string(skill), frontmatter)
+	if err != nil {
+		return fmt.Errorf("%w: SKILL.md: %v", ErrInvalid, err)
+	}
+	yamlPath := filepath.Join(dir, filepath.FromSlash(openaiYAML))
+	data, readErr := os.ReadFile(yamlPath)
+	yaml, nextYAML := string(data), ""
+	switch {
+	case errors.Is(readErr, fs.ErrNotExist):
+		// Created only to say manual: an installed copy without the file
+		// says nothing to Codex, and neither should the staged one.
+		if openai {
+			nextYAML = policyKey + ":\n  " + implicitKey + ": false\n"
+		}
+	case readErr != nil:
+		return readErr
+	default:
+		if nextYAML, err = editOpenAIManual(yaml, openai); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+	}
+	if nextSkill != string(skill) {
+		if err := writeAtomic(resolve(skillPath), []byte(nextSkill)); err != nil {
+			return err
+		}
+	}
+	if nextYAML == yaml {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(yamlPath), 0o755); err != nil {
+		return err
+	}
+	return writeAtomic(resolve(yamlPath), []byte(nextYAML))
 }
 
 // fileHashes maps each file of a skill folder to a hash of its bytes, over

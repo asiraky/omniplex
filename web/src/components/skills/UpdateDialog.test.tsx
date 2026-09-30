@@ -89,6 +89,25 @@ describe("UpdateDialog", () => {
     expect(updateAll()).toBeNull();
   });
 
+  it("says when the only difference is edits made here, and still offers to put upstream back", async () => {
+    const command = mockCommand({
+      stage_update: () =>
+        stage([
+          entry("mine", { changed: true, local: true, files: [{ path: "notes.md", status: "modified" }] }),
+          changed("newer"),
+        ]),
+      discard_staged: () => ({}),
+    });
+    open(command);
+    await screen.findByText("mine");
+
+    expect(rowOf("mine").getByText("edited here")).toBeTruthy();
+    expect(rowOf("mine").getByText(/replaces your edits/)).toBeTruthy();
+    expect(rowOf("mine").getByRole("button", { name: "Update mine" })).toBeTruthy();
+    expect(rowOf("newer").queryByText("edited here")).toBeNull();
+    expect(rowOf("newer").queryByText(/replaces your edits/)).toBeNull();
+  });
+
   it("updates just the skill that was chosen and leaves the rest waiting", async () => {
     const command = mockCommand({
       stage_update: () => stage([changed("a"), changed("b"), changed("c")]),

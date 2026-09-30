@@ -141,7 +141,7 @@ export function CommitBar({ ctx }: { ctx: SkillsContext }) {
                 {changes.map((c) => (
                   <li key={c.name} className="px-3">
                     <TickRow checked={!unticked.has(c.name)} onChange={(on) => tick(c.name, on)} disabled={busy}>
-                      <span className="block font-mono text-[12.5px] leading-tight break-all">{c.name}</span>
+                      <span className="block font-mono text-[12.5px] leading-tight wrap-anywhere">{c.name}</span>
                       <span className="text-muted-foreground block text-[12px] leading-snug">{changeText(c)}</span>
                     </TickRow>
                   </li>
