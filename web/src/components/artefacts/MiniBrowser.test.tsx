@@ -2,7 +2,8 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { frameFit, MiniBrowser } from "~/components/artefacts/MiniBrowser";
+import { frameFit } from "~/components/artefacts/frameFit";
+import { MiniBrowser } from "~/components/artefacts/MiniBrowser";
 import { render } from "~/test/harness";
 
 const frame = () => screen.getByTitle("page") as HTMLIFrameElement;

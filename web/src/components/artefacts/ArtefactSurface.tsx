@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { useArtefactText } from "~/components/artefacts/artefactText";
 import { TypeBadge } from "~/components/artefacts/ArtefactTile";
 import {
   CodeView,
@@ -23,7 +24,6 @@ import {
   MarkdownView,
   MediaView,
   PdfView,
-  useArtefactText,
 } from "~/components/artefacts/viewers";
 import { IconButton } from "~/components/IconButton";
 import { Button } from "~/components/ui/button";

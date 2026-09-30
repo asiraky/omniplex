@@ -5,10 +5,6 @@ import { cn } from "~/lib/utils";
 
 export type SkillsCommand = <T = unknown>(name: string, args: Record<string, unknown>) => Promise<T>;
 
-export function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 /**
  * All three harnesses, always in the same order and the same place, with the
  * ones that cannot see the skill faded out: down a list the columns line up,

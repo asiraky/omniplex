@@ -11,6 +11,7 @@ import { OpenPathContext } from "~/lib/openPath";
 import type { HarnessMeta, PullRequest, ThreadMeta, ThreadState } from "~/protocol";
 
 import { Composer } from "./Composer";
+import { useComposerItems } from "./composer/useComposerItems";
 import { ElicitationPrompt } from "./ElicitationPrompt";
 import { JobsStrip } from "./JobsStrip";
 import { PermissionPrompt } from "./PermissionPrompt";
@@ -214,36 +215,80 @@ function ComposerDock({
           onSave={schedule.save}
         />
       )}
-      <Composer
+      <ThreadComposer
         key={activeId}
-        ref={recents.composerRef}
-        draft={activeId ? (store.drafts[activeId] ?? "") : ""}
-        onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
-        disabled={state.closed || workspace.cleaning || workspace.failed}
-        disabledPlaceholder={workspace.placeholder}
-        busy={state.phase === "turn"}
-        onSend={commands.send}
-        onSchedule={() => activeId && schedule.openFromComposer(activeId)}
-        onCancel={commands.cancel}
-        attachments={activeId ? (store.attachments[activeId] ?? []) : []}
-        onAttachFiles={store.attachFiles}
-        onRemoveAttachment={(key) => activeId && store.removeAttachment(activeId, key)}
+        state={state}
+        activeId={activeId}
+        meta={meta}
         harnesses={harnesses}
-        harness={state.harness}
-        instance={meta?.providerInstance ?? ""}
-        model={state.model}
-        effort={state.effort}
-        onSwitchModel={harness.switchModel}
-        onSwitchEffort={harness.switchEffort}
-        onSwitchAccount={(instance, model) =>
-          void harness.switchAccount(instance, { model, confirm: true })
-        }
-        usage={state.usage}
-        loadComposerItems={commands.loadComposerItems}
-        onRunClientAction={commands.runClientComposerAction}
-        onRunComposerAction={commands.runComposerAction}
-        onCommandUsed={recents.noteUsed}
+        commands={commands}
+        harness={harness}
+        recents={recents}
+        schedule={schedule}
+        store={store}
+        workspace={workspace}
       />
     </>
+  );
+}
+
+/**
+ * The attached thread's composer, keyed per thread by the dock so its command
+ * catalogue starts empty on a switch rather than showing the last thread's.
+ */
+function ThreadComposer({
+  state,
+  activeId,
+  meta,
+  harnesses,
+  commands,
+  harness,
+  recents,
+  schedule,
+  store,
+  workspace,
+}: {
+  state: ThreadState;
+  activeId: string | null;
+  meta: ThreadMeta | undefined;
+  harnesses: HarnessMeta[];
+  commands: ThreadCommands;
+  harness: ThreadHarness;
+  recents: RecentSkills;
+  schedule: ScheduleEditor;
+  store: ComposerDrafts;
+  workspace: ReturnType<typeof workspaceStatus>;
+}) {
+  const catalogue = useComposerItems(commands.loadComposerItems);
+  return (
+    <Composer
+      ref={recents.composerRef}
+      draft={activeId ? (store.drafts[activeId] ?? "") : ""}
+      onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
+      disabled={state.closed || workspace.cleaning || workspace.failed}
+      disabledPlaceholder={workspace.placeholder}
+      busy={state.phase === "turn"}
+      onSend={commands.send}
+      onSchedule={() => activeId && schedule.openFromComposer(activeId)}
+      onCancel={commands.cancel}
+      attachments={activeId ? (store.attachments[activeId] ?? []) : []}
+      onAttachFiles={store.attachFiles}
+      onRemoveAttachment={(key) => activeId && store.removeAttachment(activeId, key)}
+      harnesses={harnesses}
+      harness={state.harness}
+      instance={meta?.providerInstance ?? ""}
+      model={state.model}
+      effort={state.effort}
+      onSwitchModel={harness.switchModel}
+      onSwitchEffort={harness.switchEffort}
+      onSwitchAccount={(instance, model) =>
+        void harness.switchAccount(instance, { model, confirm: true })
+      }
+      usage={state.usage}
+      catalogue={catalogue}
+      onRunClientAction={commands.runClientComposerAction}
+      onRunComposerAction={commands.runComposerAction}
+      onCommandUsed={recents.noteUsed}
+    />
   );
 }

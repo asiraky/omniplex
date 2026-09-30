@@ -15,7 +15,7 @@ const FILTERS: { id: ArtefactFilter; label: string }[] = [
 
 /** Most recently shown first, narrowed to one source. An upload the agent
     has since revised and shown is the agent's work now. */
-export function listArtefacts(artefacts: Artefact[], filter: ArtefactFilter): Artefact[] {
+function listArtefacts(artefacts: Artefact[], filter: ArtefactFilter): Artefact[] {
   return artefacts
     .filter((a) => filter === "all" || a.source === filter)
     .sort((a, b) => b.shownAt - a.shownAt);

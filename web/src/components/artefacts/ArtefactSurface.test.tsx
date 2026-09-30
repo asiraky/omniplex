@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
-import { forgetTextCache, readText, TEXT_CAP } from "~/components/artefacts/viewers";
+import { forgetTextCache, readText, TEXT_CAP } from "~/components/artefacts/artefactText";
 import { rawUrl, type Artefact } from "~/lib/artefacts";
 import { makeArtefact } from "~/test/artefact";
 import { render, viewport, wrap } from "~/test/harness";

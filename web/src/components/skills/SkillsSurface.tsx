@@ -6,6 +6,7 @@ import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { Spinner } from "~/components/ui/spinner";
 import {
+  errorText,
   groupSkills,
   HARNESSES,
   matchesFilter,
@@ -19,7 +20,7 @@ import { cn } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
 import { NewSkillDialog } from "./NewSkillDialog";
-import { ErrorLine, errorText, HarnessChips, ProblemIcon, Segmented, type SkillsCommand } from "./parts";
+import { ErrorLine, HarnessChips, ProblemIcon, Segmented, type SkillsCommand } from "./parts";
 import { SkillDetailView } from "./SkillDetailView";
 
 export type { SkillsCommand } from "./parts";

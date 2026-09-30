@@ -24,7 +24,7 @@ import type { Label } from "~/protocol";
  * both themes through the badge accent machinery, and picking from nine chips
  * is the whole decision — no contrast checking passed on to the user.
  */
-export const LABEL_COLORS = [
+const LABEL_COLORS = [
   "#e5484d",
   "#f76b15",
   "#ffb224",

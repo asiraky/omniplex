@@ -13,10 +13,10 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { skillDescriptionError, skillNameError, type Skill } from "~/lib/skills";
+import { errorText, skillDescriptionError, skillNameError, type Skill } from "~/lib/skills";
 import { cn } from "~/lib/utils";
 
-import { ErrorLine, errorText, type SkillsCommand } from "./parts";
+import { ErrorLine, type SkillsCommand } from "./parts";
 
 type CreateScope = "project" | "user";
 

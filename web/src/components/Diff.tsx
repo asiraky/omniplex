@@ -20,7 +20,7 @@ const HEADER = /^(diff --git |index |--- |\+\+\+ |old mode |new mode |new file m
  * producing this text, so the parser only has to be right about git's output,
  * not about every patch a human might paste.
  */
-export function parsePatch(patch: string): DiffLine[] {
+function parsePatch(patch: string): DiffLine[] {
   const out: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;

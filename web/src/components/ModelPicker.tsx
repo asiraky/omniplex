@@ -2,7 +2,7 @@ import { CheckIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { ContextNote, EffortMenu } from "~/components/EffortMenu";
-import { PROVIDER_LOGOS, ProviderLogo } from "~/components/ProviderLogo";
+import { ProviderLogo } from "~/components/ProviderLogo";
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsibleContent } from "~/components/ui/collapsible";
 import {
@@ -16,7 +16,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import {
-  defaultModel,
   isLegacy,
   pickerInstances,
   resolveInstance,
@@ -25,6 +24,7 @@ import {
 } from "~/lib/models";
 import { formatEffort } from "~/lib/efforts";
 import { rankModels, type ModelRow } from "~/lib/modelSearch";
+import { PROVIDER_LOGOS } from "~/lib/providerLogos";
 import { cn } from "~/lib/utils";
 import { useIsDesktop } from "~/useMediaQuery";
 import type { HarnessMeta, ModelMeta } from "~/protocol";
@@ -544,5 +544,3 @@ function rowsOf(instances: PickerInstance[]): (ModelRow & { ref: PickerInstance 
     })),
   );
 }
-
-export { defaultModel };

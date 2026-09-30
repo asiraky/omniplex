@@ -14,11 +14,18 @@ import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { useCopy } from "~/lib/clipboard";
 import { fileIconFor } from "~/lib/fileIcons";
-import { fmtSize, splitFrontmatter, type Skill, type SkillDetail, type SkillFileContent } from "~/lib/skills";
+import {
+  errorText,
+  fmtSize,
+  splitFrontmatter,
+  type Skill,
+  type SkillDetail,
+  type SkillFileContent,
+} from "~/lib/skills";
 import { cn } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
-import { ErrorLine, errorText, HarnessChips, ProblemIcon, ScopeBadge, Segmented, type SkillsCommand } from "./parts";
+import { ErrorLine, HarnessChips, ProblemIcon, ScopeBadge, Segmented, type SkillsCommand } from "./parts";
 
 type ViewMode = "preview" | "source";
 

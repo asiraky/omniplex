@@ -1,29 +1,24 @@
-import { ArrowUpIcon, ChevronDownIcon, ClockIcon, PaperclipIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { PaperclipIcon } from "lucide-react";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 
-import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { ContextMeter } from "~/components/ContextMeter";
-import { ModelPicker } from "~/components/ModelPicker";
-import { Button } from "~/components/ui/button";
-import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "~/components/ui/command";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
-import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "~/components/ui/sheet";
-import { Spinner } from "~/components/ui/spinner";
-import {
-  detectComposerTrigger,
-  rankComposerItems,
-  replaceComposerTrigger,
-  submittedComposerAction,
-} from "~/lib/composerItems";
-import { formatContextWindow, pickerInstances, resolveInstance, resolveModel, type PickerInstance } from "~/lib/models";
-import { cn } from "~/lib/utils";
-import { dragHasFiles, filesFrom, overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
-import { pastedFile } from "~/lib/paste";
+import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
-import type { ComposerItem, HarnessMeta, Usage } from "~/protocol";
-import { useLatest } from "~/useLatest";
+import type { PickerInstance } from "~/lib/models";
+import { cn } from "~/lib/utils";
+import type { HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
+
+import { AttachButton } from "./composer/AttachButton";
+import { AttachmentStrip } from "./composer/AttachmentStrip";
+import { CommandMenu } from "./composer/CommandMenu";
+import { ComposerModelPicker } from "./composer/ComposerModelPicker";
+import { SendButtons } from "./composer/SendButtons";
+import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
+import { useComposerMenu } from "./composer/useComposerMenu";
+import { useComposerSend } from "./composer/useComposerSend";
+import { useDraftRef } from "./composer/useDraftRef";
+import { useFileDrop, usePasteIntake } from "./composer/useFileIntake";
 
 /** What a message carries besides its text: the ready images by id, and the
     ready files by the artefact each became. */
@@ -38,40 +33,7 @@ export interface ComposerHandle {
   focusEnd: (cursor?: number) => void;
 }
 
-const NO_HARNESSES: HarnessMeta[] = [];
-
-export function Composer({
-  ref,
-  draft,
-  onDraftChange,
-  disabled,
-  sendDisabled = false,
-  busy,
-  onSend,
-  onSchedule,
-  onCancel,
-  attachments = [],
-  onAttachFiles,
-  onRemoveAttachment,
-  disabledPlaceholder,
-  harnesses = NO_HARNESSES,
-  harness = "",
-  instance = "",
-  model = "",
-  effort = "",
-  onSwitchModel,
-  onSwitchEffort,
-  onSwitchAccount,
-  anyHarness = false,
-  onPickInstance,
-  usage,
-  loadComposerItems,
-  onRunClientAction,
-  onRunComposerAction,
-  onCommandUsed,
-  tools,
-  footer,
-}: {
+interface ComposerProps {
   ref?: Ref<ComposerHandle>;
   /**
    * The in-progress message. Owned by the parent and keyed per thread there,
@@ -118,7 +80,9 @@ export function Composer({
   onPickInstance?: (instance: PickerInstance) => void;
   /** The thread's token usage, source of the context meter. */
   usage?: Usage;
-  loadComposerItems?: () => Promise<ComposerItem[]>;
+  /** The provider's command catalogue, from `useComposerItems` in the parent.
+      Omitted, the menu offers only the composer's own commands. */
+  catalogue?: ComposerCatalogue;
   onRunClientAction?: (action: string) => void;
   onRunComposerAction?: (action: string, args: string, invocation: string) => Promise<void>;
   /** Reports the leading `/token` of a submitted message, so the parent can
@@ -128,49 +92,54 @@ export function Composer({
   tools?: ReactNode;
   /** A drawer under the box, for context that is usually right already. */
   footer?: ReactNode;
-}) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+}
+
+const NO_HARNESSES: HarnessMeta[] = [];
+const NO_ATTACHMENTS: Attachment[] = [];
+
+function placeholderFor(blocked: boolean, disabledPlaceholder: string | undefined, isDesktop: boolean) {
+  if (blocked) return disabledPlaceholder ?? "Thread closed";
   // There is no ⇧↵ worth advertising on a phone, so keep the hint to desktop.
+  return isDesktop ? "Ask anything…  (↵ to send · ⇧↵ for newline)" : "Ask anything…";
+}
+
+export function Composer({
+  ref,
+  draft,
+  onDraftChange,
+  disabled,
+  sendDisabled = false,
+  busy,
+  onSend,
+  onSchedule,
+  onCancel,
+  attachments = NO_ATTACHMENTS,
+  onAttachFiles,
+  onRemoveAttachment,
+  disabledPlaceholder,
+  harnesses = NO_HARNESSES,
+  harness = "",
+  instance = "",
+  model = "",
+  effort = "",
+  onSwitchModel,
+  onSwitchEffort,
+  onSwitchAccount,
+  anyHarness = false,
+  onPickInstance,
+  usage,
+  catalogue = NO_CATALOGUE,
+  onRunClientAction,
+  onRunComposerAction,
+  onCommandUsed,
+  tools,
+  footer,
+}: ComposerProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDesktop = useIsDesktop();
-
-  // The running model's own reasoning levels, so the effort control offers what
-  // this model accepts rather than a fixed set. Legacy picks report none, and
-  // the control simply does not appear.
-  const modelEfforts = useMemo(() => {
-    const instances = pickerInstances(harnesses);
-    const inst = resolveInstance(instances, instance, harness);
-    return resolveModel(inst, model)?.efforts ?? [];
-  }, [harnesses, instance, harness, model]);
-  const contextLabel = formatContextWindow(usage?.contextWindow);
-  const [providerItems, setProviderItems] = useState<ComposerItem[]>([]);
-  const [loadingItems, setLoadingItems] = useState(false);
-  // Only send reads it, so a catalogue landing need not render anything.
-  const catalogueReady = useRef(!loadComposerItems);
-  const loadSequence = useRef(0);
-  const draftRef = useRef(draft);
-  const [cursor, setCursor] = useState(draft.length);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [dismissedTrigger, setDismissedTrigger] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [composerFocused, setComposerFocused] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  // Dragging over a child fires dragleave on the parent, so a boolean set from
-  // those two events flickers as the pointer crosses the textarea. Depth counts
-  // enters against leaves instead, and only zero means the drag has gone.
-  const dragDepth = useRef(0);
-  const [dragging, setDragging] = useState(false);
+  const { draftRef, changeDraft } = useDraftRef(draft, onDraftChange);
 
-  const uploading = attachments.some((a) => a.status === "uploading");
-  const sendableAttachments = attachments.filter((a) => a.status === "ready" || a.status === "staged").length;
-  const carriesFiles = attachments.some((a) => a.kind === "file" && a.status !== "error");
-  // The server would refuse it, and a refused send has already cleared the
-  // composer by the time it says so.
-  const tooMuch = overPromptLimit(attachments);
-  const cannotSend =
-    disabled || sendDisabled || uploading || tooMuch || (!draft.trim() && sendableAttachments === 0);
-
-  // Set by ⌘⇧V / Ctrl⇧V between its keydown and the paste it causes.
-  const plainPaste = useRef(false);
   const attach = useCallback(
     (files: File[]) => {
       if (disabled || files.length === 0) return;
@@ -178,81 +147,47 @@ export function Composer({
     },
     [disabled, onAttachFiles],
   );
+  const drop = useFileDrop(attach);
+  const paste = usePasteIntake({ attach, disabled, textAsFile: !!onAttachFiles });
 
-  const items = useMemo<ComposerItem[]>(() => {
-    const clientItems: ComposerItem[] = [
-      {
-        id: "client:model",
-        name: "model",
-        description: "Switch response model for this thread",
-        kind: "command",
-        trigger: "/",
-        insertText: "/model",
-        origin: "built-in",
-        behavior: "client-action",
-        action: "model",
-      },
-    ];
-    const claimed = new Set(clientItems.map((item) => `${item.trigger}\0${item.insertText}`));
-    return [
-      ...clientItems,
-      ...providerItems.filter((item) => !claimed.has(`${item.trigger}\0${item.insertText}`)),
-    ];
-  }, [providerItems]);
-
-  const reloadItems = useCallback(() => {
-    if (!loadComposerItems) {
-      setProviderItems([]);
-      catalogueReady.current = true;
-      return;
-    }
-    const sequence = ++loadSequence.current;
-    setLoadingItems(true);
-    loadComposerItems()
-      .then((next) => {
-        if (sequence === loadSequence.current) {
-          setProviderItems(next);
-          catalogueReady.current = true;
-        }
-      })
-      .catch(() => {
-        // Retain a previously successful catalogue. If the first request
-        // failed, catalogueReady remains false and slash text is not sent as
-        // a prompt while its behavior is unknown.
-      })
-      .finally(() => {
-        if (sequence === loadSequence.current) setLoadingItems(false);
-      });
-  }, [loadComposerItems]);
-
-  // The catalogue cannot load while the workspace is still being prepared: the
-  // actor has no thread to ask, so the request fails and `catalogueReady`
-  // stays false. Retry on the edge where sending becomes possible, or a slash
-  // command written during the wait would be silently refused afterwards.
-  const wasSendBlocked = useRef(sendDisabled);
-  useEffect(() => {
-    if (wasSendBlocked.current && !sendDisabled) reloadItems();
-    wasSendBlocked.current = sendDisabled;
-  }, [reloadItems, sendDisabled]);
-
-  useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
-
-  const changeDraft = useCallback(
-    (next: string) => {
-      draftRef.current = next;
-      onDraftChange(next);
+  const runClientAction = useCallback(
+    (action: string) => {
+      if (action === "model") {
+        // Let the command popover close before opening the picker. Focusing
+        // the textarea here would immediately dismiss the newly opened picker.
+        window.requestAnimationFrame(() => setModelPickerOpen(true));
+      } else {
+        onRunClientAction?.(action);
+      }
     },
-    [onDraftChange],
+    [onRunClientAction],
   );
 
-  useEffect(() => {
-    reloadItems();
-    return () => {
-      loadSequence.current++;
-    };
-  }, [reloadItems]);
+  const menu = useComposerMenu({
+    draft,
+    draftRef,
+    changeDraft,
+    catalogue,
+    textareaRef,
+    disabled,
+    sendDisabled,
+    runClientAction,
+    onRunComposerAction,
+  });
+  const { send, cannotSend, sendableAttachments, carriesFiles, tooMuch } = useComposerSend({
+    draft,
+    draftRef,
+    changeDraft,
+    attachments,
+    disabled,
+    sendDisabled,
+    catalogueReady: catalogue.ready,
+    items: menu.items,
+    onSend,
+    onCommandUsed,
+    runClientAction,
+    onRunComposerAction,
+  });
 
   // Grow with the content, up to a cap. Runs on mount too, so a restored draft
   // opens at the right height instead of a single collapsed row.
@@ -263,168 +198,13 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [draft]);
 
-  const focusAt = useCallback((nextCursor: number) => {
-    window.requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(nextCursor, nextCursor);
-      setCursor(nextCursor);
-    });
-  }, []);
-
+  const { focusAt } = menu;
   useImperativeHandle(
     ref,
     () => ({
       focusEnd: (nextCursor?: number) => focusAt(nextCursor ?? draftRef.current.length),
     }),
-    [focusAt],
-  );
-
-  const trigger = useMemo(
-    () => detectComposerTrigger(draft, cursor, items),
-    [draft, cursor, items],
-  );
-
-  // Provider catalogues can change while a thread is open. Refresh at the
-  // start of each completion interaction; native adapters remain authoritative
-  // without making the core subscribe to provider-specific invalidations.
-  // The query is read through a ref so typing after the trigger does not
-  // re-run this: it is once per trigger opening, not once per keystroke.
-  const triggerQuery = useLatest(trigger?.query);
-  useEffect(() => {
-    if (triggerQuery.current === "") reloadItems();
-  }, [reloadItems, trigger?.trigger, triggerQuery]);
-  const triggerKey = trigger ? `${trigger.start}:${trigger.end}:${trigger.trigger}:${trigger.query}` : "";
-  const matches = useMemo(
-    () => (trigger ? rankComposerItems(items, trigger) : []),
-    [items, trigger],
-  );
-  const menuOpen = Boolean(
-    trigger && triggerKey !== dismissedTrigger && !disabled && composerFocused,
-  );
-
-  // A new trigger, or a new query under it, is a new list: start at its top.
-  const [indexedTrigger, setIndexedTrigger] = useState(triggerKey);
-  if (indexedTrigger !== triggerKey) {
-    setIndexedTrigger(triggerKey);
-    setActiveIndex(0);
-  }
-
-  const choose = useCallback(
-    (item: ComposerItem) => {
-      if (!trigger) return;
-      if (item.behavior === "client-action" && item.action) {
-        const next = replaceComposerTrigger(draft, trigger, "");
-        changeDraft(next.value);
-        setDismissedTrigger(triggerKey);
-        if (item.action === "model") {
-          // Let the command popover close before opening the picker. Focusing
-          // the textarea here would immediately dismiss the newly opened picker.
-          window.requestAnimationFrame(() => setModelPickerOpen(true));
-        } else {
-          onRunClientAction?.(item.action);
-        }
-        return;
-      }
-      if (item.behavior === "adapter-action" && item.action) {
-        // An adapter action is a turn by another name: it goes to the same
-        // thread the send button is waiting on, so it waits with it.
-        if (sendDisabled) return;
-        const next = replaceComposerTrigger(draft, trigger, "");
-        setDismissedTrigger(triggerKey);
-        // Keep the literal command in place if the provider rejects it; App
-        // has already surfaced the error and the user can retry or edit it.
-        const submittedDraft = draft;
-        void onRunComposerAction?.(item.action, "", item.insertText)
-          .then(() => {
-            if (draftRef.current === submittedDraft) changeDraft(next.value);
-          })
-          .catch(() => {});
-        return;
-      }
-      const next = replaceComposerTrigger(draft, trigger, `${item.insertText} `);
-      changeDraft(next.value);
-      setDismissedTrigger(triggerKey);
-      focusAt(next.cursor);
-    },
-    [changeDraft, draft, focusAt, onRunClientAction, onRunComposerAction, sendDisabled, trigger, triggerKey],
-  );
-
-  const send = async () => {
-    const t = draft.trim();
-    // A message may be nothing but attachments: "what is this?" is often the
-    // whole question, and the picture or the file is the rest of it.
-    if ((!t && sendableAttachments === 0) || disabled || sendDisabled) return;
-    // Sending now would send the message without the file still on its way up,
-    // which is not what attaching it meant.
-    if (uploading || tooMuch) return;
-    if (t.startsWith("/") && !catalogueReady.current) return;
-    // Recorded on submit rather than on completion: choosing from the menu is
-    // browsing, sending is the use. The token is reported whatever the message
-    // turns out to do — a prompt, a client action, an adapter action — because
-    // all three are things the user reached for. Matched against the catalogue
-    // rather than assumed to start with a slash: Codex's own skills trigger on
-    // `$`, and a message beginning with a word that is not a command at all is
-    // not a use of anything.
-    const leading = t.split(/\s/, 1)[0] ?? "";
-    const used = items.find((item) => item.insertText === leading);
-    if (used) onCommandUsed?.(used.insertText);
-    const intercepted = submittedComposerAction(t, items);
-    if (intercepted?.item.behavior === "client-action") {
-      changeDraft("");
-      if (intercepted.item.action === "model") {
-        window.requestAnimationFrame(() => setModelPickerOpen(true));
-      } else if (intercepted.item.action) {
-        onRunClientAction?.(intercepted.item.action);
-      }
-      return;
-    }
-    if (intercepted?.item.behavior === "adapter-action" && intercepted.item.action) {
-      try {
-        const submittedDraft = draftRef.current;
-        await onRunComposerAction?.(intercepted.item.action, intercepted.args, t);
-        if (draftRef.current === submittedDraft) changeDraft("");
-      } catch {
-        // App reports the provider error. Retain the command so it can be
-        // retried or edited, without leaving a rejected promise behind.
-      }
-      return;
-    }
-    onSend(t, sendPayload(attachments));
-    changeDraft("");
-  };
-
-  const menu = (
-    <Command shouldFilter={false} className="bg-transparent">
-      <CommandList className="max-h-[min(45dvh,18rem)]">
-        <CommandEmpty>{loadingItems ? "Loading commands…" : "No matching command."}</CommandEmpty>
-        <CommandGroup>
-          {matches.map((item, index) => (
-            <CommandItem
-              key={item.id}
-              value={item.id}
-              aria-selected={index === activeIndex}
-              className={index === activeIndex ? "bg-accent text-accent-foreground" : undefined}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseMove={() => setActiveIndex(index)}
-              onSelect={() => choose(item)}
-            >
-              <span className="min-w-0 flex-1">
-                <span className="font-medium">{item.insertText}</span>
-                {item.argsHint && <span className="text-muted-foreground ml-1">{item.argsHint}</span>}
-                {item.description && (
-                  <span className="text-muted-foreground ml-2 text-xs">{item.description}</span>
-                )}
-              </span>
-              {item.origin && (
-                <span className="text-muted-foreground shrink-0 text-[11px]">[{item.origin}]</span>
-              )}
-            </CommandItem>
-          ))}
-        </CommandGroup>
-      </CommandList>
-    </Command>
+    [draftRef, focusAt],
   );
 
   const textarea = (
@@ -434,69 +214,23 @@ export function Composer({
       value={draft}
       disabled={disabled}
       aria-label="Message"
-      placeholder={
-        disabled || sendDisabled
-          ? (disabledPlaceholder ?? "Thread closed")
-          : isDesktop
-            ? "Ask anything…  (↵ to send · ⇧↵ for newline)"
-            : "Ask anything…"
-      }
+      placeholder={placeholderFor(disabled || sendDisabled, disabledPlaceholder, isDesktop)}
       onChange={(e) => {
         changeDraft(e.target.value);
-        setCursor(e.target.selectionStart);
+        menu.setCursor(e.target.selectionStart);
       }}
-      onPaste={(e) => {
-        // A screenshot on the clipboard is the fastest way to attach one, and
-        // the reason the terminal habit transfers; a copied file comes the same
-        // way.
-        const files = filesFrom(e.clipboardData);
-        if (files.length > 0) {
-          e.preventDefault();
-          attach(files);
-          return;
-        }
-        // A long paste goes in as a file rather than a wall of text, unless it
-        // came with ⇧, the usual "paste it as it is".
-        const plain = plainPaste.current;
-        plainPaste.current = false;
-        if (plain || disabled || !onAttachFiles) return;
-        const file = pastedFile(e.clipboardData.getData("text/plain"));
-        if (!file) return;
-        e.preventDefault();
-        attach([file]);
-      }}
-      onFocus={() => setComposerFocused(true)}
-      onBlur={() => setComposerFocused(false)}
-      onClick={(e) => setCursor(e.currentTarget.selectionStart)}
+      onPaste={paste.onPaste}
+      onFocus={() => menu.setFocused(true)}
+      onBlur={() => menu.setFocused(false)}
+      onClick={(e) => menu.setCursor(e.currentTarget.selectionStart)}
       onKeyUp={(e) => {
-        plainPaste.current = false;
-        setCursor(e.currentTarget.selectionStart);
+        paste.clear();
+        menu.setCursor(e.currentTarget.selectionStart);
       }}
       onKeyDown={(e) => {
-        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "v") plainPaste.current = true;
+        paste.noteKey(e);
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-        if (menuOpen) {
-          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-            e.preventDefault();
-            if (matches.length > 0) {
-              const offset = e.key === "ArrowDown" ? 1 : -1;
-              setActiveIndex((index) => (index + offset + matches.length) % matches.length);
-            }
-            return;
-          }
-          if (e.key === "Escape") {
-            e.preventDefault();
-            setDismissedTrigger(triggerKey);
-            return;
-          }
-          if (e.key === "Enter" || e.key === "Tab") {
-            e.preventDefault();
-            if (matches.length > 0) {
-              choose(matches[Math.min(activeIndex, matches.length - 1)]!);
-            }
-            return;
-          }
-        }
+        if (menu.onKey(e)) return;
         if (e.key !== "Enter") return;
         // Shift+Enter is the newline; let the textarea handle it.
         if (e.shiftKey) return;
@@ -509,190 +243,53 @@ export function Composer({
     />
   );
 
-  // What is going out with the next message: pictures as thumbnails, anything
-  // else as a file tile. Sized for a thumb: the remove button is always
-  // visible, because there is no hover on a phone.
-  const strip = attachments.length > 0 && (
-    <div className="flex flex-wrap gap-2 px-3 pt-3">
-      {attachments.map((a) => (
-        <div key={a.key} className={cn("relative", a.kind === "file" && "max-w-60 min-w-0")}>
-          {a.kind === "file" ? (
-            <FileChip attachment={a} />
-          ) : (
-            <>
-              <img
-                src={a.previewUrl}
-                alt={a.name}
-                className={cn("size-16 rounded-lg border object-cover", a.status === "error" && "opacity-40")}
-              />
-              {a.status === "uploading" && (
-                <span className="bg-background/60 absolute inset-0 grid place-items-center rounded-lg">
-                  <Spinner className="size-5" />
-                </span>
-              )}
-              {a.status === "error" && (
-                <span
-                  title={a.error}
-                  className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
-                >
-                  {a.error ?? "Upload failed"}
-                </span>
-              )}
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => onRemoveAttachment?.(a.key)}
-            aria-label={`Remove ${a.name}`}
-            className="bg-background text-muted-foreground hover:text-foreground absolute -top-2 -right-2 grid size-6 place-items-center rounded-full border shadow-sm"
-          >
-            <XIcon className="size-3.5" />
-          </button>
-        </div>
-      ))}
-      {tooMuch && (
-        <p className="text-destructive w-full text-xs">Images and PDFs are over 20 MB in total. Remove something to send.</p>
-      )}
-    </div>
-  );
-
   return (
     <div className="mx-auto max-w-3xl px-4 pb-[calc(0.875rem+env(safe-area-inset-bottom))] md:px-5">
       <div
         className={cn(
           "bg-card focus-within:border-ring focus-within:ring-ring/50 relative z-10 rounded-2xl border shadow-lg transition-[color,box-shadow] focus-within:ring-[3px]",
-          dragging && "border-primary ring-primary/50 ring-[3px]",
+          drop.dragging && "border-primary ring-primary/50 ring-[3px]",
         )}
-        onDragEnter={(e) => {
-          if (!dragHasFiles(e.dataTransfer)) return;
-          e.preventDefault();
-          dragDepth.current++;
-          setDragging(true);
-        }}
-        onDragOver={(e) => {
-          if (dragHasFiles(e.dataTransfer)) e.preventDefault();
-        }}
-        onDragLeave={() => {
-          if (dragDepth.current > 0) dragDepth.current--;
-          if (dragDepth.current === 0) setDragging(false);
-        }}
-        onDrop={(e) => {
-          if (!dragHasFiles(e.dataTransfer)) return;
-          e.preventDefault();
-          dragDepth.current = 0;
-          setDragging(false);
-          attach(filesFrom(e.dataTransfer));
-        }}
+        {...drop.handlers}
       >
-        {dragging && (
+        {drop.dragging && (
           <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
             <PaperclipIcon className="size-4" />
             Drop files to attach
           </div>
         )}
-        {strip}
-        {isDesktop ? (
-          <Popover open={menuOpen}>
-            <PopoverAnchor asChild>{textarea}</PopoverAnchor>
-            <PopoverContent
-              side="top"
-              align="start"
-              onOpenAutoFocus={(event) => event.preventDefault()}
-              className="w-[min(40rem,calc(100vw-2rem))] p-0"
-            >
-              {menu}
-            </PopoverContent>
-          </Popover>
-        ) : (
-          <>
-            {textarea}
-            <Sheet
-              modal={false}
-              open={menuOpen}
-              onOpenChange={(open) => {
-                if (!open) setDismissedTrigger(triggerKey);
-              }}
-            >
-              <SheetContent
-                side="bottom"
-                onOpenAutoFocus={(event) => event.preventDefault()}
-                className="max-h-[70dvh] p-0 pb-[env(safe-area-inset-bottom)]"
-              >
-                <SheetHeader><SheetTitle>Commands</SheetTitle></SheetHeader>
-                {menu}
-              </SheetContent>
-            </Sheet>
-          </>
-        )}
+        <AttachmentStrip attachments={attachments} tooMuch={tooMuch} onRemove={onRemoveAttachment} />
+        <CommandMenu
+          isDesktop={isDesktop}
+          open={menu.open}
+          anchor={textarea}
+          onDismiss={menu.dismiss}
+          matches={menu.matches}
+          activeIndex={menu.activeIndex}
+          loading={catalogue.loading}
+          onHover={menu.setActiveIndex}
+          onChoose={menu.choose}
+        />
 
         <div className="flex items-center gap-1 px-2.5 pb-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              attach(Array.from(e.target.files ?? []));
-              // Cleared so picking the same file twice in a row still fires.
-              e.target.value = "";
-            }}
-          />
-          {onAttachFiles && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              disabled={disabled}
-              onClick={() => fileInputRef.current?.click()}
-              aria-label="Attach files"
-              title="Attach files"
-              className="text-muted-foreground hover:text-foreground size-11 shrink-0 rounded-full md:size-8"
-            >
-              <PlusIcon />
-            </Button>
-          )}
+          <AttachButton show={!!onAttachFiles} disabled={disabled} onFiles={attach} />
 
           {harnesses.length > 0 && (
-            // The one control for what runs the next turn: the model, the
-            // account it bills to among this harness's own accounts, and
-            // reasoning effort, which opens out of the same menu rather than
-            // sitting beside it as a second dropdown.
-            <ModelPicker
+            <ComposerModelPicker
               harnesses={harnesses}
-              lockDriver={!anyHarness}
-              onInstanceChange={onPickInstance}
-              disabled={disabled}
-              efforts={onSwitchEffort ? modelEfforts : []}
+              harness={harness}
+              instance={instance}
+              model={model}
               effort={effort}
-              contextLabel={contextLabel}
-              onEffortChange={onSwitchEffort}
-              value={{ harness, instance, model }}
-              onChange={(next) => {
-                const current = resolveInstance(pickerInstances(harnesses), instance, harness)?.id;
-                if (next.instance !== current) {
-                  onSwitchAccount?.(next.instance, next.model);
-                  return;
-                }
-                onSwitchModel?.(next.model);
-                // Effort is per model: a level the old model allowed (Codex's
-                // "ultra") may be one the new model rejects, which would break
-                // its next turn. When the chosen model does not support the
-                // current effort, drop to its strongest supported level —
-                // closest to the intent, and a valid, displayable value.
-                const nextEfforts =
-                  resolveModel(resolveInstance(pickerInstances(harnesses), instance, harness), next.model)
-                    ?.efforts ?? [];
-                if (effort && nextEfforts.length > 0 && !nextEfforts.includes(effort)) {
-                  onSwitchEffort?.(nextEfforts[nextEfforts.length - 1]);
-                }
-              }}
+              contextWindow={usage?.contextWindow}
+              anyHarness={anyHarness}
+              disabled={disabled}
               open={modelPickerOpen}
               onOpenChange={setModelPickerOpen}
-              compact
-              // shrink undoes Button's shrink-0: the picker is the one control
-              // in this row that can give up width, so it must, or the send
-              // button is what gets pushed off a narrow screen.
-              className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent h-11 w-auto max-w-[55%] min-w-0 shrink border-0 bg-transparent px-2 shadow-none dark:bg-transparent md:h-8 md:min-h-8"
+              onSwitchModel={onSwitchModel}
+              onSwitchEffort={onSwitchEffort}
+              onSwitchAccount={onSwitchAccount}
+              onPickInstance={onPickInstance}
             />
           )}
 
@@ -702,69 +299,15 @@ export function Composer({
 
           {usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />}
 
-          {busy && (
-            <Button
-              variant="destructive"
-              size="icon"
-              onClick={onCancel}
-              aria-label="Interrupt the running turn"
-              title="Interrupt the running turn"
-              // Set apart from the model control beside it: the send button
-              // ends the row rather than continuing it, and a shared gap made
-              // the two read as one cluster.
-              className="ml-1.5 size-11 shrink-0 rounded-full md:ml-2 md:size-8"
-            >
-              <SquareIcon className="size-3.5 fill-current" />
-            </Button>
-          )}
-          {/* Sending while a turn runs hands the message to the harness,
-              which reads it at its next step. The button only appears once
-              there is something to send, so an idle-looking stop button is
-              not crowded by a dead send. */}
-          {(!busy || draft.trim() || sendableAttachments > 0) && (
-            // Scheduling rides on send's edge rather than taking its own slot:
-            // a phone-width row has no room for a third round button.
-            <div className="ml-1.5 flex shrink-0 md:ml-2">
-              <Button
-                size="icon"
-                disabled={cannotSend}
-                onClick={() => void send()}
-                aria-label={busy ? "Send to the running turn" : "Send"}
-                title={busy ? "The model reads it after its current step" : undefined}
-                className={cn("size-11 shrink-0 rounded-full md:size-8", onSchedule && "rounded-r-none")}
-              >
-                <ArrowUpIcon />
-              </Button>
-              {onSchedule && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      size="icon"
-                      disabled={cannotSend}
-                      aria-label="More send options"
-                      className="border-primary-foreground/25 h-11 w-7 shrink-0 rounded-l-none rounded-r-full border-l md:h-8 md:w-6"
-                    >
-                      <ChevronDownIcon className="size-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent side="top" align="end">
-                    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={() => void send()}>
-                      <ArrowUpIcon />
-                      Send now
-                    </DropdownMenuItem>
-                    {/* A scheduled prompt keeps its text and images, not files. */}
-                    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule} disabled={carriesFiles}>
-                      <ClockIcon />
-                      <span className="flex flex-col">
-                        Schedule send…
-                        {carriesFiles && <span className="text-muted-foreground text-xs">Not with files attached</span>}
-                      </span>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </div>
-          )}
+          <SendButtons
+            busy={busy}
+            hasContent={!!draft.trim() || sendableAttachments > 0}
+            cannotSend={cannotSend}
+            carriesFiles={carriesFiles}
+            onSend={() => void send()}
+            onSchedule={onSchedule}
+            onCancel={onCancel}
+          />
         </div>
       </div>
       {footer && (
@@ -773,50 +316,6 @@ export function Composer({
         <div className="bg-muted/50 mx-2.5 -mt-3 rounded-b-xl border border-t-0 pt-3">
           {footer}
         </div>
-      )}
-    </div>
-  );
-}
-
-/** A staged non-image file: its tile, with the upload's progress or failure
-    in place of its size until it is ready. */
-function FileChip({ attachment: a }: { attachment: Attachment }) {
-  // A PDF goes to the attachment store in one request with nothing to count,
-  // so it has no progress to show; an artefact upload reports as it goes.
-  const pct = a.progress === undefined ? undefined : Math.round(a.progress * 100);
-  const detail =
-    a.status === "uploading" ? (
-      pct === undefined ? (
-        "Uploading…"
-      ) : (
-        `Uploading ${pct}%`
-      )
-    ) : a.status === "error" ? (
-      <span className="text-destructive" title={a.error}>
-        {a.error ?? "Upload failed"}
-      </span>
-    ) : undefined;
-  return (
-    <div className="relative">
-      <ArtefactTile
-        compact
-        name={a.name}
-        mediaType={a.mediaType ?? "application/octet-stream"}
-        size={a.size ?? 0}
-        detail={detail}
-        className={cn("pr-4", a.status === "error" && "border-destructive/50")}
-      />
-      {a.status === "uploading" && pct !== undefined && (
-        <span
-          role="progressbar"
-          aria-label={`Uploading ${a.name}`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={pct}
-          className="absolute inset-x-2 bottom-0.5 h-0.5 overflow-hidden rounded-full"
-        >
-          <span className="bg-primary block h-full transition-[width]" style={{ width: `${pct}%` }} />
-        </span>
       )}
     </div>
   );

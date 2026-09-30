@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { render, wrap } from "~/test/harness";
 import { Composer } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
+import type { ComposerCatalogue } from "./composer/useComposerItems";
 
 const png = (name = "shot.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
 const pdf = (name = "b.pdf") => new File([new Uint8Array([1, 2, 3])], name, { type: "application/pdf" });
@@ -287,41 +288,86 @@ describe("the send button's options", () => {
   });
 });
 
-describe("a workspace that is still being prepared", () => {
-  const compact = {
-    id: "command:compact",
-    name: "compact",
-    description: "Compact the transcript",
-    kind: "command" as const,
-    trigger: "/",
-    insertText: "/compact",
-    origin: "project" as const,
-    behavior: "adapter-action" as const,
-    action: "compact",
-  };
+const compact = {
+  id: "command:compact",
+  name: "compact",
+  description: "Compact the transcript",
+  kind: "command" as const,
+  trigger: "/",
+  insertText: "/compact",
+  origin: "project" as const,
+  behavior: "adapter-action" as const,
+  action: "compact",
+};
 
+// cmdk scrolls its selected item into view as the menu opens; jsdom has no
+// layout to scroll.
+beforeAll(() => {
+  Element.prototype.scrollIntoView ??= () => {};
+});
+
+const catalogue = (over: Partial<ComposerCatalogue> = {}): ComposerCatalogue => ({
+  items: [compact],
+  loading: false,
+  ready: true,
+  reload: vi.fn(),
+  ...over,
+});
+
+describe("a workspace that is still being prepared", () => {
   it("refuses an adapter command picked from the menu while sending is held back", async () => {
     const onRunComposerAction = vi.fn().mockResolvedValue(undefined);
     mount({
       draft: "/comp",
       sendDisabled: true,
-      loadComposerItems: async () => [compact],
+      catalogue: catalogue(),
       onRunComposerAction,
     });
     fireEvent.focus(box());
     fireEvent.click(await screen.findByText("/compact"));
     expect(onRunComposerAction).not.toHaveBeenCalled();
   });
+});
 
-  it("reloads the command catalogue once the workspace can take commands", async () => {
-    // The first load fails the way the actor fails before it has a thread.
-    const loadComposerItems = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("workspace is not ready"))
-      .mockResolvedValue([compact]);
-    const { rerender } = mount({ draft: "", sendDisabled: true, loadComposerItems });
-    await waitFor(() => expect(loadComposerItems).toHaveBeenCalledTimes(1));
-    await act(async () => rerender({ sendDisabled: false }));
-    await waitFor(() => expect(loadComposerItems).toHaveBeenCalledTimes(2));
+describe("the command catalogue", () => {
+  it("asks for a fresh catalogue once per trigger opening, not once per keystroke", () => {
+    const reload = vi.fn();
+    const { rerender } = mount({ draft: "", catalogue: catalogue({ reload }) });
+    expect(reload).not.toHaveBeenCalled();
+
+    const type = (value: string) => {
+      fireEvent.change(box(), { target: { value } });
+      rerender({ draft: value, catalogue: catalogue({ reload }) });
+    };
+    type("/");
+    expect(reload).toHaveBeenCalledTimes(1);
+    type("/co");
+    type("/com");
+    expect(reload).toHaveBeenCalledTimes(1);
+    type("");
+    type("/");
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds back slash text until a catalogue has loaded", () => {
+    const onRunComposerAction = vi.fn().mockResolvedValue(undefined);
+    const { onSend } = mount({
+      draft: "/compact",
+      catalogue: catalogue({ items: [], ready: false }),
+      onRunComposerAction,
+    });
+    fireEvent.click(sendButton());
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onRunComposerAction).not.toHaveBeenCalled();
+  });
+
+  it("runs a submitted adapter command instead of sending it as a prompt", async () => {
+    const onRunComposerAction = vi.fn().mockResolvedValue(undefined);
+    const onDraftChange = vi.fn();
+    const { onSend } = mount({ draft: "/compact now", catalogue: catalogue(), onRunComposerAction, onDraftChange });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(""));
+    expect(onRunComposerAction).toHaveBeenCalledWith("compact", "now", "/compact now");
+    expect(onSend).not.toHaveBeenCalled();
   });
 });
