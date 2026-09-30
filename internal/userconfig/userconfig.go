@@ -13,14 +13,14 @@ import (
 )
 
 // DefaultBranchFormat turns a `gh issue list` row into a branch name. It ships
-// as the default so the suggestion list works before anyone opens settings; it
-// is a string rather than Go code because the presenter is what evaluates it.
-const DefaultBranchFormat = "(issue) => `issue/${issue.number}-${issue.title.toLowerCase().replace(/[^a-z0-9]+/g, \"-\").replace(/^-+|-+$/g, \"\").slice(0, 40).replace(/-+$/, \"\")}`"
+// as the default so the suggestion list works before anyone opens settings.
+const DefaultBranchFormat = "issue/{number}-{title}"
 
 type Config struct {
 	Version int `json:"version"`
-	// BranchFormat is a JavaScript arrow function, object in and string out,
-	// evaluated by the web UI to name a new worktree. Empty means the default.
+	// BranchFormat is a template with {number} and {title} placeholders,
+	// filled in by the web UI to name a new worktree from an issue. Empty
+	// means the default.
 	BranchFormat string `json:"branchFormat,omitempty"`
 	// SuggestIssues disables the `gh` lookup for people who do not use it.
 	SuggestIssues *bool `json:"suggestIssues,omitempty"`
@@ -98,7 +98,9 @@ func Normalize(cfg Config) (Config, error) {
 	if cfg.Version != 1 {
 		return cfg, fmt.Errorf("unsupported user config version %d", cfg.Version)
 	}
-	if strings.TrimSpace(cfg.BranchFormat) == "" {
+	// Configs written before templates hold a JavaScript arrow function, which
+	// the UI no longer runs; any of those goes back to the default.
+	if strings.TrimSpace(cfg.BranchFormat) == "" || strings.Contains(cfg.BranchFormat, "=>") {
 		cfg.BranchFormat = DefaultBranchFormat
 	}
 	cfg.ProjectsDir = strings.TrimSpace(cfg.ProjectsDir)

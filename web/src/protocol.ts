@@ -459,7 +459,7 @@ export interface PullRequest {
  */
 export interface UserConfig {
   version: number;
-  /** A JavaScript arrow function, issue in and branch name out, evaluated here. */
+  /** A branch name template with {number} and {title} placeholders, filled in here. */
   branchFormat?: string;
   suggestIssues?: boolean;
   /** Where new projects' home folders go. Empty means ~/Omniplex. */

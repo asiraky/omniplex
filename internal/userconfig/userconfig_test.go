@@ -50,3 +50,21 @@ func TestABadValueOnDiskStillLoads(t *testing.T) {
 		t.Fatalf("fix: %v", err)
 	}
 }
+
+func TestNormalizeReplacesAnOldFunctionBranchFormatButKeepsATemplate(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                         DefaultBranchFormat,
+		"  ":                       DefaultBranchFormat,
+		"(i) => `fix/${i.number}`": DefaultBranchFormat,
+		"fix/{number}":             "fix/{number}",
+		"{title}-{number}":         "{title}-{number}",
+	} {
+		got, err := Normalize(Config{BranchFormat: in})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.BranchFormat != want {
+			t.Errorf("Normalize(%q).BranchFormat = %q, want %q", in, got.BranchFormat, want)
+		}
+	}
+}

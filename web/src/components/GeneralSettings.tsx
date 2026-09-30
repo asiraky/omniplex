@@ -13,12 +13,11 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
-import { Textarea } from "~/components/ui/textarea";
+import { branchTemplate, DEFAULT_BRANCH_TEMPLATE } from "~/lib/branchTemplate";
 import { pickerInstances } from "~/lib/models";
 import { LEVELS } from "~/lib/permissions";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Issue, PermissionLevel, UserConfig } from "~/protocol";
-import { makeFormatter } from "./WorkspacePicker";
 
 // A stand-in issue, so the preview shows a real answer rather than describing one.
 const sampleIssue: Issue = {
@@ -33,28 +32,28 @@ const UNSET = "__omniplex_unset__";
 
 function BranchFormatField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const preview = useMemo(() => {
-    const { format, error } = makeFormatter(value);
+    const { format, error } = branchTemplate(value);
     if (error) return { text: error, bad: true };
     const out = format(sampleIssue);
     return out
       ? { text: out, bad: false }
-      : { text: "function returned nothing for the sample issue", bad: true };
+      : { text: "the template makes nothing for the sample issue", bad: true };
   }, [value]);
 
   return (
     <div className="space-y-1.5">
       <Label htmlFor="settings-branch-format">Branch names from issues</Label>
       <p className="text-muted-foreground text-[11px]">
-        A JavaScript function, issue in and branch name out. It names the copies started from your
-        open GitHub issues.
+        Names the copies started from your open GitHub issues. {"{number}"} is the issue number
+        and {"{title}"} its title, lowercased with dashes. Leave it empty for the default.
       </p>
-      <Textarea
+      <Input
         id="settings-branch-format"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        placeholder={DEFAULT_BRANCH_TEMPLATE}
         spellCheck={false}
-        rows={4}
-        className="scroll-thin font-mono md:text-[11px]"
+        className="font-mono md:text-[12px]"
       />
       <p
         className={cn(

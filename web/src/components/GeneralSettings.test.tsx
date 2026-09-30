@@ -72,7 +72,7 @@ describe("GeneralSettings", () => {
     fireEvent.change(screen.getByLabelText("Projects folder"), { target: { value: "~/work" } });
     await pickLevel("Do everything");
     fireEvent.change(screen.getByLabelText("Branch names from issues"), {
-      target: { value: "(i) => `fix/${i.number}`" },
+      target: { value: "fix/{number}" },
     });
     save();
     await screen.findByRole("button", { name: "Saved" });
@@ -81,7 +81,7 @@ describe("GeneralSettings", () => {
       suggestIssues: true,
       projectsDir: "~/work",
       defaultLevel: "all",
-      branchFormat: "(i) => `fix/${i.number}`",
+      branchFormat: "fix/{number}",
     });
   });
 
@@ -119,12 +119,12 @@ describe("GeneralSettings", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("previews the branch a function makes, and says when it is broken", () => {
-    open({ version: 1, branchFormat: "(i) => `fix/${i.number}`" });
-    expect(screen.getByText(/#482 → fix\/482/)).toBeTruthy();
+  it("previews the branch a template makes, and says when it is broken", () => {
+    open({ version: 1, branchFormat: "fix/{number}-{title}" });
+    expect(screen.getByText(/#482 → fix\/482-token-refresh-500s-after-24h/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Branch names from issues"), {
-      target: { value: "(i) => " },
+      target: { value: "fix/{nmber}" },
     });
-    expect(screen.queryByText(/#482 → fix\/482/)).toBeNull();
+    expect(screen.getByText(/#482 → unknown placeholder \{nmber\}/)).toBeTruthy();
   });
 });
