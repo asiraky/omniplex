@@ -145,6 +145,10 @@ type Options struct {
 	Port int
 	// IncludePublic opts into binding globally routable addresses.
 	IncludePublic bool
+	// Private leaves out the local network when choosing automatically:
+	// loopback and overlay addresses only. A laptop on café wifi shares its
+	// LAN with strangers; its tailnet it shares only with the owner's devices.
+	Private bool
 }
 
 // ErrPublicNotAllowed is returned when binding would expose the server to the
@@ -174,7 +178,7 @@ func Plan(o Options) (BindPlan, error) {
 		// rule for exposing omniplex to the internet, and it is not a side effect of
 		// asking for a wildcard bind.
 		if host == "" || host == "0.0.0.0" || host == "::" {
-			return automatic(port, o.IncludePublic)
+			return automatic(port, o.IncludePublic, o.Private)
 		}
 
 		ip := net.ParseIP(host)
@@ -197,7 +201,7 @@ func Plan(o Options) (BindPlan, error) {
 		}, nil
 	}
 
-	return automatic(o.Port, o.IncludePublic)
+	return automatic(o.Port, o.IncludePublic, o.Private)
 }
 
 // hostnamePlan resolves a hostname to the addresses it names and binds those.
@@ -235,16 +239,23 @@ func hostnamePlan(host string, port int, includePublic bool) (BindPlan, error) {
 	return plan, nil
 }
 
-func automatic(port int, includePublic bool) (BindPlan, error) {
+func automatic(port int, includePublic, private bool) (BindPlan, error) {
 	local, err := Local()
 	if err != nil {
 		return BindPlan{}, err
 	}
+	return choose(local, port, includePublic, private), nil
+}
 
+// choose picks what to bind out of the addresses this machine holds.
+func choose(local []Addr, port int, includePublic, private bool) BindPlan {
 	plan := BindPlan{Port: port}
 	seen := map[string]bool{}
 	for _, a := range local {
-		if a.Kind == KindPublic && !includePublic {
+		if a.Kind == KindPublic && (!includePublic || private) {
+			continue
+		}
+		if a.Kind == KindPrivate && private {
 			continue
 		}
 		key := a.IP.String()
@@ -262,7 +273,7 @@ func automatic(port int, includePublic bool) (BindPlan, error) {
 	if len(plan.Addrs) == 0 {
 		plan.Addrs = []Addr{{IP: net.IPv4(127, 0, 0, 1), Kind: KindLoopback}}
 	}
-	return plan, nil
+	return plan
 }
 
 // URL renders the address as something a browser can open.

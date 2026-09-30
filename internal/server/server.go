@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/projection"
+	"github.com/asiraky/omniplex/internal/setup"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
 )
@@ -50,6 +52,8 @@ type Server struct {
 	// commit is the git revision this binary was built from, empty when it
 	// was not built from a checkout.
 	commit string
+	// version is the release this binary was stamped with, "dev" otherwise.
+	version string
 	// attachments holds images a human added to a prompt. Nil in tests that
 	// never upload one, in which case the endpoints report the feature off.
 	attachments *attachment.Store
@@ -94,6 +98,9 @@ type Options struct {
 	// a deploy verifiable: without it "the server restarted" and "the server
 	// restarted running the new binary" look identical from outside.
 	Commit string
+	// Version is the release version stamped at build time ("dev" when not a
+	// release build). Reported beside the commit, under the same gate.
+	Version string
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
@@ -113,6 +120,7 @@ func New(o Options) *Server {
 		artefacts:   o.Artefacts,
 		signer:      o.ArtefactSigner,
 		commit:      o.Commit,
+		version:     o.Version,
 		logf:        o.Logf,
 	}
 	if s.logf == nil {
@@ -164,8 +172,13 @@ func (s *Server) Handler() http.Handler {
 		// needs: did this request come from this machine without being
 		// relayed. A stranger arriving through `tailscale serve` fails it on
 		// the headers Tailscale sets, so the probe stays mute to them.
-		if s.commit != "" && (paired || auth.DirectlyLocal(r)) {
-			body["commit"] = s.commit
+		if paired || auth.DirectlyLocal(r) {
+			if s.commit != "" {
+				body["commit"] = s.commit
+			}
+			if s.version != "" {
+				body["version"] = s.version
+			}
 		}
 		writeJSON(w, body)
 	})
@@ -179,6 +192,18 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/harnesses", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.mgr.Harnesses(r.Context()))
+	})
+
+	// What the first-run screen shows: is git here, and can at least one
+	// harness start a thread. Asked fresh each time, so "Check again" after an
+	// install sees the install.
+	mux.HandleFunc("GET /api/setup", func(w http.ResponseWriter, r *http.Request) {
+		s.mgr.ExpireProbes()
+		var hs []setup.Harness
+		for _, h := range s.mgr.Harnesses(r.Context()) {
+			hs = append(hs, setup.Harness{ID: h.ID, Name: h.Name, Availability: h.Availability})
+		}
+		writeJSON(w, setup.Build(runtime.GOOS, setup.Git(r.Context()), hs))
 	})
 
 	mux.HandleFunc("GET /api/threads", func(w http.ResponseWriter, r *http.Request) {

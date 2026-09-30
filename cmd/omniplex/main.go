@@ -44,7 +44,15 @@ import (
 //go:embed all:webdist
 var webdist embed.FS
 
+// version is the release this binary is, stamped by release builds with
+// -ldflags "-X main.version=1.2.3". Anything else is "dev".
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Println(version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		if err := runMCP(os.Stdin, os.Stdout); err != nil {
 			log.Fatalf("mcp: %v", err)
@@ -61,6 +69,7 @@ func main() {
 		addr       = flag.String("addr", "", "bind one specific address, e.g. 192.168.1.20:8787 (default: every private and overlay address)")
 		port       = flag.Int("port", envInt("OMNIPLEX_PORT", 8787), "port to listen on")
 		bindPublic = flag.Bool("bind-public", false, "also bind globally routable addresses, exposing omniplex to the internet")
+		private    = flag.Bool("private", os.Getenv("OMNIPLEX_PRIVATE") == "1", "bind loopback and overlay (tailnet) addresses only, leaving out the local network")
 		dbPath     = flag.String("db", envStr("OMNIPLEX_DB", defaultDB()), "path to the event log database")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
 		codexBin   = flag.String("codex", "codex", "path to the codex CLI")
@@ -74,6 +83,7 @@ func main() {
 		Override:      *addr,
 		Port:          *port,
 		IncludePublic: *bindPublic,
+		Private:       *private,
 	})
 	if err != nil {
 		log.Fatalf("choose addresses: %v", err)
@@ -168,6 +178,7 @@ func main() {
 		Artefacts:      artefacts,
 		ArtefactSigner: signer,
 		Commit:         buildCommit(),
+		Version:        version,
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.

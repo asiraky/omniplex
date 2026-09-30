@@ -254,3 +254,36 @@ func TestListenReportsOnlyWhatBound(t *testing.T) {
 		t.Error("only loopback bound, so the plan must not report itself reachable")
 	}
 }
+
+// An installed copy binds loopback and the tailnet only: the local network on
+// a laptop is whoever else is on the café wifi.
+func TestPrivatePlanLeavesOutTheLocalNetwork(t *testing.T) {
+	local := []Addr{
+		{IP: net.ParseIP("127.0.0.1"), Kind: KindLoopback},
+		{IP: net.ParseIP("192.168.1.20"), Kind: KindPrivate},
+		{IP: net.ParseIP("100.101.102.103"), Kind: KindOverlay},
+		{IP: net.ParseIP("203.0.113.9"), Kind: KindPublic},
+	}
+
+	plan := choose(local, 8787, true, true)
+	var kinds []Kind
+	for _, a := range plan.Addrs {
+		kinds = append(kinds, a.Kind)
+	}
+	if len(kinds) != 2 || kinds[0] != KindLoopback || kinds[1] != KindOverlay {
+		t.Fatalf("private plan bound %v, want loopback and overlay only", kinds)
+	}
+	if !plan.Reachable {
+		t.Fatal("a tailnet address is reachable from another device; pairing must stay on")
+	}
+
+	// Without a tailnet it is loopback alone, and nothing else can reach it.
+	if plan := choose(local[:2], 8787, false, true); plan.Reachable || len(plan.Addrs) != 1 {
+		t.Fatalf("private plan without an overlay: %+v", plan)
+	}
+
+	// The default is unchanged: the local network is bound.
+	if plan := choose(local, 8787, false, false); len(plan.Addrs) != 3 {
+		t.Fatalf("default plan: %+v", plan.Addrs)
+	}
+}

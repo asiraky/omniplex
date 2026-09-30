@@ -203,14 +203,14 @@ func TestAccountChangeDropsCachedModels(t *testing.T) {
 	mu.Lock()
 	account = "a@b.c"
 	mu.Unlock()
-	mgr.expireProbesForTest()
+	mgr.ExpireProbes()
 	mgr.Harnesses(context.Background())
 	waitForListing(t, &fa.fakeAdapter, 1)
 
 	mu.Lock()
 	account = "z@b.c"
 	mu.Unlock()
-	mgr.expireProbesForTest()
+	mgr.ExpireProbes()
 	mgr.Harnesses(context.Background())
 	waitForListing(t, &fa.fakeAdapter, 2)
 }
