@@ -322,8 +322,8 @@ func TestSetInvocation(t *testing.T) {
 		if after := read(t, skillFile); after != before {
 			t.Errorf("SKILL.md = %q, want the original %q", after, before)
 		}
-		// The file made for Codex stays, now saying the opposite.
-		if !exists(yamlFile) || openaiManual(read(t, yamlFile)) {
+		// The file made for Codex goes again.
+		if exists(yamlFile) {
 			t.Errorf("openai.yaml after turning off: %q", read(t, yamlFile))
 		}
 	})

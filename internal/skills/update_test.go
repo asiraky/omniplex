@@ -759,3 +759,29 @@ func TestAListedSkillSaysWhatItsFilesSay(t *testing.T) {
 		t.Error("manual with only the frontmatter saying so")
 	}
 }
+
+func TestManualOnThenOffLeavesTheSkillAsItWas(t *testing.T) {
+	r, u := installed(t)
+	show := filepath.Join(r.Library, "show-me")
+	before, err := HashDir(show)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManual(t, show, true)
+	setManual(t, show, false)
+	if after, _ := HashDir(show); after != before || exists(filepath.Join(show, "agents")) {
+		t.Errorf("the skill kept what turning manual on added: %v", entries(t, show))
+	}
+	if _, by := u.stageUpdate(r, show); by["show-me"].Changed {
+		t.Errorf("reported as changed: %+v", by["show-me"])
+	}
+
+	// A file that says more than the policy is the skill's own: kept.
+	yaml := filepath.Join(show, "agents", "openai.yaml")
+	write(t, yaml, "interface:\n  display_name: Show\n")
+	setManual(t, show, true)
+	setManual(t, show, false)
+	if !exists(yaml) {
+		t.Error("removed an openai.yaml the skill had of its own")
+	}
+}

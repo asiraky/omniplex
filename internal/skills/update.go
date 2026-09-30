@@ -218,7 +218,7 @@ func keepManual(dir string, frontmatter, openai bool) error {
 		// Created only to say manual: an installed copy without the file
 		// says nothing to Codex, and neither should the staged one.
 		if openai {
-			nextYAML = policyKey + ":\n  " + implicitKey + ": false\n"
+			nextYAML = createdOpenAI
 		}
 	case readErr != nil:
 		return readErr

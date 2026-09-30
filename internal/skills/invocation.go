@@ -260,6 +260,9 @@ func FileManual(dir string) (frontmatter, openai bool) {
 	return frontmatter, openai
 }
 
+// createdOpenAI is agents/openai.yaml as SetManual creates it.
+const createdOpenAI = policyKey + ":\n  " + implicitKey + ": false\n"
+
 // SetManual writes the manual-only choice into both of the skill's files.
 // agents/openai.yaml is created only to turn manual on. Both edits are worked
 // out before either file is written, so a refusal leaves the skill as it was.
@@ -279,14 +282,19 @@ func SetManual(dir string, manual bool) error {
 
 	yamlPath := filepath.Join(dir, filepath.FromSlash(openaiYAML))
 	var yaml, nextYAML string
+	drop := false
 	data, err := os.ReadFile(yamlPath)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if manual {
-			nextYAML = policyKey + ":\n  " + implicitKey + ": false\n"
+			nextYAML = createdOpenAI
 		}
 	case err != nil:
 		return err
+	case !manual && string(data) == createdOpenAI:
+		// The file as turning manual on made it: turning manual off takes
+		// it away again, so the skill goes back to what it was.
+		yaml, drop = string(data), true
 	default:
 		yaml = string(data)
 		if nextYAML, err = editOpenAIManual(yaml, manual); err != nil {
@@ -301,6 +309,13 @@ func SetManual(dir string, manual bool) error {
 		if err := writeAtomic(skillPath, []byte(nextSkill)); err != nil {
 			return err
 		}
+	}
+	if drop {
+		if err := os.Remove(yamlPath); err != nil {
+			return err
+		}
+		_ = os.Remove(filepath.Dir(yamlPath)) // agents/, when nothing else is in it
+		return nil
 	}
 	if nextYAML != yaml {
 		if err := os.MkdirAll(filepath.Dir(yamlPath), 0o755); err != nil {
