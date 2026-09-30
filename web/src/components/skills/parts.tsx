@@ -1,59 +1,109 @@
 import { TriangleAlertIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
-import { HARNESSES, scopeLabel, type Skill, type SkillHarness } from "~/lib/skills";
+import {
+  harnessLabel,
+  invocationSummary,
+  joinWords,
+  originLabel,
+  skillOrigin,
+  type Setup,
+  type Skill,
+  type SkillGroup,
+  type SkillsList,
+} from "~/lib/skills";
 import { cn } from "~/lib/utils";
 
 export type SkillsCommand = <T = unknown>(name: string, args: Record<string, unknown>) => Promise<T>;
 
-/**
- * All three harnesses, always in the same order and the same place, with the
- * ones that cannot see the skill faded out: down a list the columns line up,
- * so "which of these is Claude missing" is a scan rather than a read.
- */
-export function HarnessChips({ harnesses, className }: { harnesses: SkillHarness[]; className?: string }) {
-  const visible = HARNESSES.filter((h) => harnesses.includes(h.id));
-  const label = visible.length ? `Visible to ${visible.map((h) => h.label).join(", ")}` : "No harness sees this";
-  return (
-    <span className={cn("flex shrink-0 items-center gap-0.5", className)} title={label}>
-      <span className="sr-only">{label}</span>
-      {HARNESSES.map((h) => {
-        const on = harnesses.includes(h.id);
-        return (
-          <span
-            key={h.id}
-            aria-hidden
-            className={cn(
-              "rounded border px-1 py-px font-mono text-[9.5px] leading-tight",
-              on ? "bg-secondary/60 text-foreground/80 border-border" : "text-muted-foreground/35 border-transparent line-through",
-            )}
-          >
-            {h.label.toLowerCase()}
-          </span>
-        );
-      })}
-    </span>
-  );
+/** What a slot is handed: enough to call the server and fold the answer back into the list. */
+export interface SkillsContext {
+  command: SkillsCommand;
+  /** `threadId` / `projectId`, to spread into every command's args. */
+  scopeArgs: Record<string, unknown>;
+  list: SkillsList | null;
+  setup?: Setup;
+  /** True when there is a project to install into. */
+  projectAvailable: boolean;
+  /** Ask the server for the list again. */
+  refresh: () => void;
+  /** Put skills the server just returned into the list, replacing by dir. */
+  upsert: (skills: Skill[]) => void;
 }
 
-export function ScopeBadge({ skill }: { skill: Pick<Skill, "scope" | "plugin"> }) {
+/**
+ * Where the install, commit and update flows attach. Each is rendered only
+ * when given, so the surface works without any of them.
+ */
+export interface SkillsSlots {
+  /** Toolbar, left of "New skill": the Install action. */
+  install?: (ctx: SkillsContext) => ReactNode;
+  /** Between the toolbar and the list: the commit bar. */
+  commitBar?: (ctx: SkillsContext) => ReactNode;
+  /** Right end of a source repo group's header. Not rendered for other groups. */
+  groupAction?: (group: SkillGroup, ctx: SkillsContext) => ReactNode;
+  /** Detail view actions, between Edit and Remove. Only asked for a skill with a source. */
+  update?: (skill: Skill, ctx: SkillsContext) => ReactNode;
+}
+
+/** A small pill for the exceptions a row carries; rows with nothing to say have none. */
+export function Marker({ tone = "quiet", children }: { tone?: "quiet" | "attention"; children: ReactNode }) {
   return (
     <span
       className={cn(
-        "shrink-0 rounded-full border px-1.5 py-px text-[10px] font-medium whitespace-nowrap",
-        skill.scope === "project" ? "border-primary/40 bg-primary/10 text-foreground" : "text-muted-foreground",
+        "shrink-0 rounded-full border px-1.5 py-px text-[10.5px] leading-tight font-medium whitespace-nowrap",
+        tone === "attention"
+          ? "border-attention/40 bg-attention-surface text-attention-foreground"
+          : "text-muted-foreground",
       )}
     >
-      {scopeLabel(skill)}
+      {children}
     </span>
   );
 }
 
-export function ProblemIcon({ problem, className }: { problem?: string; className?: string }) {
+/**
+ * The exceptions only: most skills are in every prompt and seen everywhere,
+ * and say nothing. "Not in" is kept to skills that could be linked; a plugin
+ * skill being Claude-only is what a plugin is, not news.
+ */
+export function SkillMarkers({ skill }: { skill: Skill }) {
+  const { state, missing } = invocationSummary(skill);
+  return (
+    <>
+      {state === "manual" && <Marker>manual</Marker>}
+      {state === "off" && <Marker>off</Marker>}
+      {state === "mixed" && <Marker tone="attention">harnesses differ</Marker>}
+      {state === "unseen" && <Marker tone="attention">no harness reads it</Marker>}
+      {state !== "unseen" && skill.editable && missing.length > 0 && (
+        <Marker>not in {joinWords(missing.map(harnessLabel))}</Marker>
+      )}
+    </>
+  );
+}
+
+export function OriginBadge({ skill }: { skill: Skill }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full border px-1.5 py-px text-[10.5px] font-medium whitespace-nowrap",
+        skillOrigin(skill).kind === "project"
+          ? "border-primary/40 bg-primary/10 text-foreground"
+          : "text-muted-foreground",
+      )}
+    >
+      {originLabel(skill)}
+    </span>
+  );
+}
+
+/** A skill's problem as text on the page: a phone has no hover to hide it behind. */
+export function ProblemText({ problem, className }: { problem?: string; className?: string }) {
   if (!problem) return null;
   return (
-    <span className={cn("text-attention-foreground shrink-0", className)} title={problem}>
-      <TriangleAlertIcon className="size-3.5" aria-hidden />
-      <span className="sr-only">Problem: {problem}</span>
+    <span className={cn("text-attention-foreground flex items-start gap-1.5 text-[12px] leading-snug", className)}>
+      <TriangleAlertIcon className="mt-px size-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0 break-words">{problem}</span>
     </span>
   );
 }
@@ -64,6 +114,14 @@ export function ErrorLine({ message, className }: { message: string; className?:
       <TriangleAlertIcon className="mt-px size-4 shrink-0" />
       <span className="min-w-0 break-words">{message}</span>
     </div>
+  );
+}
+
+export function SectionHeading({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <h3 className={cn("text-muted-foreground mb-1.5 text-[11px] font-semibold tracking-wide uppercase", className)}>
+      {children}
+    </h3>
   );
 }
 
@@ -91,7 +149,8 @@ export function Segmented<T extends string>({
           aria-selected={value === o.id}
           onClick={() => onChange(o.id)}
           className={cn(
-            "focus-visible:ring-ring min-w-0 flex-1 truncate rounded-full px-2.5 py-1 text-[12px] font-medium whitespace-nowrap outline-none focus-visible:ring-2",
+            // Thumb-sized on a phone; a pointer gets the compact pill.
+            "focus-visible:ring-ring min-h-11 min-w-0 flex-1 truncate rounded-full px-3 py-1 text-[12.5px] font-medium whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-0 md:px-2.5 md:text-[12px]",
             value === o.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
           )}
         >

@@ -32,6 +32,7 @@ import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { fileIconFor } from "~/lib/fileIcons";
 import { liveJobCount } from "~/lib/jobs";
 import type { Artefact } from "~/lib/artefacts";
+import type { Skill } from "~/lib/skills";
 import {
   artefactSurface,
   closeSurface,
@@ -84,6 +85,8 @@ export interface PanelProps {
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
   pr?: PullRequest | null;
+  /** Puts a skill's token into the thread's composer, from the skills surface. */
+  onUseSkill?: (skill: Skill) => void | Promise<void>;
 }
 
 function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
@@ -197,6 +200,7 @@ function PanelBody({
   loadFile,
   request,
   pr,
+  onUseSkill,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per thread so the panel reopens as it was left.
@@ -485,7 +489,20 @@ function PanelBody({
               This artefact is not in this thread.
             </div>
           ))}
-        {active?.kind === "skills" && <SkillsSurface command={command} threadId={threadId} />}
+        {active?.kind === "skills" && (
+          <SkillsSurface
+            command={command}
+            threadId={threadId}
+            onUse={
+              onUseSkill &&
+              (async (skill) => {
+                await onUseSkill(skill);
+                // The sheet covers the composer the token just went into.
+                if (inSheet) onClose();
+              })
+            }
+          />
+        )}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces

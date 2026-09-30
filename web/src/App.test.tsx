@@ -1076,6 +1076,116 @@ describe("recent skills on an empty transcript", () => {
   });
 });
 
+// The Skills page from the sidebar: whose skills it lists follows what is
+// open, and Use only exists where there is a composer to write into.
+describe("the Skills page", () => {
+  const listed = {
+    name: "alpha",
+    description: "Run alpha workflow",
+    dir: "/lib/alpha",
+    scope: "user",
+    paths: ["/lib/alpha"],
+    harnesses: ["claude", "codex", "pi"],
+    editable: true,
+  };
+
+  const boot = async (catalogue: unknown[], kind: "phone" | "desktop" = "desktop") => {
+    viewport(kind);
+    command.mockImplementation(async (name: string) => {
+      if (name === "list_composer_items") return { items: catalogue };
+      if (name === "list_skills") return { skills: [listed], subagents: [] };
+      if (name === "read_skill") return { ...listed, content: "# Alpha\n", files: [] };
+      return {} as any;
+    });
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+  };
+
+  const attachThread = () =>
+    act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", state("a", "default"));
+    });
+
+  const openPage = async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    return screen.findByRole("button", { name: /alpha/ });
+  };
+
+  const listArgs = () => command.mock.calls.filter(([name]) => name === "list_skills").map(([, args]) => args);
+
+  it("lists personal skills only when no project is known, and offers no Use", async () => {
+    await boot([]);
+    fireEvent.click(await openPage());
+    await screen.findByRole("button", { name: "Back to skills" });
+
+    expect(listArgs()).toEqual([{}]);
+    expect(screen.queryByRole("button", { name: "Use" })).toBeNull();
+  });
+
+  it("lists the last project's skills when there is no thread open", async () => {
+    localStorage.setItem("omniplex.lastProject.v1", "p1");
+    await boot([]);
+    await openPage();
+    expect(listArgs()).toEqual([{ projectId: "p1" }]);
+  });
+
+  it("lists what the open thread sees and closes back to it", async () => {
+    await boot([]);
+    await attachThread();
+    await openPage();
+    expect(listArgs()).toEqual([{ threadId: "a" }]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close skills" }));
+    expect(screen.getByLabelText("Message")).toBeTruthy();
+  });
+
+  it("puts the harness's own token for the skill into the composer and returns to the thread", async () => {
+    await boot([
+      { id: "skill:alpha", name: "alpha", kind: "skill", trigger: "$", insertText: "$alpha", behavior: "prompt" },
+    ]);
+    await attachThread();
+    fireEvent.click(await openPage());
+    await act(async () => fireEvent.click(await screen.findByRole("button", { name: "Use" })));
+
+    const composer = (await screen.findByLabelText("Message")) as HTMLTextAreaElement;
+    expect(composer.value).toBe("$alpha ");
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+  });
+
+  it("stays on the skill and says so when the thread's harness does not list it", async () => {
+    await boot([]);
+    await attachThread();
+    fireEvent.click(await openPage());
+    await act(async () => fireEvent.click(await screen.findByRole("button", { name: "Use" })));
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to skills" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close skills" }));
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("closes the phone's sidebar along with the page after Use", async () => {
+    await boot(
+      [{ id: "skill:alpha", name: "alpha", kind: "skill", trigger: "/", insertText: "/alpha", behavior: "prompt" }],
+      "phone",
+    );
+    await attachThread();
+    fireEvent.click(screen.getByRole("button", { name: "Show threads" }));
+    await waitFor(() => expect(sidebarShowing()).toBe(true));
+    fireEvent.click(await openPage());
+    await act(async () => fireEvent.click(await screen.findByRole("button", { name: "Use" })));
+
+    const composer = (await screen.findByLabelText("Message")) as HTMLTextAreaElement;
+    expect(composer.value).toBe("/alpha ");
+    expect(sidebarShowing()).toBe(false);
+  });
+});
+
 describe("attaching to a thread", () => {
   it("shows a centered loading state instead of the empty-thread action", async () => {
     viewport("desktop");

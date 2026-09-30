@@ -1,11 +1,15 @@
 import { lazy, Suspense, useCallback, type RefObject } from "react";
 
 import type { Client } from "~/client";
+import type { Skill, SkillsScope } from "~/lib/skills";
 import type { QuotaStatus, UsageReport } from "~/protocol";
 
 import { Spinner } from "./ui/spinner";
 
 const UsagePage = lazy(() => import("./Usage").then((m) => ({ default: m.UsagePage })));
+const SkillsPage = lazy(() =>
+  import("./skills/SkillsPage").then((m) => ({ default: m.SkillsPage })),
+);
 const ThemePreview = lazy(() =>
   import("./ThemePreview").then((m) => ({ default: m.ThemePreview })),
 );
@@ -57,6 +61,33 @@ export function UsageScreen({
         loadReport={loadReport}
         onClose={onClose}
       />
+    </Suspense>
+  );
+}
+
+/**
+ * The Skills page, over the whole viewport. `scope` says whose skills it
+ * lists; `onUse` is given only when there is a thread to put a skill into.
+ */
+export function SkillsScreen({
+  clientRef,
+  scope,
+  onUse,
+  onClose,
+}: {
+  clientRef: RefObject<Client | null>;
+  scope: SkillsScope;
+  onUse?: (skill: Skill) => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const command = useCallback(
+    <T,>(name: string, args: Record<string, unknown>): Promise<T> =>
+      clientRef.current!.command(name, args),
+    [clientRef],
+  );
+  return (
+    <Suspense fallback={<PageSpinner />}>
+      <SkillsPage command={command} scope={scope} onUse={onUse} onClose={onClose} />
     </Suspense>
   );
 }

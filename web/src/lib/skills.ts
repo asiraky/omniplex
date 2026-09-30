@@ -1,7 +1,34 @@
 // Mirrors internal/skills: the JSON the skills WS commands return.
 
+import type { ComposerItem } from "~/protocol";
+
 export type SkillHarness = "claude" | "codex" | "pi";
 export type SkillScope = "project" | "user" | "plugin" | "system";
+/**
+ * How one harness treats a skill it can see. `auto`: the description is in
+ * the system prompt. `name-only`: the name is, the description is not.
+ * `manual`: neither; only the user runs it, by name. `off`: disabled.
+ */
+export type InvocationMode = "auto" | "name-only" | "manual" | "off";
+
+export interface HarnessState {
+  mode: InvocationMode;
+  /** "settings" when harness config, not the skill's own files, decides. */
+  by?: string;
+}
+
+export interface Source {
+  method: "npx" | "git" | "local";
+  /** "owner/repo", a URL, or a local path. */
+  repo: string;
+  ref?: string;
+  /** The skill's folder inside the repo, slash-separated. */
+  path?: string;
+  /** True when Omniplex installed it; false when the skills CLI's lock names it. */
+  managed: boolean;
+  installedAt?: string;
+  updatedAt?: string;
+}
 
 export interface Skill {
   name: string;
@@ -15,6 +42,11 @@ export interface Skill {
   harnesses: SkillHarness[];
   editable: boolean;
   problem?: string;
+  /** Synced down from claude.ai rather than written here. */
+  synced?: boolean;
+  /** One entry per harness that can see the skill. Absent from an older server. */
+  invocation?: Partial<Record<SkillHarness, HarnessState>>;
+  source?: Source;
 }
 
 export interface SkillFile {
@@ -37,10 +69,39 @@ export interface Subagent {
   harness: SkillHarness;
 }
 
+/** How one harness reaches the library. */
+export interface Link {
+  harness: SkillHarness;
+  /** The harness skills dir that reaches, or would reach, the library. */
+  dir: string;
+  state: "direct" | "per-skill" | "none";
+}
+
+export interface GitInfo {
+  root: string;
+  branch: string;
+}
+
+export interface Setup {
+  /** As configured, "~"-abbreviated. */
+  library: string;
+  /** Absolute, symlink-resolved when it exists. */
+  libraryDir: string;
+  exists: boolean;
+  /** Relative to the project root. */
+  projectLibrary: string;
+  cliVersion: string;
+  npx: boolean;
+  git?: GitInfo;
+  links: Link[];
+}
+
 export interface SkillsList {
   skills: Skill[];
   subagents: Subagent[];
   projectRoot?: string;
+  /** Absent from an older server. */
+  setup?: Setup;
 }
 
 export interface SkillFileContent {
@@ -54,12 +115,18 @@ export const HARNESSES: { id: SkillHarness; label: string }[] = [
   { id: "pi", label: "pi" },
 ];
 
-export type SkillFilter = "all" | "project" | "user" | "plugin";
+export function harnessLabel(id: SkillHarness): string {
+  return HARNESSES.find((h) => h.id === id)?.label ?? id;
+}
 
-export function matchesFilter(skill: Skill, filter: SkillFilter): boolean {
-  if (filter === "all") return true;
-  if (filter === "plugin") return skill.scope === "plugin" || skill.scope === "system";
-  return skill.scope === filter;
+/**
+ * Go marshals an empty slice as null, and a library skill no harness reads has
+ * exactly that for `harnesses`. Everything below assumes arrays, so a skill is
+ * put through here once, where it arrives.
+ */
+export function normalizeSkill<T extends Skill>(skill: T): T {
+  if (skill.harnesses && skill.paths) return skill;
+  return { ...skill, harnesses: skill.harnesses ?? [], paths: skill.paths ?? [] };
 }
 
 export function matchesQuery(skill: Skill, query: string): boolean {
@@ -68,60 +135,378 @@ export function matchesQuery(skill: Skill, query: string): boolean {
   return (
     skill.name.toLowerCase().includes(q) ||
     skill.description.toLowerCase().includes(q) ||
-    (skill.plugin ?? "").toLowerCase().includes(q)
+    (skill.plugin ?? "").toLowerCase().includes(q) ||
+    (skill.source?.repo ?? "").toLowerCase().includes(q)
   );
 }
 
-export interface SkillSection {
-  key: string;
-  title: string;
-  skills: Skill[];
+// ---- grouping by origin ----
+
+export type SkillGroupKind = "project" | "yours" | "source" | "plugins" | "synced" | "system";
+
+/** One row: every copy of a name inside one group. The first copy is the one shown. */
+export interface SkillEntry {
+  name: string;
+  copies: Skill[];
 }
 
-const SCOPE_RANK: Record<SkillScope, number> = { project: 0, user: 1, plugin: 2, system: 3 };
+export interface SkillSubgroup {
+  key: string;
+  title: string;
+  entries: SkillEntry[];
+}
 
-export function scopeLabel(skill: Pick<Skill, "scope" | "plugin">): string {
-  switch (skill.scope) {
-    case "project":
-      return "Project";
-    case "user":
-      return "Personal";
-    case "plugin":
-      return skill.plugin ? `Plugin · ${skill.plugin}` : "Plugin";
-    default:
-      return "System";
+export interface SkillGroup {
+  key: string;
+  kind: SkillGroupKind;
+  title: string;
+  /** A source group's repo. */
+  repo?: string;
+  /** Read-only groups start folded: they are most of the list and none of the work. */
+  collapsed: boolean;
+  entries: SkillEntry[];
+  /** Plugins only: the same entries, cut per plugin. */
+  subgroups?: SkillSubgroup[];
+}
+
+const GROUP_RANK: Record<SkillGroupKind, number> = {
+  project: 0,
+  yours: 1,
+  source: 2,
+  plugins: 3,
+  synced: 4,
+  system: 5,
+};
+
+const GROUP_TITLE: Record<Exclude<SkillGroupKind, "source">, string> = {
+  project: "Project",
+  yours: "Yours",
+  plugins: "Plugins",
+  synced: "claude.ai synced",
+  system: "Codex built-in",
+};
+
+/**
+ * Where a skill came from, which is what the list is organised by. A project
+ * skill stays under Project even when it was installed from a repo: the
+ * project is the more useful answer to "whose is this", and its source is on
+ * the detail view.
+ */
+export function skillOrigin(skill: Skill): { kind: SkillGroupKind; key: string; title: string } {
+  let kind: SkillGroupKind;
+  if (skill.synced) kind = "synced";
+  else if (skill.scope === "plugin") kind = "plugins";
+  else if (skill.scope === "system") kind = "system";
+  else if (skill.scope === "project") kind = "project";
+  else if (skill.source?.repo) {
+    return { kind: "source", key: `source:${skill.source.repo}`, title: skill.source.repo };
+  } else kind = "yours";
+  return { kind, key: kind, title: GROUP_TITLE[kind] };
+}
+
+const byName = (a: string, b: string) => a.toLowerCase().localeCompare(b.toLowerCase());
+
+/** Same-name copies become one entry, the most widely seen copy first. */
+function mergeByName(skills: Skill[]): SkillEntry[] {
+  const entries = new Map<string, SkillEntry>();
+  for (const skill of skills) {
+    const key = skill.name.toLowerCase();
+    const entry = entries.get(key);
+    if (entry) entry.copies.push(skill);
+    else entries.set(key, { name: skill.name, copies: [skill] });
   }
+  const out = [...entries.values()].sort((a, b) => byName(a.name, b.name));
+  for (const entry of out) {
+    entry.copies.sort((a, b) => b.harnesses.length - a.harnesses.length || a.dir.localeCompare(b.dir));
+  }
+  return out;
 }
 
 /**
- * Sections in the server's order: project, personal, one per plugin, system.
- * The server already sorts, so this only has to cut the list where the
- * section changes; a plugin's skills are contiguous because they share a name.
+ * The list's groups, in reading order: Project, Yours, one per source repo,
+ * then the read-only ones (Plugins, claude.ai synced, Codex built-in).
  */
-export function groupSkills(skills: Skill[]): SkillSection[] {
-  const sorted = [...skills].sort(
-    (a, b) =>
-      SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope] ||
-      (a.plugin ?? "").localeCompare(b.plugin ?? "") ||
-      a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-  );
-  const sections: SkillSection[] = [];
-  for (const skill of sorted) {
-    const key = skill.scope === "plugin" ? `plugin:${skill.plugin ?? ""}` : skill.scope;
-    let section = sections[sections.length - 1];
-    if (!section || section.key !== key) {
-      const title =
-        skill.scope === "plugin"
-          ? `${skill.plugin || "Plugin"} plugin`
-          : skill.scope === "system"
-            ? "Codex built-in"
-            : scopeLabel(skill);
-      section = { key, title, skills: [] };
-      sections.push(section);
-    }
-    section.skills.push(skill);
+export function groupSkills(skills: Skill[]): SkillGroup[] {
+  const buckets = new Map<string, { origin: ReturnType<typeof skillOrigin>; skills: Skill[] }>();
+  for (const skill of skills) {
+    const origin = skillOrigin(skill);
+    const bucket = buckets.get(origin.key);
+    if (bucket) bucket.skills.push(skill);
+    else buckets.set(origin.key, { origin, skills: [skill] });
   }
-  return sections;
+  const groups: SkillGroup[] = [];
+  for (const { origin, skills: members } of buckets.values()) {
+    const group: SkillGroup = {
+      key: origin.key,
+      kind: origin.kind,
+      title: origin.title,
+      collapsed: GROUP_RANK[origin.kind] >= GROUP_RANK.plugins,
+      entries: [],
+    };
+    if (origin.kind === "source") group.repo = origin.title;
+    if (origin.kind === "plugins") {
+      // A name is merged inside its plugin only: two plugins shipping a skill
+      // of the same name are two skills.
+      const plugins = new Map<string, Skill[]>();
+      for (const skill of members) {
+        const plugin = skill.plugin ?? "";
+        const list = plugins.get(plugin);
+        if (list) list.push(skill);
+        else plugins.set(plugin, [skill]);
+      }
+      group.subgroups = [...plugins.entries()]
+        .sort(([a], [b]) => byName(a, b))
+        .map(([plugin, list]) => ({
+          key: `plugin:${plugin}`,
+          title: plugin || "Other plugins",
+          entries: mergeByName(list),
+        }));
+      group.entries = group.subgroups.flatMap((s) => s.entries);
+    } else {
+      group.entries = mergeByName(members);
+    }
+    groups.push(group);
+  }
+  return groups.sort((a, b) => GROUP_RANK[a.kind] - GROUP_RANK[b.kind] || byName(a.title, b.title));
+}
+
+/** The copies that share a row with the skill at `dir`; just itself when it is alone or unknown. */
+export function copiesOf(groups: SkillGroup[], dir: string): Skill[] {
+  for (const group of groups) {
+    for (const entry of group.entries) {
+      if (entry.copies.some((s) => s.dir === dir)) return entry.copies;
+    }
+  }
+  return [];
+}
+
+/** Where a skill sits, for the detail view's badge. */
+export function originLabel(skill: Skill): string {
+  const origin = skillOrigin(skill);
+  if (origin.kind === "plugins") return skill.plugin ? `Plugin: ${skill.plugin}` : "Plugin";
+  if (origin.kind === "yours" || origin.kind === "source") return "Personal";
+  return origin.title;
+}
+
+// ---- invocation ----
+
+const inPrompt = (mode: InvocationMode) => mode === "auto" || mode === "name-only";
+
+/**
+ * What a harness does with a skill, or null when it cannot see it. A server
+ * that predates `invocation` reports nothing, which reads as the default.
+ */
+export function harnessState(skill: Skill, harness: SkillHarness): HarnessState | null {
+  if (!skill.harnesses.includes(harness)) return null;
+  return skill.invocation?.[harness] ?? { mode: "auto" };
+}
+
+export interface InvocationSummary {
+  /**
+   * `auto`: every harness that sees it has it in the prompt (the quiet case).
+   * `manual` / `off`: none does. `mixed`: they disagree. `unseen`: no harness
+   * reads it at all.
+   */
+  state: "auto" | "manual" | "off" | "mixed" | "unseen";
+  /** Harnesses that cannot see it. */
+  missing: SkillHarness[];
+  /** Harnesses whose own settings, not the skill's files, decide the mode. */
+  overridden: SkillHarness[];
+  /** The skill's files say manual for every harness they decide. */
+  manual: boolean;
+  /** The skill's files disagree between harnesses, which the toggle can repair. */
+  fixable: boolean;
+}
+
+export function invocationSummary(skill: Skill): InvocationSummary {
+  const missing: SkillHarness[] = [];
+  const overridden: SkillHarness[] = [];
+  const modes: InvocationMode[] = [];
+  const fileModes: InvocationMode[] = [];
+  for (const { id } of HARNESSES) {
+    const state = harnessState(skill, id);
+    if (!state) {
+      missing.push(id);
+      continue;
+    }
+    modes.push(state.mode);
+    if (state.by === "settings") overridden.push(id);
+    else fileModes.push(state.mode);
+  }
+  const shown = modes.filter(inPrompt).length;
+  let state: InvocationSummary["state"];
+  if (modes.length === 0) state = "unseen";
+  else if (shown === modes.length) state = "auto";
+  else if (shown > 0) state = "mixed";
+  else state = modes.every((m) => m === "off") ? "off" : "manual";
+
+  const fileManual = fileModes.filter((m) => !inPrompt(m)).length;
+  return {
+    state,
+    missing,
+    overridden,
+    manual: fileModes.length > 0 && fileManual === fileModes.length,
+    fixable: skill.editable && fileManual > 0 && fileManual < fileModes.length,
+  };
+}
+
+/** A harness's mode in words; null is a harness that cannot see the skill. */
+export function modeText(mode: InvocationMode | null): string {
+  switch (mode) {
+    case "auto":
+      return "In the prompt. The model can pick it on its own.";
+    case "name-only":
+      return "Name in the prompt, description left out.";
+    case "manual":
+      return "Manual. It runs only when you name it.";
+    case "off":
+      return "Turned off.";
+    default:
+      return "Cannot see it.";
+  }
+}
+
+export function joinWords(words: string[]): string {
+  if (words.length <= 1) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+// ---- what lands in a harness's system prompt ----
+
+/**
+ * The published budgets, as estimates: none of the harnesses report what they
+ * actually sent. pi documents no budget, so it has none here.
+ */
+export const PROMPT_BUDGETS: Record<SkillHarness, { chars?: number; perDescription?: number; note: string }> = {
+  claude: {
+    chars: 8000,
+    perDescription: 1536,
+    note: "Claude lists skills in about 1% of the context window, roughly 8,000 characters at 200k, and cuts each description at 1,536 characters.",
+  },
+  codex: {
+    chars: 8000,
+    note: "Codex uses 2% of the context window or 8,000 characters. Past that it shortens descriptions, then drops them.",
+  },
+  pi: { note: "pi does not document a budget." },
+};
+
+export interface PromptEntry {
+  skill: Skill;
+  mode: "auto" | "name-only";
+  /** Characters of description that reach the prompt. */
+  chars: number;
+  /** Characters lost to the harness's per-description cap. */
+  cut: number;
+}
+
+export interface PromptReport {
+  harness: SkillHarness;
+  /** Longest first. */
+  entries: PromptEntry[];
+  total: number;
+  /** The harness's overall budget in characters, when it publishes one. */
+  budget?: number;
+  /** How far `total` runs past the budget; 0 when inside it or when there is none. */
+  over: number;
+  /** Skills the harness sees but keeps out of the prompt. */
+  manual: number;
+  off: number;
+}
+
+export function promptReport(skills: Skill[], harness: SkillHarness): PromptReport {
+  const { chars: budget, perDescription } = PROMPT_BUDGETS[harness];
+  const entries: PromptEntry[] = [];
+  let manual = 0;
+  let off = 0;
+  for (const skill of skills) {
+    const state = harnessState(skill, harness);
+    if (!state) continue;
+    if (state.mode === "manual") manual++;
+    else if (state.mode === "off") off++;
+    else if (state.mode === "name-only") entries.push({ skill, mode: "name-only", chars: 0, cut: 0 });
+    else {
+      const full = skill.description.length;
+      const chars = perDescription === undefined ? full : Math.min(full, perDescription);
+      entries.push({ skill, mode: "auto", chars, cut: full - chars });
+    }
+  }
+  entries.sort((a, b) => b.chars - a.chars || byName(a.skill.name, b.skill.name));
+  const total = entries.reduce((sum, e) => sum + e.chars, 0);
+  return {
+    harness,
+    entries,
+    total,
+    budget,
+    over: budget === undefined ? 0 : Math.max(0, total - budget),
+    manual,
+    off,
+  };
+}
+
+// ---- using a skill in a thread ----
+
+/**
+ * The composer's own entry for a skill, which is what knows the token this
+ * thread's harness takes ("/name", "$name", a plugin's "plugin:name"). None
+ * means the harness running the thread does not offer the skill.
+ */
+export function composerItemFor(
+  items: ComposerItem[],
+  skill: Pick<Skill, "name" | "plugin">,
+): ComposerItem | undefined {
+  const wanted = (skill.plugin ? [`${skill.plugin}:${skill.name}`, skill.name] : [skill.name]).map((n) =>
+    n.toLowerCase(),
+  );
+  const named = (item: ComposerItem, name: string) =>
+    item.name.toLowerCase() === name || (item.aliases ?? []).some((a) => a.toLowerCase() === name);
+  for (const name of wanted) {
+    const hit =
+      items.find((item) => item.kind === "skill" && named(item, name)) ??
+      items.find((item) => item.behavior === "prompt" && named(item, name));
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+// ---- what the Skills page lists ----
+
+export interface SkillsScope {
+  kind: "thread" | "project" | "personal";
+  threadId?: string;
+  projectId?: string;
+  /** The project's name, when the app knows it. */
+  projectName?: string;
+}
+
+/**
+ * The open thread when there is one (its checkout is the project root the
+ * harness really sees), else the project being drafted in or last started
+ * from, else just the user's own skills.
+ */
+export function skillsScope(input: {
+  threadId?: string | null;
+  threadProjectId?: string;
+  draftProjectId?: string;
+  lastProjectId?: string;
+  projects: { id: string; name: string }[];
+}): SkillsScope {
+  const nameOf = (id?: string) => input.projects.find((p) => p.id === id)?.name;
+  if (input.threadId) {
+    return { kind: "thread", threadId: input.threadId, projectName: nameOf(input.threadProjectId) };
+  }
+  for (const id of [input.draftProjectId, input.lastProjectId]) {
+    const name = nameOf(id);
+    if (id && name !== undefined) return { kind: "project", projectId: id, projectName: name };
+  }
+  return { kind: "personal" };
+}
+
+/** A record's timestamp as a short date; "" when it is missing or not a date. */
+export function fmtDate(iso?: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
 /** The Agent Skills spec's name rule; "" when valid, else why not. */

@@ -23,12 +23,14 @@ import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
-import { ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
+import { SkillsScreen, ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { ThreadView } from "./components/ThreadView";
+import { loadLastProject } from "./lib/lastProject";
+import { skillsScope } from "./lib/skills";
 import { cn } from "./lib/utils";
 import { useIsDesktop } from "./useMediaQuery";
 
@@ -94,6 +96,36 @@ export function App() {
     );
   }
 
+  // The Skills page, the same way. It lists what the open thread can use when
+  // there is one, else the project being started in or last used, else only
+  // the user's own; Use needs a composer, so it is offered only over a thread.
+  if (screens.showSkills) {
+    return (
+      <SkillsScreen
+        clientRef={clientRef}
+        scope={skillsScope({
+          threadId: activeId,
+          threadProjectId: meta?.projectId,
+          draftProjectId: nav.creating?.projectId,
+          lastProjectId: loadLastProject() || undefined,
+          projects,
+        })}
+        onUse={
+          activeId && state
+            ? async (skill) => {
+                await recents.use(skill);
+                screens.setShowSkills(false);
+                // On a phone the sidebar the page was opened from is still
+                // over the composer.
+                if (!isDesktop) nav.setSidebarOpen(false);
+              }
+            : undefined
+        }
+        onClose={() => screens.setShowSkills(false)}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       <Sidebar
@@ -107,6 +139,7 @@ export function App() {
         onDelete={deletion.remove}
         onShowAccess={() => screens.setShowAccess(true)}
         onShowUsage={() => screens.setShowUsage(true)}
+        onShowSkills={() => screens.setShowSkills(true)}
         onShowSettings={() => screens.setSettings({})}
         accentOf={accentOf}
         projects={projects}
@@ -203,6 +236,7 @@ export function App() {
           state={state}
           panel={panel}
           pr={pr}
+          onUseSkill={recents.use}
         />
       )}
 

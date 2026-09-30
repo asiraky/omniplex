@@ -13,17 +13,25 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { errorText, skillDescriptionError, skillNameError, type Skill } from "~/lib/skills";
+import { errorText, skillDescriptionError, skillNameError, type Setup, type Skill } from "~/lib/skills";
 import { cn } from "~/lib/utils";
 
 import { ErrorLine, type SkillsCommand } from "./parts";
 
 type CreateScope = "project" | "user";
 
-const SCOPES: { id: CreateScope; label: string; hint: string }[] = [
-  { id: "project", label: "Project", hint: ".agents/skills in this project, linked into .claude/skills" },
-  { id: "user", label: "Personal", hint: "~/.agents/skills, linked into Claude's skills dir" },
+const SCOPES: { id: CreateScope; label: string }[] = [
+  { id: "project", label: "Project" },
+  { id: "user", label: "Personal" },
 ];
+
+/** Where a new skill of this scope is written, as the server has it configured. */
+function scopeHint(scope: CreateScope, setup?: Setup): string {
+  if (scope === "project") {
+    return setup?.projectLibrary ? `${setup.projectLibrary} in this project` : "This project's library";
+  }
+  return setup?.library || "Your personal library";
+}
 
 /** The form is only as fresh as the mount: key it per opening so each one
     starts blank. */
@@ -33,6 +41,7 @@ export function NewSkillDialog({
   command,
   scopeArgs,
   projectAvailable,
+  setup,
   onCreated,
 }: {
   open: boolean;
@@ -40,6 +49,8 @@ export function NewSkillDialog({
   command: SkillsCommand;
   scopeArgs: Record<string, unknown>;
   projectAvailable: boolean;
+  /** Names the real library paths in the hints. Absent from an older server. */
+  setup?: Setup;
   onCreated: (skill: Skill) => void;
 }) {
   const [name, setName] = useState("");
@@ -85,7 +96,7 @@ export function NewSkillDialog({
         <DialogHeader>
           <DialogTitle className="text-[15px]">New skill</DialogTitle>
           <DialogDescription className="text-[12px]">
-            Codex and pi read it from .agents/skills; Claude gets a symlink.
+            It is written into the library. Claude gets a link when it does not read that folder itself.
           </DialogDescription>
         </DialogHeader>
 
@@ -165,7 +176,7 @@ export function NewSkillDialog({
                   >
                     <span className="text-[13px] leading-tight">{s.label}</span>
                     <span className="text-muted-foreground truncate text-[11px] leading-tight">
-                      {disabled ? "Open from a thread or project to create one here" : s.hint}
+                      {disabled ? "Open from a thread or project to create one here" : scopeHint(s.id, setup)}
                     </span>
                   </button>
                 );
