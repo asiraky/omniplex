@@ -2,7 +2,7 @@ import { AttentionLabel } from "~/components/AttentionLabel";
 import { Button } from "~/components/ui/button";
 import type { PendingPermission } from "~/protocol";
 
-// A permission request is durable session state, not a modal owned by this
+// A permission request is durable thread state, not a modal owned by this
 // connection: it is rendered from the log, and any attached device can answer.
 export function PermissionPrompt({
   request,

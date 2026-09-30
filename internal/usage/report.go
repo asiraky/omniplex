@@ -77,7 +77,7 @@ type Row struct {
 }
 
 // Report is the whole answer for one range. It is the bounded aggregate that
-// travels: a handful of rows per provider-model pair, never a session list
+// travels: a handful of rows per provider-model pair, never a thread list
 // and never raw events.
 type Report struct {
 	Range        string `json:"range"`
@@ -91,10 +91,10 @@ type Report struct {
 
 // EventRow is one durable event the aggregation walks, as the store hands it
 // over: the three event types that can say anything about usage accounting —
-// session.created and session.config_changed carry the model attribution,
+// thread.created and thread.config_changed carry the model attribution,
 // usage.updated carries the token counts.
 type EventRow struct {
-	SessionID string
+	ThreadID  string
 	Harness   string
 	Type      string
 	Timestamp int64 // epoch ms
@@ -102,7 +102,7 @@ type EventRow struct {
 	Payload   json.RawMessage
 }
 
-// Aggregate folds the event rows of every session that used tokens in the
+// Aggregate folds the event rows of every thread that used tokens in the
 // window into one report.
 //
 // The semantics are per harness and this is where they matter:
@@ -116,7 +116,7 @@ type EventRow struct {
 //     event is usage. A reset (totals going backwards) means the thread
 //     started counting again, and the new baseline is charged as-is.
 //
-// Events older than the window are still walked: a codex session whose last
+// Events older than the window are still walked: a codex thread whose last
 // pre-window event was days ago still needs that baseline to delta against,
 // and a model switch before the window still tells the walk which model an
 // in-window event ran on.
@@ -137,11 +137,11 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 	}
 	cells := map[cellKey]*Row{}
 
-	// Per-session walk state.
-	var session string
+	// Per-thread walk state.
+	var thread string
 	var model string
 	var harness string
-	// lastUsage is the previous usage.updated payload of the session being
+	// lastUsage is the previous usage.updated payload of the thread being
 	// walked, whatever it counted: the claude de-duplication and the codex
 	// delta both need it.
 	var lastUsage Counts
@@ -172,14 +172,14 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 	}
 
 	for _, r := range rows {
-		if r.SessionID != session {
-			session = r.SessionID
+		if r.ThreadID != thread {
+			thread = r.ThreadID
 			harness = r.Harness
 			model = ""
 			lastUsage, haveLastUsage = Counts{}, false
 		}
 		switch r.Type {
-		case "session.created":
+		case "thread.created":
 			var p struct {
 				Model string `json:"model"`
 			}
@@ -187,7 +187,7 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 			if p.Model != "" {
 				model = p.Model
 			}
-		case "session.config_changed":
+		case "thread.config_changed":
 			var p struct {
 				Model string `json:"model"`
 			}

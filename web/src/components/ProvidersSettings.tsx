@@ -1,21 +1,14 @@
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
 import { AuthMethods } from "~/components/AuthFlowDialog";
 import type { AuthWires } from "~/components/AuthFlowDialog";
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { ModelSettingsSection } from "~/components/ModelSettingsSection";
-import { IconButton } from "~/components/IconButton";
+import { SettingsPane } from "~/components/SettingsPane";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Separator } from "~/components/ui/separator";
@@ -169,7 +162,7 @@ function InstanceList({
 
 /**
  * The add wizard: pick a harness, name the account, fill its fields. The id is
- * derived from the name and fixed at creation — it is the routing key sessions
+ * derived from the name and fixed at creation — it is the routing key threads
  * record, so it must not drift when the account is later renamed.
  */
 function AddInstance({
@@ -359,6 +352,9 @@ function InstanceView({
       setView({ kind: "list" });
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      // On success this view is already on its way out, so the reset only
+      // matters for a failed delete; here it runs either way.
       setBusy(false);
       setConfirming(false);
     }
@@ -460,7 +456,7 @@ function InstanceView({
       <div className="space-y-2">
         <SectionHeading note="cannot be undone">Remove account</SectionHeading>
         <p className="text-muted-foreground text-[11px]">
-          Takes the account out of the config. Sessions that used it keep their transcripts.
+          Takes the account out of the config. Threads that used it keep their transcripts.
         </p>
         {confirming ? (
           <div className="flex flex-wrap items-center gap-2">
@@ -514,7 +510,7 @@ export default function ProvidersSettings({
   wires,
   onOpenTerminal,
   onRecheck,
-  onClose,
+  onBack,
 }: {
   harnesses: HarnessMeta[];
   wires: AuthWires;
@@ -522,7 +518,7 @@ export default function ProvidersSettings({
   onOpenTerminal: (instanceId: string) => void;
   /** Re-probe the harnesses; the refreshed list arrives via the prop. */
   onRecheck: () => Promise<void> | void;
-  onClose: () => void;
+  onBack?: () => void;
 }) {
   const [view, setView] = useState<View>({ kind: "list" });
   const [error, setError] = useState<string | null>(null);
@@ -545,76 +541,52 @@ export default function ProvidersSettings({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent
-        fullscreenOnMobile
-        className="flex max-h-[min(90dvh,44rem)] flex-col gap-0 p-0 md:max-w-lg"
-      >
-        <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
-          <DialogTitle className="flex items-center gap-1.5">
-            {view.kind !== "list" && (
-              <IconButton label="Back" onClick={() => go({ kind: "list" })} className="-ml-2">
-                <ChevronLeftIcon />
-              </IconButton>
-            )}
-            Providers
-          </DialogTitle>
-          <DialogDescription>
-            The agents this server can run and the accounts they sign in with.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
-          {view.kind === "list" && (
-            <>
-              <InstanceList
-                harnesses={harnesses}
-                onOpen={(harnessId, instanceId) => go({ kind: "instance", harnessId, instanceId })}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" onClick={() => go({ kind: "add", harnessId: null })}>
-                  <PlusIcon />
-                  Add account
-                </Button>
-                <Button variant="outline" size="sm" disabled={checking} onClick={() => void recheck()}>
-                  {checking ? <Spinner aria-hidden className="size-3.5" /> : <RefreshCwIcon />}
-                  Check again
-                </Button>
-              </div>
-            </>
-          )}
-          {view.kind === "add" && (
-            <AddInstance
-              harnesses={harnesses}
-              view={view}
-              setView={go}
-              wires={wires}
-              onError={setError}
-            />
-          )}
-          {view.kind === "instance" && (
-            <InstanceView
-              // Keyed so moving between accounts resets the form's local
-              // state instead of carrying one account's edits to another.
-              key={view.instanceId}
-              harnesses={harnesses}
-              view={view}
-              setView={go}
-              wires={wires}
-              onOpenTerminal={onOpenTerminal}
-              onError={setError}
-            />
-          )}
-
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription className="font-mono text-[11px] break-words">
-                {error}
-              </AlertDescription>
-            </Alert>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
+    <SettingsPane
+      title="Providers"
+      description="The agents this server can run and the accounts they sign in with."
+      onBack={view.kind !== "list" ? () => go({ kind: "list" }) : onBack}
+      error={error}
+    >
+      {view.kind === "list" && (
+        <>
+          <InstanceList
+            harnesses={harnesses}
+            onOpen={(harnessId, instanceId) => go({ kind: "instance", harnessId, instanceId })}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => go({ kind: "add", harnessId: null })}>
+              <PlusIcon />
+              Add account
+            </Button>
+            <Button variant="outline" size="sm" disabled={checking} onClick={() => void recheck()}>
+              {checking ? <Spinner aria-hidden className="size-3.5" /> : <RefreshCwIcon />}
+              Check again
+            </Button>
+          </div>
+        </>
+      )}
+      {view.kind === "add" && (
+        <AddInstance
+          harnesses={harnesses}
+          view={view}
+          setView={go}
+          wires={wires}
+          onError={setError}
+        />
+      )}
+      {view.kind === "instance" && (
+        <InstanceView
+          // Keyed so moving between accounts resets the form's local
+          // state instead of carrying one account's edits to another.
+          key={view.instanceId}
+          harnesses={harnesses}
+          view={view}
+          setView={go}
+          wires={wires}
+          onOpenTerminal={onOpenTerminal}
+          onError={setError}
+        />
+      )}
+    </SettingsPane>
   );
 }

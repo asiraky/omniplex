@@ -1,16 +1,22 @@
 import {
+  BookOpenIcon,
   BotIcon,
   FileDiffIcon,
+  FileIcon,
   FolderTreeIcon,
   Maximize2Icon,
   Minimize2Icon,
+  PackageIcon,
   PlusIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
+import { ArtefactList } from "~/components/artefacts/ArtefactList";
+import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { IconButton } from "~/components/IconButton";
+import { SkillsSurface } from "~/components/skills/SkillsSurface";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
@@ -25,20 +31,26 @@ import {
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { fileIconFor } from "~/lib/fileIcons";
 import { liveJobCount } from "~/lib/jobs";
+import type { Artefact } from "~/lib/artefacts";
 import {
+  artefactSurface,
   closeSurface,
   fileSurface,
   loadPanel,
   newTerminalSurface,
   openSurface,
+  putSurface,
   savePanel,
   type PanelState,
   type Surface,
 } from "~/lib/panel";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
-import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, SessionChanges, SessionState } from "~/protocol";
-import { useIsDesktop } from "~/useMediaQuery";
+import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, ThreadChanges, ThreadState } from "~/protocol";
+import { useLatest } from "~/useLatest";
+import { useDocksPanel } from "~/useMediaQuery";
+
+const NO_ARTEFACTS: Artefact[] = [];
 
 const WIDTH_KEY = "omniplex.changesWidth";
 const MIN_WIDTH = 320;
@@ -46,16 +58,17 @@ const DEFAULT_WIDTH = 460;
 
 /** An imperative ask from outside: put this on screen. */
 export interface PanelRequest {
-  kind: "diff" | "path" | "jobs";
+  kind: "diff" | "path" | "jobs" | "artefact" | "artefacts" | "skills";
   path?: string;
   line?: number;
+  artefactId?: string;
   nonce: number;
 }
 
 export interface PanelProps {
-  sessionId: string;
-  /** The session, for the jobs surface (jobs + items) and its badge. */
-  state: SessionState;
+  threadId: string;
+  /** The thread, for the jobs surface (jobs + items) and its badge. */
+  state: ThreadState;
   /** A ws command, for stopping a job and tailing a shell's output. */
   command: (command: string, args: unknown) => Promise<any>;
   open: boolean;
@@ -65,16 +78,22 @@ export interface PanelProps {
   onToggleExpanded?: () => void;
   /** Data is re-read when this changes — when a turn ends, in practice. */
   revision: string;
-  loadChanges: (comparison: DiffComparison) => Promise<SessionChanges>;
-  loadDiff: (path: string, changes: SessionChanges) => Promise<FileDiff>;
+  loadChanges: (comparison: DiffComparison) => Promise<ThreadChanges>;
+  loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
   loadTree: (includeIgnored: boolean) => Promise<FileTree>;
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
   pr?: PullRequest | null;
 }
 
-function surfaceLabel(s: Surface): string {
+function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
   switch (s.kind) {
+    case "artefacts":
+      return "Artefacts";
+    case "skills":
+      return "Skills";
+    case "artefact":
+      return artefacts.find((a) => a.id === s.artefactId)?.name ?? "Artefact";
     case "diff":
       return "Diff";
     case "files":
@@ -88,6 +107,58 @@ function surfaceLabel(s: Surface): string {
   }
 }
 
+/** What routing a request does to the panel. An empty route does nothing. */
+interface Route {
+  update?: (p: PanelState) => PanelState;
+  /** A changed file to open in the diff surface. */
+  reveal?: { path: string; nonce: number };
+  /** Set only when a file tab opens: the line to scroll to, if any. */
+  file?: { line?: number };
+}
+
+/**
+ * Where a request lands, or null while it cannot be judged yet. A path request
+ * routes on the change list, so it waits for the list to settle rather than
+ * judging against the empty one a fresh mount holds.
+ */
+function routeRequest(
+  request: PanelRequest,
+  settled: boolean,
+  changedPaths: Set<string>,
+  tree: FileTree | null,
+): Route | null {
+  const { path, nonce } = request;
+  switch (request.kind) {
+    case "diff":
+      return {
+        update: (p) => openSurface(p, { id: "diff", kind: "diff" }),
+        reveal: path ? { path, nonce } : undefined,
+      };
+    case "jobs":
+    case "artefacts":
+    case "skills": {
+      const kind = request.kind;
+      return { update: (p) => openSurface(p, { id: kind, kind }) };
+    }
+    case "artefact": {
+      const id = request.artefactId;
+      return id ? { update: (p) => putSurface(p, artefactSurface(id)) } : {};
+    }
+  }
+  if (!path) return {};
+  if (!settled) return null;
+  // A path in the change list opens as its diff; anything else opens as the
+  // file itself, including files the thread never touched.
+  if (changedPaths.has(path) && request.line === undefined) {
+    return { update: (p) => openSurface(p, { id: "diff", kind: "diff" }), reveal: { path, nonce } };
+  }
+  // A directory reference opens the tree rather than a file that isn't one.
+  if (tree?.files.some((f) => f.startsWith(path + "/")) && !tree.files.includes(path)) {
+    return { update: (p) => openSurface(p, { id: "files", kind: "files" }) };
+  }
+  return { update: (p) => openSurface(p, fileSurface(path)), file: { line: request.line } };
+}
+
 function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
   switch (s.kind) {
     case "diff":
@@ -96,6 +167,12 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
       return <FolderTreeIcon className={className} />;
     case "jobs":
       return <BotIcon className={className} />;
+    case "artefacts":
+      return <PackageIcon className={className} />;
+    case "artefact":
+      return <FileIcon className={className} />;
+    case "skills":
+      return <BookOpenIcon className={className} />;
     case "terminal":
       return <TerminalIcon className={className} />;
     case "file": {
@@ -106,7 +183,7 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
 }
 
 function PanelBody({
-  sessionId,
+  threadId,
   state,
   command,
   open,
@@ -122,48 +199,46 @@ function PanelBody({
   pr,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
-  // The tab model, persisted per session so the panel reopens as it was left.
-  const [panel, setPanel] = useState<PanelState>(() => loadPanel(sessionId));
-  useEffect(() => savePanel(sessionId, panel), [sessionId, panel]);
+  // The tab model, persisted per thread so the panel reopens as it was left.
+  const [panel, setPanel] = useState<PanelState>(() => loadPanel(threadId));
+  useEffect(() => savePanel(threadId, panel), [threadId, panel]);
 
   // ---- the change list, owned here because routing needs it too ----
-  const [changes, setChanges] = useState<SessionChanges | null>(null);
+  const [changes, setChanges] = useState<ThreadChanges | null>(null);
   const [comparison, setComparison] = useState<DiffComparison>(() => {
-    const stored = localStorage.getItem(`omniplex.diffComparison:${sessionId}`);
+    const stored = localStorage.getItem(`omniplex.diffComparison:${threadId}`);
     return stored === "branch" || stored === "pull_request" ? stored : "uncommitted";
   });
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState("");
-  const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
   // A refresh that started earlier must not overwrite a later one's answer.
-  const changesGen = useRef(0);
+  const changesGeneration = useRef(0);
   // The loaders are held by ref: a parent that re-creates them on every render
   // must not turn "read the worktree once" into a loop.
-  const loadChangesRef = useRef(loadChanges);
-  loadChangesRef.current = loadChanges;
+  const loadChangesRef = useLatest(loadChanges);
 
   const refreshChanges = useCallback(async () => {
-    const mine = ++changesGen.current;
+    const generation = ++changesGeneration.current;
     setChangesLoading(true);
     setChangesError("");
     try {
       const next = await loadChangesRef.current(comparison);
-      if (mine !== changesGen.current) return;
+      if (generation !== changesGeneration.current) return;
       setChanges(next);
     } catch (e) {
-      if (mine !== changesGen.current) return;
+      if (generation !== changesGeneration.current) return;
       setChangesError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (mine === changesGen.current) setChangesLoading(false);
+      if (generation === changesGeneration.current) setChangesLoading(false);
     }
-  }, [comparison]);
+  }, [comparison, loadChangesRef]);
 
   const changeComparison = useCallback((next: DiffComparison) => {
-    localStorage.setItem(`omniplex.diffComparison:${sessionId}`, next);
+    localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
     setChanges(null);
     setChangesError("");
     setComparison(next);
-  }, [sessionId]);
+  }, [threadId]);
 
   // Opening reads the worktree, and so does the end of a turn: the agent has
   // just stopped writing, which is exactly when the data is worth re-reading.
@@ -177,27 +252,26 @@ function PanelBody({
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState("");
   const [includeIgnored, setIncludeIgnored] = useState(false);
-  const treeGen = useRef(0);
+  const treeGeneration = useRef(0);
   const treeWanted = useRef(false);
-  const loadTreeRef = useRef(loadTree);
-  loadTreeRef.current = loadTree;
+  const loadTreeRef = useLatest(loadTree);
 
   const refreshTree = useCallback(async (ignored?: boolean) => {
     treeWanted.current = true;
-    const mine = ++treeGen.current;
+    const generation = ++treeGeneration.current;
     setTreeLoading(true);
     setTreeError("");
     try {
       const next = await loadTreeRef.current(ignored ?? false);
-      if (mine !== treeGen.current) return;
+      if (generation !== treeGeneration.current) return;
       setTree(next);
     } catch (e) {
-      if (mine !== treeGen.current) return;
+      if (generation !== treeGeneration.current) return;
       setTreeError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (mine === treeGen.current) setTreeLoading(false);
+      if (generation === treeGeneration.current) setTreeLoading(false);
     }
-  }, []);
+  }, [loadTreeRef]);
 
   // Lazy: the tree is read the first time a surface needs it, then kept fresh
   // on the same cadence as the change list.
@@ -213,57 +287,30 @@ function PanelBody({
   }, [revision]);
 
   const toggleIgnored = useCallback(() => {
-    setIncludeIgnored((v) => {
-      void refreshTree(!v);
-      return !v;
-    });
-  }, [refreshTree]);
+    const next = !includeIgnored;
+    setIncludeIgnored(next);
+    void refreshTree(next);
+  }, [includeIgnored, refreshTree]);
 
   const changedPaths = useMemo(() => new Set((changes?.files ?? []).map((f) => f.path)), [changes]);
 
   // ---- requests from outside ----
+  const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
-  // A path request routes on the change list, so it waits for the list to
-  // settle rather than judging against the empty one a fresh mount holds.
-  // Each nonce is routed exactly once.
-  const routedNonce = useRef(0);
-  useEffect(() => {
-    if (!request || request.nonce === routedNonce.current) return;
-    if (request.kind === "diff") {
-      routedNonce.current = request.nonce;
-      setPanel((p) => openSurface(p, { id: "diff", kind: "diff" }));
-      if (request.path) setReveal({ path: request.path, nonce: request.nonce });
-      return;
+  // Each nonce is routed exactly once, during render, so the tab it opens is
+  // in the same paint as the request rather than one frame behind it.
+  const [routedNonce, setRoutedNonce] = useState(0);
+  if (request && request.nonce !== routedNonce) {
+    const route = routeRequest(request, changes !== null || !!changesError, changedPaths, tree);
+    // Null is "not settled yet": the nonce stays unrouted and the render the
+    // change list arrives in looks again.
+    if (route) {
+      setRoutedNonce(request.nonce);
+      if (route.update) setPanel(route.update);
+      if (route.reveal) setReveal(route.reveal);
+      if (route.file) setFileLine(route.file.line);
     }
-    if (request.kind === "jobs") {
-      routedNonce.current = request.nonce;
-      setPanel((p) => openSurface(p, { id: "jobs", kind: "jobs" }));
-      return;
-    }
-    if (!request.path) {
-      routedNonce.current = request.nonce;
-      return;
-    }
-    // Not settled yet: leave the nonce unrouted and let the next changes
-    // update re-run this effect.
-    if (changes === null && !changesError) return;
-    routedNonce.current = request.nonce;
-    // A path in the change list opens as its diff; anything else opens as the
-    // file itself — including files the session never touched.
-    if (changedPaths.has(request.path) && request.line === undefined) {
-      setPanel((p) => openSurface(p, { id: "diff", kind: "diff" }));
-      setReveal({ path: request.path, nonce: request.nonce });
-      return;
-    }
-    // A directory reference opens the tree rather than a file that isn't one.
-    if (tree?.files.some((f) => f.startsWith(request.path + "/")) && !tree.files.includes(request.path)) {
-      setPanel((p) => openSurface(p, { id: "files", kind: "files" }));
-      return;
-    }
-    setFileLine(request.line);
-    setPanel((p) => openSurface(p, fileSurface(request.path!)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request?.nonce, changes, changesError]);
+  }
 
   const selectFile = useCallback((path: string) => {
     setFileLine(undefined);
@@ -271,18 +318,43 @@ function PanelBody({
   }, []);
 
   const jobCount = liveJobCount(state.jobs);
+  const artefacts = state.artefacts ?? NO_ARTEFACTS;
+  const openArtefact = useCallback(
+    (id: string) => setPanel((p) => putSurface(p, artefactSurface(id))),
+    [],
+  );
+  const shownArtefact = active?.kind === "artefact" ? artefacts.find((a) => a.id === active.artefactId) : undefined;
 
   const addSurface = useCallback((s: Surface) => setPanel((p) => openSurface(p, s)), []);
+
+  // The active tab is always in view: opening an artefact from the transcript
+  // appends a tab, and on a phone the strip is a few tabs wide.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const strip = tabsRef.current;
+    const tab = strip && panel.active ? strip.querySelector<HTMLElement>(`[data-surface="${CSS.escape(panel.active)}"]`) : null;
+    if (!strip || !tab) return;
+    const box = strip.getBoundingClientRect();
+    const at = tab.getBoundingClientRect();
+    if (at.left < box.left) strip.scrollLeft -= box.left - at.left;
+    else if (at.right > box.right) strip.scrollLeft += at.right - box.right;
+  }, [panel.active, open]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-1 border-b px-1.5 pt-[calc(0.375rem+env(safe-area-inset-top))] pb-1.5">
-        <div role="tablist" aria-label="Panel tabs" className="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        <div
+          ref={tabsRef}
+          role="tablist"
+          aria-label="Panel tabs"
+          className="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overscroll-x-contain"
+        >
           {panel.surfaces.map((s) => {
             const selected = s.id === panel.active;
             return (
               <span
                 key={s.id}
+                data-surface={s.id}
                 className={cn(
                   "group flex shrink-0 items-center rounded-md border text-[11.5px] transition-colors",
                   selected ? "bg-accent border-border" : "hover:bg-accent/50 border-transparent",
@@ -293,11 +365,11 @@ function PanelBody({
                   role="tab"
                   aria-selected={selected}
                   onClick={() => setPanel((p) => ({ ...p, active: s.id }))}
-                  title={s.kind === "file" ? s.path : surfaceLabel(s)}
+                  title={s.kind === "file" ? s.path : surfaceLabel(s, artefacts)}
                   className="focus-visible:ring-ring flex min-h-8 items-center gap-1.5 rounded-l-md py-1 pl-2 outline-none focus-visible:ring-2"
                 >
                   <SurfaceIcon s={s} className="size-3.5 shrink-0" />
-                  <span className="max-w-32 truncate">{surfaceLabel(s)}</span>
+                  <span className="max-w-32 truncate">{surfaceLabel(s, artefacts)}</span>
                   {s.kind === "jobs" && jobCount > 0 && (
                     <span className="bg-primary/15 text-primary rounded-full px-1.5 text-[10px] tabular-nums">
                       {jobCount}
@@ -306,7 +378,7 @@ function PanelBody({
                 </button>
                 <button
                   type="button"
-                  aria-label={`Close ${surfaceLabel(s)}`}
+                  aria-label={`Close ${surfaceLabel(s, artefacts)}`}
                   onClick={() => setPanel((p) => closeSurface(p, s.id))}
                   className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-8 items-center rounded-r-md py-1 pr-1.5 pl-1 opacity-60 outline-none focus-visible:ring-2 group-hover:opacity-100"
                 >
@@ -315,8 +387,11 @@ function PanelBody({
               </span>
             );
           })}
+        </div>
 
-          <DropdownMenu>
+        {/* Outside the scroller: with a row of tabs, a + that scrolled away with
+            them would be off screen on a phone. */}
+        <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -336,12 +411,17 @@ function PanelBody({
               <DropdownMenuItem onSelect={() => addSurface({ id: "jobs", kind: "jobs" })}>
                 <BotIcon className="size-3.5" /> Jobs
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addSurface({ id: "artefacts", kind: "artefacts" })}>
+                <PackageIcon className="size-3.5" /> Artefacts
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addSurface({ id: "skills", kind: "skills" })}>
+                <BookOpenIcon className="size-3.5" /> Skills
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setPanel((p) => openSurface(p, newTerminalSurface(p)))}>
                 <TerminalIcon className="size-3.5" /> Terminal
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
 
         {!inSheet && onToggleExpanded && (
           <IconButton
@@ -391,14 +471,28 @@ function PanelBody({
             loadFile={loadFile}
           />
         )}
-        {active?.kind === "jobs" && <JobsSurface sessionId={sessionId} state={state} command={command} />}
+        {active?.kind === "jobs" && <JobsSurface threadId={threadId} state={state} command={command} />}
+        {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
+        {active?.kind === "artefact" &&
+          (shownArtefact ? (
+            <ArtefactSurface
+              key={shownArtefact.id}
+              threadId={threadId}
+              artefact={shownArtefact}
+            />
+          ) : (
+            <div className="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-[13px]">
+              This artefact is not in this thread.
+            </div>
+          ))}
+        {active?.kind === "skills" && <SkillsSurface command={command} threadId={threadId} />}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces
           .filter((s) => s.kind === "terminal")
           .map((s) => (
             <div key={s.id} className={cn("h-full", s.id !== panel.active && "hidden")}>
-              <TerminalSurface target={{ session: sessionId }} />
+              <TerminalSurface target={{ thread: threadId }} />
             </div>
           ))}
       </div>
@@ -413,50 +507,45 @@ function PanelBody({
  * readable.
  */
 export function Panel(props: PanelProps) {
-  const isDesktop = useIsDesktop();
+  const docked = useDocksPanel();
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_KEY));
     return Number.isFinite(stored) && stored >= MIN_WIDTH ? stored : DEFAULT_WIDTH;
   });
-  const dragging = useRef(false);
 
   // Escape closes the docked panel. The sheet does this for itself.
   useEffect(() => {
-    if (!props.open || !isDesktop) return;
+    if (!props.open || !docked) return;
     const onKey = (e: KeyboardEvent) => {
-      // A dialog or sheet over the panel owns Escape first; closing both at
-      // once would dismiss something the user was not looking at.
-      if (e.key !== "Escape" || document.querySelector("[role=dialog]")) return;
+      // A dialog, sheet, menu or popover owns Escape first; closing both at
+      // once would dismiss something the user was not looking at. Radix
+      // prevents the default of the Escape it dismisses a layer with.
+      if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("[role=dialog]")) return;
       props.onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [props.open, props.onClose, isDesktop]);
-
-  useEffect(() => {
-    if (!dragging.current) localStorage.setItem(WIDTH_KEY, String(width));
-  }, [width]);
+  }, [props.open, props.onClose, docked]);
 
   const startDrag = useCallback((e: ReactPointerEvent) => {
     e.preventDefault();
-    dragging.current = true;
+    // Stored once, when the drag ends, not on every pixel of it.
+    let last: number | undefined;
     const max = () => Math.max(MIN_WIDTH, window.innerWidth - 360);
-    const onMove = (m: PointerEvent) =>
-      setWidth(Math.min(max(), Math.max(MIN_WIDTH, window.innerWidth - m.clientX)));
+    const onMove = (m: PointerEvent) => {
+      last = Math.min(max(), Math.max(MIN_WIDTH, window.innerWidth - m.clientX));
+      setWidth(last);
+    };
     const onUp = () => {
-      dragging.current = false;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      setWidth((w) => {
-        localStorage.setItem(WIDTH_KEY, String(w));
-        return w;
-      });
+      if (last !== undefined) localStorage.setItem(WIDTH_KEY, String(last));
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   }, []);
 
-  if (!isDesktop) {
+  if (!docked) {
     if (!props.open) return null;
     return (
       <Sheet open onOpenChange={(v) => !v && props.onClose()}>
@@ -475,7 +564,7 @@ export function Panel(props: PanelProps) {
             (e.currentTarget as HTMLElement | null)?.focus();
           }}
         >
-          <SheetTitle className="sr-only">Session panel</SheetTitle>
+          <SheetTitle className="sr-only">Thread panel</SheetTitle>
           <PanelBody {...props} inSheet />
         </SheetContent>
       </Sheet>
@@ -494,7 +583,7 @@ export function Panel(props: PanelProps) {
         // shell, and hiding the panel is not closing its tabs.
         !props.open && "hidden",
       )}
-      aria-label="Session panel"
+      aria-label="Thread panel"
     >
       {!props.expanded && (
         <div
@@ -502,7 +591,10 @@ export function Panel(props: PanelProps) {
           aria-orientation="vertical"
           aria-label="Resize the panel"
           onPointerDown={startDrag}
-          className="hover:bg-primary/40 absolute inset-y-0 -left-1 w-2 cursor-col-resize"
+          // z-20: the handle overhangs 4px into <main>, whose fades are z-10;
+          // below them the hover highlight comes out notched, as the
+          // sidebar's did.
+          className="hover:bg-primary/40 absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
         />
       )}
       <PanelBody {...props} />

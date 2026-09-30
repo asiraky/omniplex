@@ -1,7 +1,6 @@
-// Package userconfig holds per-machine preferences that deliberately do not
-// belong in a repo. Project settings live in .omniplex/project.json and are shared
-// with whoever clones the project; the things here are the operator's own
-// habits, so they live beside the database in ~/.omniplex instead.
+// Package userconfig holds per-machine preferences that are not about any one
+// project: the operator's own habits, and where new projects go. They live
+// beside the database in ~/.omniplex.
 package userconfig
 
 import (
@@ -9,54 +8,88 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
 
 // DefaultBranchFormat turns a `gh issue list` row into a branch name. It ships
-// as the default so the suggestion list works before anyone opens settings; it
-// is a string rather than Go code because the presenter is what evaluates it.
-const DefaultBranchFormat = "(issue) => `issue/${issue.number}-${issue.title.toLowerCase().replace(/[^a-z0-9]+/g, \"-\").replace(/^-+|-+$/g, \"\").slice(0, 40).replace(/-+$/, \"\")}`"
+// as the default so the suggestion list works before anyone opens settings.
+const DefaultBranchFormat = "issue/{number}-{title}"
 
-// DefaultSummaryPrompt is the system prompt the summariser runs under when the
-// operator has not written one. It is deliberately shaped around the question
-// somebody actually has when they reopen a session they have forgotten: what
-// did I ask for, what happened, and is anything still owed. The transcript
-// arrives as a user turn, so this says nothing about how to parse it.
-const DefaultSummaryPrompt = `You are summarising a coding-agent session for the person who started it. They have forgotten what it was about and do not want to reread it.
+var placeholder = regexp.MustCompile(`\{([^{}]*)\}`)
 
-Write three short sections, using these exact headings:
-
-**Request** — what the user originally asked for, in one or two plain sentences. Their opening message may be long and rambling; state the actual intent, not their wording.
-
-**What happened** — what the agent did, and whether it changed any files. Name the files or areas it touched. Say plainly if it changed nothing, got stuck, or was interrupted.
-
-**Follow-ups** — anything still outstanding: unanswered questions, failing checks, work the agent said it would do but did not. Write "None." if there is nothing.
-
-Be brief and concrete — under 200 words in total. Report only what the transcript shows; never guess at intent or invent work that is not there. Address the user as "you". Do not add a preamble, a title, or a closing remark.`
+// CheckBranchFormat refuses a template naming a placeholder the UI cannot
+// fill. The UI would fall back to issue/{number} with an error on every
+// suggestion, so the mistake belongs at save time, not in the picker.
+func CheckBranchFormat(format string) error {
+	for _, m := range placeholder.FindAllStringSubmatch(format, -1) {
+		if m[1] != "number" && m[1] != "title" {
+			return fmt.Errorf("branch name template: unknown placeholder {%s}; use {number} and {title}", m[1])
+		}
+	}
+	return nil
+}
 
 type Config struct {
 	Version int `json:"version"`
-	// BranchFormat is a JavaScript arrow function, object in and string out,
-	// evaluated by the web UI to name a new worktree. Empty means the default.
+	// BranchFormat is a template with {number} and {title} placeholders,
+	// filled in by the web UI to name a new worktree from an issue. Empty
+	// means the default.
 	BranchFormat string `json:"branchFormat,omitempty"`
 	// SuggestIssues disables the `gh` lookup for people who do not use it.
 	SuggestIssues *bool `json:"suggestIssues,omitempty"`
-	// SummaryPrompt is the system prompt the session summariser runs under.
-	// Empty means DefaultSummaryPrompt, so an operator who has never opened
-	// settings still gets a usable summary — and clearing the box is how you
-	// go back to the default rather than a separate stored flag.
-	SummaryPrompt string `json:"summaryPrompt,omitempty"`
 	// Providers declares provider instances — configured accounts for the
 	// harness adapters. Entries are held raw and written back verbatim: an
 	// entry naming a driver this build has never heard of must survive a
 	// load/save cycle untouched, so a config written on another branch is
 	// never destroyed. internal/provider parses them.
 	Providers []json.RawMessage `json:"providers,omitempty"`
+	// ProjectsDir is where a project's home folder is made. Empty means
+	// ~/Omniplex.
+	ProjectsDir string `json:"projectsDir,omitempty"`
+	// DefaultInstance and DefaultModel are what a project's first thread runs
+	// on, before the project has a habit of its own. Empty defers to whichever
+	// account is ready.
+	DefaultInstance string `json:"defaultInstance,omitempty"`
+	DefaultModel    string `json:"defaultModel,omitempty"`
+	// DefaultLevel is the permission level a project's first thread starts
+	// on: "ask", "edits" or "all". Empty defers to each harness's default.
+	DefaultLevel string `json:"defaultLevel,omitempty"`
+}
+
+// ProjectsDirOrDefault is the folder project home folders go in.
+func (c Config) ProjectsDirOrDefault() (string, error) {
+	if c.ProjectsDir != "" {
+		return ExpandHome(c.ProjectsDir)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Omniplex"), nil
+}
+
+// ExpandHome turns a leading ~ into the user's home folder. People type
+// ~/code, not /home/them/code. A relative path is refused: it would resolve
+// against wherever the server was started, which is nobody's intent.
+func ExpandHome(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[1:])
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("give the full path, starting with / or ~: %s", path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func Default() Config {
-	return Config{Version: 1, BranchFormat: DefaultBranchFormat, SummaryPrompt: DefaultSummaryPrompt}
+	return Config{Version: 1, BranchFormat: DefaultBranchFormat}
 }
 
 // Path is ~/.omniplex/config.json, beside omniplex.db. OMNIPLEX_CONFIG
@@ -80,12 +113,12 @@ func Normalize(cfg Config) (Config, error) {
 	if cfg.Version != 1 {
 		return cfg, fmt.Errorf("unsupported user config version %d", cfg.Version)
 	}
-	if strings.TrimSpace(cfg.BranchFormat) == "" {
+	// Configs written before templates hold a JavaScript arrow function, which
+	// the UI no longer runs; any of those goes back to the default.
+	if strings.TrimSpace(cfg.BranchFormat) == "" || strings.Contains(cfg.BranchFormat, "=>") {
 		cfg.BranchFormat = DefaultBranchFormat
 	}
-	if strings.TrimSpace(cfg.SummaryPrompt) == "" {
-		cfg.SummaryPrompt = DefaultSummaryPrompt
-	}
+	cfg.ProjectsDir = strings.TrimSpace(cfg.ProjectsDir)
 	return cfg, nil
 }
 
@@ -133,10 +166,13 @@ func Load() (Config, error) {
 }
 
 // Save writes atomically, matching project.Save, so a crash mid-write cannot
-// leave a half-parsed config that breaks every later session.
+// leave a half-parsed config that breaks every later thread.
 func Save(cfg Config) (Config, error) {
 	cfg, err := Normalize(cfg)
 	if err != nil {
+		return cfg, err
+	}
+	if err := validate(cfg); err != nil {
 		return cfg, err
 	}
 	path, err := Path()
@@ -168,4 +204,20 @@ func Save(cfg Config) (Config, error) {
 		return cfg, err
 	}
 	return cfg, os.Rename(name, path)
+}
+
+// validate refuses what a settings screen could get wrong. It runs on save,
+// not load: a bad value already on disk must not lock out the screen that
+// fixes it.
+func validate(cfg Config) error {
+	if cfg.ProjectsDir != "" {
+		if _, err := ExpandHome(cfg.ProjectsDir); err != nil {
+			return fmt.Errorf("projects folder: %w", err)
+		}
+	}
+	switch cfg.DefaultLevel {
+	case "", "ask", "edits", "all":
+		return nil
+	}
+	return fmt.Errorf("unknown permission level %q", cfg.DefaultLevel)
 }

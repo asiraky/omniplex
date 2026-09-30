@@ -87,7 +87,7 @@ func TestStreamingWhileIdleImpliesTurn(t *testing.T) {
 }
 
 // A finish for a turn that is not the open one — a stale close from an
-// adapter, a duplicate — must not take the session idle while different work
+// adapter, a duplicate — must not take the thread idle while different work
 // is running, and must not paint the running turn's tools as failed. Mirrored
 // by web/src/apply.test.ts.
 func TestStaleTurnFinishedDoesNotGoIdle(t *testing.T) {
@@ -170,16 +170,16 @@ func TestAttention(t *testing.T) {
 		t.Fatalf("post-turn attention = %q, want needs_prompt", got)
 	}
 
-	s.Apply(event(t, 7, proto.SessionClosed, proto.SessionClosedPayload{Reason: "done"}))
+	s.Apply(event(t, 7, proto.ThreadClosed, proto.ThreadClosedPayload{Reason: "done"}))
 	if got := s.Attention(); got != AttentionClosed {
 		t.Fatalf("closed attention = %q, want closed", got)
 	}
 }
 
-// The defence must not resurrect a closed session.
-func TestStreamingDoesNotReopenClosedSession(t *testing.T) {
+// The defence must not resurrect a closed thread.
+func TestStreamingDoesNotReopenClosedThread(t *testing.T) {
 	s := New("s1")
-	s.Apply(event(t, 1, proto.SessionClosed, proto.SessionClosedPayload{Reason: "closed"}))
+	s.Apply(event(t, 1, proto.ThreadClosed, proto.ThreadClosedPayload{Reason: "closed"}))
 	s.Apply(event(t, 2, proto.MessageChunk, proto.MessageChunkPayload{
 		Role: "agent", Kind: "text", BlockID: "b1", Delta: "late",
 	}))
@@ -191,25 +191,25 @@ func TestStreamingDoesNotReopenClosedSession(t *testing.T) {
 // Effort is the one config field whose empty value is a choice rather than an
 // absence: clearing it hands the level back to the harness. A payload that
 // says so must be able to say so, or the composer keeps showing — and a
-// restart keeps resuming — a level the session no longer runs at. Mirrored by
+// restart keeps resuming — a level the thread no longer runs at. Mirrored by
 // web/src/apply.test.ts.
 func TestClearingEffortSticks(t *testing.T) {
 	s := New("s1")
 	high, cleared := "high", ""
 
-	s.Apply(event(t, 1, proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Effort: &high}))
+	s.Apply(event(t, 1, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &high}))
 	if s.Effort != "high" {
 		t.Fatalf("effort = %q, want high", s.Effort)
 	}
 
-	s.Apply(event(t, 2, proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Effort: &cleared}))
+	s.Apply(event(t, 2, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &cleared}))
 	if s.Effort != "" {
 		t.Fatalf("effort = %q after clearing, want empty", s.Effort)
 	}
 
 	// An event about something else still leaves effort alone.
-	s.Apply(event(t, 3, proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Effort: &high}))
-	s.Apply(event(t, 4, proto.SessionConfigChanged, proto.SessionConfigChangedPayload{Model: "sonnet"}))
+	s.Apply(event(t, 3, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &high}))
+	s.Apply(event(t, 4, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "sonnet"}))
 	if s.Effort != "high" {
 		t.Fatalf("effort = %q after an unrelated change, want high", s.Effort)
 	}
@@ -300,5 +300,46 @@ func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
 	it := s.Items[len(s.Items)-1]
 	if it.ID != "prompt:t2" || it.Text != "next" || len(it.Images) != 1 {
 		t.Fatalf("prompt item = %+v", it)
+	}
+}
+
+func TestShowingAPathAgainRevisesOneArtefact(t *testing.T) {
+	s := New("s")
+	show := func(seq int64, size int64, src string) {
+		s.Apply(event(t, seq, proto.ArtefactShown, proto.ArtefactShownPayload{
+			ArtefactID: "a1", Path: "/home/p/report.html", Name: "report.html", MediaType: "text/html", Size: size,
+			Entry: "report.html", Files: 1, Source: src, TurnID: "t1",
+		}))
+	}
+	show(1, 10, proto.ArtefactFromAgent)
+	show(2, 20, proto.ArtefactFromAgent)
+	s.Apply(event(t, 3, proto.ArtefactShown, proto.ArtefactShownPayload{
+		ArtefactID: "u1", Path: "/home/p/uploads/brief.pdf", Name: "brief.pdf", MediaType: "application/pdf", Size: 5, Files: 1, Source: proto.ArtefactFromUpload,
+	}))
+
+	if len(s.Artefacts) != 2 {
+		t.Fatalf("artefacts = %+v", s.Artefacts)
+	}
+	a, ok := s.ArtefactByPath("/home/p/report.html")
+	if !ok || a.ID != "a1" || a.Size != 20 {
+		t.Fatalf("report = %+v", a)
+	}
+	// One timeline card per time the agent showed it; uploads show on their
+	// message instead.
+	var items []Item
+	for _, it := range s.Items {
+		if it.Kind == ItemArtefact {
+			items = append(items, it)
+		}
+	}
+	if len(items) != 2 || items[0].ID == items[1].ID || items[1].ArtefactID != "a1" || items[1].TurnID != "t1" || items[1].Size != 20 {
+		t.Fatalf("items = %+v", items)
+	}
+
+	// A clone is independent of the actor's state.
+	c := s.Clone()
+	show(4, 30, proto.ArtefactFromAgent)
+	if got, _ := c.ArtefactByID("a1"); got.Size != 20 {
+		t.Fatalf("clone shares artefacts: %+v", got)
 	}
 }

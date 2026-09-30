@@ -8,7 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~
 import { Spinner } from "~/components/ui/spinner";
 import { useDiffWrap } from "~/lib/diffWrap";
 import { cn } from "~/lib/utils";
-import type { ChangedFile, DiffComparison, FileDiff, PullRequest, SessionChanges } from "~/protocol";
+import type { ChangedFile, DiffComparison, FileDiff, PullRequest, ThreadChanges } from "~/protocol";
+import { useLatest } from "~/useLatest";
+
+type DiffEntry = { diff?: FileDiff; loading: boolean; error?: string };
+type DiffsRead = { changes: ThreadChanges | null; diffs: Record<string, DiffEntry> };
+const NO_DIFFS: Record<string, DiffEntry> = {};
 
 const STATUS_LABEL: Record<string, string> = {
   added: "A",
@@ -140,11 +145,11 @@ export function DiffSurface({
   onComparisonChange,
   pr,
 }: {
-  changes: SessionChanges | null;
+  changes: ThreadChanges | null;
   loading: boolean;
   error: string;
   onRefresh: () => void;
-  loadDiff: (path: string, changes: SessionChanges) => Promise<FileDiff>;
+  loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
   reveal?: { path: string; nonce: number } | null;
   comparison: DiffComparison;
   onComparisonChange: (comparison: DiffComparison) => void;
@@ -152,51 +157,38 @@ export function DiffSurface({
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [wrap, setWrap] = useDiffWrap();
-  const [diffs, setDiffs] = useState<Record<string, { diff?: FileDiff; loading: boolean; error?: string }>>({});
+  // A new change list describes a worktree that has moved on; every diff read
+  // against the old one is stale. So the diffs are held with the list they
+  // were read against, and a list that is no longer the current one reads as
+  // no diffs at all. An in-flight read from before a refresh lands on the old
+  // list and is never seen.
+  const [read, setRead] = useState<DiffsRead>({ changes, diffs: {} });
+  const diffs = read.changes === changes ? read.diffs : NO_DIFFS;
 
-  // Paths already asked for, so expanding a row twice does not re-read it.
-  const requested = useRef(new Set<string>());
   // Row elements, so a revealed file can be scrolled to.
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const diffRef = useRef(loadDiff);
-  diffRef.current = loadDiff;
-
-  // A new change list describes a worktree that has moved on; every diff read
-  // against the old one is stale. The generation is what keeps an in-flight
-  // read from before the refresh from overwriting one made after it — merely
-  // checking `requested` would accept the stale answer the moment the same
-  // path was asked for again.
-  const generation = useRef(0);
-  useEffect(() => {
-    generation.current++;
-    requested.current.clear();
-    setDiffs({});
-  }, [changes]);
+  const diffRef = useLatest(loadDiff);
 
   const toggle = useCallback((path: string, forceOpen = false) => {
     setExpanded((current) => (current === path && !forceOpen ? null : path));
-    if (requested.current.has(path)) return;
-    requested.current.add(path);
-    const mine = generation.current;
-    setDiffs((d) => ({ ...d, [path]: { loading: true } }));
+    // Expanding a row twice does not re-read it; a failed read may be retried.
+    const known = diffs[path];
+    if (known && !known.error) return;
+    // The first entry for a new list starts it afresh.
+    setRead((r) => ({
+      changes,
+      diffs: { ...(r.changes === changes ? r.diffs : NO_DIFFS), [path]: { loading: true } },
+    }));
     if (!changes) return;
+    // An answer for a list that has since been replaced is dropped.
+    const land = (entry: DiffEntry) =>
+      setRead((r) => (r.changes === changes ? { changes, diffs: { ...r.diffs, [path]: entry } } : r));
     void diffRef.current(path, changes)
-      .then((diff) => {
-        if (mine !== generation.current) return;
-        setDiffs((d) => ({ ...d, [path]: { diff, loading: false } }));
-      })
-      .catch((e) => {
-        if (mine !== generation.current) return;
-        requested.current.delete(path);
-        setDiffs((d) => ({
-          ...d,
-          [path]: { loading: false, error: e instanceof Error ? e.message : String(e) },
-        }));
-      });
-  }, [changes]);
+      .then((diff) => land({ diff, loading: false }))
+      .catch((e) => land({ loading: false, error: e instanceof Error ? e.message : String(e) }));
+  }, [changes, diffs, diffRef]);
 
-  const toggleRef = useRef(toggle);
-  toggleRef.current = toggle;
+  const toggleRef = useLatest(toggle);
 
   const files = changes?.files ?? [];
 
@@ -206,8 +198,7 @@ export function DiffSurface({
   useEffect(() => {
     if (!reveal) return;
     if (!files.some((f) => f.path === reveal.path)) return;
-    setExpanded(reveal.path);
-    if (!requested.current.has(reveal.path)) toggleRef.current(reveal.path, true);
+    toggleRef.current(reveal.path, true);
     const row = rowRefs.current.get(reveal.path);
     row?.scrollIntoView({ block: "start", behavior: "smooth" });
     // The nonce is what makes a repeat click count as a new request.
@@ -283,7 +274,7 @@ export function DiffSurface({
         ))}
         {changes?.truncated && (
           <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
-            Only the first files are listed; this session changed more than the panel will show.
+            Only the first files are listed; this thread changed more than the panel will show.
           </p>
         )}
       </div>

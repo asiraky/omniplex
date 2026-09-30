@@ -8,24 +8,28 @@
    these eight or so variables rather than editing every file. */
 :root {
   --radius: 0.625rem;
+  /* The tint: the hue and strength every grey below leans towards. Light mode
+     reads it at a fraction of dark mode's strength, so both follow one choice. */
+  --tint-h: 265;
+  --tint-c: 0.014;
 
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.21 0.006 285);
+  --background: oklch(0.99 calc(var(--tint-c) * 0.35) var(--tint-h));
+  --foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.006 285);
+  --card-foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.006 285);
+  --popover-foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --primary: oklch(0.52 0.17 275);
   --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.96 0.002 285);
-  --secondary-foreground: oklch(0.28 0.006 285);
-  --muted: oklch(0.96 0.002 285);
-  --muted-foreground: oklch(0.52 0.011 285);
-  --accent: oklch(0.955 0.004 285);
-  --accent-foreground: oklch(0.28 0.006 285);
+  --secondary: oklch(0.96 calc(var(--tint-c) * 0.6) var(--tint-h));
+  --secondary-foreground: oklch(0.28 calc(var(--tint-c) * 0.4) var(--tint-h));
+  --muted: oklch(0.96 calc(var(--tint-c) * 0.6) var(--tint-h));
+  --muted-foreground: oklch(0.52 calc(var(--tint-c) * 0.8) var(--tint-h));
+  --accent: oklch(0.955 calc(var(--tint-c) * 0.7) var(--tint-h));
+  --accent-foreground: oklch(0.28 calc(var(--tint-c) * 0.4) var(--tint-h));
   --destructive: oklch(0.58 0.21 27);
-  --border: oklch(0.9 0.003 285);
-  --input: oklch(0.9 0.003 285);
+  --border: oklch(0.9 calc(var(--tint-c) * 0.45) var(--tint-h));
+  --input: oklch(0.9 calc(var(--tint-c) * 0.45) var(--tint-h));
   --ring: oklch(0.52 0.17 275);
 
   /* The transcript's own roles: the reader's own words, the agent's private
@@ -33,7 +37,7 @@
      part of the theme because both themes have to answer them differently. */
   --user-bubble: oklch(0.94 0.03 275);
   --user-bubble-foreground: oklch(0.28 0.05 275);
-  --thought: oklch(0.55 0.01 285);
+  --thought: oklch(0.55 calc(var(--tint-c) * 0.7) var(--tint-h));
   --attention: oklch(0.62 0.14 70);
   --attention-foreground: oklch(0.42 0.11 70);
   --attention-surface: oklch(0.97 0.03 80);
@@ -45,44 +49,44 @@
   --chart-4: oklch(0.68 0.15 70);
   --chart-5: oklch(0.58 0.2 15);
 
-  --sidebar: oklch(0.975 0.001 285);
-  --sidebar-foreground: oklch(0.21 0.006 285);
+  --sidebar: oklch(0.975 calc(var(--tint-c) * 0.5) var(--tint-h));
+  --sidebar-foreground: oklch(0.21 calc(var(--tint-c) * 0.4) var(--tint-h));
   --sidebar-primary: oklch(0.52 0.17 275);
   --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.93 0.003 285);
-  --sidebar-accent-foreground: oklch(0.28 0.006 285);
-  --sidebar-border: oklch(0.9 0.003 285);
+  --sidebar-accent: oklch(0.93 calc(var(--tint-c) * 0.6) var(--tint-h));
+  --sidebar-accent-foreground: oklch(0.28 calc(var(--tint-c) * 0.4) var(--tint-h));
+  --sidebar-border: oklch(0.9 calc(var(--tint-c) * 0.45) var(--tint-h));
   --sidebar-ring: oklch(0.52 0.17 275);
 }
 
-/* "Deep slate / raised": slate-blue neutrals (hue 265), indigo accent (275),
-   sidebar one step lighter than the canvas — the card tone. */
+/* Dark mode's greys lean on the same tint, at full strength. Surfaces step up in lightness from canvas to card to popover to hover; the
+   indigo accent stays put whatever the tint. */
 .dark {
-  --background: oklch(0.19 0.01 265);
-  --foreground: oklch(0.93 0.008 265);
-  --card: oklch(0.23 0.012 265);
-  --card-foreground: oklch(0.93 0.008 265);
-  --popover: oklch(0.25 0.012 265);
-  --popover-foreground: oklch(0.93 0.008 265);
+  --background: oklch(0.235 var(--tint-c) var(--tint-h));
+  --foreground: oklch(0.94 calc(var(--tint-c) * 0.5) var(--tint-h));
+  --card: oklch(0.275 var(--tint-c) var(--tint-h));
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.295 var(--tint-c) var(--tint-h));
+  --popover-foreground: var(--foreground);
   --primary: oklch(0.7 0.17 275);
   --primary-foreground: oklch(0.97 0.005 265);
-  --secondary: oklch(0.28 0.014 265);
-  --secondary-foreground: oklch(0.93 0.008 265);
-  --muted: oklch(0.28 0.014 265);
-  --muted-foreground: oklch(0.66 0.02 265);
-  --accent: oklch(0.3 0.02 270);
-  --accent-foreground: oklch(0.93 0.008 265);
+  --secondary: oklch(0.32 calc(var(--tint-c) * 1.2) var(--tint-h));
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.32 calc(var(--tint-c) * 1.2) var(--tint-h));
+  --muted-foreground: oklch(0.72 calc(var(--tint-c) * 1.5) var(--tint-h));
+  --accent: oklch(0.34 calc(var(--tint-c) * 1.5) var(--tint-h));
+  --accent-foreground: var(--foreground);
   --destructive: oklch(0.65 0.19 25);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 14%);
   --ring: oklch(0.7 0.17 275);
 
-  --user-bubble: oklch(0.36 0.09 275);
-  --user-bubble-foreground: oklch(0.95 0.015 275);
-  --thought: oklch(0.65 0.02 265);
+  --user-bubble: oklch(0.4 0.09 275);
+  --user-bubble-foreground: oklch(0.96 0.015 275);
+  --thought: oklch(0.68 calc(var(--tint-c) * 1.5) var(--tint-h));
   --attention: oklch(0.78 0.14 78);
   --attention-foreground: oklch(0.84 0.11 78);
-  --attention-surface: oklch(0.28 0.05 75);
+  --attention-surface: oklch(0.31 0.05 75);
   --success: oklch(0.74 0.14 160);
 
   --chart-1: oklch(0.7 0.17 275);
@@ -91,14 +95,35 @@
   --chart-4: oklch(0.78 0.14 78);
   --chart-5: oklch(0.68 0.19 15);
 
-  --sidebar: oklch(0.23 0.012 265);
-  --sidebar-foreground: oklch(0.93 0.008 265);
+  --sidebar: oklch(0.265 var(--tint-c) var(--tint-h));
+  --sidebar-foreground: var(--foreground);
   --sidebar-primary: oklch(0.7 0.17 275);
   --sidebar-primary-foreground: oklch(0.97 0.005 265);
-  --sidebar-accent: oklch(0.3 0.02 270);
-  --sidebar-accent-foreground: oklch(0.95 0.01 265);
+  --sidebar-accent: oklch(0.34 calc(var(--tint-c) * 1.5) var(--tint-h));
+  --sidebar-accent-foreground: var(--foreground);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.7 0.17 275);
+}
+
+/* Set on <html> by applyTint and the boot script in index.html. */
+[data-tint="blue"] {
+  --tint-h: 245;
+  --tint-c: 0.03;
+}
+[data-tint="violet"] {
+  --tint-h: 295;
+  --tint-c: 0.03;
+}
+[data-tint="green"] {
+  --tint-h: 160;
+  --tint-c: 0.022;
+}
+[data-tint="red"] {
+  --tint-h: 20;
+  --tint-c: 0.028;
+}
+[data-tint="grey"] {
+  --tint-c: 0;
 }
 
 @theme inline {
@@ -208,6 +233,20 @@
   .scroll-thin {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklch, var(--muted-foreground) 45%, transparent) transparent;
+  }
+
+  /* A shadow on whichever side has more to scroll to. Phones hide scrollbars,
+     so a table cut at the screen edge otherwise looks like the whole table.
+     The "local" covers ride with the content and hide a shadow once its edge
+     is reached; the "scroll" shadows stay put. */
+  .scroll-shadow-x {
+    --scroll-cover: var(--background);
+    --scroll-shade: color-mix(in oklch, var(--foreground) 16%, transparent);
+    background:
+      linear-gradient(to right, var(--scroll-cover) 40%, transparent) left / 2rem 100% no-repeat local,
+      linear-gradient(to left, var(--scroll-cover) 40%, transparent) right / 2rem 100% no-repeat local,
+      linear-gradient(to right, var(--scroll-shade), transparent) left / 0.75rem 100% no-repeat scroll,
+      linear-gradient(to left, var(--scroll-shade), transparent) right / 0.75rem 100% no-repeat scroll;
   }
 
   /* The block cursor trailing streaming text. Markdown output is a stack of

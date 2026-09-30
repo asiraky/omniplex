@@ -28,7 +28,7 @@ const SNAP_BACKLOG = 1500;
  * arriving, and the whole of it once the reveal has caught up.
  *
  * Text already present when the component mounts is shown immediately, so
- * attaching to a session mid-turn does not retype the transcript; only text
+ * attaching to a thread mid-turn does not retype the transcript; only text
  * arriving afterwards is paced.
  */
 export function useSmoothText(text: string, active: boolean): string {

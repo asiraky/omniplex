@@ -16,8 +16,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/asiraky/omniplex/internal/auth"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // testServer builds a server whose guard treats requests as remote, so the
@@ -30,7 +30,7 @@ func testServer(t *testing.T) (http.Handler, *auth.Guard) {
 }
 
 // testServerWithStore is testServer for a test that also needs to seed rows,
-// such as one that needs a session to exist before it can open its terminal.
+// such as one that needs a thread to exist before it can open its terminal.
 func testServerWithStore(t *testing.T) (http.Handler, *auth.Guard, *store.Store) {
 	t.Helper()
 
@@ -41,10 +41,10 @@ func testServerWithStore(t *testing.T) (http.Handler, *auth.Guard, *store.Store)
 	t.Cleanup(func() { st.Close() })
 
 	guard := auth.New(st, true, auth.DefaultPort)
-	mgr := session.NewManager(st, func(string, ...any) {})
+	mgr := thread.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
-	srv := New(Options{Manager: mgr, Store: st, Guard: guard, DefaultCwd: t.TempDir()})
+	srv := New(Options{Manager: mgr, Store: st, Guard: guard})
 	return srv.Handler(), guard, st
 }
 
@@ -62,7 +62,7 @@ func TestPrivateRoutesRefuseUnpairedDevices(t *testing.T) {
 	ts := httptest.NewServer(asRemote(handler))
 	defer ts.Close()
 
-	for _, path := range []string{"/api/sessions", "/api/harnesses", "/api/fs", "/api/devices"} {
+	for _, path := range []string{"/api/threads", "/api/harnesses", "/api/fs", "/api/devices"} {
 		res, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -139,13 +139,13 @@ func TestPairingGrantsAccess(t *testing.T) {
 	}
 
 	// The same client, now holding the cookie, reaches a private route.
-	res2, err := client.Get(ts.URL + "/api/sessions")
+	res2, err := client.Get(ts.URL + "/api/threads")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer res2.Body.Close()
 	if res2.StatusCode != http.StatusOK {
-		t.Fatalf("a paired device got %d on /api/sessions, want 200", res2.StatusCode)
+		t.Fatalf("a paired device got %d on /api/threads, want 200", res2.StatusCode)
 	}
 
 	// The code cannot be used twice.
@@ -168,7 +168,7 @@ func TestBrowserNavigationRedirectsToPairing(t *testing.T) {
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/threads", nil)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	res, err := client.Do(req)
@@ -311,15 +311,14 @@ func TestHealthWithholdsCommitFromUnpairedDevices(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	guard := auth.New(st, true, auth.DefaultPort)
-	mgr := session.NewManager(st, func(string, ...any) {})
+	mgr := thread.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
 	handler := New(Options{
-		Manager:    mgr,
-		Store:      st,
-		Guard:      guard,
-		DefaultCwd: t.TempDir(),
-		Commit:     "deadbeef",
+		Manager: mgr,
+		Store:   st,
+		Guard:   guard,
+		Commit:  "deadbeef",
 	}).Handler()
 
 	read := func(h http.Handler) map[string]any {
@@ -363,15 +362,14 @@ func TestHealthGivesCommitToTheBoxEvenBehindAProxy(t *testing.T) {
 	guard := auth.New(st, true, auth.DefaultPort)
 	// What `tailscale serve --https=443` does to a running server.
 	guard.SetProxied(true)
-	mgr := session.NewManager(st, func(string, ...any) {})
+	mgr := thread.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
 	handler := New(Options{
-		Manager:    mgr,
-		Store:      st,
-		Guard:      guard,
-		DefaultCwd: t.TempDir(),
-		Commit:     "deadbeef",
+		Manager: mgr,
+		Store:   st,
+		Guard:   guard,
+		Commit:  "deadbeef",
 	}).Handler()
 
 	read := func(h http.Handler) map[string]any {

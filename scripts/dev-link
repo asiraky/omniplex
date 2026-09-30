@@ -16,7 +16,7 @@
 #
 # Only ever signals the process group recorded in .omniplex/dev.pid — the one
 # it started itself. It never matches on a name or a path, because the main
-# checkout is probably running the server that hosts the session you are in.
+# checkout is probably running the server that hosts the thread you are in.
 set -e
 cd "$(dirname "$0")/.."
 

@@ -11,7 +11,7 @@ tmp_dir = ".air"
   cmd = "go build -o ./.air/omniplex ./cmd/omniplex"
   bin = "./.air/omniplex -dev"
   include_ext = ["go"]
-  # .worktrees holds the checkouts omniplex provisions for its own sessions. They are
+  # .worktrees holds the checkouts omniplex provisions for its own threads. They are
   # full copies of this repository, so watching them would restart the dev
   # server on every edit an agent makes in one — the exact loop that running omniplex
   # on its own source is meant to avoid.

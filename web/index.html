@@ -16,9 +16,9 @@
          manual switch had repainted the page the other way. The content below
          is only what the first paint uses; the script further down corrects it
          before that paint. -->
-    <meta name="theme-color" content="#121418" />
+    <meta name="theme-color" content="#1e2129" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="description" content="Omniplex drives coding sessions across harnesses, and attaches to them from any device." />
+    <meta name="description" content="Omniplex drives coding threads across harnesses, and attaches to them from any device." />
     <!-- A personal server, not a site. Nothing here should ever be indexed. -->
     <meta name="robots" content="noindex, nofollow" />
 
@@ -53,11 +53,14 @@
             : window.matchMedia("(prefers-color-scheme: dark)").matches;
           document.documentElement.classList.toggle("dark", dark);
           document.documentElement.style.colorScheme = dark ? "dark" : "light";
+          // Same key and names as TINT_STORAGE_KEY and TINTS in lib/theme.ts.
+          var tint = localStorage.getItem("omniplex.tint");
+          if (tint && tint !== "slate") document.documentElement.dataset.tint = tint;
           // The two literals are the --background values of the two themes.
           // applyTheme takes this over from the real computed value as soon
           // as the bundle runs; this is only for the frame before that.
           var chrome = document.querySelector('meta[name="theme-color"]');
-          if (chrome) chrome.setAttribute("content", dark ? "#121418" : "#fcfcfc");
+          if (chrome) chrome.setAttribute("content", dark ? "#1e2129" : "#fcfcfc");
         } catch (e) {
           /* Private-mode storage can throw. The default class stands. */
         }

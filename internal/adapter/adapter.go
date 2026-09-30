@@ -15,11 +15,11 @@ import (
 
 // CreateOptions configures a new harness session.
 type CreateOptions struct {
-	SessionID string // caller-owned identity; the harness is told to use it where it can
-	Cwd       string
-	Model     string
-	Mode      string
-	Effort    string
+	ThreadID string // omniplex thread id, caller-owned; the harness is told to use it where it can
+	Cwd      string
+	Model    string
+	Mode     string
+	Effort   string
 
 	// Env is the provider instance's credential overlay, applied over the
 	// ambient environment when the harness process spawns. It is the entire
@@ -33,6 +33,27 @@ type CreateOptions struct {
 	// SessionID.
 	Resume           bool
 	HarnessSessionID string
+
+	// MCPServers are stdio MCP servers omniplex runs beside the harness, the
+	// way it gives an agent tools of its own (showing a file). An adapter
+	// whose harness cannot take MCP servers ignores them.
+	MCPServers []MCPServer
+
+	// ExtraDirs are folders outside Cwd the agent may read and write: the
+	// project's home folder, when the session works in a repo. An adapter
+	// whose harness has no such setting ignores them.
+	ExtraDirs []string
+}
+
+// MCPServer is one stdio MCP server. Tools lists the tool names it serves, so
+// an adapter can pre-approve them rather than ask a human about omniplex's own
+// tools.
+type MCPServer struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"`
+	Tools   []string          `json:"tools"`
 }
 
 // PromptInput is one user turn.
@@ -141,7 +162,18 @@ type PermissionModeMeta struct {
 	// Default marks the mode selected when the user has expressed no
 	// preference. It matches what an empty CreateOptions.Mode does.
 	Default bool `json:"default,omitempty"`
+	// Level places the mode on the scale every harness shares, so a person can
+	// pick how much the agent may do without learning each harness's names.
+	// Empty for the modes that fit none of them; those stay under Advanced.
+	Level string `json:"level,omitempty"`
 }
+
+// The permission levels, least trusting first.
+const (
+	LevelAsk   = "ask"   // ask before changing anything
+	LevelEdits = "edits" // edit files, ask before commands
+	LevelAll   = "all"   // do everything without asking
+)
 
 // Availability states.
 const (
@@ -376,41 +408,6 @@ type HostServices interface {
 // not a canonical transcript event.
 type ComposerCatalogueInvalidator interface {
 	ComposerCatalogueChanged()
-}
-
-// SummaryRequest is one transcript to compress, plus the instructions that say
-// how. System is the operator's editable prompt; Transcript is the rendered
-// session. They are kept apart rather than concatenated so an adapter can put
-// each where its harness expects it — a system prompt slot and a user turn —
-// instead of every adapter re-inventing the same delimiter.
-type SummaryRequest struct {
-	System     string
-	Transcript string
-}
-
-// Summarizer is an optional adapter capability: answer one question about a
-// transcript, cheaply, without starting a session.
-//
-// It is on the Adapter rather than on Session on purpose. A summary is most
-// wanted for a session that finished days ago, and resuming a closed
-// conversation just to ask it what it did would restart a harness, restore its
-// context, and bill for it. This spawns a short-lived process against the
-// harness's fastest model and throws it away.
-//
-// The env overlay is the session's own provider instance, so the summary is
-// billed to the account that did the work. An adapter whose harness cannot do
-// this simply does not implement it, and the host says so.
-type Summarizer interface {
-	Summarize(ctx context.Context, env map[string]string, req SummaryRequest) (SummaryResult, error)
-}
-
-// SummaryResult is the answer plus the model that gave it. The model is
-// reported rather than configured because the adapter chooses it, and a
-// summary that names its author can be judged; one that appears from nowhere
-// cannot.
-type SummaryResult struct {
-	Text  string
-	Model string
 }
 
 // ---- Account-level usage limits ----

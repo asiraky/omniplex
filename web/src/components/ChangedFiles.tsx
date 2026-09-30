@@ -120,8 +120,9 @@ function previewFiles(files: ChangedFile[]): ChangedFile[] {
     picked.push(file);
     if (picked.length === PREVIEW_FILES) return picked;
   }
+  const taken = new Set(picked);
   for (const file of files) {
-    if (picked.includes(file)) continue;
+    if (taken.has(file)) continue;
     picked.push(file);
     if (picked.length === PREVIEW_FILES) break;
   }

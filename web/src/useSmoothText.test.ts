@@ -34,7 +34,7 @@ describe("useSmoothText", () => {
   });
 
   // The incident from issue #24: a block mounts with its first chunk while the
-  // session is (wrongly or rightly) not in a turn, then the text keeps
+  // thread is (wrongly or rightly) not in a turn, then the text keeps
   // growing. The reveal loop had already exited and nothing restarted it, so
   // the block froze at the first chunk forever.
   it("catches up when text grows while inactive", async () => {

@@ -19,13 +19,14 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
+	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/projection"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // Server exposes the sync protocol over WebSocket and a small HTTP API, and
@@ -37,23 +38,26 @@ import (
 // mixed-content and CORS problems from another device — and what lets pairing
 // behave the same in development as in production.
 type Server struct {
-	id         string
-	mgr        *session.Manager
-	store      *store.Store
-	guard      *auth.Guard
-	defaultCwd string
-	webFS      fs.FS
-	web        *webAssets
-	devProxy   http.Handler
-	allowAny   bool
-	endpoints  *endpoints.Builder
+	id        string
+	mgr       *thread.Manager
+	store     *store.Store
+	guard     *auth.Guard
+	webFS     fs.FS
+	web       *webAssets
+	devProxy  http.Handler
+	allowAny  bool
+	endpoints *endpoints.Builder
 	// commit is the git revision this binary was built from, empty when it
 	// was not built from a checkout.
 	commit string
 	// attachments holds images a human added to a prompt. Nil in tests that
 	// never upload one, in which case the endpoints report the feature off.
 	attachments *attachment.Store
-	logf        func(string, ...any)
+	// artefacts holds what threads produced; signer mints the tokens that
+	// open them outside the device gate. Both nil turns artefacts off.
+	artefacts *artefact.Store
+	signer    *artefact.Signer
+	logf      func(string, ...any)
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -67,11 +71,10 @@ type Server struct {
 }
 
 type Options struct {
-	Manager    *session.Manager
-	Store      *store.Store
-	Guard      *auth.Guard
-	Endpoints  *endpoints.Builder
-	DefaultCwd string
+	Manager   *thread.Manager
+	Store     *store.Store
+	Guard     *auth.Guard
+	Endpoints *endpoints.Builder
 	// WebFS serves the built UI when non-nil.
 	WebFS fs.FS
 	// DevViteURL turns on development mode: the UI is proxied to the Vite dev
@@ -84,6 +87,9 @@ type Options struct {
 	// Attachments stores images attached to prompts. Nil turns the feature
 	// off: uploads are refused and nothing else changes.
 	Attachments *attachment.Store
+	// Artefacts and ArtefactSigner turn on thread artefacts.
+	Artefacts      *artefact.Store
+	ArtefactSigner *artefact.Signer
 	// Commit is the git revision this binary was built from. It is what makes
 	// a deploy verifiable: without it "the server restarted" and "the server
 	// restarted running the new binary" look identical from outside.
@@ -101,10 +107,11 @@ func New(o Options) *Server {
 		store:       o.Store,
 		guard:       o.Guard,
 		endpoints:   o.Endpoints,
-		defaultCwd:  o.DefaultCwd,
 		webFS:       o.WebFS,
 		allowAny:    o.AllowAnyOrigin,
 		attachments: o.Attachments,
+		artefacts:   o.Artefacts,
+		signer:      o.ArtefactSigner,
 		commit:      o.Commit,
 		logf:        o.Logf,
 	}
@@ -174,16 +181,16 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, s.mgr.Harnesses(r.Context()))
 	})
 
-	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		sessions, err := s.mgr.List(r.Context())
+	mux.HandleFunc("GET /api/threads", func(w http.ResponseWriter, r *http.Request) {
+		threads, err := s.mgr.List(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, sessions)
+		writeJSON(w, threads)
 	})
 
-	mux.HandleFunc("GET /api/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/threads/{id}", func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -208,14 +215,14 @@ func (s *Server) Handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(payload)
-		s.logf("session_snapshot session=%s duration_ms=%d payload_bytes=%d turns=%d items=%d items_before=%d",
+		s.logf("thread_snapshot thread=%s duration_ms=%d payload_bytes=%d turns=%d items=%d items_before=%d",
 			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns), len(state.Items), state.ItemsBefore)
 	})
 
 	// The page of timeline items older than the client's window. `before` is
 	// the cursor the last response handed back (ItemsBefore); the reply's
 	// itemsBefore is the next one, zero meaning the top has been reached.
-	mux.HandleFunc("GET /api/sessions/{id}/items", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/threads/{id}/items", func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		before, err := strconv.Atoi(r.URL.Query().Get("before"))
 		if err != nil || before < 0 {
@@ -238,7 +245,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		page, start := projection.WindowBefore(state.Items, before, count)
 		writeJSON(w, map[string]any{"items": page, "itemsBefore": start})
-		s.logf("session_items session=%s duration_ms=%d before=%d items=%d items_before=%d",
+		s.logf("thread_items thread=%s duration_ms=%d before=%d items=%d items_before=%d",
 			r.PathValue("id"), time.Since(started).Milliseconds(), before, len(page), start)
 	})
 
@@ -246,7 +253,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/fs", func(w http.ResponseWriter, r *http.Request) {
 		dir := r.URL.Query().Get("path")
 		if dir == "" {
-			dir = s.defaultCwd
+			dir, _ = os.UserHomeDir()
 		}
 		if strings.HasPrefix(dir, "~") {
 			home, _ := os.UserHomeDir()
@@ -291,12 +298,14 @@ func (s *Server) Handler() http.Handler {
 	// everywhere afterwards, and read back here by whatever device is looking
 	// at the transcript — including one that was not in the room when the
 	// picture was sent.
-	mux.HandleFunc("POST /api/sessions/{id}/attachments", s.handleUploadAttachment)
-	mux.HandleFunc("GET /api/sessions/{id}/attachments/{attachmentId}", s.handleGetAttachment)
+	mux.HandleFunc("POST /api/threads/{id}/attachments", s.handleUploadAttachment)
+	mux.HandleFunc("GET /api/threads/{id}/attachments/{attachmentId}", s.handleGetAttachment)
+
+	s.routeArtefacts(mux)
 
 	mux.HandleFunc("/ws", s.serveWS)
 
-	// A pty per open terminal tab, scoped to the session's checkout. Behind
+	// A pty per open terminal tab, scoped to the thread's checkout. Behind
 	// the gate like everything else: private by default.
 	mux.HandleFunc("/api/term", s.serveTerm)
 
@@ -327,7 +336,7 @@ func publicPaths(path string) bool {
 	case "/pair", "/api/pair", "/api/health":
 		return true
 	}
-	return false
+	return artefactPublicPath(path)
 }
 
 // gate refuses anything from an unpaired device before it reaches a handler.
@@ -373,7 +382,7 @@ func wantsHTML(r *http.Request) bool {
 const maxWSMessageBytes = 1 << 20
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
-	// Session snapshots and tool output are highly repetitive JSON. Context
+	// Thread snapshots and tool output are highly repetitive JSON. Context
 	// takeover keeps the dictionary across frames, which matters for streamed
 	// deltas as well as the initial snapshot. Peers without permessage-deflate
 	// support simply negotiate no extension; the compressed HTTP snapshot path

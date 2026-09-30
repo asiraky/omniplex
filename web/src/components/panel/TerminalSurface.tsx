@@ -7,14 +7,14 @@ import { cn } from "~/lib/utils";
 
 /**
  * One terminal tab: an xterm bound to a pty the server spawned in the
- * session's checkout. The shell's lifetime is this component's — closing the
+ * thread's checkout. The shell's lifetime is this component's — closing the
  * tab (or the panel unmounting the surface) hangs up the socket and the server
  * reaps the shell. A reconnect is a fresh shell; the surface says so rather
  * than pretending continuity it does not have.
  */
 export type TerminalTarget =
-  /** The user's shell in a session's checkout. */
-  | { session: string }
+  /** The user's shell in a thread's checkout. */
+  | { thread: string }
   /** A harness's own sign-in flow for one provider instance. */
   | { login: string };
 
@@ -30,7 +30,7 @@ export function TerminalSurface({
   const [gone, setGone] = useState(false);
   // Bumping this remounts the effect: a fresh socket, a fresh shell.
   const [generation, setGeneration] = useState(0);
-  const targetKey = "session" in target ? `session:${target.session}` : `login:${target.login}`;
+  const targetKey = "thread" in target ? `thread:${target.thread}` : `login:${target.login}`;
   const login = "login" in target;
 
   useEffect(() => {
@@ -57,8 +57,8 @@ export function TerminalSurface({
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const query =
-      "session" in target
-        ? `session=${encodeURIComponent(target.session)}`
+      "thread" in target
+        ? `thread=${encodeURIComponent(target.thread)}`
         : `login=${encodeURIComponent(target.login)}`;
     const ws = new WebSocket(`${proto}//${location.host}/api/term?${query}`);
     ws.binaryType = "arraybuffer";

@@ -1,0 +1,665 @@
+package thread
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/asiraky/omniplex/internal/project"
+	"github.com/asiraky/omniplex/internal/proto"
+	"github.com/asiraky/omniplex/internal/store"
+)
+
+const maxHookOutput = 4 << 20
+
+type provisionContext struct {
+	Version               int             `json:"version"`
+	ThreadID              string          `json:"threadId"`
+	ProjectRoot           string          `json:"projectRoot"`
+	RequestedBranch       string          `json:"requestedBranch,omitempty"`
+	BaseRef               string          `json:"baseRef,omitempty"`
+	SuggestedWorktreePath string          `json:"suggestedWorktreePath,omitempty"`
+	ProvisionResult       json.RawMessage `json:"provisionResult,omitempty"`
+}
+
+type provisionResult struct {
+	Cwd       string         `json:"cwd"`
+	Branch    string         `json:"branch,omitempty"`
+	Resources map[string]any `json:"resources,omitempty"`
+}
+
+func lifecycleDir(threadID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".omniplex", "workspaces", threadID)
+	return dir, os.MkdirAll(dir, 0o700)
+}
+
+func (m *Manager) provision(meta store.ThreadMeta, f project.Folder, a *Actor) {
+	ctx := context.Background()
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceRequested, proto.WorkspaceRequestedPayload{
+		ProjectID: meta.ProjectID, ProjectRoot: f.Path, Mode: meta.WorkspaceMode, Branch: meta.Branch, BaseRef: baseRefFor(meta, f),
+	}))
+	_ = m.store.SetPhase(ctx, meta.ID, "provisioning")
+	m.notifyList()
+
+	// meta.Cwd is the project root for a local thread and the borrowed
+	// checkout for an attached one; either way it is already the answer when
+	// nothing has to be provisioned.
+	base := meta.Cwd
+	if base == "" {
+		base = f.Path
+	}
+	result := provisionResult{Cwd: base, Branch: meta.Branch}
+	if meta.ProvisionScript != "" {
+		var err error
+		result, err = m.runProvisionHook(ctx, meta, f, a)
+		if err != nil {
+			m.provisionFailed(meta.ID, a, err)
+			return
+		}
+	} else if meta.WorkspaceMode == "managed" {
+		var err error
+		result, err = m.createWorktree(ctx, meta, f, a)
+		if err != nil {
+			m.provisionFailed(meta.ID, a, err)
+			return
+		}
+	}
+
+	info, err := os.Stat(result.Cwd)
+	if err != nil || !info.IsDir() {
+		m.provisionFailed(meta.ID, a, fmt.Errorf("provision result cwd is not a directory: %s", result.Cwd))
+		return
+	}
+	raw, _ := json.Marshal(result)
+	if err := m.store.UpdateWorkspace(ctx, meta.ID, result.Cwd, result.Branch, "provisioning", raw); err != nil {
+		m.provisionFailed(meta.ID, a, err)
+		return
+	}
+	a.Cwd = result.Cwd
+	if err := a.Activate(ctx, result.Cwd, meta.Model, meta.Mode, meta.Effort); err != nil {
+		m.provisionFailed(meta.ID, a, fmt.Errorf("start harness: %w", err))
+		return
+	}
+	_ = m.store.SetPhase(ctx, meta.ID, "ready")
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceReady, proto.WorkspaceReadyPayload{Cwd: result.Cwd, Branch: result.Branch, Resources: result.Resources}))
+	m.notifyList()
+}
+
+func (m *Manager) provisionFailed(id string, a *Actor, err error) {
+	_ = m.store.SetPhase(context.Background(), id, "provision_failed")
+	_ = a.Emit(context.Background(), proto.Emit(proto.WorkspaceFailed, proto.WorkspaceFailedPayload{Hook: "provision", Error: err.Error()}))
+	m.notifyList()
+}
+
+func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) (provisionResult, error) {
+	stateDir, err := lifecycleDir(meta.ID)
+	if err != nil {
+		return provisionResult{}, err
+	}
+	hook, err := project.ResolveHook(f.Path, meta.ProvisionScript)
+	if err != nil {
+		return provisionResult{}, err
+	}
+	branch, suggested := workspaceTarget(meta, f)
+	meta.Branch = branch
+	// The base is resolved once, here, and the answer is what every hook sees:
+	// a ref that exists in this clone. Resolving it per-hook would fetch twice
+	// and could hand the hook a name Git cannot look up.
+	res, err := m.resolveBase(ctx, meta, f, a)
+	if err != nil {
+		return provisionResult{}, err
+	}
+	compatibility := isCompatibilityHook(hook, "setup")
+	var hookArgs []string
+	var compatibleResult provisionResult
+	if compatibility {
+		compatibleResult, err = m.createWorktreeFrom(ctx, meta, f, a, &res)
+		if err != nil {
+			return provisionResult{}, err
+		}
+		raw, _ := json.Marshal(compatibleResult)
+		if err := m.store.UpdateWorkspace(ctx, meta.ID, compatibleResult.Cwd, compatibleResult.Branch, "provisioning", raw); err != nil {
+			return provisionResult{}, err
+		}
+		// A compatibility hook predates every flag omniplex has ever passed, so
+		// it gets the branch and nothing else. The base reaches it as
+		// OMNIPLEX_BASE_REF, where an old script simply ignores it.
+		hookArgs = []string{compatibleResult.Branch}
+	}
+	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: f.Path, RequestedBranch: meta.Branch, BaseRef: res.Ref, SuggestedWorktreePath: suggested}
+	contextPath, resultPath := filepath.Join(stateDir, "context.json"), filepath.Join(stateDir, "result.json")
+	if err := writeJSON(contextPath, input); err != nil {
+		return provisionResult{}, err
+	}
+	_ = os.Remove(resultPath)
+	if err := m.runHook(ctx, a, meta, f.Path, hook, hookArgs, res.Ref, "provision", contextPath, resultPath, stateDir, f.ProvisionTimeoutSeconds); err != nil {
+		return provisionResult{}, err
+	}
+	b, err := os.ReadFile(resultPath)
+	if err != nil {
+		if compatibility && os.IsNotExist(err) {
+			return compatibleResult, nil
+		}
+		return provisionResult{}, fmt.Errorf("provision did not write OMNIPLEX_RESULT_FILE: %w", err)
+	}
+	var result provisionResult
+	if err := json.Unmarshal(b, &result); err != nil {
+		return result, fmt.Errorf("parse provision result: %w", err)
+	}
+	if result.Cwd == "" {
+		return result, errors.New("provision result must contain cwd")
+	}
+	if !filepath.IsAbs(result.Cwd) {
+		result.Cwd = filepath.Join(f.Path, result.Cwd)
+	}
+	return result, nil
+}
+
+func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMeta, cwd, hook string, hookArgs []string, baseRef, kind, contextPath, resultPath, stateDir string, seconds int) error {
+	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds)*time.Second)
+	defer cancel()
+	runID, started := uuid.NewString(), time.Now()
+	cmd, display := hookCommand(ctx, hook, hookArgs...)
+	_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: runID, Hook: kind, Command: display}))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "OMNIPLEX_LIFECYCLE_VERSION=2", "OMNIPLEX_HOOK="+kind, "OMNIPLEX_THREAD_ID="+meta.ID, "OMNIPLEX_PROJECT_ROOT="+cwd, "OMNIPLEX_CONTEXT_FILE="+contextPath, "OMNIPLEX_RESULT_FILE="+resultPath, "OMNIPLEX_STATE_DIR="+stateDir, "OMNIPLEX_BASE_REF="+baseRef)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	total := 0
+	truncated := false
+	stream := func(name string, scanner *bufio.Scanner) {
+		defer wg.Done()
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 256*1024)
+		for scanner.Scan() {
+			chunk := redactHookOutput(scanner.Text()) + "\n"
+			mu.Lock()
+			allowed := maxHookOutput - total
+			if allowed > len(chunk) {
+				allowed = len(chunk)
+			}
+			if allowed < len(chunk) {
+				truncated = true
+			}
+			if allowed > 0 {
+				total += allowed
+				_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{RunID: runID, Hook: kind, Stream: name, Chunk: chunk[:allowed]}))
+			}
+			mu.Unlock()
+		}
+	}
+	wg.Add(2)
+	go stream("stdout", bufio.NewScanner(stdout))
+	go stream("stderr", bufio.NewScanner(stderr))
+	err = cmd.Wait()
+	wg.Wait()
+	if truncated {
+		_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{RunID: runID, Hook: kind, Stream: "stdout", Chunk: "\n[output truncated by omniplex]\n"}))
+	}
+	exit := 0
+	if err != nil {
+		exit = -1
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			exit = ee.ExitCode()
+		}
+	}
+	_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookFinished, proto.WorkspaceHookFinishedPayload{RunID: runID, Hook: kind, ExitCode: exit, DurationMs: time.Since(started).Milliseconds()}))
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s hook timed out: %w", kind, ctx.Err())
+	}
+	if err != nil {
+		return fmt.Errorf("%s hook exited %d", kind, exit)
+	}
+	return nil
+}
+
+func hookCommand(ctx context.Context, hook string, args ...string) (*exec.Cmd, string) {
+	switch strings.ToLower(filepath.Ext(hook)) {
+	case ".ts", ".mts":
+		argv := append([]string{"run", hook}, args...)
+		return exec.CommandContext(ctx, "bun", argv...), strings.Join(append([]string{"bun", "run", hook}, args...), " ")
+	case ".js", ".mjs", ".cjs":
+		argv := append([]string{hook}, args...)
+		return exec.CommandContext(ctx, "node", argv...), strings.Join(append([]string{"node", hook}, args...), " ")
+	case ".sh":
+		argv := append([]string{hook}, args...)
+		return exec.CommandContext(ctx, "sh", argv...), strings.Join(append([]string{"sh", hook}, args...), " ")
+	default:
+		return exec.CommandContext(ctx, hook, args...), strings.Join(append([]string{hook}, args...), " ")
+	}
+}
+
+func isCompatibilityHook(path, kind string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if stem == "worktree-"+kind {
+		return true
+	}
+	return base == kind && filepath.Base(filepath.Dir(path)) == "worktree" && filepath.Base(filepath.Dir(filepath.Dir(path))) == ".claude"
+}
+
+// baseRefFor is the base a thread asked for: its own choice where it made
+// one, and the folder default otherwise. It is a request, not a ref Git is
+// guaranteed to know — resolveBaseRef turns it into one, and reads empty as
+// HEAD.
+func baseRefFor(meta store.ThreadMeta, f project.Folder) string {
+	if base := strings.TrimSpace(meta.BaseRef); base != "" {
+		return base
+	}
+	return strings.TrimSpace(f.BaseBranch)
+}
+
+// resolveBase resolves the thread's base and tells the user whatever the
+// resolver had to do to get there. The note goes out as provision hook output
+// so it lands on the workspace card: branching from somewhere other than what
+// was asked for is not an error, but it is never allowed to be silent.
+func (m *Manager) resolveBase(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) (baseResolution, error) {
+	res, err := resolveBaseRef(ctx, f.Path, baseRefFor(meta, f))
+	if err != nil {
+		return res, err
+	}
+	emitBaseNote(ctx, a, res)
+	return res, nil
+}
+
+func emitBaseNote(ctx context.Context, a *Actor, res baseResolution) {
+	if a == nil || res.Note == "" {
+		return
+	}
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stdout", Chunk: "note: " + res.Note + "\n"}))
+}
+
+func workspaceTarget(meta store.ThreadMeta, f project.Folder) (string, string) {
+	branch := meta.Branch
+	if branch == "" {
+		branch = "feature/omniplex-" + strings.ReplaceAll(meta.ID, "-", "")[:8]
+	}
+	dir := strings.ReplaceAll(branch, "/", "-")
+	return branch, filepath.Join(f.Path, f.CopiesDir, dir)
+}
+
+func redactHookOutput(value string) string {
+	for _, entry := range os.Environ() {
+		name, secret, ok := strings.Cut(entry, "=")
+		upper := strings.ToUpper(name)
+		if !ok || len(secret) < 4 || !(strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.HasSuffix(upper, "_KEY")) {
+			continue
+		}
+		value = strings.ReplaceAll(value, secret, "[REDACTED]")
+	}
+	return value
+}
+
+func (m *Manager) createWorktree(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) (provisionResult, error) {
+	return m.createWorktreeFrom(ctx, meta, f, a, nil)
+}
+
+// createWorktreeFrom takes an already-resolved base when the caller has one, so
+// a provision that resolves the base for its hooks does not resolve it a second
+// time here — and cannot reach a different answer than the one the hook saw.
+func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor, resolved *baseResolution) (provisionResult, error) {
+	branch, path := workspaceTarget(meta, f)
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		return provisionResult{Cwd: path, Branch: branch}, nil
+	}
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
+	// An existing branch is checked out where it stands: the base names where a
+	// branch begins, and this one already began somewhere. Only the create case
+	// consults it, so only the create case has to be able to resolve it.
+	args := []string{"worktree", "add", path, branch}
+	branchCheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	branchCheck.Dir = f.Path
+	if branchCheck.Run() != nil {
+		res := baseResolution{}
+		if resolved != nil {
+			res = *resolved
+		} else {
+			var err error
+			if res, err = m.resolveBase(ctx, meta, f, a); err != nil {
+				return provisionResult{}, err
+			}
+		}
+		// Resolving can itself create the branch: asking for base "staging" on
+		// a thread branch also called "staging" tracks the remote one, and by
+		// now it exists. Creating it a second time is an error, so ask again.
+		recheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		recheck.Dir = f.Path
+		if recheck.Run() != nil {
+			args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+		}
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = f.Path
+	b, err := cmd.CombinedOutput()
+	if len(b) > 0 && a != nil {
+		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stdout", Chunk: string(b)}))
+	}
+	if err != nil {
+		return provisionResult{}, fmt.Errorf("git worktree add: %w", err)
+	}
+	return provisionResult{Cwd: path, Branch: branch}, nil
+}
+
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+// cleanup releases a thread. removeWorktree decides whether the checkout on
+// disk goes with it; nothing infers that from the workspace mode any more,
+// because the mode says who created the directory and not whether the user
+// wants it gone.
+func (m *Manager) cleanup(meta store.ThreadMeta, f project.Folder, a *Actor, purge, removeWorktree bool) {
+	ctx := context.Background()
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupStarted, map[string]any{"purge": purge, "removeWorktree": removeWorktree}))
+	_ = m.store.SetPhase(ctx, meta.ID, "cleaning")
+	m.notifyList()
+
+	// The snapshots have to go before the checkout does. They are refs in the
+	// repository this worktree belongs to, so removing the worktree strands
+	// them — along with every blob they hold, including the contents of files
+	// Git was otherwise never tracking. This is not conditional on the
+	// workspace mode: a local thread's snapshots are just as much ours to
+	// clean up, and its checkout is the one the user keeps.
+	purgeCheckpoints(ctx, meta.Cwd, meta.ID, m.logf)
+
+	// The main checkout is never omniplex's to remove however the caller asks, and
+	// the mode is checked before the script rather than after it. A thread
+	// created by an earlier build can be local and still carry a deprovision
+	// script; running that script would be running a worktree-teardown hook
+	// over the directory the user works in.
+	var err error
+	// The caller checked this before starting; teardown runs outside its lock,
+	// so it is checked again here, as late as it can be. A thread that moved
+	// in while this one was shutting down keeps its files.
+	if removeWorktree && meta.WorkspaceMode != "local" {
+		if holder, shared := m.otherThreadIn(ctx, meta.ID, meta.Cwd); shared {
+			m.logf("keeping %s: %q is still there", meta.Cwd, holder)
+			removeWorktree = false
+		}
+	}
+	stage := "deprovision"
+	if removeWorktree && meta.WorkspaceMode != "local" {
+		if meta.DeprovisionScript != "" {
+			err = m.runDeprovisionHook(ctx, meta, f, a)
+		} else {
+			stage = "worktree-remove"
+			err = m.removeWorktree(ctx, meta, f, a)
+		}
+	}
+	if err != nil {
+		// Teardown runs in a goroutine, long after the client was told the
+		// delete had been accepted, so this log line is the only place the
+		// reason is recorded outside that one thread's event stream.
+		m.logf("workspace cleanup failed for %s (%s): %v", meta.ID, stage, err)
+		if phaseErr := m.store.SetPhase(ctx, meta.ID, "cleanup_failed"); phaseErr != nil {
+			m.logf("marking %s cleanup_failed: %v", meta.ID, phaseErr)
+		}
+		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupFailed, proto.WorkspaceFailedPayload{Hook: stage, Error: err.Error()}))
+		m.notifyList()
+		return
+	}
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupFinished, map[string]any{}))
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceReleased, map[string]any{}))
+	// Closing changes the durable phase to closed before the actor's exit hook
+	// removes it from the live map. Keep Get behind the lifecycle lock across
+	// that transition so it can never return the dying cleanup actor. For a
+	// purge, keep the deletion in the same critical section so Get cannot
+	// restore a transcript in the gap between close and delete either.
+	m.lifecycle.Lock()
+	a.Close("workspace released")
+	if purge {
+		// Only once the thread is actually gone: a failed delete leaves the
+		// transcript in place, and a transcript whose pictures were thrown away
+		// is worse than one that is simply still there.
+		if err := m.store.DeleteThread(ctx, meta.ID); err != nil {
+			m.logf("delete cleaned thread %s: %v", meta.ID, err)
+		} else {
+			m.purgeAttachments(meta.ID)
+		}
+	}
+	m.lifecycle.Unlock()
+	m.notifyList()
+}
+
+func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) error {
+	stateDir, err := lifecycleDir(meta.ID)
+	if err != nil {
+		return err
+	}
+	hook, err := project.ResolveHook(f.Path, meta.DeprovisionScript)
+	if err != nil {
+		return err
+	}
+	input := provisionContext{Version: 1, ThreadID: meta.ID, ProjectRoot: f.Path, RequestedBranch: meta.Branch, BaseRef: baseRefFor(meta, f), ProvisionResult: meta.ProvisionResult}
+	contextPath, resultPath := filepath.Join(stateDir, "deprovision-context.json"), filepath.Join(stateDir, "deprovision-result.json")
+	if err := writeJSON(contextPath, input); err != nil {
+		return err
+	}
+	var hookArgs []string
+	if isCompatibilityHook(hook, "teardown") {
+		identity := meta.Branch
+		if identity == "" {
+			identity = filepath.Base(meta.Cwd)
+		}
+		hookArgs = []string{identity}
+	}
+	return m.runHook(ctx, a, meta, f.Path, hook, hookArgs, baseRefFor(meta, f), "deprovision", contextPath, resultPath, stateDir, f.DeprovisionTimeoutSeconds)
+}
+
+func (m *Manager) removeWorktree(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) error {
+	return m.removeGitWorktree(ctx, meta, f, a, false)
+}
+
+func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor, allowMissingLease bool) error {
+	target, err := filepath.Abs(meta.Cwd)
+	if err != nil {
+		return err
+	}
+	root, err := filepath.Abs(f.Path)
+	if err != nil {
+		return err
+	}
+	if canonical, canonicalErr := filepath.EvalSymlinks(target); canonicalErr == nil {
+		target = canonical
+	}
+	if canonical, canonicalErr := filepath.EvalSymlinks(root); canonicalErr == nil {
+		root = canonical
+	}
+	if target == "" || target == root {
+		if allowMissingLease {
+			prune := exec.CommandContext(ctx, "git", "worktree", "prune")
+			prune.Dir = root
+			return prune.Run()
+		}
+		return errors.New("refusing to remove the project root")
+	}
+	if _, statErr := os.Stat(target); os.IsNotExist(statErr) {
+		prune := exec.CommandContext(ctx, "git", "worktree", "prune")
+		prune.Dir = root
+		return prune.Run()
+	}
+	if rel, relErr := filepath.Rel(target, root); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("refusing to remove an ancestor of the project root")
+	}
+	common := func(dir string) (string, error) {
+		b, e := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-common-dir").Output()
+		if e != nil {
+			return "", e
+		}
+		v := strings.TrimSpace(string(b))
+		if !filepath.IsAbs(v) {
+			v = filepath.Join(dir, v)
+		}
+		abs, absErr := filepath.Abs(v)
+		if absErr != nil {
+			return "", absErr
+		}
+		if canonical, canonicalErr := filepath.EvalSymlinks(abs); canonicalErr == nil {
+			abs = canonical
+		}
+		return abs, nil
+	}
+	// The project root's common dir is resolved before the registration check
+	// rather than after it, because it is what proves ownership of a worktree
+	// Git has already forgotten.
+	rootCommon, err := common(root)
+	if err != nil {
+		return err
+	}
+	listed, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return fmt.Errorf("list worktrees: %w", err)
+	}
+	found := false
+	for _, line := range strings.Split(string(listed), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			path := strings.TrimPrefix(line, "worktree ")
+			abs, _ := filepath.Abs(path)
+			if canonical, canonicalErr := filepath.EvalSymlinks(abs); canonicalErr == nil {
+				abs = canonical
+			}
+			if abs == target {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		// A directory that is on disk but unregistered is the wreckage of an
+		// earlier removal that deleted the administrative entry and then
+		// failed to delete the files. Refusing it means the workspace can
+		// never be cleaned up by any route, so force delete — which exists for
+		// exactly this — finishes the job by hand once the .git pointer has
+		// confirmed whose worktree it was.
+		if allowMissingLease && orphanedWorktreeOf(target, rootCommon) {
+			m.logf("force removing orphaned worktree %s (no Git administrative entry)", target)
+			return m.deleteWorktreeDir(ctx, root, target)
+		}
+		if allowMissingLease {
+			return fmt.Errorf("cannot force delete: %s exists but is not a registered Git worktree", target)
+		}
+		return fmt.Errorf("refusing cleanup: %s is not a registered worktree", target)
+	}
+	targetCommon, err := common(target)
+	if err != nil {
+		return err
+	}
+	if rootCommon != targetCommon {
+		return errors.New("refusing cleanup: worktree belongs to another repository")
+	}
+	// Anything still running in there will race the removal and can leave the
+	// worktree half-deleted and unregistered, so an ordinary cleanup stops and
+	// names the process instead of starting. Force delete accepts the risk:
+	// its whole purpose is to get rid of a workspace that will not go quietly.
+	if !allowMissingLease {
+		if procs := processesIn(target, false); len(procs) > 0 {
+			return fmt.Errorf("refusing cleanup: %s is still in use by %s — stop it and delete again", filepath.Base(target), describeProcs(procs))
+		}
+	}
+	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", target)
+	cmd.Dir = f.Path
+	b, err := cmd.CombinedOutput()
+	if len(b) > 0 {
+		// Git's own diagnosis is the only useful thing in a failure, so it is
+		// logged whether or not there is an actor to narrate it to. Without
+		// this the closed-thread and force-delete paths report a bare "exit
+		// status 128" and nothing anywhere records why.
+		m.logf("git worktree remove %s: %s", target, strings.TrimSpace(string(b)))
+		if a != nil {
+			_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "worktree-remove", Stream: "stdout", Chunk: string(b)}))
+		}
+	}
+	if err != nil {
+		// Git deletes the administrative entry even when it could not delete
+		// the checkout, so by now this is no longer a worktree it will act on
+		// again — leaving it here is what makes the failure permanent. Finish
+		// by hand instead. The usual cause is a file recreated underneath the
+		// walk, which a second pass simply wins.
+		m.logf("git worktree remove %s failed (%v); removing the directory directly", target, err)
+		if rmErr := m.deleteWorktreeDir(ctx, root, target); rmErr != nil {
+			return fmt.Errorf("%w (and removing the directory failed: %v)", err, rmErr)
+		}
+		return nil
+	}
+	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
+	prune.Dir = f.Path
+	return prune.Run()
+}
+
+// removeTree is os.RemoveAll behind a seam, so a test can reproduce a removal
+// that reports success while the directory is still there — the outcome a live
+// writer produces and the one worth guarding against.
+var removeTree = os.RemoveAll
+
+// deleteWorktreeDir removes a checkout Git has stopped managing and then
+// prunes, so the repository forgets it whether or not Git had already.
+//
+// The removal is retried once: the common failure is a live process recreating
+// files behind the walk, and the second pass normally finds a smaller tree and
+// wins. Repeating forever against a busy dev server would only hang the
+// cleanup, so one retry is the whole budget.
+func (m *Manager) deleteWorktreeDir(ctx context.Context, root, target string) error {
+	err := removeTree(target)
+	if err != nil {
+		err = removeTree(target)
+	}
+	if err == nil {
+		// RemoveAll returning nil only means the tree was empty at the moment
+		// it finished. Force delete deliberately runs with a writer still
+		// active, and that writer can recreate the directory immediately
+		// afterwards. Reporting success here would let the caller purge the
+		// thread, leaving a directory on disk that no thread names any more
+		// and nothing in the UI can ever offer to clean up again — a worse
+		// version of the state this whole change exists to prevent.
+		if _, statErr := os.Lstat(target); statErr == nil {
+			err = fmt.Errorf("%s was recreated while it was being removed", target)
+		}
+	}
+	if err != nil {
+		if procs := processesIn(target, true); len(procs) > 0 {
+			return fmt.Errorf("%w — %s is still writing to it", err, describeProcs(procs))
+		}
+		return err
+	}
+	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
+	prune.Dir = root
+	return prune.Run()
+}

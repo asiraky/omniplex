@@ -29,7 +29,7 @@ const SEGMENT = [
  * window does, and — on hover, focus, or tap — a popover that says exactly
  * where the conversation stands against auto-compaction. The ring alone never
  * shows a number; the popover carries the detail, kept strictly separate from
- * the session's cost accounting so the two can never be confused (the mistake
+ * the thread's cost accounting so the two can never be confused (the mistake
  * that let a summed-per-turn total read as a full window in the first place).
  */
 export function ContextMeter({ usage, model }: { usage: Usage; model?: string }) {

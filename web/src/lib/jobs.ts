@@ -1,5 +1,5 @@
 // Jobs: work running beside the conversation. Mirrors internal/proto's job
-// vocabulary and the derived helpers the UI needs from a SessionState.
+// vocabulary and the derived helpers the UI needs from a ThreadState.
 
 import type { Job, JobKind, JobStatus } from "../protocol";
 
@@ -31,7 +31,7 @@ export function isLive(j: Job): boolean {
 }
 
 /** Whether a job belongs in the roster. A finished shell does not: its output
-    already lives in the transcript, and a session's worth of them buries the
+    already lives in the transcript, and a thread's worth of them buries the
     handful of things actually running. Finished agents and monitors stay —
     their drill-down is the only record of what they did. */
 export function jobVisible(j: Job): boolean {

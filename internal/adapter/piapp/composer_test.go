@@ -100,7 +100,7 @@ func TestPiCommandOrigin(t *testing.T) {
 // process, so exercise the decode against a pi that actually answers.
 func TestComposerItemsOverRPC(t *testing.T) {
 	dir := t.TempDir()
-	s := startSession(t, dir, adapter.CreateOptions{SessionID: "sess-1"})
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
 	catalogue, ok := s.(adapter.ComposerCataloguer)
 	if !ok {
 		t.Fatal("pi session does not advertise a composer catalogue")

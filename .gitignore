@@ -13,7 +13,7 @@ node_modules/
 !/cmd/omniplex/webdist/.gitkeep
 *.tsbuildinfo
 
-# Worktrees omniplex provisions for its own sessions, which live inside the checkout
+# Worktrees omniplex provisions for its own threads, which live inside the checkout
 # by default and are complete repositories in their own right.
 /.worktrees/
 

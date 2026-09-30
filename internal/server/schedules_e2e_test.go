@@ -17,8 +17,8 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/proto"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // Opt-in real-browser test: npm run test:e2e:schedules. Only the provider is
@@ -39,12 +39,12 @@ func TestSchedulesBrowser(t *testing.T) {
 	defer st.Close()
 	fa := &scheduleBrowserAdapter{}
 	images := attachment.New(filepath.Join(dir, "images"))
-	var mgr *session.Manager
+	var mgr *thread.Manager
 	start := func() http.Handler {
-		mgr = session.NewManager(st, t.Logf, fa)
+		mgr = thread.NewManager(st, t.Logf, fa)
 		mgr.SetAttachments(images)
 		mgr.StartScheduler()
-		return New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), DefaultCwd: dir, WebFS: os.DirFS(filepath.Join(root, "cmd/omniplex/webdist")), Attachments: images}).Handler()
+		return New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), WebFS: os.DirFS(filepath.Join(root, "cmd/omniplex/webdist")), Attachments: images}).Handler()
 	}
 	handler := start()
 	defer func() { mgr.Shutdown() }()
@@ -109,16 +109,16 @@ func (*scheduleBrowserAdapter) Probe(context.Context, map[string]string) adapter
 	return adapter.Ready(nil)
 }
 func (a *scheduleBrowserAdapter) CreateSession(context.Context, adapter.HostServices, adapter.CreateOptions) (adapter.Session, error) {
-	return &scheduleBrowserSession{owner: a, events: make(chan proto.Emission, 32)}, nil
+	return &scheduleBrowserThread{owner: a, events: make(chan proto.Emission, 32)}, nil
 }
 
-type scheduleBrowserSession struct {
+type scheduleBrowserThread struct {
 	owner  *scheduleBrowserAdapter
 	events chan proto.Emission
 	once   sync.Once
 }
 
-func (s *scheduleBrowserSession) Prompt(_ context.Context, p adapter.PromptInput) error {
+func (s *scheduleBrowserThread) Prompt(_ context.Context, p adapter.PromptInput) error {
 	if strings.HasPrefix(p.Text, "Continue implementing") {
 		if len(p.Images) != 1 {
 			return errors.New("scheduled image was lost")
@@ -138,6 +138,6 @@ func (s *scheduleBrowserSession) Prompt(_ context.Context, p adapter.PromptInput
 	s.events <- proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: p.TurnID, StopReason: proto.StopEndTurn})
 	return nil
 }
-func (*scheduleBrowserSession) Cancel(context.Context) error    { return nil }
-func (s *scheduleBrowserSession) Events() <-chan proto.Emission { return s.events }
-func (s *scheduleBrowserSession) Close() error                  { s.once.Do(func() { close(s.events) }); return nil }
+func (*scheduleBrowserThread) Cancel(context.Context) error    { return nil }
+func (s *scheduleBrowserThread) Events() <-chan proto.Emission { return s.events }
+func (s *scheduleBrowserThread) Close() error                  { s.once.Do(func() { close(s.events) }); return nil }

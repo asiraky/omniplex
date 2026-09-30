@@ -1,13 +1,13 @@
 import type { ComposerItem } from "~/protocol";
 
-// Recents are per project, not per session and not global: which skills you
+// Recents are per project, not per thread and not global: which skills you
 // reach for is a property of the work, and the same browser moves between
 // projects whose catalogues barely overlap. Per browser rather than per user
 // is the deliberate cheap choice — it matches how the client already keeps
 // sidebar width, theme and panel state.
 const KEY_PREFIX = "hy.recentSkills.v1:";
-// No project (a session whose meta has not landed yet) still gets a list, it
-// just shares one drawer with every other project-less session.
+// No project (a thread whose meta has not landed yet) still gets a list, it
+// just shares one drawer with every other project-less thread.
 const NO_PROJECT = "~";
 // How many are kept on disk. More than are shown, so that dropping one skill
 // for a day does not lose it — it re-enters the list the moment the catalogue
@@ -54,7 +54,7 @@ export function recordRecentSkill(projectId: string | undefined, insertText: str
 }
 
 /**
- * Resolves remembered insert texts against the catalogue this session actually
+ * Resolves remembered insert texts against the catalogue this thread actually
  * has, newest first, and tops the list up from the catalogue when there is not
  * enough history to fill it — a brand new user has no recents at all, and an
  * empty transcript offering nothing is the dead space this replaces.

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+
+import { toast } from "./toast";
 
 /**
  * Copies through the async Clipboard API, falling back to the legacy

@@ -1,9 +1,11 @@
 // The right panel's tab model. Surfaces are an ordered array with stable ids —
-// singletons (`diff`, `files`, `jobs`) plus any number of `file:<path>` and
-// `terminal:<n>` tabs — persisted per session, so the panel a session was left
+// singletons (`diff`, `files`, `jobs`, `artefacts`, `skills`) plus any number
+// of `file:<path>`, `artefact:<id>` and `terminal:<n>` tabs — persisted per thread, so the panel a thread was left
 // with is the panel it reopens to.
 
-export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal";
+export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact" | "skills";
+
+const KINDS: string[] = ["diff", "files", "jobs", "file", "terminal", "artefacts", "artefact", "skills"];
 
 export interface Surface {
   /** Stable id: the kind itself for singletons, `file:<path>`, `terminal:<n>`. */
@@ -11,6 +13,8 @@ export interface Surface {
   kind: SurfaceKind;
   /** file surfaces: the workspace-relative path. */
   path?: string;
+  /** artefact surfaces: which artefact. */
+  artefactId?: string;
 }
 
 export interface PanelState {
@@ -24,9 +28,9 @@ export function defaultPanel(): PanelState {
   return { surfaces: [{ id: "diff", kind: "diff" }], active: "diff" };
 }
 
-export function loadPanel(sessionId: string): PanelState {
+export function loadPanel(threadId: string): PanelState {
   try {
-    const raw = localStorage.getItem(KEY_PREFIX + sessionId);
+    const raw = localStorage.getItem(KEY_PREFIX + threadId);
     if (!raw) return defaultPanel();
     const parsed = JSON.parse(raw) as PanelState;
     if (!Array.isArray(parsed.surfaces) || parsed.surfaces.length === 0) return defaultPanel();
@@ -37,8 +41,9 @@ export function loadPanel(sessionId: string): PanelState {
         (s): s is Surface =>
           !!s &&
           typeof s.id === "string" &&
-          ["diff", "files", "jobs", "file", "terminal"].includes(s.kind) &&
-          (s.kind !== "file" || typeof s.path === "string"),
+          KINDS.includes(s.kind) &&
+          (s.kind !== "file" || typeof s.path === "string") &&
+          (s.kind !== "artefact" || typeof s.artefactId === "string"),
       );
     if (surfaces.length === 0) return defaultPanel();
     const active = surfaces.some((s) => s.id === parsed.active) ? parsed.active : surfaces[0].id;
@@ -48,9 +53,9 @@ export function loadPanel(sessionId: string): PanelState {
   }
 }
 
-export function savePanel(sessionId: string, state: PanelState) {
+export function savePanel(threadId: string, state: PanelState) {
   try {
-    localStorage.setItem(KEY_PREFIX + sessionId, JSON.stringify(state));
+    localStorage.setItem(KEY_PREFIX + threadId, JSON.stringify(state));
   } catch {
     // Storage can be denied outright; the panel still works, it just forgets.
   }
@@ -87,4 +92,18 @@ export function newTerminalSurface(state: PanelState): Surface {
 
 export function fileSurface(path: string): Surface {
   return { id: `file:${path}`, kind: "file", path };
+}
+
+/** One tab per artefact. */
+export function artefactSurface(artefactId: string): Surface {
+  return { id: `artefact:${artefactId}`, kind: "artefact", artefactId };
+}
+
+/** Opens the surface, replacing a tab with the same id rather than just focusing it. */
+export function putSurface(state: PanelState, surface: Surface): PanelState {
+  const i = state.surfaces.findIndex((s) => s.id === surface.id);
+  if (i < 0) return { surfaces: [...state.surfaces, surface], active: surface.id };
+  const surfaces = state.surfaces.slice();
+  surfaces[i] = surface;
+  return { surfaces, active: surface.id };
 }

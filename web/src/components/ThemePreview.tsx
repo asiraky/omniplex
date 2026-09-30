@@ -9,7 +9,7 @@ import { Wordmark } from "./Logo";
  * The theme sample page, reachable at #themes: a static mock of the dashboard
  * behind a floating palette switcher, so candidate colour schemes can be
  * compared against real-looking content rather than swatches. Nothing here is
- * live — it renders canned sessions and a canned conversation.
+ * live — it renders canned threads and a canned conversation.
  *
  * Every palette redefines the same CSS custom properties the app's components
  * already consume, applied inline on the page wrapper; picking a winner means
@@ -251,7 +251,7 @@ const PALETTES: Palette[] = [
   },
 ];
 
-const FAKE_SESSIONS = [
+const FAKE_THREADS = [
   { harness: "claude", title: "Fix the flaky websocket test", project: "omniplex", branch: "feature/ws-retry", ago: "2m", active: true },
   { harness: "codex", title: "Add CSV export to reports", project: "reports", branch: "main", ago: "1h", active: false },
   { harness: "claude", title: "Untitled", project: "omniplex", branch: "feature/theme-page", ago: "3h", active: false },
@@ -305,7 +305,7 @@ export function ThemePreview() {
           </span>
         </div>
         <div className="flex-1 px-2 py-2">
-          {FAKE_SESSIONS.map((s) => (
+          {FAKE_THREADS.map((s) => (
             <div
               key={s.title}
               className={cn(
@@ -333,7 +333,7 @@ export function ThemePreview() {
           ))}
         </div>
         <div className="flex items-center gap-2 px-3 py-2" style={{ borderTop: "1px solid var(--sidebar-border)" }}>
-          <span className="text-muted-foreground flex-1 text-[11px]">3 sessions</span>
+          <span className="text-muted-foreground flex-1 text-[11px]">3 threads</span>
           <span className="bg-success size-2 rounded-full" />
           <MoonIcon className="text-muted-foreground size-4" />
         </div>

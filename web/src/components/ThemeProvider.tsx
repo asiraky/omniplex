@@ -2,12 +2,16 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 
 import {
   applyTheme,
+  applyTint,
   readStoredTheme,
+  readStoredTint,
   resolveTheme,
   storeTheme,
+  storeTint,
   ThemeContext,
   watchSystemTheme,
   type Theme,
+  type Tint,
 } from "~/lib/theme";
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -35,7 +39,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemeState(next);
   }, []);
 
-  const value = useMemo(() => ({ theme, resolved, setTheme }), [theme, resolved, setTheme]);
+  const [tint, setTintState] = useState<Tint>(() => readStoredTint());
+  useEffect(() => applyTint(tint), [tint]);
+  const setTint = useCallback((next: Tint) => {
+    storeTint(next);
+    setTintState(next);
+  }, []);
+
+  const value = useMemo(
+    () => ({ theme, resolved, setTheme, tint, setTint }),
+    [theme, resolved, setTheme, tint, setTint],
+  );
 
   return <ThemeContext value={value}>{children}</ThemeContext>;
 }

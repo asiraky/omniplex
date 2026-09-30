@@ -21,9 +21,32 @@ const shape = (rows: Row[]) =>
   rows.map((r) => {
     if (r.kind === "fold") return `fold(${r.items.length})`;
     if (r.kind === "jobs") return `jobs(${r.items.length})`;
+    if (r.kind === "artefacts") return `artefacts(${r.items.map((i) => i.id.replace("artefact:", "")).join(",")})`;
     if (r.kind === "run") return r.live ? `live(${r.items.length})` : `run(${r.items.length})`;
     return `${r.item.kind}:${r.item.role ?? "tool"}`;
   });
+
+// One showing of an artefact. The agent can show the same one several times
+// in a turn; seq tells the showings apart.
+function artefact(id: string, seq: number, over: Partial<Item> = {}): Item {
+  return { id: `artefact:${id}@${seq}`, kind: "artefact", artefactId: id, turnId: "turn1", ...over };
+}
+
+describe("buildRows with shown artefacts", () => {
+  it("keeps a finished turn's artefacts out of the fold, under the answer, one card each at its last showing", () => {
+    const rows = buildRows(
+      [prompt("make it"), tool(), artefact("a", 1), tool(), artefact("b", 1), artefact("a", 2), msg("done")],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "fold(2)", "message:agent", "artefacts(a@2,b@1)"]);
+  });
+
+  it("shows artefacts in place while the turn is still running", () => {
+    const rows = buildRows([prompt("make it"), artefact("a", 1), artefact("b", 1)], [turn("turn1", { done: false })], "turn");
+    expect(shape(rows)).toContain("artefacts(a@1,b@1)");
+  });
+});
 
 describe("buildRows on a finished turn", () => {
   it("folds everything between the prompt and the answer", () => {

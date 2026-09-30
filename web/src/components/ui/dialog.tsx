@@ -49,7 +49,7 @@ function DialogOverlay({
 
 // A centred card is a pointer idiom: it assumes a window to float inside and
 // room around the edges. A phone has neither, so a dialog that is really a
-// task — new session, project settings — takes the whole screen there and is
+// task — new thread, project settings — takes the whole screen there and is
 // a card again from `md` up. Rows are header / scrolling body / footer, so
 // the body scrolls under a pinned footer rather than the page scrolling away
 // from its own primary action.

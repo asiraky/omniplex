@@ -39,12 +39,12 @@ func TestRunRepairsDatabaseLifecycleGitAndClaudeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	if err := st.PutProject(ctx, p); err != nil {
+	p := project.Project{ID: "p1", Name: "p1", Folders: []project.Folder{project.NewFolder("f-p1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	if err := putProject(ctx, st, p); err != nil {
 		t.Fatal(err)
 	}
-	meta := store.SessionMeta{ID: "s1", Cwd: worktree, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	if err := st.CreateSession(ctx, meta); err != nil {
+	meta := store.ThreadMeta{ID: "s1", Cwd: worktree, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
@@ -74,7 +74,7 @@ func TestRunRepairsDatabaseLifecycleGitAndClaudeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.GitRepaired || report.Database.Sessions != 1 || report.WorkspaceFiles != 1 || report.ClaudeTranscripts != 1 {
+	if !report.GitRepaired || report.Database.Threads != 1 || report.WorkspaceFiles != 1 || report.ClaudeTranscripts != 1 {
 		t.Fatalf("unexpected report: %+v", report)
 	}
 
@@ -96,9 +96,9 @@ func TestRunRepairsDatabaseLifecycleGitAndClaudeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	got, err := st.Session(ctx, meta.ID)
+	got, err := st.Thread(ctx, meta.ID)
 	if err != nil || got.Cwd != newWorktree {
-		t.Fatalf("session = %+v, %v", got, err)
+		t.Fatalf("thread = %+v, %v", got, err)
 	}
 }
 
@@ -111,10 +111,10 @@ func TestRunRefusesTranscriptCollisionBeforeChangingState(t *testing.T) {
 	}
 	dbPath := filepath.Join(top, "hy.db")
 	st, _ := store.Open(dbPath)
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	_ = st.PutProject(ctx, p)
-	meta := store.SessionMeta{ID: "s1", Cwd: oldRoot, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	_ = st.CreateSession(ctx, meta)
+	p := project.Project{ID: "p1", Name: "p1", Folders: []project.Folder{project.NewFolder("f-p1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	_ = putProject(ctx, st, p)
+	meta := store.ThreadMeta{ID: "s1", Cwd: oldRoot, Harness: "claude", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	_ = st.CreateThread(ctx, meta)
 	_ = st.Close()
 	for _, cwd := range []string{oldRoot, newRoot} {
 		if err := os.MkdirAll(filepath.Join(home, ".claude", "projects", claudeProjectKey(cwd)), 0o700); err != nil {
@@ -127,12 +127,12 @@ func TestRunRefusesTranscriptCollisionBeforeChangingState(t *testing.T) {
 	st, _ = store.Open(dbPath)
 	defer st.Close()
 	got, _ := st.Project(ctx, p.ID)
-	if got.Root != oldRoot {
-		t.Fatalf("database changed despite preflight failure: %s", got.Root)
+	if got.Folders[0].Path != oldRoot {
+		t.Fatalf("database changed despite preflight failure: %s", got.Folders[0].Path)
 	}
 }
 
-func TestRunRelocatesCanonicalizedSessionPath(t *testing.T) {
+func TestRunRelocatesCanonicalizedThreadPath(t *testing.T) {
 	ctx := context.Background()
 	top, home := t.TempDir(), t.TempDir()
 	realParent := filepath.Join(top, "real")
@@ -150,14 +150,14 @@ func TestRunRelocatesCanonicalizedSessionPath(t *testing.T) {
 	}
 	dbPath := filepath.Join(top, "hy.db")
 	st, _ := store.Open(dbPath)
-	p := project.Project{ID: "p1", Root: oldRoot, Config: project.DefaultConfig(oldRoot), CreatedAt: 1, UpdatedAt: 1}
-	_ = st.PutProject(ctx, p)
+	p := project.Project{ID: "p1", Name: "p1", Folders: []project.Folder{project.NewFolder("f-p1", oldRoot)}, CreatedAt: 1, UpdatedAt: 1}
+	_ = putProject(ctx, st, p)
 	canonicalWorktree, err := filepath.EvalSymlinks(filepath.Join(oldRoot, "worktree"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta := store.SessionMeta{ID: "s1", Cwd: canonicalWorktree, Harness: "codex", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
-	_ = st.CreateSession(ctx, meta)
+	meta := store.ThreadMeta{ID: "s1", Cwd: canonicalWorktree, Harness: "codex", ProjectID: p.ID, Phase: "idle", CreatedAt: 1, UpdatedAt: 1}
+	_ = st.CreateThread(ctx, meta)
 	_ = st.Close()
 	if err := os.Rename(realOld, realNew); err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestRunRelocatesCanonicalizedSessionPath(t *testing.T) {
 	}
 	st, _ = store.Open(dbPath)
 	defer st.Close()
-	got, _ := st.Session(ctx, meta.ID)
+	got, _ := st.Thread(ctx, meta.ID)
 	want, err := filepath.EvalSymlinks(filepath.Join(newRoot, "worktree"))
 	if err != nil {
 		t.Fatal(err)
@@ -192,4 +192,8 @@ func git(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+func putProject(ctx context.Context, st *store.Store, p project.Project) error {
+	return st.CreateProject(ctx, p)
 }

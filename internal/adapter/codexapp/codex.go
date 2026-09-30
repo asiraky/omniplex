@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,12 +106,12 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 // point, so each preset pins every axis explicitly.
 func (a *Adapter) PermissionModes() []adapter.PermissionModeMeta {
 	return []adapter.PermissionModeMeta{
-		{ID: "untrusted", Label: "Manual", Description: "Ask before all but trusted read-only commands"},
+		{ID: "untrusted", Label: "Manual", Description: "Ask before all but trusted read-only commands", Level: adapter.LevelAsk},
 		{ID: "read-only", Label: "Plan", Description: "Read and analyze only; ask to go further"},
-		{ID: "on-request", Label: "Ask when needed", Description: "Write in the workspace; the model asks when it needs more", Default: true},
+		{ID: "on-request", Label: "Ask when needed", Description: "Write in the workspace; the model asks when it needs more", Default: true, Level: adapter.LevelEdits},
 		{ID: "auto-review", Label: "Auto", Description: "A reviewer subagent approves or denies escalations"},
 		{ID: "sandboxed-auto", Label: "No prompts (sandboxed)", Description: "Never ask; the sandbox contains the damage"},
-		{ID: "full-access", Label: "Bypass", Description: "Never ask and no sandbox"},
+		{ID: "full-access", Label: "Bypass", Description: "Never ask and no sandbox", Level: adapter.LevelAll},
 	}
 }
 
@@ -123,12 +124,15 @@ type modeSettings struct {
 	reviewer       string         // ApprovalsReviewer
 }
 
-func settingsFor(mode string) (modeSettings, error) {
+func settingsFor(mode string, writableRoots []string) (modeSettings, error) {
 	policy := func(approval, sandbox string, sandboxPolicy map[string]any, reviewer string) modeSettings {
 		return modeSettings{approvalPolicy: approval, sandbox: sandbox, sandboxPolicy: sandboxPolicy, reviewer: reviewer}
 	}
 	readOnly := map[string]any{"type": "readOnly", "networkAccess": false}
 	workspaceWrite := map[string]any{"type": "workspaceWrite", "networkAccess": false}
+	if len(writableRoots) > 0 {
+		workspaceWrite["writableRoots"] = writableRoots
+	}
 	fullAccess := map[string]any{"type": "dangerFullAccess"}
 
 	switch mode {
@@ -175,15 +179,58 @@ func trustArgs(cwd string) []string {
 	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
 }
 
+// writableRootsArgs lets a workspace-write sandbox write to folders outside
+// the cwd: the project's home folder, when the session works in a repo.
+func writableRootsArgs(dirs []string) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(dirs))
+	for i, d := range dirs {
+		quoted[i] = strconv.Quote(d)
+	}
+	return []string{"-c", "sandbox_workspace_write.writable_roots=[" + strings.Join(quoted, ",") + "]"}
+}
+
+// mcpArgs adds omniplex's own MCP servers to this app-server run as config
+// overrides, leaving the user's config.toml alone.
+func mcpArgs(servers []adapter.MCPServer) []string {
+	var out []string
+	for _, m := range servers {
+		key := "mcp_servers." + m.Name
+		quoted := make([]string, len(m.Args))
+		for i, a := range m.Args {
+			quoted[i] = strconv.Quote(a)
+		}
+		out = append(out, "-c", key+".command="+strconv.Quote(m.Command), "-c", key+".args=["+strings.Join(quoted, ",")+"]")
+		if len(m.Env) > 0 {
+			keys := make([]string, 0, len(m.Env))
+			for k := range m.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			pairs := make([]string, len(keys))
+			for i, k := range keys {
+				pairs[i] = k + "=" + strconv.Quote(m.Env[k])
+			}
+			out = append(out, "-c", key+".env={"+strings.Join(pairs, ",")+"}")
+		}
+	}
+	return out
+}
+
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	// Resolve the mode before spawning anything: an unknown id should fail
 	// legibly, not leave an orphaned app-server.
-	mode, err := settingsFor(o.Mode)
+	mode, err := settingsFor(o.Mode, o.ExtraDirs)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(a.Bin, append([]string{"app-server"}, trustArgs(o.Cwd)...)...)
+	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
+	args = append(args, mcpArgs(o.MCPServers)...)
+	args = append(args, writableRootsArgs(o.ExtraDirs)...)
+	cmd := exec.Command(a.Bin, args...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account CODEX_HOME isolates config and login.
@@ -203,7 +250,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 	// The whole tree, not just app-server: shells, dev servers and browsers
 	// the agent starts must end with the session.
-	tree := procgroup.Attach(cmd, "codex-"+o.SessionID)
+	tree := procgroup.Attach(cmd, "codex-"+o.ThreadID)
 	if err := cmd.Start(); err != nil {
 		tree.Kill()
 		return nil, fmt.Errorf("start %s app-server: %w", a.Bin, err)
@@ -219,6 +266,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		subagents: map[string]string{},
 		done:      make(chan struct{}),
 		effort:    o.Effort,
+		extraDirs: o.ExtraDirs,
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
 
@@ -290,7 +338,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		s.model = startRes.Thread.Model
 		s.mu.Unlock()
 	}
-	s.emit(proto.Emit(proto.SessionConfigChanged, proto.SessionConfigChangedPayload{
+	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 		HarnessSessionID: s.threadID,
 		Model:            s.model,
 	}))
@@ -310,6 +358,8 @@ type session struct {
 	tree procgroup.Group
 	conn *jsonrpc.Conn
 	cwd  string
+	// extraDirs stay writable across a permission change.
+	extraDirs []string
 
 	threadID string
 	effort   string
@@ -486,7 +536,7 @@ func (s *session) Cancel(ctx context.Context) error {
 // is sent explicitly — including the reviewer — so switching away from a mode
 // resets what that mode had set.
 func (s *session) SetMode(ctx context.Context, mode string) error {
-	m, err := settingsFor(mode)
+	m, err := settingsFor(mode, s.extraDirs)
 	if err != nil {
 		return err
 	}

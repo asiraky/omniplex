@@ -312,7 +312,7 @@ func TestOneMTagSurvivesTheHarnessReportingTheBareModel(t *testing.T) {
 	for {
 		select {
 		case e := <-s.events:
-			if p, ok := e.Payload.(proto.SessionConfigChangedPayload); ok && p.Model != "" {
+			if p, ok := e.Payload.(proto.ThreadConfigChangedPayload); ok && p.Model != "" {
 				got = p.Model
 			}
 			continue

@@ -19,9 +19,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/adapter/codexapp"
 	"github.com/asiraky/omniplex/internal/adapter/piapp"
+	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
@@ -31,8 +33,8 @@ import (
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/server"
-	"github.com/asiraky/omniplex/internal/session"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
@@ -43,6 +45,12 @@ import (
 var webdist embed.FS
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCP(os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("mcp: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "relocate" {
 		if err := runRelocateCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("relocate project: %v", err)
@@ -54,7 +62,6 @@ func main() {
 		port       = flag.Int("port", envInt("OMNIPLEX_PORT", 8787), "port to listen on")
 		bindPublic = flag.Bool("bind-public", false, "also bind globally routable addresses, exposing omniplex to the internet")
 		dbPath     = flag.String("db", envStr("OMNIPLEX_DB", defaultDB()), "path to the event log database")
-		cwd        = flag.String("cwd", mustCwd(), "default working directory for new sessions")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
 		codexBin   = flag.String("codex", "codex", "path to the codex CLI")
 		piBin      = flag.String("pi", "pi", "path to the pi CLI")
@@ -96,29 +103,32 @@ func main() {
 	// before this one starts any of its own.
 	procgroup.Sweep()
 
-	mgr := session.NewManager(st, logf,
+	mgr := thread.NewManager(st, logf,
 		claudecode.New(*claudePath),
 		codexapp.New(*codexBin),
 		piapp.New(*piBin),
 	)
 
 	// Images attached to prompts live beside the event log, not inside it, and
-	// go away with the session that collected them.
+	// go away with the thread that collected them.
 	attachments := attachment.New(filepath.Join(filepath.Dir(*dbPath), "attachments"))
 	mgr.SetAttachments(attachments)
+
+	// What threads produce lives beside the attachments, outside every
+	// worktree, so it outlives the checkout it was made in.
+	artefacts := artefact.New(filepath.Join(filepath.Dir(*dbPath), "artefacts"))
+	signer, err := artefact.LoadSigner(artefacts.Dir())
+	if err != nil {
+		log.Fatalf("artefact key: %v", err)
+	}
+	mgr.SetArtefacts(artefacts)
+	thread.ToolServers = artefactTools(signer, plan.Port)
 	defer mgr.Shutdown()
 
 	// Provider instances: configured accounts layered over the default
 	// (ambient-credential) instance each adapter already has. A broken or
 	// unknowable config degrades to defaults; it never stops the server.
 	configureProviders(mgr, logf)
-
-	// The config stored against a project is a cache of the file in the repo,
-	// so the file wins on startup: pulling a branch that changes .omniplex/project.json
-	// should take effect without re-adding the project.
-	if err := mgr.ReloadProjects(context.Background()); err != nil {
-		logf("reload project config: %v", err)
-	}
 
 	// Work that was in flight when the last process stopped comes back now,
 	// rather than when someone opens a browser. A restart should cost an agent
@@ -148,16 +158,17 @@ func main() {
 	access := endpoints.NewBuilder(plan, plan.Port)
 
 	srv := server.New(server.Options{
-		Manager:     mgr,
-		Store:       st,
-		Guard:       guard,
-		Endpoints:   access,
-		DefaultCwd:  *cwd,
-		WebFS:       webFS,
-		DevViteURL:  devViteURL,
-		Attachments: attachments,
-		Commit:      buildCommit(),
-		Logf:        logf,
+		Manager:        mgr,
+		Store:          st,
+		Guard:          guard,
+		Endpoints:      access,
+		WebFS:          webFS,
+		DevViteURL:     devViteURL,
+		Attachments:    attachments,
+		Artefacts:      artefacts,
+		ArtefactSigner: signer,
+		Commit:         buildCommit(),
+		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
 		AllowAnyOrigin: false,
@@ -188,7 +199,7 @@ func main() {
 
 	opts := banner.Options{
 		DBPath:    *dbPath,
-		Cwd:       *cwd,
+		Projects:  projectsDir(),
 		Harness:   harnesses,
 		Addrs:     lines,
 		HasUI:     hasUI,
@@ -246,7 +257,7 @@ func main() {
 // configureProviders loads provider instances from the user config, sweeping
 // any literal sensitive values into the secret store (and rewriting the config
 // so no secret stays on disk in it), then installs them on the manager.
-func configureProviders(mgr *session.Manager, logf func(string, ...any)) {
+func configureProviders(mgr *thread.Manager, logf func(string, ...any)) {
 	cfg, err := userconfig.Load()
 	if err != nil {
 		logf("load user config: %v (provider instances skipped)", err)
@@ -380,10 +391,35 @@ func defaultDB() string {
 	return filepath.Join(home, ".omniplex", "omniplex.db")
 }
 
-func mustCwd() string {
-	d, err := os.Getwd()
+func projectsDir() string {
+	cfg, _ := userconfig.Load()
+	dir, err := cfg.ProjectsDirOrDefault()
 	if err != nil {
-		return "."
+		return err.Error()
 	}
-	return d
+	return dir
+}
+
+// artefactTools is the MCP server every harness gets: this binary, run as
+// `omniplex mcp`, pointed back at this server over loopback with a token for
+// its one thread.
+func artefactTools(signer *artefact.Signer, port int) func(threadID, home string) []adapter.MCPServer {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("artefact tools off: %v", err)
+		return nil
+	}
+	return func(threadID, home string) []adapter.MCPServer {
+		return []adapter.MCPServer{{
+			Name:    "omniplex",
+			Command: exe,
+			Args:    []string{"mcp"},
+			Env: map[string]string{
+				"OMNIPLEX_URL":         fmt.Sprintf("http://127.0.0.1:%d", port),
+				"OMNIPLEX_AGENT_TOKEN": signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Thread: threadID}),
+				"OMNIPLEX_HOME":        home,
+			},
+			Tools: []string{mcpShowTool},
+		}}
+	}
 }

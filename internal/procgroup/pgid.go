@@ -13,7 +13,7 @@ func attachPgid(cmd *exec.Cmd) Group {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	// A session leader (Setsid, as a pty child is) already leads its own
+	// A thread leader (Setsid, as a pty child is) already leads its own
 	// process group; asking for setpgid on top of setsid makes clone fail
 	// with EPERM.
 	if !cmd.SysProcAttr.Setsid {

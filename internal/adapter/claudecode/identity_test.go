@@ -33,7 +33,7 @@ func TestSessionIDRotationIsReported(t *testing.T) {
 	for {
 		select {
 		case e := <-s.events:
-			if p, ok := e.Payload.(proto.SessionConfigChangedPayload); ok && p.HarnessSessionID != "" {
+			if p, ok := e.Payload.(proto.ThreadConfigChangedPayload); ok && p.HarnessSessionID != "" {
 				got = append(got, p.HarnessSessionID)
 			}
 			continue
@@ -63,7 +63,7 @@ func TestUnchangedSessionIDIsNotReemitted(t *testing.T) {
 	for {
 		select {
 		case e := <-s.events:
-			if p, ok := e.Payload.(proto.SessionConfigChangedPayload); ok && p.HarnessSessionID != "" {
+			if p, ok := e.Payload.(proto.ThreadConfigChangedPayload); ok && p.HarnessSessionID != "" {
 				t.Fatalf("unchanged id re-emitted: %q", p.HarnessSessionID)
 			}
 			continue
@@ -100,10 +100,10 @@ func TestConversationIDPrefersTheHarnessIDOnResume(t *testing.T) {
 		o    adapter.CreateOptions
 		want string
 	}{
-		{"fresh session uses omniplex's name", adapter.CreateOptions{SessionID: "omniplex-id"}, "omniplex-id"},
-		{"resume without a rotation uses omniplex's name", adapter.CreateOptions{SessionID: "omniplex-id", Resume: true}, "omniplex-id"},
-		{"resume after a rotation uses the rotated id", adapter.CreateOptions{SessionID: "omniplex-id", Resume: true, HarnessSessionID: "rotated"}, "rotated"},
-		{"a rotation never renames a fresh session", adapter.CreateOptions{SessionID: "omniplex-id", HarnessSessionID: "rotated"}, "omniplex-id"},
+		{"fresh session uses omniplex's name", adapter.CreateOptions{ThreadID: "omniplex-id"}, "omniplex-id"},
+		{"resume without a rotation uses omniplex's name", adapter.CreateOptions{ThreadID: "omniplex-id", Resume: true}, "omniplex-id"},
+		{"resume after a rotation uses the rotated id", adapter.CreateOptions{ThreadID: "omniplex-id", Resume: true, HarnessSessionID: "rotated"}, "rotated"},
+		{"a rotation never renames a fresh session", adapter.CreateOptions{ThreadID: "omniplex-id", HarnessSessionID: "rotated"}, "omniplex-id"},
 	}
 	for _, tc := range cases {
 		if got := conversationID(tc.o); got != tc.want {

@@ -5,12 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Sidebar } from "./Sidebar";
 import { render, viewport } from "~/test/harness";
-import type { Label, Project, SessionMeta } from "~/protocol";
+import type { Label, Project, ThreadMeta } from "~/protocol";
 
-const session = (id: string, over: Partial<SessionMeta> = {}): SessionMeta =>
+const thread = (id: string, over: Partial<ThreadMeta> = {}): ThreadMeta =>
   ({
     id,
-    title: `Session ${id}`,
+    title: `Thread ${id}`,
     phase: "idle",
     updatedAt: Date.now(),
     cwd: "/tmp/repo",
@@ -18,15 +18,15 @@ const session = (id: string, over: Partial<SessionMeta> = {}): SessionMeta =>
     projectId: "p1",
     branch: "main",
     ...over,
-  }) as SessionMeta;
+  }) as ThreadMeta;
 
 const confirmDelete = (id: string) =>
-  fireEvent.click(screen.getByRole("button", { name: `Delete session Session ${id}` }));
+  fireEvent.click(screen.getByRole("button", { name: `Delete thread Thread ${id}` }));
 const checkbox = () => screen.queryByRole("checkbox", { name: /Also delete the worktree/ });
 
 function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
   const props = {
-    sessions: [session("a"), session("b")],
+    threads: [thread("a"), thread("b")],
     activeId: null as string | null,
     status: "online" as const,
     open: true,
@@ -36,14 +36,15 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     onDelete: vi.fn(),
     onShowAccess: vi.fn(),
     onShowUsage: vi.fn(),
-    onShowProviders: vi.fn(),
+    onShowSettings: vi.fn(),
     accentOf: () => undefined,
     projects: [] as Project[],
     projectName: () => "repo",
-    projectRoot: () => "/tmp/repo",
+    projectFolders: () => ["/tmp/repo"],
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
+    onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     ...over,
   };
@@ -52,12 +53,12 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
 }
 
 /**
- * The same sidebar, but with a sessions list the test can change the way the
+ * The same sidebar, but with a threads list the test can change the way the
  * server would — which is the only way to watch a delete finish, because a
- * delete finishes when the session leaves that list.
+ * delete finishes when the thread leaves that list.
  */
-function renderLive(sessions: SessionMeta[], over: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
-  let set: (s: SessionMeta[]) => void = () => {};
+function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
+  let set: (s: ThreadMeta[]) => void = () => {};
   const props = {
     activeId: null as string | null,
     status: "online" as const,
@@ -68,29 +69,30 @@ function renderLive(sessions: SessionMeta[], over: Partial<React.ComponentProps<
     onDelete: vi.fn(() => Promise.resolve()),
     onShowAccess: vi.fn(),
     onShowUsage: vi.fn(),
-    onShowProviders: vi.fn(),
+    onShowSettings: vi.fn(),
     accentOf: () => undefined,
     projects: [] as Project[],
     projectName: () => "repo",
-    projectRoot: () => "/tmp/repo",
+    projectFolders: () => ["/tmp/repo"],
     labels: [],
     onSetLabel: vi.fn(),
     onManageLabels: vi.fn(),
+    onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
   function Live() {
-    const [list, setList] = useState(sessions);
+    const [list, setList] = useState(threads);
     const [open, setPanelOpen] = useState(true);
     set = setList;
     setOpen = setPanelOpen;
-    return <Sidebar {...props} sessions={list} open={open} />;
+    return <Sidebar {...props} threads={list} open={open} />;
   }
   render(<Live />);
   return {
     props,
-    serverSays: (next: SessionMeta[]) => act(() => set(next)),
+    serverSays: (next: ThreadMeta[]) => act(() => set(next)),
     setSidebarOpen: (open: boolean) => act(() => setOpen(open)),
   };
 }
@@ -99,8 +101,8 @@ function renderLive(sessions: SessionMeta[], over: Partial<React.ComponentProps<
 // role queries cannot see the rows behind it. The order of the rows is exactly
 // what these tests are about, so they read the DOM directly.
 const rowOrder = () =>
-  Array.from(document.querySelectorAll('[aria-label^="Delete session"]')).map((el) =>
-    el.getAttribute("aria-label")!.replace("Delete session ", ""),
+  Array.from(document.querySelectorAll('[aria-label^="Delete thread"]')).map((el) =>
+    el.getAttribute("aria-label")!.replace("Delete thread ", ""),
   );
 
 afterEach(() => vi.unstubAllGlobals());
@@ -110,18 +112,18 @@ describe("Sidebar", () => {
     viewport("phone");
     renderSidebar({ activeId: null });
 
-    expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New thread" })).toBeTruthy();
     // Nothing behind the panel to collapse back to.
-    expect(screen.queryByRole("button", { name: "Hide sessions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Hide threads" })).toBeNull();
     // And no second, differently-shaped close control in the same corner.
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
   });
 
-  it("offers the collapse control on a phone once a session is selected", () => {
+  it("offers the collapse control on a phone once a thread is selected", () => {
     viewport("phone");
     renderSidebar({ activeId: "a" });
 
-    expect(screen.getByRole("button", { name: "Hide sessions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide threads" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
   });
 
@@ -129,7 +131,7 @@ describe("Sidebar", () => {
     viewport("desktop");
     renderSidebar({ activeId: null });
 
-    expect(screen.getByRole("button", { name: "Hide sessions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide threads" })).toBeTruthy();
   });
 
   it("fills the viewport on a phone rather than leaving a sliver behind", () => {
@@ -149,7 +151,7 @@ describe("Sidebar", () => {
     viewport("phone");
     renderSidebar({ activeId: "a" });
 
-    const del = screen.getAllByRole("button", { name: /^Delete session/ })[0];
+    const del = screen.getAllByRole("button", { name: /^Delete thread/ })[0];
     // The square stays 32px so it stays aligned with the logo below it; the
     // hit area is grown around it instead. 32 + 2*6 = 44.
     expect(del.className).toContain("size-8");
@@ -157,20 +159,15 @@ describe("Sidebar", () => {
     expect(del.className).toContain("md:after:hidden");
   });
 
-  it("puts the collapse control right after the new-session button, as when docked", () => {
-    viewport("phone");
-    renderSidebar({ activeId: "a" });
-    const names = Array.from(document.querySelectorAll("[data-slot=sheet-content] button"))
-      .map((b) => b.getAttribute("aria-label"))
-      .filter(Boolean);
-    // Adjacent, in that order — the docked panel's arrangement, not a lone X
-    // floating in the corner above it.
-    expect(names.indexOf("Hide sessions")).toBe(names.indexOf("New session") + 1);
+  it("starts a project from the header", () => {
+    const props = renderSidebar({ activeId: null });
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    expect(props.onNewProject).toHaveBeenCalled();
   });
 
   it("offers the worktree removal as a checkbox, ticked for one omniplex provisioned", () => {
-    const managed = session("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
-    const props = renderSidebar({ sessions: [managed], activeId: "a" });
+    const managed = thread("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
+    const props = renderSidebar({ threads: [managed], activeId: "a" });
 
     confirmDelete("a");
     const box = checkbox();
@@ -185,8 +182,8 @@ describe("Sidebar", () => {
   });
 
   it("keeps the worktree when the box is unticked", () => {
-    const managed = session("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
-    const props = renderSidebar({ sessions: [managed], activeId: "a" });
+    const managed = thread("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
+    const props = renderSidebar({ threads: [managed], activeId: "a" });
 
     confirmDelete("a");
     fireEvent.click(checkbox()!);
@@ -195,8 +192,8 @@ describe("Sidebar", () => {
   });
 
   it("defaults a borrowed worktree to staying, and says omniplex did not make it", () => {
-    const borrowed = session("a", { workspaceMode: "borrowed", cwd: "/tmp/elsewhere" });
-    const props = renderSidebar({ sessions: [borrowed], activeId: "a" });
+    const borrowed = thread("a", { workspaceMode: "borrowed", cwd: "/tmp/elsewhere" });
+    const props = renderSidebar({ threads: [borrowed], activeId: "a" });
 
     confirmDelete("a");
     expect(checkbox()!.getAttribute("data-state")).toBe("unchecked");
@@ -206,24 +203,24 @@ describe("Sidebar", () => {
     expect(props.onDelete).toHaveBeenCalledWith("a", false);
   });
 
-  it("does not offer removal while another session is still in the worktree", () => {
+  it("does not offer removal while another thread is still in the worktree", () => {
     const shared = { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" };
     const props = renderSidebar({
-      sessions: [session("a", shared), session("b", shared)],
+      threads: [thread("a", shared), thread("b", shared)],
       activeId: "a",
     });
 
     confirmDelete("a");
     expect(checkbox()).toBeNull();
-    expect(screen.getByText(/1 other session/)).toBeTruthy();
+    expect(screen.getByText(/1 other thread/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(props.onDelete).toHaveBeenCalledWith("a", false);
   });
 
-  it("tells a main-checkout session its checkout is untouched, and offers no box", () => {
+  it("tells a main-checkout thread its checkout is untouched, and offers no box", () => {
     const props = renderSidebar({
-      sessions: [session("a", { workspaceMode: "local" })],
+      threads: [thread("a", { workspaceMode: "local" })],
       activeId: "a",
     });
 
@@ -235,11 +232,11 @@ describe("Sidebar", () => {
     expect(props.onDelete).toHaveBeenCalledWith("a", false);
   });
 
-  it("offers no removal for a managed session that never got a worktree", () => {
+  it("offers no removal for a managed thread that never got a worktree", () => {
     // Provisioning failed before `git worktree add` ran, so cwd is still the
     // project root — which the server refuses to remove.
     const props = renderSidebar({
-      sessions: [session("a", { workspaceMode: "managed", phase: "provision_failed" })],
+      threads: [thread("a", { workspaceMode: "managed", phase: "provision_failed" })],
       activeId: "a",
     });
 
@@ -250,10 +247,10 @@ describe("Sidebar", () => {
     expect(props.onDelete).toHaveBeenCalledWith("a", false);
   });
 
-  it("counts a closed session as still referencing the worktree", () => {
+  it("counts a closed thread as still referencing the worktree", () => {
     const shared = { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" };
     const props = renderSidebar({
-      sessions: [session("a", shared), session("b", { ...shared, phase: "closed" })],
+      threads: [thread("a", shared), thread("b", { ...shared, phase: "closed" })],
       activeId: "a",
     });
 
@@ -265,65 +262,65 @@ describe("Sidebar", () => {
     expect(props.onDelete).toHaveBeenCalledWith("a", false);
   });
   it("keeps the dialog open, and says so, until the delete actually finishes", () => {
-    const { props, serverSays } = renderLive([session("a"), session("b")]);
+    const { props, serverSays } = renderLive([thread("a"), thread("b")]);
 
     confirmDelete("a");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(props.onDelete).toHaveBeenCalledWith("a", false);
 
     // The server has only accepted the request; the workspace is still coming
-    // down. Closing here would be claiming the session is already gone.
+    // down. Closing here would be claiming the thread is already gone.
     expect(screen.getByRole("button", { name: /Deleting/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
 
-    serverSays([session("b")]);
+    serverSays([thread("b")]);
     expect(screen.queryByRole("button", { name: /Deleting/ })).toBeNull();
   });
 
   it("leaves the row where it is when the server bumps it while it cleans up", () => {
-    const { serverSays } = renderLive([session("a"), session("b"), session("c")]);
-    expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
+    const { serverSays } = renderLive([thread("a"), thread("b"), thread("c")]);
+    expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
 
     confirmDelete("b");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
-    // Entering "cleaning" restamps the session, and the list is newest-first,
+    // Entering "cleaning" restamps the thread, and the list is newest-first,
     // so the server now sends it back at the top. The row does not move.
     serverSays([
-      session("b", { phase: "cleaning", updatedAt: Date.now() + 1000 }),
-      session("a"),
-      session("c"),
+      thread("b", { phase: "cleaning", updatedAt: Date.now() + 1000 }),
+      thread("a"),
+      thread("c"),
     ]);
-    expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
+    expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
   });
 
   it("holds the row in place for its exit animation, then drops it", () => {
     vi.useFakeTimers();
     try {
-      const { serverSays } = renderLive([session("a"), session("b"), session("c")]);
+      const { serverSays } = renderLive([thread("a"), thread("b"), thread("c")]);
 
       confirmDelete("b");
       fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-      serverSays([session("a"), session("c")]);
+      serverSays([thread("a"), thread("c")]);
 
       // Still there, in its own place, collapsing.
-      expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
-      const row = document.querySelector('[aria-label="Delete session Session b"]')!;
+      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
+      const row = document.querySelector('[aria-label="Delete thread Thread b"]')!;
       expect(row.closest(".grid")!.className).toContain("grid-rows-[0fr]");
 
       act(() => vi.advanceTimersByTime(500));
-      expect(rowOrder()).toEqual(["Session a", "Session c"]);
+      expect(rowOrder()).toEqual(["Thread a", "Thread c"]);
     } finally {
       vi.useRealTimers();
     }
   });
 
   it("stops waiting when the teardown fails, so the force-delete prompt is reachable", () => {
-    const { serverSays } = renderLive([session("a"), session("b")]);
+    const { serverSays } = renderLive([thread("a"), thread("b")]);
 
     confirmDelete("a");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    serverSays([session("a", { phase: "cleanup_failed" }), session("b")]);
+    serverSays([thread("a", { phase: "cleanup_failed" }), thread("b")]);
 
     expect(screen.queryByRole("button", { name: /Deleting/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
@@ -331,20 +328,20 @@ describe("Sidebar", () => {
 
   it("closes the dialog when the server refuses the delete", async () => {
     const onDelete = vi.fn(() => Promise.reject(new Error("nope")));
-    renderLive([session("a")], { onDelete });
+    renderLive([thread("a")], { onDelete });
 
     confirmDelete("a");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await act(async () => {});
 
     expect(screen.queryByRole("button", { name: /Deleting/ })).toBeNull();
-    expect(rowOrder()).toEqual(["Session a"]);
+    expect(rowOrder()).toEqual(["Thread a"]);
   });
 
   it("holds the window while the delete runs, and lets go once the wait is abnormal", () => {
     vi.useFakeTimers();
     try {
-      renderLive([session("a"), session("b")]);
+      renderLive([thread("a"), thread("b")]);
       confirmDelete("a");
       fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
@@ -365,8 +362,8 @@ describe("Sidebar", () => {
   });
 
   it("settles the worktree answer once it has been sent", () => {
-    const managed = session("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
-    renderLive([managed, session("b")]);
+    const managed = thread("a", { workspaceMode: "managed", cwd: "/tmp/repo/.worktrees/a" });
+    renderLive([managed, thread("b")]);
 
     confirmDelete("a");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -382,14 +379,14 @@ describe("Sidebar", () => {
     // which used to take the dialog, the pinned order and the animation with
     // it, because they lived inside the list.
     viewport("phone");
-    const { serverSays, setSidebarOpen } = renderLive([session("a"), session("b")]);
+    const { serverSays, setSidebarOpen } = renderLive([thread("a"), thread("b")]);
 
     confirmDelete("a");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     setSidebarOpen(false);
     expect(screen.getByRole("button", { name: /Deleting/ })).toBeTruthy();
 
-    serverSays([session("b")]);
+    serverSays([thread("b")]);
     expect(screen.queryByRole("button", { name: /Deleting/ })).toBeNull();
   });
 
@@ -398,132 +395,160 @@ describe("Sidebar", () => {
       { id: "l1", name: "Parked", color: "#8d8d8d", position: 0, createdAt: 1 },
       { id: "l2", name: "In progress", color: "#0091ff", position: 1, createdAt: 2 },
     ];
-    const filed = [session("a", { labelId: "l1" }), session("b", { labelId: "l2" }), session("c")];
+    const filed = [thread("a", { labelId: "l1" }), thread("b", { labelId: "l2" }), thread("c")];
 
     afterEach(() => localStorage.clear());
 
     it("names the label on its dot, and offers filing on an unlabelled row", () => {
       // The name is not in the row any more — it is the accessible name of the
       // dot, which is also what the tooltip says on hover.
-      renderSidebar({ sessions: filed, labels });
+      renderSidebar({ threads: filed, labels });
       expect(screen.getByRole("button", { name: "Labelled Parked — change label" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Label session Session c" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Label thread Thread c" })).toBeTruthy();
     });
 
-    it("carries one label control in the header, and it is the filter", () => {
-      renderSidebar({ sessions: filed, labels });
-      expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
-      // The old second button — a bare "Labels" that opened the manager — is
-      // gone; the manager is an item inside the filter menu now.
-      expect(screen.queryByRole("button", { name: "Labels" })).toBeNull();
+    it("filters labels and projects from one menu, and clears both at once", async () => {
+      const projects = [
+        { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+        { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+      ] as Project[];
+      const threads = [
+        thread("a", { labelId: "l1", projectId: "p1" }),
+        thread("b", { labelId: "l2", projectId: "p2" }),
+        thread("c", { projectId: "p1" }),
+      ];
+      renderSidebar({ threads, labels, projects });
+      const open = () =>
+        fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+          button: 0,
+          ctrlKey: false,
+        });
+
+      open();
+      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "worksauce" }));
+      fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Parked" }));
+      // The menu stays open between toggles.
+      expect(screen.getByRole("menuitemcheckbox", { name: "No label" })).toBeTruthy();
+      expect(rowOrder()).toEqual(["Thread c"]);
+      // The open menu hides the rest of the page from role queries.
+      expect(screen.getByRole("button", { name: "Filter threads, 2 hidden", hidden: true })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("menuitem", { name: "Show all" }));
+      expect(rowOrder()).toHaveLength(3);
+      expect(screen.getByRole("button", { name: "Filter threads" })).toBeTruthy();
     });
 
-    it("hides the sessions under a switched-off label, and says so in the footer", () => {
+    it("hides the threads under a switched-off label, and says so in the footer", () => {
       localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1"]));
-      renderSidebar({ sessions: filed, labels });
+      renderSidebar({ threads: filed, labels });
 
-      expect(rowOrder()).toEqual(["Session b", "Session c"]);
-      expect(screen.getByText("2 of 3 sessions")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Filter by label — 1 hidden" })).toBeTruthy();
+      expect(rowOrder()).toEqual(["Thread b", "Thread c"]);
+      expect(screen.getByText("2 of 3 threads")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter threads, 1 hidden" })).toBeTruthy();
     });
 
-    it("switches unlabelled sessions off on their own", () => {
+    it("switches unlabelled threads off on their own", () => {
       localStorage.setItem("omniplex.labelFilter", JSON.stringify(["none"]));
-      renderSidebar({ sessions: filed, labels });
-      expect(rowOrder()).toEqual(["Session a", "Session b"]);
+      renderSidebar({ threads: filed, labels });
+      expect(rowOrder()).toEqual(["Thread a", "Thread b"]);
     });
 
     it("offers the way back when the filter has hidden everything", () => {
-      // Filtered to nothing is not "no sessions yet": the sessions are there,
+      // Filtered to nothing is not "no threads yet": the threads are there,
       // and with no groups left on screen the message is the only thing that
       // can say so.
       localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1", "l2", "none"]));
-      renderSidebar({ sessions: filed, labels });
-      expect(screen.getByText("3 sessions hidden by the filters.")).toBeTruthy();
+      renderSidebar({ threads: filed, labels });
+      expect(screen.getByText("3 threads hidden by the filters.")).toBeTruthy();
 
       fireEvent.click(screen.getByRole("button", { name: "Show all" }));
-      expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
+      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
       expect(localStorage.getItem("omniplex.labelFilter")).toBe("[]");
     });
 
     it("ignores a stored id whose label has since been deleted", () => {
       localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l2"]));
-      renderSidebar({ sessions: filed, labels: [labels[0]] });
+      renderSidebar({ threads: filed, labels: [labels[0]] });
       // "b" was filed under the deleted label, so it is unlabelled now — and
       // unlabelled is showing.
-      expect(rowOrder()).toEqual(["Session a", "Session b", "Session c"]);
-      expect(screen.getByRole("button", { name: "Filter by label" })).toBeTruthy();
+      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
+      expect(screen.getByRole("button", { name: "Filter threads" })).toBeTruthy();
     });
   });
   describe("projects", () => {
     const projects = [
-      { id: "p1", root: "/src/omniplex", config: { name: "omniplex" }, createdAt: 1, updatedAt: 1 },
-      { id: "p2", root: "/src/worksauce", config: { name: "worksauce" }, createdAt: 1, updatedAt: 1 },
+      { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+      { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
     ] as Project[];
     // Most recently updated first, the way the server sends them.
     const mixed = [
-      session("a", { projectId: "p2" }),
-      session("b", { projectId: "p1" }),
-      session("c", { projectId: "p2" }),
+      thread("a", { projectId: "p2" }),
+      thread("b", { projectId: "p1" }),
+      thread("c", { projectId: "p2" }),
     ];
     const header = (name: string, count: number) =>
-      screen.queryByRole("button", { name: `${name}, ${count} session${count === 1 ? "" : "s"}` });
+      screen.queryByRole("button", { name: `${name}, ${count} thread${count === 1 ? "" : "s"}` });
 
     afterEach(() => localStorage.clear());
 
-    it("groups under headers once two projects have sessions on screen", () => {
-      renderSidebar({ sessions: mixed, projects });
+    it("groups under headers once two projects have threads on screen", () => {
+      renderSidebar({ threads: mixed, projects });
 
-      // "worksauce" leads because its newest session is the newest session.
+      // "worksauce" leads because its newest thread is the newest thread.
       expect(header("worksauce", 2)).toBeTruthy();
       expect(header("omniplex", 1)).toBeTruthy();
-      expect(rowOrder()).toEqual(["Session a", "Session c", "Session b"]);
+      expect(rowOrder()).toEqual(["Thread a", "Thread c", "Thread b"]);
     });
 
-    it("shows no header when every session on screen is one project's", () => {
-      renderSidebar({ sessions: [session("a"), session("b")], projects });
+    it("shows no header when every thread on screen is one project's", () => {
+      renderSidebar({ threads: [thread("a"), thread("b")], projects });
       expect(header("omniplex", 2)).toBeNull();
-      expect(rowOrder()).toEqual(["Session a", "Session b"]);
+      expect(rowOrder()).toEqual(["Thread a", "Thread b"]);
     });
 
     it("drops the grouping when the filter leaves one project populated", () => {
       localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
-      renderSidebar({ sessions: mixed, projects });
+      renderSidebar({ threads: mixed, projects });
 
-      expect(rowOrder()).toEqual(["Session b"]);
+      expect(rowOrder()).toEqual(["Thread b"]);
       expect(header("omniplex", 1)).toBeNull();
-      expect(screen.getByText("1 of 3 sessions")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Filter by project — 1 hidden" })).toBeTruthy();
+      expect(screen.getByText("1 of 3 threads")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Filter threads, 1 hidden" })).toBeTruthy();
     });
 
-    it("offers no project filter when there is nothing to choose between", () => {
-      renderSidebar({ sessions: mixed, projects: [projects[0]] });
-      expect(screen.queryByRole("button", { name: /Filter by project/ })).toBeNull();
+    it("offers no project choices when there is nothing to choose between", async () => {
+      renderSidebar({ threads: mixed, projects: [projects[0]] });
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Filter threads" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      await screen.findByRole("menu");
+      expect(screen.queryByRole("menuitemcheckbox", { name: "All projects" })).toBeNull();
     });
 
     it("folds a group shut, and remembers it", () => {
-      renderSidebar({ sessions: mixed, projects });
+      renderSidebar({ threads: mixed, projects });
 
       fireEvent.click(header("worksauce", 2)!);
       // The header stays — it is the way back — but its rows are gone.
       expect(header("worksauce", 2)).toBeTruthy();
-      expect(rowOrder()).toEqual(["Session b"]);
+      expect(rowOrder()).toEqual(["Thread b"]);
       expect(localStorage.getItem("omniplex.projectCollapsed")).toBe(JSON.stringify(["p2"]));
     });
 
     it("comes back folded exactly where it was left", () => {
       localStorage.setItem("omniplex.projectCollapsed", JSON.stringify(["p1"]));
-      renderSidebar({ sessions: mixed, projects });
+      renderSidebar({ threads: mixed, projects });
 
-      expect(rowOrder()).toEqual(["Session a", "Session c"]);
+      expect(rowOrder()).toEqual(["Thread a", "Thread c"]);
       expect(header("omniplex", 1)!.getAttribute("aria-expanded")).toBe("false");
       expect(header("worksauce", 2)!.getAttribute("aria-expanded")).toBe("true");
     });
 
     it("ignores a stored id whose project has since been removed", () => {
       localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
-      renderSidebar({ sessions: mixed, projects: [projects[0]] });
-      expect(rowOrder()).toEqual(["Session a", "Session c", "Session b"]);
+      renderSidebar({ threads: mixed, projects: [projects[0]] });
+      expect(rowOrder()).toEqual(["Thread a", "Thread c", "Thread b"]);
     });
   });
 });

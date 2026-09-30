@@ -44,7 +44,7 @@ function quotaStatus(over: Partial<QuotaStatus> = {}): QuotaStatus {
       checkedAt: Date.now() - 5 * 60 * 1000,
       plan: "max",
       windows: [
-        { id: "five_hour", kind: "session", label: "Session", usedPercent: 42, resetsAt: Date.now() + 3 * HOUR },
+        { id: "five_hour", kind: "thread", label: "Thread", usedPercent: 42, resetsAt: Date.now() + 3 * HOUR },
         { id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 96, resetsAt: Date.now() + 3 * 24 * HOUR },
       ],
     },

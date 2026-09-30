@@ -12,9 +12,9 @@ import (
 	"strings"
 )
 
-// RelocateStats describes the durable records changed by RelocateProject.
+// RelocateStats describes the durable records changed by RelocateFolder.
 type RelocateStats struct {
-	Sessions  int
+	Threads   int
 	Events    int
 	Snapshots int
 	Commands  int
@@ -28,10 +28,12 @@ type RelocationPath struct {
 	New string
 }
 
-// RelocateProject atomically rewrites the path-bearing records for one project.
-// Callers are expected to run this offline: a live manager would retain the old
-// paths in its in-memory actors even though the database had changed beneath it.
-func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, aliases ...RelocationPath) (RelocateStats, error) {
+// RelocateFolder atomically rewrites the path-bearing records for a folder
+// that moved on disk: every project folder at that path, a project home inside
+// it, and the threads of those projects. Callers are expected to run this
+// offline: a live manager would retain the old paths in its in-memory actors
+// even though the database had changed beneath it.
+func (s *Store) RelocateFolder(ctx context.Context, oldRoot, newRoot string, aliases ...RelocationPath) (RelocateStats, error) {
 	mappings := append([]RelocationPath{{Old: oldRoot, New: newRoot}}, aliases...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,29 +44,52 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 	}
 	defer tx.Rollback()
 
-	var projectID string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE root = ?`, oldRoot).Scan(&projectID); err != nil {
-		if err == sql.ErrNoRows {
-			return RelocateStats{}, fmt.Errorf("project rooted at %s: %w", oldRoot, ErrNotFound)
-		}
-		return RelocateStats{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE projects SET root = ? WHERE id = ?`, newRoot, projectID); err != nil {
-		return RelocateStats{}, fmt.Errorf("update project root: %w", err)
-	}
-
-	type sessionPath struct {
-		id, cwd, projectID string
-		changed            bool
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, cwd, project_id FROM sessions`)
+	projects := map[string]bool{}
+	frows, err := tx.QueryContext(ctx, `SELECT f.project_id, p.home FROM folders f JOIN projects p ON p.id = f.project_id WHERE f.path = ?`, oldRoot)
 	if err != nil {
 		return RelocateStats{}, err
 	}
-	var projectSessions []sessionPath
-	changedSessions := 0
+	homes := map[string]string{}
+	for frows.Next() {
+		var id, home string
+		if err := frows.Scan(&id, &home); err != nil {
+			frows.Close()
+			return RelocateStats{}, err
+		}
+		projects[id], homes[id] = true, home
+	}
+	frows.Close()
+	if len(projects) == 0 {
+		return RelocateStats{}, fmt.Errorf("folder %s: %w", oldRoot, ErrNotFound)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE folders SET path = ? WHERE path = ?`, newRoot, oldRoot); err != nil {
+		return RelocateStats{}, fmt.Errorf("update folder path: %w", err)
+	}
+	// A plain-folder project's home is its folder, and a home inside the
+	// folder moves with it. One elsewhere stays where it is.
+	for id, home := range homes {
+		if home == "" {
+			continue
+		}
+		if next, ok := relocatePath(home, mappings); ok {
+			if _, err := tx.ExecContext(ctx, `UPDATE projects SET home = ? WHERE id = ?`, next, id); err != nil {
+				return RelocateStats{}, err
+			}
+		}
+	}
+
+	type threadPath struct {
+		id, cwd, projectID string
+		changed            bool
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, cwd, project_id FROM threads`)
+	if err != nil {
+		return RelocateStats{}, err
+	}
+	var projectThreads []threadPath
+	changedThreads := 0
 	for rows.Next() {
-		var item sessionPath
+		var item threadPath
 		if err := rows.Scan(&item.id, &item.cwd, &item.projectID); err != nil {
 			rows.Close()
 			return RelocateStats{}, err
@@ -73,10 +98,10 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 		if pathChanged {
 			item.cwd = next
 			item.changed = true
-			changedSessions++
+			changedThreads++
 		}
-		if item.projectID == projectID || pathChanged {
-			projectSessions = append(projectSessions, item)
+		if projects[item.projectID] || pathChanged {
+			projectThreads = append(projectThreads, item)
 		}
 	}
 	if err := rows.Close(); err != nil {
@@ -86,32 +111,32 @@ func (s *Store) RelocateProject(ctx context.Context, oldRoot, newRoot string, al
 		return RelocateStats{}, err
 	}
 
-	stats := RelocateStats{Sessions: changedSessions}
-	for _, item := range projectSessions {
+	stats := RelocateStats{Threads: changedThreads}
+	for _, item := range projectThreads {
 		if item.changed {
 			// item.cwd was rewritten above. Rows outside the old prefix retain
 			// their cwd but still participate in the JSON migration below.
-			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET cwd = ? WHERE id = ?`, item.cwd, item.id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE threads SET cwd = ? WHERE id = ?`, item.cwd, item.id); err != nil {
 				return RelocateStats{}, err
 			}
 		}
 	}
 
-	ids := make([]string, 0, len(projectSessions))
-	for _, item := range projectSessions {
+	ids := make([]string, 0, len(projectThreads))
+	for _, item := range projectThreads {
 		ids = append(ids, item.id)
 	}
 	if len(ids) > 0 {
-		if stats.Events, err = relocateJSONRows(ctx, tx, "events", "payload", "session_id", ids, mappings); err != nil {
+		if stats.Events, err = relocateJSONRows(ctx, tx, "events", "payload", "thread_id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
-		if stats.Snapshots, err = relocateJSONRows(ctx, tx, "snapshots", "state", "session_id", ids, mappings); err != nil {
+		if stats.Snapshots, err = relocateJSONRows(ctx, tx, "snapshots", "state", "thread_id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
-		if stats.Commands, err = relocateJSONRows(ctx, tx, "commands", "result", "session_id", ids, mappings); err != nil {
+		if stats.Commands, err = relocateJSONRows(ctx, tx, "commands", "result", "thread_id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
-		if _, err := relocateJSONRows(ctx, tx, "sessions", "provision_result", "id", ids, mappings); err != nil {
+		if _, err := relocateJSONRows(ctx, tx, "threads", "provision_result", "id", ids, mappings); err != nil {
 			return RelocateStats{}, err
 		}
 	}

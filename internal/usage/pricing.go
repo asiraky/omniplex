@@ -1,7 +1,7 @@
 // Package usage holds the account-level analytics: what work cost through
 // the API, over time, from the durable event log. It is deliberately
 // server-side — the aggregation ships small pre-bucketed rows to a client,
-// never a session history.
+// never a thread history.
 package usage
 
 import (
@@ -46,7 +46,7 @@ var catalog = map[string]Rates{
 	"claude-fable-5":    {rate(10), rate(50), rate(1), rate(12.5)},
 	"claude-haiku-4-5":  {rate(1), rate(5), rate(0.1), rate(1.25)},
 
-	// OpenAI, for Codex sessions. Cached input is published; cache writes are
+	// OpenAI, for Codex threads. Cached input is published; cache writes are
 	// not, so those stay nil.
 	"gpt-5.6-sol":        {rate(4), rate(20), rate(0.4), nil},
 	"gpt-5.6":            {rate(4), rate(20), rate(0.4), nil},

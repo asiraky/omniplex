@@ -71,7 +71,7 @@ export function defaultModel(instance: PickerInstance | undefined): ModelMeta | 
  * A recorded model can outlive the catalogue that offered it — a harness
  * upgrade drops a name, or the list is still the fallback while the live one
  * loads. Rather than silently swapping in something else, an unknown id is
- * returned as a model of its own so the trigger keeps saying what the session
+ * returned as a model of its own so the trigger keeps saying what the thread
  * is actually running.
  */
 export function resolveModel(
@@ -106,7 +106,7 @@ export function resolveInstance(
 ): PickerInstance | undefined {
   return (
     instances.find((i) => i.id === instanceId) ??
-    // A session created before instances existed records only its harness; its
+    // A thread created before instances existed records only its harness; its
     // default instance is the one whose id matches the driver.
     instances.find((i) => i.driver === harnessId && i.id === harnessId) ??
     instances.find((i) => i.driver === harnessId) ??

@@ -4,7 +4,7 @@ import { applyEvent, emptyState } from "./apply";
 import type { Event } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
-  return { sessionId: "s1", seq, timestamp, type, payload } as Event;
+  return { threadId: "s1", seq, timestamp, type, payload } as Event;
 }
 
 // These mirror internal/projection/state_test.go: the client reducer and the
@@ -68,9 +68,9 @@ describe("applyEvent turn lifecycle", () => {
     expect(s.phase).toBe("turn");
   });
 
-  it("does not reopen a closed session on a stray chunk", () => {
+  it("does not reopen a closed thread on a stray chunk", () => {
     let s = emptyState("s1");
-    s = applyEvent(s, ev(1, "session.closed", { reason: "closed" }));
+    s = applyEvent(s, ev(1, "thread.closed", { reason: "closed" }));
     s = applyEvent(s, ev(2, "message.chunk", { blockId: "b1", role: "agent", kind: "text", delta: "late" }));
     expect(s.phase).toBe("closed");
   });
@@ -117,17 +117,17 @@ describe("applyEvent turn lifecycle", () => {
 describe("applyEvent config changes", () => {
   it("lets a cleared effort clear the effort", () => {
     let s = emptyState("s1");
-    s = applyEvent(s, ev(1, "session.config_changed", { effort: "high" }));
+    s = applyEvent(s, ev(1, "thread.config_changed", { effort: "high" }));
     expect(s.effort).toBe("high");
 
-    s = applyEvent(s, ev(2, "session.config_changed", { effort: "" }));
+    s = applyEvent(s, ev(2, "thread.config_changed", { effort: "" }));
     expect(s.effort).toBe("");
   });
 
   it("leaves effort alone when the event is about something else", () => {
     let s = emptyState("s1");
-    s = applyEvent(s, ev(1, "session.config_changed", { effort: "high" }));
-    s = applyEvent(s, ev(2, "session.config_changed", { model: "sonnet" }));
+    s = applyEvent(s, ev(1, "thread.config_changed", { effort: "high" }));
+    s = applyEvent(s, ev(2, "thread.config_changed", { model: "sonnet" }));
     expect(s.effort).toBe("high");
     expect(s.model).toBe("sonnet");
   });
@@ -135,7 +135,7 @@ describe("applyEvent config changes", () => {
 
 describe("jobs", () => {
   const ev = (seq: number, type: string, payload: unknown, timestamp = seq * 1000) =>
-    ({ seq, sessionId: "s", type, timestamp, payload }) as unknown as Event;
+    ({ seq, threadId: "s", type, timestamp, payload }) as unknown as Event;
 
   it("folds job rows by merging and settles the spawning tool on finish", () => {
     let s = emptyState("s");

@@ -4,7 +4,7 @@ A harness process receives Omniplex's own environment plus the instance's
 overlay (`CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, API keys and the like) and
 nothing else. It never receives the project's dotenv files. Projects load their
 own, and that matters: Vite's `loadEnv`, dotenv and Node's `--env-file` all keep
-a variable that is already set, so a session carrying the main checkout's
+a variable that is already set, so a thread carrying the main checkout's
 `.env.local` would override the files of any worktree it starts a dev server or
 a worker in.
 
@@ -29,5 +29,5 @@ Per adapter:
 An adapter that adds a runtime which loads dotenv files from its cwd needs the
 same treatment; `envleak_test.go` in the Claude adapter is the shape of the test.
 
-Sessions that were already running when this shipped keep the variables they
+Threads that were already running when this shipped keep the variables they
 leaked until they are restarted.

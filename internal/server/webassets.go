@@ -24,7 +24,7 @@ import (
 // all let a browser cache the document on its own judgement; it went on naming
 // a hash that the next build had deleted, and a missing file cannot
 // revalidate. The page rendered, the script 404'd, and the app was silently
-// dead — no WebSocket, so no sessions and no harnesses, which reads like three
+// dead — no WebSocket, so no threads and no harnesses, which reads like three
 // unrelated bugs. That happened on a real phone. The fix is the document being
 // fresh, which makes a stale asset reference impossible.
 type webAssets struct {

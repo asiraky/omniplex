@@ -1,16 +1,18 @@
-import { FileIcon, FolderIcon, FolderOpenIcon, Trash2Icon } from "lucide-react";
-import { useId, useMemo, useState } from "react";
-
-import { Alert, AlertDescription } from "~/components/ui/alert";
-import { Button } from "~/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
+  FileIcon,
+  FolderGit2Icon,
+  FolderIcon,
+  FolderOpenIcon,
+  FolderPlusIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { useEffect, useId, useState } from "react";
+
+import { FolderBrowser, GitHubPicker } from "~/components/FolderSources";
+import { Badge } from "~/components/ui/badge";
+import { SettingsPane } from "~/components/SettingsPane";
+import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
@@ -22,19 +24,15 @@ import {
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import { Spinner } from "~/components/ui/spinner";
-import { Textarea } from "~/components/ui/textarea";
 import { formatEffort } from "~/lib/efforts";
 import { cn } from "~/lib/utils";
-import type { HarnessMeta, Issue, Project, ProjectConfig, UserConfig } from "~/protocol";
-import { makeFormatter } from "./WorkspacePicker";
-
-// A stand-in issue, so the preview shows a real answer rather than describing one.
-const sampleIssue: Issue = {
-  number: 482,
-  title: "Token refresh 500s after 24h",
-  url: "",
-  labels: [{ name: "bug" }],
-};
+import type {
+  Folder,
+  GitHubRepo,
+  HarnessMeta,
+  Project,
+  ProjectDefaults,
+} from "~/protocol";
 
 /**
  * The effort levels to offer when no model says. Harnesses report their own —
@@ -58,13 +56,12 @@ const UNSET = "__omniplex_unset__";
  */
 function effortsOf(harnesses: HarnessMeta[], harnessId: string): string[] {
   const models = harnesses.find((h) => h.id === harnessId)?.models ?? [];
-  const seen: string[] = [];
+  // A Set keeps insertion order, so the harness's own ordering survives.
+  const seen = new Set<string>();
   for (const model of models) {
-    for (const effort of model.efforts ?? []) {
-      if (!seen.includes(effort)) seen.push(effort);
-    }
+    for (const effort of model.efforts ?? []) seen.add(effort);
   }
-  return seen.length > 0 ? seen : FALLBACK_EFFORTS;
+  return seen.size > 0 ? [...seen] : FALLBACK_EFFORTS;
 }
 
 /** A section heading, so every group on this screen has the same weight. */
@@ -74,48 +71,6 @@ function SectionHeading({ children, note }: { children: React.ReactNode; note?: 
       {children}
       {note && <span className="text-muted-foreground font-normal"> · {note}</span>}
     </h3>
-  );
-}
-
-/**
- * The branch-name function is the operator's own habit, not the project's, so
- * it saves to ~/.omniplex/config.json even though it is edited on this screen.
- */
-function BranchFormatField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const id = useId();
-  const preview = useMemo(() => {
-    const { format, error } = makeFormatter(value);
-    if (error) return { text: error, bad: true };
-    const out = format(sampleIssue);
-    return out
-      ? { text: out, bad: false }
-      : { text: "function returned nothing for the sample issue", bad: true };
-  }, [value]);
-
-  return (
-    <div className="space-y-1.5">
-      <SectionHeading note="this machine only">Branch names from issues</SectionHeading>
-      <p className="text-muted-foreground text-[11px]">
-        A JavaScript function, issue in and branch name out. It names the worktrees suggested from
-        your open GitHub issues.
-      </p>
-      <Textarea
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        rows={4}
-        className="scroll-thin font-mono md:text-[11px]"
-      />
-      <p
-        className={cn(
-          "font-mono text-[11px] break-all",
-          preview.bad ? "text-attention-foreground" : "text-muted-foreground",
-        )}
-      >
-        #{sampleIssue.number} → {preview.text}
-      </p>
-    </div>
   );
 }
 
@@ -180,6 +135,7 @@ function HookField({
           {listing.path !== root && (
             <button
               type="button"
+              aria-label="Parent folder"
               onClick={() => void load(listing.parent)}
               className="hover:bg-accent text-muted-foreground flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[12px]"
             >
@@ -215,27 +171,158 @@ function HookField({
   );
 }
 
+/** Where a folder added to a project comes from. Exactly one is set. */
+export interface AddFolderRequest {
+  path?: string;
+  url?: string;
+  name?: string;
+}
+
+/**
+ * The folders a project points at. Adding and removing take effect at once,
+ * like removing the project does: they are not settings Save would undo.
+ * Removing takes the pointer away and nothing else.
+ */
+function FoldersSection({
+  folders,
+  onAdd,
+  onRemove,
+  listRepos,
+}: {
+  folders: Folder[];
+  onAdd: (req: AddFolderRequest) => Promise<void>;
+  onRemove: (folderId: string) => Promise<void>;
+  listRepos: () => Promise<GitHubRepo[]>;
+}) {
+  const [adding, setAdding] = useState<"github" | "folder" | "new" | null>(null);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      setAdding(null);
+      setNewName("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const option = (id: "github" | "folder" | "new", label: string, Icon: typeof FolderIcon) => (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-pressed={adding === id}
+      onClick={() => setAdding(adding === id ? null : id)}
+      className={cn("h-11 flex-1 md:h-8", adding === id && "bg-accent")}
+    >
+      <Icon />
+      {label}
+    </Button>
+  );
+
+  return (
+    <div className="space-y-2">
+      <SectionHeading>Folders</SectionHeading>
+      <ul className="divide-y rounded-lg border">
+        {folders.map((f) => (
+          <li key={f.id} className="flex min-h-11 items-center gap-2 px-3 py-1.5 md:min-h-9">
+            {f.git ? (
+              <FolderGit2Icon className="text-muted-foreground size-3.5 shrink-0" />
+            ) : (
+              <FolderIcon className="text-muted-foreground size-3.5 shrink-0" />
+            )}
+            <span className="min-w-0 flex-1 font-mono text-[11px] break-all">{f.path}</span>
+            {f.git && <Badge variant="secondary">Git</Badge>}
+            {folders.length > 1 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${f.path}`}
+                disabled={busy}
+                onClick={() => void run(() => onRemove(f.id))}
+                className="text-muted-foreground hover:text-destructive size-11 shrink-0 md:size-7"
+              >
+                <Trash2Icon />
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="text-muted-foreground text-[11px]">
+        Removing a folder only takes it out of the project. Nothing on disk is touched.
+      </p>
+
+      <p className="flex items-center gap-1.5 pt-1 text-[12px]">
+        <PlusIcon className="size-3.5" /> Add to project
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {option("github", "From GitHub", FolderGit2Icon)}
+        {option("folder", "A folder here", FolderOpenIcon)}
+        {option("new", "New folder", FolderPlusIcon)}
+      </div>
+      {adding === "github" && (
+        <GitHubPicker
+          listRepos={listRepos}
+          busy={busy}
+          onChoose={(url) => void run(() => onAdd({ url }))}
+        />
+      )}
+      {adding === "folder" && (
+        <FolderBrowser busy={busy} onChoose={(path) => void run(() => onAdd({ path }))} />
+      )}
+      {adding === "new" && (
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newName.trim()) void run(() => onAdd({ name: newName.trim() }));
+          }}
+        >
+          <Input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Folder name"
+            aria-label="New folder name"
+            autoFocus
+            className="min-w-0 flex-1"
+          />
+          <Button type="submit" disabled={!newName.trim() || busy}>
+            {busy && <Spinner aria-hidden className="size-4" />}
+            Add
+          </Button>
+        </form>
+      )}
+      {error && <p className="text-destructive text-[11px] break-words">{error}</p>}
+    </div>
+  );
+}
+
 /**
  * Forgetting a project. Deliberately not in the footer next to Save: this is
  * the one control on the screen that cannot be undone by editing a field
  * back, and a destructive button sitting a thumb's width from the one you
  * press every time is how it gets pressed by accident on a phone.
  *
- * Nothing on disk goes with it — not the checkout, not its worktrees, not
- * .omniplex/project.json — so re-adding the same directory brings every
- * setting on this screen back. The copy says so, because "delete" on a screen
- * full of paths reads like it might mean the paths.
+ * Nothing on disk goes with it: not its folders, not their worktrees. The copy
+ * says so, because "delete" on a screen full of paths reads like it might mean
+ * the paths.
  */
 function DeleteProjectSection({
   name,
-  sessionCount,
+  threadCount,
   onDelete,
   onError,
   busy,
   setBusy,
 }: {
   name: string;
-  sessionCount: number;
+  threadCount: number;
   onDelete: () => Promise<void>;
   onError: (message: string | null) => void;
   /** Owned by the screen, not this section: Save has to go dead while a
@@ -246,10 +333,10 @@ function DeleteProjectSection({
 }) {
   const [confirming, setConfirming] = useState(false);
 
-  // Sessions have transcripts, and often a worktree, behind them. The server
+  // Threads have transcripts, and often a worktree, behind them. The server
   // refuses this outright; saying so here means the user learns it before
   // pressing rather than from an error afterwards.
-  const blocked = sessionCount > 0;
+  const blocked = threadCount > 0;
 
   const run = async () => {
     setBusy(true);
@@ -268,8 +355,8 @@ function DeleteProjectSection({
       <SectionHeading note="cannot be undone">Remove project</SectionHeading>
       <p className="text-muted-foreground text-[11px]">
         {blocked
-          ? `${sessionCount} session${sessionCount === 1 ? "" : "s"} still belong${sessionCount === 1 ? "s" : ""} to this project. Delete ${sessionCount === 1 ? "it" : "them"} first.`
-          : "Takes it out of Omniplex only. The checkout, its worktrees and its project.json are left exactly as they are, so adding the directory again restores these settings."}
+          ? `${threadCount} thread${threadCount === 1 ? "" : "s"} still belong${threadCount === 1 ? "s" : ""} to this project. Delete ${threadCount === 1 ? "it" : "them"} first.`
+          : "Takes it out of Omniplex only. Nothing on disk is touched."}
       </p>
       {confirming && !blocked ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -308,117 +395,106 @@ function DeleteProjectSection({
 
 export function ProjectSettings({
   project,
-  defaultRoot,
   harnesses,
-  userConfig,
-  onAdd,
   onSave,
+  onAddFolder,
+  onRemoveFolder,
+  listRepos,
   onDelete,
-  sessionCount,
-  onSaveUserConfig,
-  onClose,
+  threadCount,
+  onDeleted,
+  onBack,
 }: {
-  project: Project | null;
-  defaultRoot: string;
+  project: Project;
   harnesses: HarnessMeta[];
-  userConfig: UserConfig | null;
-  onAdd: (root: string) => Promise<void>;
-  onSave: (id: string, cfg: ProjectConfig) => Promise<void>;
+  onAddFolder: (projectId: string, req: AddFolderRequest) => Promise<Project>;
+  onRemoveFolder: (projectId: string, folderId: string) => Promise<Project>;
+  listRepos: () => Promise<GitHubRepo[]>;
+  onSave: (id: string, name: string, defaults: ProjectDefaults, folders: Folder[]) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  /** How many sessions still belong to this project; a project with any is
+  /** How many threads still belong to this project; a project with any is
       not deletable, and the screen says so before the button is pressed. */
-  sessionCount: number;
-  onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
-  onClose: () => void;
+  threadCount: number;
+  /** After the project is gone; this screen has nothing left to show. */
+  onDeleted: () => void;
+  onBack?: () => void;
 }) {
-  const [root, setRoot] = useState(project?.root ?? defaultRoot);
-  const [cfg, setCfg] = useState<ProjectConfig>(
-    project?.config ?? {
-      version: 1,
-      name: "",
-      defaults: { harness: "codex", harnesses: {}, workspace: "local" },
-      workspace: {
-        suggestedRoot: ".worktrees",
-        provisionTimeoutSeconds: 1800,
-        deprovisionTimeoutSeconds: 600,
-      },
-    },
-  );
-  const [settingsHarness, setSettingsHarness] = useState(
-    project?.config.defaults.harness ?? "codex",
-  );
-  const [user, setUser] = useState<UserConfig>(userConfig ?? { version: 1 });
+  const [name, setName] = useState(project.name);
+  const [defs, setDefs] = useState<ProjectDefaults>(project.defaults);
+  const [folders, setFolders] = useState<Folder[]>(project.folders);
+  const [settingsHarness, setSettingsHarness] = useState(project.defaults.harness ?? "codex");
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Any edit makes it saveable again.
+  useEffect(() => setSaved(false), [name, defs, folders]);
 
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      if (project) {
-        await onSave(project.id, cfg);
-        await onSaveUserConfig(user);
-      } else await onAdd(root);
-      onClose();
+      await onSave(project.id, name, defs, folders);
+      setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(false);
     }
   };
 
-  const defaults = (patch: Partial<ProjectConfig["defaults"]>) =>
-    setCfg({ ...cfg, defaults: { ...cfg.defaults, ...patch } });
-  const agentDefaults = (patch: Partial<NonNullable<ProjectConfig["defaults"]["harnesses"]>[string]>) =>
+  const defaults = (patch: Partial<ProjectDefaults>) => setDefs({ ...defs, ...patch });
+  const agentDefaults = (
+    patch: Partial<NonNullable<ProjectDefaults["harnesses"]>[string]>,
+  ) =>
     defaults({
       harnesses: {
-        ...cfg.defaults.harnesses,
-        [settingsHarness]: { ...cfg.defaults.harnesses?.[settingsHarness], ...patch },
+        ...defs.harnesses,
+        [settingsHarness]: { ...defs.harnesses?.[settingsHarness], ...patch },
       },
     });
-  const workspace = (patch: Partial<ProjectConfig["workspace"]>) =>
-    setCfg({ ...cfg, workspace: { ...cfg.workspace, ...patch } });
+  const folder = (id: string, patch: Partial<Folder>) =>
+    setFolders(folders.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  // The server's list after an add or remove, keeping edits not saved yet.
+  const takeFolders = (next: Project) =>
+    setFolders((current) => next.folders.map((f) => current.find((c) => c.id === f.id) ?? f));
+  // Copies, base branches and hooks only mean something in a git folder.
+  const gitFolders = folders.filter((f) => f.git);
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      {/* Header and footer stay put; only the form between them scrolls. */}
-      <DialogContent
-        fullscreenOnMobile
-        className="flex max-h-[min(90dvh,44rem)] flex-col gap-0 p-0 md:max-w-lg"
-      >
-        <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
-          <DialogTitle>{project ? `${cfg.name} settings` : "Add project"}</DialogTitle>
-          <DialogDescription>
-            {project
-              ? "Defaults every new session in this project starts from."
-              : "Point Omniplex at a Git checkout to start creating sessions in it."}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="scroll-thin min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-          {!project ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="project-root">Project directory</Label>
-              <Input
-                id="project-root"
-                value={root}
-                onChange={(e) => setRoot(e.target.value)}
-                className="font-mono md:text-[12px]"
-              />
-            </div>
-          ) : (
+    <SettingsPane
+      title={name || project.name}
+      description="Defaults every new thread in this project starts from."
+      onBack={onBack}
+      error={error}
+      footer={
+        // Dead while a delete is in flight: a save landing after the
+        // delete commits would write the project straight back.
+        <Button disabled={busy || deleting || saved} onClick={save}>
+          {busy ? "Saving…" : saved ? "Saved" : "Save"}
+        </Button>
+      }
+    >
+          {
             <div className="space-y-5">
               <div className="space-y-1.5">
                 <Label htmlFor="project-name">Project name</Label>
                 <Input
                   id="project-name"
-                  value={cfg.name}
-                  onChange={(e) => setCfg({ ...cfg, name: e.target.value })}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                 />
-                <p className="text-muted-foreground font-mono text-[10px] break-all">
-                  {project.root}/.omniplex/project.json
-                </p>
               </div>
+
+              <Separator />
+
+              <FoldersSection
+                folders={folders}
+                listRepos={listRepos}
+                onAdd={async (req) => takeFolders(await onAddFolder(project.id, req))}
+                onRemove={async (id) => takeFolders(await onRemoveFolder(project.id, id))}
+              />
 
               <Separator />
 
@@ -426,7 +502,7 @@ export function ProjectSettings({
                 <SectionHeading>Agent defaults</SectionHeading>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Select
-                    value={cfg.defaults.harness ?? ""}
+                    value={defs.harness ?? ""}
                     onValueChange={(v) => defaults({ harness: v })}
                   >
                     <SelectTrigger aria-label="Default harness" className="w-full">
@@ -455,7 +531,7 @@ export function ProjectSettings({
                   </Select>
 
                   <Select
-                    value={cfg.defaults.harnesses?.[settingsHarness]?.model || UNSET}
+                    value={defs.harnesses?.[settingsHarness]?.model || UNSET}
                     onValueChange={(v) => agentDefaults({ model: v === UNSET ? "" : v })}
                   >
                     <SelectTrigger aria-label="Default model" className="w-full">
@@ -477,7 +553,7 @@ export function ProjectSettings({
                         ));
                         // A saved model the current harness list does not know
                         // still renders, verbatim, rather than vanishing.
-                        const saved = cfg.defaults.harnesses?.[settingsHarness]?.model;
+                        const saved = defs.harnesses?.[settingsHarness]?.model;
                         if (saved && !models.some((m) => m.id === saved)) {
                           items.push(
                             <SelectItem key={saved} value={saved}>
@@ -491,7 +567,7 @@ export function ProjectSettings({
                   </Select>
 
                   <Select
-                    value={cfg.defaults.harnesses?.[settingsHarness]?.effort || UNSET}
+                    value={defs.harnesses?.[settingsHarness]?.effort || UNSET}
                     onValueChange={(v) => agentDefaults({ effort: v === UNSET ? "" : v })}
                   >
                     <SelectTrigger aria-label="Default effort" className="w-full">
@@ -511,7 +587,7 @@ export function ProjectSettings({
 
                   {/* Modes belong to the default harness; the list follows it. */}
                   <Select
-                    value={cfg.defaults.harnesses?.[settingsHarness]?.mode || UNSET}
+                    value={defs.harnesses?.[settingsHarness]?.mode || UNSET}
                     onValueChange={(v) => agentDefaults({ mode: v === UNSET ? "" : v })}
                   >
                     <SelectTrigger aria-label="Default permission mode" className="w-full">
@@ -530,7 +606,7 @@ export function ProjectSettings({
                         ));
                         // A saved mode the current harness list does not know
                         // still renders, verbatim, rather than vanishing.
-                        const saved = cfg.defaults.harnesses?.[settingsHarness]?.mode;
+                        const saved = defs.harnesses?.[settingsHarness]?.mode;
                         if (saved && !modes.some((m) => m.id === saved)) {
                           items.push(
                             <SelectItem key={saved} value={saved}>
@@ -544,7 +620,7 @@ export function ProjectSettings({
                   </Select>
 
                   <Select
-                    value={cfg.defaults.workspace ?? "local"}
+                    value={defs.workspace ?? "local"}
                     onValueChange={(v) => defaults({ workspace: v })}
                   >
                     <SelectTrigger aria-label="Default workspace" className="w-full">
@@ -564,75 +640,52 @@ export function ProjectSettings({
 
               <Separator />
 
-              <div className="space-y-3">
-                <SectionHeading>Workspace</SectionHeading>
-                <div className="space-y-1.5">
-                  <Label htmlFor="base-branch">Base branch</Label>
-                  <Input
-                    id="base-branch"
-                    value={cfg.defaults.baseBranch ?? ""}
-                    onChange={(e) => defaults({ baseBranch: e.target.value })}
-                    placeholder="main"
-                    className="font-mono md:text-[12px]"
+              {gitFolders.map((f) => (
+                <div key={f.id} className="space-y-3">
+                  <SectionHeading note={gitFolders.length > 1 ? f.path : undefined}>
+                    Workspace
+                  </SectionHeading>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`base-branch-${f.id}`}>Base branch</Label>
+                    <Input
+                      id={`base-branch-${f.id}`}
+                      value={f.baseBranch ?? ""}
+                      onChange={(e) => folder(f.id, { baseBranch: e.target.value })}
+                      placeholder="main"
+                      className="font-mono md:text-[12px]"
+                    />
+                  </div>
+                  <HookField
+                    label="Provision"
+                    root={f.path}
+                    value={f.provision ?? ""}
+                    onChange={(v) => folder(f.id, { provision: v })}
+                  />
+                  <HookField
+                    label="Deprovision"
+                    root={f.path}
+                    value={f.deprovision ?? ""}
+                    onChange={(v) => folder(f.id, { deprovision: v })}
                   />
                 </div>
-                <HookField
-                  label="Provision"
-                  root={project.root}
-                  value={cfg.workspace.provision ?? ""}
-                  onChange={(v) => workspace({ provision: v })}
-                />
-                <HookField
-                  label="Deprovision"
-                  root={project.root}
-                  value={cfg.workspace.deprovision ?? ""}
-                  onChange={(v) => workspace({ deprovision: v })}
-                />
-              </div>
+              ))}
 
-              <Separator />
-
-              <BranchFormatField
-                value={user.branchFormat ?? ""}
-                onChange={(v) => setUser({ ...user, branchFormat: v })}
-              />
-
-              <Separator />
+              {gitFolders.length > 0 && <Separator />}
 
               <DeleteProjectSection
-                name={cfg.name}
-                sessionCount={sessionCount}
+                name={name}
+                threadCount={threadCount}
                 busy={deleting}
                 setBusy={setDeleting}
                 onError={setError}
                 onDelete={async () => {
                   await onDelete(project.id);
-                  onClose();
+                  onDeleted();
                 }}
               />
             </div>
-          )}
+          }
 
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription className="font-mono text-[11px] break-words">
-                {error}
-              </AlertDescription>
-            </Alert>
-          )}
-        </div>
-
-        <DialogFooter className="border-t px-6 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] md:pb-4">
-          <Button variant="ghost" onClick={onClose} disabled={deleting}>
-            Cancel
-          </Button>
-          {/* Dead while a delete is in flight: a save landing after the
-              delete commits would write the project straight back. */}
-          <Button disabled={busy || deleting || (!project && !root)} onClick={save}>
-            {busy ? "Saving…" : project ? "Save" : "Add project"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </SettingsPane>
   );
 }

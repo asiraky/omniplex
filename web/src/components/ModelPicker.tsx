@@ -2,7 +2,7 @@ import { CheckIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { ContextNote, EffortMenu } from "~/components/EffortMenu";
-import { PROVIDER_LOGOS, ProviderLogo } from "~/components/ProviderLogo";
+import { ProviderLogo } from "~/components/ProviderLogo";
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsibleContent } from "~/components/ui/collapsible";
 import {
@@ -16,7 +16,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import {
-  defaultModel,
   isLegacy,
   pickerInstances,
   resolveInstance,
@@ -25,18 +24,21 @@ import {
 } from "~/lib/models";
 import { formatEffort } from "~/lib/efforts";
 import { rankModels, type ModelRow } from "~/lib/modelSearch";
+import { PROVIDER_LOGOS } from "~/lib/providerLogos";
 import { cn } from "~/lib/utils";
 import { useIsDesktop } from "~/useMediaQuery";
 import type { HarnessMeta, ModelMeta } from "~/protocol";
 
 /** What the picker returns: choosing a model chooses its account too. */
 export interface ModelSelection {
-  /** The driver, which is what a session records as its harness. */
+  /** The driver, which is what a thread records as its harness. */
   harness: string;
-  /** The provider instance the session runs under. */
+  /** The provider instance the thread runs under. */
   instance: string;
   model: string;
 }
+
+const NO_EFFORTS: string[] = [];
 
 /**
  * The one control for choosing a harness account and a model.
@@ -60,7 +62,7 @@ export function ModelPicker({
   onInstanceChange,
   lockDriver = false,
   disabled = false,
-  efforts = [],
+  efforts = NO_EFFORTS,
   effort = "",
   contextLabel = "",
   onEffortChange,
@@ -74,13 +76,13 @@ export function ModelPicker({
   value: ModelSelection;
   onChange: (next: ModelSelection) => void;
   /**
-   * Mid-session the harness is fixed — another one is a different agent — but
+   * Mid-thread the harness is fixed — another one is a different agent — but
    * the account is not: the rail offers only this harness's other enabled
    * accounts, and disappears when there are none. Picking a model under
-   * another account is a request to switch the session to it.
+   * another account is a request to switch the thread to it.
    */
   lockDriver?: boolean;
-  /** New-session preferences can select an account immediately on a rail click. */
+  /** New-thread preferences can select an account immediately on a rail click. */
   onInstanceChange?: (instance: PickerInstance) => void;
   disabled?: boolean;
   /**
@@ -127,13 +129,20 @@ export function ModelPicker({
   // Which instance's models the right pane shows. It follows the selection
   // until the user browses another account, which is a look rather than a
   // choice: nothing changes until a model is picked.
-  const [browsing, setBrowsing] = useState(selectedInstance?.id ?? "");
+  const selectedId = selectedInstance?.id ?? "";
+  const [browsing, setBrowsing] = useState(selectedId);
   const [search, setSearch] = useState("");
-  useEffect(() => {
-    if (!open) return;
-    setBrowsing(selectedInstance?.id ?? "");
-    setSearch("");
-  }, [open, selectedInstance?.id]);
+  // Opening the picker, or the selection moving while it is open, starts it
+  // over at the selection with no query. Adjusted during render so the menu
+  // never paints a stale pane first.
+  const [synced, setSynced] = useState({ open, selectedId });
+  if (synced.open !== open || synced.selectedId !== selectedId) {
+    setSynced({ open, selectedId });
+    if (open) {
+      setBrowsing(selectedId);
+      setSearch("");
+    }
+  }
 
   const shown = instances.find((i) => i.id === browsing) ?? selectedInstance;
 
@@ -251,8 +260,11 @@ export function ModelPicker({
       {selectedInstance && (
         <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "max-md:hidden")} />
       )}
-      <span className="min-w-0 flex-1 truncate text-left text-[13px]">
-        {selectedModel?.label ?? "No model"}
+      {/* Baseline-aligned: the effort is set smaller, and centring the two
+          boxes left its text sitting higher than the model's. */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span className="min-w-0 flex-1 truncate text-left text-[13px]">
+          {selectedModel?.label ?? "No model"}
         {/* The generation and the effort compete for one line, and only one of
             them is a knob: when effort is on show, the generation stays in the
             list, where the row that names it also explains it. */}
@@ -268,6 +280,7 @@ export function ModelPicker({
           {formatEffort(effort)}
         </span>
       )}
+      </span>
       <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
     </Button>
   );
@@ -531,5 +544,3 @@ function rowsOf(instances: PickerInstance[]): (ModelRow & { ref: PickerInstance 
     })),
   );
 }
-
-export { defaultModel };

@@ -39,7 +39,7 @@ describe("field height", () => {
       <>
         <Input aria-label="text" />
         <Button>Action</Button>
-        <Button size="icon" aria-label="icon" />
+        <Button size="icon" aria-label="Refresh" />
         <Select>
           <SelectTrigger aria-label="select">
             <SelectValue />
@@ -51,7 +51,7 @@ describe("field height", () => {
     const controls = [
       screen.getByLabelText("text"),
       screen.getByRole("button", { name: "Action" }),
-      screen.getByRole("button", { name: "icon" }),
+      screen.getByRole("button", { name: "Refresh" }),
       screen.getByRole("combobox", { name: "select" }),
     ];
 

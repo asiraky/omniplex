@@ -63,7 +63,7 @@ type Line struct {
 // Options is everything the banner needs to know.
 type Options struct {
 	DBPath    string
-	Cwd       string
+	Projects  string
 	Harness   []string
 	Addrs     []Line
 	HasUI     bool
@@ -83,7 +83,7 @@ type Options struct {
 func Write(w io.Writer, o Options) {
 	fmt.Fprintf(w, "\n  Omniplex — harness multiplexer\n\n")
 	fmt.Fprintf(w, "  log       %s\n", o.DBPath)
-	fmt.Fprintf(w, "  cwd       %s\n", o.Cwd)
+	fmt.Fprintf(w, "  projects  %s\n", o.Projects)
 	for _, h := range o.Harness {
 		fmt.Fprintf(w, "  harness   %s\n", h)
 	}

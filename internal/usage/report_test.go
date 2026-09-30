@@ -7,21 +7,21 @@ import (
 	"time"
 )
 
-func ev(session, harness, typ string, ts int64, payload any) EventRow {
+func ev(thread, harness, typ string, ts int64, payload any) EventRow {
 	raw, _ := json.Marshal(payload)
-	return EventRow{SessionID: session, Harness: harness, Type: typ, Timestamp: ts, Payload: raw}
+	return EventRow{ThreadID: thread, Harness: harness, Type: typ, Timestamp: ts, Payload: raw}
 }
 
-func usageEv(session, harness string, ts int64, in, out, cr, cw int64) EventRow {
-	return ev(session, harness, "usage.updated", ts, map[string]any{
+func usageEv(thread, harness string, ts int64, in, out, cr, cw int64) EventRow {
+	return ev(thread, harness, "usage.updated", ts, map[string]any{
 		"input": in, "output": out, "cacheRead": cr, "cacheWrite": cw,
 	})
 }
 
 // accountingEv is a usage.updated event the adapter marked as fresh
 // accounting (the flag every claude result carries since it was added).
-func accountingEv(session, harness string, ts int64, in, out, cr, cw int64) EventRow {
-	return ev(session, harness, "usage.updated", ts, map[string]any{
+func accountingEv(thread, harness string, ts int64, in, out, cr, cw int64) EventRow {
+	return ev(thread, harness, "usage.updated", ts, map[string]any{
 		"input": in, "output": out, "cacheRead": cr, "cacheWrite": cw, "accounting": true,
 	})
 }
@@ -32,7 +32,7 @@ func TestClaudeDoubleEmissionCollapses(t *testing.T) {
 	// One claude turn: the flagged result event, then the occupancy
 	// re-emission of the same numbers (no flag). The turn must count once.
 	rows := []EventRow{
-		ev("s1", "claude", "session.created", now.UnixMilli()-time.Hour.Milliseconds(), map[string]any{"model": "claude-opus-5"}),
+		ev("s1", "claude", "thread.created", now.UnixMilli()-time.Hour.Milliseconds(), map[string]any{"model": "claude-opus-5"}),
 		accountingEv("s1", "claude", now.UnixMilli()-time.Hour.Milliseconds(), 1000, 2000, 500, 100),
 		usageEv("s1", "claude", now.UnixMilli()-time.Hour.Milliseconds()+5, 1000, 2000, 500, 100),
 	}
@@ -119,9 +119,9 @@ func TestOutOfWindowBaselineStillDeltas(t *testing.T) {
 func TestModelAttributionFollowsSwitches(t *testing.T) {
 	ts := now.Add(-time.Hour).UnixMilli()
 	rows := []EventRow{
-		ev("s1", "claude", "session.created", ts, map[string]any{"model": "claude-opus-5"}),
+		ev("s1", "claude", "thread.created", ts, map[string]any{"model": "claude-opus-5"}),
 		accountingEv("s1", "claude", ts+1, 1_000_000, 0, 0, 0),
-		ev("s1", "claude", "session.config_changed", ts+2, map[string]any{"model": "claude-sonnet-5"}),
+		ev("s1", "claude", "thread.config_changed", ts+2, map[string]any{"model": "claude-sonnet-5"}),
 		accountingEv("s1", "claude", ts+3, 1_000_000, 0, 0, 0),
 	}
 	rep := Aggregate(rows, mustSpec(t, "24h"), now)
@@ -141,14 +141,14 @@ func TestModelAttributionFollowsSwitches(t *testing.T) {
 	}
 }
 
-func TestSessionsWalkIndependently(t *testing.T) {
+func TestThreadsWalkIndependently(t *testing.T) {
 	ts := now.Add(-time.Hour).UnixMilli()
 	rows := []EventRow{
-		// Session one walks first (the store orders by session id), ends
-		// mid-stream; session two must not inherit its model or baseline.
-		ev("s1", "claude", "session.created", ts, map[string]any{"model": "claude-opus-5"}),
+		// Thread one walks first (the store orders by thread id), ends
+		// mid-stream; thread two must not inherit its model or baseline.
+		ev("s1", "claude", "thread.created", ts, map[string]any{"model": "claude-opus-5"}),
 		usageEv("s1", "claude", ts+1, 100, 0, 0, 0),
-		ev("s2", "claude", "session.created", ts, map[string]any{"model": "claude-sonnet-5"}),
+		ev("s2", "claude", "thread.created", ts, map[string]any{"model": "claude-sonnet-5"}),
 		usageEv("s2", "claude", ts+1, 100, 0, 0, 0),
 	}
 	rep := Aggregate(rows, mustSpec(t, "24h"), now)
@@ -157,7 +157,7 @@ func TestSessionsWalkIndependently(t *testing.T) {
 	}
 	for _, r := range rep.Rows {
 		if r.Model == "" {
-			t.Fatalf("session two inherited a blank model: %+v", rep.Rows)
+			t.Fatalf("thread two inherited a blank model: %+v", rep.Rows)
 		}
 	}
 }
@@ -216,7 +216,7 @@ func mustSpec(t *testing.T, id string) RangeSpec {
 func TestCodexCachedInputPricedOnceAfterDelta(t *testing.T) {
 	ts := now.Add(-time.Hour).UnixMilli()
 	rows := []EventRow{
-		ev("s", "codex", "session.created", ts-1, map[string]any{"model": "gpt-5.4"}),
+		ev("s", "codex", "thread.created", ts-1, map[string]any{"model": "gpt-5.4"}),
 		usageEv("s", "codex", now.Add(-48*time.Hour).UnixMilli(), 2000, 0, 1000, 0),
 		usageEv("s", "codex", ts, 3000, 0, 1900, 0),
 	}
@@ -233,7 +233,7 @@ func TestRecordedPricingOverridesCurrentCatalogue(t *testing.T) {
 	ts := now.Add(-time.Hour).UnixMilli()
 	row := accountingEv("s", "claude", ts, 1_000_000, 0, 0, 0)
 	row.Pricing = &RecordedPricing{Version: "recorded", Rates: Rates{Input: rate(7)}}
-	rep := Aggregate([]EventRow{ev("s", "claude", "session.created", ts-1, map[string]any{"model": "claude-opus-5"}), row}, mustSpec(t, "24h"), now)
+	rep := Aggregate([]EventRow{ev("s", "claude", "thread.created", ts-1, map[string]any{"model": "claude-opus-5"}), row}, mustSpec(t, "24h"), now)
 	if rep.Totals.Cost != 7 || rep.PriceVersion != "recorded" {
 		t.Fatalf("historical rate replaced: %+v", rep)
 	}

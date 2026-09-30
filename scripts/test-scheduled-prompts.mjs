@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
-const [url, sessionId] = process.argv.slice(2);
+const [url, threadId] = process.argv.slice(2);
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}),
@@ -25,8 +25,8 @@ async function open(width) {
     timezoneId: "Australia/Brisbane",
   });
   await context.addInitScript(
-    (id) => localStorage.setItem("omniplex.lastSession", id),
-    sessionId,
+    (id) => localStorage.setItem("omniplex.lastThread", id),
+    threadId,
   );
   const page = await context.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
@@ -35,7 +35,7 @@ async function open(width) {
   return { context, page };
 }
 async function state() {
-  const r = await fetch(`${url}/api/sessions/${sessionId}`);
+  const r = await fetch(`${url}/api/threads/${threadId}`);
   assert.equal(r.status, 200);
   return r.json();
 }

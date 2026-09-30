@@ -20,7 +20,7 @@ const HEADER = /^(diff --git |index |--- |\+\+\+ |old mode |new mode |new file m
  * producing this text, so the parser only has to be right about git's output,
  * not about every patch a human might paste.
  */
-export function parsePatch(patch: string): DiffLine[] {
+function parsePatch(patch: string): DiffLine[] {
   const out: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
@@ -62,6 +62,21 @@ export function parsePatch(patch: string): DiffLine[] {
   return out;
 }
 
+/**
+ * A key for each line that stays with it: its kind, numbers and text, plus a
+ * count for the rare exact repeat (a patch that touches two files can say "No
+ * newline at end of file" twice).
+ */
+function keyed(lines: DiffLine[]): { key: string; line: DiffLine }[] {
+  const seen = new Map<string, number>();
+  return lines.map((line) => {
+    const base = `${line.kind}:${line.oldNo ?? ""}:${line.newNo ?? ""}:${line.text}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return { key: `${base}#${n}`, line };
+  });
+}
+
 function gutter(n?: number) {
   return n === undefined ? "" : String(n);
 }
@@ -87,6 +102,7 @@ export function Diff({
   className?: string;
 }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
+  const rows = useMemo(() => keyed(lines), [lines]);
 
   if (lines.length === 0) {
     return <p className="text-muted-foreground px-3 py-2 text-[12px]">No textual changes.</p>;
@@ -94,9 +110,9 @@ export function Diff({
 
   return (
     <div className={cn("font-mono text-[11px] leading-[1.55]", className)}>
-      {lines.map((line, i) => (
+      {rows.map(({ key, line }) => (
         <div
-          key={i}
+          key={key}
           className={cn(
             "flex",
             wrap ? "w-full whitespace-pre-wrap [overflow-wrap:anywhere]" : "w-max min-w-full whitespace-pre",

@@ -16,7 +16,7 @@ const module = "github.com/asiraky/omniplex"
 // depend on the adapter contract; they may not depend on any implementation
 // of it.
 var corePackages = []string{
-	"internal/session",
+	"internal/thread",
 	"internal/server",
 	"internal/store",
 	"internal/projection",
@@ -51,7 +51,7 @@ func TestCoreDoesNotImportAnyHarness(t *testing.T) {
 func TestAdaptersDoNotImportCore(t *testing.T) {
 	root := repoRoot(t)
 	forbidden := []string{
-		module + "/internal/session",
+		module + "/internal/thread",
 		module + "/internal/server",
 		module + "/internal/store",
 		module + "/internal/projection",

@@ -1,0 +1,337 @@
+package thread
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/asiraky/omniplex/internal/store"
+)
+
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ready waits for a thread to finish provisioning and returns its row.
+func ready(t *testing.T, st *store.Store, id string) store.ThreadMeta {
+	t.Helper()
+	waitFor(t, func() bool {
+		m, e := st.Thread(context.Background(), id)
+		return e == nil && m.Phase == "ready"
+	})
+	m, err := st.Thread(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// A thread may stack itself on any ref, not only the project's default base
+// branch: that is the whole point of being able to build on another worktree's
+// work before it has merged.
+func TestManagedWorktreeBranchesFromTheThreadsOwnBase(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	// A second commit that only "stacked" carries, so branching from it is
+	// distinguishable from branching from the default base.
+	git(t, root, "checkout", "-b", "stacked")
+	if err := os.WriteFile(filepath.Join(root, "STACKED"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "add", "STACKED")
+	git(t, root, "commit", "-m", "stacked")
+	want := git(t, root, "rev-parse", "stacked")
+	git(t, root, "checkout", "main")
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/7-on-top", BaseRef: "stacked",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("worktree HEAD %s, want the base ref %s", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Cwd, "STACKED")); err != nil {
+		t.Fatalf("the base ref's content is missing from the worktree: %v", err)
+	}
+}
+
+// A base nobody can find is not fatal. Refusing to start the thread punishes
+// the user for a stale folder default they may not have written, so the
+// worktree branches from the repository's default branch and says so.
+func TestUnknownBaseRefFallsBackToTheDefaultBranch(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+	wantMain := git(t, root, "rev-parse", "main")
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/8-nowhere", BaseRef: "no/such/ref",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "rev-parse", "HEAD"); got != wantMain {
+		t.Fatalf("worktree HEAD %s, want the default branch %s", got, wantMain)
+	}
+	state, err := a.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Workspace.Output, "no/such/ref") || !strings.Contains(state.Workspace.Output, "note:") {
+		t.Fatalf("the fallback was swallowed instead of shown: %q", state.Workspace.Output)
+	}
+}
+
+// Deleting a thread is deleting a thread. Removing the checkout it ran in is
+// a separate, explicit answer, and its absence means no.
+func TestDeleteLeavesTheWorktreeUnlessAsked(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/2-keep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+
+	if err := mgr.Delete(context.Background(), a.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		_, e := st.Thread(context.Background(), a.ID)
+		return errors.Is(e, store.ErrNotFound)
+	})
+	if _, err := os.Stat(meta.Cwd); err != nil {
+		t.Fatalf("deleting the thread removed the worktree nobody asked to remove: %v", err)
+	}
+	if !strings.Contains(git(t, root, "worktree", "list", "--porcelain"), resolve(meta.Cwd)) {
+		t.Fatal("the worktree was unregistered from Git")
+	}
+}
+
+func TestDeleteRemovesTheWorktreeWhenAsked(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/3-go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+
+	if err := mgr.Delete(context.Background(), a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		_, statErr := os.Stat(meta.Cwd)
+		return os.IsNotExist(statErr)
+	})
+	// The branch outlives the checkout: omniplex never deletes branches.
+	if out := git(t, root, "branch", "--list", "issue/3-go"); !strings.Contains(out, "issue/3-go") {
+		t.Fatalf("the branch was deleted with the worktree: %q", out)
+	}
+}
+
+// Now that two threads may share one checkout, the last one out is the only
+// one allowed to take it with them.
+func TestDeleteRefusesToRemoveASharedWorktree(t *testing.T) {
+	root, worktree, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	first, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, st, first.ID)
+	second, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
+	if err != nil {
+		t.Fatalf("a second thread should be able to share a worktree: %v", err)
+	}
+	ready(t, st, second.ID)
+
+	if err := mgr.Delete(context.Background(), first.ID, true); err == nil {
+		t.Fatal("removing a worktree another thread is still in should be refused")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("the shared worktree was removed anyway: %v", err)
+	}
+	// Without the request it is an ordinary delete, and it goes through.
+	if err := mgr.Delete(context.Background(), first.ID, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The main checkout is the user's own working directory, and no answer to any
+// dialog makes it omniplex's to delete.
+func TestDeleteNeverRemovesTheMainCheckout(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, st, a.ID)
+
+	if err := mgr.Delete(context.Background(), a.ID, true); err == nil {
+		t.Fatal("the main checkout should never be removable")
+	}
+	if _, err := os.Stat(filepath.Join(root, "README")); err != nil {
+		t.Fatalf("the user's checkout was touched: %v", err)
+	}
+}
+
+// A closed thread still has a checkout on disk, and the checkbox has to mean
+// the same thing whatever phase the row is in.
+func TestDeletingAClosedThreadStillHonoursTheCheckbox(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/4-closed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	// Stop the harness without releasing the checkout.
+	if err := mgr.Close(context.Background(), a.ID, "done for now"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		m, e := st.Thread(context.Background(), a.ID)
+		return e == nil && m.Phase == "closed"
+	})
+
+	if err := mgr.Delete(context.Background(), a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(meta.Cwd); !os.IsNotExist(statErr) {
+		t.Fatalf("a closed thread's worktree survived a ticked delete: %v", statErr)
+	}
+}
+
+// A closed sibling is still a thread omniplex knows of, and it still names the
+// directory somebody is about to delete.
+func TestAClosedSiblingStillProtectsTheWorktree(t *testing.T) {
+	root, worktree, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	first, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, st, first.ID)
+	second, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, st, second.ID)
+	if err := mgr.Close(context.Background(), second.ID, "done for now"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		m, e := st.Thread(context.Background(), second.ID)
+		return e == nil && m.Phase == "closed"
+	})
+
+	if err := mgr.Delete(context.Background(), first.ID, true); err == nil {
+		t.Fatal("a worktree a closed thread still names should not be removable")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("the worktree was removed anyway: %v", err)
+	}
+}
+
+// Attaching is allowed while somebody else is working; it is not allowed while
+// somebody else is tearing the directory down.
+func TestAttachingToACheckoutBeingCleanedUpIsRefused(t *testing.T) {
+	root, worktree, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if err := st.SetPhase(context.Background(), meta.ID, "cleaning"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree}); err == nil {
+		t.Fatal("attaching to a checkout being cleaned up should be refused")
+	}
+}
+
+// The first message can go with the request that creates the thread. It
+// waits while the workspace is prepared and reaches the agent once it starts.
+func TestAMessageSentWhileTheWorkspaceIsPreparedRunsWhenTheAgentStarts(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	gate := make(chan struct{})
+	fa := &fakeAdapter{createGate: gate}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Prompt(context.Background(), "fix the login page", nil)
+	if err != nil {
+		t.Fatalf("a message to a thread being prepared was refused: %v", err)
+	}
+	if !res.Queued() {
+		t.Fatalf("the message started a turn with no agent to run it: %+v", res)
+	}
+	close(gate)
+	ready(t, st, a.ID)
+	waitFor(t, func() bool { return fa.thread() != nil })
+	select {
+	case in := <-fa.thread().prompts:
+		if in.Text != "fix the login page" {
+			t.Fatalf("the agent got %q", in.Text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the queued message never reached the agent")
+	}
+}

@@ -8,31 +8,31 @@ import (
 )
 
 // The due-time index is updated in the same transaction as its source event.
-func updateScheduleIndex(ctx context.Context, tx *sql.Tx, sessionID string, em proto.Emission, payload []byte) error {
+func updateScheduleIndex(ctx context.Context, tx *sql.Tx, threadID string, em proto.Emission, payload []byte) error {
 	switch em.Type {
 	case proto.PromptScheduled:
 		var p proto.ScheduledPrompt
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO scheduled_prompts(session_id,schedule_id,due_at,status) VALUES(?,?,?,?) ON CONFLICT(session_id,schedule_id) DO UPDATE SET due_at=excluded.due_at,status=excluded.status`, sessionID, p.ID, p.DueAt, p.Status)
+		_, err := tx.ExecContext(ctx, `INSERT INTO scheduled_prompts(thread_id,schedule_id,due_at,status) VALUES(?,?,?,?) ON CONFLICT(thread_id,schedule_id) DO UPDATE SET due_at=excluded.due_at,status=excluded.status`, threadID, p.ID, p.DueAt, p.Status)
 		return err
 	case proto.TurnStarted:
 		var p proto.TurnStartedPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE scheduled_prompts SET status='sent' WHERE session_id=? AND schedule_id=?`, sessionID, p.QueueID)
+		_, err := tx.ExecContext(ctx, `UPDATE scheduled_prompts SET status='sent' WHERE thread_id=? AND schedule_id=?`, threadID, p.QueueID)
 		return err
-	case proto.SessionClosed:
-		_, err := tx.ExecContext(ctx, `DELETE FROM scheduled_prompts WHERE session_id=?`, sessionID)
+	case proto.ThreadClosed:
+		_, err := tx.ExecContext(ctx, `DELETE FROM scheduled_prompts WHERE thread_id=?`, threadID)
 		return err
 	}
 	return nil
 }
 
-func (s *Store) DueScheduleSessions(ctx context.Context, now int64) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT p.session_id FROM scheduled_prompts p JOIN sessions s ON s.id=p.session_id WHERE p.status IN ('pending','ready') AND p.due_at<=? AND s.phase IN ('idle','turn')`, now)
+func (s *Store) DueScheduleThreads(ctx context.Context, now int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT p.thread_id FROM scheduled_prompts p JOIN threads s ON s.id=p.thread_id WHERE p.status IN ('pending','ready') AND p.due_at<=? AND s.phase IN ('idle','turn')`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (s *Store) DueScheduleSessions(ctx context.Context, now int64) ([]string, e
 	return ids, rows.Err()
 }
 func (s *Store) ScheduleCounts(ctx context.Context) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT session_id,COUNT(*) FROM scheduled_prompts WHERE status IN ('pending','ready') GROUP BY session_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT thread_id,COUNT(*) FROM scheduled_prompts WHERE status IN ('pending','ready') GROUP BY thread_id`)
 	if err != nil {
 		return nil, err
 	}

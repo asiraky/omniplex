@@ -1,6 +1,6 @@
 # Scheduled prompts
 
-Use the clock beside Send in an existing session. Choose a duration or an
+Use the clock beside Send in an existing thread. Choose a duration or an
 absolute date/time in the next 24 hours. The sheet previews the resolved date,
 time and UTC offset; its IANA timezone defaults to the browser's timezone and
 can be changed. Daylight-saving gaps are refused and repeated times require
@@ -9,13 +9,13 @@ choosing an occurrence.
 The server saves the prompt, attachment references and current model, permission
 mode and effort. Scheduled cards support editing, sending immediately and
 cancelling. Editing preserves the original settings. When sent, those settings
-become the session's active settings. Normal Stop does not cancel schedules.
-Deleting the session removes them.
+become the thread's active settings. Normal Stop does not cancel schedules.
+Deleting the thread removes them.
 
 No browser needs to remain open. The host must be awake. A schedule picked up
-within one hour of its due time waits for a busy session to become idle; a host
+within one hour of its due time waits for a busy thread to become idle; a host
 that returns more than one hour late marks it missed. Restarting also rechecks
-the grace window for messages previously waiting on a busy session. Failed and
+the grace window for messages previously waiting on a busy thread. Failed and
 missed messages stay available for explicit retry or rescheduling. Provider
 limits and requests for human input can still prevent completion.
 
@@ -52,4 +52,4 @@ the harness is a deterministic test adapter. It exercises desktop and 390px
 mobile controls, edit/cancel/send-now, provider failure, timezone conversion,
 page reload, then a real one-minute timer with every browser closed and the
 server restarted. Screenshots go to `.omniplex/schedule-screenshots/` (override
-with `OMNIPLEX_SCREENSHOTS`). No production sessions or provider tokens are used.
+with `OMNIPLEX_SCREENSHOTS`). No production threads or provider tokens are used.

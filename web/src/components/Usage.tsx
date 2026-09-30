@@ -54,7 +54,7 @@ export interface UsageProps {
  * The account-level Usage page: what work cost through the API (Cost),
  * what it consumed (Tokens), and whether there is allowance left to keep
  * working (Limits). A full-page destination on purpose — it answers
- * questions about the account, not about any one session, so it never needs
+ * questions about the account, not about any one thread, so it never needs
  * one attached.
  */
 export function UsagePage({ quotas, onRefreshQuota, onClose, loadReport }: UsageProps) {
@@ -557,7 +557,7 @@ function ProviderLimits({
         <div className="mt-3 flex items-center justify-between gap-3">
           <p className="text-muted-foreground text-[12px] leading-relaxed">
             Not observed yet{observed > 0 && ` — the last attempt was ${formatAge(observed, now)}`}. Refresh asks
-            the provider directly, without starting a session or sending a message.
+            the provider directly, without starting a thread or sending a message.
             {status.lastError && <> The last refresh failed: {status.lastError}.</>}
           </p>
         </div>

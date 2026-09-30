@@ -17,6 +17,7 @@ import { answeredPrompt, applyAuthFlowEvent, emptyAuthFlowView } from "~/lib/aut
 import type { AuthFlowView } from "~/lib/authFlow";
 import { useCopy } from "~/lib/clipboard";
 import type { AuthFlowEvent, AuthFlowNotice, AuthMethod, AuthStatus, InstanceAuth } from "~/protocol";
+import { useLatest } from "~/useLatest";
 
 /** The two client capabilities every piece of this surface needs. */
 export interface AuthWires {
@@ -49,7 +50,7 @@ function Notice({ notice }: { notice: AuthFlowNotice }) {
                 Open sign-in page
               </a>
             </Button>
-            {/* The device this UI is on may not be where the browser session
+            {/* The device this UI is on may not be where the browser thread
                 lives; the raw URL travels by copy for that case. */}
             <Button variant="outline" size="sm" onClick={() => void copy(notice.url ?? "")}>
               {copied ? <CheckIcon /> : <CopyIcon />}
@@ -97,6 +98,19 @@ function Notice({ notice }: { notice: AuthFlowNotice }) {
     default:
       return <p className="text-[12px]">{notice.message}</p>;
   }
+}
+
+/** Notices carry no id, but the list only ever grows, and the one in-place
+    edit is a trailing progress line taking a new message. Keying each notice
+    by its type and how many of that type came before it is therefore stable,
+    and keeps that progress line mounted while its text changes. */
+function noticeKeys(notices: AuthFlowNotice[]) {
+  const seen = new Map<string, number>();
+  return notices.map((notice) => {
+    const n = seen.get(notice.type) ?? 0;
+    seen.set(notice.type, n + 1);
+    return { key: `${notice.type}-${n}`, notice };
+  });
 }
 
 /** The question the flow is waiting on. Secrets are masked and travel only in
@@ -174,11 +188,12 @@ export function AuthFlowRun({
   onClose: () => void;
 }) {
   const [view, setView] = useState<AuthFlowView>(emptyAuthFlowView);
-  const [flowId, setFlowId] = useState<string | null>(null);
+  // Only the answer handler reads it, so it never needs a render of its own.
+  const flowIdRef = useRef<string | null>(null);
   // Read by the unmount cleanup, which must not cancel a finished flow.
-  const doneRef = useRef(false);
-  doneRef.current = view.done;
+  const doneRef = useLatest(view.done);
 
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup, react-doctor/exhaustive-deps -- `cancelled` stops a late ack from subscribing and the cleanup unsubscribes an early one; the cleanup wants the newest doneRef, which is why it is a ref
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
@@ -194,7 +209,7 @@ export function AuthFlowRun({
           return;
         }
         startedFlow = id;
-        setFlowId(id);
+        flowIdRef.current = id;
         unsubscribe = wires.subscribe(id, (ev) => setView((v) => applyAuthFlowEvent(v, ev)));
       })
       .catch((e: unknown) => {
@@ -214,9 +229,10 @@ export function AuthFlowRun({
       }
     };
     // A flow runs once per (instance, method) mount; changing either remounts.
-  }, [wires, instanceId, methodId]);
+  }, [wires, instanceId, methodId, doneRef]);
 
   const answer = (value: string) => {
+    const flowId = flowIdRef.current;
     if (!flowId || !view.prompt) return;
     const promptId = view.prompt.id;
     setView(answeredPrompt);
@@ -238,8 +254,8 @@ export function AuthFlowRun({
             Starting sign-in…
           </p>
         )}
-        {view.notices.map((n, i) => (
-          <Notice key={i} notice={n} />
+        {noticeKeys(view.notices).map(({ key, notice }) => (
+          <Notice key={key} notice={notice} />
         ))}
       </div>
 
@@ -441,7 +457,7 @@ export function AuthMethods({
 }
 
 /**
- * The standalone sign-in dialog — what the header key icon and the in-session
+ * The standalone sign-in dialog — what the header key icon and the in-thread
  * recovery card open for a flows-capable instance, so signing back in does not
  * require finding the instance in the providers screen first.
  */
@@ -464,7 +480,7 @@ export default function InstanceAuthDialog({
         <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
           <DialogTitle>Sign in — {instanceName}</DialogTitle>
           <DialogDescription>
-            Connect a credential for this account. Sessions pick the change up as soon as it lands.
+            Connect a credential for this account. Threads pick the change up as soon as it lands.
           </DialogDescription>
         </DialogHeader>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 py-5">

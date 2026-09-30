@@ -117,8 +117,8 @@ describe("resolveModel", () => {
   });
 
   it("keeps naming a model the catalogue no longer lists", () => {
-    // The session is running it; swapping the label for something else would
-    // say the session is doing something it is not.
+    // The thread is running it; swapping the label for something else would
+    // say the thread is doing something it is not.
     expect(resolveModel(instance, "claude-opus-4-6")).toEqual({
       id: "claude-opus-4-6",
       label: "claude-opus-4-6",
@@ -143,7 +143,7 @@ describe("resolveInstance", () => {
     } as Partial<HarnessMeta>),
   ]);
 
-  it("routes a session recorded before instances existed to the driver's default", () => {
+  it("routes a thread recorded before instances existed to the driver's default", () => {
     expect(resolveInstance(instances, "", "codex")?.id).toBe("codex");
   });
 

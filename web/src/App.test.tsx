@@ -4,22 +4,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { render, viewport } from "~/test/harness";
 import type { ClientEvents } from "./client";
-import type { SessionMeta } from "./protocol";
+import type { ThreadMeta } from "./protocol";
 
 // The socket is the app's only source of truth, so the tests own it: this
 // captures the callbacks App hands the client and lets each test decide when
-// the session list arrives — which is the whole subject of these tests.
+// the thread list arrives — which is the whole subject of these tests.
 let events: ClientEvents;
 const command = vi.fn(async (_name: string, _args: unknown) => ({}) as any);
 const attach = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
-const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn() }));
+const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn(), success: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast }));
+const uploadStaged = vi.hoisted(() => vi.fn());
+vi.mock("./lib/attachments", async (actual) => ({
+  ...(await actual<typeof import("./lib/attachments")>()),
+  uploadStaged,
+}));
 
 vi.mock("./client", () => ({
   wsURL: () => "ws://test",
+  uuid: () => Math.random().toString(36).slice(2),
   Client: class {
     constructor(_url: string, e: ClientEvents) {
       events = e;
@@ -39,12 +45,9 @@ const { App } = await import("./App");
 
 const project = {
   id: "p1",
-  root: "/tmp/repo",
-  config: {
-    name: "repo",
-    defaults: { harness: "claude", harnesses: {}, workspace: "local" },
-    workspace: {},
-  },
+  name: "repo",
+  defaults: { harness: "claude", harnesses: {}, workspace: "local" },
+  folders: [{ id: "f1", path: "/tmp/repo", git: true, copiesDir: ".worktrees", provisionTimeoutSeconds: 1800, deprovisionTimeoutSeconds: 600 }],
 } as any;
 
 const harness = {
@@ -66,17 +69,17 @@ const harness = {
   ],
 } as any;
 
-const session = (id: string): SessionMeta =>
+const thread = (id: string): ThreadMeta =>
   ({
     id,
-    title: `Session ${id}`,
+    title: `Thread ${id}`,
     phase: "idle",
     updatedAt: Date.now(),
     cwd: "/tmp/repo",
     harness: "claude",
     projectId: "p1",
     branch: "main",
-  }) as SessionMeta;
+  }) as ThreadMeta;
 
 /** The mobile sidebar is a sheet; its presence in the DOM is "open". */
 const sidebarShowing = () => document.querySelector("[data-slot=sheet-content]") !== null;
@@ -95,14 +98,14 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 const state = (id: string, mode: string): any => ({
-  sessionId: id,
+  threadId: id,
   seq: 1,
   cwd: "/tmp/repo",
   harness: "claude",
   model: "",
   mode,
   effort: "",
-  title: `Session ${id}`,
+  title: `Thread ${id}`,
   phase: "idle",
   closed: false,
   workspace: { phase: "ready", projectId: "p1", projectRoot: "/tmp/repo" },
@@ -116,33 +119,33 @@ const state = (id: string, mode: string): any => ({
   queuedPrompts: [],
 });
 
-describe("new session project", () => {
-  it("uses the viewed session's project after switching sessions", async () => {
+describe("new thread project", () => {
+  it("uses the viewed thread's project after switching threads", async () => {
     localStorage.setItem("omniplex.lastProject.v1", "p2");
     render(<App />);
     await act(async () => {
-      events.onProjects([project, { ...project, id: "p2", config: { ...project.config, name: "other" } }]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a"), { ...session("b"), projectId: "p2" }]);
+      events.onProjects([project, { ...project, id: "p2", name: "other" }]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a"), { ...thread("b"), projectId: "p2" }]);
     });
-    fireEvent.click(screen.getByText("Session b"));
-    fireEvent.click(screen.getByText("Session a"));
-    fireEvent.click(screen.getAllByRole("button", { name: /New session/ })[0]);
-    expect(screen.getByLabelText("Project").textContent).toBe("repo");
+    fireEvent.click(screen.getByText("Thread b"));
+    fireEvent.click(screen.getByText("Thread a"));
+    fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+    expect(screen.getByRole("button", { name: /^Project/ }).textContent).toBe("repo");
   });
 });
 
 describe("copying a transcript", () => {
-  it("copies only the raw user and assistant prose from the session header", async () => {
+  it("copies only the raw user and assistant prose from the thread header", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
     });
-    fireEvent.click(screen.getByText("Session a"));
+    fireEvent.click(screen.getByText("Thread a"));
     await act(async () =>
       events.onState("a", {
         ...state("a", "default"),
@@ -164,23 +167,23 @@ describe("copying a transcript", () => {
   });
 });
 
-describe("session actions on a phone", () => {
-  const openSession = async () => {
+describe("thread actions on a phone", () => {
+  const openThread = async () => {
     viewport("phone");
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
     });
     await act(async () => {
-      fireEvent.click(screen.getByText("Session a"));
+      fireEvent.click(screen.getByText("Thread a"));
       events.onState("a", state("a", "default"));
     });
   };
 
   it("puts the header actions in one overflow menu", async () => {
-    await openSession();
+    await openThread();
     await act(async () =>
       events.onLabels([
         { id: "label-1", name: "Parked", color: "#f59e0b", position: 0, createdAt: 1 },
@@ -188,47 +191,28 @@ describe("session actions on a phone", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Copy transcript" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Summarise this session" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Label this session" })).toBeNull();
-    fireEvent.pointerDown(screen.getByRole("button", { name: "More session actions" }), {
+    expect(screen.queryByRole("button", { name: "Label this thread" })).toBeNull();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More thread actions" }), {
       button: 0,
       ctrlKey: false,
     });
 
     expect(screen.getByRole("menuitem", { name: "Open panel" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Summarise session" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy transcript" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Sign in again to Claude Code" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "repo settings" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Label session" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Label thread" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: /diff/i })).toBeNull();
   });
 
-  it("keeps provider sign-in available while the session is attaching", async () => {
-    viewport("phone");
-    render(<App />);
-    await act(async () => {
-      events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a")]);
-    });
-
-    fireEvent.click(screen.getByText("Session a"));
-
-    expect(screen.getByText("Attaching…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Sign in again to Claude Code" })).toBeTruthy();
-  });
-
   it("opens the whole panel directly, with terminal available from its surface menu", async () => {
-    await openSession();
+    await openThread();
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "More session actions" }), {
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More thread actions" }), {
       button: 0,
       ctrlKey: false,
     });
     fireEvent.click(screen.getByRole("menuitem", { name: "Open panel" }));
 
-    const panel = await screen.findByRole("dialog", { name: "Session panel" });
+    const panel = await screen.findByRole("dialog", { name: "Thread panel" });
     fireEvent.pointerDown(within(panel).getByRole("button", { name: "Open a surface" }), {
       button: 0,
       ctrlKey: false,
@@ -237,11 +221,11 @@ describe("session actions on a phone", () => {
   });
 });
 
-describe("a bypass session is just a session", () => {
+describe("a bypass thread is just a thread", () => {
   it("opens with no confirmation, banner, or acknowledgement", async () => {
     const confirm = vi.fn(() => true);
     vi.stubGlobal("confirm", confirm);
-    localStorage.setItem("omniplex.lastSession", "a");
+    localStorage.setItem("omniplex.lastThread", "a");
     viewport("desktop");
     render(<App />);
     await act(async () => {
@@ -260,9 +244,8 @@ describe("a bypass session is just a session", () => {
             ],
           },
         ],
-        "/tmp/repo",
       );
-      events.onSessions([session("a")]);
+      events.onThreads([thread("a")]);
       events.onState("a", state("a", "bypassPermissions"));
     });
 
@@ -274,25 +257,25 @@ describe("a bypass session is just a session", () => {
 });
 
 describe("landing on a phone", () => {
-  it("lands on the session list when there is nothing to restore", async () => {
+  it("lands on the thread list when there is nothing to restore", async () => {
     viewport("phone");
     render(<App />);
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
 
     expect(sidebarShowing()).toBe(true);
   });
 
-  it("still lands on the session list when there are no sessions at all", async () => {
+  it("still lands on the thread list when there are no threads at all", async () => {
     viewport("phone");
     render(<App />);
-    await act(async () => events.onSessions([]));
+    await act(async () => events.onThreads([]));
 
     expect(sidebarShowing()).toBe(true);
     expect(screen.getByText("All caught up")).toBeTruthy();
   });
 
-  it("restores straight into the last session without flashing the list open", async () => {
-    localStorage.setItem("omniplex.lastSession", "a");
+  it("restores straight into the last thread without flashing the list open", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
     viewport("phone");
     render(<App />);
 
@@ -300,52 +283,52 @@ describe("landing on a phone", () => {
     // the sidebar must not be shown only to be shut a frame later.
     expect(sidebarShowing()).toBe(false);
 
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
     expect(attach).toHaveBeenCalledWith("a");
     expect(sidebarShowing()).toBe(false);
   });
 
-  it("falls back to the list when the stored session is gone", async () => {
-    localStorage.setItem("omniplex.lastSession", "gone");
+  it("falls back to the list when the stored thread is gone", async () => {
+    localStorage.setItem("omniplex.lastThread", "gone");
     viewport("phone");
     render(<App />);
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
 
     expect(attach).not.toHaveBeenCalled();
     await waitFor(() => expect(sidebarShowing()).toBe(true));
   });
 
   it("says nothing while it is still deciding", async () => {
-    localStorage.setItem("omniplex.lastSession", "a");
+    localStorage.setItem("omniplex.lastThread", "a");
     viewport("phone");
     render(<App />);
 
     // Neither empty-state message: both would be contradicted a moment later.
     expect(screen.queryByText("All caught up")).toBeNull();
     expect(screen.queryByText("Nothing open")).toBeNull();
-    expect(screen.getByText("Reopening your last session…")).toBeTruthy();
+    expect(screen.getByText("Reopening your last thread…")).toBeTruthy();
   });
 });
 
 describe("the empty content column", () => {
-  it("points at the list when there are sessions to pick from", async () => {
+  it("points at the list when there are threads to pick from", async () => {
     viewport("desktop");
     render(<App />);
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
 
     expect(screen.getByText("Nothing open")).toBeTruthy();
     // The action is still offered, but quietly: no oversized call to action
-    // competing with the list of sessions beside it.
+    // competing with the list of threads beside it.
     const cta = screen
-      .getAllByRole("button", { name: /New session/ })
-      .find((b) => b.textContent?.includes("New session"))!;
+      .getAllByRole("button", { name: /New thread/ })
+      .find((b) => b.textContent?.includes("New thread"))!;
     expect(cta.getAttribute("data-size")).toBe("sm");
     expect(cta.getAttribute("data-variant")).toBe("outline");
   });
 
   it("claims nothing before the list has arrived", () => {
-    // No stored session, so nothing to restore — but also no grounds yet for
-    // telling someone with six live sessions that they are all caught up.
+    // No stored thread, so nothing to restore — but also no grounds yet for
+    // telling someone with six live threads that they are all caught up.
     viewport("desktop");
     render(<App />);
 
@@ -356,7 +339,7 @@ describe("the empty content column", () => {
   it("congratulates you when there is nothing at all", async () => {
     viewport("desktop");
     render(<App />);
-    await act(async () => events.onSessions([]));
+    await act(async () => events.onThreads([]));
 
     expect(screen.getByText("All caught up")).toBeTruthy();
     expect(
@@ -371,8 +354,8 @@ describe("composer drafts", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a"), session("b")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a"), thread("b")]);
     });
   };
 
@@ -380,7 +363,7 @@ describe("composer drafts", () => {
 
   const open = async (id: string) => {
     await act(async () => {
-      fireEvent.click(screen.getByText(`Session ${id}`));
+      fireEvent.click(screen.getByText(`Thread ${id}`));
       events.onState(id, state(id, "default"));
     });
   };
@@ -441,7 +424,7 @@ describe("composer drafts", () => {
     });
     expect(composer().value).toBe("draft for a");
 
-    // Switching sessions unmounts the whole content subtree, Composer included.
+    // Switching threads unmounts the whole content subtree, Composer included.
     await open("b");
     expect(composer().value).toBe("");
 
@@ -460,10 +443,10 @@ describe("composer drafts", () => {
       fireEvent.keyDown(composer(), { key: "Enter" });
     });
 
-    expect(command).toHaveBeenCalledWith("prompt", { sessionId: "a", text: "hello" });
+    expect(command).toHaveBeenCalledWith("prompt", { threadId: "a", text: "hello" });
     expect(composer().value).toBe("");
 
-    // Coming back to the session shows the cleared field, not the sent text.
+    // Coming back to the thread shows the cleared field, not the sent text.
     await open("b");
     await open("a");
     expect(composer().value).toBe("");
@@ -530,21 +513,23 @@ describe("composer drafts", () => {
       }),
     );
     await waitFor(() =>
-      expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "a" }),
+      expect(command).toHaveBeenCalledWith("list_composer_items", { threadId: "a" }),
     );
 
     fireEvent.change(composer(), { target: { value: "/status", selectionStart: 7 } });
     fireEvent.keyDown(composer(), { key: "Enter" });
-    expect(toast.info).toHaveBeenCalledWith("Session status", {
-      description: "gpt-test · on-request · 12,345 context tokens",
-    });
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith("Thread status", {
+        description: "gpt-test · on-request · 12,345 context tokens",
+      }),
+    );
 
     fireEvent.focus(composer());
     fireEvent.change(composer(), { target: { value: "/comp", selectionStart: 5 } });
     fireEvent.keyDown(composer(), { key: "Enter" });
     await waitFor(() =>
       expect(command).toHaveBeenCalledWith("run_composer_action", {
-        sessionId: "a",
+        threadId: "a",
         action: "compact",
         args: "",
         invocation: "/compact",
@@ -557,7 +542,7 @@ describe("composer drafts", () => {
     fireEvent.keyDown(composer(), { key: "Enter" });
     await waitFor(() =>
       expect(command).toHaveBeenCalledWith("run_composer_action", {
-        sessionId: "a",
+        threadId: "a",
         action: "review",
         args: "focus on races",
         invocation: "/review focus on races",
@@ -607,7 +592,7 @@ describe("composer drafts", () => {
     await boot();
     await open("a");
     await waitFor(() =>
-      expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "a" }),
+      expect(command).toHaveBeenCalledWith("list_composer_items", { threadId: "a" }),
     );
 
     fireEvent.focus(composer());
@@ -643,7 +628,7 @@ describe("composer drafts", () => {
     await boot();
     await open("a");
     await waitFor(() =>
-      expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "a" }),
+      expect(command).toHaveBeenCalledWith("list_composer_items", { threadId: "a" }),
     );
 
     await act(async () => {
@@ -661,7 +646,7 @@ describe("composer drafts", () => {
     await boot();
     await open("a");
     await waitFor(() =>
-      expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "a" }),
+      expect(command).toHaveBeenCalledWith("list_composer_items", { threadId: "a" }),
     );
     const loadsBefore = command.mock.calls.filter(([name]) => name === "list_composer_items").length;
 
@@ -679,7 +664,7 @@ describe("composer drafts", () => {
     await boot();
     await open("a");
     await waitFor(() =>
-      expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "a" }),
+      expect(command).toHaveBeenCalledWith("list_composer_items", { threadId: "a" }),
     );
 
     fireEvent.focus(composer());
@@ -728,83 +713,85 @@ describe("composer drafts", () => {
     expect(composer().value).toBe("$al");
   });
 
-  it("keeps a new session's draft while the list has not caught up with it", async () => {
+  it("keeps a new thread's draft while the list has not caught up with it", async () => {
     await boot();
 
-    // Create a session: it is attached, and can be typed into, before the
+    // Create a thread: it is attached, and can be typed into, before the
     // broadcast listing it arrives.
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: /New session/ })[0]);
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
     });
     command.mockImplementation(async (name: string) =>
-      name === "create_session" ? { sessionId: "fresh" } : ({} as any),
+      name === "create_thread" ? { threadId: "fresh" } : ({} as any),
     );
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "go" } });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
     });
     await act(async () => events.onState("fresh", state("fresh", "default")));
     await act(async () => {
       fireEvent.change(composer(), { target: { value: "draft for fresh" } });
     });
 
-    // Switch away, then a list lands that still predates the new session. The
-    // draft must not be pruned as if the session were gone.
+    // Switch away, then a list lands that still predates the new thread. The
+    // draft must not be pruned as if the thread were gone.
     await open("a");
-    await act(async () => events.onSessions([session("a"), session("b")]));
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
 
     // The broadcast finally carries it; returning shows the draft intact.
-    await act(async () => events.onSessions([session("a"), session("b"), session("fresh")]));
+    await act(async () => events.onThreads([thread("a"), thread("b"), thread("fresh")]));
     await open("fresh");
     expect(composer().value).toBe("draft for fresh");
   });
 });
 
-describe("losing the attached session", () => {
-  it("lets go even if the session never sent a first snapshot", async () => {
+describe("losing the attached thread", () => {
+  it("lets go even if the thread never sent a first snapshot", async () => {
     viewport("phone");
     render(<App />);
-    await act(async () => events.onSessions([session("a"), session("b")]));
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
 
     // Selecting clears state and waits for the server; deleting a row that is
     // not the open one goes through exactly this path, so a delete landing
     // before the first snapshot used to leave the app attached to nothing and
     // stuck on "Attaching…".
     await act(async () => {
-      fireEvent.click(screen.getByText("Session b"));
+      fireEvent.click(screen.getByText("Thread b"));
     });
     expect(attach).toHaveBeenCalledWith("b");
 
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
 
     expect(detach).toHaveBeenCalled();
     // On a phone that leaves nothing behind the sidebar, so it returns.
     expect(sidebarShowing()).toBe(true);
   });
 
-  it("does not let go of a session the list has not caught up with yet", async () => {
+  it("does not let go of a thread the list has not caught up with yet", async () => {
     viewport("phone");
     render(<App />);
     await act(async () => {
-      events.onSessions([session("a")]);
+      events.onThreads([thread("a")]);
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
+      events.onHarnesses([harness]);
     });
 
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: /New session/ })[0]);
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
     });
     command.mockImplementation(async (name: string) =>
-      name === "create_session" ? { sessionId: "fresh" } : ({} as any),
+      name === "create_thread" ? { threadId: "fresh" } : ({} as any),
     );
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "go" } });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
     });
     expect(attach).toHaveBeenCalledWith("fresh");
 
-    // Creating attaches before the broadcast carrying the new session
+    // Creating attaches before the broadcast carrying the new thread
     // arrives, so for a moment the attached id is in no list at all. A list
     // that predates it must not read as "it is gone".
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
     expect(detach).not.toHaveBeenCalled();
     expect(sidebarShowing()).toBe(false);
   });
@@ -812,50 +799,50 @@ describe("losing the attached session", () => {
 
 describe("resuming after a tab discard", () => {
   const seed = (id: string) => {
-    localStorage.setItem("omniplex.lastSession", id);
+    localStorage.setItem("omniplex.lastThread", id);
     sessionStorage.setItem(
       "omniplex.resume",
       JSON.stringify({ build: "dev", state: state(id, "default"), scrollTop: 120, atBottom: false }),
     );
   };
 
-  it("paints the cached session immediately, with no Attaching…", async () => {
+  it("paints the cached thread immediately, with no Attaching…", async () => {
     viewport("phone");
     seed("a");
     render(<App />);
 
     // Before any frame from the server: the transcript is up, the header
-    // names the session, and nothing says "Attaching…".
+    // names the thread, and nothing says "Attaching…".
     expect(screen.queryByText("Attaching…")).toBeNull();
-    expect(screen.getByText("Session a")).toBeTruthy();
+    expect(screen.getByText("Thread a")).toBeTruthy();
     expect(sidebarShowing()).toBe(false);
 
     // The client was handed the cached state so its first attach carries a
     // cursor and the server replays only the gap.
-    expect(prime).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "a", seq: 1 }));
+    expect(prime).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", seq: 1 }));
 
-    // The list confirming the session exists changes nothing.
-    await act(async () => events.onSessions([session("a")]));
+    // The list confirming the thread exists changes nothing.
+    await act(async () => events.onThreads([thread("a")]));
     expect(detach).not.toHaveBeenCalled();
-    expect(screen.getByText("Session a")).toBeTruthy();
+    expect(screen.getByText("Thread a")).toBeTruthy();
   });
 
-  it("lets go when the list reveals the session is gone", async () => {
+  it("lets go when the list reveals the thread is gone", async () => {
     viewport("phone");
     seed("a");
     render(<App />);
-    expect(screen.getByText("Session a")).toBeTruthy();
+    expect(screen.getByText("Thread a")).toBeTruthy();
 
     // Deleted from elsewhere while the page was dead: released like a live
     // delete, and the phone lands back on the sidebar.
-    await act(async () => events.onSessions([session("b")]));
+    await act(async () => events.onThreads([thread("b")]));
     expect(detach).toHaveBeenCalled();
     expect(sidebarShowing()).toBe(true);
   });
 
   it("ignores a cache written by a different bundle", async () => {
     viewport("phone");
-    localStorage.setItem("omniplex.lastSession", "a");
+    localStorage.setItem("omniplex.lastThread", "a");
     sessionStorage.setItem(
       "omniplex.resume",
       JSON.stringify({ build: "other", state: state("a", "default"), scrollTop: 0, atBottom: true }),
@@ -863,7 +850,7 @@ describe("resuming after a tab discard", () => {
     render(<App />);
     expect(prime).not.toHaveBeenCalled();
     // The cold path instead: restore once the list arrives.
-    await act(async () => events.onSessions([session("a")]));
+    await act(async () => events.onThreads([thread("a")]));
     expect(attach).toHaveBeenCalledWith("a");
   });
 });
@@ -894,14 +881,14 @@ describe("transcript scroll position", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a"), session("b")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a"), thread("b")]);
     });
   };
 
   const open = async (id: string) => {
     await act(async () => {
-      fireEvent.click(screen.getByText(`Session ${id}`));
+      fireEvent.click(screen.getByText(`Thread ${id}`));
       events.onState(id, state(id, "default"));
     });
   };
@@ -930,7 +917,7 @@ describe("transcript scroll position", () => {
     expect(scroller().scrollTop).toBe(300);
   });
 
-  it("leaves a session that was read to the tail following the tail", async () => {
+  it("leaves a thread that was read to the tail following the tail", async () => {
     await boot();
     await open("a");
     await scrollTo(CONTENT - VIEWPORT);
@@ -942,11 +929,11 @@ describe("transcript scroll position", () => {
     expect(screen.queryByLabelText("Scroll to bottom")).toBeNull();
   });
 
-  it("forgets a resumed position when the list says that session is gone", async () => {
+  it("forgets a resumed position when the list says that thread is gone", async () => {
     // The cache hydrates a position for "a" before any list exists, so the
     // prune that follows the list has never seen the id — it has to be
     // dropped here or an id coming back would inherit a dead offset.
-    localStorage.setItem("omniplex.lastSession", "a");
+    localStorage.setItem("omniplex.lastThread", "a");
     sessionStorage.setItem(
       "omniplex.resume",
       JSON.stringify({ build: "dev", state: state("a", "default"), scrollTop: 300, atBottom: false }),
@@ -955,29 +942,29 @@ describe("transcript scroll position", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("b")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("b")]);
     });
-    await act(async () => events.onSessions([session("a"), session("b")]));
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
     await open("a");
     expect(scroller().scrollTop).not.toBe(300);
   });
 
-  it("forgets the position of a session that goes away", async () => {
+  it("forgets the position of a thread that goes away", async () => {
     await boot();
     await open("a");
     await scrollTo(300);
-    await act(async () => events.onSessions([session("b")]));
-    // The id coming back is a different session wearing an old name; it must
+    await act(async () => events.onThreads([thread("b")]));
+    // The id coming back is a different thread wearing an old name; it must
     // not inherit a stranger's place in the transcript.
-    await act(async () => events.onSessions([session("a"), session("b")]));
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
     await open("a");
     expect(scroller().scrollTop).not.toBe(300);
   });
 });
 
 // The empty transcript's nudge, end to end: what it offers comes from the
-// session's own catalogue and from what this project reached for before, and
+// thread's own catalogue and from what this project reached for before, and
 // picking one writes into the composer rather than sending anything.
 describe("recent skills on an empty transcript", () => {
   const catalogue = [
@@ -1011,11 +998,11 @@ describe("recent skills on an empty transcript", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
     });
     await act(async () => {
-      fireEvent.click(screen.getByText("Session a"));
+      fireEvent.click(screen.getByText("Thread a"));
       events.onState("a", state("a", "default"));
     });
   };
@@ -1056,7 +1043,7 @@ describe("recent skills on an empty transcript", () => {
     expect(localStorage.getItem("hy.recentSkills.v1:other")).toBeNull();
   });
 
-  it("waits for a newly provisioned session to be ready before loading skills", async () => {
+  it("waits for a newly provisioned thread to be ready before loading skills", async () => {
     viewport("desktop");
     let catalogueRequests = 0;
     command.mockImplementation(async (name: string) => {
@@ -1067,10 +1054,10 @@ describe("recent skills on an empty transcript", () => {
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("fresh")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("fresh")]);
     });
-    fireEvent.click(screen.getByText("Session fresh"));
+    fireEvent.click(screen.getByText("Thread fresh"));
 
     await act(async () =>
       events.onState("fresh", {
@@ -1085,26 +1072,126 @@ describe("recent skills on an empty transcript", () => {
     await act(async () => events.onState("fresh", state("fresh", "default")));
     expect(await screen.findByText("/alpha")).toBeTruthy();
     expect(catalogueRequests).toBeGreaterThan(1);
-    expect(command).toHaveBeenCalledWith("list_composer_items", { sessionId: "fresh" });
+    expect(command).toHaveBeenCalledWith("list_composer_items", { threadId: "fresh" });
   });
 });
 
-describe("attaching to a session", () => {
-  it("shows a centered loading state instead of the empty-session action", async () => {
+describe("attaching to a thread", () => {
+  it("shows a centered loading state instead of the empty-thread action", async () => {
     viewport("desktop");
     render(<App />);
     await act(async () => {
       events.onProjects([project]);
-      events.onHarnesses([harness], "/tmp/repo");
-      events.onSessions([session("a")]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
     });
 
-    fireEvent.click(screen.getByText("Session a"));
+    fireEvent.click(screen.getByText("Thread a"));
 
-    expect(screen.getByText("Attaching to session…")).toBeTruthy();
-    expect(within(document.querySelector("main")!).queryByRole("button", { name: "New session" })).toBeNull();
-    expect(screen.getByText("Attaching to session…").parentElement?.getAttribute("aria-busy")).toBe(
+    expect(screen.getByText("Attaching to thread…")).toBeTruthy();
+    expect(within(document.querySelector("main")!).queryByRole("button", { name: "New thread" })).toBeNull();
+    expect(screen.getByText("Attaching to thread…").parentElement?.getAttribute("aria-busy")).toBe(
       "true",
     );
+  });
+});
+
+describe("a new thread's first message", () => {
+  const start = async () => {
+    viewport("desktop");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+    });
+    command.mockImplementation(async (name: string) =>
+      name === "create_thread" ? { threadId: "fresh" } : ({} as any),
+    );
+    fireEvent.change(document.querySelector("textarea")!, { target: { value: "read this" } });
+  };
+  const pick = (file: File) =>
+    act(async () => {
+      fireEvent.change(document.querySelector('input[type="file"]')!, {
+        target: { files: [file] },
+      });
+    });
+  const report = new File(["numbers"], "report.txt", { type: "text/plain" });
+
+  beforeEach(() => {
+    uploadStaged.mockReset();
+    command.mockReset();
+    command.mockImplementation(async () => ({}) as any);
+  });
+
+  it("starts the thread empty, uploads the files to it, then sends the message with them", async () => {
+    uploadStaged.mockResolvedValue({
+      kind: "file",
+      status: "ready",
+      artefactId: "art-1",
+      progress: 1,
+    });
+    await start();
+    await pick(report);
+    expect(uploadStaged).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+
+    expect(command).toHaveBeenCalledWith("create_thread", expect.objectContaining({ text: "" }));
+    expect(uploadStaged).toHaveBeenCalledWith("fresh", report, expect.anything());
+    await waitFor(() =>
+      expect(command).toHaveBeenCalledWith("prompt", {
+        threadId: "fresh",
+        text: "read this",
+        files: [{ artefactId: "art-1" }],
+      }),
+    );
+  });
+
+  it("leaves the message in the new thread when a file fails to upload", async () => {
+    uploadStaged.mockRejectedValue(new Error("disk full"));
+    await start();
+    await pick(report);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await act(async () => events.onState("fresh", state("fresh", "default")));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("read this");
+  });
+
+  it("sends a plain message with the thread", async () => {
+    await start();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    expect(command).toHaveBeenCalledWith(
+      "create_thread",
+      expect.objectContaining({ text: "read this" }),
+    );
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+  });
+
+  it("schedules: starts the thread empty and opens the schedule with the message", async () => {
+    await start();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("menuitem", { name: /Schedule send/ }));
+    });
+    await act(async () => events.onState("fresh", state("fresh", "default")));
+
+    expect(command).toHaveBeenCalledWith("create_thread", expect.objectContaining({ text: "" }));
+    expect(await screen.findByRole("dialog", { name: "Schedule message" })).toBeTruthy();
+    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
   });
 });

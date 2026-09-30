@@ -1,1810 +1,218 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Client, uuid, wsURL, type ConnectionStatus } from "./client";
-import { useIsDesktop } from "./useMediaQuery";
-import { useDocumentTitle } from "./useDocumentTitle";
-import { useSessionPR } from "./useSessionPR";
-import type { Access, AuthFlowEvent, ComposerItem, FileContent, FileDiff, FileTree, HarnessMeta, Label, Project, ProjectConfig, QuotaStatus, SessionChanges, SessionMeta, SessionState, SessionSummary, PullRequest, UsageReport, UserConfig, Workspace } from "./protocol";
-import { AccessPanel } from "./components/Access";
-import type { PanelRequest } from "./components/panel/Panel";
-import { liveJobCount } from "./lib/jobs";
-import { OpenPathContext } from "./lib/openPath";
-import { Composer, type ComposerHandle } from "./components/Composer";
-import { ScheduleDialog, ScheduledPrompts, type ScheduleInput } from "./components/ScheduledPrompts";
-import type { ScheduledPrompt, Turn } from "./protocol";
-import { JobsStrip } from "./components/JobsStrip";
-import { NewSession } from "./components/NewSession";
-import type { NewSessionInput } from "./components/NewSession";
-import { PermissionPrompt } from "./components/PermissionPrompt";
-import { ElicitationPrompt } from "./components/ElicitationPrompt";
-import { DeleteSessionDialog, useDeleteSession } from "./components/DeleteSessionDialog";
-import { LabelManager } from "./components/LabelManager";
-import { LabelDot, LabelMenu, LabelMenuItems } from "./components/LabelMenu";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "./components/ui/dropdown-menu";
+import { useCallback, useMemo } from "react";
+
+import { NEW_THREAD } from "./app/threadKeys";
+import { useActivePR } from "./app/useActivePR";
+import { useComposerDrafts } from "./app/useComposerDrafts";
+import { useLabelActions } from "./app/useLabelActions";
+import { useNewThread } from "./app/useNewThread";
+import { usePanel } from "./app/usePanel";
+import { useProjectActions } from "./app/useProjectActions";
+import { useProviderAuth } from "./app/useProviderAuth";
+import { useReadState } from "./app/useReadState";
+import { useRecentSkills } from "./app/useRecentSkills";
+import { useScheduleEditor } from "./app/useScheduleEditor";
+import { usePruneScrollMemory, useScrollMemory } from "./app/useScrollMemory";
+import { useScreens } from "./app/useScreens";
+import { useThreadCommands } from "./app/useThreadCommands";
+import { useThreadDeletion } from "./app/useThreadDeletion";
+import { useThreadHarness } from "./app/useThreadHarness";
+import { useThreadSelection } from "./app/useThreadSelection";
+import { useThreadTitle } from "./app/useThreadTitle";
+import { useTranscriptCopy } from "./app/useTranscriptCopy";
+import { useWire } from "./app/useWire";
+import { AppDialogs } from "./components/AppDialogs";
+import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
+import { EmptyState } from "./components/EmptyState";
+import { ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
 import { Sidebar } from "./components/Sidebar";
-import { Transcript } from "./components/Transcript";
-import { IconButton } from "./components/IconButton";
-import { Button } from "./components/ui/button";
-import { Spinner } from "./components/ui/spinner";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./components/ui/select";
-import { isPdf, isSupportedFile, maxBytesFor, prepareImage, uploadAttachment, type Attachment } from "./lib/attachments";
-import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "./lib/recentSkills";
-import { loadResume } from "./resume";
+import { ThreadDraft } from "./components/ThreadDraft";
+import { ThreadHeader } from "./components/ThreadHeader";
+import { ThreadPanel } from "./components/ThreadPanel";
+import { ThreadView } from "./components/ThreadView";
 import { cn } from "./lib/utils";
-import { transcriptMarkdown } from "./lib/transcript";
-import { useCopy } from "./lib/clipboard";
-import {
-  CheckIcon,
-  CoffeeIcon,
-  CopyIcon,
-  EllipsisIcon,
-  LogInIcon,
-  MessagesSquareIcon,
-  PanelLeftIcon,
-  PanelRightIcon,
-  PlusIcon,
-  SettingsIcon,
-  SparklesIcon,
-  TagIcon,
-} from "lucide-react";
-import { toast } from "sonner";
-
-const LAST_SESSION = "omniplex.lastSession";
-
-const Panel = lazy(() => import("./components/panel/Panel").then((m) => ({ default: m.Panel })));
-const SessionSummaryPanel = lazy(() => import("./components/SessionSummary").then((m) => ({ default: m.SessionSummaryPanel })));
-const ProjectSettings = lazy(() => import("./components/ProjectSettings").then((m) => ({ default: m.ProjectSettings })));
-// The sign-in dialog carries xterm; it stays out of the first load like the Panel does.
-const LoginDialog = lazy(() => import("./components/LoginDialog").then((m) => ({ default: m.LoginDialog })));
-const ProvidersSettings = lazy(() => import("./components/ProvidersSettings"));
-const InstanceAuthDialog = lazy(() => import("./components/AuthFlowDialog"));
-const ThemePreview = lazy(() => import("./components/ThemePreview").then((m) => ({ default: m.ThemePreview })));
-const UsagePage = lazy(() => import("./components/Usage").then((m) => ({ default: m.UsagePage })));
-
-// The permission-mode switcher is parked, not removed: changing modes mid-chat
-// is not something we want to offer right now, and hiding it is cheaper to
-// reverse than deleting it. Flip this to bring it back.
-const SHOW_MODE_SWITCHER = false;
+import { useIsDesktop } from "./useMediaQuery";
 
 export function App() {
-  const [scheduleEditor, setScheduleEditor] = useState<{id: string; sessionId: string; text: string; imageIds: string[]; schedule?: ScheduledPrompt} | null>(null);
-  const { copied: transcriptCopied, copy: copyTranscript } = useCopy();
-  // The snapshot a previous page of this tab saved as it went to background
-  // (resume.ts). A mobile browser discards a backgrounded tab and reloads it
-  // on return; hydrating from the cache paints the session as it was left —
-  // right frame one, right scroll position — instead of "Attaching…", and the
-  // socket then fetches only what the page missed. Cleared once consumed, and
-  // if the session turns out to be gone when the list arrives.
-  const [resume, setResume] = useState(() => {
-    try {
-      return loadResume(localStorage.getItem(LAST_SESSION));
-    } catch {
-      return null;
-    }
-  });
-  // The copy the socket-setup effect reads: priming must use what the page
-  // hydrated with, not what later clearing left behind.
-  const resumeRef = useRef(resume);
-  // The socket callbacks below outlive any single render, so they read the
-  // attached session from a ref rather than a captured closure. The ref is
-  // written after commit, never during render, so it can only ever hold a
-  // value the UI actually rendered.
-  const activeRef = useRef<string | null>(resume?.state.sessionId ?? null);
-  const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  const [sessions, setSessions] = useState<SessionMeta[]>([]);
-  const [harnesses, setHarnesses] = useState<HarnessMeta[]>([]);
-  const [defaultCwd, setDefaultCwd] = useState("");
-  const [projects, setProjects] = useState<Project[]>([]);
-  // The user's label definitions, server-owned: every mutation round-trips
-  // and comes back as a broadcast, so paired devices all render the same set.
-  const [labels, setLabels] = useState<Label[]>([]);
-  const [manageLabels, setManageLabels] = useState(false);
-  const [activeId, setActiveId] = useState<string | null>(resume?.state.sessionId ?? null);
-  const [state, setState] = useState<SessionState | null>(resume?.state ?? null);
-  // Read by long-lived callbacks (openPath) that must see the current state
-  // without re-creating themselves on every event.
-  const stateRef = useRef<SessionState | null>(resume?.state ?? null);
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-  // Composer drafts, kept per session up here rather than inside the Composer.
-  // Switching sessions nulls `state`, which unmounts the whole content subtree
-  // (Composer included) and remounts it for the next session — so a draft owned
-  // by the Composer would be destroyed on every switch. Holding it in the
-  // parent, keyed by session id, lets a half-typed message survive the swap and
-  // still be there when you come back. Session scope only: no persistence, and
-  // the map is pruned as sessions go away (see below).
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // Images staged for the next message, per session and for the same reason as
-  // the drafts: switching away and back must not lose what you attached. The
-  // upload starts as soon as a picture is picked, so by send time this is a
-  // list of ids the server already holds.
-  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
-  const [composerRevision, setComposerRevision] = useState(0);
-  // Where each session's transcript was scrolled, kept up here for the same
-  // reason as the drafts: switching sessions unmounts the Transcript, so a
-  // position it owned would be lost every time — you would come back to a
-  // session you were reading half-way up and find yourself at the bottom.
-  // A ref rather than state: the transcript reports every scroll, and nothing
-  // on the page renders from this, so re-rendering the app on each one would
-  // be pure cost. Seeded from the resume cache so the boot restore and the
-  // switch restore are one path. Session scope only, pruned with the drafts.
-  const scrollPositions = useRef<Record<string, { top: number; atBottom: boolean }>>(
-    resume ? { [resume.state.sessionId]: { top: resume.scrollTop, atBottom: resume.atBottom } } : {},
-  );
-  // Sessions the list has taken away. A deleted session's transcript reports
-  // one last position as it unmounts, and that unmount happens after the prune
-  // below has already dropped it — so the id is refused outright rather than
-  // being written straight back in.
-  const goneSessions = useRef<Set<string>>(new Set());
-  const recordScroll = useCallback((id: string, top: number, atBottom: boolean) => {
-    if (goneSessions.current.has(id)) return;
-    scrollPositions.current[id] = { top, atBottom };
-  }, []);
-  const setDraft = useCallback(
-    (id: string, text: string) =>
-      setDrafts((d) => (d[id] === text ? d : { ...d, [id]: text })),
-    [],
-  );
-  const patchAttachment = useCallback((sessionId: string, key: string, patch: Partial<Attachment>) => {
-    setAttachments((all) => {
-      const list = all[sessionId];
-      if (!list?.some((a) => a.key === key)) return all;
-      return { ...all, [sessionId]: list.map((a) => (a.key === key ? { ...a, ...patch } : a)) };
-    });
-  }, []);
-
-  // Picked, dropped, or pasted images and PDFs. Each is uploaded on its own the moment
-  // it arrives: the composer stays usable, and a slow picture on a slow
-  // connection never blocks typing the question that goes with it.
-  // The in-flight upload behind each staged image, so removing one can stop it.
-  const uploadsInFlight = useRef<Map<string, AbortController>>(new Map());
-
-  const attachFiles = useCallback(
-    (files: File[]) => {
-      const sessionId = activeId;
-      if (!sessionId) return;
-      for (const file of files) {
-        if (!isSupportedFile(file)) {
-          toast.error(`${file.name} is not a file omniplex can send`, {
-            description: "PNG, JPEG, GIF and WebP images, and PDFs.",
-          });
-          continue;
-        }
-        const pdf = isPdf(file.type);
-        // Not `crypto.randomUUID`: that exists only in a secure context, and
-        // the origins a phone reaches this server on are not one.
-        const key = uuid();
-        const staged: Attachment = {
-          key,
-          name: file.name || (pdf ? "document.pdf" : "pasted image"),
-          mediaType: file.type,
-          previewUrl: pdf ? "" : URL.createObjectURL(file),
-          status: "uploading",
-        };
-        setAttachments((all) => ({ ...all, [sessionId]: [...(all[sessionId] ?? []), staged] }));
-        // Shrunk before it is sent, not after: a phone camera's 4 MB frame is
-        // more picture than any model looks at, and the upload is the slow
-        // part of attaching it.
-        const abort = new AbortController();
-        uploadsInFlight.current.set(key, abort);
-        (pdf ? Promise.resolve(file) : prepareImage(file))
-          .then((ready) => {
-            if (ready.size > maxBytesFor(ready.type)) {
-              throw new Error(pdf ? "PDFs are limited to 10 MB." : "This image is too large to send.");
-            }
-            return uploadAttachment(sessionId, ready, abort.signal);
-          })
-          .then((up) => patchAttachment(sessionId, key, { status: "ready", id: up.id, size: up.size }))
-          .catch((e: Error) => {
-            // An abort means the picture was taken back; there is nothing left
-            // to report it to.
-            if (e.name !== "AbortError") patchAttachment(sessionId, key, { status: "error", error: e.message });
-          })
-          .finally(() => uploadsInFlight.current.delete(key));
-      }
-    },
-    [activeId, patchAttachment],
-  );
-
-  const removeAttachment = useCallback((sessionId: string, key: string) => {
-    uploadsInFlight.current.get(key)?.abort();
-    setAttachments((all) => {
-      const list = all[sessionId] ?? [];
-      const going = list.find((a) => a.key === key);
-      if (going) URL.revokeObjectURL(going.previewUrl);
-      return { ...all, [sessionId]: list.filter((a) => a.key !== key) };
-    });
-  }, []);
-
   const isDesktop = useIsDesktop();
-  // Whether the last-session key was set at boot. Read once, before anything
-  // can write it, because it decides what the very first frame shows. Storage
-  // can be denied outright (Safari with cookies blocked), and a throw here
-  // would take the whole mount with it.
-  const [hadLastSession] = useState(() => {
-    try {
-      return localStorage.getItem(LAST_SESSION) !== null;
-    } catch {
-      return false;
-    }
+  const wire = useWire();
+  const { clientRef, state, threads, projects, harnesses, labels } = wire;
+  const screens = useScreens();
+  const panel = usePanel(wire.stateRef);
+  const scroll = useScrollMemory(wire.resume);
+  const nav = useThreadSelection({
+    wire,
+    isDesktop,
+    onLeave: panel.reset,
+    onForget: scroll.forget,
   });
-  // True until the first session list lands, which is when we know whether
-  // the stored session still exists. Until then a phone must not flash the
-  // sidebar open and then shut it again a moment later.
-  const [sessionsLoaded, setSessionsLoaded] = useState(false);
-  const restoreAttempted = useRef(false);
-  // Open is the desktop default. On a phone the sidebar *is* the landing
-  // screen: with nothing selected there is nothing behind it to look at, so
-  // it starts open unless we are about to restore straight into a session.
-  const [sidebarOpen, setSidebarOpen] = useState(() => isDesktop || !hadLastSession);
-  // Crossing the breakpoint resets it — but only on an actual crossing. On
-  // mount this must leave the initial choice above alone.
-  const wasDesktop = useRef(isDesktop);
-  useEffect(() => {
-    if (wasDesktop.current === isDesktop) return;
-    wasDesktop.current = isDesktop;
-    setSidebarOpen(isDesktop || activeRef.current === null);
-  }, [isDesktop]);
-  const [creating, setCreating] = useState(false);
-  const [projectSettings, setProjectSettings] = useState<Project | "add" | null>(null);
-  const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
-  // The summary panel. Summaries are held per session so flicking between two
-  // sessions does not re-bill a model for an answer we already have; they are
-  // deliberately not persisted, because a stale summary read as current is
-  // worse than no summary at all.
-  const [showSummary, setShowSummary] = useState(false);
-  const [summaries, setSummaries] = useState<Record<string, SessionSummary>>({});
-  // Progress and failure are per session too, not global: a summary started
-  // for one session must not clear the spinner — or show its error — in
-  // another one the user has since switched to.
-  const [summarizing, setSummarizing] = useState<Record<string, boolean>>({});
-  const [summaryErrors, setSummaryErrors] = useState<Record<string, string>>({});
-  const [access, setAccess] = useState<Access | null>(null);
-  const [showAccess, setShowAccess] = useState(false);
-  const [showChanges, setShowChanges] = useState(false);
-  const [panelLoaded, setPanelLoaded] = useState(false);
-  useEffect(() => {
-    if (showChanges) setPanelLoaded(true);
-  }, [showChanges]);
-  // One click takes the diff panel to the full content width; another brings
-  // it back. There is no in-between state on purpose.
-  const [changesExpanded, setChangesExpanded] = useState(false);
-  // The theme sample page: a static mock of the dashboard behind a palette
-  // switcher, reachable at #themes so it needs no router.
-  const [themePreview, setThemePreview] = useState(() => window.location.hash === "#themes");
-  useEffect(() => {
-    const onHash = () => setThemePreview(window.location.hash === "#themes");
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-  // The account-level Usage page: cost history, token history, and the
-  // providers' remaining allowance. A full-page destination, not a session
-  // view — it never needs one attached.
-  const [showUsage, setShowUsage] = useState(false);
-  // Every provider instance's cached usage limits, pushed by the server on
-  // welcome and whenever a live push or refresh changes one.
-  const [quotas, setQuotas] = useState<QuotaStatus[]>([]);
-  // What the panel should put on screen, and a counter that changes on every
-  // request. Without the counter, asking for the same file twice would look
-  // identical to the panel and it would not bring it back into view.
-  const [panelRequest, setPanelRequest] = useState<PanelRequest | null>(null);
+  const { activeId, select } = nav;
+  usePruneScrollMemory(scroll, threads);
+  const store = useComposerDrafts(threads, activeId);
+  const schedule = useScheduleEditor(wire, store);
+  const create = useNewThread({ wire, store, select, openSchedule: schedule.openNew });
+  const commands = useThreadCommands({ wire, activeId, store, openDiff: panel.openDiff });
+  const setThreadUnread = useReadState(wire, activeId);
+  const labelActions = useLabelActions(wire);
+  const projectActions = useProjectActions(wire);
+  const auth = useProviderAuth(wire);
+  const copy = useTranscriptCopy(wire);
 
-  // Opening the diff from a turn's card: show the panel, and put it on the file
-  // that was clicked.
-  const openDiff = useCallback((path?: string) => {
-    setShowChanges(true);
-    setPanelRequest((current) => ({ kind: "diff", path, nonce: (current?.nonce ?? 0) + 1 }));
-  }, []);
-
-  // Opening a path clicked in prose. The panel routes it: the diff surface
-  // when the session changed it, the file surface otherwise. An absolute path
-  // under the checkout is relativised first; the server only serves the
-  // workspace.
-  // Opening the jobs surface from the strip or a spawn card in the transcript.
-  const panelCommand = useCallback(
-    (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
-    [],
-  );
-  const openJobs = useCallback(() => {
-    setShowChanges(true);
-    setPanelRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
-  }, []);
-
-  const openPath = useCallback((path: string, line?: number) => {
-    const cwd = stateRef.current?.cwd ?? "";
-    let rel = path;
-    if (cwd && (rel === cwd || rel.startsWith(cwd + "/"))) rel = rel.slice(cwd.length).replace(/^\//, "");
-    if (rel === "") return;
-    setShowChanges(true);
-    setPanelRequest((current) => ({ kind: "path", path: rel, line, nonce: (current?.nonce ?? 0) + 1 }));
-  }, []);
-
-  const clientRef = useRef<Client | null>(null);
-  const forcePromptedRef = useRef<string | null>(null);
-  // The floating overlay (composer plus any permission/elicitation prompt
-  // stacked above it) and the column it floats over. We measure the first and
-  // publish its height on the second, so the transcript can reserve exactly
-  // that much room beneath its content.
-  const chatLayoutRef = useRef<HTMLDivElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    activeRef.current = activeId;
-  }, [activeId]);
-
-  useEffect(() => {
-    const client = new Client(wsURL(), {
-      onStatus: setStatus,
-      onSessions: (list) => {
-        setSessions(list);
-        setSessionsLoaded(true);
-      },
-      onHarnesses: (h, cwd) => {
-        setHarnesses(h);
-        // A harness-only push carries no cwd; keep the one the welcome frame
-        // established rather than blanking it.
-        if (cwd) setDefaultCwd(cwd);
-      },
-      onComposerItemsChanged: (id) => {
-        if (id === activeRef.current) setComposerRevision((revision) => revision + 1);
-      },
-      onProjects: setProjects,
-      onLabels: setLabels,
-      onQuotas: setQuotas,
-      // State only lands for the session currently attached; the client
-      // discards anything else.
-      onState: (id, s) => {
-        if (id === activeRef.current) setState(s);
-      },
-      onAccess: setAccess,
-    });
-    clientRef.current = client;
-    // A resumed page attaches where it left off: the client carries the
-    // cached state and cursor into its first attach, and the server answers
-    // with just the gap.
-    if (resumeRef.current) client.prime(resumeRef.current.state);
-    client.connect();
-    return () => client.close();
-  }, []);
-
-  // User-scope preferences are read once the socket is up, and again after a
-  // reconnect only if we never got them; they change far less often than state.
-  useEffect(() => {
-    if (status !== "online" || userConfig) return;
-    clientRef.current?.command("get_user_config", {}).then(res => setUserConfig(res.userConfig)).catch(() => {});
-  }, [status, userConfig]);
-
-  // Restore the last session once the list arrives. This runs once: after it,
-  // "no session selected" is a state the user chose, not one we have yet to
-  // resolve, and re-opening the sidebar under them would be wrong.
-  useEffect(() => {
-    if (!sessionsLoaded || restoreAttempted.current) return;
-    restoreAttempted.current = true;
-    if (activeId) {
-      // Hydrated from the resume cache before the list could say whether the
-      // session still exists. It usually does; when it doesn't — deleted or
-      // closed from elsewhere while the page was dead — let go the same way
-      // a live delete would. The seenActive effect below can't: it only acts
-      // on sessions it saw in a list first.
-      if (sessions.some((s) => s.id === activeId && s.phase !== "closed")) return;
-      // Including the position the cache seeded: the prune below only drops
-      // sessions it saw in a list, and this one never made it into one.
-      delete scrollPositions.current[activeId];
-      goneSessions.current.add(activeId);
-      setActiveId(null);
-      setState(null);
-      setResume(null);
-      clientRef.current?.detach();
-      if (!isDesktop) setSidebarOpen(true);
-      return;
-    }
-    const last = localStorage.getItem(LAST_SESSION);
-    const pick = sessions.find((s) => s.id === last && s.phase !== "closed") ?? null;
-    if (pick) select(pick.id);
-    // Nothing to restore into, so the phone lands on the sidebar after all.
-    else if (!isDesktop) setSidebarOpen(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionsLoaded, sessions]);
-  // Until the first list lands we do not know whether there is anything to
-  // show, so the content column holds the space rather than announcing "all
-  // caught up" to someone with six sessions on a slow connection.
-  const restoring = !sessionsLoaded;
-
-  const select = useCallback(
-    (id: string) => {
-      setActiveId(id);
-      activeRef.current = id;
-      // The panel belongs to a checkout, so it must not survive a move to a
-      // different one.
-      setShowChanges(false);
-      setChangesExpanded(false);
-      // A file asked for in one session means nothing in the next, and another
-      // session holding the same path would otherwise open it unasked.
-      setPanelRequest(null);
-      setState(null);
-      localStorage.setItem(LAST_SESSION, id);
-      clientRef.current?.attach(id);
-      if (!isDesktop) setSidebarOpen(false);
-    },
-    [isDesktop],
-  );
-
-  // The sidebar stays as it was: on a phone the new-session screen covers it
-  // completely, so closing it would only mean cancelling drops you onto an
-  // empty screen instead of back where you started.
-  const startNew = useCallback(() => setCreating(true), []);
-
-  const create = useCallback(
-    async (input: NewSessionInput) => {
-      const res = await clientRef.current!.command("create_session", input);
-      setCreating(false);
-      select(res.sessionId);
-    },
-    [select],
-  );
-
-  const listWorkspaces = useCallback(async (projectId: string) => {
-    const res = await clientRef.current!.command("list_workspaces", { projectId });
-    return (res.workspaces ?? []) as Workspace[];
-  }, []);
-  // Its own request: `gh` can take seconds, and nothing that shapes a choice
-  // should be waiting behind it.
-  const listIssues = useCallback(async (projectId: string) => {
-    const res = await clientRef.current!.command("list_issues", { projectId });
-    return { issues: res.issues ?? [], issuesError: res.issuesError ?? "" };
-  }, []);
-  const saveUserConfig = useCallback(async (cfg: UserConfig) => { const res=await clientRef.current!.command("save_user_config",{config:cfg}); setUserConfig(res.userConfig); },[]);
-
-  // Summarising starts a harness against a small model, so it can take tens of
-  // seconds. The result is keyed by session id: the panel can be closed and
-  // reopened, or another session visited and come back to, without paying for
-  // the same answer twice.
-  const summarize = useCallback(async (id: string) => {
-    setSummarizing((prev) => ({ ...prev, [id]: true }));
-    setSummaryErrors((prev) => { const { [id]: _gone, ...rest } = prev; return rest; });
-    try {
-      const res = await clientRef.current!.command("summarize_session", { sessionId: id });
-      setSummaries((prev) => ({ ...prev, [id]: res.summary as SessionSummary }));
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setSummaryErrors((prev) => ({ ...prev, [id]: message }));
-    } finally {
-      setSummarizing((prev) => { const { [id]: _gone, ...rest } = prev; return rest; });
-    }
-  }, []);
-
-  // The transcript asking for the page above its window. Fire-and-forget: the
-  // client dedups concurrent asks and publishes the merged state through the
-  // same onState path every other update takes.
-  const loadOlderItems = useCallback(() => {
-    void clientRef.current?.loadOlder();
-  }, []);
-
-  // Copying wants the whole timeline, and a windowed state only holds the
-  // tail — so pull the rest in first. What arrives stays loaded, which is
-  // exactly what a reader who just copied everything would expect. A failed
-  // fetch aborts the copy loudly: a truncated transcript that says "Copied"
-  // is a lie pasted somewhere the truncation won't be noticed.
-  const copyFullTranscript = useCallback(async () => {
-    let s = stateRef.current;
-    if (!s) return;
-    if ((s.itemsBefore ?? 0) > 0) {
-      const full = await clientRef.current?.loadAll();
-      if (!full) {
-        toast.error("Could not load the full transcript to copy");
-        return;
-      }
-      s = full;
-    }
-    await copyTranscript(transcriptMarkdown(s.items, s.turns));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [copyTranscript]);
-
-  // Opening the panel summarises only if there is nothing to show yet. Asking
-  // again is a button, not a side effect of looking.
-  const openSummary = useCallback(() => {
-    if (!activeId) return;
-    setShowSummary(true);
-    if (!summaries[activeId]) void summarize(activeId);
-  }, [activeId, summaries, summarize]);
-
-  // A saved prompt invalidates every summary: they were all written to
-  // different instructions and would otherwise sit there looking current.
-  const saveSummaryPrompt = useCallback(async (summaryPrompt: string) => {
-    // Refusing loudly rather than returning: a silent no-op here would save
-    // nothing, re-run against the old prompt, and look like it had worked.
-    if (!userConfig) throw new Error("settings are still loading — try again in a moment");
-    await saveUserConfig({ ...userConfig, summaryPrompt });
-    setSummaries({});
-  }, [userConfig, saveUserConfig]);
-
-  // Read-on-open, reported to the server so paired devices agree. The report
-  // carries the seq this page has actually rendered, not the server's head —
-  // events landing mid-report stay unread. Gated on the phase: while a turn
-  // streams, every event bumps seq, and re-reporting each one would chatter
-  // on exactly the connections we care about. The turn finishing flips the
-  // phase and sends one report for the whole turn.
-  const viewedReported = useRef<Record<string, number>>({});
-  // One chain of read-state commands per session. The server runs each
-  // connection's commands in independent goroutines, so two frames sent
-  // back-to-back can execute in either order — and "mark unread" losing to an
-  // in-flight read-on-open report would silently undo the user's click.
-  // Sending each command only after the previous one's ack pins the order.
-  const readStateQueue = useRef<Record<string, Promise<unknown>>>({});
-  const sendReadState = useCallback((sessionId: string, command: string, args: object) => {
-    const next = (readStateQueue.current[sessionId] ?? Promise.resolve()).then(
-      () => clientRef.current?.command(command, args),
-    );
-    // Swallowed here so the chain survives a failure; callers hang their own
-    // error handling off the returned promise.
-    readStateQueue.current[sessionId] = next.catch(() => {});
-    return next;
-  }, []);
-  useEffect(() => {
-    if (!state || state.sessionId !== activeId) return;
-    if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning") return;
-    if (state.seq <= (viewedReported.current[state.sessionId] ?? 0)) return;
-    viewedReported.current[state.sessionId] = state.seq;
-    sendReadState(state.sessionId, "mark_session_viewed", {
-      sessionId: state.sessionId,
-      seq: state.seq,
-    }).catch(() => {
-      // Nothing to tell the user: the dot clears next time this succeeds.
-    });
-  }, [activeId, state, sendReadState]);
-
-  // The explicit flag back the other way, from the row's context menu.
-  // Fire-and-forget like the label mutations: the sessions broadcast is the
-  // authoritative answer.
-  const setSessionUnread = useCallback((sessionId: string, unread: boolean) => {
-    if (unread) {
-      // Forget what this page reported, or the effect above would treat the
-      // current head as already-sent and never re-mark it read.
-      delete viewedReported.current[sessionId];
-      sendReadState(sessionId, "mark_session_unread", { sessionId }).catch((e) => {
-        toast.error("Could not mark that session unread", { description: e.message });
-      });
-      return;
-    }
-    const head = sessions.find((s) => s.id === sessionId)?.headSeq ?? 0;
-    sendReadState(sessionId, "mark_session_viewed", { sessionId, seq: head }).catch((e) => {
-      toast.error("Could not mark that session read", { description: e.message });
-    });
-  }, [sessions, sendReadState]);
-
-  // Label mutations fire and forget: the authoritative answer arrives as a
-  // labels (or sessions) broadcast, the same way it does for a paired device,
-  // so there is no local state to reconcile — only failures to report.
-  const setSessionLabel = useCallback((sessionId: string, labelId: string) => {
-    clientRef.current?.command("set_session_label", { sessionId, labelId }).catch((e) => {
-      toast.error("Could not label that session", { description: e.message });
-    });
-  }, []);
-  const createLabel = useCallback((name: string, color: string) => {
-    clientRef.current?.command("create_label", { name, color }).catch((e) => {
-      toast.error("Could not create that label", { description: e.message });
-    });
-  }, []);
-  const saveLabel = useCallback((label: Label) => {
-    // Apply locally before the round-trip: a second edit made before the
-    // broadcast lands (recolour, then flip the collapse switch) must derive
-    // from this save, not from the stale snapshot, or the later save silently
-    // reverts the earlier field. The broadcast then settles the true state.
-    setLabels((ls) =>
-      ls
-        .map((l) => (l.id === label.id ? label : l))
-        .sort((a, b) => a.position - b.position || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
-    );
-    clientRef.current
-      ?.command("save_label", {
-        labelId: label.id,
-        name: label.name,
-        color: label.color,
-        position: label.position,
-      })
-      .catch((e) => {
-        toast.error("Could not save that label", { description: e.message });
-      });
-  }, []);
-  const deleteLabel = useCallback((id: string) => {
-    clientRef.current?.command("delete_label", { labelId: id }).catch((e) => {
-      toast.error("Could not delete that label", { description: e.message });
-    });
-  }, []);
-  const openLabelManager = useCallback(() => setManageLabels(true), []);
-
-  const addProject = useCallback(async (root: string) => { const res=await clientRef.current!.command("add_project",{root}); setProjects(p=>[res.project,...p.filter(x=>x.id!==res.project.id)]); },[]);
-  const saveProject = useCallback(async (projectId:string,config:ProjectConfig) => { const res=await clientRef.current!.command("save_project",{projectId,config}); setProjects(p=>p.map(x=>x.id===projectId?res.project:x)); },[]);
-  // Forgetting a project touches nothing on disk, so the only thing to undo
-  // locally is the list. The server broadcasts the new one to every other
-  // device anyway; dropping it here just means this one does not wait for it.
-  const deleteProject = useCallback(async (projectId: string) => {
-    await clientRef.current!.command("delete_project", { projectId });
-    setProjects((p) => p.filter((x) => x.id !== projectId));
-  }, []);
-
-  // Git is the source of truth for what a session changed: it catches the
-  // formatter and the codemod as well as the edits we parsed out of tool calls.
-  const loadChanges = useCallback(async (comparison: import("./protocol").DiffComparison) => {
-    const res = await clientRef.current!.command("session_changes", { sessionId: activeId, comparison });
-    return res.changes as SessionChanges;
-  }, [activeId]);
-
-  const loadFileDiff = useCallback(
-    async (path: string, changes: SessionChanges) => {
-      const res = await clientRef.current!.command("session_file_diff", {
-        sessionId: activeId,
-        path,
-        comparison: changes.mode,
-        base: changes.base,
-        head: changes.head,
-      });
-      return res.diff as FileDiff;
-    },
-    [activeId],
-  );
-
-  // The real filesystem, for the files and file surfaces: git is the diff
-  // surface, and a file the session never touched is exactly what it can't show.
-  const loadFileTree = useCallback(
-    async (includeIgnored: boolean) => {
-      const res = await clientRef.current!.command("session_file_tree", { sessionId: activeId, includeIgnored });
-      return res.tree as FileTree;
-    },
-    [activeId],
-  );
-
-  const loadFile = useCallback(
-    async (path: string) => {
-      const res = await clientRef.current!.command("session_read_file", { sessionId: activeId, path });
-      return res.file as FileContent;
-    },
-    [activeId],
-  );
-
-  const send = useCallback(
-    (text: string) => {
-      if (!activeId) return;
-      const staged = attachments[activeId] ?? [];
-      const imageIds = staged.filter((a) => a.status === "ready").map((a) => a.id!);
-      // Left out entirely when there are none: the overwhelming majority of
-      // prompts carry no picture, and the frame is persisted for retry.
-      const args = { sessionId: activeId, text, ...(imageIds.length ? { imageIds } : {}) };
-      clientRef.current?.command("prompt", args).catch((e) => {
-        toast.error("Could not send that prompt", { description: e.message });
-      });
-      // Cleared optimistically, like the draft: the message is on its way, and
-      // the transcript is about to show the same pictures back from the server.
-      for (const a of staged) URL.revokeObjectURL(a.previewUrl);
-      setAttachments((all) => (all[activeId]?.length ? { ...all, [activeId]: [] } : all));
-    },
-    [activeId, attachments],
-  );
-
-  async function saveSchedule(input: ScheduleInput) {
-    const editor = scheduleEditor;
-    if (!editor || !clientRef.current) throw new Error("Reconnect before scheduling");
-    await clientRef.current.command("schedule_prompt", { sessionId: editor.sessionId, id: editor.schedule?.id ?? editor.id, revision: editor.schedule?.revision ?? 0, ...input, imageIds: editor.imageIds });
-    if (!editor.schedule) {
-      // Clear only the draft and images captured when this sheet opened.
-      setDrafts(all => all[editor.sessionId] === editor.text ? {...all, [editor.sessionId]: ""} : all);
-      setAttachments(all => {
-        const staged = all[editor.sessionId] ?? [];
-        for (const a of staged) if (a.id && editor.imageIds.includes(a.id)) URL.revokeObjectURL(a.previewUrl);
-        return {...all, [editor.sessionId]: staged.filter(a => !a.id || !editor.imageIds.includes(a.id))};
-      });
-    }
-  }
-
-  const loadComposerItems = useCallback(async (): Promise<ComposerItem[]> => {
-    if (!activeId) return [];
-    const result = await clientRef.current!.command("list_composer_items", { sessionId: activeId });
-    return result.items ?? [];
-  }, [activeId, composerRevision]);
-
-  const runComposerAction = useCallback(
-    async (action: string, args: string, invocation: string) => {
-      if (!activeId) return;
-      try {
-        await clientRef.current!.command("run_composer_action", {
-          sessionId: activeId,
-          action,
-          args,
-          invocation,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        toast.error("Could not run that command", { description: message });
-        throw error;
-      }
-    },
-    [activeId],
-  );
-
-  const runClientComposerAction = useCallback(
-    (action: string) => {
-      if (action === "diff") {
-        setShowChanges(true);
-        setPanelRequest((current) => ({
-          kind: "diff",
-          nonce: (current?.nonce ?? 0) + 1,
-        }));
-        return;
-      }
-      if (action === "status" && state) {
-        const used = state.usage?.contextUsed;
-        const parts = [
-          state.model || "Default model",
-          state.mode || "Default approvals",
-          used !== undefined ? `${used.toLocaleString()} context tokens` : "Token usage unavailable",
-        ];
-        toast.info("Session status", { description: parts.join(" · ") });
-      }
-    },
-    [state],
-  );
-
-  const cancel = useCallback(() => {
-    if (!activeId) return;
-    // Stop drops whatever was queued behind the turn; the text comes back to
-    // the composer rather than vanishing, in front of anything already typed.
-    const queued = state?.queuedPrompts ?? [];
-    if (queued.length > 0) {
-      const restored = queued.map((q) => q.prompt).filter(Boolean);
-      const current = drafts[activeId] ?? "";
-      setDraft(activeId, [...restored, current].filter(Boolean).join("\n\n"));
-    }
-    clientRef.current?.command("cancel", { sessionId: activeId }).catch((e) => {
-      const message = e instanceof Error ? e.message : String(e);
-      toast.error("Could not stop the turn", { description: message });
-    });
-  }, [activeId, drafts, setDraft, state]);
-
-  const dequeue = useCallback(
-    (queueId: string) => {
-      if (!activeId) return;
-      const text = state?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
-      clientRef.current?.command("dequeue_prompt", { sessionId: activeId, queueId }).then(
-        () => {
-          if (!text) return;
-          // Against the draft as it is when the reply lands, not as it was
-          // when the request left: on a slow link that is seconds apart.
-          setDrafts((d) => ({ ...d, [activeId]: [text, d[activeId] ?? ""].filter(Boolean).join("\n\n") }));
-        },
-        (e) => toast.error("Could not remove that prompt", { description: e.message }),
-      );
-    },
-    [activeId, state],
-  );
-
-  const resolvePermission = useCallback(
-    (requestId: string, outcome: string, optionId: string) => {
-      if (activeId) {
-        clientRef.current?.command("resolve_permission", {
-          sessionId: activeId,
-          requestId,
-          outcome,
-          optionId,
-        });
-      }
-    },
-    [activeId],
-  );
-
-  const resolveElicitation = useCallback(
-    (requestId: string, action: string, value: unknown) => {
-      if (activeId) {
-        clientRef.current?.command("resolve_elicitation", {
-          sessionId: activeId,
-          requestId,
-          action,
-          value,
-        });
-      }
-    },
-    [activeId],
-  );
-
-  // The returned promise settles when the server has *accepted* the delete,
-  // not when it is done — the session is gone when it leaves the list, which
-  // is what the sidebar waits on. Rejecting it is the sidebar's cue to stop
-  // waiting, so the error is re-thrown after it has been reported.
-  const remove = useCallback(
-    (id: string, removeWorktree: boolean) => {
-      if (id !== activeRef.current) select(id);
-      const client = clientRef.current;
-      if (!client) {
-        toast.error("Could not delete that session", { description: "Not connected." });
-        return Promise.reject(new Error("not connected"));
-      }
-      return client.command("delete_session", { sessionId: id, removeWorktree }).catch((e) => {
-        toast.error("Could not delete that session", { description: e.message });
-        throw e;
-      });
-    },
-    [select],
-  );
-
-  const forceDelete = useCallback((id: string) => {
-    // Only a worktree omniplex provisioned is omniplex's to destroy, so only that case may
-    // promise it. The old copy promised it to every session and kept the
-    // promise for one of them.
-    const removes = sessions.find((s) => s.id === id)?.workspaceMode === "managed";
-    const accepted = window.confirm(
-      removes
-        ? "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script, removes the recorded Git worktree, and permanently deletes the session."
-        : "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script and permanently deletes the session. The checkout is left on disk — omniplex did not create it.",
-    );
-    if (!accepted) return;
-    clientRef.current?.command("force_delete_session", { sessionId: id }).catch((e) => toast.error("Force delete failed", { description: e.message }));
-  }, [sessions]);
-
-  // Ask the server to re-probe, for when the user has just installed something.
-  // The instance whose sign-in is open, if any. Closing it rechecks, so the
-  // login shows up as "ready" by itself.
-  const [loginInstance, setLoginInstance] = useState<string | null>(null);
-  // The providers screen, and the structured sign-in dialog for one instance.
-  const [showProviders, setShowProviders] = useState(false);
-  const [authInstance, setAuthInstance] = useState<string | null>(null);
-
-  const recheck = useCallback(() => {
-    // Returned so a caller with a spinner can hold it up until the answer.
-    return clientRef.current?.command("recheck_harnesses", {}).then((res) => {
-      if (res?.harnesses) setHarnesses(res.harnesses);
-    });
-  }, []);
-
-  // What the providers surface needs from the client: commands, and the
-  // auth-flow event stream (which deliberately bypasses the state reducer —
-  // flows are ephemeral and their frames can carry nothing persistable).
-  const authWires = useMemo(
-    () => ({
-      command: (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
-      subscribe: (flowId: string, listener: (ev: AuthFlowEvent) => void) =>
-        clientRef.current?.onAuthFlow(flowId, listener) ?? (() => {}),
-    }),
-    [],
-  );
-
-  const meta = useMemo(() => sessions.find((s) => s.id === activeId), [sessions, activeId]);
-  const activeProviderInstance = harnesses
-    .flatMap((h) => h.instances ?? [])
-    .find((i) => i.id === (meta?.providerInstance || meta?.harness));
-
-  // Every "sign in" affordance routes through here: a flows-capable instance
-  // gets the structured dialog, anything else the embedded login terminal.
-  const openInstanceAuth = useCallback(
-    (instanceId: string) => {
-      const inst = harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === instanceId);
-      if (inst?.auth === "flows") setAuthInstance(instanceId);
-      else setLoginInstance(instanceId);
-    },
-    [harnesses],
-  );
-
-  // The empty transcript's list of skills to reach for, and the composer it
-  // writes into. Both live up here for the same reason the drafts do: the
-  // Transcript and the Composer are siblings remounted per session, and this
-  // is the one place that can see the catalogue, the project, and the input at
-  // once.
-  const composerRef = useRef<ComposerHandle>(null);
-  const [recents, setRecents] = useState<{ items: ComposerItem[]; seeded: boolean }>({
-    items: [],
-    seeded: false,
+  const meta = useMemo(() => threads.find((s) => s.id === activeId), [threads, activeId]);
+  const harness = useThreadHarness(wire, activeId, meta);
+  const recents = useRecentSkills({
+    activeId,
+    projectId: meta?.projectId,
+    state,
+    store,
+    isDesktop,
+    loadComposerItems: commands.loadComposerItems,
   });
-  const projectId = meta?.projectId;
-  // Only an empty transcript asks for this, so only an empty transcript pays
-  // for the catalogue fetch. A newly provisioned session publishes empty
-  // snapshots before its harness is ready; asking during those snapshots can
-  // produce an empty catalogue that would otherwise stick until a session
-  // switch. Wait for the harness-backed idle/turn phase instead.
-  const transcriptEmpty =
-    !!state && state.items.length === 0 && (state.phase === "idle" || state.phase === "turn");
-  useEffect(() => {
-    if (!activeId || !transcriptEmpty) {
-      setRecents((prev) => (prev.items.length === 0 ? prev : { items: [], seeded: false }));
-      return;
-    }
-    let cancelled = false;
-    loadComposerItems()
-      .then((catalogue) => {
-        if (cancelled) return;
-        const history = loadRecentSkills(projectId);
-        const items = resolveRecentSkills(history, catalogue);
-        // Seeded means none of what is being shown was actually remembered —
-        // a first run, or a project whose history no longer resolves.
-        const seeded = !items.some((item) => history.includes(item.insertText));
-        setRecents({ items, seeded });
-      })
-      .catch(() => {
-        // No catalogue, no suggestions. The empty state still reads fine.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeId, transcriptEmpty, loadComposerItems, projectId]);
+  const deletion = useThreadDeletion({ wire, activeId, select });
 
-  // Clicking a suggestion writes the token and a space into the draft, and
-  // nothing else: what happens next — an argument, or straight to submit — is
-  // the user's to decide. Desktop takes the cursor with it, because the next
-  // keystroke almost always belongs in the input. A phone deliberately does
-  // not: focusing raises the keyboard over the very button just tapped, and
-  // submit is one tap away without it.
-  const pickRecent = useCallback(
-    (item: ComposerItem) => {
-      if (!activeId) return;
-      const current = drafts[activeId] ?? "";
-      const prefix = current && !/\s$/.test(current) ? `${current} ` : current;
-      const next = `${prefix}${item.insertText} `;
-      setDraft(activeId, next);
-      if (isDesktop) composerRef.current?.focusEnd(next.length);
-    },
-    [activeId, drafts, isDesktop, setDraft],
-  );
+  const pr = useActivePR(wire, activeId, meta);
+  useThreadTitle(activeId, state, meta);
 
-  const noteSkillUsed = useCallback(
-    (insertText: string) => recordRecentSkill(projectId, insertText),
-    [projectId],
-  );
-
-  // Whether the work in this session has landed, and the confirmation the
-  // transcript's prompt opens. The dialog and its guards are the sidebar's
-  // own, so "finish with this session" and the row's X are the same action
-  // reached from two places; only the sidebar's row animation is not shared,
-  // because the transcript has no row.
-  const deleteFlow = useDeleteSession({
-    sessions,
-    onDelete: remove,
-    projectRoot: (id) => projects.find((p) => p.id === id)?.root,
-  });
-  const fetchPR = useCallback(async (sessionId: string): Promise<PullRequest | null> => {
-    const res = await clientRef.current!.command("session_pr", { sessionId });
-    return (res.pr ?? null) as PullRequest | null;
-  }, []);
-  // The server checks this too and is the authority; asking here only spares
-  // a subprocess for the sessions that plainly have nothing to report.
-  const prEligible =
-    (meta?.workspaceMode === "managed" || meta?.workspaceMode === "borrowed") && !!meta?.branch;
-  const pr = useSessionPR(activeId, prEligible, fetchPR);
-
-  // The permission modes for the attached session's harness. Everything the UI
-  // knows about them came from the adapter via the server; ids stay opaque.
-  const modeOptions = useMemo(
-    () => harnesses.find((h) => h.id === state?.harness)?.permissionModes ?? [],
-    [harnesses, state?.harness],
-  );
-  // An empty recorded mode means the harness default; render it as such.
-  const currentModeId =
-    (modeOptions.some((m) => m.id === state?.mode) ? state?.mode : undefined) ??
-    modeOptions.find((m) => m.default)?.id ??
-    modeOptions[0]?.id ??
-    "";
-
-  const switchMode = useCallback(
-    (modeId: string) => {
-      if (!activeId) return;
-      // Every mode switches the same way: the picked value is the decision.
-      clientRef.current?.command("set_mode", { sessionId: activeId, mode: modeId }).catch((e) => {
-        toast.error("Could not switch permission mode", { description: e.message });
-      });
-    },
-    [activeId],
-  );
   const accentOf = useCallback(
     (id: string) => harnesses.find((h) => h.id === id)?.accent,
     [harnesses],
   );
+  const projectFolders = (id?: string) =>
+    projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [];
 
-  const switchModel = useCallback(
-    (modelId: string) => {
-      if (!activeId) return;
-      clientRef.current?.command("set_model", { sessionId: activeId, model: modelId }).catch((e) => {
-        toast.error("Could not switch model", { description: e.message });
-      });
-    },
-    [activeId],
-  );
-  const switchEffort = useCallback(
-    (effort: string) => {
-      if (!activeId) return;
-      clientRef.current?.command("set_effort", { sessionId: activeId, effort }).catch((e) => {
-        toast.error("Could not change reasoning effort", { description: e.message });
-      });
-    },
-    [activeId],
-  );
-  // Re-sends a failed turn's prompt, images and all. Only ever on an explicit
-  // press: nothing finishing — a sign-in, an account switch — resends by itself.
-  const retryTurn = useCallback(
-    (turn: Turn) => {
-      if (!activeId) return;
-      clientRef.current
-        ?.command("prompt", {
-          sessionId: activeId,
-          text: turn.prompt,
-          ...(turn.images?.length ? { imageIds: turn.images.map((i) => i.id) } : {}),
-        })
-        .catch((e) => toast.error("Could not send", { description: e.message }));
-    },
-    [activeId],
-  );
-  // The session's harness's other accounts that could take the next turn: the
-  // way out of a usage limit.
-  const activeInstanceId = activeProviderInstance?.id;
-  const switchTargets = useMemo(
-    () =>
-      (harnesses.find((h) => h.id === state?.harness)?.instances ?? [])
-        .filter((i) => i.enabled !== false && i.availability?.state === "ready" && i.id !== activeInstanceId)
-        .map((i) => ({ id: i.id, name: i.displayName })),
-    [harnesses, state?.harness, activeInstanceId],
-  );
-  // Moves the session, conversation and all, to another account of its
-  // harness. From the model picker it asks first — a picker row is an easy
-  // thing to tap by accident — and may bring a model along; from the limit
-  // card, where the button says exactly what it does, it goes straight on to
-  // retry the prompt that hit the limit.
-  const switchAccount = useCallback(
-    async (instance: string, opts: { model?: string; retry?: Turn; confirm?: boolean } = {}): Promise<boolean> => {
-      if (!activeId || !clientRef.current) return false;
-      const name =
-        harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === instance)?.displayName ?? instance;
-      if (
-        opts.confirm &&
-        !window.confirm(`Move this session to ${name}?\n\nThe conversation comes with it; the next turn runs on ${name}.`)
-      ) {
-        return false;
-      }
-      try {
-        await clientRef.current.command("switch_account", { sessionId: activeId, instance });
-      } catch (e) {
-        toast.error("Could not switch account", { description: (e as Error).message });
-        return false;
-      }
-      if (opts.model && opts.model !== state?.model) switchModel(opts.model);
-      if (opts.retry) retryTurn(opts.retry);
-      return true;
-    },
-    [activeId, harnesses, state?.model, switchModel, retryTurn],
-  );
-  const pending = state?.pendingPermissions?.[0];
-  const elicitation = state?.pendingElicitations?.[0];
-  // The tab is named after whatever is attached, so a phone with several
-  // sessions open in several tabs can tell them apart without switching to
-  // each one.
-  // The list entry, not just the attached state: switching sessions drops
-  // `state` until the snapshot lands, and on a slow connection that would
-  // leave every tab called "Omniplex" for exactly as long as it takes to
-  // reconnect — which is when telling them apart matters most.
-  useDocumentTitle(
-    activeId
-      ? { title: state?.title ?? meta?.title, needsAttention: Boolean(pending || elicitation) }
-      : null,
-  );
-  const activeProject = projects.find((p) => p.id === meta?.projectId);
-  // Preparing is not closed: the worktree is still being cut, but the user can
-  // already write the first message — only sending waits. Cleaning is different:
-  // the workspace is going away, so there is nothing left to write to.
-  const workspacePreparing = state ? ["creating","provisioning"].includes(state.phase) : false;
-  const workspaceCleaning = state?.phase === "cleaning";
-  const workspaceBusy = workspacePreparing || workspaceCleaning;
-  const workspaceFailed = state ? ["provision_failed","cleanup_failed"].includes(state.phase) : false;
-
-  useEffect(() => {
-    if (!activeId || state?.phase !== "cleanup_failed" || !state.workspace.deleteAfterCleanup) return;
-    const key = `${activeId}:${state.seq}`;
-    if (forcePromptedRef.current === key) return;
-    forcePromptedRef.current = key;
-    forceDelete(activeId);
-  }, [activeId, state, forceDelete]);
-
-  // The attached session went away (deleted elsewhere, or torn down here).
-  //
-  // "Absent from the list" only means gone if it was ever in the list: a
-  // session we just created is attached before the broadcast carrying it
-  // arrives, and treating that gap as a disappearance would detach the
-  // session the user is watching being born. So it has to have been seen
-  // first. Waiting for `state` instead would be the wrong test — deleting a
-  // row that is not the open one selects it first, which clears state, so a
-  // delete landing before the first snapshot would leave the app attached to
-  // nothing and stuck on "Attaching…" forever.
-  //
-  // On a phone this also leaves nothing behind the sidebar, so it comes back.
-  const seenActive = useRef<string | null>(null);
-  useEffect(() => {
-    if (!activeId) return;
-    if (sessions.some((s) => s.id === activeId)) {
-      seenActive.current = activeId;
-      return;
-    }
-    if (seenActive.current !== activeId) return;
-    seenActive.current = null;
-    setActiveId(null); setState(null); clientRef.current?.detach();
-    if (!isDesktop) setSidebarOpen(true);
-  }, [sessions, activeId, isDesktop]);
-
-  // Drop drafts for sessions that have left the list, so a deleted session does
-  // not leave its text behind for the life of the tab. "Absent from the list"
-  // only means gone if the session was ever *in* the list: a freshly created
-  // session is attached — and can be typed into — before the broadcast listing
-  // it arrives, and treating that gap as a disappearance would prune its draft.
-  // Same reasoning, and the same guard, as `seenActive` above.
-  const seenSessions = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    for (const s of sessions) seenSessions.current.add(s.id);
-    // The scroll positions go the same way, and for the same reason: a
-    // deleted session's offset means nothing, and a new id reusing it would
-    // be handed a stranger's place in the transcript.
-    for (const s of sessions) goneSessions.current.delete(s.id);
-    for (const id of Object.keys(scrollPositions.current)) {
-      if (sessions.some((s) => s.id === id) || !seenSessions.current.has(id)) continue;
-      delete scrollPositions.current[id];
-      goneSessions.current.add(id);
-    }
-    setDrafts((d) => {
-      const live = new Set(sessions.map((s) => s.id));
-      const next: Record<string, string> = {};
-      let changed = false;
-      for (const [id, text] of Object.entries(d)) {
-        if (live.has(id) || !seenSessions.current.has(id)) next[id] = text;
-        else changed = true;
-      }
-      return changed ? next : d;
-    });
-    // Staged images go the same way, releasing their preview URLs as they do:
-    // a deleted session must not leak blobs for the life of the tab.
-    setAttachments((all) => {
-      const live = new Set(sessions.map((s) => s.id));
-      const next: Record<string, Attachment[]> = {};
-      let changed = false;
-      for (const [id, list] of Object.entries(all)) {
-        if (live.has(id) || !seenSessions.current.has(id)) next[id] = list;
-        else {
-          for (const a of list) URL.revokeObjectURL(a.previewUrl);
-          changed = true;
-        }
-      }
-      return changed ? next : all;
-    });
-  }, [sessions]);
-
-  // Nothing measures the composer on its own, so a fixed padding could only
-  // ever guess at its height — and it grows (a tall draft, a permission prompt
-  // appearing above it) well past any guess. A ResizeObserver on the whole
-  // overlay keeps `--composer-h` exactly right, and the transcript reserves
-  // `that + headroom` below its tail. Grow the overlay and the content above it
-  // visibly rises: it reads as the composer pushing the transcript up, even
-  // though it is floating.
-  const hasSession = state != null;
-  // The resume cache is one boot's worth of help. Its scroll position moved
-  // into the per-session map above as the page hydrated, and the transcript
-  // takes over reporting from there, so once a session is on screen the blob
-  // has done its job.
-  useEffect(() => {
-    if (resume && hasSession) setResume(null);
-  }, [resume, hasSession]);
-  useEffect(() => {
-    if (!hasSession || typeof ResizeObserver === "undefined") return;
-    const overlay = overlayRef.current;
-    const layout = chatLayoutRef.current;
-    if (!overlay || !layout) return;
-    const apply = () =>
-      layout.style.setProperty(
-        "--composer-h",
-        `${Math.ceil(overlay.getBoundingClientRect().height)}px`,
-      );
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(overlay);
-    return () => {
-      ro.disconnect();
-      layout.style.removeProperty("--composer-h");
-    };
-    // themePreview toggles the whole main tree in and out below, so the
-    // measured elements are remounted under it: re-run to observe the new ones.
-  }, [hasSession, themePreview]);
-
-  // Historical usage: the server aggregates the event log and prices it, so
-  // the phone only ever downloads the bucketed result.
-  const loadUsageReport = useCallback(async (range: string): Promise<UsageReport> => {
-    const res = await clientRef.current!.command("usage_report", { range });
-    return res.report as UsageReport;
-  }, []);
-  const refreshQuota = useCallback(async (instance: string): Promise<QuotaStatus[]> => {
-    const res = await clientRef.current!.command("quota_refresh", { instance });
-    return (res.quotas ?? []) as QuotaStatus[];
-  }, []);
-
-  if (themePreview) return <Suspense fallback={<div className="flex h-dvh items-center justify-center"><Spinner /></div>}><ThemePreview /></Suspense>;
+  if (screens.themePreview) return <ThemePreviewScreen />;
 
   // The Usage page covers the whole viewport, above everything: it answers an
-  // account question, and the session underneath keeps streaming while it is
+  // account question, and the thread underneath keeps streaming while it is
   // up.
-  if (showUsage) {
+  if (screens.showUsage) {
     return (
-      <Suspense fallback={<div className="flex h-dvh items-center justify-center"><Spinner /></div>}>
-        <UsagePage
-          quotas={quotas}
-          onRefreshQuota={refreshQuota}
-          loadReport={loadUsageReport}
-          onClose={() => setShowUsage(false)}
-        />
-      </Suspense>
+      <UsageScreen
+        clientRef={clientRef}
+        quotas={wire.quotas}
+        onClose={() => screens.setShowUsage(false)}
+      />
     );
   }
 
   return (
     <div className="flex h-full overflow-hidden">
       <Sidebar
-        sessions={sessions}
+        threads={threads}
         activeId={activeId}
-        status={status}
-        open={sidebarOpen}
-        onOpenChange={setSidebarOpen}
+        status={wire.status}
+        open={nav.sidebarOpen}
+        onOpenChange={nav.setSidebarOpen}
         onSelect={select}
-        onNew={startNew}
-        onDelete={remove}
-        onShowAccess={() => setShowAccess(true)}
-        onShowUsage={() => setShowUsage(true)}
-        onShowProviders={() => setShowProviders(true)}
+        onNew={nav.startNew}
+        onDelete={deletion.remove}
+        onShowAccess={() => screens.setShowAccess(true)}
+        onShowUsage={() => screens.setShowUsage(true)}
+        onShowSettings={() => screens.setSettings({})}
         accentOf={accentOf}
         projects={projects}
-        projectName={(id)=>projects.find(p=>p.id===id)?.config.name}
-        projectRoot={(id)=>projects.find(p=>p.id===id)?.root}
+        projectName={(id) => projects.find((p) => p.id === id)?.name}
+        projectFolders={projectFolders}
         labels={labels}
-        onSetLabel={setSessionLabel}
-        onManageLabels={openLabelManager}
-        onSetUnread={setSessionUnread}
+        onSetLabel={labelActions.setThreadLabel}
+        onManageLabels={() => screens.setManageLabels(true)}
+        onNewProject={() => screens.setNewProject(true)}
+        onSetUnread={setThreadUnread}
       />
 
-      <DeleteSessionDialog flow={deleteFlow} />
+      <DeleteThreadDialog flow={deletion.deleteFlow} />
 
       <main
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col",
           // The expanded diff panel takes the whole content area; the main
           // column stays mounted so the transcript keeps its scroll and state.
-          showChanges && changesExpanded && "hidden",
+          panel.open && panel.expanded && "hidden",
         )}
       >
-        <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
-          {/* The open sidebar carries its own collapse button, so this one
-              only appears when there is a closed sidebar to reopen. */}
-          <IconButton
-            label="Show sessions"
-            onClick={() => setSidebarOpen(true)}
-            className={cn(sidebarOpen && "hidden")}
-          >
-            <PanelLeftIcon />
-          </IconButton>
-
-          {state ? (
-            <>
-              <p className="min-w-0 flex-1 truncate text-[13px] font-medium">
-                {state.title || "Untitled session"}
-              </p>
-
-              {SHOW_MODE_SWITCHER && modeOptions.length > 0 && !state.closed && (
-                <Select value={currentModeId} onValueChange={switchMode}>
-                  {/* Every mode gets the same chip: one that changed shape or
-                      colour by mode would jitter the header and shout at the
-                      user about a choice they already made deliberately. */}
-                  <SelectTrigger
-                    aria-label="Permission mode"
-                    className="h-8 w-auto shrink-0 gap-1 px-2 text-[11px]"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {modeOptions.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-
-              {/* Filing the open session — the same menu the sidebar row
-                  carries, so a session can be labelled from either place.
-                  Invisible until the user has defined a label. */}
-              {isDesktop && labels.length > 0 && activeId && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    {(() => {
-                      const current = labels.find((l) => l.id === meta?.labelId);
-                      return current ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Labelled ${current.name} — change label`}
-                          className="text-muted-foreground h-8 max-w-32 gap-1.5 px-2 text-[11px]"
-                        >
-                          <LabelDot color={current.color} />
-                          <span className="truncate">{current.name}</span>
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label="Label this session"
-                          className="size-8"
-                        >
-                          <TagIcon />
-                        </Button>
-                      );
-                    })()}
-                  </DropdownMenuTrigger>
-                  <LabelMenu
-                    labels={labels}
-                    current={meta?.labelId}
-                    onSelect={(labelId) => setSessionLabel(activeId, labelId)}
-                    onManage={openLabelManager}
-                  />
-                </DropdownMenu>
-              )}
-
-              {isDesktop ? (
-                <>
-                  <IconButton label="Summarise this session" onClick={openSummary}>
-                    <SparklesIcon />
-                  </IconButton>
-
-                  <IconButton
-                    label={transcriptCopied ? "Transcript copied" : "Copy transcript"}
-                    onClick={() => void copyFullTranscript()}
-                  >
-                    {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
-                  </IconButton>
-
-                  {activeProviderInstance?.canLogin && (
-                    <IconButton
-                      label={`Sign in again to ${activeProviderInstance.displayName}`}
-                      onClick={() => openInstanceAuth(activeProviderInstance.id)}
-                    >
-                      <LogInIcon />
-                    </IconButton>
-                  )}
-
-                  {activeProject && (
-                    <IconButton
-                      label={`${activeProject.config.name} settings`}
-                      onClick={() => setProjectSettings(activeProject)}
-                    >
-                      <SettingsIcon />
-                    </IconButton>
-                  )}
-
-                  <IconButton
-                    label={showChanges ? "Hide the panel" : "Show the panel"}
-                    onClick={() => setShowChanges((v) => !v)}
-                    className={cn("relative", showChanges && "bg-accent")}
-                  >
-                    <PanelRightIcon />
-                    {/* A live agent-count badge: work is happening off-transcript. */}
-                    {liveJobCount(state.jobs) > 0 && (
-                      <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
-                        {liveJobCount(state.jobs)}
-                      </span>
-                    )}
-                  </IconButton>
-                </>
-              ) : (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="More session actions"
-                      className="relative size-11 shrink-0"
-                    >
-                      <EllipsisIcon />
-                      {liveJobCount(state.jobs) > 0 && (
-                        <span className="bg-primary text-primary-foreground absolute top-0.5 right-0.5 flex size-3.5 items-center justify-center rounded-full text-[9px] tabular-nums">
-                          {liveJobCount(state.jobs)}
-                        </span>
-                      )}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-48">
-                    <DropdownMenuItem onSelect={() => setShowChanges(true)}>
-                      <PanelRightIcon /> Open panel
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={openSummary}>
-                      <SparklesIcon /> Summarise session
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={() => void copyFullTranscript()}
-                    >
-                      {transcriptCopied ? <CheckIcon className="text-success" /> : <CopyIcon />}
-                      {transcriptCopied ? "Transcript copied" : "Copy transcript"}
-                    </DropdownMenuItem>
-                    {activeProviderInstance?.canLogin && (
-                      <DropdownMenuItem onSelect={() => openInstanceAuth(activeProviderInstance.id)}>
-                        <LogInIcon /> Sign in again to {activeProviderInstance.displayName}
-                      </DropdownMenuItem>
-                    )}
-                    {activeProject && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => setProjectSettings(activeProject)}>
-                          <SettingsIcon /> {activeProject.config.name} settings
-                        </DropdownMenuItem>
-                      </>
-                    )}
-                    {labels.length > 0 && activeId && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>
-                            {(() => {
-                              const current = labels.find((l) => l.id === meta?.labelId);
-                              return current ? (
-                                <>
-                                  <LabelDot color={current.color} />
-                                  <span className="truncate">{current.name}</span>
-                                </>
-                              ) : (
-                                <>
-                                  <TagIcon /> Label session
-                                </>
-                              );
-                            })()}
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent className="min-w-40">
-                            <LabelMenuItems
-                              labels={labels}
-                              current={meta?.labelId}
-                              onSelect={(labelId) => setSessionLabel(activeId, labelId)}
-                              onManage={openLabelManager}
-                            />
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-
-            </>
-          ) : (
-            <>
-              <span className="text-muted-foreground flex-1 text-[13px]">
-                {meta ? "Attaching…" : ""}
-              </span>
-              {activeProviderInstance?.canLogin && (
-                <IconButton
-                  label={`Sign in again to ${activeProviderInstance.displayName}`}
-                  onClick={() => openInstanceAuth(activeProviderInstance.id)}
-                >
-                  <LogInIcon />
-                </IconButton>
-              )}
-            </>
-          )}
-        </header>
+        <ThreadHeader
+          sidebarOpen={nav.sidebarOpen}
+          onShowSidebar={() => nav.setSidebarOpen(true)}
+          state={state}
+          activeId={activeId}
+          meta={meta}
+          creating={!!nav.creating}
+          isDesktop={isDesktop}
+          labels={{
+            labels,
+            onSetLabel: labelActions.setThreadLabel,
+            onManage: () => screens.setManageLabels(true),
+          }}
+          harness={harness}
+          copy={copy}
+          panel={panel}
+        />
 
         {state ? (
-          <div ref={chatLayoutRef} className="relative flex min-h-0 flex-1 flex-col">
-            {/* Content scrolling up dissolves into the header rather than
-                being cut by a border. */}
-            <div className="from-background to-background/0 pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b" />
-
-            <OpenPathContext.Provider value={openPath}>
-              <Transcript key={activeId} state={state} hasOlder={(state.itemsBefore ?? 0) > 0} onLoadOlder={loadOlderItems} initialScroll={activeId ? scrollPositions.current[activeId] : undefined} onScrollChange={recordScroll} onContinue={()=>activeId&&clientRef.current?.command("continue_session",{sessionId:activeId})} onLogin={activeProviderInstance?.canLogin ? ()=>openInstanceAuth(activeProviderInstance.id) : undefined} providerName={activeProviderInstance?.displayName} providerReady={activeProviderInstance?.availability.state === "ready"} onRetryTurn={retryTurn} switchTargets={switchTargets} onSwitchAccount={(instance, retry) => switchAccount(instance, { retry })} onRetryProvision={()=>activeId&&clientRef.current?.command("retry_provision",{sessionId:activeId})} onCleanup={()=>activeId&&clientRef.current?.command("cleanup_session",{sessionId:activeId})} onForceDelete={()=>activeId&&forceDelete(activeId)} onOpenDiff={openDiff} jobs={state.jobs} onOpenJobs={openJobs} pr={pr} onFinish={()=>meta&&deleteFlow.ask(meta)} recents={recents.items} recentsSeeded={recents.seeded} onPickRecent={pickRecent} onDequeue={dequeue} />
-            </OpenPathContext.Provider>
-
-            {/* The mirror of the header fade: content dissolves into the
-                composer instead of sliding under a hard edge, and it hides the
-                seam where text scrolls past the composer's transparent gutters.
-                It sits just above the overlay, tracking its measured height. */}
-            <div
-              className="from-background to-background/0 pointer-events-none absolute inset-x-0 z-10 h-8 bg-gradient-to-t"
-              style={{ bottom: "var(--composer-h, 9rem)" }}
-            />
-
-            {/* The input floats over the transcript's tail instead of sitting
-                in a full-width tray. Anything that blocks the turn — a
-                permission or elicitation — stacks above it. */}
-            <div ref={overlayRef} className="absolute inset-x-0 bottom-0 z-10">
-              {pending && (
-                <PermissionPrompt
-                  request={pending}
-                  onResolve={(outcome, optionId) =>
-                    resolvePermission(pending.requestId, outcome, optionId)
-                  }
-                />
-              )}
-
-              {elicitation && (
-                <ElicitationPrompt
-                  request={elicitation}
-                  onResolve={(action, value) => resolveElicitation(elicitation.requestId, action, value)}
-                />
-              )}
-
-              {liveJobCount(state.jobs) > 0 && <JobsStrip jobs={state.jobs} onOpen={openJobs} />}
-
-              <ScheduledPrompts schedules={state.scheduledPrompts ?? []} disabled={state.closed || workspaceBusy || workspaceFailed} onEdit={p => activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:p.prompt,imageIds:(p.images ?? []).map(i=>i.id),schedule:p})} onAction={async (action,p) => {if(!clientRef.current)throw new Error("Reconnect first");await clientRef.current.command(action,{sessionId:activeId,id:p.id,revision:p.revision});}} />
-              {scheduleEditor && <ScheduleDialog key={`schedule:${scheduleEditor.id}`} initialText={scheduleEditor.text} imageCount={scheduleEditor.imageIds.length} schedule={scheduleEditor.schedule} onClose={()=>setScheduleEditor(null)} onSave={saveSchedule} />}
-              <Composer
-                key={activeId}
-                ref={composerRef}
-                draft={activeId ? (drafts[activeId] ?? "") : ""}
-                onDraftChange={(text) => activeId && setDraft(activeId, text)}
-                disabled={state.closed || workspaceCleaning || workspaceFailed}
-                sendDisabled={workspacePreparing}
-                disabledPlaceholder={workspaceBusy ? (workspaceCleaning ? "Cleaning up workspace…" : "Preparing workspace…") : workspaceFailed ? "Workspace needs attention" : undefined}
-                busy={state.phase === "turn"}
-                onSend={send}
-                onSchedule={()=>activeId && setScheduleEditor({id:uuid(),sessionId:activeId,text:drafts[activeId] ?? "",imageIds:(attachments[activeId] ?? []).filter(a=>a.status==="ready").map(a=>a.id!)})}
-                onCancel={cancel}
-                attachments={activeId ? (attachments[activeId] ?? []) : []}
-                onAttachFiles={attachFiles}
-                onRemoveAttachment={(key) => activeId && removeAttachment(activeId, key)}
-                harnesses={harnesses}
-                harness={state.harness}
-                instance={meta?.providerInstance ?? ""}
-                model={state.model}
-                effort={state.effort}
-                onSwitchModel={switchModel}
-                onSwitchEffort={switchEffort}
-                onSwitchAccount={(instance, model) => void switchAccount(instance, { model, confirm: true })}
-                usage={state.usage}
-                loadComposerItems={loadComposerItems}
-                onRunClientAction={runClientComposerAction}
-                onRunComposerAction={runComposerAction}
-                onCommandUsed={noteSkillUsed}
-              />
-            </div>
-          </div>
+          <ThreadView
+            state={state}
+            activeId={activeId}
+            meta={meta}
+            harnesses={harnesses}
+            scroll={scroll}
+            commands={commands}
+            harness={harness}
+            panel={panel}
+            pr={pr}
+            recents={recents}
+            schedule={schedule}
+            store={store}
+            onLogin={auth.openInstanceAuth}
+            onForceDelete={deletion.forceDelete}
+            onFinish={deletion.deleteFlow.ask}
+          />
+        ) : nav.creating ? (
+          <ThreadDraft
+            projects={projects}
+            activeProjectId={nav.creating.projectId}
+            harnesses={harnesses}
+            userConfig={wire.userConfig}
+            status={wire.status}
+            draft={store.drafts[NEW_THREAD] ?? ""}
+            onDraftChange={(text) => store.setDraft(NEW_THREAD, text)}
+            onStart={create}
+            attachments={store.attachments[NEW_THREAD] ?? []}
+            onAttachFiles={store.attachToDraft}
+            onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
+            onListWorkspaces={projectActions.listWorkspaces}
+            onListIssues={projectActions.listIssues}
+            onAddProject={() => screens.setNewProject(true)}
+            onSettings={(p) => screens.setSettings({ at: { kind: "project", id: p.id } })}
+            onRecheck={auth.recheck}
+            onLogin={auth.openInstanceAuth}
+            onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
+          />
         ) : (
           <EmptyState
-            restoring={restoring}
+            restoring={nav.restoring}
             attaching={!!activeId}
-            hasSessions={sessions.length > 0}
-            onNew={startNew}
+            hasThreads={threads.length > 0}
+            onNew={nav.startNew}
           />
         )}
       </main>
 
-      {state && activeId && panelLoaded && (
-        <Suspense fallback={null}>
-          <Panel
-          // Remounted per session: the tab model is per-session state.
-          key={activeId}
-          sessionId={activeId}
+      {state && activeId && (
+        <ThreadPanel
+          clientRef={clientRef}
+          threadId={activeId}
           state={state}
-          command={panelCommand}
-          open={showChanges}
-          onClose={() => { setShowChanges(false); setChangesExpanded(false); }}
-          expanded={changesExpanded}
-          onToggleExpanded={() => setChangesExpanded((v) => !v)}
-          // The worktree is worth re-reading when the agent stops writing to it.
-          revision={`${activeId}:${state.phase === "turn" ? "turn" : "settled"}`}
-          loadChanges={loadChanges}
-          loadDiff={loadFileDiff}
-          loadTree={loadFileTree}
-          loadFile={loadFile}
-          request={panelRequest}
+          panel={panel}
           pr={pr}
-          />
-        </Suspense>
-      )}
-
-      {showSummary && activeId && (
-        <Suspense fallback={null}>
-          <SessionSummaryPanel
-          summary={summaries[activeId] ?? null}
-          loading={!!summarizing[activeId]}
-          error={summaryErrors[activeId] ?? null}
-          // A summary made before the latest events is still worth reading —
-          // it just should not claim to be the whole story.
-          stale={!!state && !!summaries[activeId] && summaries[activeId].seq < state.seq}
-          userConfig={userConfig}
-          onRegenerate={() => void summarize(activeId)}
-          onSavePrompt={saveSummaryPrompt}
-          onClose={() => setShowSummary(false)}
-          />
-        </Suspense>
-      )}
-
-      {manageLabels && (
-        <LabelManager
-          labels={labels}
-          onCreate={createLabel}
-          onSave={saveLabel}
-          onDelete={deleteLabel}
-          onClose={() => setManageLabels(false)}
         />
       )}
 
-      {showAccess && access && (
-        <AccessPanel
-          access={access}
-          onEnableHTTPS={async () => {
-            const res = await clientRef.current!.command("enable_https", {});
-            if (res?.access) setAccess(res.access);
-          }}
-          onDisableHTTPS={async () => {
-            const res = await clientRef.current!.command("disable_https", {});
-            if (res?.access) setAccess(res.access);
-          }}
-          onClose={() => setShowAccess(false)}
-        />
-      )}
-
-      {creating && (
-        <NewSession
-          projects={projects}
-          activeProjectId={meta?.projectId}
-          harnesses={harnesses}
-          userConfig={userConfig}
-          onCreate={create}
-          onListWorkspaces={listWorkspaces}
-          onListIssues={listIssues}
-          onAddProject={()=>setProjectSettings("add")}
-          onSettings={setProjectSettings}
-          onRecheck={recheck}
-          onLogin={openInstanceAuth}
-          onManageProviders={() => setShowProviders(true)}
-          status={status}
-          onClose={() => setCreating(false)}
-        />
-      )}
-      {showProviders && (
-        <Suspense fallback={null}>
-          <ProvidersSettings
-            harnesses={harnesses}
-            wires={authWires}
-            onOpenTerminal={(id) => setLoginInstance(id)}
-            onRecheck={recheck}
-            onClose={() => setShowProviders(false)}
-          />
-        </Suspense>
-      )}
-      {authInstance && (
-        <Suspense fallback={null}>
-          <InstanceAuthDialog
-            wires={authWires}
-            instanceId={authInstance}
-            instanceName={
-              harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === authInstance)?.displayName ??
-              authInstance
-            }
-            onOpenTerminal={() => {
-              setAuthInstance(null);
-              setLoginInstance(authInstance);
-            }}
-            onClose={() => setAuthInstance(null)}
-          />
-        </Suspense>
-      )}
-      {loginInstance && (
-        <Suspense fallback={null}>
-          <LoginDialog
-            instanceId={loginInstance}
-            name={
-              harnesses.flatMap((h) => h.instances ?? []).find((i) => i.id === loginInstance)?.displayName ??
-              loginInstance
-            }
-            onEnded={recheck}
-            onClose={() => {
-              setLoginInstance(null);
-              recheck();
-            }}
-          />
-        </Suspense>
-      )}
-      {projectSettings && (
-        <Suspense fallback={null}>
-          <ProjectSettings
-          project={projectSettings === "add" ? null : projectSettings}
-          defaultRoot={defaultCwd}
-          harnesses={harnesses}
-          userConfig={userConfig}
-          onAdd={addProject}
-          onSave={saveProject}
-          onDelete={deleteProject}
-          sessionCount={
-            projectSettings === "add"
-              ? 0
-              : sessions.filter((s) => s.projectId === projectSettings.id).length
-          }
-          onSaveUserConfig={saveUserConfig}
-          onClose={() => setProjectSettings(null)}
-          />
-        </Suspense>
-      )}
-    </div>
-  );
-}
-
-/**
- * What the content column shows with nothing attached.
- *
- * There are three of these and they are genuinely different situations, so
- * they say different things. A single oversized "New session" button was
- * answering all three with a call to action nobody asked for — on a phone it
- * was the whole landing screen, and on a desktop with sessions in the list it
- * was pointing away from them.
- */
-function EmptyState({
-  restoring,
-  attaching,
-  hasSessions,
-  onNew,
-}: {
-  restoring: boolean;
-  attaching: boolean;
-  hasSessions: boolean;
-  onNew: () => void;
-}) {
-  // Mid-restore. Saying anything here would only be contradicted a moment
-  // later, so it says nothing and just holds the space.
-  if (restoring) {
-    return (
-      <div className="flex flex-1 items-center justify-center" aria-busy="true">
-        <span className="sr-only">Reopening your last session…</span>
-        <Spinner className="text-muted-foreground/60 size-5" />
-      </div>
-    );
-  }
-
-  // Selecting clears the old snapshot before attaching to the new session.
-  // That gap is loading, not an invitation to create another session.
-  if (attaching) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 pb-16" aria-busy="true">
-        <Spinner className="text-muted-foreground/60 size-6" />
-        <p className="text-muted-foreground text-[13px]">Attaching to session…</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 pb-16 text-center">
-      {hasSessions ? (
-        <>
-          <MessagesSquareIcon aria-hidden className="text-muted-foreground/40 size-7" />
-          <div className="max-w-xs">
-            <p className="text-[15px] font-medium">Nothing open</p>
-            <p className="text-muted-foreground mt-1.5 text-[13px] leading-relaxed">
-              Pick a session from the list to jump back into it.
-            </p>
-          </div>
-        </>
-      ) : (
-        <>
-          <CoffeeIcon aria-hidden className="text-muted-foreground/40 size-7" />
-          <div className="max-w-xs">
-            <p className="text-[15px] font-medium">All caught up</p>
-            <p className="text-muted-foreground mt-1.5 text-[13px] leading-relaxed">
-              Nothing is running. Put your feet up — or start something new.
-            </p>
-          </div>
-        </>
-      )}
-      {/* Offered, not insisted on — but still a real target for a thumb. */}
-      <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={onNew}>
-        <PlusIcon />
-        New session
-      </Button>
+      <AppDialogs
+        wire={wire}
+        screens={screens}
+        labels={labelActions}
+        auth={auth}
+        projects={projectActions}
+      />
     </div>
   );
 }

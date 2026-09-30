@@ -4,8 +4,8 @@ import { detectPath } from "./paths";
 
 describe("detectPath", () => {
   it("accepts slashed paths", () => {
-    expect(detectPath("internal/session/lifecycle.go")).toEqual({
-      path: "internal/session/lifecycle.go",
+    expect(detectPath("internal/thread/lifecycle.go")).toEqual({
+      path: "internal/thread/lifecycle.go",
       line: undefined,
     });
     expect(detectPath("web/src/App.tsx")).toEqual({
@@ -84,8 +84,8 @@ describe("detectPath", () => {
       path: "system/init",
       line: 5,
     });
-    expect(detectPath("internal/session/")).toEqual({
-      path: "internal/session",
+    expect(detectPath("internal/thread/")).toEqual({
+      path: "internal/thread",
       line: undefined,
     });
   });

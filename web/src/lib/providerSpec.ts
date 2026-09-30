@@ -7,7 +7,7 @@ import type { ProviderConfigField, ProviderEnvVar, ProviderInstanceSpec } from "
 
 /**
  * Derives the instance id from the display name the user typed. The id is the
- * routing key sessions record forever, so it is a slug rather than free text —
+ * routing key threads record forever, so it is a slug rather than free text —
  * and once taken it gets a numeric suffix instead of colliding, because two
  * accounts both called "Work" are still two accounts.
  */

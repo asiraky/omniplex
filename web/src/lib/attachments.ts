@@ -1,5 +1,5 @@
 /**
- * Images and PDFs attached to a prompt.
+ * Files attached to a prompt.
  *
  * A file is uploaded the moment it is picked, not when the message is
  * sent: on a phone on 4G a 3 MB screenshot takes seconds, and paying for that
@@ -7,37 +7,34 @@
  * a message to send, all that goes over the socket is a list of ids.
  */
 
+import { MAX_ARTEFACT_BYTES, uploadArtefact, type ArtefactRef, type UploadedArtefact } from "~/lib/artefacts";
+
 export const PDF_TYPE = "application/pdf";
 
-/** What the server stores, and therefore what may be attached. */
-export const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", PDF_TYPE];
+/** What the server stores, and therefore what may be attached as an image. */
+export const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /** Matches internal/attachment.MaxBytes, which is itself the largest image the
     Claude API will take once base64 has inflated it by a third. Checked here so
     the phone finds out before it spends the upload rather than after. */
 export const MAX_IMAGE_BYTES = 3_750_000;
 
-/** Matches internal/attachment.MaxPDFBytes. A PDF is sent as it was picked:
-    there is no shrinking one in a browser. */
-export const MAX_PDF_BYTES = 10_000_000;
-
-/** Matches internal/attachment.MaxPromptBytes: everything one message carries,
-    together. Checked here because a refused send clears the composer. */
-export const MAX_PROMPT_BYTES = 20_000_000;
-
 /** The longest edge worth sending. Anthropic resizes anything larger than this
     before the model ever sees it, so uploading more is paying 4G for pixels
     that get thrown away. */
 const MAX_EDGE = 1568;
 
+/** Matches internal/attachment.MaxPDFBytes. A PDF is sent as it was picked:
+    there is no shrinking one in a browser. */
+export const MAX_PDF_BYTES = 10_000_000;
+
+/** Matches internal/attachment.MaxPromptBytes: every image and PDF one message
+    carries, together. Checked here because a refused send clears the composer. */
+export const MAX_PROMPT_BYTES = 20_000_000;
+
 /** Below this a picture is left exactly as it was picked: re-encoding a small
     screenshot only costs it sharpness. */
 const REENCODE_OVER = 400 * 1024;
-
-/** The `accept` attribute for a file input. Deliberately the same list the
-    server enforces: offering a HEIC that will be refused is worse than not
-    offering it. */
-export const ATTACH_ACCEPT = ACCEPTED_TYPES.join(",");
 
 export interface UploadedImage {
   id: string;
@@ -45,57 +42,71 @@ export interface UploadedImage {
   size: number;
 }
 
-/** One file in the composer, from picked to sendable. */
+/**
+ * One file in the composer, from picked to sendable.
+ *
+ * Two routes share the same staging. What the model can read directly, an
+ * image or a PDF, goes to the attachment store and is named by `id`. Anything
+ * else, a zip or a HEIC the store would refuse, goes up as an artefact and is
+ * named by `artefactId`: the server saved it in the project's uploads folder
+ * and tells the agent where. `kind` is only how the composer shows it.
+ */
 export interface Attachment {
   /** Local identity, stable across the upload. Not the server's id. */
   key: string;
   name: string;
-  /** The picked file's type, which decides whether it gets a thumbnail. */
-  mediaType: string;
+  /** Absent means "image", which is what every attachment was before files. */
+  kind?: "image" | "file";
   /** Object URL for an image's thumbnail, shown before the upload finishes.
-      Empty for a PDF, which is shown as its name. */
+      Empty for a file, which shows a tile instead. */
   previewUrl: string;
-  status: "uploading" | "ready" | "error";
-  /** The server's id, present once uploaded. This is what the prompt names. */
+  /** "staged" is held in the browser, for a thread that does not exist yet:
+      it goes up once the thread does. */
+  status: "staged" | "uploading" | "ready" | "error";
+  /** The attachment store's id, present once an image or PDF is uploaded. */
   id?: string;
-  /** Bytes the server stored, present once uploaded. */
+  /** The artefact a file became, present once uploaded. */
+  artefactId?: string;
+  mediaType?: string;
   size?: number;
+  /** 0..1 while a file uploads; images are small enough to go without. */
+  progress?: number;
   error?: string;
 }
 
-export function isSupportedFile(file: File): boolean {
-  return ACCEPTED_TYPES.includes(file.type);
+export function isSupportedImage(file: File): boolean {
+  return ACCEPTED_IMAGE_TYPES.includes(file.type);
 }
 
-/** Whether the uploaded files together are more than one message may carry. */
-export function overPromptLimit(attachments: Attachment[]): boolean {
-  const total = attachments.reduce((sum, a) => sum + (a.status === "ready" ? (a.size ?? 0) : 0), 0);
-  return total > MAX_PROMPT_BYTES;
-}
-
-export function isPdf(mediaType: string): boolean {
+export function isPdf(mediaType: string | undefined): boolean {
   return mediaType === PDF_TYPE;
 }
 
-/** The largest file of this type the server will take. */
-export function maxBytesFor(mediaType: string): number {
-  return isPdf(mediaType) ? MAX_PDF_BYTES : MAX_IMAGE_BYTES;
+/** Whether the images and PDFs uploaded to the store are, together, more than
+    one message may carry. Files sent as artefacts are only a path to the
+    agent, so they do not count. */
+export function overPromptLimit(attachments: Attachment[]): boolean {
+  let total = 0;
+  for (const a of attachments) {
+    if (a.status === "ready" && a.id && !a.artefactId) total += a.size ?? 0;
+  }
+  return total > MAX_PROMPT_BYTES;
 }
 
 /** Where a stored file is read back from. The device cookie rides the
     request, so this works straight from an `<img src>` or a link. */
-export function attachmentUrl(sessionId: string, id: string): string {
-  return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(id)}`;
+export function attachmentUrl(threadId: string, id: string): string {
+  return `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(id)}`;
 }
 
-/** Uploads one file and returns how the prompt will refer to it. */
+/** Uploads one image or PDF and returns how the prompt will refer to it. */
 export async function uploadAttachment(
-  sessionId: string,
+  threadId: string,
   file: File,
   signal?: AbortSignal,
 ): Promise<UploadedImage> {
   const res = await fetch(
-    `/api/sessions/${encodeURIComponent(sessionId)}/attachments`,
+    `/api/threads/${encodeURIComponent(threadId)}/attachments`,
     {
       method: "POST",
       headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -116,15 +127,15 @@ export async function uploadAttachment(
 }
 
 /**
- * The images and PDFs in a drop or a paste.
+ * The files in a drop or a paste.
  *
  * A screenshot pasted from the clipboard arrives as a file with no useful
  * name, and a drag from a browser carries the picture alongside its URL as
  * text — so this reads files only, and leaves anything else to the textarea.
  */
-export function attachableFilesFrom(data: DataTransfer | null): File[] {
+export function filesFrom(data: DataTransfer | null): File[] {
   if (!data) return [];
-  return Array.from(data.files).filter((f) => f.type.startsWith("image/") || isPdf(f.type));
+  return Array.from(data.files);
 }
 
 /** Whether a drag is carrying files at all, which decides if the composer
@@ -173,4 +184,95 @@ export async function prepareImage(file: File): Promise<File> {
   } catch {
     return file;
   }
+}
+
+// ---- staging any file ----
+
+/** Whether a file takes the image path. Anything else — including an image
+    type the model cannot take — is uploaded as an artefact. */
+export function isImageAttachment(file: File): boolean {
+  return isSupportedImage(file);
+}
+
+/** The composer's entry for a file the moment it is picked, before any byte
+    has gone up. `key` is the caller's: it must be unique, and
+    `crypto.randomUUID` is not available on a plain-http origin. */
+export function stageFile(file: File, key: string): Attachment {
+  const image = isImageAttachment(file);
+  return {
+    key,
+    kind: image ? "image" : "file",
+    name: file.name || (image ? "pasted image" : "file"),
+    // react-doctor-disable-next-line react-doctor/no-create-object-url-without-revoke -- the URL lives on the staged attachment; useComposerDrafts revokes it when the attachment is removed, sent, or its thread goes
+    previewUrl: image ? URL.createObjectURL(file) : "",
+    status: "uploading",
+    mediaType: file.type || "application/octet-stream",
+    size: file.size,
+    // Only an artefact upload reports progress; see FileChip.
+    ...(image || (isPdf(file.type) && file.size <= MAX_PDF_BYTES) ? {} : { progress: 0 }),
+  };
+}
+
+export interface UploadDeps {
+  prepare: (file: File) => Promise<File>;
+  uploadImage: (threadId: string, file: File, signal?: AbortSignal) => Promise<UploadedImage>;
+  uploadFile: (
+    threadId: string,
+    file: File,
+    opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void },
+  ) => Promise<UploadedArtefact>;
+}
+
+const defaultDeps: UploadDeps = {
+  prepare: prepareImage,
+  uploadImage: uploadAttachment,
+  uploadFile: uploadArtefact,
+};
+
+/**
+ * Uploads a staged file and resolves to the patch that makes it sendable.
+ *
+ * A PDF goes to the store as it is, where Claude reads it natively. An image
+ * that is still too heavy once shrunk, or a PDF over its limit, is not refused:
+ * it goes up as a file instead, so the agent can still open it, and the patch
+ * says so by turning the attachment's kind to "file". A file over the artefact
+ * cap is refused here, before the upload spends the connection on it.
+ */
+export async function uploadStaged(
+  threadId: string,
+  file: File,
+  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
+  deps: UploadDeps = defaultDeps,
+): Promise<Partial<Attachment>> {
+  if (isImageAttachment(file)) {
+    const ready = await deps.prepare(file);
+    if (ready.size <= MAX_IMAGE_BYTES) {
+      const up = await deps.uploadImage(threadId, ready, opts.signal);
+      return { status: "ready", id: up.id, size: up.size };
+    }
+  } else if (isPdf(file.type) && file.size <= MAX_PDF_BYTES) {
+    const up = await deps.uploadImage(threadId, file, opts.signal);
+    return { status: "ready", id: up.id, size: up.size, progress: 1 };
+  }
+  if (file.size > MAX_ARTEFACT_BYTES) throw new Error("This file is too large to send (200 MB at most).");
+  const up = await deps.uploadFile(threadId, file, opts);
+  return {
+    kind: "file",
+    status: "ready",
+    artefactId: up.artefact.id,
+    progress: 1,
+  };
+}
+
+/** What a message carries: the ready images and PDFs by id and the ready
+    files by artefact id. Anything still uploading or failed is left out. */
+export function sendPayload(attachments: Attachment[]): { imageIds: string[]; files: ArtefactRef[] } {
+  const imageIds: string[] = [];
+  const files: ArtefactRef[] = [];
+  for (const a of attachments) {
+    if (a.status !== "ready") continue;
+    if (a.artefactId) files.push({ artefactId: a.artefactId });
+    else if (a.id) imageIds.push(a.id);
+  }
+  return { imageIds, files };
 }

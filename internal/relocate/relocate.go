@@ -25,7 +25,7 @@ type Options struct {
 	// HomeDir selects ~/.omniplex/workspaces and the default Claude config root.
 	HomeDir string
 	// ClaudeConfigDirs holds CLAUDE_CONFIG_DIR values by provider instance.
-	// Values may be absolute or relative to each session's working directory.
+	// Values may be absolute or relative to each thread's working directory.
 	ClaudeConfigDirs map[string]string
 	// ClaudeConfigDir is the ambient CLAUDE_CONFIG_DIR used when an instance
 	// does not override it.
@@ -100,40 +100,41 @@ func Run(ctx context.Context, oldRoot, newRoot string, options Options) (Report,
 	if err != nil {
 		return Report{}, fmt.Errorf("list projects: %w", err)
 	}
-	projectID := ""
+	projectIDs := map[string]bool{}
 	for _, project := range projects {
-		if filepath.Clean(project.Root) == oldRoot {
-			projectID = project.ID
-			break
+		for _, folder := range project.Folders {
+			if filepath.Clean(folder.Path) == oldRoot {
+				projectIDs[project.ID] = true
+			}
 		}
 	}
-	if projectID == "" {
-		return Report{}, fmt.Errorf("no project is rooted at %s", oldRoot)
+	if len(projectIDs) == 0 {
+		return Report{}, fmt.Errorf("no project has the folder %s", oldRoot)
 	}
 
-	sessions, err := st.ListSessions(ctx)
+	threads, err := st.ListThreads(ctx)
 	if err != nil {
-		return Report{}, fmt.Errorf("list sessions: %w", err)
+		return Report{}, fmt.Errorf("list threads: %w", err)
 	}
-	var projectSessions []store.SessionMeta
-	for _, session := range sessions {
-		_, underOldRoot := replacePath(session.Cwd, mappings)
-		if session.ProjectID == projectID || underOldRoot {
-			projectSessions = append(projectSessions, session)
+	var projectThreads []store.ThreadMeta
+	for _, thread := range threads {
+		_, underOldRoot := replacePath(thread.Cwd, mappings)
+		if projectIDs[thread.ProjectID] || underOldRoot {
+			projectThreads = append(projectThreads, thread)
 		}
 	}
 
-	files, err := planWorkspaceFiles(options.HomeDir, projectSessions, mappings)
+	files, err := planWorkspaceFiles(options.HomeDir, projectThreads, mappings)
 	if err != nil {
 		return Report{}, err
 	}
-	moves, err := planClaudeMoves(options, projectSessions, mappings)
+	moves, err := planClaudeMoves(options, projectThreads, mappings)
 	if err != nil {
 		return Report{}, err
 	}
 
 	report := Report{}
-	if report.GitRepaired, err = repairGit(ctx, options.GitBin, newRoot, projectSessions, mappings); err != nil {
+	if report.GitRepaired, err = repairGit(ctx, options.GitBin, newRoot, projectThreads, mappings); err != nil {
 		return Report{}, err
 	}
 
@@ -166,7 +167,7 @@ func Run(ctx context.Context, oldRoot, newRoot string, options Options) (Report,
 		moved = append(moved, change)
 	}
 
-	report.Database, err = st.RelocateProject(ctx, oldRoot, newRoot, mappings[1:]...)
+	report.Database, err = st.RelocateFolder(ctx, oldRoot, newRoot, mappings[1:]...)
 	if err != nil {
 		rollback()
 		return Report{}, fmt.Errorf("rewrite database: %w", err)
@@ -176,10 +177,10 @@ func Run(ctx context.Context, oldRoot, newRoot string, options Options) (Report,
 	return report, nil
 }
 
-func planWorkspaceFiles(home string, sessions []store.SessionMeta, mappings []store.RelocationPath) ([]fileChange, error) {
+func planWorkspaceFiles(home string, threads []store.ThreadMeta, mappings []store.RelocationPath) ([]fileChange, error) {
 	var changes []fileChange
-	for _, session := range sessions {
-		dir := filepath.Join(home, ".omniplex", "workspaces", session.ID)
+	for _, thread := range threads {
+		dir := filepath.Join(home, ".omniplex", "workspaces", thread.ID)
 		entries, err := os.ReadDir(dir)
 		if os.IsNotExist(err) {
 			continue
@@ -214,19 +215,19 @@ func planWorkspaceFiles(home string, sessions []store.SessionMeta, mappings []st
 	return changes, nil
 }
 
-func planClaudeMoves(options Options, sessions []store.SessionMeta, mappings []store.RelocationPath) ([]move, error) {
+func planClaudeMoves(options Options, threads []store.ThreadMeta, mappings []store.RelocationPath) ([]move, error) {
 	seen := map[string]bool{}
 	var moves []move
-	for _, session := range sessions {
-		if session.Harness != "claude" {
+	for _, thread := range threads {
+		if thread.Harness != "claude" {
 			continue
 		}
-		oldCwd := filepath.Clean(session.Cwd)
+		oldCwd := filepath.Clean(thread.Cwd)
 		newCwd, ok := replacePath(oldCwd, mappings)
 		if !ok {
 			continue
 		}
-		instance := session.ProviderInstance
+		instance := thread.ProviderInstance
 		if instance == "" {
 			instance = "claude"
 		}
@@ -266,7 +267,7 @@ func planClaudeMoves(options Options, sessions []store.SessionMeta, mappings []s
 	return moves, nil
 }
 
-func repairGit(ctx context.Context, gitBin, root string, sessions []store.SessionMeta, mappings []store.RelocationPath) (bool, error) {
+func repairGit(ctx context.Context, gitBin, root string, threads []store.ThreadMeta, mappings []store.RelocationPath) (bool, error) {
 	if gitBin == "" {
 		gitBin = "git"
 	}
@@ -297,8 +298,8 @@ func repairGit(ctx context.Context, gitBin, root string, sessions []store.Sessio
 			}
 		}
 	}
-	for _, session := range sessions {
-		cwd, ok := replacePath(session.Cwd, mappings)
+	for _, thread := range threads {
+		cwd, ok := replacePath(thread.Cwd, mappings)
 		if !ok || cwd == root || seen[cwd] {
 			continue
 		}

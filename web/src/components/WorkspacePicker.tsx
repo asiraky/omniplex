@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Badge } from "~/components/ui/badge";
 import { Input } from "~/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
+import { branchTemplate } from "~/lib/branchTemplate";
 import { cn } from "~/lib/utils";
 import type { Issue, UserConfig, Workspace } from "~/protocol";
 
@@ -12,39 +13,6 @@ export interface WorkspaceChoice {
   branch: string;
   /** Set only when attaching to a checkout that already exists. */
   attachPath: string;
-}
-
-/**
- * Turn the user's format function into a callable. It is their own code from
- * their own settings file, evaluated in their own browser, so `new Function` is
- * no wider a door than the settings box already is — but a typo in it must not
- * take the dialog down, hence the two layers of try/catch.
- */
-export function makeFormatter(source: string): {
-  format: (issue: Issue) => string;
-  error: string | null;
-} {
-  const fallback = { format: (i: Issue) => `issue/${i.number}`, error: null as string | null };
-  if (!source.trim()) return fallback;
-  let fn: (issue: Issue) => unknown;
-  try {
-    fn = new Function("issue", `"use strict"; return (${source})(issue);`) as (
-      issue: Issue,
-    ) => unknown;
-  } catch (e) {
-    return { ...fallback, error: e instanceof Error ? e.message : String(e) };
-  }
-  return {
-    error: null,
-    format: (issue: Issue) => {
-      try {
-        const out = fn(issue);
-        return typeof out === "string" ? out : String(out ?? "");
-      } catch {
-        return "";
-      }
-    },
-  };
 }
 
 type Row =
@@ -102,7 +70,7 @@ export function WorkspacePicker({
   const text = attached ? label(attached) : value.branch;
 
   const formatter = useMemo(
-    () => makeFormatter(userConfig?.branchFormat ?? ""),
+    () => branchTemplate(userConfig?.branchFormat ?? ""),
     [userConfig?.branchFormat],
   );
 
@@ -140,11 +108,14 @@ export function WorkspacePicker({
   }, [mode, value.branch, value.attachPath, issues, workspaces, formatter, userConfig?.suggestIssues]);
 
   // Every row is selectable. A checkout somebody else is in is a warning the
-  // caller renders, not a door omniplex locks: nothing about Git stops two sessions
+  // caller renders, not a door omniplex locks: nothing about Git stops two threads
   // sharing one, only their own edits do.
-  useEffect(() => {
+  // A list that grew or shrank puts the highlight back on the first row.
+  const [rowCount, setRowCount] = useState(rows.length);
+  if (rowCount !== rows.length) {
+    setRowCount(rows.length);
     setActive(0);
-  }, [rows.length]);
+  }
   // The list lives in a portal, so keyboard moves scroll it by element id.
   useEffect(() => {
     if (open) document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: "nearest" });
@@ -176,7 +147,7 @@ export function WorkspacePicker({
       return;
     }
     // Enter picks the highlighted row only while the list is open; otherwise it
-    // falls through to the dialog, where it starts the session.
+    // falls through to the dialog, where it starts the thread.
     if (e.key === "Enter" && open && rows[active]) {
       e.preventDefault();
       choose(rows[active]);
@@ -197,10 +168,10 @@ export function WorkspacePicker({
   rows.forEach((r, i) => {
     const heading =
       r.kind === "existing"
-        ? "Existing worktrees"
+        ? "Existing copies"
         : r.kind === "issue"
           ? "From open issues"
-          : "Create new worktree";
+          : "New branch";
     if (heading !== last) {
       body.push(group(heading));
       last = heading;
@@ -312,19 +283,19 @@ export function WorkspacePicker({
           className="scroll-thin max-h-[min(16rem,var(--radix-popover-content-available-height))] w-[var(--radix-popover-trigger-width)] touch-pan-y overscroll-contain overflow-y-auto p-0 py-1"
         >
           {loading && (
-            <p className="text-muted-foreground px-3 py-2 text-[12px]">Loading worktrees…</p>
+            <p className="text-muted-foreground px-3 py-2 text-[12px]">Loading copies…</p>
           )}
           {!loading && rows.length === 0 && (
             <p className="text-muted-foreground px-3 py-2 text-[12px]">
               {mode === "attach"
-                ? "No other worktrees in this project yet."
-                : "Type a branch name to create a worktree."}
+                ? "No copies of this folder yet."
+                : "Type a branch name."}
             </p>
           )}
           {body}
           {formatter.error && (
             <p className="text-attention-foreground px-3 py-2 text-[11px]">
-              Branch format function: {formatter.error}
+              Branch name template: {formatter.error}
             </p>
           )}
           {issuesError && !formatter.error && (
@@ -339,10 +310,10 @@ export function WorkspacePicker({
         {mode === "attach"
           ? attached
             ? `Attaching to ${attached.path}`
-            : "Pick a worktree from the list."
+            : "Pick a copy from the list."
           : value.branch.trim()
-            ? "Creates a new worktree on this branch."
-            : "Leave blank — we'll make one up."}
+            ? "The copy gets this branch."
+            : "Leave it blank and Omniplex makes one up."}
       </p>
     </div>
   );

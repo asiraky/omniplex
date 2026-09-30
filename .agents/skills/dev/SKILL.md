@@ -7,8 +7,8 @@ description: Start this worktree's Omniplex dev server and hand the user a worki
 
 ## Never in the main checkout
 
-The main checkout is probably running the live server that hosts the session
-you are in. Starting or restarting a server there takes the user's session down
+The main checkout is probably running the live server that hosts the thread
+you are in. Starting or restarting a server there takes the user's thread down
 with it.
 
 A worktree is identified by `.omniplex/worktree.env` — its own ports and its own
@@ -55,9 +55,9 @@ scripts/dev-link --restart   # mints a new pairing code
 
 A worktree gets its own `.omniplex/dev.db`, seeded at provision time with the
 **projects and labels** of the database the provisioning server was on — enough
-to start a session and to work on the list UI. Sessions are never copied: a
-copied session's harness process belongs to the other server, and resuming it
-from here would put two harnesses on one transcript. So the session list starts
+to start a thread and to work on the list UI. Threads are never copied: a
+copied thread's harness process belongs to the other server, and resuming it
+from here would put two harnesses on one transcript. So the thread list starts
 empty, and anything you start here is genuinely yours.
 
 Worktrees provisioned before seeding existed start empty; re-provisioning, or a
@@ -81,6 +81,6 @@ scripts/dev-link --stop
 
 Only ever signals the process group in `.omniplex/dev.pid` — the one this script
 started. Never `pkill omniplex`, never kill a process you found by matching a
-name or a path: the match will include the server running the user's session.
+name or a path: the match will include the server running the user's thread.
 
 Ask before stopping if the user might still be looking at it.

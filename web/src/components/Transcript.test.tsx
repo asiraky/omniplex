@@ -7,14 +7,14 @@ import { render, viewport, wrap } from "~/test/harness";
 import type { PullRequest, Turn } from "~/protocol";
 
 const state = (text: string): any => ({
-  sessionId: "a",
+  threadId: "a",
   seq: 1,
   cwd: "/tmp/repo",
   harness: "claude",
   model: "",
   mode: "default",
   effort: "",
-  title: "Session a",
+  title: "Thread a",
   phase: "idle",
   closed: false,
   workspace: { phase: "ready", projectId: "p1", projectRoot: "/tmp/repo" },
@@ -91,7 +91,7 @@ describe("copying a user message", () => {
   });
 });
 
-// A prompt sent into a session on screen is lifted to the top of the view so
+// A prompt sent into a thread on screen is lifted to the top of the view so
 // the answer streams into the space below it. Which prompts count as "just
 // sent" is this component's rule — the hook is told what to hold, not when.
 //
@@ -103,9 +103,9 @@ const PROMPT_TOP = 500;
 // The room the anchor has to reserve to lift a prompt that far up.
 const RESERVE = `${VIEW - (HEIGHT - (PROMPT_TOP - 16))}px`;
 
-const prompts = (ids: string[], sessionId = "a"): any => ({
+const prompts = (ids: string[], threadId = "a"): any => ({
   ...state(""),
-  sessionId,
+  threadId,
   items: ids.map((id) => ({ id, kind: "message", role: "user", text: id, receivedAt: 1 })),
 });
 
@@ -157,7 +157,7 @@ function measured(container: HTMLElement) {
 }
 
 describe("lifting a just-sent prompt", () => {
-  it("anchors a prompt that arrives while the session is on screen", () => {
+  it("anchors a prompt that arrives while the thread is on screen", () => {
     const { container, rerender } = render(view(prompts(["p1"])));
     const el = measured(container);
 
@@ -167,7 +167,7 @@ describe("lifting a just-sent prompt", () => {
     expect(el.scrollTop).toBe(PROMPT_TOP - 16);
   });
 
-  it("anchors the first prompt of a session that had none", () => {
+  it("anchors the first prompt of a thread that had none", () => {
     const { container, rerender } = render(view(prompts([])));
     measured(container);
 
@@ -176,8 +176,8 @@ describe("lifting a just-sent prompt", () => {
     expect(reserve(container)).toBe(RESERVE);
   });
 
-  it("leaves a session that was only just opened where it is", () => {
-    // Switching sessions changes the newest prompt too — the whole transcript
+  it("leaves a thread that was only just opened where it is", () => {
+    // Switching threads changes the newest prompt too — the whole transcript
     // arrives at once — and nobody asked for that view to move.
     const { container, rerender } = render(view(prompts(["p1"])));
     measured(container);
@@ -188,7 +188,7 @@ describe("lifting a just-sent prompt", () => {
   });
 });
 
-// A worktree session whose branch has landed is offered a way out of the
+// A worktree thread whose branch has landed is offered a way out of the
 // transcript it is being read in.
 function merged(pr: PullRequest | null, onFinish = () => {}) {
   return render(
@@ -213,26 +213,26 @@ const MERGED: PullRequest = {
 };
 
 describe("the merged-pull-request prompt", () => {
-  it("offers to finish the session once the branch has landed", () => {
+  it("offers to finish the thread once the branch has landed", () => {
     merged(MERGED);
-    expect(screen.getByRole("button", { name: /finish with this session/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /finish with this thread/i })).toBeTruthy();
     expect(screen.getByText("PR #75 merged")).toBeTruthy();
   });
 
   it("says nothing while the pull request is still open", () => {
     merged({ number: 75, state: "OPEN", merged: false });
-    expect(screen.queryByRole("button", { name: /finish with this session/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /finish with this thread/i })).toBeNull();
   });
 
   it("says nothing when there is no pull request to speak of", () => {
     merged(null);
-    expect(screen.queryByRole("button", { name: /finish with this session/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /finish with this thread/i })).toBeNull();
   });
 
   it("opens the confirmation rather than deleting anything itself", () => {
     const onFinish = vi.fn();
     merged(MERGED, onFinish);
-    fireEvent.click(screen.getByRole("button", { name: /finish with this session/i }));
+    fireEvent.click(screen.getByRole("button", { name: /finish with this thread/i }));
     expect(onFinish).toHaveBeenCalledTimes(1);
   });
 
@@ -241,7 +241,7 @@ describe("the merged-pull-request prompt", () => {
     merged(MERGED);
     // The tooltip does not render on a coarse pointer, so the accessible name
     // is the whole explanation and has to carry it alone.
-    expect(screen.getByRole("button", { name: /finish with this session/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /finish with this thread/i })).toBeTruthy();
   });
 });
 
@@ -367,7 +367,7 @@ function withRecents(s: any, onPick = () => {}) {
 }
 
 describe("recent skills on an empty transcript", () => {
-  it("offers them when there is nothing in the session yet", () => {
+  it("offers them when there is nothing in the thread yet", () => {
     withRecents(empty());
     expect(screen.getByText("/work-issue")).toBeTruthy();
   });
@@ -404,7 +404,7 @@ describe("a turn that failed", () => {
     return s;
   };
 
-  it("lets a signed-out user sign in from the failed session", () => {
+  it("lets a signed-out user sign in from the failed thread", () => {
     const onLogin = vi.fn();
     render(
       <Transcript
@@ -458,9 +458,9 @@ describe("a turn that failed", () => {
   });
 
   // A limit is not fixed by retrying on the same account. The card offers the
-  // harness's other accounts; once the session has moved, it offers the retry.
+  // harness's other accounts; once the thread has moved, it offers the retry.
   describe("on a usage limit", () => {
-    const limited = () => failed({ failure: "limit", error: "You've hit your session limit · resets 2:10pm" });
+    const limited = () => failed({ failure: "limit", error: "You've hit your thread limit · resets 2:10pm" });
     const props = {
       onFinish: () => {},
       onRetryProvision: () => {},
@@ -508,7 +508,7 @@ describe("a turn that failed", () => {
       await waitFor(() => expect(button.disabled).toBe(false));
     });
 
-    it("offers only the retry once the session has switched", () => {
+    it("offers only the retry once the thread has switched", () => {
       const s = limited();
       s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
       const onRetryTurn = vi.fn();
@@ -562,5 +562,48 @@ describe("a turn that failed", () => {
 
     expect(screen.getByText("Asked the agent to pick the work back up")).toBeTruthy();
     expect(screen.queryByText(/Server restarted/)).toBeNull();
+  });
+});
+
+describe("published artefacts", () => {
+  const published = (n: number) => {
+    const s = state("done");
+    s.items = Array.from({ length: n }, (_, i) => ({
+      id: `art${i}`,
+      kind: "artefact",
+      artefactId: `a${i}`,
+      version: 1,
+      title: `file-${i}.md`,
+      mediaType: "text/markdown",
+      size: 10,
+      receivedAt: 1,
+    }));
+    s.turns = [];
+    return render(
+      <Transcript
+        state={s}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+      />,
+    );
+  };
+  const tiles = () => screen.queryAllByText(/^file-\d+\.md$/);
+
+  it("folds a long run of files behind a button that shows the rest", () => {
+    published(9);
+    expect(tiles()).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Show 6 more files" }));
+    expect(tiles()).toHaveLength(9);
+    expect(screen.queryByRole("button", { name: /^Show \d+ more/ })).toBeNull();
+  });
+
+  it("does not fold away a single file", () => {
+    published(4);
+    expect(tiles()).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: /^Show \d+ more/ })).toBeNull();
   });
 });

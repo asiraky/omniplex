@@ -11,7 +11,7 @@ import (
 )
 
 // Attention is the derived answer to "whose turn is it?" — the one signal a
-// session list, a notifier, or any future routing system should read. It is a
+// thread list, a notifier, or any future routing system should read. It is a
 // pure function of projected state, never stored: the log stays authoritative.
 //
 // The user's-turn states are deliberately split three ways. "Waiting for a
@@ -35,14 +35,14 @@ const (
 	AttentionBackground = "background"
 	// AttentionNeedsPrompt: idle — the conversation is with the user.
 	AttentionNeedsPrompt = "needs_prompt"
-	// AttentionFailed: workspace provisioning or cleanup failed; the session
+	// AttentionFailed: workspace provisioning or cleanup failed; the thread
 	// needs a human decision before anything else can happen.
 	AttentionFailed = "failed"
-	// AttentionClosed: the session is a closed transcript.
+	// AttentionClosed: the thread is a closed transcript.
 	AttentionClosed = "closed"
 )
 
-// Attention derives the session's attention state from the projection. Pending
+// Attention derives the thread's attention state from the projection. Pending
 // human requests outrank the running turn on purpose: a turn that is blocked
 // on a permission is the user's turn, not the agent's.
 func (s *State) Attention() string {
@@ -95,7 +95,7 @@ func (s *State) LiveJobs() JobCounts {
 	return c
 }
 
-// AttentionForPhase derives attention for a session with no live projection —
+// AttentionForPhase derives attention for a thread with no live projection —
 // a row in the store whose actor is not running. A dead actor cancels its
 // pending permissions on the way down, so the phase alone is enough.
 func AttentionForPhase(phase string) string {
@@ -119,9 +119,13 @@ const (
 	// neither a message nor a tool call: a context compaction, or a switch to
 	// another account.
 	ItemNotice = "notice"
+	// ItemArtefact is an artefact the agent showed, at the point in the
+	// conversation it showed it. Uploads get no item: they show on the
+	// message that carried them.
+	ItemArtefact = "artefact"
 )
 
-// Item is one entry in the session timeline, in the order it first appeared.
+// Item is one entry in the thread timeline, in the order it first appeared.
 type Item struct {
 	ID     string `json:"id"`
 	Kind   string `json:"kind"`
@@ -154,6 +158,30 @@ type Item struct {
 	Trigger    string `json:"trigger,omitempty"`    // auto | manual
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
+
+	// artefact: Title is its name. Enough to draw the tile without the
+	// artefact list.
+	ArtefactID string `json:"artefactId,omitempty"`
+	MediaType  string `json:"mediaType,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+}
+
+// Artefact is a file or folder the thread has shown, as it was the last time
+// it was shown. The file itself is live on disk and may have moved on.
+type Artefact struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Dir        bool   `json:"dir,omitempty"`
+	MediaType  string `json:"mediaType"`
+	Size       int64  `json:"size"`
+	Entry      string `json:"entry"`
+	Files      int    `json:"files"`
+	ModifiedAt int64  `json:"modifiedAt"`
+	Source     string `json:"source"`
+	Note       string `json:"note,omitempty"`
+	TurnID     string `json:"turnId,omitempty"`
+	ShownAt    int64  `json:"shownAt"`
 }
 
 // Job is work running beside the conversation: a subagent, a background
@@ -253,10 +281,10 @@ type WorkspaceState struct {
 	DeleteAfterCleanup bool           `json:"deleteAfterCleanup,omitempty"`
 }
 
-// State is the complete renderable state of a session as of Seq.
+// State is the complete renderable state of a thread as of Seq.
 type State struct {
 	Scheduled []proto.ScheduledPrompt `json:"scheduledPrompts,omitempty"`
-	SessionID string                  `json:"sessionId"`
+	ThreadID  string                  `json:"threadId"`
 	Seq       int64                   `json:"seq"`
 	Cwd       string                  `json:"cwd"`
 	Harness   string                  `json:"harness"`
@@ -284,13 +312,16 @@ type State struct {
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
 	Queued       []QueuedPrompt            `json:"queuedPrompts"`
+	// Artefacts is never windowed: it is small, and the list has to be whole
+	// for the artefacts surface to be.
+	Artefacts []Artefact `json:"artefacts"`
 
 	itemIndex map[string]int `json:"-"`
 }
 
-func New(sessionID string) *State {
+func New(threadID string) *State {
 	return &State{
-		SessionID:    sessionID,
+		ThreadID:     threadID,
 		Phase:        "idle",
 		Items:        []Item{},
 		Turns:        []Turn{},
@@ -299,6 +330,7 @@ func New(sessionID string) *State {
 		Pending:      []PendingPermission{},
 		Elicitations: []PendingElicitation{},
 		Queued:       []QueuedPrompt{},
+		Artefacts:    []Artefact{},
 		itemIndex:    map[string]int{},
 	}
 }
@@ -317,11 +349,14 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	if err := json.Unmarshal(blob, &s); err != nil {
 		return nil, err
 	}
+	if s.Artefacts == nil {
+		s.Artefacts = []Artefact{}
+	}
 	s.reindex()
 	return &s, nil
 }
 
-// jobIndex is a linear scan: a session has a handful of jobs, not thousands,
+// jobIndex is a linear scan: a thread has a handful of jobs, not thousands,
 // and an index would be one more thing to rebuild after a snapshot.
 func (s *State) job(id string) *Job {
 	for i := range s.Jobs {
@@ -464,13 +499,13 @@ func (s *State) Apply(ev proto.Event) {
 	s.Seq = ev.Seq
 
 	switch ev.Type {
-	case proto.SessionCreated:
-		var p proto.SessionCreatedPayload
+	case proto.ThreadCreated:
+		var p proto.ThreadCreatedPayload
 		decode(ev.Payload, &p)
 		s.Cwd, s.Harness, s.Model, s.Mode, s.Effort, s.Title = p.Cwd, p.Harness, p.Model, p.Mode, p.Effort, p.Title
 
-	case proto.SessionConfigChanged:
-		var p proto.SessionConfigChangedPayload
+	case proto.ThreadConfigChanged:
+		var p proto.ThreadConfigChangedPayload
 		decode(ev.Payload, &p)
 		if p.ReplaceSettings || p.Model != "" {
 			s.Model = p.Model
@@ -491,7 +526,7 @@ func (s *State) Apply(ev proto.Event) {
 			s.HarnessSessionID = p.HarnessSessionID
 		}
 
-	case proto.SessionClosed:
+	case proto.ThreadClosed:
 		s.Closed = true
 		s.Phase = "closed"
 
@@ -672,7 +707,7 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 		// Only the finish of the turn that is actually open may take the
-		// session idle. A stale finish — an adapter closing a turn the log
+		// thread idle. A stale finish — an adapter closing a turn the log
 		// never opened, or a duplicate for a turn already superseded — must
 		// not report "user's turn" while different work is running. This is
 		// the projection's twin of the actor's turnActive guard; without it
@@ -829,8 +864,13 @@ func (s *State) Apply(ev proto.Event) {
 			it.PostTokens = p.PostTokens
 		})
 
-	case proto.SessionAccountChanged:
-		var p proto.SessionAccountChangedPayload
+	case proto.ArtefactShown:
+		var p proto.ArtefactShownPayload
+		decode(ev.Payload, &p)
+		s.applyArtefact(p, ev)
+
+	case proto.ThreadAccountChanged:
+		var p proto.ThreadAccountChangedPayload
 		decode(ev.Payload, &p)
 		// A line in the timeline where the account changed, anchored to the
 		// sequence like a compaction so replays land the same item.
@@ -923,6 +963,60 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// ArtefactByID finds an artefact.
+func (s *State) ArtefactByID(id string) (Artefact, bool) {
+	for _, a := range s.Artefacts {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return Artefact{}, false
+}
+
+// ArtefactByPath finds the artefact for a path, so showing a file again
+// revises it rather than adding a second one.
+func (s *State) ArtefactByPath(p string) (Artefact, bool) {
+	for _, a := range s.Artefacts {
+		if a.Path == p {
+			return a, true
+		}
+	}
+	return Artefact{}, false
+}
+
+func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
+	a := Artefact{
+		ID: p.ArtefactID, Name: p.Name, Path: p.Path, Dir: p.Dir, MediaType: p.MediaType, Size: p.Size,
+		Entry: p.Entry, Files: p.Files, ModifiedAt: p.ModifiedAt, Source: p.Source, Note: p.Note,
+		TurnID: p.TurnID, ShownAt: ev.Timestamp,
+	}
+	found := false
+	for i := range s.Artefacts {
+		if s.Artefacts[i].ID == p.ArtefactID {
+			s.Artefacts[i] = a
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.Artefacts = append(s.Artefacts, a)
+	}
+	if p.Source == proto.ArtefactFromUpload {
+		return
+	}
+	s.upsert("artefact:"+p.ArtefactID+"@"+strconv.FormatInt(ev.Seq, 10), func(it *Item) {
+		it.Kind = ItemArtefact
+		it.TurnID = p.TurnID
+		if it.ReceivedAt == 0 {
+			it.ReceivedAt = ev.Timestamp
+		}
+		it.Title = p.Name
+		it.ArtefactID = p.ArtefactID
+		it.MediaType = p.MediaType
+		it.Size = p.Size
+	})
+}
+
 // Clone returns a deep copy safe to hand outside the actor goroutine. A
 // shallow copy would share the item and content slices with the live state,
 // which the actor keeps mutating.
@@ -948,6 +1042,7 @@ func (s *State) Clone() *State {
 	copy(out.Jobs, s.Jobs)
 	out.Plan = make([]proto.PlanEntry, len(s.Plan))
 	copy(out.Plan, s.Plan)
+	out.Artefacts = append([]Artefact{}, s.Artefacts...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))
 	for i, p := range s.Pending {

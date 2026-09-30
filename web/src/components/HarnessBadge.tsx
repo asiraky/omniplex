@@ -1,7 +1,8 @@
 import type { CSSProperties } from "react";
 
-import { PROVIDER_LOGOS, ProviderLogo } from "~/components/ProviderLogo";
+import { ProviderLogo } from "~/components/ProviderLogo";
 import { Badge } from "~/components/ui/badge";
+import { PROVIDER_LOGOS } from "~/lib/providerLogos";
 import { cn } from "~/lib/utils";
 
 /**

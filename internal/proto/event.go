@@ -11,14 +11,14 @@ import (
 
 // Event types. Lifecycle, content, and human interaction.
 const (
-	PromptScheduled      = "prompt.scheduled"
-	SessionCreated       = "session.created"
-	SessionConfigChanged = "session.config_changed"
-	SessionClosed        = "session.closed"
-	// SessionAccountChanged marks the point where a session moved to another
+	PromptScheduled     = "prompt.scheduled"
+	ThreadCreated       = "thread.created"
+	ThreadConfigChanged = "thread.config_changed"
+	ThreadClosed        = "thread.closed"
+	// ThreadAccountChanged marks the point where a thread moved to another
 	// account of the same harness. It changes who the next turn is billed to,
 	// not the conversation, so it is a line in the timeline and nothing more.
-	SessionAccountChanged = "session.account_changed"
+	ThreadAccountChanged = "thread.account_changed"
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
@@ -27,7 +27,7 @@ const (
 	// the prompt is handed over at once (Sent) and the harness reads it at
 	// its next step — PromptInjected — or, if the turn ends first, starts a
 	// turn with it (turn.started naming the queue id). Otherwise it starts
-	// its own turn once the session is idle. PromptDequeued removes it:
+	// its own turn once the thread is idle. PromptDequeued removes it:
 	// because a human took it back, or because the running turn was
 	// interrupted.
 	PromptQueued   = "prompt.queued"
@@ -73,6 +73,12 @@ const (
 	WorkspaceCleanupFinished = "workspace.cleanup_finished"
 	WorkspaceCleanupFailed   = "workspace.cleanup_failed"
 	WorkspaceReleased        = "workspace.released"
+
+	// ArtefactShown is a file or folder in the project put in front of the
+	// user: the agent showing what it made, or a human uploading one. The
+	// file stays where it is and is read live; showing the same path again
+	// is the same artefact, revised.
+	ArtefactShown = "artefact.shown"
 )
 
 // Stop reasons for turn.finished.
@@ -181,10 +187,10 @@ const (
 	OutcomeCancelled    = "cancelled"
 )
 
-// Event is one durable fact about a session. seq is a per-session monotonic
+// Event is one durable fact about a thread. seq is a per-thread monotonic
 // integer assigned at append time; there is no global sequence.
 type Event struct {
-	SessionID string          `json:"sessionId"`
+	ThreadID  string          `json:"threadId"`
 	Seq       int64           `json:"seq"`
 	Timestamp int64           `json:"timestamp"`
 	Type      string          `json:"type"`
@@ -192,7 +198,7 @@ type Event struct {
 }
 
 // Emission is an event before it has been sequenced. Adapters emit these; the
-// session actor stamps seq and timestamp at append.
+// thread actor stamps seq and timestamp at append.
 type Emission struct {
 	Type    string
 	Payload any
@@ -205,7 +211,7 @@ func NowMillis() int64 { return time.Now().UnixMilli() }
 
 // ---- Payloads ----
 
-type SessionCreatedPayload struct {
+type ThreadCreatedPayload struct {
 	Cwd     string `json:"cwd"`
 	Harness string `json:"harness"`
 	Model   string `json:"model,omitempty"`
@@ -254,7 +260,7 @@ type WorkspaceFailedPayload struct {
 	ExitCode int    `json:"exitCode,omitempty"`
 }
 
-type SessionConfigChangedPayload struct {
+type ThreadConfigChangedPayload struct {
 	ReplaceSettings bool   `json:"replaceSettings,omitempty"`
 	Model           string `json:"model,omitempty"`
 	Mode            string `json:"mode,omitempty"`
@@ -270,19 +276,43 @@ type SessionConfigChangedPayload struct {
 	HarnessSessionID string `json:"harnessSessionId,omitempty"`
 }
 
-// SessionAccountChangedPayload names both accounts by id and by the name the
+// ThreadAccountChangedPayload names both accounts by id and by the name the
 // human knew them by at the time, so the timeline still reads right after an
 // account is renamed or removed.
-type SessionAccountChangedPayload struct {
+type ThreadAccountChangedPayload struct {
 	From     string `json:"from"`
 	To       string `json:"to"`
 	FromName string `json:"fromName,omitempty"`
 	ToName   string `json:"toName,omitempty"`
 }
 
-type SessionClosedPayload struct {
+type ThreadClosedPayload struct {
 	Reason string `json:"reason"`
 }
+
+// ArtefactShownPayload describes an artefact as it was when shown. Path is
+// absolute on the server; one path is always one artefact id.
+type ArtefactShownPayload struct {
+	ArtefactID string `json:"artefactId"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Dir        bool   `json:"dir,omitempty"`
+	MediaType  string `json:"mediaType"`
+	Size       int64  `json:"size"`
+	Entry      string `json:"entry"`
+	Files      int    `json:"files"`
+	ModifiedAt int64  `json:"modifiedAt"`
+	// Source is who showed it: the agent, or a human uploading.
+	Source string `json:"source"`
+	Note   string `json:"note,omitempty"`
+	// TurnID is the turn it was shown in, when there was one.
+	TurnID string `json:"turnId,omitempty"`
+}
+
+const (
+	ArtefactFromAgent  = "agent"
+	ArtefactFromUpload = "upload"
+)
 
 // PromptImage is one image or PDF a human attached to a prompt. The name and
 // the wire field ("images") predate PDFs; MediaType says which it is.
@@ -300,7 +330,7 @@ type PromptImage struct {
 }
 
 // AttachmentTitle names a prompt that was nothing but attachments, so a
-// session sent from a phone with one screenshot and no words still reads as
+// thread sent from a phone with one screenshot and no words still reads as
 // something in the sidebar.
 func AttachmentTitle(attachments []PromptImage) string {
 	pdfs := 0
@@ -367,7 +397,7 @@ type TurnStartedPayload struct {
 }
 
 // TurnRecovery describes a turn started to continue work an earlier turn did
-// not finish. Attempt counts consecutive recoveries so a session that dies on
+// not finish. Attempt counts consecutive recoveries so a thread that dies on
 // every resume stops rather than restarting itself forever.
 type TurnRecovery struct {
 	ResumeOf string `json:"resumeOf"`
@@ -650,7 +680,7 @@ func DefaultPermissionOptions() []PermissionOption {
 }
 
 // ScheduledPrompt is a durable one-shot instruction. Revision guards edits from
-// stale devices. The provider account remains the session's account.
+// stale devices. The provider account remains the thread's account.
 type ScheduledPrompt struct {
 	ID       string        `json:"id"`
 	Revision int           `json:"revision"`

@@ -55,16 +55,17 @@ export function wrap(ui: ReactElement) {
  * Answer the `md` media query the way a phone or a desktop would.
  *
  * The layout reads this query in JS as well as in CSS — which shape the
- * sidebar takes, whether the new-session screen is a card or a page — so
+ * sidebar takes, whether the new-thread screen is a card or a page — so
  * "what size is the screen" is set here rather than by prop.
  */
 export function viewport(kind: "phone" | "desktop") {
   const desktop = kind === "desktop";
   const listeners = new Set<(e: MediaQueryListEvent) => void>();
   vi.stubGlobal("matchMedia", (query: string) => ({
-    // Only the min-width:768px query is consulted; anything else (a coarse
-    // pointer probe, reduced motion) answers false, as jsdom would.
-    matches: query.includes("min-width: 768px") ? desktop : false,
+    // A desktop clears both width queries (md, and room to dock the panel);
+    // anything else (a coarse pointer probe, reduced motion) answers false,
+    // as jsdom would.
+    matches: /min-width: (768|1024)px/.test(query) ? desktop : false,
     media: query,
     onchange: null,
     addEventListener: (_: string, cb: (e: MediaQueryListEvent) => void) => listeners.add(cb),

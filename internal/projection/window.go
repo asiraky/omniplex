@@ -1,4 +1,4 @@
-// Windowing the timeline for the wire. A long session's items dwarf the rest
+// Windowing the timeline for the wire. A long thread's items dwarf the rest
 // of the state put together, and a presenter opening it only needs the tail on
 // screen — the rest can arrive as the reader scrolls up. The window is a
 // presentation concern only: Seq still means "everything up to here", the

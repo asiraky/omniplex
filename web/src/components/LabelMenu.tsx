@@ -25,7 +25,7 @@ export function LabelDot({ color, className }: { color: string; className?: stri
 
 /**
  * The assignment menu: one label or none, since a label here is a status, not
- * a tag. The same content serves the sidebar row and the session header — only
+ * a tag. The same content serves the sidebar row and the thread header — only
  * the trigger differs, so the trigger stays with the caller.
  */
 export function LabelMenu({
@@ -35,7 +35,7 @@ export function LabelMenu({
   onManage,
 }: {
   labels: Label[];
-  /** The session's current labelId, or undefined/"" for unlabelled. */
+  /** The thread's current labelId, or undefined/"" for unlabelled. */
   current?: string;
   /** Called with the new labelId, or "" to clear. */
   onSelect: (labelId: string) => void;

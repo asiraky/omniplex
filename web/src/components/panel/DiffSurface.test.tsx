@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DiffSurface } from "./DiffSurface";
-import { render } from "~/test/harness";
-import type { FileDiff, SessionChanges } from "~/protocol";
+import { render, wrap } from "~/test/harness";
+import type { FileDiff, ThreadChanges } from "~/protocol";
 
 // Long enough that no container holds it: this is the line the wrap toggle exists for.
 const LONG = "x".repeat(400);
 const TEXT = `const a = "${LONG}";`;
 
-const CHANGES: SessionChanges = {
+const CHANGES: ThreadChanges = {
   root: "/tmp/wt",
   branch: "feature/wrap",
   mode: "branch",
@@ -90,5 +90,45 @@ describe("DiffSurface comparison", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "Diff comparison" }));
     fireEvent.click(await screen.findByRole("option", { name: "Uncommitted changes" }));
     expect(change).toHaveBeenCalledWith("uncommitted");
+  });
+});
+
+describe("DiffSurface refresh", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("drops a diff read against a replaced change list, and reads again against the new one", async () => {
+    const reads: { changes: ThreadChanges; resolve: (d: FileDiff) => void }[] = [];
+    const loadDiff = (_path: string, changes: ThreadChanges) =>
+      new Promise<FileDiff>((resolve) => reads.push({ changes, resolve }));
+    const surface = (changes: ThreadChanges) => (
+      <DiffSurface
+        changes={changes}
+        loading={false}
+        error=""
+        onRefresh={() => {}}
+        loadDiff={loadDiff}
+        comparison="branch"
+        onComparisonChange={() => {}}
+      />
+    );
+    const { rerender } = render(surface(CHANGES));
+    const row = () => screen.getByRole("button", { name: /long\.ts/ });
+
+    fireEvent.click(row());
+    const next = { ...CHANGES };
+    rerender(wrap(surface(next)));
+    await act(async () => reads[0].resolve(DIFF));
+    expect(screen.queryByText(TEXT)).toBeNull();
+
+    // Collapse and expand: the row reads again, against the list now shown.
+    fireEvent.click(row());
+    fireEvent.click(row());
+    expect(reads).toHaveLength(2);
+    expect(reads[1].changes).toBe(next);
+    await act(async () => reads[1].resolve(DIFF));
+    expect(screen.getByText(TEXT)).toBeTruthy();
   });
 });
