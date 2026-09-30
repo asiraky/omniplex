@@ -154,6 +154,9 @@ type Skill struct {
 	// Invocation has one entry per harness in Harnesses.
 	Invocation map[Harness]HarnessState `json:"invocation"`
 	Source     *Source                  `json:"source,omitempty"`
+	// Manual is what the skill's own files say, both of them: the manual-only
+	// switch's state when no harness reads the files to say it for them.
+	Manual bool `json:"manual,omitempty"`
 }
 
 type File struct {
@@ -410,6 +413,10 @@ func Discover(r Roots) ([]Skill, error) {
 		s := byDir[dir]
 		sort.Slice(s.Harnesses, func(i, j int) bool { return harnessRank(s.Harnesses[i]) < harnessRank(s.Harnesses[j]) })
 		s.Invocation = policy.invocation(s, manual[dir])
+		if s.Editable {
+			frontmatter, openai := FileManual(dir)
+			s.Manual = frontmatter && openai
+		}
 		s.Source = sources.lookup(s)
 		out = append(out, *s)
 	}

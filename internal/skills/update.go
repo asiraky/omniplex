@@ -45,6 +45,8 @@ const (
 // installed skills it would replace.
 type updatePlan struct {
 	Library string         `json:"library"` // symlink-resolved
+	Repo    string         `json:"repo"`
+	Ref     string         `json:"ref,omitempty"`
 	Targets []updateTarget `json:"targets"`
 }
 
@@ -120,7 +122,7 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 		return UpdateStage{}, err
 	}
 	out := UpdateStage{ID: st.id, Repo: s.Source.Repo, Skills: []UpdateSkill{}}
-	st.m.Update = &updatePlan{Library: library}
+	st.m.Update = &updatePlan{Library: library, Repo: s.Source.Repo, Ref: s.Source.Ref}
 	for _, inst := range all {
 		if !inst.Editable || inst.Source == nil || filepath.Dir(inst.Dir) != library ||
 			inst.Source.Repo != s.Source.Repo || inst.Source.Ref != s.Source.Ref {
@@ -193,7 +195,14 @@ func (st *stage) match(inst Skill) (stagedFolder, bool) {
 // each mechanism on its own: an installed copy whose harnesses disagreed
 // keeps disagreeing, and that stays the user's to fix.
 func keepManual(dir string, frontmatter, openai bool) error {
-	skillPath := filepath.Join(dir, "SKILL.md")
+	skillPath, err := writableInside(dir, "SKILL.md")
+	if err != nil {
+		return err
+	}
+	yamlPath, err := writableInside(dir, filepath.FromSlash(openaiYAML))
+	if err != nil {
+		return err
+	}
 	skill, err := os.ReadFile(skillPath)
 	if err != nil {
 		return err
@@ -202,7 +211,6 @@ func keepManual(dir string, frontmatter, openai bool) error {
 	if err != nil {
 		return fmt.Errorf("%w: SKILL.md: %v", ErrInvalid, err)
 	}
-	yamlPath := filepath.Join(dir, filepath.FromSlash(openaiYAML))
 	data, readErr := os.ReadFile(yamlPath)
 	yaml, nextYAML := string(data), ""
 	switch {
@@ -220,7 +228,7 @@ func keepManual(dir string, frontmatter, openai bool) error {
 		}
 	}
 	if nextSkill != string(skill) {
-		if err := writeAtomic(resolve(skillPath), []byte(nextSkill)); err != nil {
+		if err := writeAtomic(skillPath, []byte(nextSkill)); err != nil {
 			return err
 		}
 	}
@@ -230,7 +238,30 @@ func keepManual(dir string, frontmatter, openai bool) error {
 	if err := os.MkdirAll(filepath.Dir(yamlPath), 0o755); err != nil {
 		return err
 	}
-	return writeAtomic(resolve(yamlPath), []byte(nextYAML))
+	return writeAtomic(yamlPath, []byte(nextYAML))
+}
+
+// writableInside is where writing rel under dir really lands, refused when a
+// symlink takes it out of dir. A staged copy is somebody else's repo, and it
+// is written to before anything else has looked at its links.
+func writableInside(dir, rel string) (string, error) {
+	top, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(top, rel)
+	real := filepath.Join(resolve(filepath.Dir(path)), filepath.Base(path))
+	if _, err := os.Lstat(real); err == nil {
+		// A link that dangles is replaced, not followed: writeAtomic renames
+		// over it.
+		if target, err := filepath.EvalSymlinks(real); err == nil {
+			real = target
+		}
+	}
+	if !within(top, real) {
+		return "", fmt.Errorf("%w: %s leads outside the skill", ErrInvalid, filepath.ToSlash(rel))
+	}
+	return real, nil
 }
 
 // fileHashes maps each file of a skill folder to a hash of its bytes, over
@@ -322,8 +353,11 @@ func openUpdate(r Roots, id, dir string) (*stage, Skill, updateTarget, error) {
 	if !s.Editable {
 		return nil, Skill{}, updateTarget{}, ErrNotEditable
 	}
-	if filepath.Dir(s.Dir) == st.m.Update.Library {
-		for _, t := range st.m.Update.Targets {
+	// By name alone a skill removed and made again since the check would
+	// pass: it has to still come from the source that was checked.
+	plan := st.m.Update
+	if filepath.Dir(s.Dir) == plan.Library && s.Source != nil && s.Source.Repo == plan.Repo && s.Source.Ref == plan.Ref {
+		for _, t := range plan.Targets {
 			if t.Dir == filepath.Base(s.Dir) {
 				return st, s, t, nil
 			}

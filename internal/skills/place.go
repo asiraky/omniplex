@@ -251,8 +251,15 @@ func InstallStaged(r Roots, id string, names []string, scope string, link []Harn
 		tmps = append(tmps, tmp)
 	}
 	for i, p := range plan {
-		if err := swapIn(tmps[i], p.target); err != nil {
-			return nil, err
+		place := swapIn
+		if !replace {
+			// Not swapIn: the check above was a while ago, and a skill of
+			// the same name placed since then is not ours to overwrite. A
+			// rename onto a folder with anything in it fails.
+			place = os.Rename
+		}
+		if err := place(tmps[i], p.target); err != nil {
+			return nil, fmt.Errorf("%s: %w", p.sf.Name, err)
 		}
 	}
 

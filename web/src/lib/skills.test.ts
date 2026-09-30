@@ -233,6 +233,18 @@ describe("invocationSummary", () => {
     expect(invocationSummary(s)).toMatchObject({ state: "mixed", overridden: ["claude"], manual: true, fixable: false });
   });
 
+  it("reads the switch from the skill's files when no harness reads them", () => {
+    // In a library nothing links to, and with every harness overridden.
+    expect(invocationSummary(skill("a", { harnesses: [], invocation: {}, manual: true })).manual).toBe(true);
+    expect(invocationSummary(skill("a", { harnesses: [], invocation: {} })).manual).toBe(false);
+    const overridden = skill("a", {
+      harnesses: ["claude"],
+      invocation: { claude: { mode: "auto", by: "settings" } },
+      manual: true,
+    });
+    expect(invocationSummary(overridden).manual).toBe(true);
+  });
+
   it("lists the harnesses that cannot see it", () => {
     expect(invocationSummary(skill("a", { harnesses: ["pi"] }))).toMatchObject({ state: "auto", missing: ["claude", "codex"] });
   });

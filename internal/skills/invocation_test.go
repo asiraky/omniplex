@@ -262,6 +262,7 @@ func TestEditOpenAIManual(t *testing.T) {
 		{"a deeper key of the same name is not the policy", nested, true, "policy:\n  allow_implicit_invocation: false\n  nested:\n    allow_implicit_invocation: false\n"},
 		{"a policy under another key is not the policy", elsewhere, true, elsewhere + noImplicit},
 		{"crlf", "interface: {}\r\npolicy:\r\n  allow_implicit_invocation: true\r\n", true, "interface: {}\r\npolicy:\r\n  allow_implicit_invocation: false\r\n"},
+		{"a comment at column 0 inside policy", "policy:\n# why\n  allow_implicit_invocation: true\n", true, "policy:\n# why\n  allow_implicit_invocation: false\n"},
 		{"crlf, appended", "interface: {}\r\n", true, "interface: {}\r\npolicy:\r\n  allow_implicit_invocation: false\r\n"},
 	}
 	for _, tt := range tests {

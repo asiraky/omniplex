@@ -47,6 +47,8 @@ export interface Skill {
   /** One entry per harness that can see the skill. Absent from an older server. */
   invocation?: Partial<Record<SkillHarness, HarnessState>>;
   source?: Source;
+  /** Both of the skill's own files say manual-only. */
+  manual?: boolean;
 }
 
 export interface SkillFile {
@@ -345,7 +347,9 @@ export function invocationSummary(skill: Skill): InvocationSummary {
     state,
     missing,
     overridden,
-    manual: fileModes.length > 0 && fileManual === fileModes.length,
+    // With no harness reading the files (none linked, or every one
+    // overridden by a setting), the files themselves are the answer.
+    manual: fileModes.length > 0 ? fileManual === fileModes.length : skill.manual === true,
     fixable: skill.editable && fileManual > 0 && fileManual < fileModes.length,
   };
 }

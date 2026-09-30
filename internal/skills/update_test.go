@@ -658,3 +658,104 @@ func TestAFetchIsForInstallingOrForUpdating(t *testing.T) {
 		t.Errorf("staged notes.md = %q, %v", content, err)
 	}
 }
+
+func TestCheckingAnUpdateNeverWritesThroughALink(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		link string // under the staged show-me, pointing at outside
+		dir  bool
+	}{
+		{name: "the file", link: "agents/openai.yaml"},
+		{name: "its folder", link: "agents", dir: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, u := installed(t)
+			show := filepath.Join(r.Library, "show-me")
+			// Manual here, so the check writes the choice onto the staged copy.
+			setManual(t, show, true)
+			outside := filepath.Join(t.TempDir(), "victim")
+			target := outside
+			if tt.dir {
+				if err := os.MkdirAll(outside, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				write(t, outside, "mine\n")
+			}
+			fetch := u.npx
+			u.npx = func(c Command) ([]byte, error) {
+				out, err := fetch(c)
+				link := filepath.Join(c.Dir, ".agents", "skills", "show-me", filepath.FromSlash(tt.link))
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, link); err != nil {
+					t.Fatal(err)
+				}
+				return out, err
+			}
+			u.stageUpdate(r, show)
+			if tt.dir {
+				if got := entries(t, outside); len(got) != 0 {
+					t.Errorf("wrote %v outside the skill", got)
+				}
+			} else if read(t, outside) != "mine\n" {
+				t.Error("wrote through the link to a file outside the skill")
+			}
+		})
+	}
+}
+
+func TestAnUpdateCheckedBeforeTheSkillWasReplacedIsRefused(t *testing.T) {
+	r, u := installed(t)
+	show := filepath.Join(r.Library, "show-me")
+	u.files["show-me/notes.md"] = "v2"
+	got, _ := u.stageUpdate(r, show)
+	// Same folder, but no longer from that source.
+	if err := Remove(r, show); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(r, ScopeUser, "show-me", "Mine now"); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, filepath.Join(show, "SKILL.md"))
+	if _, err := ApplyUpdate(r, got.ID, []string{show}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if read(t, filepath.Join(show, "SKILL.md")) != before || exists(filepath.Join(show, "notes.md")) {
+		t.Error("the stale update replaced the new skill")
+	}
+}
+
+func TestAListedSkillSaysWhatItsFilesSay(t *testing.T) {
+	r, _ := installed(t)
+	show := filepath.Join(r.Library, "show-me")
+	manual := func() bool {
+		t.Helper()
+		all, err := Discover(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range all {
+			if s.Dir == show {
+				return s.Manual
+			}
+		}
+		t.Fatal("show-me not listed")
+		return false
+	}
+	if manual() {
+		t.Error("manual before it was made manual")
+	}
+	setManual(t, show, true)
+	if !manual() {
+		t.Error("not manual after both files say so")
+	}
+	// One file alone is not the switch on.
+	if err := os.Remove(filepath.Join(show, "agents", "openai.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if manual() {
+		t.Error("manual with only the frontmatter saying so")
+	}
+}

@@ -39,7 +39,9 @@ func findTopKey(lines []string, from, to int, key string) (at, next int, value s
 		next = i + 1
 		for j := i + 1; j < to; j++ {
 			l := strings.TrimRight(lines[j], "\r\n")
-			if strings.TrimSpace(l) == "" {
+			// A comment's indentation means nothing in YAML: one at column 0
+			// does not end the block.
+			if t := strings.TrimSpace(l); t == "" || strings.HasPrefix(t, "#") {
 				continue
 			}
 			if !isIndented(l) {
