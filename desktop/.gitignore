@@ -1,0 +1,5 @@
+/dist/
+/release/
+# Staged by the release workflow (or by hand) before packaging; see README.
+/resources/bin/*
+!/resources/bin/.gitkeep

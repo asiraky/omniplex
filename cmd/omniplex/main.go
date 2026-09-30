@@ -7,6 +7,7 @@ import (
 	"embed"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -69,6 +70,7 @@ func main() {
 		addr       = flag.String("addr", "", "bind one specific address, e.g. 192.168.1.20:8787 (default: every private and overlay address)")
 		port       = flag.Int("port", envInt("OMNIPLEX_PORT", 8787), "port to listen on")
 		bindPublic = flag.Bool("bind-public", false, "also bind globally routable addresses, exposing omniplex to the internet")
+		stdinLife  = flag.Bool("exit-on-stdin-close", false, "shut down when stdin closes; for a parent process (the desktop app) that must not leave this server behind if it dies")
 		private    = flag.Bool("private", os.Getenv("OMNIPLEX_PRIVATE") == "1", "bind loopback and overlay (tailnet) addresses only, leaving out the local network")
 		dbPath     = flag.String("db", envStr("OMNIPLEX_DB", defaultDB()), "path to the event log database")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
@@ -265,6 +267,17 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	// The desktop app holds our stdin open for as long as it lives. The pipe
+	// closes when it quits and when it crashes, so this is both the graceful
+	// stop on every platform (Windows has no SIGTERM to send) and what keeps an
+	// orphaned server from holding the port the next launch wants.
+	if *stdinLife {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			log.Println("stdin closed")
+			sig <- os.Interrupt
+		}()
+	}
 	<-sig
 
 	log.Println("shutting down; disposing harnesses")
