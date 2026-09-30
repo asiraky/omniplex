@@ -38,9 +38,14 @@ type Report struct {
 
 // Harness is what the report needs to know about one harness.
 type Harness struct {
-	ID           string
-	Name         string
+	ID   string
+	Name string
+	// Availability is the default instance's, which is what the screen shows.
 	Availability adapter.Availability
+	// OtherInstanceOK says a non-default instance (a second account) works.
+	// That is enough to run a thread, so the machine is ready even when the
+	// default instance is signed out.
+	OtherInstanceOK bool
 }
 
 // Build assembles the report: ready means git works and at least one of the
@@ -57,7 +62,7 @@ func Build(platform string, git adapter.Availability, harnesses []Harness) Repor
 				continue
 			}
 			r.Checks = append(r.Checks, Check{ID: h.ID, Name: h.Name, Kind: "harness", Availability: h.Availability})
-			anyHarness = anyHarness || h.Availability.OK()
+			anyHarness = anyHarness || h.Availability.OK() || h.OtherInstanceOK
 		}
 	}
 	r.Ready = git.OK() && anyHarness

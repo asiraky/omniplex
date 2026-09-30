@@ -21,6 +21,11 @@ export interface ServerOptions {
   restart?: RestartOptions;
 }
 
+// The server's exit status when another Omniplex server already has its
+// database (cmd/omniplex exitDataInUse). Restarting cannot fix that, and the
+// likely culprit is one the user started from a terminal.
+export const EXIT_DATA_IN_USE = 17;
+
 // The packaged binary sits in Resources/bin; in development it is the one
 // `npm run build:server` leaves at the repo root, or whatever
 // OMNIPLEX_SERVER_BIN names.
@@ -114,12 +119,20 @@ export class ServerSupervisor {
     this.policy.started();
 
     let exited = false;
-    const onGone = (reason: string) => {
+    const onGone = (reason: string, code: number | null = null) => {
       if (exited) return;
       exited = true;
       if (this.child === child) this.child = null;
       if (this.stopping || gen !== this.generation) return;
       this.opts.log.line(`server exited unexpectedly (${reason})`);
+      if (code === EXIT_DATA_IN_USE) {
+        this.setStatus({
+          kind: "failed",
+          message:
+            "Another Omniplex server is already running on this computer, probably one started from a terminal. Stop it, then try again.",
+        });
+        return;
+      }
       const delay = this.policy.onExit();
       if (delay === null) {
         this.setStatus({ kind: "failed", message: `The server stopped (${reason}) and kept failing to restart.` });
@@ -130,7 +143,7 @@ export class ServerSupervisor {
       this.restartTimer = setTimeout(() => void this.spawnOnce(), delay);
     };
     child.once("error", (err) => onGone(err.message));
-    child.once("exit", (code, signal) => onGone(signal ? `signal ${signal}` : `exit code ${code}`));
+    child.once("exit", (code, signal) => onGone(signal ? `signal ${signal}` : `exit code ${code}`, code));
 
     const origin = `http://127.0.0.1:${port}`;
     const healthy = await waitForHealth(origin, this.opts.healthTimeoutMs ?? 30000, () => exited);

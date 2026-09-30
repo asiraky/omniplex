@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
+	"github.com/asiraky/omniplex/internal/datalock"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/netinfo"
 	"github.com/asiraky/omniplex/internal/overlay"
@@ -38,6 +40,10 @@ import (
 	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
+
+// exitDataInUse is the status when another server holds the database. The
+// desktop app (desktop/src/server.ts) knows it.
+const exitDataInUse = 17
 
 // web/dist is embedded when it has been built. The directory always contains a
 // placeholder so the build works without a UI bundle present.
@@ -95,6 +101,18 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o755); err != nil {
 		log.Fatalf("create data dir: %v", err)
 	}
+
+	dbLock, err := datalock.Acquire(*dbPath)
+	if errors.Is(err, datalock.ErrHeld) {
+		// A distinct status so the desktop app can say what is wrong rather
+		// than retrying a start that cannot succeed.
+		fmt.Fprintf(os.Stderr, "%s is in use by another Omniplex server; stop it first\n", *dbPath)
+		os.Exit(exitDataInUse)
+	}
+	if err != nil {
+		log.Fatalf("lock data: %v", err)
+	}
+	defer dbLock.Release()
 
 	st, err := store.Open(*dbPath)
 	if err != nil {

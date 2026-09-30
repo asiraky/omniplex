@@ -201,7 +201,13 @@ func (s *Server) Handler() http.Handler {
 		s.mgr.ExpireProbes()
 		var hs []setup.Harness
 		for _, h := range s.mgr.Harnesses(r.Context()) {
-			hs = append(hs, setup.Harness{ID: h.ID, Name: h.Name, Availability: h.Availability})
+			sh := setup.Harness{ID: h.ID, Name: h.Name, Availability: h.Availability}
+			for _, inst := range h.Instances {
+				if inst.ID != h.ID && inst.Enabled && inst.Availability.OK() {
+					sh.OtherInstanceOK = true
+				}
+			}
+			hs = append(hs, sh)
 		}
 		writeJSON(w, setup.Build(runtime.GOOS, setup.Git(r.Context()), hs))
 	})

@@ -15,6 +15,7 @@ const port = Number(process.argv[process.argv.indexOf("-port") + 1]);
 fs.appendFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), pid: process.pid, desktop: process.env.OMNIPLEX_DESKTOP }) + "\\n");
 const mode = process.env.FAKE_MODE;
 if (mode === "crash") process.exit(3);
+if (mode === "in-use") process.exit(17);
 if (mode === "stubborn") process.on("SIGTERM", () => {});
 else process.on("SIGTERM", () => { fs.appendFileSync(process.env.FAKE_RECORD, "SIGTERM\\n"); process.exit(0); });
 http.createServer((req, res) => {
@@ -109,6 +110,13 @@ describe.skipIf(process.platform === "win32")("ServerSupervisor", () => {
     await until("failed");
     expect(starts()).toHaveLength(1 + fast.maxRestarts);
     expect(statuses.at(-1)).toMatchObject({ kind: "failed" });
+  });
+
+  it("does not retry when another server holds the database", async () => {
+    const { until, statuses } = launch("in-use");
+    await until("failed");
+    expect(starts()).toHaveLength(1);
+    expect(statuses.at(-1)).toMatchObject({ kind: "failed", message: expect.stringContaining("already running") });
   });
 
   it("treats a server that never answers as failed", async () => {
