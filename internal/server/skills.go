@@ -67,6 +67,58 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		return map[string]any{"ok": true}, nil
 	case "create_skill":
 		return skills.Create(roots, a.Scope, a.Name, a.Description)
+
+	case "stage_skills":
+		return s.skillFetch.Stage(ctx, roots, a.Source)
+	case "read_staged_file":
+		content, binary, err := skills.ReadStagedFile(a.ID, a.Skill, a.Path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"content": content, "binary": binary}, nil
+	case "install_staged":
+		link := make([]skills.Harness, 0, len(a.Link))
+		for _, h := range a.Link {
+			link = append(link, skills.Harness(h))
+		}
+		placed, err := skills.InstallStaged(roots, a.ID, a.Skills, a.Scope, link, a.Replace)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"skills": placed}, nil
+	case "discard_staged":
+		if err := skills.DiscardStaged(a.ID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "skills_git_status":
+		status, err := skills.LibraryStatus(ctx, roots)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"git": status}, nil
+	case "commit_skills":
+		commit, status, err := skills.CommitSkills(ctx, roots, a.Names, a.Message)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"commit": commit, "git": status}, nil
+
+	case "stage_update":
+		return s.skillFetch.StageUpdate(ctx, roots, a.Dir)
+	case "read_update_file":
+		before, after, binary, err := skills.ReadUpdateFile(roots, a.ID, a.Dir, a.Path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"old": before, "new": after, "binary": binary}, nil
+	case "apply_update":
+		updated, err := skills.ApplyUpdate(roots, a.ID, a.Dirs)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"skills": updated}, nil
 	}
 	return nil, fmt.Errorf("unknown skill command %q", command)
 }

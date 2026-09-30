@@ -192,6 +192,18 @@ type skillArgs struct {
 	Library        string `json:"library"`
 	ProjectLibrary string `json:"projectLibrary"`
 	CLIVersion     string `json:"cliVersion"`
+	// Installing: what was pasted, the staging dir a fetch made, and what to
+	// take out of it.
+	Source  string   `json:"source"`
+	ID      string   `json:"id"`
+	Skill   string   `json:"skill"`
+	Skills  []string `json:"skills"`
+	Link    []string `json:"link"`
+	Replace bool     `json:"replace"`
+	// Committing the library, and applying an update.
+	Names   []string `json:"names"`
+	Message string   `json:"message"`
+	Dirs    []string `json:"dirs"`
 }
 
 type threadArgs struct {

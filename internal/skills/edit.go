@@ -145,15 +145,21 @@ func ReadFile(r Roots, dir, rel string) (content string, binary bool, err error)
 	if err != nil {
 		return "", false, err
 	}
+	return readInside(s.Dir, rel)
+}
+
+// readInside reads rel under dir, a symlink-resolved skill folder: an
+// installed skill or a staged one.
+func readInside(dir, rel string) (content string, binary bool, err error) {
 	rel = filepath.FromSlash(rel)
 	if rel == "" || filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
 		return "", false, fmt.Errorf("%w: path must stay inside the skill", ErrInvalid)
 	}
-	real, err := filepath.EvalSymlinks(filepath.Join(s.Dir, rel))
+	real, err := filepath.EvalSymlinks(filepath.Join(dir, rel))
 	if err != nil {
 		return "", false, ErrNotFound
 	}
-	if inside, err := filepath.Rel(s.Dir, real); err != nil || !filepath.IsLocal(inside) {
+	if inside, err := filepath.Rel(dir, real); err != nil || !filepath.IsLocal(inside) {
 		return "", false, fmt.Errorf("%w: path must stay inside the skill", ErrInvalid)
 	}
 	f, err := os.Open(real)
