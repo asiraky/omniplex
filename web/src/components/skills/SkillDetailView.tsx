@@ -228,10 +228,15 @@ export function SkillDetailView({
   const argsRef = useLatest(scopeArgs);
   const onChangedRef = useLatest(onChanged);
 
+  // An update swaps the files under the same dir, and the record's timestamp
+  // is the only sign of it that reaches here.
+  const version = skill.source?.updatedAt ?? "";
+
   useEffect(() => {
     let stale = false;
     setLoading(true);
     setError("");
+    fileCache.current.clear();
     commandRef
       .current<SkillDetail>("read_skill", { ...argsRef.current, dir: skill.dir })
       .then((raw) => {
@@ -253,7 +258,7 @@ export function SkillDetailView({
     return () => {
       stale = true;
     };
-  }, [skill.dir, reloadSeq, commandRef, argsRef]);
+  }, [skill.dir, version, reloadSeq, commandRef, argsRef]);
 
   useEffect(() => {
     if (doc === null) return;
@@ -283,7 +288,7 @@ export function SkillDetailView({
     return () => {
       stale = true;
     };
-  }, [doc, skill.dir, commandRef, argsRef]);
+  }, [doc, skill.dir, version, commandRef, argsRef]);
 
   // The document sits under the skill's facts, so opening a file has to bring
   // it to the top rather than leave the reader at the file list below it.

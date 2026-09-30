@@ -282,6 +282,11 @@ export function SkillsSurface({ command, threadId, projectId, onUse, slots }: Sk
     refresh();
   };
 
+  const newSkill = useCallback(() => {
+    setCreateSeq((n) => n + 1);
+    setCreating(true);
+  }, []);
+
   const ctx: SkillsContext = {
     command,
     scopeArgs,
@@ -290,6 +295,7 @@ export function SkillsSurface({ command, threadId, projectId, onUse, slots }: Sk
     projectAvailable,
     refresh,
     upsert,
+    newSkill,
   };
 
   const empty = !loading && !error && list !== null && skills.length === 0;
@@ -340,18 +346,14 @@ export function SkillsSurface({ command, threadId, projectId, onUse, slots }: Sk
               as a phone, and four controls beside a search box leave no box. */}
           <div className="flex flex-wrap items-center gap-1.5 pt-1 pb-0.5">
             <Segmented label="Skills views" value={view} onChange={setView} options={VIEWS} className="mr-auto" />
-            {slots?.install?.(ctx)}
-            <Button
-              size="sm"
-              className="h-11 shrink-0 text-[13px] md:h-8 md:text-[12px]"
-              onClick={() => {
-                setCreateSeq((n) => n + 1);
-                setCreating(true);
-              }}
-            >
-              <PlusIcon className="size-3.5" />
-              New skill
-            </Button>
+            {slots?.install ? (
+              slots.install(ctx)
+            ) : (
+              <Button size="sm" className="h-11 shrink-0 text-[13px] md:h-8 md:text-[12px]" onClick={newSkill}>
+                <PlusIcon className="size-3.5" />
+                New skill
+              </Button>
+            )}
           </div>
         </div>
 

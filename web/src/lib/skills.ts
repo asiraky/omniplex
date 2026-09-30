@@ -204,7 +204,7 @@ export function skillOrigin(skill: Skill): { kind: SkillGroupKind; key: string; 
   return { kind, key: kind, title: GROUP_TITLE[kind] };
 }
 
-const byName = (a: string, b: string) => a.toLowerCase().localeCompare(b.toLowerCase());
+export const byName = (a: string, b: string) => a.toLowerCase().localeCompare(b.toLowerCase());
 
 /** Same-name copies become one entry, the most widely seen copy first. */
 function mergeByName(skills: Skill[]): SkillEntry[] {
@@ -499,6 +499,85 @@ export function skillsScope(input: {
     if (id && name !== undefined) return { kind: "project", projectId: id, projectName: name };
   }
   return { kind: "personal" };
+}
+
+// ---- installing, committing and updating ----
+//
+// Only the shapes on the wire live here. What is done with them is in
+// `skillFlows.ts`: this module is in the entry bundle, and those helpers are
+// wanted only once the Skills page is open.
+
+export type InstallScope = "user" | "project";
+
+export interface StagedSkill {
+  name: string;
+  description: string;
+  /** The skill's folder inside the repo. */
+  path?: string;
+  /** Includes SKILL.md. */
+  files: SkillFile[];
+  /** The staged files mark it manual-only. */
+  manual: boolean;
+  problem?: string;
+  /** Named by --skill / -s in the pasted command. */
+  picked: boolean;
+  /** A folder of this name is already in the personal library. */
+  inUser: boolean;
+  /** ... or in the project library. */
+  inProject: boolean;
+}
+
+/** A source fetched into a throwaway dir on the server, waiting to be placed or discarded. */
+export interface Staged {
+  id: string;
+  /** The fetcher that produced it. */
+  method: Source["method"];
+  repo: string;
+  ref?: string;
+  skills: StagedSkill[];
+  /** e.g. why git was used instead of npx. */
+  note?: string;
+}
+
+export interface GitChange {
+  /** A skill's folder name, or the source record's file name. */
+  name: string;
+  status: "added" | "modified" | "removed";
+  files: number;
+}
+
+/** Uncommitted changes in the personal library, one entry per top-level item. */
+export interface GitStatus {
+  root: string;
+  branch: string;
+  changes: GitChange[];
+}
+
+export interface FileChange {
+  path: string;
+  status: "added" | "modified" | "removed";
+}
+
+export interface UpdateSkill {
+  name: string;
+  dir: string;
+  changed: boolean;
+  /** No longer in the source. */
+  gone?: boolean;
+  files: FileChange[];
+}
+
+/** A source fetched again and compared against every skill installed from it. */
+export interface UpdateStage {
+  id: string;
+  repo: string;
+  skills: UpdateSkill[];
+}
+
+export interface UpdateFile {
+  old: string;
+  new: string;
+  binary: boolean;
 }
 
 /** A record's timestamp as a short date; "" when it is missing or not a date. */

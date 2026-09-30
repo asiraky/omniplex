@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, type RefObject } from "react";
+import { lazy, Suspense, useCallback, type ComponentProps, type RefObject } from "react";
 
 import type { Client } from "~/client";
 import type { Skill, SkillsScope } from "~/lib/skills";
@@ -7,8 +7,15 @@ import type { QuotaStatus, UsageReport } from "~/protocol";
 import { Spinner } from "./ui/spinner";
 
 const UsagePage = lazy(() => import("./Usage").then((m) => ({ default: m.UsagePage })));
+// The page and its install, commit and update flows load together, and only
+// when the page is opened: passing the slots from here as a static import
+// would put every one of those dialogs in the entry bundle.
 const SkillsPage = lazy(() =>
-  import("./skills/SkillsPage").then((m) => ({ default: m.SkillsPage })),
+  Promise.all([import("./skills/SkillsPage"), import("./skills/flows")]).then(([page, flows]) => ({
+    default: (props: Omit<ComponentProps<typeof page.SkillsPage>, "slots">) => (
+      <page.SkillsPage {...props} slots={flows.pageSlots} />
+    ),
+  })),
 );
 const ThemePreview = lazy(() =>
   import("./ThemePreview").then((m) => ({ default: m.ThemePreview })),

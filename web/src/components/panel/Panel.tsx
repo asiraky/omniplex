@@ -16,6 +16,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArtefactList } from "~/components/artefacts/ArtefactList";
 import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { IconButton } from "~/components/IconButton";
+import { panelSlots } from "~/components/skills/flows";
 import { SkillsSurface } from "~/components/skills/SkillsSurface";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
@@ -493,6 +494,7 @@ function PanelBody({
           <SkillsSurface
             command={command}
             threadId={threadId}
+            slots={panelSlots}
             onUse={
               onUseSkill &&
               (async (skill) => {

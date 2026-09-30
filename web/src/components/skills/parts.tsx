@@ -1,6 +1,7 @@
 import { TriangleAlertIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { Checkbox } from "~/components/ui/checkbox";
 import {
   harnessLabel,
   invocationSummary,
@@ -21,6 +22,11 @@ export interface SkillsContext {
   command: SkillsCommand;
   /** `threadId` / `projectId`, to spread into every command's args. */
   scopeArgs: Record<string, unknown>;
+  /**
+   * A new object after every load and after every write the surface folds in
+   * (`upsert`, a removal), so watching it is how a slot hears that something
+   * on disk changed.
+   */
   list: SkillsList | null;
   setup?: Setup;
   /** True when there is a project to install into. */
@@ -29,6 +35,8 @@ export interface SkillsContext {
   refresh: () => void;
   /** Put skills the server just returned into the list, replacing by dir. */
   upsert: (skills: Skill[]) => void;
+  /** Open the "New skill" dialog; see `SkillsSlots.install`. */
+  newSkill: () => void;
 }
 
 /**
@@ -36,7 +44,11 @@ export interface SkillsContext {
  * when given, so the surface works without any of them.
  */
 export interface SkillsSlots {
-  /** Toolbar, left of "New skill": the Install action. */
+  /**
+   * Toolbar: the Install action. It stands in for the surface's own "New
+   * skill" button, which it offers itself through `ctx.newSkill`: the two
+   * side by side, next to the view switch, do not fit a phone's width.
+   */
   install?: (ctx: SkillsContext) => ReactNode;
   /** Between the toolbar and the list: the commit bar. */
   commitBar?: (ctx: SkillsContext) => ReactNode;
@@ -117,6 +129,36 @@ export function ErrorLine({ message, className }: { message: string; className?:
   );
 }
 
+/**
+ * A tick box whose whole row is the target: 44px tall, where the box alone is
+ * a 16px thing to hit with a thumb.
+ */
+export function TickRow({
+  checked,
+  onChange,
+  disabled,
+  className,
+  children,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className={cn("flex min-h-11 min-w-0 items-start gap-3 py-2", !disabled && "cursor-pointer", className)}>
+      <Checkbox
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(v) => onChange(v === true)}
+        className="mt-0.5 size-5 md:size-4"
+      />
+      <span className="min-w-0 flex-1">{children}</span>
+    </label>
+  );
+}
+
 export function SectionHeading({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <h3 className={cn("text-muted-foreground mb-1.5 text-[11px] font-semibold tracking-wide uppercase", className)}>
@@ -149,8 +191,10 @@ export function Segmented<T extends string>({
           aria-selected={value === o.id}
           onClick={() => onChange(o.id)}
           className={cn(
-            // Thumb-sized on a phone; a pointer gets the compact pill.
-            "focus-visible:ring-ring min-h-11 min-w-0 flex-1 truncate rounded-full px-3 py-1 text-[12.5px] font-medium whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-0 md:px-2.5 md:text-[12px]",
+            // Thumb-sized on a phone; a pointer gets the compact pill. Each
+            // tab starts from its own label's width: split evenly, the longer
+            // label is cut short while the row still has room to spare.
+            "focus-visible:ring-ring min-h-11 min-w-0 flex-auto truncate rounded-full px-3 py-1 text-[12.5px] font-medium whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-0 md:px-2.5 md:text-[12px]",
             value === o.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
           )}
         >
