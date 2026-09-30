@@ -186,6 +186,12 @@ type skillArgs struct {
 	Scope       string `json:"scope"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Harness     string `json:"harness"`
+	Manual      bool   `json:"manual"`
+	// The skills setup: the libraries and the pinned skills CLI version.
+	Library        string `json:"library"`
+	ProjectLibrary string `json:"projectLibrary"`
+	CLIVersion     string `json:"cliVersion"`
 }
 
 type threadArgs struct {

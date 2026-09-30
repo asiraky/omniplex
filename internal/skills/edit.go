@@ -117,7 +117,7 @@ func writeAtomic(path string, data []byte) error {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".SKILL.md.*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -184,9 +184,10 @@ func ReadFile(r Roots, dir, rel string) (content string, binary bool, err error)
 	return string(data), false, nil
 }
 
-// Create writes a new skill to <base>/.agents/skills/<name> — the directory
-// Codex and pi read — and links it into Claude's skills dir unless that dir
-// already resolves to the same place.
+// Create writes a new skill into the library for the scope, and links it into
+// Claude's skills dir unless that dir already is the library. Codex and pi are
+// left to reach the library their own way; a library neither reads shows the
+// skill with a link action for each.
 func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err := ValidateName(name); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -195,33 +196,24 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err := validateDescription(description); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	var agentsDir, claudeDir string
-	switch scope {
-	case ScopeUser:
-		if r.Home == "" || r.ClaudeConfigDir == "" {
-			return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
-		}
-		agentsDir = filepath.Join(r.Home, ".agents", "skills")
-		claudeDir = filepath.Join(r.ClaudeConfigDir, "skills")
-	case ScopeProject:
-		if r.ProjectRoot == "" {
-			return Skill{}, fmt.Errorf("%w: no project to create the skill in", ErrInvalid)
-		}
-		agentsDir = filepath.Join(r.ProjectRoot, ".agents", "skills")
-		claudeDir = filepath.Join(r.ProjectRoot, ".claude", "skills")
-	default:
-		return Skill{}, fmt.Errorf("%w: scope must be user or project", ErrInvalid)
+	library, err := LibraryDir(r, scope)
+	if err != nil {
+		return Skill{}, err
 	}
-	for _, d := range []string{agentsDir, claudeDir} {
+	claudeDir := linkDir(r, Claude, scope)
+	if claudeDir == "" {
+		return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
+	}
+	for _, d := range []string{library, claudeDir} {
 		if _, err := os.Lstat(filepath.Join(d, name)); err == nil {
 			return Skill{}, fmt.Errorf("%w: %s already exists in %s", ErrInvalid, name, d)
 		}
 	}
 
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+	if err := os.MkdirAll(library, 0o755); err != nil {
 		return Skill{}, err
 	}
-	dir := filepath.Join(agentsDir, name)
+	dir := filepath.Join(library, name)
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return Skill{}, err
 	}
@@ -235,8 +227,10 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	if err := linkForClaude(claudeDir, realDir, name); err != nil {
-		return Skill{}, err
+	if LinkState(r, Claude, scope).State != LinkDirect {
+		if err := symlinkTo(realDir, filepath.Join(claudeDir, name)); err != nil {
+			return Skill{}, err
+		}
 	}
 	s, err := find(r, realDir)
 	if errors.Is(err, ErrNotFound) {
@@ -245,21 +239,33 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	return s, err
 }
 
-func linkForClaude(claudeDir, realDir, name string) error {
-	if realClaude, err := filepath.EvalSymlinks(claudeDir); err == nil {
-		if realClaude == filepath.Dir(realDir) {
-			return nil // Claude's dir is the .agents dir already
+// Remove deletes an editable skill: the real directory, every path it was
+// discovered at that is itself a symlink to it, and its line in the library's
+// source record. A path that only reaches it through a symlinked parent goes
+// with the directory.
+func Remove(r Roots, dir string) error {
+	s, err := find(r, dir)
+	if err != nil {
+		return err
+	}
+	if !s.Editable {
+		return ErrNotEditable
+	}
+	for _, p := range s.Paths {
+		if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(p); err != nil {
+				return err
+			}
 		}
-	} else if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	}
+	if err := os.RemoveAll(s.Dir); err != nil {
 		return err
 	}
-	realClaude, err := filepath.EvalSymlinks(claudeDir)
-	if err != nil {
-		return err
+	library := filepath.Dir(s.Dir)
+	for _, lib := range []string{r.ProjectLibrary, r.Library} {
+		if real, ok := realDir(lib); ok && real == library {
+			return forgetRecord(library, filepath.Base(s.Dir))
+		}
 	}
-	target, err := filepath.Rel(realClaude, realDir)
-	if err != nil {
-		target = realDir
-	}
-	return os.Symlink(target, filepath.Join(claudeDir, name))
+	return nil
 }

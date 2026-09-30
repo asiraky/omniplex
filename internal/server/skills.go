@@ -7,14 +7,41 @@ import (
 
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/thread"
+	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
 func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) (any, error) {
+	// Saved first: every other command reads the roots the setup decides.
+	if command == "save_skills_setup" {
+		next := userconfig.SkillsConfig{Library: a.Library, ProjectLibrary: a.ProjectLibrary, CLIVersion: a.CLIVersion}
+		if _, err := userconfig.Update(func(cur *userconfig.Config) error {
+			cur.Skills = next
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
 	roots, err := s.mgr.SkillRoots(ctx, a.ThreadID, a.ProjectID)
 	if err != nil {
 		return nil, err
 	}
 	switch command {
+	case "save_skills_setup":
+		return map[string]any{"setup": skillsSetup(roots)}, nil
+	case "link_library":
+		if err := skills.LinkLibrary(roots, skills.Harness(a.Harness)); err != nil {
+			return nil, err
+		}
+		return map[string]any{"setup": skillsSetup(roots)}, nil
+	case "link_skill":
+		return skills.LinkSkill(roots, a.Dir, skills.Harness(a.Harness))
+	case "set_skill_invocation":
+		return skills.SetInvocation(roots, a.Dir, a.Manual)
+	case "remove_skill":
+		if err := skills.Remove(roots, a.Dir); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 	case "list_skills":
 		found, err := skills.Discover(roots)
 		if err != nil {
@@ -24,7 +51,7 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"skills": found, "subagents": subagents, "projectRoot": roots.ProjectRoot}, nil
+		return map[string]any{"skills": found, "subagents": subagents, "projectRoot": roots.ProjectRoot, "setup": skillsSetup(roots)}, nil
 	case "read_skill":
 		return skills.Read(roots, a.Dir)
 	case "read_skill_file":
@@ -42,6 +69,19 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		return skills.Create(roots, a.Scope, a.Name, a.Description)
 	}
 	return nil, fmt.Errorf("unknown skill command %q", command)
+}
+
+// skillsSetup is the setup as the screen shows it. Outside a project the
+// roots carry no project library, so the configured one is filled in here:
+// the setting is still there to see and change.
+func skillsSetup(roots skills.Roots) skills.Setup {
+	setup := skills.DetectSetup(roots)
+	if roots.ProjectRoot == "" {
+		if cfg, err := userconfig.Load(); err == nil && cfg.Skills.ProjectLibrary != "" {
+			setup.ProjectLibrary = cfg.Skills.ProjectLibrary
+		}
+	}
+	return setup
 }
 
 // attachedFiles is the trailer a prompt carries for the files a human

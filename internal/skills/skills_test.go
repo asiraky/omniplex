@@ -85,10 +85,54 @@ func fixture(t *testing.T) Roots {
 	write(t, filepath.Join(project, ".claude", "agents-real", "local.md"), "---\nname: local\ndescription: Project agent\n---\n")
 	link(t, "agents-real", filepath.Join(project, ".claude", "agents"))
 
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("PI_CODING_AGENT_DIR", "")
+	clearEnv(t)
 	return DefaultRoots(home, nil, project)
+}
+
+// clearEnv keeps the developer's own harness and XDG settings out of the
+// roots a test builds.
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "XDG_STATE_HOME"} {
+		t.Setenv(key, "")
+	}
+}
+
+// machine is an empty home and project with nothing linked, for a test that
+// lays out its own skills.
+func machine(t *testing.T) Roots {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, project := filepath.Join(base, "home"), filepath.Join(base, "project")
+	for _, dir := range []string{home, project} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearEnv(t)
+	return DefaultRoots(home, nil, project)
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func isSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func byName(t *testing.T, list []Skill) map[string]Skill {
@@ -199,10 +243,23 @@ func TestDefaultRoots(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/from/process")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", "/process/claude")
+	t.Setenv("XDG_STATE_HOME", "")
 	r := DefaultRoots("/h", map[string]string{"CLAUDE_CONFIG_DIR": "~/inst/a"}, "/p/")
-	want := Roots{Home: "/h", ClaudeConfigDir: "/h/inst/a", CodexHome: "/from/process", PiAgentDir: "/h/.pi/agent", ProjectRoot: "/p"}
-	if r != want {
-		t.Errorf("got %+v, want %+v", r, want)
+	got := [5]string{r.Home, r.ClaudeConfigDir, r.CodexHome, r.PiAgentDir, r.ProjectRoot}
+	want := [5]string{"/h", "/h/inst/a", "/from/process", "/h/.pi/agent", "/p"}
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if !strings.HasPrefix(r.Library, "/h/") || !strings.HasPrefix(r.ProjectLibrary, "/p/") || !strings.HasPrefix(r.CLILock, "/h/") {
+		t.Errorf("library %q, project library %q and lock %q should sit under the home and the project", r.Library, r.ProjectLibrary, r.CLILock)
+	}
+	if none := DefaultRoots("/h", nil, ""); none.ProjectLibrary != "" {
+		t.Errorf("project library %q with no project", none.ProjectLibrary)
+	}
+	// The skills CLI keeps its lock under XDG_STATE_HOME when that is set.
+	t.Setenv("XDG_STATE_HOME", "/state")
+	if lock := DefaultRoots("/h", nil, "").CLILock; !strings.HasPrefix(lock, "/state/") {
+		t.Errorf("lock = %q, want it under XDG_STATE_HOME", lock)
 	}
 }
 
