@@ -331,3 +331,31 @@ func TestAuthFlowScrubsSecretFromEvents(t *testing.T) {
 		t.Errorf("final event should carry the redacted error: %+v", last)
 	}
 }
+
+// A general flow needs no provider instance: whatever run narrates reaches the
+// channel, and its error ends the flow with secret answers scrubbed.
+func TestBeginFlowRunsArbitrarySignIn(t *testing.T) {
+	mgr, _ := flowTestManager(t)
+	id, ch, err := mgr.BeginFlow(func(ctx context.Context, ia adapter.AuthInteraction) error {
+		v, err := ia.Prompt(ctx, adapter.AuthPrompt{Message: "token", Secret: true})
+		if err != nil {
+			return err
+		}
+		return errors.New("rejected " + v)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := <-ch
+	if ev.Prompt == nil {
+		t.Fatalf("first event should be the prompt: %+v", ev)
+	}
+	if err := mgr.RespondAuthFlow(id, ev.Prompt.ID, "tok-123"); err != nil {
+		t.Fatal(err)
+	}
+	evs := collect(t, ch)
+	last := evs[len(evs)-1]
+	if !last.Done || last.Err != "rejected [secret]" {
+		t.Errorf("final event = %+v", last)
+	}
+}
