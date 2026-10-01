@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // syncKey is Claude Code's switch for the skills enabled on a claude.ai
@@ -88,10 +89,17 @@ func readThrough(path string) (content, real string, err error) {
 	return string(data), real, err
 }
 
+// editMu serialises config edits. Commands run concurrently, and two edits
+// that read the same file would otherwise each write back without the other's
+// change.
+var editMu sync.Mutex
+
 // editThrough rewrites a config file with edit, through a symlink to its
 // target. A missing file reads as empty and is only created if edit returns
 // something; nothing is written when the content does not change.
 func editThrough(path string, edit func(content string, exists bool) (string, error)) error {
+	editMu.Lock()
+	defer editMu.Unlock()
 	content, real, err := readThrough(path)
 	exists := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

@@ -149,10 +149,19 @@ func SetMode(r Roots, dir, mode string) (Skill, error) {
 	if !s.Editable {
 		return Skill{}, ErrNotEditable
 	}
+	off := mode == ModeOff
+	// Turning off adds a table to config.toml; refuse before anything is
+	// written rather than leave the skill half off.
+	if off && r.CodexHome != "" {
+		if content, _, err := readThrough(codexConfigPath(r)); err == nil {
+			if err := codexSkillsElsewhere(content); err != nil {
+				return Skill{}, err
+			}
+		}
+	}
 	if err := SetManual(s.Dir, mode != ModeOn); err != nil {
 		return Skill{}, err
 	}
-	off := mode == ModeOff
 	if r.ClaudeConfigDir != "" {
 		if err := editSettings(claudeSettingsPath(r), func(content string) (string, error) {
 			return setClaudeOff(content, s, off)

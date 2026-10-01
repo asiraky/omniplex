@@ -2,7 +2,9 @@ package skills
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -58,31 +60,116 @@ func tomlLines(content string) []string {
 	return strings.SplitAfter(content, "\n")
 }
 
+// tomlHeader is a line that opens a table: [a.b] or [[a.b]], maybe with a
+// comment after it.
+var tomlHeader = regexp.MustCompile(`^\[\[?[^\[\]=,#]+\]\]?\s*(#.*)?$`)
+
+// bareKey takes the spaces and quotes out of a key or header, so that
+// [ "skills" . bundled ] reads as [skills.bundled].
+var bareKey = strings.NewReplacer(" ", "", "\t", "", `"`, "", "'", "")
+
+// scanTOML finds the tables of a TOML file and the keys in each. The first
+// table, with no header and at -1, holds the keys before any header. Lines
+// inside a multi-line string or array are neither keys nor headers, so text
+// in, say, an instruction string that looks like a table is left alone.
 func scanTOML(lines []string) []tomlTable {
-	var out []tomlTable
+	out := []tomlTable{{at: -1}}
+	str := ""  // the delimiter of a multi-line string left open
+	depth := 0 // how many brackets a multi-line value has left open
 	for i, raw := range lines {
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
+		switch {
+		case str != "":
+			if strings.Contains(line, str) {
+				str = ""
+			}
 			continue
-		}
-		if strings.HasPrefix(line, "[") {
+		case depth > 0:
+			depth += bracketDepth(line)
+			continue
+		case line == "" || strings.HasPrefix(line, "#"):
+			continue
+		case tomlHeader.MatchString(line):
 			header, _, _ := strings.Cut(line, "#")
-			header = strings.NewReplacer(" ", "", "\t", "", `"`, "", "'", "").Replace(header)
-			out = append(out, tomlTable{header: header, at: i, end: i + 1})
+			out = append(out, tomlTable{header: bareKey.Replace(header), at: i, end: i + 1})
 			continue
-		}
-		if len(out) == 0 {
-			continue // a top-level key
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
+		value = strings.TrimSpace(value)
+		str = openString(value)
+		if str == "" {
+			depth = max(bracketDepth(value), 0)
+		}
 		t := &out[len(out)-1]
-		t.keys = append(t.keys, tomlKey{name: unquote(key), value: strings.TrimSpace(value), at: i})
+		t.keys = append(t.keys, tomlKey{name: unquote(key), value: value, at: i})
 		t.end = i + 1
 	}
 	return out
+}
+
+// openString is the delimiter of a multi-line string that value starts and
+// does not close on the same line, or "".
+func openString(value string) string {
+	for _, d := range []string{`"""`, `'''`} {
+		if strings.HasPrefix(value, d) && !strings.Contains(value[len(d):], d) {
+			return d
+		}
+	}
+	return ""
+}
+
+// bracketDepth counts the brackets and braces a line opens less the ones it
+// closes, skipping strings and a trailing comment.
+func bracketDepth(line string) int {
+	n := 0
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; c {
+		case '#':
+			return n
+		case '[', '{':
+			n++
+		case ']', '}':
+			n--
+		case '"', '\'':
+			for i++; i < len(line) && line[i] != c; i++ {
+				if c == '"' && line[i] == '\\' {
+					i++
+				}
+			}
+		}
+	}
+	return n
+}
+
+// codexSkillsElsewhere refuses a config.toml that sets skills.bundled or
+// skills.config some way other than the tables written here: a key under
+// [skills], a dotted key, or an inline table. Adding a table header for a key
+// already defined like that leaves a file TOML will not read.
+func codexSkillsElsewhere(content string) error {
+	lines := tomlLines(content)
+	for _, t := range scanTOML(lines) {
+		prefix := ""
+		switch t.header {
+		case "":
+		case "[skills]":
+			prefix = "skills."
+		default:
+			continue
+		}
+		for _, k := range t.keys {
+			raw, _, _ := strings.Cut(strings.TrimSpace(lines[k.at]), "=")
+			full := prefix + bareKey.Replace(raw)
+			for _, name := range []string{"skills.bundled", "skills.config"} {
+				if full == "skills" || full == name || strings.HasPrefix(full, name+".") {
+					return fmt.Errorf("%w: %s in Codex's config.toml is written in a form this cannot change; edit it by hand", ErrInvalid, name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func tablesNamed(lines []string, header string) []tomlTable {
@@ -301,6 +388,11 @@ func SetCodexBundled(r Roots, on bool) error {
 		return errors.New("no Codex home")
 	}
 	return editThrough(codexConfigPath(r), func(content string, _ bool) (string, error) {
+		if !on {
+			if err := codexSkillsElsewhere(content); err != nil {
+				return "", err
+			}
+		}
 		return editCodexBundled(content, on), nil
 	})
 }

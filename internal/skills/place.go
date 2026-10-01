@@ -179,7 +179,9 @@ func InstallStaged(r Roots, id string, names []string) ([]Skill, error) {
 			return nil, err
 		}
 		target := filepath.Join(library, sf.Name)
-		if info, err := os.Lstat(target); err == nil && !info.IsDir() {
+		// A link is replaced like a folder: swapIn moves the link itself,
+		// never what it points at.
+		if info, err := os.Lstat(target); err == nil && !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			return nil, fmt.Errorf("%w: %s in %s is not a folder this can replace", ErrInvalid, sf.Name, abbreviate(library, r.Home))
 		}
 		hash, err := HashDir(folder)

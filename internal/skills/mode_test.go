@@ -456,3 +456,18 @@ func TestSetModeFiles(t *testing.T) {
 		}
 	})
 }
+
+func TestSetModeOffRefusesAConfigItCannotEditBeforeWritingAnything(t *testing.T) {
+	r := machine(t)
+	dir := everywhere(t, r, "s", "")
+	config := filepath.Join(r.CodexHome, "config.toml")
+	in := "[skills]\nconfig = []\n"
+	write(t, config, in)
+	before := read(t, filepath.Join(dir, "SKILL.md"))
+	if _, err := SetMode(r, dir, ModeOff); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err %v, want a refusal", err)
+	}
+	if read(t, config) != in || read(t, filepath.Join(dir, "SKILL.md")) != before || exists(filepath.Join(r.ClaudeConfigDir, "settings.json")) {
+		t.Fatal("a refused off still wrote something")
+	}
+}

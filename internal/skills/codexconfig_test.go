@@ -1,7 +1,11 @@
 package skills
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -142,5 +146,88 @@ func TestSetCodexBundledMakesNoFileToSayOn(t *testing.T) {
 	}
 	if exists(filepath.Join(r.CodexHome, "config.toml")) {
 		t.Fatal("turning on created config.toml")
+	}
+}
+
+func TestTheScanSkipsMultiLineValues(t *testing.T) {
+	in := "developer_instructions = \"\"\"\nExample:\n[skills.bundled]\nenabled = true\n\"\"\"\nexamples = [\n  [\"a\"],\n  [\"[skills.bundled]\"],\n]\nnote = '''one line'''\n"
+	if !codexBundled(in) {
+		t.Fatal("text inside a string read as the switch")
+	}
+	off := editCodexBundled(in, false)
+	if want := in + "\n[skills.bundled]\nenabled = false\n"; off != want {
+		t.Fatalf("off:\n%q\nwant\n%q", off, want)
+	}
+	if codexBundled(off) {
+		t.Fatal("still on after off")
+	}
+	if on := editCodexBundled(off, true); on != in {
+		t.Fatalf("on again:\n%q", on)
+	}
+}
+
+func TestCodexSkillsElsewhere(t *testing.T) {
+	for in, refused := range map[string]bool{
+		"":                                            false,
+		"model = \"x\"\n[skills]\nenabled = 1\n":      false,
+		"[skills.bundled]\nenabled = true\n":          false,
+		codexEntry("/a/SKILL.md", "false"):            false,
+		"[skills.bundled.extra]\nx = 1\n":             false,
+		"bundled = 1\n[x]\nskills.config = 1\n":       false,
+		"skillsx = 1\n[skills]\nbundledx = 1\n":       false,
+		"[skills]\nbundled = { enabled = true }\n":    true,
+		"[skills]\nbundled.enabled = true\n":          true,
+		"[ skills ]\n\"config\" = []\n":               true,
+		"skills.bundled.enabled = true\n":             true,
+		"skills = { bundled = { enabled = true } }\n": true,
+		"s = \"\"\"\n[skills]\nbundled = 1\n\"\"\"\n": false,
+	} {
+		err := codexSkillsElsewhere(in)
+		if refused != errors.Is(err, ErrInvalid) {
+			t.Errorf("%q: err %v, want refused %v", in, err, refused)
+		}
+	}
+}
+
+func TestSetCodexBundledRefusesAKeyItCannotEdit(t *testing.T) {
+	r := machine(t)
+	path := filepath.Join(r.CodexHome, "config.toml")
+	in := "[skills]\nbundled = { enabled = true }\n"
+	write(t, path, in)
+	if err := SetCodexBundled(r, false); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err %v, want a refusal", err)
+	}
+	if got := read(t, path); got != in {
+		t.Fatalf("file changed: %q", got)
+	}
+	// On only ever takes lines out, so it goes ahead.
+	if err := SetCodexBundled(r, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConcurrentConfigEditsKeepEachOther(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	write(t, path, "{}\n")
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v := "true"
+			if err := editSettings(path, func(c string) (string, error) {
+				return setTopKey(c, fmt.Sprintf("k%d", i), &v)
+			}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	var got map[string]bool
+	if err := json.Unmarshal([]byte(read(t, path)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 {
+		t.Fatalf("%d of 20 edits survived: %v", len(got), got)
 	}
 }

@@ -256,3 +256,24 @@ func TestCopySkillLeavesGitBehind(t *testing.T) {
 		t.Error("a script stopped being executable")
 	}
 }
+
+func TestInstallReplacesALinkedSkill(t *testing.T) {
+	staging(t)
+	r := machine(t)
+	elsewhere := filepath.Join(r.Home, "dev", "one")
+	write(t, filepath.Join(elsewhere, "SKILL.md"), skillMD("one", "Mine"))
+	link(t, elsewhere, filepath.Join(r.Library, "one"))
+	got, _ := stageLocal(t, r, twoSkills)
+	if !got.Skills[0].Installed {
+		t.Fatalf("staged = %+v", got.Skills)
+	}
+	if _, err := InstallStaged(r, got.ID, []string{"one"}); err != nil {
+		t.Fatal(err)
+	}
+	if isSymlink(filepath.Join(r.Library, "one")) || read(t, filepath.Join(r.Library, "one", "notes.md")) != "fetched" {
+		t.Error("the link was not replaced by the fetched copy")
+	}
+	if read(t, filepath.Join(elsewhere, "SKILL.md")) != skillMD("one", "Mine") {
+		t.Error("the folder the link pointed at was touched")
+	}
+}
