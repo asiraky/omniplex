@@ -453,7 +453,16 @@ function CliDetail({
               No accounts yet. Add one per sign-in you want the agents to have.
             </p>
           )}
-          <AddAccount cli={cli} command={command} startOpen={n === 0} onCli={(next) => onSaved(next)} />
+          <AddAccount
+            cli={cli}
+            command={command}
+            startOpen={n === 0}
+            onCli={(next) => {
+              onSaved(next);
+              // A new account is unchecked: ask now, so its row says where it stands.
+              void check();
+            }}
+          />
         </section>
 
         <section aria-label="Details" className="space-y-1.5">

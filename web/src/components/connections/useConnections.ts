@@ -129,6 +129,8 @@ export interface LiveReport {
   error: string;
   /** The server being reconnected. */
   busy: string | null;
+  /** The last reconnect that failed, kept with its server's row. */
+  failed: { name: string; error: string } | null;
   refresh: () => void;
   reconnect: (name: string) => Promise<void>;
 }
@@ -143,6 +145,7 @@ export function useLiveReport(command: PageCommand, threadId: string | undefined
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<{ name: string; error: string } | null>(null);
   const [seq, setSeq] = useState(0);
   const commandRef = useLatest(command);
   const [on, setOn] = useState(shown);
@@ -153,6 +156,7 @@ export function useLiveReport(command: PageCommand, threadId: string | undefined
     let stale = false;
     setLoading(true);
     setError("");
+    setFailed(null);
     commandRef
       .current<ThreadMcpReport>("thread_mcp_status", { threadId })
       .then((r) => !stale && setReport({ live: !!r?.live, servers: r?.servers ?? [] }))
@@ -169,12 +173,12 @@ export function useLiveReport(command: PageCommand, threadId: string | undefined
     async (name: string) => {
       if (!threadId) return;
       setBusy(name);
-      setError("");
+      setFailed(null);
       try {
         const r = await commandRef.current<ThreadMcpReport>("thread_mcp_reconnect", { threadId, name });
         setReport({ live: !!r?.live, servers: r?.servers ?? [] });
       } catch (e) {
-        setError(errorText(e));
+        setFailed({ name, error: errorText(e) });
       } finally {
         setBusy(null);
       }
@@ -182,5 +186,5 @@ export function useLiveReport(command: PageCommand, threadId: string | undefined
     [threadId, commandRef],
   );
 
-  return { report, loading, error, busy, refresh, reconnect };
+  return { report, loading, error, busy, failed, refresh, reconnect };
 }

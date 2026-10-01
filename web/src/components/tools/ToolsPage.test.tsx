@@ -129,6 +129,32 @@ describe("the thread's live view", () => {
     expect(calls(command, "thread_mcp_status")).toHaveLength(1);
   });
 
+  it("keeps a failed reconnect with its row and the rest of the report", async () => {
+    const { command } = backend(
+      {
+        thread_mcp_reconnect: () => {
+          throw new Error("still down");
+        },
+      },
+      {
+        live: true,
+        servers: [
+          { name: "docs", status: "failed", error: "refused" },
+          { name: "local", status: "connected" },
+        ],
+      },
+    );
+    renderPage(command, "mcp", "t1");
+    const reconnect = await waitFor(() => within(liveSection()).getByRole("button", { name: "Reconnect" }));
+    await act(async () => fireEvent.click(reconnect));
+    const problem = within(liveSection()).getByRole("button", { name: /still down/ });
+    expect(problem.getAttribute("aria-expanded")).toBe("false");
+    expect(within(liveSection()).getByRole("button", { name: /^local\b/ })).toBeTruthy();
+    // Asking again clears it.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Ask the agent again" })));
+    await waitFor(() => expect(within(liveSection()).queryByRole("button", { name: /still down/ })).toBeNull());
+  });
+
   it("offers sign in only for our remote server", async () => {
     const { command } = backend(
       {},
@@ -253,11 +279,18 @@ describe("sign-ins", () => {
     const { command, state } = backend({
       add_cli_account: (args) => {
         const c = state.clis[0];
-        return { cli: { ...c, accounts: [...c.accounts, { name: String(args.account), env: {}, status: "signed_out" }] } };
+        state.clis = [{ ...c, accounts: [...c.accounts, { name: String(args.account), env: {}, status: "unchecked" }] }];
+        return { cli: state.clis[0] };
+      },
+      check_cli: () => {
+        const c = state.clis[0];
+        state.clis = [{ ...c, accounts: c.accounts.map((a) => (a.status === "unchecked" ? { ...a, status: "signed_out" } : a)) }];
+        return { cli: state.clis[0] };
       },
       remove_cli_account: (args) => {
         const c = state.clis[0];
-        return { cli: { ...c, accounts: c.accounts.filter((a) => a.name !== args.account) } };
+        state.clis = [{ ...c, accounts: c.accounts.filter((a) => a.name !== args.account) }];
+        return { cli: state.clis[0] };
       },
     });
     state.clis = [cli({ accounts: [{ name: "home", env: {}, status: "signed_in" }] })];
@@ -275,6 +308,9 @@ describe("sign-ins", () => {
     expect(calls(command, "add_cli_account")).toEqual([{ id: "gws", account: "work" }]);
     const accounts = screen.getByRole("region", { name: "Accounts" });
     await within(accounts).findByText("work");
+    // A new account is checked straight away, not left unchecked.
+    await waitFor(() => expect(calls(command, "check_cli")).toHaveLength(1));
+    expect(within(screen.getByRole("tablist")).getByRole("tab", { name: /needs attention/ })).toBeTruthy();
 
     fireEvent.click(within(accounts).getByRole("button", { name: "Remove home" }));
     expect(calls(command, "remove_cli_account")).toHaveLength(0);

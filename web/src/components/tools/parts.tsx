@@ -165,6 +165,7 @@ export function Segmented<T extends string>({
             role={radio ? "radio" : "tab"}
             aria-selected={radio ? undefined : selected}
             aria-checked={radio ? selected : undefined}
+            aria-label={o.attention ? `${o.label}${o.count !== undefined ? ` ${o.count}` : ""}, needs attention` : undefined}
             disabled={disabled}
             onClick={() => onChange(o.id)}
             className={cn(
@@ -177,11 +178,7 @@ export function Segmented<T extends string>({
           >
             {o.label}
             {o.count !== undefined && <span className="text-muted-foreground ml-1 tabular-nums">{o.count}</span>}
-            {o.attention && (
-              <span className="bg-attention ml-1.5 inline-block size-1.5 rounded-full align-middle">
-                <span className="sr-only">, needs attention</span>
-              </span>
-            )}
+            {o.attention && <span aria-hidden className="bg-attention ml-1.5 inline-block size-1.5 rounded-full align-middle" />}
           </button>
         );
       })}

@@ -58,6 +58,7 @@ export function ServerDetail({
   command,
   live,
   reconnecting,
+  reconnectError,
   onReconnect,
   onBack,
   onSaved,
@@ -70,6 +71,8 @@ export function ServerDetail({
   /** The open thread's report on this server, when it has one. */
   live?: ThreadMcp;
   reconnecting: boolean;
+  /** Why the last reconnect of this server failed. */
+  reconnectError?: string;
   onReconnect: () => void;
   onBack: () => void;
   onSaved: (s: McpServer, previousName?: string) => void;
@@ -187,7 +190,15 @@ export function ServerDetail({
 
           <div className="flex flex-wrap items-center gap-2">
             {offerSignIn && (
-              <Button size="sm" className={ACTION} onClick={onSignIn} disabled={busy !== null}>
+              // Loud only when the server asked for it; after a plain failure
+              // it is one thing to try among others.
+              <Button
+                variant={server.status === "sign_in" ? "default" : "outline"}
+                size="sm"
+                className={ACTION}
+                onClick={onSignIn}
+                disabled={busy !== null}
+              >
                 <KeyRoundIcon className="size-3.5" />
                 Sign in
               </Button>
@@ -242,7 +253,11 @@ export function ServerDetail({
                   </Button>
                 )}
               </div>
-              {live.error && <FoldedProblem problem={live.error} tone={live.status === "failed" ? "bad" : "attention"} />}
+              {reconnectError ? (
+                <FoldedProblem problem={`Reconnect failed. ${reconnectError}`} tone="bad" />
+              ) : (
+                live.error && <FoldedProblem problem={live.error} tone={live.status === "failed" ? "bad" : "attention"} />
+              )}
             </div>
           </section>
         )}

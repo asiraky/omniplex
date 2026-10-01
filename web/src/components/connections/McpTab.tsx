@@ -7,6 +7,7 @@ import {
   DetailHeader,
   ErrorLine,
   FactList,
+  FoldedProblem,
   ListRow,
   ListToolbar,
   Loading,
@@ -214,6 +215,7 @@ export function McpTab({
         command={command}
         live={live.report?.live ? live.report.servers.find((x) => x.name === s.name) : undefined}
         reconnecting={live.busy === s.name}
+        reconnectError={live.failed?.name === s.name ? live.failed.error : undefined}
         onReconnect={() => void live.reconnect(s.name)}
         onBack={() => go(null)}
         onSaved={(saved, previous) => {
@@ -335,7 +337,7 @@ function LiveSection({
 }) {
   const { report } = live;
   let note: ReactNode;
-  if (live.error) note = <ErrorLine message={`Could not ask the agent. ${live.error}`} />;
+  if (live.error) note = <FoldedProblem problem={`Could not ask the agent. ${live.error}`} tone="bad" />;
   else if (!report && live.loading)
     note = (
       <span className="flex items-center gap-2">
@@ -364,6 +366,7 @@ function LiveSection({
           {rows.map((s) => {
             const action = ours ? liveAction(s, ours) : null;
             const own = !!ours?.some((o) => o.name === s.name);
+            const failed = live.failed?.name === s.name ? `Reconnect failed. ${live.failed.error}` : undefined;
             return (
               <li key={s.name}>
                 <ListRow
@@ -376,9 +379,9 @@ function LiveSection({
                         : "From the agent's own config"
                       : undefined
                   }
-                  problem={s.error}
+                  problem={failed ?? s.error}
                   foldProblem
-                  problemTone={s.status === "failed" ? "bad" : "attention"}
+                  problemTone={failed || s.status === "failed" ? "bad" : "attention"}
                   onOpen={own ? () => onOpenServer(s.name) : undefined}
                   action={
                     action === "sign_in" ? (
