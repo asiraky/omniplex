@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/asiraky/omniplex/internal/endpoints"
+	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
@@ -346,9 +347,16 @@ type instanceArgs struct {
 	InstanceID string `json:"instanceId"`
 }
 
+// authBeginArgs starts one of three kinds of sign-in: a provider instance's
+// method, an MCP server's OAuth (MCPServer, with the browser's Origin, which
+// decides where the authorization server sends it back), or a CLI account.
 type authBeginArgs struct {
 	InstanceID string `json:"instanceId"`
 	MethodID   string `json:"methodId"`
+	MCPServer  string `json:"mcpServer"`
+	Origin     string `json:"origin"`
+	CLI        string `json:"cli"`
+	Account    string `json:"account"`
 }
 
 // authRespondArgs answers one prompt of a running flow. Value may be a secret;
@@ -377,4 +385,47 @@ type modelSettingArgs struct {
 type logoutArgs struct {
 	InstanceID string `json:"instanceId"`
 	MethodID   string `json:"methodId"`
+}
+
+// saveMCPServerArgs carries a server with its env and header values. They
+// travel here on their way to the secret store and are never echoed back.
+type saveMCPServerArgs struct {
+	Server       mcp.Draft `json:"server"`
+	PreviousName string    `json:"previousName"`
+}
+
+type mcpServerArgs struct {
+	Name string `json:"name"`
+}
+
+type setMCPServerOffArgs struct {
+	Name string   `json:"name"`
+	Off  []string `json:"off"`
+}
+
+type parseMCPServerArgs struct {
+	Text string `json:"text"`
+}
+
+type addFoundServerArgs struct {
+	Harness string `json:"harness"`
+	Name    string `json:"name"`
+	// Where is the server's URL or command, which tells apart same-named
+	// servers in two instances' configs.
+	Where string `json:"where"`
+}
+
+type saveCLIArgs struct {
+	CLI        mcp.CLI `json:"cli"`
+	PreviousID string  `json:"previousId"`
+}
+
+type cliArgs struct {
+	ID      string `json:"id"`
+	Account string `json:"account"`
+}
+
+type threadMCPArgs struct {
+	ThreadID string `json:"threadId"`
+	Name     string `json:"name"`
 }

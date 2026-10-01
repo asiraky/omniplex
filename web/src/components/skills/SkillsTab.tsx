@@ -1,13 +1,17 @@
-import { ChevronRightIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { IconButton } from "~/components/IconButton";
-import { Button } from "~/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible";
+import {
+  ErrorLine,
+  ListRow,
+  ListToolbar,
+  Loading,
+  LoadError,
+  Section,
+  type PageCommand,
+} from "~/components/tools/parts";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import {
-  errorText,
   matchesQuery,
   SECTION_ORDER,
   sectionSkills,
@@ -16,12 +20,12 @@ import {
   type SkillsList,
   type SkillsScope,
 } from "~/lib/skills";
-import { cn } from "~/lib/utils";
+import { cn, errorText } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
 import { AddSheet } from "./AddSheet";
 import { CommitStrip } from "./CommitStrip";
-import { ErrorLine, ModeChip, ProblemText, type SkillsCommand } from "./parts";
+import { ModeChip } from "./parts";
 import { SkillDetailView } from "./SkillDetailView";
 
 /** Sections that are not ours to edit start folded; the reader came for their own. */
@@ -38,28 +42,15 @@ const baseName = (path: string) => path.replace(/[/\\]+$/, "").split(/[/\\]/).po
 /** Name, two lines of description, a chip only when the skill is not on. */
 function SkillRow({ skill, showPlugin, onOpen }: { skill: Skill; showPlugin: boolean; onOpen: (skill: Skill) => void }) {
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(skill)}
-      className={cn(
-        "hover:bg-accent/50 focus-visible:ring-ring flex min-h-11 w-full flex-col justify-center gap-0.5 rounded-md px-2 py-2 text-left transition-colors outline-none focus-visible:ring-2",
-        skill.mode === "off" && "opacity-60",
-      )}
-    >
-      <span className="flex w-full min-w-0 items-center gap-1.5">
-        {/* The spaces are for the button's spoken name; flex drops them on screen. */}
-        <span className="min-w-0 truncate font-mono text-[13px]">{skill.name}</span>{" "}
-        {showPlugin && skill.plugin && (
-          <span className="text-muted-foreground min-w-0 truncate text-[11.5px]">{skill.plugin}</span>
-        )}{" "}
-        <span className="ml-auto" />
-        <ModeChip mode={skill.mode} />
-      </span>{" "}
-      {skill.description && (
-        <span className="text-muted-foreground line-clamp-2 text-[12.5px] leading-snug">{skill.description}</span>
-      )}
-      <ProblemText problem={skill.problem} />
-    </button>
+    <ListRow
+      title={skill.name}
+      aside={showPlugin ? skill.plugin : undefined}
+      markers={<ModeChip mode={skill.mode} />}
+      sub={skill.description}
+      problem={skill.problem}
+      dim={skill.mode === "off"}
+      onOpen={() => onOpen(skill)}
+    />
   );
 }
 
@@ -99,57 +90,12 @@ function SectionSwitch({
   );
 }
 
-function Section({
-  title,
-  count,
-  open,
-  onOpenChange,
-  action,
-  note,
-  children,
-}: {
-  title: string;
-  count: number;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** Sits at the right end of the header, outside the fold control. */
-  action?: ReactNode;
-  /** A line under the header, shown folded or not. */
-  note?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section aria-label={title} className="mb-1">
-      <Collapsible open={open} onOpenChange={onOpenChange}>
-        <div className="flex flex-wrap items-center">
-          <CollapsibleTrigger className="text-muted-foreground hover:text-foreground focus-visible:ring-ring group flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-[11px] font-semibold tracking-wide uppercase outline-none focus-visible:ring-2 md:min-h-8">
-            <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
-            <span className="truncate">{title}</span>
-            {count > 0 && <span className="tabular-nums">{count}</span>}
-          </CollapsibleTrigger>
-          {action}
-        </div>
-        {note && <p className="text-muted-foreground px-2 pb-1 text-[12.5px] leading-snug">{note}</p>}
-        <CollapsibleContent>{children}</CollapsibleContent>
-      </Collapsible>
-    </section>
-  );
-}
-
 /**
- * The Skills page: every skill the agents can see from here, in fixed
+ * The Skills tab: every skill the agents can see from here, in fixed
  * sections, with an editor for the ones that are ours. Read again on open and
  * after every change.
  */
-export function SkillsPage({
-  command,
-  scope,
-  onClose,
-}: {
-  command: SkillsCommand;
-  scope: SkillsScope;
-  onClose: () => void;
-}) {
+export function SkillsTab({ command, scope }: { command: PageCommand; scope: SkillsScope }) {
   const scopeArgs = useMemo(() => {
     const args: Record<string, unknown> = {};
     if (scope.threadId) args.threadId = scope.threadId;
@@ -343,94 +289,46 @@ export function SkillsPage({
   const noMatches = searching && list !== null && rendered.every((r) => r === null);
 
   return (
-    <div className="bg-background fixed inset-0 z-50 flex flex-col pb-[env(safe-area-inset-bottom)]">
-      <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-4">
-        <IconButton label="Close skills" onClick={onClose}>
-          <XIcon />
-        </IconButton>
-        <h1 className="min-w-0 flex-1 text-[15px] leading-tight font-semibold">Skills</h1>
-      </header>
-      <div className="min-h-0 flex-1 border-t">
-        {/* A list of names and sentences: past this width the lines only get
-            harder to follow. */}
-        <div className="relative mx-auto flex h-full w-full max-w-3xl min-h-0 flex-col">
-          <div className={cn("flex h-full min-h-0 flex-col", open && "hidden")} aria-hidden={open ? true : undefined}>
-            <div className="flex items-center gap-1.5 border-b px-2 py-1">
-              <div className="relative min-w-0 flex-1">
-                <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
-                <input
-                  type="search"
-                  value={query}
-                  onChange={(e) => changeQuery(e.target.value)}
-                  placeholder="Search skills"
-                  aria-label="Search skills"
-                  className="placeholder:text-muted-foreground focus-visible:ring-ring h-11 w-full rounded-md bg-transparent pr-7 pl-7 text-base outline-none focus-visible:ring-2 md:h-8 md:text-[12px] [&::-webkit-search-cancel-button]:hidden"
-                />
-                {query && (
-                  <button
-                    type="button"
-                    aria-label="Clear search"
-                    onClick={() => changeQuery("")}
-                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-0 flex size-11 -translate-y-1/2 items-center justify-center md:size-8"
-                  >
-                    <XIcon className="size-3.5" />
-                  </button>
-                )}
-              </div>
-              <Button
-                size="sm"
-                className="h-11 shrink-0 text-[13px] md:h-8 md:text-[12px]"
-                onClick={() => {
-                  setAddSeq((n) => n + 1);
-                  setAdding(true);
-                }}
-              >
-                <PlusIcon className="size-3.5" />
-                Add
-              </Button>
-            </div>
+    <div className="relative flex h-full min-h-0 flex-col">
+      <div className={cn("flex h-full min-h-0 flex-col", open && "hidden")} aria-hidden={open ? true : undefined}>
+        <ListToolbar
+          query={query}
+          onQuery={changeQuery}
+          searchLabel="Search skills"
+          onAdd={() => {
+            setAddSeq((n) => n + 1);
+            setAdding(true);
+          }}
+        />
 
-            <CommitStrip command={command} scopeArgs={scopeArgs} version={loads} />
+        <CommitStrip command={command} scopeArgs={scopeArgs} version={loads} />
 
-            <div ref={listScrollRef} className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
-              {error && (
-                <div className="space-y-2 px-2 py-3">
-                  <ErrorLine message={`Could not list skills. ${error}`} />
-                  <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={refresh} disabled={loading}>
-                    Try again
-                  </Button>
-                </div>
-              )}
-              {loading && !list && (
-                <p className="text-muted-foreground flex items-center justify-center gap-2 px-2 py-10 text-[12.5px]">
-                  <Spinner className="text-primary size-3.5" /> Finding skills…
-                </p>
-              )}
-              {noMatches && (
-                <p className="text-muted-foreground px-2 py-10 text-center text-[12.5px]">
-                  No skills match “{query.trim()}”.
-                </p>
-              )}
-              {rendered}
-            </div>
-          </div>
-
-          {open && (
-            <div className="absolute inset-0">
-              <SkillDetailView
-                key={open.skill.dir}
-                command={command}
-                scopeArgs={scopeArgs}
-                skill={open.skill}
-                startEditing={open.edit}
-                onBack={() => setOpen(null)}
-                onChanged={upsert}
-                onRemoved={removed}
-              />
-            </div>
+        <div ref={listScrollRef} className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+          {error && <LoadError message={`Could not list skills. ${error}`} onRetry={refresh} busy={loading} />}
+          {loading && !list && <Loading>Finding skills…</Loading>}
+          {noMatches && (
+            <p className="text-muted-foreground px-2 py-10 text-center text-[12.5px]">
+              No skills match “{query.trim()}”.
+            </p>
           )}
+          {rendered}
         </div>
       </div>
+
+      {open && (
+        <div className="absolute inset-0">
+          <SkillDetailView
+            key={open.skill.dir}
+            command={command}
+            scopeArgs={scopeArgs}
+            skill={open.skill}
+            startEditing={open.edit}
+            onBack={() => setOpen(null)}
+            onChanged={upsert}
+            onRemoved={removed}
+          />
+        </div>
+      )}
 
       <AddSheet
         key={addSeq}

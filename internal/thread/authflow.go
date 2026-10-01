@@ -14,7 +14,8 @@ import (
 )
 
 // This file runs structured authentication flows. A flow is one adapter's
-// BeginAuth call, narrated to whichever client started it: display events out,
+// BeginAuth call, or any other sign-in (an MCP server's OAuth, a command-line
+// tool's account), narrated to whichever client started it: display events out,
 // prompt answers in. Flows are deliberately ephemeral and connection-scoped —
 // they are never written to the event log, because their traffic sits next to
 // secrets and because an abandoned half-finished OAuth dance is worthless to
@@ -54,10 +55,15 @@ type AuthFlowPrompt struct {
 }
 
 type authFlow struct {
-	id         string
-	instanceID string
-	cancel     context.CancelFunc
-	events     chan AuthFlowEvent
+	id     string
+	ctx    context.Context
+	cancel context.CancelFunc
+	events chan AuthFlowEvent
+	// sendMu guards closing events. An adapter may still be calling Notify or
+	// Prompt from a goroutine it left behind when the flow ended; that send
+	// must find the flow ended, not a closed channel.
+	sendMu sync.RWMutex
+	ended  bool
 
 	mu      sync.Mutex
 	pending map[string]chan string
@@ -67,6 +73,31 @@ type authFlow struct {
 	// message; every string leaving the flow is scrubbed against this list so
 	// a submitted secret can never ride out inside an event.
 	secrets []string
+}
+
+// send delivers one event, or reports false once the flow has ended.
+func (f *authFlow) send(ev AuthFlowEvent) bool {
+	f.sendMu.RLock()
+	defer f.sendMu.RUnlock()
+	if f.ended {
+		return false
+	}
+	select {
+	case f.events <- ev:
+		return true
+	case <-f.ctx.Done():
+		return false
+	}
+}
+
+// end closes events. The flow's context is cancelled first, so a send
+// waiting on a reader gives up and lets go of sendMu.
+func (f *authFlow) end() {
+	f.cancel()
+	f.sendMu.Lock()
+	f.ended = true
+	close(f.events)
+	f.sendMu.Unlock()
 }
 
 // noteSecret remembers a secret answer so scrub can redact it later.
@@ -99,7 +130,7 @@ func (ia interaction) Notify(ev adapter.AuthEvent) {
 	e := ev
 	e.Message = ia.f.scrub(e.Message)
 	e.Instructions = ia.f.scrub(e.Instructions)
-	ia.f.events <- AuthFlowEvent{FlowID: ia.f.id, Event: &e}
+	ia.f.send(AuthFlowEvent{FlowID: ia.f.id, Event: &e})
 }
 
 func (ia interaction) Prompt(ctx context.Context, p adapter.AuthPrompt) (string, error) {
@@ -115,7 +146,12 @@ func (ia interaction) Prompt(ctx context.Context, p adapter.AuthPrompt) (string,
 		ia.f.mu.Unlock()
 	}()
 
-	ia.f.events <- AuthFlowEvent{FlowID: ia.f.id, Prompt: &AuthFlowPrompt{ID: id, AuthPrompt: p}}
+	if ctx.Err() != nil || !ia.f.send(AuthFlowEvent{FlowID: ia.f.id, Prompt: &AuthFlowPrompt{ID: id, AuthPrompt: p}}) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return "", context.Canceled
+	}
 	select {
 	case v := <-answer:
 		if p.Secret {
@@ -128,10 +164,7 @@ func (ia interaction) Prompt(ctx context.Context, p adapter.AuthPrompt) (string,
 }
 
 // BeginAuthFlow starts one method's authentication flow for one instance and
-// returns the channel its narration arrives on. The channel closes when the
-// flow ends, after a final Done event. The caller owns delivery: if it stops
-// reading, it must cancel the flow, or the flow's goroutine would block on
-// send.
+// returns the channel its narration arrives on, as BeginFlow does.
 func (m *Manager) BeginAuthFlow(instanceID, methodID string) (string, <-chan AuthFlowEvent, error) {
 	if methodID == TerminalAuthMethod {
 		return "", nil, fmt.Errorf("the terminal method runs in the login terminal, not a structured flow")
@@ -148,34 +181,48 @@ func (m *Manager) BeginAuthFlow(instanceID, methodID string) (string, <-chan Aut
 	if err != nil {
 		return "", nil, err
 	}
+	return m.BeginFlow(func(ctx context.Context, ia adapter.AuthInteraction) error {
+		if err := flows.BeginAuth(ctx, env, methodID, ia); err != nil {
+			return err
+		}
+		// The harness now holds (or has revoked) a credential the cached
+		// probe knows nothing about; models may differ under the new identity
+		// too.
+		m.forgetInstance(instanceID)
+		return nil
+	})
+}
 
+// BeginFlow runs any sign-in flow under the flow engine: run narrates
+// through ia, and its error (scrubbed of secret answers) ends the flow. It
+// returns the flow id and the channel the narration arrives on. The channel
+// closes when the flow ends, after a final Done event. The caller owns
+// delivery: if it stops reading, it must cancel the flow, or the flow's
+// goroutine would block on send.
+func (m *Manager) BeginFlow(run func(ctx context.Context, ia adapter.AuthInteraction) error) (string, <-chan AuthFlowEvent, error) {
+	if run == nil {
+		return "", nil, fmt.Errorf("no sign-in flow to run")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), authFlowTimeout)
 	f := &authFlow{
-		id:         uuid.NewString(),
-		instanceID: instanceID,
-		cancel:     cancel,
-		events:     make(chan AuthFlowEvent, 16),
-		pending:    map[string]chan string{},
+		id:      uuid.NewString(),
+		ctx:     ctx,
+		cancel:  cancel,
+		events:  make(chan AuthFlowEvent, 16),
+		pending: map[string]chan string{},
 	}
 	m.authMu.Lock()
 	m.authFlows[f.id] = f
 	m.authMu.Unlock()
 
 	go func() {
-		defer close(f.events)
+		defer f.end()
 		defer func() {
 			m.authMu.Lock()
 			delete(m.authFlows, f.id)
 			m.authMu.Unlock()
-			cancel()
 		}()
-		err := flows.BeginAuth(ctx, env, methodID, interaction{f})
-		if err == nil {
-			// The harness now holds (or has revoked) a credential the cached
-			// probe knows nothing about; models may differ under the new
-			// identity too.
-			m.forgetInstance(instanceID)
-		}
+		err := run(ctx, interaction{f})
 		done := AuthFlowEvent{FlowID: f.id, Done: true}
 		if err != nil {
 			done.Err = f.scrub(err.Error())

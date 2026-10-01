@@ -4,10 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { defaultCommitMessage, normalizeGitStatus } from "~/lib/skillFlows";
-import { errorText, type GitStatus } from "~/lib/skills";
+import { type GitStatus } from "~/lib/skills";
+import { errorText } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
-import { ErrorLine, type SkillsCommand } from "./parts";
+import { ErrorLine, type PageCommand } from "~/components/tools/parts";
 
 /**
  * One line when the personal library is a git repo with uncommitted skill
@@ -22,7 +23,7 @@ export function CommitStrip({
   scopeArgs,
   version,
 }: {
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   version: unknown;
 }) {

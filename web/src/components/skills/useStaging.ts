@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { useLatest } from "~/useLatest";
 
-import type { SkillsCommand } from "./parts";
+import type { PageCommand } from "~/components/tools/parts";
 
 /**
  * The one staging dir a dialog holds on the server. A fetch can take a minute
@@ -10,7 +10,7 @@ import type { SkillsCommand } from "./parts";
  * the page by the time it lands; whichever happens, the dir is thrown away
  * rather than left for the server's hourly sweep.
  */
-export function useStaging(command: SkillsCommand, scopeArgs: Record<string, unknown>) {
+export function useStaging(command: PageCommand, scopeArgs: Record<string, unknown>) {
   const held = useRef("");
   // Bumped whenever whatever is in flight stops being wanted.
   const token = useRef(0);

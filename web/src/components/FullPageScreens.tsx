@@ -1,13 +1,16 @@
-import { lazy, Suspense, useCallback, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useMemo, type RefObject } from "react";
 
 import type { Client } from "~/client";
 import type { SkillsScope } from "~/lib/skills";
-import type { QuotaStatus, UsageReport } from "~/protocol";
+import type { ToolsTab } from "~/lib/toolsTab";
+import type { AuthFlowEvent, QuotaStatus, UsageReport } from "~/protocol";
+
+import type { AuthWires } from "./AuthFlowDialog";
 
 import { Spinner } from "./ui/spinner";
 
 const UsagePage = lazy(() => import("./Usage").then((m) => ({ default: m.UsagePage })));
-const SkillsPage = lazy(() => import("./skills/SkillsPage").then((m) => ({ default: m.SkillsPage })));
+const ToolsPage = lazy(() => import("./tools/ToolsPage").then((m) => ({ default: m.ToolsPage })));
 const ThemePreview = lazy(() =>
   import("./ThemePreview").then((m) => ({ default: m.ThemePreview })),
 );
@@ -64,26 +67,35 @@ export function UsageScreen({
 }
 
 /**
- * The Skills page, over the whole viewport. `scope` says whose skills it
- * lists.
+ * The Skills page, with its MCP and Sign-ins tabs, over the whole viewport.
+ * `scope` says whose skills it lists and which thread's session it asks.
  */
-export function SkillsScreen({
+export function ToolsScreen({
   clientRef,
   scope,
+  tab,
   onClose,
 }: {
   clientRef: RefObject<Client | null>;
   scope: SkillsScope;
+  tab?: ToolsTab;
   onClose: () => void;
 }) {
   const command = useCallback(
-    <T,>(name: string, args: Record<string, unknown>): Promise<T> =>
-      clientRef.current!.command(name, args),
+    (name: string, args: unknown) => clientRef.current!.command(name, args),
     [clientRef],
+  );
+  const wires = useMemo<AuthWires>(
+    () => ({
+      command,
+      subscribe: (flowId: string, listener: (ev: AuthFlowEvent) => void) =>
+        clientRef.current?.onAuthFlow(flowId, listener) ?? (() => {}),
+    }),
+    [command, clientRef],
   );
   return (
     <Suspense fallback={<PageSpinner />}>
-      <SkillsPage command={command} scope={scope} onClose={onClose} />
+      <ToolsPage wires={wires} scope={scope} tab={tab} onClose={onClose} />
     </Suspense>
   );
 }

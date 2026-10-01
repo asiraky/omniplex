@@ -1,22 +1,21 @@
-import { ArrowLeftIcon, ChevronRightIcon, PencilIcon, RefreshCwIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ChevronRightIcon, PencilIcon, RefreshCwIcon, Trash2Icon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { IconButton } from "~/components/IconButton";
 import { Markdown } from "~/components/Markdown";
+import {
+  ConfirmDialog,
+  DetailHeader,
+  EditStrip,
+  ErrorLine,
+  ProblemText,
+  Segmented,
+  type PageCommand,
+} from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
 import { Spinner } from "~/components/ui/spinner";
 import { fileIconFor } from "~/lib/fileIcons";
 import {
-  errorText,
   fmtSize,
   MODE_LABEL,
   MODE_TEXT,
@@ -27,10 +26,9 @@ import {
   type SkillFileContent,
   type SkillMode,
 } from "~/lib/skills";
-import { cn } from "~/lib/utils";
+import { cn, errorText } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
-import { ErrorLine, ProblemText, Segmented, type SkillsCommand } from "./parts";
 import { UpdateCheck } from "./UpdateCheck";
 
 type ViewMode = "preview" | "source";
@@ -97,7 +95,7 @@ function ModeSwitch({
   onChanged,
 }: {
   skill: Skill;
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   onChanged: (skill: Skill) => void;
 }) {
@@ -144,7 +142,7 @@ export function SkillDetailView({
   onChanged,
   onRemoved,
 }: {
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   skill: Skill;
   /** Open straight into the editor, as after creating the skill. */
@@ -178,8 +176,6 @@ export function SkillDetailView({
   // Bumped on every "Check for update", so each press is a fresh check.
   const [updateSeq, setUpdateSeq] = useState(0);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [removeError, setRemoveError] = useState("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<HTMLDivElement>(null);
@@ -306,50 +302,23 @@ export function SkillDetailView({
   };
 
   const remove = async () => {
-    if (removing) return;
-    setRemoving(true);
-    setRemoveError("");
-    try {
-      await commandRef.current("remove_skill", { ...argsRef.current, dir: skill.dir });
-      setConfirmingRemove(false);
-      onRemoved(skill);
-    } catch (e) {
-      setRemoveError(errorText(e));
-    } finally {
-      setRemoving(false);
-    }
+    await commandRef.current("remove_skill", { ...argsRef.current, dir: skill.dir });
+    onRemoved(skill);
   };
 
-  const header = (
-    <div className="flex items-start gap-1 border-b px-1 py-1">
-      <IconButton label="Back to skills" onClick={back}>
-        <ArrowLeftIcon />
-      </IconButton>
-      <div className="min-w-0 flex-1 py-1">
-        <h2 className="min-w-0 truncate font-mono text-[14px] font-medium" title={skill.name}>
-          {skill.name}
-        </h2>
-        <p className="text-muted-foreground mt-0.5 text-[12px] leading-snug break-words">{originText(skill)}</p>
-      </div>
-    </div>
-  );
+  const header = <DetailHeader backLabel="Back to skills" onBack={back} title={skill.name} sub={originText(skill)} />;
 
   if (editing) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         {header}
-        <div className="flex items-center gap-2 border-b px-3 py-1.5">
-          <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10.5px]">
-            Editing SKILL.md{dirty ? " · unsaved" : ""}
-          </span>
-          <Button variant="ghost" size="sm" className="h-11 text-[12px] md:h-8" onClick={cancelEdit} disabled={saving}>
-            Cancel
-          </Button>
-          <Button size="sm" className="h-11 text-[12px] md:h-8" onClick={() => void save()} disabled={saving || !dirty}>
-            {saving && <Spinner className="size-3.5" />}
-            Save
-          </Button>
-        </div>
+        <EditStrip
+          label={`Editing SKILL.md${dirty ? " · unsaved" : ""}`}
+          saving={saving}
+          canSave={dirty}
+          onCancel={cancelEdit}
+          onSave={() => void save()}
+        />
         {saveError && <ErrorLine message={saveError} className="border-b px-3 py-2" />}
         <textarea
           aria-label="SKILL.md source"
@@ -418,10 +387,7 @@ export function SkillDetailView({
                   variant="outline"
                   size="sm"
                   className={cn(actionClass, "text-destructive hover:text-destructive ml-auto")}
-                  onClick={() => {
-                    setRemoveError("");
-                    setConfirmingRemove(true);
-                  }}
+                  onClick={() => setConfirmingRemove(true)}
                 >
                   <Trash2Icon className="size-3.5" />
                   Remove
@@ -530,29 +496,21 @@ export function SkillDetailView({
         )}
       </div>
 
-      <Dialog open={confirmingRemove} onOpenChange={(next) => !removing && setConfirmingRemove(next)}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Remove {skill.name}?</DialogTitle>
-            <DialogDescription>
-              This deletes the skill's folder.
-              {skill.source
-                ? ` You can install it again from ${skill.source.repo}.`
-                : " It was written here, so there is no other copy to get it back from."}
-            </DialogDescription>
-          </DialogHeader>
-          {removeError && <ErrorLine message={removeError} />}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmingRemove(false)} disabled={removing}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={() => void remove()} disabled={removing}>
-              {removing && <Spinner className="size-3.5" />}
-              Remove skill
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={confirmingRemove}
+        onOpenChange={setConfirmingRemove}
+        title={`Remove ${skill.name}?`}
+        description={
+          <>
+            This deletes the skill's folder.
+            {skill.source
+              ? ` You can install it again from ${skill.source.repo}.`
+              : " It was written here, so there is no other copy to get it back from."}
+          </>
+        }
+        confirmLabel="Remove skill"
+        onConfirm={remove}
+      />
     </div>
   );
 }

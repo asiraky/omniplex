@@ -15,7 +15,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -192,33 +191,6 @@ func writableRootsArgs(dirs []string) []string {
 	return []string{"-c", "sandbox_workspace_write.writable_roots=[" + strings.Join(quoted, ",") + "]"}
 }
 
-// mcpArgs adds omniplex's own MCP servers to this app-server run as config
-// overrides, leaving the user's config.toml alone.
-func mcpArgs(servers []adapter.MCPServer) []string {
-	var out []string
-	for _, m := range servers {
-		key := "mcp_servers." + m.Name
-		quoted := make([]string, len(m.Args))
-		for i, a := range m.Args {
-			quoted[i] = strconv.Quote(a)
-		}
-		out = append(out, "-c", key+".command="+strconv.Quote(m.Command), "-c", key+".args=["+strings.Join(quoted, ",")+"]")
-		if len(m.Env) > 0 {
-			keys := make([]string, 0, len(m.Env))
-			for k := range m.Env {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			pairs := make([]string, len(keys))
-			for i, k := range keys {
-				pairs[i] = k + "=" + strconv.Quote(m.Env[k])
-			}
-			out = append(out, "-c", key+".env={"+strings.Join(pairs, ",")+"}")
-		}
-	}
-	return out
-}
-
 func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	// Resolve the mode before spawning anything: an unknown id should fail
 	// legibly, not leave an orphaned app-server.
@@ -228,13 +200,33 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 
 	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
-	args = append(args, mcpArgs(o.MCPServers)...)
+	var native []string
+	if len(o.MCPServers) > 0 {
+		all, err := nativeServers(o.Env)
+		if err != nil {
+			return nil, err
+		}
+		native = sortedNames(all)
+	}
+	mcp, secrets, refused, mcpKeys := mcpConfig(o.MCPServers, native)
+	for _, r := range refused {
+		host.Logf("codex: MCP server left out: %s", r)
+	}
+	args = append(args, mcp...)
 	args = append(args, writableRootsArgs(o.ExtraDirs)...)
 	cmd := exec.Command(a.Bin, args...)
 	cmd.Dir = o.Cwd
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account CODEX_HOME isolates config and login.
-	cmd.Env = adapter.MergeEnv(os.Environ(), o.Env)
+	// MCP header and env values ride along under their generated names.
+	overlay := make(map[string]string, len(o.Env)+len(secrets))
+	for k, v := range o.Env {
+		overlay[k] = v
+	}
+	for k, v := range secrets {
+		overlay[k] = v
+	}
+	cmd.Env = adapter.MergeEnv(os.Environ(), overlay)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -256,7 +248,13 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, fmt.Errorf("start %s app-server: %w", a.Bin, err)
 	}
 
+	mcpOurs := map[string]bool{}
+	for _, m := range o.MCPServers {
+		mcpOurs[m.Name] = true
+	}
 	s := &session{
+		mcpKeys:   mcpKeys,
+		mcpOurs:   mcpOurs,
 		host:      host,
 		cmd:       cmd,
 		tree:      tree,
@@ -364,6 +362,11 @@ type session struct {
 	threadID string
 	effort   string
 	model    string
+
+	// mcpKeys maps each config key omniplex gave an MCP server back to its
+	// name; mcpOurs holds those names.
+	mcpKeys map[string]string
+	mcpOurs map[string]bool
 
 	events chan proto.Emission
 	done   chan struct{}

@@ -1110,7 +1110,7 @@ describe("the Skills page", () => {
     });
 
   const openPage = async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skills, MCP and sign-ins" }));
     return screen.findByRole("button", { name: /alpha/ });
   };
 
@@ -1137,7 +1137,7 @@ describe("the Skills page", () => {
     await openPage();
     expect(listArgs()).toEqual([{ threadId: "a" }]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Close skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.getByLabelText("Message")).toBeTruthy();
   });
 });

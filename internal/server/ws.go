@@ -452,10 +452,16 @@ func ephemeralCommand(name string) bool {
 	case "read_staged_file", "read_update_file", "skills_git_status":
 		return true
 	}
-	return false
+	// Connections: reads of live state (a stored answer would be stale),
+	// saves that carry credentials (which must not sit in a claimed row), and
+	// writes that are idempotent or refuse a repeat on their own.
+	return connectionCommands[name]
 }
 
 func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
+	if connectionCommands[f.Command] {
+		return c.srv.connectionsCommand(ctx, f.Command, f.Args)
+	}
 	switch f.Command {
 	case "create_thread":
 		var a createArgs
@@ -1061,7 +1067,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		flowID, events, err := c.srv.mgr.BeginAuthFlow(a.InstanceID, a.MethodID)
+		flowID, events, err := c.beginFlow(a)
 		if err != nil {
 			return nil, err
 		}

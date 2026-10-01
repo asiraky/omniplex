@@ -5,6 +5,8 @@
 
 export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact";
 
+// A saved panel naming a kind that is gone (the MCP tab moved to the Skills
+// page) loads without it.
 const KINDS: string[] = ["diff", "files", "jobs", "file", "terminal", "artefacts", "artefact"];
 
 export interface Surface {

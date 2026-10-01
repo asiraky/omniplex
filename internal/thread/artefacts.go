@@ -29,12 +29,13 @@ import (
 var ToolServers func(threadID, home string) []adapter.MCPServer
 
 // harnessExtras is what every harness gets beside its working directory: the
-// tool servers, and the folders it may write in outside it. That is the
-// thread's home folder when it works somewhere else (a repo, a worktree), so
-// an agent in a repo can put what it makes for you outside the repo. A thread
-// scoped to the whole project also gets every folder of the project that is
-// not already inside another.
-func harnessExtras(ctx context.Context, st *store.Store, meta store.ThreadMeta, cwd string, logf func(string, ...any)) ([]adapter.MCPServer, []string) {
+// tool servers, then the user's MCP servers the adapter takes, and the
+// folders it may write in outside it. That is the thread's home folder when
+// it works somewhere else (a repo, a worktree), so an agent in a repo can put
+// what it makes for you outside the repo. A thread scoped to the whole
+// project also gets every folder of the project that is not already inside
+// another.
+func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, cwd string, logf func(string, ...any)) ([]adapter.MCPServer, []string) {
 	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
 		logf("home folder for %s: %v", meta.ID, err)
@@ -51,10 +52,11 @@ func harnessExtras(ctx context.Context, st *store.Store, meta store.ThreadMeta, 
 		}
 	}
 	extra := extraDirs(cwd, dirs)
-	if ToolServers == nil {
-		return nil, extra
+	var servers []adapter.MCPServer
+	if ToolServers != nil {
+		servers = ToolServers(meta.ID, home)
 	}
-	return ToolServers(meta.ID, home), extra
+	return append(servers, userMCPServers(ctx, ad)...), extra
 }
 
 // extraDirs drops what the agent can already reach: anything inside cwd, or
