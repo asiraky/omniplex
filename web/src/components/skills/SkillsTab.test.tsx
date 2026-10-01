@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { GitChange, Skill, SkillDetail, SkillsList } from "~/lib/skills";
 import { render } from "~/test/harness";
 
-import type { SkillsCommand } from "./parts";
-import { SkillsPage } from "./SkillsPage";
+import type { PageCommand } from "~/components/tools/parts";
+import { SkillsTab } from "./SkillsTab";
 
 const skill = (name: string, extra: Partial<Skill> = {}): Skill => ({
   name,
@@ -62,11 +62,11 @@ function server(overrides: Record<string, Handler> = {}, initial: Skill[] = [ski
     if (!handler) throw new Error(`unexpected command ${name}`);
     return handler(args);
   });
-  return { command: command as unknown as SkillsCommand & typeof command, state };
+  return { command: command as unknown as PageCommand & typeof command, state };
 }
 
-function renderPage(command: SkillsCommand) {
-  return render(<SkillsPage command={command} scope={{ kind: "personal" }} onClose={() => {}} />);
+function renderPage(command: PageCommand) {
+  return render(<SkillsTab command={command} scope={{ kind: "personal" }} />);
 }
 
 const calls = (command: ReturnType<typeof vi.fn>, name: string) =>
@@ -208,7 +208,7 @@ describe("installing", () => {
     ],
   };
 
-  async function fetchSource(command: SkillsCommand) {
+  async function fetchSource(command: PageCommand) {
     renderPage(command);
     fireEvent.click(await screen.findByRole("button", { name: "Add" }));
     const dialog = await screen.findByRole("dialog");

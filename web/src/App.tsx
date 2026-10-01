@@ -23,7 +23,7 @@ import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
-import { SkillsScreen, ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
+import { ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
@@ -98,11 +98,12 @@ export function App() {
 
   // The Skills page, the same way. It lists what the open thread can use when
   // there is one, else the project being started in or last used, else only
-  // the user's own.
-  if (screens.showSkills) {
+  // the user's own; its MCP tab asks the open thread's session.
+  if (screens.tools) {
     return (
-      <SkillsScreen
+      <ToolsScreen
         clientRef={clientRef}
+        tab={screens.tools.tab}
         scope={skillsScope({
           threadId: activeId,
           threadProjectId: meta?.projectId,
@@ -110,7 +111,7 @@ export function App() {
           lastProjectId: loadLastProject() || undefined,
           projects,
         })}
-        onClose={() => screens.setShowSkills(false)}
+        onClose={() => screens.setTools(null)}
       />
     );
   }
@@ -128,7 +129,7 @@ export function App() {
         onDelete={deletion.remove}
         onShowAccess={() => screens.setShowAccess(true)}
         onShowUsage={() => screens.setShowUsage(true)}
-        onShowSkills={() => screens.setShowSkills(true)}
+        onShowSkills={() => screens.setTools({})}
         onShowSettings={() => screens.setSettings({})}
         accentOf={accentOf}
         projects={projects}
@@ -167,6 +168,7 @@ export function App() {
           harness={harness}
           copy={copy}
           panel={panel}
+          onShowMcp={() => screens.setTools({ tab: "mcp" })}
         />
 
         {state ? (
@@ -226,9 +228,6 @@ export function App() {
           state={state}
           panel={panel}
           pr={pr}
-          onOpenConnections={(server) =>
-            screens.setSettings({ at: { kind: "connections", server } })
-          }
         />
       )}
 

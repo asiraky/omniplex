@@ -1,37 +1,59 @@
-import { PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { PlusIcon, XIcon } from "lucide-react";
+import { useId } from "react";
 
 import { IconButton } from "~/components/IconButton";
-import { Badge } from "~/components/ui/badge";
+import { Marker, Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
-import { Spinner } from "~/components/ui/spinner";
-import { newRow, type Row } from "~/lib/connections";
+import { Label } from "~/components/ui/label";
+import { Switch } from "~/components/ui/switch";
+import { Textarea } from "~/components/ui/textarea";
+import { newRow, toggleOff, type CliForm, type Mark, type Row, type ServerForm } from "~/lib/connections";
 import { cn } from "~/lib/utils";
+import type { McpHarness, McpKind } from "~/protocol";
 
-export type Tone = "good" | "warn" | "bad";
+// The pieces the MCP and Sign-ins tabs share: their forms and switches.
 
-const TONE: Record<Tone, string> = {
-  good: "text-green-600 dark:text-green-500",
-  warn: "text-attention-foreground",
-  bad: "text-destructive",
-};
-
-/** A status in a word. Nothing at all when there is no status to report. */
-export function StatusChip({ label, tone }: { label?: string; tone?: Tone }) {
-  if (!label || !tone) return null;
-  return (
-    <Badge variant="outline" className={cn("text-[10px]", TONE[tone])}>
-      {label}
-    </Badge>
-  );
+export function MarkChip({ mark }: { mark: Mark | null }) {
+  if (!mark) return null;
+  return <Marker tone={mark.tone}>{mark.label}</Marker>;
 }
 
-export function SectionHeading({ children, action }: { children: ReactNode; action?: ReactNode }) {
+const FIELD = "h-11 font-mono md:h-8 md:text-[12px]";
+
+function Field({
+  label,
+  hint,
+  value,
+  onChange,
+  placeholder,
+  mono = true,
+  inputMode,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  mono?: boolean;
+  inputMode?: "url";
+}) {
+  const id = useId();
   return (
-    <div className="flex min-h-8 items-center gap-2">
-      <h3 className="min-w-0 flex-1 text-[12px] font-medium">{children}</h3>
-      {action}
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        inputMode={inputMode}
+        autoCapitalize="off"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={cn(FIELD, !mono && "font-sans")}
+      />
+      {hint && <p className="text-muted-foreground text-[12px] leading-snug">{hint}</p>}
     </div>
   );
 }
@@ -47,6 +69,7 @@ export function RowsEditor({
   secret,
   namePlaceholder,
   valuePlaceholder,
+  addLabel,
 }: {
   label: string;
   rows: Row[];
@@ -54,18 +77,17 @@ export function RowsEditor({
   secret?: boolean;
   namePlaceholder?: string;
   valuePlaceholder?: string;
+  addLabel: string;
 }) {
-  const idBase = useId();
   const set = (key: number, patch: Partial<Row>) =>
     onChange(rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   return (
-    <fieldset className="space-y-2">
+    <fieldset className="space-y-1.5">
       <legend className="mb-1.5 text-sm font-medium">{label}</legend>
       {rows.map((row, i) => (
         <div key={row.key} className="flex items-center gap-1.5">
           <Input
             aria-label={`${label} ${i + 1} name`}
-            id={`${idBase}-${row.key}-n`}
             autoComplete="off"
             autoCapitalize="off"
             spellCheck={false}
@@ -73,7 +95,7 @@ export function RowsEditor({
             placeholder={namePlaceholder}
             // Renaming a stored entry is a new entry: its stored value stays with the old name.
             onChange={(e) => set(row.key, { name: e.target.value, stored: false })}
-            className="min-w-0 flex-1 font-mono md:text-[12px]"
+            className={cn(FIELD, "min-w-0 flex-1")}
           />
           <Input
             aria-label={`${label} ${i + 1} value`}
@@ -84,7 +106,7 @@ export function RowsEditor({
             value={row.value}
             placeholder={row.stored ? "(unchanged)" : valuePlaceholder}
             onChange={(e) => set(row.key, { value: e.target.value })}
-            className={cn("min-w-0 flex-[1.4]", !secret && "font-mono", "md:text-[12px]")}
+            className={cn(FIELD, "min-w-0 flex-[1.4]", secret && "font-sans")}
           />
           <IconButton
             label={`Remove ${row.name || "row"}`}
@@ -94,70 +116,174 @@ export function RowsEditor({
           </IconButton>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={() => onChange([...rows, newRow()])}>
-        <PlusIcon />
-        Add
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-11 px-2 text-[13px] md:h-8 md:text-[12px]"
+        onClick={() => onChange([...rows, newRow()])}
+      >
+        <PlusIcon className="size-3.5" />
+        {addLabel}
       </Button>
     </fieldset>
   );
 }
 
-/** A destructive action that asks once, in place, before it runs. */
-export function ConfirmRemove({
-  label,
-  question,
-  onConfirm,
-  compact,
+/** One switch per agent that runs this kind of server. */
+export function AgentSwitches({
+  harnesses,
+  off,
+  disabled,
+  onChange,
 }: {
-  label: string;
-  question: string;
-  onConfirm: () => Promise<void>;
-  /** An icon-only trigger, for a row. */
-  compact?: boolean;
+  harnesses: McpHarness[];
+  off: string[];
+  disabled?: boolean;
+  onChange: (off: string[]) => void;
 }) {
-  const [asking, setAsking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const run = async () => {
-    setBusy(true);
-    try {
-      await onConfirm();
-    } finally {
-      setBusy(false);
-      setAsking(false);
-    }
-  };
-  if (!asking) {
-    return compact ? (
-      <IconButton label={label} onClick={() => setAsking(true)} className="text-muted-foreground">
-        <Trash2Icon />
-      </IconButton>
-    ) : (
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => setAsking(true)}
-        className="text-destructive hover:text-destructive"
-      >
-        <Trash2Icon />
-        {label}
-      </Button>
-    );
+  const idBase = useId();
+  if (harnesses.length === 0) {
+    return <p className="text-muted-foreground text-[12.5px]">No agent here can run this kind of server.</p>;
   }
   return (
-    <div className="flex w-full flex-wrap items-center gap-2">
-      <span className="min-w-0 flex-1 text-[12px]">{question}</span>
-      <div className="ml-auto flex gap-2">
-        <Button variant="ghost" size="sm" onClick={() => setAsking(false)} disabled={busy}>
-          Cancel
-        </Button>
-        <Button variant="destructive" size="sm" onClick={() => void run()} disabled={busy}>
-          {busy ? <Spinner aria-hidden className="size-4" /> : "Remove"}
-        </Button>
-      </div>
+    <div className="divide-y rounded-lg border">
+      {harnesses.map((h) => (
+        <div key={h.id} className="flex min-h-11 items-center gap-2 px-3 md:min-h-10">
+          <Label htmlFor={`${idBase}-${h.id}`} className="flex-1 text-[13px] font-normal">
+            {h.name}
+          </Label>
+          <Switch
+            id={`${idBase}-${h.id}`}
+            checked={!off.includes(h.id)}
+            disabled={disabled}
+            onCheckedChange={(on) => onChange(toggleOff(off, h.id, on))}
+          />
+        </div>
+      ))}
     </div>
   );
 }
 
-export function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+const KINDS: { id: McpKind; label: string }[] = [
+  { id: "http", label: "URL" },
+  { id: "stdio", label: "Command" },
+];
+
+/** The server form's fields, less which agents get it. */
+export function ServerFields({
+  form,
+  onChange,
+}: {
+  form: ServerForm;
+  onChange: (patch: Partial<ServerForm>) => void;
+}) {
+  const argsId = useId();
+  const hasStored = [...form.headers, ...form.env].some((r) => r.stored);
+  return (
+    <div className="space-y-4">
+      <Field label="Name" value={form.name} onChange={(name) => onChange({ name })} placeholder="cloudflare" />
+      <div className="space-y-1.5">
+        <Segmented label="How it runs" radio value={form.kind} options={KINDS} onChange={(kind) => onChange({ kind })} className="w-fit" />
+      </div>
+      {form.kind === "http" ? (
+        <Field
+          label="URL"
+          inputMode="url"
+          value={form.url}
+          onChange={(url) => onChange({ url })}
+          placeholder="https://mcp.example.com/mcp"
+        />
+      ) : (
+        <>
+          <Field label="Command" value={form.command} onChange={(command) => onChange({ command })} placeholder="npx" />
+          <div className="space-y-1.5">
+            <Label htmlFor={argsId}>Arguments, one per line</Label>
+            <Textarea
+              id={argsId}
+              autoCapitalize="off"
+              autoComplete="off"
+              spellCheck={false}
+              value={form.args}
+              onChange={(e) => onChange({ args: e.target.value })}
+              placeholder={"-y\n@example/mcp-server"}
+              className="max-h-48 min-h-16 font-mono md:text-[12px]"
+            />
+          </div>
+        </>
+      )}
+      {form.kind === "http" ? (
+        <RowsEditor
+          label="Headers"
+          addLabel="Add header"
+          secret
+          rows={form.headers}
+          onChange={(headers) => onChange({ headers })}
+          namePlaceholder="X-Api-Key"
+          valuePlaceholder="Value"
+        />
+      ) : (
+        <RowsEditor
+          label="Environment"
+          addLabel="Add variable"
+          secret
+          rows={form.env}
+          onChange={(env) => onChange({ env })}
+          namePlaceholder="API_KEY"
+          valuePlaceholder="Value"
+        />
+      )}
+      {hasStored && (
+        <p className="text-muted-foreground -mt-2 text-[12px] leading-snug">
+          Stored values are never shown. Leave one blank to keep it, or type to replace it.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The sign-in form's fields: the commands that check and sign in an account. */
+export function CliFields({ form, onChange }: { form: CliForm; onChange: (patch: Partial<CliForm>) => void }) {
+  return (
+    <div className="space-y-4">
+      <Field label="Name" mono={false} value={form.name} onChange={(name) => onChange({ name })} placeholder="Google Workspace" />
+      <Field
+        label="Status command"
+        hint="Run to see whether an account is signed in."
+        value={form.statusCommand}
+        onChange={(statusCommand) => onChange({ statusCommand })}
+        placeholder="gws auth status"
+      />
+      <Field
+        label="Signed-in pattern"
+        hint="Text the status command prints when signed in. Leave it blank and a clean exit is enough."
+        value={form.signedInPattern}
+        onChange={(signedInPattern) => onChange({ signedInPattern })}
+      />
+      <Field
+        label="Sign-in command"
+        hint="Prints a link to open. Paste the address your browser ends up on back here."
+        value={form.signInCommand}
+        onChange={(signInCommand) => onChange({ signInCommand })}
+        placeholder="gws auth login"
+      />
+      <Field
+        label="Prepare command"
+        hint="Optional. Runs before signing in."
+        value={form.prepareCommand}
+        onChange={(prepareCommand) => onChange({ prepareCommand })}
+      />
+      <div className="space-y-1.5">
+        <RowsEditor
+          label="Account environment"
+          addLabel="Add variable"
+          rows={form.accountEnv}
+          onChange={(accountEnv) => onChange({ accountEnv })}
+          namePlaceholder="GWS_CONFIG_DIR"
+          valuePlaceholder="~/.config/gws-{account}"
+        />
+        <p className="text-muted-foreground text-[12px] leading-snug">{"{account}"} becomes each account's name.</p>
+      </div>
+    </div>
+  );
 }

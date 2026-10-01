@@ -743,7 +743,7 @@ export type AuthBeginArgs =
   | { mcpServer: string; origin: string }
   | { cli: string; account: string };
 
-// ---- MCP servers and sign-ins (Settings → Connections) ----
+// ---- MCP servers and sign-ins (the Skills page's MCP and Sign-ins tabs) ----
 
 export type McpKind = "stdio" | "http";
 

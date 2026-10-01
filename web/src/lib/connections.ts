@@ -1,4 +1,4 @@
-// The logic behind Settings → Connections and the thread's MCP surface, kept
+// The logic behind the MCP and Sign-ins tabs of the Skills page, kept
 // out of the components so the forms stay dumb. The one security-sensitive
 // rule lives here: a stored header or env value is never echoed, so a form
 // row for it starts blank, and blank on save means "keep what is stored".
@@ -6,11 +6,15 @@
 import { deriveInstanceId } from "~/lib/providerSpec";
 import type {
   Cli,
+  CliAccount,
+  CliAccountStatus,
   CliSpec,
+  FoundServer,
   McpDraft,
   McpHarness,
   McpKind,
   McpServer,
+  ThreadMcp,
   ThreadMcpStatus,
 } from "~/protocol";
 
@@ -147,10 +151,10 @@ export function formFromServer(s: McpServer): ServerForm {
   };
 }
 
-export interface SaveServerArgs {
+export type SaveServerArgs = {
   server: McpDraft & { off: string[] };
   previousName?: string;
-}
+};
 
 /** The save_mcp_server argument for a form, or what is wrong with it. */
 export function serverSaveArgs(
@@ -264,7 +268,130 @@ export function upsert<T>(list: T[], item: T, key: (t: T) => string, previous?: 
   return list.map((t, j) => (j === i ? item : t));
 }
 
-// ---- the thread surface ----
+// ---- what the lists show ----
+
+/** A status word for a row, and how loud it is. */
+export interface Mark {
+  label: string;
+  tone: "quiet" | "good" | "attention" | "bad";
+}
+
+/** A row in the list says something only when the server needs a hand. */
+export function serverMark(s: McpServer): Mark | null {
+  if (s.status === "sign_in") return { label: "Sign in", tone: "attention" };
+  if (s.status === "failed") return { label: "Failed", tone: "bad" };
+  return null;
+}
+
+/**
+ * Which agents get it, when that is not all of them: "Off" for none, else
+ * "Only Claude and Codex". Nothing when every agent that can run it does.
+ */
+export function offSummary(s: McpServer, harnesses: McpHarness[]): string | null {
+  const able = harnessesFor(harnesses, serverKind(s));
+  const on = able.filter((h) => !s.off.includes(h.id));
+  if (able.length === 0 || on.length === able.length) return null;
+  if (on.length === 0) return "Off";
+  return `Only ${joinNames(on.map((h) => h.name))}`;
+}
+
+const ACCOUNT_RANK: Record<CliAccountStatus, number> = { failed: 3, signed_out: 2, unchecked: 1, signed_in: 0 };
+
+export function accountMark(status: CliAccountStatus): Mark | null {
+  if (status === "failed") return { label: "Failed", tone: "bad" };
+  if (status === "signed_out") return { label: "Signed out", tone: "attention" };
+  if (status === "signed_in") return { label: "Signed in", tone: "good" };
+  return null;
+}
+
+/** A sign-in's row speaks for its worst account. */
+export function cliMark(accounts: Pick<CliAccount, "status">[]): Mark | null {
+  if (accounts.length === 0) return { label: "No accounts", tone: "quiet" };
+  const worst = accounts.reduce((w, a) => (ACCOUNT_RANK[a.status] > ACCOUNT_RANK[w] ? a.status : w), "signed_in" as CliAccountStatus);
+  // All signed in is the normal case: the row says nothing.
+  return worst === "signed_in" ? null : accountMark(worst);
+}
+
+/** Something in the list wants the reader: a tab's dot. */
+export function serversNeedAttention(servers: McpServer[]): boolean {
+  return servers.some((s) => serverMark(s) !== null);
+}
+
+export function clisNeedAttention(clis: Cli[]): boolean {
+  return clis.some((c) => c.accounts.some((a) => a.status === "failed" || a.status === "signed_out"));
+}
+
+/** Matches a server or found server on its name or where it runs. */
+export function serverMatches(s: { name: string; url?: string; command?: string; args?: string[] }, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return s.name.toLowerCase().includes(q) || serverWhere(s).toLowerCase().includes(q);
+}
+
+export function cliMatches(c: Cli, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    c.name.toLowerCase().includes(q) ||
+    c.id.toLowerCase().includes(q) ||
+    c.accounts.some((a) => a.name.toLowerCase().includes(q))
+  );
+}
+
+/** Found servers per agent, in the server's agent order; agents with none are left out. */
+export function foundByHarness(found: FoundServer[], harnesses: McpHarness[]): { harness: McpHarness; servers: FoundServer[] }[] {
+  const known = new Map(harnesses.map((h) => [h.id, h]));
+  const out = new Map<string, FoundServer[]>();
+  for (const f of found) out.set(f.harness, [...(out.get(f.harness) ?? []), f]);
+  const order = [...harnesses.map((h) => h.id), ...[...out.keys()].filter((id) => !known.has(id))];
+  return order
+    .filter((id) => out.has(id))
+    .map((id) => ({ harness: known.get(id) ?? { id, name: id, transports: [] }, servers: out.get(id)! }));
+}
+
+/** The one value add_found_server takes to tell two same-name entries apart. */
+export function foundWhere(f: FoundServer): string {
+  return f.url ?? f.command ?? "";
+}
+
+// ---- the thread's live view ----
+
+const LIVE_MARK: Record<ThreadMcpStatus, Mark> = {
+  connected: { label: "Connected", tone: "good" },
+  needs_auth: { label: "Sign in", tone: "attention" },
+  failed: { label: "Failed", tone: "bad" },
+  pending: { label: "Starting", tone: "quiet" },
+  disabled: { label: "Off", tone: "quiet" },
+};
+
+export function liveMark(status: ThreadMcpStatus): Mark {
+  return LIVE_MARK[status];
+}
+
+const LIVE_RANK: Record<ThreadMcpStatus, number> = { failed: 0, needs_auth: 1, pending: 2, disabled: 3, connected: 4 };
+
+/** Problems first, then by name: the rows that need a hand are the ones read. */
+export function sortLive(servers: ThreadMcp[]): ThreadMcp[] {
+  return [...servers].sort(
+    (a, b) => LIVE_RANK[a.status] - LIVE_RANK[b.status] || a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+  );
+}
+
+/**
+ * What a live row offers. Sign in for our remote server that wants it,
+ * reconnect for our server that failed, and for a server from the agent's
+ * own config only the word that it is not ours to fix.
+ */
+export function liveAction(
+  s: ThreadMcp,
+  ours: Pick<McpServer, "name" | "url">[],
+): "sign_in" | "reconnect" | "theirs" | null {
+  if (!canReconnect(s.status)) return null;
+  const own = ours.some((o) => o.name === s.name);
+  if (!own) return "theirs";
+  if (s.status === "needs_auth" && ownsSignIn(s.name, ours)) return "sign_in";
+  return "reconnect";
+}
 
 /** The session can be asked to try a server again. */
 export function canReconnect(status: ThreadMcpStatus): boolean {

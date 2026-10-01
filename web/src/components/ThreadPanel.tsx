@@ -24,15 +24,12 @@ export function ThreadPanel({
   state,
   panel,
   pr,
-  onOpenConnections,
 }: {
   clientRef: RefObject<Client | null>;
   threadId: string;
   state: ThreadState;
   panel: PanelControls;
   pr: PullRequest | null;
-  /** Open Settings → Connections on an MCP server. */
-  onOpenConnections: (server: string) => void;
 }) {
   const command = useCallback(
     (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
@@ -105,7 +102,6 @@ export function ThreadPanel({
         loadFile={loadFile}
         request={panel.request}
         pr={pr}
-        onOpenConnections={onOpenConnections}
       />
     </Suspense>
   );

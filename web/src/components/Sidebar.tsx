@@ -1,6 +1,6 @@
 import {
   ActivityIcon,
-  BookOpenIcon,
+  BlocksIcon,
   FolderPlusIcon,
   SettingsIcon,
   PanelLeftIcon,
@@ -447,14 +447,15 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>Usage and limits</TooltipContent>
         </Tooltip>
-        {/* Skills belong to the user and the project before they belong to a
-            thread, so the page is reachable from here with nothing open. */}
+        {/* Skills, MCP servers and sign-ins belong to the user and the project
+            before they belong to a thread, so the page is reachable from here
+            with nothing open. */}
         <IconButton
-          label="Skills"
+          label="Skills, MCP and sign-ins"
           onClick={props.onShowSkills}
           className="text-muted-foreground hover:text-foreground md:size-6"
         >
-          <BookOpenIcon />
+          <BlocksIcon />
         </IconButton>
         <Tooltip>
           <TooltipTrigger asChild>

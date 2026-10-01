@@ -10,7 +10,6 @@ import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import { defaultStagedTicks, normalizeStaged, sourceLabel } from "~/lib/skillFlows";
 import {
-  errorText,
   skillDescriptionError,
   skillNameError,
   type Skill,
@@ -18,10 +17,10 @@ import {
   type Staged,
   type StagedSkill,
 } from "~/lib/skills";
-import { cn } from "~/lib/utils";
+import { cn, errorText } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
-import { ErrorLine, Marker, ProblemText, type SkillsCommand } from "./parts";
+import { ErrorLine, Marker, ProblemText, type PageCommand } from "~/components/tools/parts";
 import { useStaging } from "./useStaging";
 
 const SKILL_MD = "SKILL.md";
@@ -36,7 +35,7 @@ function StagedPreview({
   id,
   skill,
 }: {
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   id: string;
   skill: StagedSkill;
@@ -131,7 +130,7 @@ function NewSkillForm({
   onCreated,
 }: {
   formId: string;
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   busy: boolean;
   setBusy: (busy: boolean) => void;
@@ -237,7 +236,7 @@ export function AddSheet({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   /** The skills as the server installed them. */
   onInstalled: (skills: Skill[]) => void;

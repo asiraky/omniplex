@@ -6,11 +6,11 @@ import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { diffLines } from "~/lib/lineDiff";
 import { normalizeUpdateStage } from "~/lib/skillFlows";
-import { errorText, type FileChange, type Skill, type UpdateFile, type UpdateStage } from "~/lib/skills";
-import { cn } from "~/lib/utils";
+import type { FileChange, Skill, UpdateFile, UpdateStage } from "~/lib/skills";
+import { cn, errorText } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
-import { ErrorLine, type SkillsCommand } from "./parts";
+import { ErrorLine, type PageCommand } from "~/components/tools/parts";
 import { useStaging } from "./useStaging";
 
 const FILE_STATUS: Record<FileChange["status"], string> = {
@@ -27,7 +27,7 @@ function FileDiff({
   dir,
   path,
 }: {
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   id: string;
   dir: string;
@@ -101,7 +101,7 @@ export function UpdateCheck({
   skill,
   onUpdated,
 }: {
-  command: SkillsCommand;
+  command: PageCommand;
   scopeArgs: Record<string, unknown>;
   skill: Skill;
   /** The skills as the server left them after the update. */

@@ -4,6 +4,7 @@ import {
   EllipsisIcon,
   PanelLeftIcon,
   PanelRightIcon,
+  PlugIcon,
   TagIcon,
 } from "lucide-react";
 
@@ -49,6 +50,8 @@ type Actions = {
   labels: HeaderLabels;
   copy: TranscriptCopy;
   panel: PanelControls;
+  /** The Skills page on its MCP tab, which asks this thread's session. */
+  onShowMcp: () => void;
 };
 
 /** The bar above the content column: the thread's title and its actions. */
@@ -64,6 +67,7 @@ export function ThreadHeader({
   harness,
   copy,
   panel,
+  onShowMcp,
 }: {
   sidebarOpen: boolean;
   onShowSidebar: () => void;
@@ -76,6 +80,7 @@ export function ThreadHeader({
   harness: ThreadHarness;
   copy: TranscriptCopy;
   panel: PanelControls;
+  onShowMcp: () => void;
 }) {
   return (
     <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
@@ -96,9 +101,9 @@ export function ThreadHeader({
           </p>
           {SHOW_MODE_SWITCHER && !state.closed && <ModeSwitcher harness={harness} />}
           {isDesktop ? (
-            <DesktopActions actions={{ state, activeId, meta, labels, copy, panel }} />
+            <DesktopActions actions={{ state, activeId, meta, labels, copy, panel, onShowMcp }} />
           ) : (
-            <PhoneActions actions={{ state, activeId, meta, labels, copy, panel }} />
+            <PhoneActions actions={{ state, activeId, meta, labels, copy, panel, onShowMcp }} />
           )}
         </>
       ) : (
@@ -206,7 +211,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
 // A phone has no room for a row of buttons, so the same actions sit in one
 // overflow menu.
 function PhoneActions({ actions }: { actions: Actions }) {
-  const { state, meta, labels, copy, panel } = actions;
+  const { state, meta, labels, copy, panel, onShowMcp } = actions;
   const label = useThreadLabel(actions);
   return (
     <DropdownMenu>
@@ -224,6 +229,9 @@ function PhoneActions({ actions }: { actions: Actions }) {
       <DropdownMenuContent align="end" className="min-w-48">
         <DropdownMenuItem onSelect={panel.show}>
           <PanelRightIcon /> Open panel
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onShowMcp}>
+          <PlugIcon /> MCP servers
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => void copy.copyAll()}>
