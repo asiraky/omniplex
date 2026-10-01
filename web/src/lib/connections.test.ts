@@ -1,20 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import type { Cli, McpHarness, McpServer } from "~/protocol";
+import type { Cli, FoundServer, McpHarness, McpServer, ThreadMcp } from "~/protocol";
 
 import {
   cliForm,
+  cliMark,
+  cliMatches,
   cliSaveArgs,
   emptyServerForm,
   formFromDraft,
+  foundByHarness,
   formFromServer,
   harnessesFor,
   joinNames,
+  liveAction,
   newRow,
+  offSummary,
   offersSignIn,
   ownsSignIn,
+  serverMatches,
   serverSaveArgs,
   serverWhere,
+  sortLive,
   toggleOff,
   upsert,
 } from "./connections";
@@ -185,5 +192,98 @@ describe("serverWhere and joinNames", () => {
     expect(joinNames(["A"])).toBe("A");
     expect(joinNames(["A", "B"])).toBe("A and B");
     expect(joinNames(["A", "B", "C"])).toBe("A, B and C");
+  });
+});
+
+describe("offSummary", () => {
+  it("says nothing when every able agent has it, Off for none, and names the ones left otherwise", () => {
+    // Gamma cannot run a command server, so turning it off changes nothing.
+    expect(offSummary(server({ url: undefined, command: "x", off: ["c"] }), agents)).toBeNull();
+    expect(offSummary(server({ off: ["a", "c"] }), agents)).toBe("Off");
+    expect(offSummary(server({ off: ["a"] }), agents)).toBe("Only Gamma");
+    expect(offSummary(server(), [])).toBeNull();
+  });
+});
+
+describe("cliMark", () => {
+  it("speaks for the worst account and says nothing when all are signed in", () => {
+    expect(cliMark([])?.tone).toBe("quiet");
+    expect(cliMark([{ status: "signed_in" }, { status: "signed_in" }])).toBeNull();
+    expect(cliMark([{ status: "signed_in" }, { status: "unchecked" }])).toBeNull();
+    expect(cliMark([{ status: "signed_out" }, { status: "signed_in" }])?.tone).toBe("attention");
+    expect(cliMark([{ status: "signed_out" }, { status: "failed" }, { status: "signed_in" }])?.tone).toBe("bad");
+  });
+});
+
+describe("serverMatches and cliMatches", () => {
+  it("match on a name or where it runs, ignoring case and blank queries", () => {
+    const s = server({ name: "docs", url: "https://Search.example.com/mcp" });
+    expect(serverMatches(s, "  ")).toBe(true);
+    expect(serverMatches(s, "DOC")).toBe(true);
+    expect(serverMatches(s, "search.example")).toBe(true);
+    expect(serverMatches(s, "nope")).toBe(false);
+    const c: Cli = {
+      id: "gws",
+      name: "Google",
+      statusCommand: "",
+      signedInPattern: "",
+      signInCommand: "",
+      prepareCommand: "",
+      accountEnv: {},
+      accounts: [{ name: "work", env: {}, status: "unchecked" }],
+    };
+    expect(cliMatches(c, "goo")).toBe(true);
+    expect(cliMatches(c, "WORK")).toBe(true);
+    expect(cliMatches(c, "home")).toBe(false);
+  });
+});
+
+describe("foundByHarness", () => {
+  const found = (name: string, harness: string): FoundServer => ({ name, harness, origin: "", added: false });
+
+  it("groups in agent order, skips agents with none, and keeps an unknown agent last", () => {
+    const groups = foundByHarness([found("x", "zz"), found("y", "c"), found("z", "a"), found("w", "c")], agents);
+    expect(groups.map((g) => [g.harness.id, g.servers.map((s) => s.name)])).toEqual([
+      ["a", ["z"]],
+      ["c", ["y", "w"]],
+      ["zz", ["x"]],
+    ]);
+    expect(groups[2].harness.name).toBe("zz");
+  });
+});
+
+describe("sortLive", () => {
+  it("puts problems first, then sorts by name ignoring case", () => {
+    const live: ThreadMcp[] = [
+      { name: "b", status: "connected" },
+      { name: "A", status: "connected" },
+      { name: "c", status: "needs_auth" },
+      { name: "d", status: "failed" },
+      { name: "e", status: "pending" },
+    ];
+    expect(sortLive(live).map((s) => s.name)).toEqual(["d", "c", "e", "A", "b"]);
+    // The input is left alone.
+    expect(live[0].name).toBe("b");
+  });
+});
+
+describe("liveAction", () => {
+  const ours = [server({ name: "remote" }), server({ name: "local", url: undefined, command: "x" })];
+
+  it("offers sign in only for our remote server that wants it", () => {
+    expect(liveAction({ name: "remote", status: "needs_auth" }, ours)).toBe("sign_in");
+    expect(liveAction({ name: "local", status: "needs_auth" }, ours)).toBe("reconnect");
+  });
+
+  it("offers reconnect for our failed server and nothing to fix for theirs", () => {
+    expect(liveAction({ name: "remote", status: "failed" }, ours)).toBe("reconnect");
+    expect(liveAction({ name: "other", status: "failed" }, ours)).toBe("theirs");
+    expect(liveAction({ name: "other", status: "needs_auth" }, ours)).toBe("theirs");
+  });
+
+  it("offers nothing for a server that is fine or still starting", () => {
+    expect(liveAction({ name: "remote", status: "connected" }, ours)).toBeNull();
+    expect(liveAction({ name: "other", status: "pending" }, ours)).toBeNull();
+    expect(liveAction({ name: "remote", status: "disabled" }, ours)).toBeNull();
   });
 });
