@@ -13,7 +13,9 @@ import {
   formFromServer,
   harnessesFor,
   joinNames,
+  BUILT_IN_MCP,
   liveAction,
+  liveSource,
   newRow,
   offSummary,
   offersSignIn,
@@ -285,5 +287,12 @@ describe("liveAction", () => {
     expect(liveAction({ name: "remote", status: "connected" }, ours)).toBeNull();
     expect(liveAction({ name: "other", status: "pending" }, ours)).toBeNull();
     expect(liveAction({ name: "remote", status: "disabled" }, ours)).toBeNull();
+  });
+
+  it("offers nothing for the built-in server, which is neither ours to fix nor theirs", () => {
+    expect(liveAction({ name: BUILT_IN_MCP, status: "failed" }, ours)).toBeNull();
+    expect(liveSource(BUILT_IN_MCP, ours)).toBe("built_in");
+    expect(liveSource("remote", ours)).toBe("ours");
+    expect(liveSource("other", ours)).toBe("theirs");
   });
 });

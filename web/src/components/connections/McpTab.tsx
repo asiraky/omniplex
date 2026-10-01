@@ -22,6 +22,7 @@ import {
   foundByHarness,
   foundWhere,
   liveAction,
+  liveSource,
   liveMark,
   offSummary,
   serverMark,
@@ -365,7 +366,8 @@ function LiveSection({
         <ul>
           {rows.map((s) => {
             const action = ours ? liveAction(s, ours) : null;
-            const own = !!ours?.some((o) => o.name === s.name);
+            const source = ours ? liveSource(s.name, ours) : null;
+            const own = source === "ours";
             const failed = live.failed?.name === s.name ? `Reconnect failed. ${live.failed.error}` : undefined;
             return (
               <li key={s.name}>
@@ -373,11 +375,13 @@ function LiveSection({
                   title={s.name}
                   markers={<MarkChip mark={liveMark(s.status)} />}
                   sub={
-                    ours && !own
-                      ? action === "theirs"
-                        ? "From the agent's own config. Fix it there."
-                        : "From the agent's own config"
-                      : undefined
+                    source === "built_in"
+                      ? "Built into Omniplex"
+                      : source === "theirs"
+                        ? action === "theirs"
+                          ? "From the agent's own config. Fix it there."
+                          : "From the agent's own config"
+                        : undefined
                   }
                   problem={failed ?? s.error}
                   foldProblem

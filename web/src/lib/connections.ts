@@ -386,11 +386,23 @@ export function liveAction(
   s: ThreadMcp,
   ours: Pick<McpServer, "name" | "url">[],
 ): "sign_in" | "reconnect" | "theirs" | null {
-  if (!canReconnect(s.status)) return null;
+  if (!canReconnect(s.status) || s.name === BUILT_IN_MCP) return null;
   const own = ours.some((o) => o.name === s.name);
   if (!own) return "theirs";
   if (s.status === "needs_auth" && ownsSignIn(s.name, ours)) return "sign_in";
   return "reconnect";
+}
+
+/**
+ * The server Omniplex gives every thread for its own tools. The name is
+ * reserved (mcp.ReservedName), so no user server can take it.
+ */
+export const BUILT_IN_MCP = "omniplex";
+
+/** Where a server in a thread's report came from. */
+export function liveSource(name: string, ours: Pick<McpServer, "name">[]): "ours" | "built_in" | "theirs" {
+  if (name === BUILT_IN_MCP) return "built_in";
+  return ours.some((o) => o.name === name) ? "ours" : "theirs";
 }
 
 /** The session can be asked to try a server again. */
