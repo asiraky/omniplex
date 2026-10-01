@@ -135,10 +135,15 @@ type Skill struct {
 	Mode   string  `json:"mode"`
 	Source *Source `json:"source,omitempty"`
 
-	// paths is every path the skill was found at, and harnesses every harness
-	// that reaches it through one of them.
+	// UserOnly is the skill's own disable-model-invocation: the agent is not
+	// told it exists, so only a person naming it at the start of a prompt
+	// runs it.
+	UserOnly bool `json:"userOnly,omitempty"`
+
+	// Harnesses is every harness that reaches the skill through one of paths,
+	// every path it was found at. Neither goes to the client.
+	Harnesses []Harness `json:"-"`
 	paths     []string
-	harnesses []Harness
 }
 
 type File struct {
@@ -159,7 +164,10 @@ type root struct {
 	plugin    string
 	harnesses []Harness
 	readonly  bool
-	synced    bool // Claude's skills dir: also look in synced/<account>/<skill>
+	// synced also looks in synced/<account>/<skill>, where claude.ai's sync
+	// writes. Claude reads them from its own skills dir; Codex and pi find
+	// them in ~/.agents/skills because they search a skills dir to any depth.
+	synced bool
 }
 
 // roots lists every directory a harness reads skills from, per the research
@@ -192,7 +200,7 @@ func (r Roots) ownRoots() []root {
 		out = append(out, root{path: filepath.Join(r.ClaudeConfigDir, "skills"), scope: ScopeUser, harnesses: []Harness{Claude}, synced: true})
 	}
 	if r.Home != "" {
-		out = append(out, root{path: filepath.Join(r.Home, ".agents", "skills"), scope: ScopeUser, harnesses: []Harness{Codex, Pi}})
+		out = append(out, root{path: filepath.Join(r.Home, ".agents", "skills"), scope: ScopeUser, harnesses: []Harness{Codex, Pi}, synced: true})
 	}
 	if r.CodexHome != "" {
 		out = append(out, root{path: filepath.Join(r.CodexHome, "skills"), scope: ScopeUser, harnesses: []Harness{Codex}})
@@ -334,8 +342,8 @@ func Discover(r Roots) ([]Skill, error) {
 				s.paths = append(s.paths, path)
 			}
 			for _, h := range rt.harnesses {
-				if !containsHarness(s.harnesses, h) {
-					s.harnesses = append(s.harnesses, h)
+				if !containsHarness(s.Harnesses, h) {
+					s.Harnesses = append(s.Harnesses, h)
 				}
 			}
 			return
@@ -345,7 +353,7 @@ func Discover(r Roots) ([]Skill, error) {
 			Scope:     rt.scope,
 			Plugin:    rt.plugin,
 			paths:     []string{path},
-			harnesses: append([]Harness{}, rt.harnesses...),
+			Harnesses: append([]Harness{}, rt.harnesses...),
 			Editable:  !rt.readonly && !synced,
 			Synced:    synced,
 		}
@@ -379,7 +387,7 @@ func Discover(r Roots) ([]Skill, error) {
 	out := make([]Skill, 0, len(order))
 	for _, dir := range order {
 		s := byDir[dir]
-		sort.Slice(s.harnesses, func(i, j int) bool { return harnessRank(s.harnesses[i]) < harnessRank(s.harnesses[j]) })
+		sort.Slice(s.Harnesses, func(i, j int) bool { return harnessRank(s.Harnesses[i]) < harnessRank(s.Harnesses[j]) })
 		s.Mode = policy.mode(s)
 		s.Source = sources.lookup(s)
 		out = append(out, *s)
@@ -430,6 +438,7 @@ func fillMeta(s *Skill, dirName string) {
 		s.Problem = err.Error()
 		return
 	}
+	s.UserOnly = userOnly(fields)
 	var problems []string
 	if name := strings.TrimSpace(fields["name"]); name != "" {
 		s.Name = name
@@ -448,6 +457,22 @@ func fillMeta(s *Skill, dirName string) {
 		problems = append(problems, "description is over 1024 characters")
 	}
 	s.Problem = strings.Join(problems, "; ")
+}
+
+func userOnly(fields map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(fields["disable-model-invocation"]), "true")
+}
+
+// UserOnly reads one SKILL.md for Skill.UserOnly, for a caller that was told
+// where a skill is rather than discovering it. A file that cannot be read or
+// parsed is not user-only: that is what the harness would make of it too.
+func UserOnly(skillFile string) bool {
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		return false
+	}
+	fields, _, err := parseFrontmatter(string(data))
+	return err == nil && userOnly(fields)
 }
 
 func scopeRank(scope string) int {

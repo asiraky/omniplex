@@ -67,8 +67,8 @@ func TestANewSkillReachesEveryAgent(t *testing.T) {
 		t.Run(how+" into an empty home", func(t *testing.T) {
 			r := machine(t)
 			s := add(t, r, "fresh")
-			if !reflect.DeepEqual(s.harnesses, allHarnesses) {
-				t.Errorf("seen by %v", s.harnesses)
+			if !reflect.DeepEqual(s.Harnesses, allHarnesses) {
+				t.Errorf("seen by %v", s.Harnesses)
 			}
 			// Claude had no skills dir, so it is given the whole library.
 			claude := filepath.Join(r.ClaudeConfigDir, "skills")
@@ -82,8 +82,8 @@ func TestANewSkillReachesEveryAgent(t *testing.T) {
 				}
 			}
 			// The next one needs nothing more.
-			if next := add(t, r, "second"); !reflect.DeepEqual(next.harnesses, allHarnesses) || isSymlink(filepath.Join(r.Library, "second")) {
-				t.Errorf("second: seen by %v", next.harnesses)
+			if next := add(t, r, "second"); !reflect.DeepEqual(next.Harnesses, allHarnesses) || isSymlink(filepath.Join(r.Library, "second")) {
+				t.Errorf("second: seen by %v", next.Harnesses)
 			}
 		})
 
@@ -94,8 +94,8 @@ func TestANewSkillReachesEveryAgent(t *testing.T) {
 			write(t, filepath.Join(r.ClaudeConfigDir, "skills", "own", "SKILL.md"), skillMD("own", "Claude's own"))
 			write(t, filepath.Join(r.PiAgentDir, "skills", "pi-own", "SKILL.md"), skillMD("pi-own", "Pi's own"))
 			s := add(t, r, "fresh")
-			if !reflect.DeepEqual(s.harnesses, allHarnesses) {
-				t.Errorf("seen by %v", s.harnesses)
+			if !reflect.DeepEqual(s.Harnesses, allHarnesses) {
+				t.Errorf("seen by %v", s.Harnesses)
 			}
 			for _, at := range []string{filepath.Join(r.ClaudeConfigDir, "skills", "fresh"), filepath.Join(r.PiAgentDir, "skills", "fresh")} {
 				target, err := os.Readlink(at)
@@ -154,8 +154,8 @@ func TestALinkThatCannotBeMadeDoesNotFailTheInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := placed[0]; s.Dir != filepath.Join(r.Library, "one") || !reflect.DeepEqual(s.harnesses, []Harness{Codex, Pi}) {
-		t.Errorf("placed %+v seen by %v", s, s.harnesses)
+	if s := placed[0]; s.Dir != filepath.Join(r.Library, "one") || !reflect.DeepEqual(s.Harnesses, []Harness{Codex, Pi}) {
+		t.Errorf("placed %+v seen by %v", s, s.Harnesses)
 	}
 }
 

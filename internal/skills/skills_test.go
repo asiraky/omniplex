@@ -158,7 +158,8 @@ func TestDiscover(t *testing.T) {
 		problem   string
 	}{
 		{"shared", ScopeUser, "", []Harness{Claude, Codex, Pi}, true, 2, ""},
-		{"cloud-one", ScopeUser, "", []Harness{Claude}, false, 1, ""},
+		// Synced by claude.ai into a dir Codex and pi also search, to any depth.
+		{"cloud-one", ScopeUser, "", []Harness{Claude, Codex, Pi}, false, 2, ""},
 		{"codex-only", ScopeUser, "", []Harness{Codex}, true, 1, ""},
 		{"pi-only", ScopeUser, "", []Harness{Pi}, true, 1, ""},
 		{"sys-skill", ScopeSystem, "", []Harness{Codex}, false, 1, ""},
@@ -177,8 +178,8 @@ func TestDiscover(t *testing.T) {
 			if s.Scope != tt.scope || s.Plugin != tt.plugin || s.Editable != tt.editable {
 				t.Errorf("scope/plugin/editable = %q/%q/%v, want %q/%q/%v", s.Scope, s.Plugin, s.Editable, tt.scope, tt.plugin, tt.editable)
 			}
-			if !reflect.DeepEqual(s.harnesses, tt.harnesses) {
-				t.Errorf("harnesses = %v, want %v", s.harnesses, tt.harnesses)
+			if !reflect.DeepEqual(s.Harnesses, tt.harnesses) {
+				t.Errorf("harnesses = %v, want %v", s.Harnesses, tt.harnesses)
 			}
 			if len(s.paths) != tt.paths {
 				t.Errorf("paths = %v, want %d", s.paths, tt.paths)
@@ -389,8 +390,8 @@ func TestCreate(t *testing.T) {
 		if s.Dir != filepath.Join(r.Home, "dotfiles", "agents", "skills", "fresh") {
 			t.Errorf("dir = %s", s.Dir)
 		}
-		if !reflect.DeepEqual(s.harnesses, []Harness{Claude, Codex, Pi}) {
-			t.Errorf("harnesses = %v", s.harnesses)
+		if !reflect.DeepEqual(s.Harnesses, []Harness{Claude, Codex, Pi}) {
+			t.Errorf("harnesses = %v", s.Harnesses)
 		}
 		// ~/.claude/skills already resolves to the library: no extra link.
 		entries, _ := os.ReadDir(filepath.Join(r.Home, "dotfiles", "agents", "skills"))
@@ -417,8 +418,8 @@ func TestCreate(t *testing.T) {
 		if real, _ := filepath.EvalSymlinks(linkPath); real != s.Dir {
 			t.Errorf("link resolves to %q, want %q", real, s.Dir)
 		}
-		if !reflect.DeepEqual(s.harnesses, []Harness{Claude, Codex, Pi}) || len(s.paths) != 2 {
-			t.Errorf("harnesses %v paths %v", s.harnesses, s.paths)
+		if !reflect.DeepEqual(s.Harnesses, []Harness{Claude, Codex, Pi}) || len(s.paths) != 2 {
+			t.Errorf("harnesses %v paths %v", s.Harnesses, s.paths)
 		}
 	})
 
@@ -488,6 +489,40 @@ func TestYAMLScalarRoundTrips(t *testing.T) {
 		got, _, err := parseFrontmatter("---\ndescription: " + yamlScalar(v) + "\n---\n")
 		if err != nil || got["description"] != v {
 			t.Errorf("%q round-tripped to %q (%v)", v, got["description"], err)
+		}
+	}
+}
+
+func TestUserOnlyFollowsDisableModelInvocation(t *testing.T) {
+	base := t.TempDir()
+	project := filepath.Join(base, "project")
+	closed := filepath.Join(project, ".claude", "skills", "closed", "SKILL.md")
+	open := filepath.Join(project, ".claude", "skills", "open", "SKILL.md")
+	explicit := filepath.Join(project, ".claude", "skills", "explicit", "SKILL.md")
+	write(t, closed, "---\nname: closed\ndescription: People only\ndisable-model-invocation: True\n---\n")
+	write(t, open, skillMD("open", "Anyone"))
+	write(t, explicit, "---\nname: explicit\ndescription: Anyone\ndisable-model-invocation: false\n---\n")
+
+	found, err := Discover(Roots{ProjectRoot: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, s := range found {
+		got[s.Name] = s.UserOnly
+	}
+	want := map[string]bool{"closed": true, "open": false, "explicit": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("discovered userOnly = %v, want %v", got, want)
+	}
+
+	for path, want := range map[string]bool{
+		closed: true,
+		open:   false,
+		filepath.Join(base, "missing", "SKILL.md"): false,
+	} {
+		if got := UserOnly(path); got != want {
+			t.Errorf("UserOnly(%s) = %v, want %v", path, got, want)
 		}
 	}
 }

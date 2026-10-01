@@ -202,6 +202,7 @@ export function App() {
             onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
             onListWorkspaces={projectActions.listWorkspaces}
             onListIssues={projectActions.listIssues}
+            onListComposerItems={projectActions.listDraftComposerItems}
             onAddProject={() => screens.setNewProject(true)}
             onSettings={(p) => screens.setSettings({ at: { kind: "project", id: p.id } })}
             onRecheck={auth.recheck}

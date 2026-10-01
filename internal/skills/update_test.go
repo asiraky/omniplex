@@ -231,7 +231,7 @@ func TestApplyUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated) != 1 || updated[0].Dir != show || !containsHarness(updated[0].harnesses, Claude) {
+	if len(updated) != 1 || updated[0].Dir != show || !containsHarness(updated[0].Harnesses, Claude) {
 		t.Errorf("updated = %+v", updated)
 	}
 	if !reflect.DeepEqual(entries(t, show), []string{"SKILL.md", "new.md", "notes.md"}) || read(t, filepath.Join(show, "notes.md")) != "v2" {

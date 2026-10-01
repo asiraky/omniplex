@@ -96,7 +96,7 @@ func (p policy) mode(s *Skill) string {
 // claudeOverride is Claude's skillOverrides value for a skill Claude sees.
 // Claude does not apply skillOverrides to a plugin's skills.
 func (p policy) claudeOverride(s *Skill) string {
-	if !containsHarness(s.harnesses, Claude) || s.Scope == ScopePlugin {
+	if !containsHarness(s.Harnesses, Claude) || s.Scope == ScopePlugin {
 		return ""
 	}
 	if v, ok := p.claude[s.Name]; ok {
@@ -106,7 +106,7 @@ func (p policy) claudeOverride(s *Skill) string {
 }
 
 func (p policy) codexOff(s *Skill) bool {
-	if !containsHarness(s.harnesses, Codex) {
+	if !containsHarness(s.Harnesses, Codex) {
 		return false
 	}
 	for _, key := range []string{resolve(filepath.Join(s.Dir, "SKILL.md")), s.Dir} {
@@ -123,10 +123,10 @@ func (p policy) codexOff(s *Skill) bool {
 // files have to say so.
 func filesManual(s *Skill) bool {
 	frontmatter, openai := FileManual(s.Dir)
-	if len(s.harnesses) == 0 {
+	if len(s.Harnesses) == 0 {
 		return frontmatter && openai
 	}
-	for _, h := range s.harnesses {
+	for _, h := range s.Harnesses {
 		if h == Codex && !openai || h != Codex && !frontmatter {
 			return false
 		}
