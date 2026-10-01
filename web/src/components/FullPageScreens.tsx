@@ -1,22 +1,13 @@
-import { lazy, Suspense, useCallback, type ComponentProps, type RefObject } from "react";
+import { lazy, Suspense, useCallback, type RefObject } from "react";
 
 import type { Client } from "~/client";
-import type { Skill, SkillsScope } from "~/lib/skills";
+import type { SkillsScope } from "~/lib/skills";
 import type { QuotaStatus, UsageReport } from "~/protocol";
 
 import { Spinner } from "./ui/spinner";
 
 const UsagePage = lazy(() => import("./Usage").then((m) => ({ default: m.UsagePage })));
-// The page and its install, commit and update flows load together, and only
-// when the page is opened: passing the slots from here as a static import
-// would put every one of those dialogs in the entry bundle.
-const SkillsPage = lazy(() =>
-  Promise.all([import("./skills/SkillsPage"), import("./skills/flows")]).then(([page, flows]) => ({
-    default: (props: Omit<ComponentProps<typeof page.SkillsPage>, "slots">) => (
-      <page.SkillsPage {...props} slots={flows.pageSlots} />
-    ),
-  })),
-);
+const SkillsPage = lazy(() => import("./skills/SkillsPage").then((m) => ({ default: m.SkillsPage })));
 const ThemePreview = lazy(() =>
   import("./ThemePreview").then((m) => ({ default: m.ThemePreview })),
 );
@@ -74,17 +65,15 @@ export function UsageScreen({
 
 /**
  * The Skills page, over the whole viewport. `scope` says whose skills it
- * lists; `onUse` is given only when there is a thread to put a skill into.
+ * lists.
  */
 export function SkillsScreen({
   clientRef,
   scope,
-  onUse,
   onClose,
 }: {
   clientRef: RefObject<Client | null>;
   scope: SkillsScope;
-  onUse?: (skill: Skill) => void | Promise<void>;
   onClose: () => void;
 }) {
   const command = useCallback(
@@ -94,7 +83,7 @@ export function SkillsScreen({
   );
   return (
     <Suspense fallback={<PageSpinner />}>
-      <SkillsPage command={command} scope={scope} onUse={onUse} onClose={onClose} />
+      <SkillsPage command={command} scope={scope} onClose={onClose} />
     </Suspense>
   );
 }

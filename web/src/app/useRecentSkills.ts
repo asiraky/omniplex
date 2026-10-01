@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ComposerHandle } from "~/components/Composer";
 import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "~/lib/recentSkills";
-import { composerItemFor, type Skill } from "~/lib/skills";
 import type { ComposerItem, ThreadState } from "~/protocol";
 
 import type { ComposerDrafts } from "./useComposerDrafts";
@@ -87,24 +86,10 @@ export function useRecentSkills({
     [activeId, drafts, isDesktop, setDraft],
   );
 
-  // "Use" on the Skills surface. The token is the harness's to decide ("/name",
-  // "$name", a plugin's "plugin:name"), so it comes from the thread's own
-  // catalogue rather than being built here; a skill the catalogue does not
-  // list is one this thread's harness cannot run, and saying so beats writing
-  // a token that does nothing.
-  const use = useCallback(
-    async (skill: Pick<Skill, "name" | "plugin">) => {
-      const item = composerItemFor(await loadComposerItems(), skill);
-      if (!item) throw new Error("This thread's harness does not list that skill.");
-      pick(item);
-    },
-    [loadComposerItems, pick],
-  );
-
   const noteUsed = useCallback(
     (insertText: string) => recordRecentSkill(projectId, insertText),
     [projectId],
   );
 
-  return { composerRef, items: recents.items, seeded: recents.seeded, pick, use, noteUsed };
+  return { composerRef, items: recents.items, seeded: recents.seeded, pick, noteUsed };
 }

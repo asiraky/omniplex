@@ -22,22 +22,14 @@ func TestSavingRefusesSettingsItCouldNotUse(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"relative projects folder": {ProjectsDir: "code/projects"},
 		"unknown level":            {DefaultLevel: "yolo"},
-		"relative skills library":  {Skills: SkillsConfig{Library: "skills"}},
-		"project library escaping": {Skills: SkillsConfig{ProjectLibrary: "../skills"}},
-		"absolute project library": {Skills: SkillsConfig{ProjectLibrary: "/srv/skills"}},
-		"cli version with a space": {Skills: SkillsConfig{CLIVersion: "1.7.0 --evil"}},
-		"cli version as a flag":    {Skills: SkillsConfig{CLIVersion: "-y"}},
 	} {
 		if _, err := Save(cfg); err == nil {
 			t.Errorf("%s: saved", name)
 		}
 	}
-	saved, err := Save(Config{ProjectsDir: " ~/work ", DefaultLevel: "edits", Skills: SkillsConfig{Library: " ~/dot/skills ", ProjectLibrary: "tools/skills", CLIVersion: "1.8.0-beta.2"}})
+	saved, err := Save(Config{ProjectsDir: " ~/work ", DefaultLevel: "edits"})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if saved.Skills.Library != "~/dot/skills" {
-		t.Errorf("skills library kept as %q", saved.Skills.Library)
 	}
 	if saved.ProjectsDir != "~/work" {
 		t.Errorf("projects folder kept as %q", saved.ProjectsDir)

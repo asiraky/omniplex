@@ -148,7 +148,6 @@ var gitRepo = map[string]string{
 func TestStageWithNpx(t *testing.T) {
 	staging(t)
 	r := machine(t)
-	r.CLIVersion = "9.9.9-test"
 	write(t, filepath.Join(r.Library, "quiet", "SKILL.md"), manualMD)
 	write(t, filepath.Join(r.ProjectLibrary, "show-me", "SKILL.md"), skillMD("show-me", "Already here"))
 	x := &tools{npx: npxAdds(t, npxRepo)}
@@ -175,10 +174,8 @@ func TestStageWithNpx(t *testing.T) {
 	if !show.Picked || quiet.Picked {
 		t.Errorf("picked: show-me %v, quiet %v", show.Picked, quiet.Picked)
 	}
-	if show.Manual || !quiet.Manual {
-		t.Errorf("manual: show-me %v, quiet %v", show.Manual, quiet.Manual)
-	}
-	if show.InUser || !show.InProject || !quiet.InUser || quiet.InProject {
+	// Only the personal library counts: a project's copy is not replaced.
+	if show.Installed || !quiet.Installed {
 		t.Errorf("clashes: show-me %+v, quiet %+v", show, quiet)
 	}
 	var files []string
@@ -200,7 +197,7 @@ func TestStageWithNpx(t *testing.T) {
 	if npx.Dir != dir {
 		t.Errorf("npx ran in %q, want the staging dir %q", npx.Dir, dir)
 	}
-	if !slices.Contains(npx.Args, "skills@"+r.CLIVersion) || !slices.Contains(npx.Args, "humanlayer/skills") {
+	if !slices.Contains(npx.Args, "skills@"+CLIVersion) || !slices.Contains(npx.Args, "humanlayer/skills") {
 		t.Errorf("npx args = %v", npx.Args)
 	}
 }
@@ -459,7 +456,7 @@ func TestStagedNames(t *testing.T) {
 		t.Errorf("twin = %+v", skills["twin"])
 	}
 	// A name that cannot be a skill's folder is shown and cannot be installed.
-	if _, err := InstallStaged(r, got.ID, []string{"Bad Folder"}, ScopeUser, nil, false); !errors.Is(err, ErrInvalid) {
+	if _, err := InstallStaged(r, got.ID, []string{"Bad Folder"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("installing a badly named skill: %v", err)
 	}
 	if exists(r.Library) && len(readDirs(r.Library)) != 0 {
@@ -492,7 +489,7 @@ func TestStageALocalFolder(t *testing.T) {
 	if !reflect.DeepEqual(stagedNames(got), []string{"leaky", "quiet", "show-me"}) {
 		t.Fatalf("staged %v", stagedNames(got))
 	}
-	if skills["quiet"].Path != "deep/er/quiet" || !skills["quiet"].Manual {
+	if skills["quiet"].Path != "deep/er/quiet" {
 		t.Errorf("quiet = %+v", skills["quiet"])
 	}
 	// A skill that links out of itself is shown with the reason and cannot
@@ -503,7 +500,7 @@ func TestStageALocalFolder(t *testing.T) {
 	if content, _, err := ReadStagedFile(got.ID, "leaky", "secret.txt"); err == nil {
 		t.Errorf("read %q through the link", content)
 	}
-	if _, err := InstallStaged(r, got.ID, []string{"leaky"}, ScopeUser, nil, false); err == nil {
+	if _, err := InstallStaged(r, got.ID, []string{"leaky"}); err == nil {
 		t.Error("installed a skill that links out of itself")
 	}
 
@@ -568,7 +565,7 @@ func TestWhatAFetcherWritesIsNotTrusted(t *testing.T) {
 	}
 	// The link is refused on the way into the library too, and nothing of the
 	// skill is left there.
-	if _, err := InstallStaged(r, got.ID, []string{"show-me"}, ScopeUser, nil, false); !errors.Is(err, ErrInvalid) {
+	if _, err := InstallStaged(r, got.ID, []string{"show-me"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("install = %v, want a refusal", err)
 	}
 	if entries, _ := os.ReadDir(r.Library); len(entries) != 0 {
@@ -589,7 +586,7 @@ func TestStagingIDs(t *testing.T) {
 		if _, _, err := ReadStagedFile(id, "victim", "SKILL.md"); !errors.Is(err, ErrInvalid) {
 			t.Errorf("read with id %q: %v", id, err)
 		}
-		if _, err := InstallStaged(r, id, []string{"victim"}, ScopeUser, nil, false); !errors.Is(err, ErrInvalid) {
+		if _, err := InstallStaged(r, id, []string{"victim"}); !errors.Is(err, ErrInvalid) {
 			t.Errorf("install with id %q: %v", id, err)
 		}
 		if _, err := ApplyUpdate(r, id, []string{victim}); !errors.Is(err, ErrInvalid) {

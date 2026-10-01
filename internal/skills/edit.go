@@ -190,11 +190,10 @@ func readInside(dir, rel string) (content string, binary bool, err error) {
 	return string(data), false, nil
 }
 
-// Create writes a new skill into the library for the scope, and links it into
-// Claude's skills dir unless that dir already is the library. Codex and pi are
-// left to reach the library their own way; a library neither reads shows the
-// skill with a link action for each.
-func Create(r Roots, scope, name, description string) (Skill, error) {
+// Create writes a new skill into the personal library and makes it visible to
+// every harness. A name any harness already has a skill under is refused,
+// since the new one would not reach that harness.
+func Create(r Roots, name, description string) (Skill, error) {
 	if err := ValidateName(name); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -202,17 +201,17 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err := validateDescription(description); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	library, err := LibraryDir(r, scope)
-	if err != nil {
-		return Skill{}, err
-	}
-	claudeDir := linkDir(r, Claude, scope)
-	if claudeDir == "" {
+	library := r.Library
+	if library == "" {
 		return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
 	}
-	for _, d := range []string{library, claudeDir} {
+	taken := []string{library}
+	for _, d := range r.agentDirs() {
+		taken = append(taken, d)
+	}
+	for _, d := range taken {
 		if _, err := os.Lstat(filepath.Join(d, name)); err == nil {
-			return Skill{}, fmt.Errorf("%w: %s already exists in %s", ErrInvalid, name, d)
+			return Skill{}, fmt.Errorf("%w: %s already exists in %s", ErrInvalid, name, abbreviate(d, r.Home))
 		}
 	}
 
@@ -233,11 +232,7 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	if LinkState(r, Claude, scope).State != LinkDirect {
-		if err := symlinkTo(realDir, filepath.Join(claudeDir, name)); err != nil {
-			return Skill{}, err
-		}
-	}
+	reachEveryAgent(r, realDir)
 	s, err := find(r, realDir)
 	if errors.Is(err, ErrNotFound) {
 		return Skill{}, fmt.Errorf("created %s but it is not discoverable", realDir)
@@ -257,7 +252,7 @@ func Remove(r Roots, dir string) error {
 	if !s.Editable {
 		return ErrNotEditable
 	}
-	for _, p := range s.Paths {
+	for _, p := range s.paths {
 		if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			if err := os.Remove(p); err != nil {
 				return err

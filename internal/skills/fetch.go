@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -176,22 +175,17 @@ func underPath(found []fetched, sub string) []fetched {
 	return kept
 }
 
-var cliVersionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.\-]*$`)
-
 // fetchNpx has the skills CLI install every skill of the source into the
 // staging dir, as though that were a project. The CLI is always named with a
 // version: a bare `npx skills` does not resolve. The ref is passed as the user
 // gave it; pinning a commit here would record the commit as the ref, and the
 // skill would never update again.
 func (f Fetcher) fetchNpx(ctx context.Context, r Roots, src ParsedSource, dir string) (found []fetched, warning string, err error) {
-	if !cliVersionRe.MatchString(r.CLIVersion) {
-		return nil, "", fmt.Errorf("%q is not a skills CLI version", r.CLIVersion)
-	}
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	stdout, err := f.run(ctx, Command{
 		Name: "npx",
-		Args: []string{"-y", "skills@" + r.CLIVersion, "add", src.spec(), "-s", "*", "-a", "universal", "--copy", "-y", "--json"},
+		Args: []string{"-y", "skills@" + CLIVersion, "add", src.spec(), "-s", "*", "-a", "universal", "--copy", "-y", "--json"},
 		Dir:  dir,
 		Env:  []string{"DISABLE_TELEMETRY=1"},
 	})

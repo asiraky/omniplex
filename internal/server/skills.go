@@ -7,36 +7,16 @@ import (
 
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/thread"
-	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
 func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) (any, error) {
-	// Saved first: every other command reads the roots the setup decides.
-	if command == "save_skills_setup" {
-		next := userconfig.SkillsConfig{Library: a.Library, ProjectLibrary: a.ProjectLibrary, CLIVersion: a.CLIVersion}
-		if _, err := userconfig.Update(func(cur *userconfig.Config) error {
-			cur.Skills = next
-			return nil
-		}); err != nil {
-			return nil, err
-		}
-	}
-	roots, err := s.mgr.SkillRoots(ctx, a.ThreadID, a.ProjectID)
+	roots, projectName, err := s.mgr.SkillRoots(ctx, a.ThreadID, a.ProjectID)
 	if err != nil {
 		return nil, err
 	}
 	switch command {
-	case "save_skills_setup":
-		return map[string]any{"setup": skillsSetup(roots)}, nil
-	case "link_library":
-		if err := skills.LinkLibrary(roots, skills.Harness(a.Harness)); err != nil {
-			return nil, err
-		}
-		return map[string]any{"setup": skillsSetup(roots)}, nil
-	case "link_skill":
-		return skills.LinkSkill(roots, a.Dir, skills.Harness(a.Harness))
-	case "set_skill_invocation":
-		return skills.SetInvocation(roots, a.Dir, a.Manual)
+	case "set_skill_mode":
+		return skills.SetMode(roots, a.Dir, a.Mode)
 	case "remove_skill":
 		if err := skills.Remove(roots, a.Dir); err != nil {
 			return nil, err
@@ -47,16 +27,21 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		if err != nil {
 			return nil, err
 		}
-		subagents, err := skills.DiscoverSubagents(roots)
-		if err != nil {
-			return nil, err
+		out := map[string]any{"skills": found, "claudeSync": skills.ClaudeSync(roots), "codexBundled": skills.CodexBundled(roots)}
+		if roots.ProjectRoot != "" {
+			out["projectRoot"], out["projectName"] = roots.ProjectRoot, projectName
 		}
-		return map[string]any{"skills": found, "subagents": subagents, "projectRoot": roots.ProjectRoot, "setup": skillsSetup(roots), "claudeSync": skills.ClaudeSync(roots)}, nil
+		return out, nil
 	case "set_claude_sync":
 		if err := skills.SetClaudeSync(roots, a.On); err != nil {
 			return nil, err
 		}
 		return map[string]any{"claudeSync": skills.ClaudeSync(roots)}, nil
+	case "set_codex_bundled":
+		if err := skills.SetCodexBundled(roots, a.On); err != nil {
+			return nil, err
+		}
+		return map[string]any{"codexBundled": skills.CodexBundled(roots)}, nil
 	case "read_skill":
 		return skills.Read(roots, a.Dir)
 	case "read_skill_file":
@@ -71,7 +56,7 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		}
 		return map[string]any{"ok": true}, nil
 	case "create_skill":
-		return skills.Create(roots, a.Scope, a.Name, a.Description)
+		return skills.Create(roots, a.Name, a.Description)
 
 	case "stage_skills":
 		return s.skillFetch.Stage(ctx, roots, a.Source)
@@ -82,11 +67,7 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		}
 		return map[string]any{"content": content, "binary": binary}, nil
 	case "install_staged":
-		link := make([]skills.Harness, 0, len(a.Link))
-		for _, h := range a.Link {
-			link = append(link, skills.Harness(h))
-		}
-		placed, err := skills.InstallStaged(roots, a.ID, a.Skills, a.Scope, link, a.Replace)
+		placed, err := skills.InstallStaged(roots, a.ID, a.Skills)
 		if err != nil {
 			return nil, err
 		}
@@ -126,19 +107,6 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		return map[string]any{"skills": updated}, nil
 	}
 	return nil, fmt.Errorf("unknown skill command %q", command)
-}
-
-// skillsSetup is the setup as the screen shows it. Outside a project the
-// roots carry no project library, so the configured one is filled in here:
-// the setting is still there to see and change.
-func skillsSetup(roots skills.Roots) skills.Setup {
-	setup := skills.DetectSetup(roots)
-	if roots.ProjectRoot == "" {
-		if cfg, err := userconfig.Load(); err == nil && cfg.Skills.ProjectLibrary != "" {
-			setup.ProjectLibrary = cfg.Skills.ProjectLibrary
-		}
-	}
-	return setup
 }
 
 // attachedFiles is the trailer a prompt carries for the files a human

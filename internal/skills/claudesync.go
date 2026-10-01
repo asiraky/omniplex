@@ -42,36 +42,72 @@ func SetClaudeSync(r Roots, on bool) error {
 	if r.ClaudeConfigDir == "" {
 		return errors.New("no Claude config dir")
 	}
-	path := claudeSettingsPath(r)
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
-	}
-	data, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		if on {
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		return writeAtomic(path, []byte("{\n  \""+syncKey+"\": false\n}\n"))
-	case err != nil:
-		return err
-	}
 	var value *string
 	if !on {
 		f := "false"
 		value = &f
 	}
-	next, err := setTopKey(string(data), syncKey, value)
-	if err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrInvalid, path, err)
+	return editSettings(claudeSettingsPath(r), func(content string) (string, error) {
+		return setTopKey(content, syncKey, value)
+	})
+}
+
+// editSettings edits a JSON settings file in place. A missing file is
+// created only when the edit has something to say.
+func editSettings(path string, edit func(string) (string, error)) error {
+	return editThrough(path, func(content string, exists bool) (string, error) {
+		if !exists {
+			next, err := edit("{}\n")
+			if err != nil || next == "{}\n" {
+				return "", err
+			}
+			return next, nil
+		}
+		next, err := edit(content)
+		if err != nil {
+			return "", fmt.Errorf("%w: %s: %v", ErrInvalid, path, err)
+		}
+		return next, nil
+	})
+}
+
+// readThrough reads a file, following a symlink to what it points at. real
+// is the file to write back to; it is set even when the file is not there.
+func readThrough(path string) (content, real string, err error) {
+	real = path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		real = r
+	} else if target, err := os.Readlink(path); err == nil {
+		// A dangling link: write where it points.
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		real = target
 	}
-	if next == string(data) {
+	data, err := os.ReadFile(real)
+	return string(data), real, err
+}
+
+// editThrough rewrites a config file with edit, through a symlink to its
+// target. A missing file reads as empty and is only created if edit returns
+// something; nothing is written when the content does not change.
+func editThrough(path string, edit func(content string, exists bool) (string, error)) error {
+	content, real, err := readThrough(path)
+	exists := err == nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	next, err := edit(content, exists)
+	if err != nil {
+		return err
+	}
+	if next == content {
 		return nil
 	}
-	return writeAtomic(path, []byte(next))
+	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		return err
+	}
+	return writeAtomic(real, []byte(next))
 }
 
 // entry is one top-level member of a JSON object, by byte offset: prev is
@@ -82,25 +118,24 @@ type entry struct {
 	prev, key, from, to int
 }
 
-// setTopKey sets a top-level key of the JSON object in content to the raw
-// JSON value, or removes it when value is nil, touching nothing else.
-func setTopKey(content, name string, value *string) (string, error) {
+// parseObject finds the top-level members of the JSON object in content.
+// open is the offset just after its opening brace.
+func parseObject(content string) (open int, entries []entry, err error) {
 	dec := json.NewDecoder(strings.NewReader(content))
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
-		return "", errors.New("settings are not a JSON object")
+		return 0, nil, errors.New("not a JSON object")
 	}
-	open := int(dec.InputOffset())
-	var entries []entry
+	open = int(dec.InputOffset())
 	for dec.More() {
 		prev := int(dec.InputOffset())
 		t, err := dec.Token()
 		if err != nil {
-			return "", err
+			return 0, nil, err
 		}
 		key, _ := t.(string)
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
-			return "", err
+			return 0, nil, err
 		}
 		to := int(dec.InputOffset())
 		entries = append(entries, entry{
@@ -112,9 +147,25 @@ func setTopKey(content, name string, value *string) (string, error) {
 		})
 	}
 	if _, err := dec.Token(); err != nil {
+		return 0, nil, err
+	}
+	return open, entries, nil
+}
+
+// setTopKey sets a top-level key of the JSON object in content to the raw
+// JSON value, or removes it when value is nil, touching nothing else.
+func setTopKey(content, name string, value *string) (string, error) {
+	return setMember(content, name, value, "")
+}
+
+// setMember is setTopKey for an object that may itself be nested: outer is
+// the indentation of the line the object opens on, so a member added to an
+// empty object sits one level in from it.
+func setMember(content, name string, value *string, outer string) (string, error) {
+	open, entries, err := parseObject(content)
+	if err != nil {
 		return "", err
 	}
-
 	out := content
 	found := false
 	// Last first, so the offsets of the ones before stay good.
@@ -141,11 +192,69 @@ func setTopKey(content, name string, value *string) (string, error) {
 	if found || value == nil {
 		return out, nil
 	}
-	member := `"` + name + `": ` + *value
+	member := jsonString(name) + ": " + *value
 	if len(entries) == 0 {
-		return content[:open] + "\n  " + member + "\n" + strings.TrimLeft(content[open:], " \t\r\n"), nil
+		return content[:open] + "\n" + outer + "  " + member + "\n" + outer + strings.TrimLeft(content[open:], " \t\r\n"), nil
 	}
 	// First in the object, indented like the member that was first.
 	indent := content[open:entries[0].key]
 	return content[:open] + indent + member + "," + content[open:], nil
+}
+
+// setNestedKey sets outer.inner in the JSON object in content, or removes it
+// when value is nil, and takes outer away too once nothing is left in it.
+// Every other byte stays where it was.
+func setNestedKey(content, outer, inner string, value *string) (string, error) {
+	open, entries, err := parseObject(content)
+	if err != nil {
+		return "", err
+	}
+	at := -1
+	for i, e := range entries {
+		if e.name == outer {
+			at = i
+		}
+	}
+	if at < 0 {
+		if value == nil {
+			return content, nil
+		}
+		// Indented like the first member, or on one line like the file.
+		indent := "  "
+		if len(entries) > 0 {
+			gap := content[open:entries[0].key]
+			nl := strings.LastIndexByte(gap, '\n')
+			if nl < 0 {
+				obj := "{" + jsonString(inner) + ": " + *value + "}"
+				return setTopKey(content, outer, &obj)
+			}
+			indent = gap[nl+1:]
+		}
+		obj := "{\n" + indent + indent + jsonString(inner) + ": " + *value + "\n" + indent + "}"
+		return setTopKey(content, outer, &obj)
+	}
+	e := entries[at]
+	raw := content[e.from:e.to]
+	if !strings.HasPrefix(raw, "{") {
+		return "", fmt.Errorf("%s is not an object", outer)
+	}
+	line := content[strings.LastIndexByte(content[:e.key], '\n')+1 : e.key]
+	next, err := setMember(raw, inner, value, indentOf(line))
+	if err != nil {
+		return "", err
+	}
+	if next == raw {
+		return content, nil
+	}
+	if value == nil {
+		if _, left, err := parseObject(next); err == nil && len(left) == 0 {
+			return setTopKey(content, outer, nil)
+		}
+	}
+	return content[:e.from] + next + content[e.to:], nil
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

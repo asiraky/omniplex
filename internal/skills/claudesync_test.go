@@ -117,3 +117,44 @@ func TestSetTopKey(t *testing.T) {
 		})
 	}
 }
+
+func TestSetNestedKey(t *testing.T) {
+	off := `"off"`
+	tests := []struct {
+		name, in string
+		value    *string
+		want     string
+	}{
+		{"adds the outer object, indented like the file", "{\n    \"a\": 1\n}", &off, "{\n    \"o\": {\n        \"k\": \"off\"\n    },\n    \"a\": 1\n}"},
+		{"adds the outer object to an empty file", "{}\n", &off, "{\n  \"o\": {\n    \"k\": \"off\"\n  }\n}\n"},
+		{"adds the outer object on one line like the file", `{"a": 1}`, &off, `{"o": {"k": "off"},"a": 1}`},
+		{"adds into an object that has others", "{\n  \"o\": {\n    \"x\": \"on\"\n  }\n}", &off, "{\n  \"o\": {\n    \"k\": \"off\",\n    \"x\": \"on\"\n  }\n}"},
+		{"adds into an empty object, one level in", "{\n  \"a\": 1,\n  \"o\": {}\n}", &off, "{\n  \"a\": 1,\n  \"o\": {\n    \"k\": \"off\"\n  }\n}"},
+		{"replaces only the value", "{\"o\": {\"k\":  \"on\" }, \"k\": 1}", &off, "{\"o\": {\"k\":  \"off\" }, \"k\": 1}"},
+		{"removes the key and keeps the rest of the object", "{\n  \"o\": {\n    \"k\": \"off\",\n    \"x\": \"on\"\n  }\n}", nil, "{\n  \"o\": {\n    \"x\": \"on\"\n  }\n}"},
+		{"removes the outer object once it is empty", "{\n  \"o\": {\n    \"k\": \"off\"\n  },\n  \"a\": 1\n}", nil, "{\n  \"a\": 1\n}"},
+		{"removing what is not there changes nothing", "{\n  \"o\": {\"x\": 1}\n}", nil, "{\n  \"o\": {\"x\": 1}\n}"},
+		{"removing with no outer object changes nothing", "{\"a\": 1}", nil, "{\"a\": 1}"},
+		{"a top-level key of the same name is left alone", "{\"k\": \"off\"}", nil, "{\"k\": \"off\"}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := setNestedKey(tt.in, "o", "k", tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("got  %q\nwant %q", got, tt.want)
+			}
+			var a, b any
+			if json.Unmarshal([]byte(got), &a) != nil || json.Unmarshal([]byte(tt.want), &b) != nil || !reflect.DeepEqual(a, b) {
+				t.Fatalf("result is not the JSON expected: %q", got)
+			}
+		})
+	}
+	for _, in := range []string{`{"o": "off"}`, `[1]`, `{"o": {`} {
+		if got, err := setNestedKey(in, "o", "k", &off); err == nil {
+			t.Errorf("%q edited to %q, want an error", in, got)
+		}
+	}
+}

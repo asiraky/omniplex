@@ -44,11 +44,11 @@ type StagedSkill struct {
 	Description string `json:"description"`
 	Path        string `json:"path,omitempty"` // in-repo folder
 	Files       []File `json:"files"`          // includes SKILL.md
-	Manual      bool   `json:"manual"`
 	Problem     string `json:"problem,omitempty"`
 	Picked      bool   `json:"picked"`
-	InUser      bool   `json:"inUser"`
-	InProject   bool   `json:"inProject"`
+	// Installed is set when the library already has a skill of this name,
+	// which installing this one replaces.
+	Installed bool `json:"installed"`
 }
 
 // manifest is what a staging dir knows about itself, so the commands that
@@ -332,8 +332,7 @@ func (st *stage) describe(r Roots, src ParsedSource, method, note string, found 
 		}
 		seen[s.Name] = true
 		s.Picked = picked["*"] || picked[s.Name] || picked[f.base]
-		s.InUser = inLibrary(r.Library, s.Name)
-		s.InProject = inLibrary(r.ProjectLibrary, s.Name)
+		s.Installed = inLibrary(r.Library, s.Name)
 		sf.Name = s.Name
 		if f.ref != "" {
 			refs[f.ref] = true
@@ -378,12 +377,10 @@ func stagedMeta(dir, base string) StagedSkill {
 	case name != base:
 		fillMeta(&s, name) // read again as the folder it will be, so the names agree
 	}
-	frontmatter, openai := FileManual(dir)
 	return StagedSkill{
 		Name:        name,
 		Description: s.Description,
 		Files:       listFiles(dir),
-		Manual:      frontmatter || openai,
 		Problem:     s.Problem,
 	}
 }

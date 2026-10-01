@@ -1,5 +1,4 @@
 import {
-  BookOpenIcon,
   BotIcon,
   FileDiffIcon,
   FileIcon,
@@ -16,8 +15,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArtefactList } from "~/components/artefacts/ArtefactList";
 import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { IconButton } from "~/components/IconButton";
-import { panelSlots } from "~/components/skills/flows";
-import { SkillsSurface } from "~/components/skills/SkillsSurface";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
@@ -33,7 +30,6 @@ import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { fileIconFor } from "~/lib/fileIcons";
 import { liveJobCount } from "~/lib/jobs";
 import type { Artefact } from "~/lib/artefacts";
-import type { Skill } from "~/lib/skills";
 import {
   artefactSurface,
   closeSurface,
@@ -60,7 +56,7 @@ const DEFAULT_WIDTH = 460;
 
 /** An imperative ask from outside: put this on screen. */
 export interface PanelRequest {
-  kind: "diff" | "path" | "jobs" | "artefact" | "artefacts" | "skills";
+  kind: "diff" | "path" | "jobs" | "artefact" | "artefacts";
   path?: string;
   line?: number;
   artefactId?: string;
@@ -86,16 +82,12 @@ export interface PanelProps {
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
   pr?: PullRequest | null;
-  /** Puts a skill's token into the thread's composer, from the skills surface. */
-  onUseSkill?: (skill: Skill) => void | Promise<void>;
 }
 
 function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
   switch (s.kind) {
     case "artefacts":
       return "Artefacts";
-    case "skills":
-      return "Skills";
     case "artefact":
       return artefacts.find((a) => a.id === s.artefactId)?.name ?? "Artefact";
     case "diff":
@@ -139,8 +131,7 @@ function routeRequest(
         reveal: path ? { path, nonce } : undefined,
       };
     case "jobs":
-    case "artefacts":
-    case "skills": {
+    case "artefacts": {
       const kind = request.kind;
       return { update: (p) => openSurface(p, { id: kind, kind }) };
     }
@@ -175,8 +166,6 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
       return <PackageIcon className={className} />;
     case "artefact":
       return <FileIcon className={className} />;
-    case "skills":
-      return <BookOpenIcon className={className} />;
     case "terminal":
       return <TerminalIcon className={className} />;
     case "file": {
@@ -201,7 +190,6 @@ function PanelBody({
   loadFile,
   request,
   pr,
-  onUseSkill,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per thread so the panel reopens as it was left.
@@ -419,9 +407,6 @@ function PanelBody({
               <DropdownMenuItem onSelect={() => addSurface({ id: "artefacts", kind: "artefacts" })}>
                 <PackageIcon className="size-3.5" /> Artefacts
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => addSurface({ id: "skills", kind: "skills" })}>
-                <BookOpenIcon className="size-3.5" /> Skills
-              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setPanel((p) => openSurface(p, newTerminalSurface(p)))}>
                 <TerminalIcon className="size-3.5" /> Terminal
               </DropdownMenuItem>
@@ -490,21 +475,6 @@ function PanelBody({
               This artefact is not in this thread.
             </div>
           ))}
-        {active?.kind === "skills" && (
-          <SkillsSurface
-            command={command}
-            threadId={threadId}
-            slots={panelSlots}
-            onUse={
-              onUseSkill &&
-              (async (skill) => {
-                await onUseSkill(skill);
-                // The sheet covers the composer the token just went into.
-                if (inSheet) onClose();
-              })
-            }
-          />
-        )}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces

@@ -895,8 +895,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		return map[string]any{"tree": tree}, nil
 
 	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill",
-		"save_skills_setup", "link_library", "link_skill", "set_skill_invocation", "remove_skill",
-		"set_claude_sync", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
+		"set_skill_mode", "remove_skill", "set_claude_sync", "set_codex_bundled", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
 		"skills_git_status", "commit_skills", "stage_update", "read_update_file", "apply_update":
 		var a skillArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
@@ -969,11 +968,8 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := userconfig.CheckBranchFormat(a.Config.BranchFormat); err != nil {
 			return nil, err
 		}
-		// The skills setup has a screen of its own (save_skills_setup); this one
-		// does not carry it, so it keeps what is on disk the same way.
 		cfg, err := userconfig.Update(func(cur *userconfig.Config) error {
 			a.Config.Providers = cur.Providers
-			a.Config.Skills = cur.Skills
 			*cur = a.Config
 			return nil
 		})

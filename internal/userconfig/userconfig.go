@@ -56,36 +56,6 @@ type Config struct {
 	// DefaultLevel is the permission level a project's first thread starts
 	// on: "ask", "edits" or "all". Empty defers to each harness's default.
 	DefaultLevel string `json:"defaultLevel,omitempty"`
-	// Skills is where Omniplex keeps the skills it installs and creates. The
-	// skills screen owns it, not the general settings screen.
-	Skills SkillsConfig `json:"skills,omitempty"`
-}
-
-// SkillsConfig names the skill libraries. Empty fields mean the default.
-type SkillsConfig struct {
-	// Library is the personal library: a full path, or one starting with ~.
-	Library string `json:"library,omitempty"`
-	// ProjectLibrary is relative to a project's root.
-	ProjectLibrary string `json:"projectLibrary,omitempty"`
-	// CLIVersion pins the `skills` npm package a fetch runs.
-	CLIVersion string `json:"cliVersion,omitempty"`
-}
-
-var cliVersionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.\-]*$`)
-
-func (s SkillsConfig) validate() error {
-	if s.Library != "" {
-		if _, err := ExpandHome(s.Library); err != nil {
-			return fmt.Errorf("skills library: %w", err)
-		}
-	}
-	if s.ProjectLibrary != "" && !filepath.IsLocal(filepath.FromSlash(s.ProjectLibrary)) {
-		return fmt.Errorf("project skills library must be a path inside the project: %s", s.ProjectLibrary)
-	}
-	if s.CLIVersion != "" && !cliVersionRe.MatchString(s.CLIVersion) {
-		return fmt.Errorf("skills CLI version: %q is not a version", s.CLIVersion)
-	}
-	return nil
 }
 
 // ProjectsDirOrDefault is the folder project home folders go in.
@@ -149,9 +119,6 @@ func Normalize(cfg Config) (Config, error) {
 		cfg.BranchFormat = DefaultBranchFormat
 	}
 	cfg.ProjectsDir = strings.TrimSpace(cfg.ProjectsDir)
-	cfg.Skills.Library = strings.TrimSpace(cfg.Skills.Library)
-	cfg.Skills.ProjectLibrary = strings.TrimSpace(cfg.Skills.ProjectLibrary)
-	cfg.Skills.CLIVersion = strings.TrimSpace(cfg.Skills.CLIVersion)
 	return cfg, nil
 }
 
@@ -247,9 +214,6 @@ func validate(cfg Config) error {
 		if _, err := ExpandHome(cfg.ProjectsDir); err != nil {
 			return fmt.Errorf("projects folder: %w", err)
 		}
-	}
-	if err := cfg.Skills.validate(); err != nil {
-		return err
 	}
 	switch cfg.DefaultLevel {
 	case "", "ask", "edits", "all":

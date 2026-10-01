@@ -98,7 +98,7 @@ export function App() {
 
   // The Skills page, the same way. It lists what the open thread can use when
   // there is one, else the project being started in or last used, else only
-  // the user's own; Use needs a composer, so it is offered only over a thread.
+  // the user's own.
   if (screens.showSkills) {
     return (
       <SkillsScreen
@@ -110,17 +110,6 @@ export function App() {
           lastProjectId: loadLastProject() || undefined,
           projects,
         })}
-        onUse={
-          activeId && state
-            ? async (skill) => {
-                await recents.use(skill);
-                screens.setShowSkills(false);
-                // On a phone the sidebar the page was opened from is still
-                // over the composer.
-                if (!isDesktop) nav.setSidebarOpen(false);
-              }
-            : undefined
-        }
         onClose={() => screens.setShowSkills(false)}
       />
     );
@@ -236,7 +225,6 @@ export function App() {
           state={state}
           panel={panel}
           pr={pr}
-          onUseSkill={recents.use}
         />
       )}
 

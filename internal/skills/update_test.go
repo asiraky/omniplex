@@ -47,14 +47,14 @@ func (u *upstream) drop(skill string) {
 	maps.DeleteFunc(u.files, func(rel, _ string) bool { return strings.HasPrefix(rel, skill+"/") })
 }
 
-// install fetches source and puts the named skills in the library of a scope.
-func (u *upstream) install(r Roots, source, scope string, names ...string) {
+// install fetches source and puts the named skills in the library.
+func (u *upstream) install(r Roots, source string, names ...string) {
 	u.t.Helper()
 	got, err := u.fetcher().Stage(context.Background(), r, source)
 	if err != nil {
 		u.t.Fatal(err)
 	}
-	if _, err := InstallStaged(r, got.ID, names, scope, nil, false); err != nil {
+	if _, err := InstallStaged(r, got.ID, names); err != nil {
 		u.t.Fatal(err)
 	}
 }
@@ -89,7 +89,7 @@ func installed(t *testing.T) (Roots, *upstream) {
 	staging(t)
 	r := machine(t)
 	u := newUpstream(t, v1)
-	u.install(r, "owner/repo", ScopeUser, "show-me", "quiet")
+	u.install(r, "owner/repo", "show-me", "quiet")
 	return r, u
 }
 
@@ -145,7 +145,7 @@ func TestUpdateFetchesTheRefThatWasInstalled(t *testing.T) {
 	staging(t)
 	r := machine(t)
 	u := newUpstream(t, v1)
-	u.install(r, "owner/repo#v2", ScopeUser, "show-me")
+	u.install(r, "owner/repo#v2", "show-me")
 	u.stageUpdate(r, filepath.Join(r.Library, "show-me"))
 	calls := u.ran("npx")
 	if last := calls[len(calls)-1]; !slices.Contains(last.Args, "owner/repo#v2") {
@@ -207,9 +207,6 @@ func TestReadUpdateFile(t *testing.T) {
 func TestApplyUpdate(t *testing.T) {
 	r, u := installed(t)
 	show, quiet := filepath.Join(r.Library, "show-me"), filepath.Join(r.Library, "quiet")
-	if _, err := LinkSkill(r, show, Claude); err != nil {
-		t.Fatal(err)
-	}
 	const long = "2020-01-02T03:04:05Z"
 	err := UpdateRecord(r.Library, func(rec *Record) error {
 		e, _ := rec.Get("show-me")
@@ -234,7 +231,7 @@ func TestApplyUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated) != 1 || updated[0].Dir != show || !containsHarness(updated[0].Harnesses, Claude) {
+	if len(updated) != 1 || updated[0].Dir != show || !containsHarness(updated[0].harnesses, Claude) {
 		t.Errorf("updated = %+v", updated)
 	}
 	if !reflect.DeepEqual(entries(t, show), []string{"SKILL.md", "new.md", "notes.md"}) || read(t, filepath.Join(show, "notes.md")) != "v2" {
@@ -473,12 +470,23 @@ func TestAnUpdateCoversOnlySiblings(t *testing.T) {
 	show := filepath.Join(r.Library, "show-me")
 	// Same repo in the project's library, same repo at another ref, another
 	// repo, and a skill from nowhere.
-	u.install(r, "owner/repo", ScopeProject, "show-me")
+	for rel, content := range v1 {
+		if name, file, _ := strings.Cut(rel, "/"); name == "show-me" {
+			write(t, filepath.Join(r.ProjectLibrary, "show-me", filepath.FromSlash(file)), content)
+		}
+	}
+	err := UpdateRecord(r.ProjectLibrary, func(rec *Record) error {
+		rec.Set("show-me", RecordEntry{Method: MethodNpx, Repo: "owner/repo", Path: "skills/show-me"})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"pinned", "stranger", "mine"} {
 		write(t, filepath.Join(r.Library, name, "SKILL.md"), skillMD(name, "d"))
 		write(t, filepath.Join(r.Library, name, "notes.md"), "v1")
 	}
-	err := UpdateRecord(r.Library, func(rec *Record) error {
+	err = UpdateRecord(r.Library, func(rec *Record) error {
 		rec.Set("pinned", RecordEntry{Method: MethodNpx, Repo: "owner/repo", Ref: "v1", Path: "skills/show-me"})
 		rec.Set("stranger", RecordEntry{Method: MethodNpx, Repo: "someone/else", Path: "skills/show-me"})
 		return nil
@@ -543,7 +551,7 @@ func TestUpdateFromALocalFolder(t *testing.T) {
 	staging(t)
 	r := machine(t)
 	got, src := stageLocal(t, r, twoSkills)
-	if _, err := InstallStaged(r, got.ID, []string{"one"}, ScopeUser, nil, false); err != nil {
+	if _, err := InstallStaged(r, got.ID, []string{"one"}); err != nil {
 		t.Fatal(err)
 	}
 	one := filepath.Join(r.Library, "one")
@@ -641,7 +649,7 @@ func TestAFetchIsForInstallingOrForUpdating(t *testing.T) {
 
 	// An update's fetch carries the choice written over upstream's files; it
 	// is not what install would record as fetched.
-	if _, err := InstallStaged(r, update.ID, []string{"show-me"}, ScopeUser, nil, true); !errors.Is(err, ErrInvalid) {
+	if _, err := InstallStaged(r, update.ID, []string{"show-me"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("installing from an update's fetch: %v", err)
 	}
 	if _, err := ApplyUpdate(r, install.ID, []string{show}); !errors.Is(err, ErrInvalid) {
@@ -715,7 +723,7 @@ func TestAnUpdateCheckedBeforeTheSkillWasReplacedIsRefused(t *testing.T) {
 	if err := Remove(r, show); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Create(r, ScopeUser, "show-me", "Mine now"); err != nil {
+	if _, err := Create(r, "show-me", "Mine now"); err != nil {
 		t.Fatal(err)
 	}
 	before := read(t, filepath.Join(show, "SKILL.md"))
@@ -724,39 +732,6 @@ func TestAnUpdateCheckedBeforeTheSkillWasReplacedIsRefused(t *testing.T) {
 	}
 	if read(t, filepath.Join(show, "SKILL.md")) != before || exists(filepath.Join(show, "notes.md")) {
 		t.Error("the stale update replaced the new skill")
-	}
-}
-
-func TestAListedSkillSaysWhatItsFilesSay(t *testing.T) {
-	r, _ := installed(t)
-	show := filepath.Join(r.Library, "show-me")
-	manual := func() bool {
-		t.Helper()
-		all, err := Discover(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, s := range all {
-			if s.Dir == show {
-				return s.Manual
-			}
-		}
-		t.Fatal("show-me not listed")
-		return false
-	}
-	if manual() {
-		t.Error("manual before it was made manual")
-	}
-	setManual(t, show, true)
-	if !manual() {
-		t.Error("not manual after both files say so")
-	}
-	// One file alone is not the switch on.
-	if err := os.Remove(filepath.Join(show, "agents", "openai.yaml")); err != nil {
-		t.Fatal(err)
-	}
-	if manual() {
-		t.Error("manual with only the frontmatter saying so")
 	}
 }
 

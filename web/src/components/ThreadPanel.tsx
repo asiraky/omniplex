@@ -2,7 +2,6 @@ import { lazy, Suspense, useCallback, type RefObject } from "react";
 
 import type { PanelControls } from "~/app/usePanel";
 import type { Client } from "~/client";
-import type { Skill } from "~/lib/skills";
 import type {
   DiffComparison,
   FileContent,
@@ -25,15 +24,12 @@ export function ThreadPanel({
   state,
   panel,
   pr,
-  onUseSkill,
 }: {
   clientRef: RefObject<Client | null>;
   threadId: string;
   state: ThreadState;
   panel: PanelControls;
   pr: PullRequest | null;
-  /** Puts a skill's token into this thread's composer. */
-  onUseSkill?: (skill: Skill) => void | Promise<void>;
 }) {
   const command = useCallback(
     (cmd: string, args: unknown) => clientRef.current!.command(cmd, args),
@@ -106,7 +102,6 @@ export function ThreadPanel({
         loadFile={loadFile}
         request={panel.request}
         pr={pr}
-        onUseSkill={onUseSkill}
       />
     </Suspense>
   );

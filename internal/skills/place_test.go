@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -47,8 +46,7 @@ func TestInstallStaged(t *testing.T) {
 	r := machine(t)
 	got, src := stageLocal(t, r, twoSkills)
 
-	// The default library is the dir Codex and pi read; Claude needs a link.
-	placed, err := InstallStaged(r, got.ID, []string{"one", "one"}, ScopeUser, []Harness{Claude, Codex}, false)
+	placed, err := InstallStaged(r, got.ID, []string{"one", "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,16 +55,8 @@ func TestInstallStaged(t *testing.T) {
 	}
 	s := placed[0]
 	dir := filepath.Join(r.Library, "one")
-	if s.Dir != dir || s.Name != "one" || s.Scope != ScopeUser || !s.Editable {
+	if s.Dir != dir || s.Name != "one" || s.Scope != ScopeUser || !s.Editable || s.Mode != ModeOn {
 		t.Errorf("skill = %+v", s)
-	}
-	for _, h := range []Harness{Claude, Codex, Pi} {
-		if !containsHarness(s.Harnesses, h) {
-			t.Errorf("%s cannot see the skill: %v", h, s.Harnesses)
-		}
-	}
-	if !isSymlink(filepath.Join(r.ClaudeConfigDir, "skills", "one")) {
-		t.Error("no link was made for Claude")
 	}
 	if read(t, filepath.Join(dir, "scripts", "run.sh")) != "#!/bin/sh\n" || isSymlink(dir) {
 		t.Error("the skill was not copied in as plain files")
@@ -97,28 +87,8 @@ func TestInstallStaged(t *testing.T) {
 	if left := stagingDirs(t, tmp); len(left) != 0 {
 		t.Errorf("staging left behind: %v", left)
 	}
-	if _, err := InstallStaged(r, got.ID, []string{"two"}, ScopeUser, nil, false); !errors.Is(err, ErrNotFound) {
+	if _, err := InstallStaged(r, got.ID, []string{"two"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("installing from a fetch already used: %v", err)
-	}
-}
-
-func TestInstallIntoAProject(t *testing.T) {
-	staging(t)
-	r := machine(t)
-	got, _ := stageLocal(t, r, twoSkills)
-	placed, err := InstallStaged(r, got.ID, []string{"two", "one"}, ScopeProject, nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(placed) != 2 || placed[0].Name != "two" || placed[0].Scope != ScopeProject || placed[1].Dir != filepath.Join(r.ProjectLibrary, "one") {
-		t.Errorf("placed = %+v", placed)
-	}
-	rec, _ := LoadRecord(r.ProjectLibrary)
-	if _, ok := rec.Get("two"); !ok || len(rec.Skills) != 2 {
-		t.Errorf("project record = %+v", rec)
-	}
-	if exists(r.Library) {
-		t.Error("a project install wrote to the personal library")
 	}
 }
 
@@ -130,7 +100,7 @@ func TestInstallRecordsWhatTheCLIResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallStaged(r, got.ID, []string{"show-me"}, ScopeUser, nil, false); err != nil {
+	if _, err := InstallStaged(r, got.ID, []string{"show-me"}); err != nil {
 		t.Fatal(err)
 	}
 	rec, _ := LoadRecord(r.Library)
@@ -140,24 +110,18 @@ func TestInstallRecordsWhatTheCLIResolved(t *testing.T) {
 	}
 }
 
-func TestInstallOverASkillAlreadyThere(t *testing.T) {
+func TestInstallReplacesASkillAlreadyThere(t *testing.T) {
 	staging(t)
 	r := machine(t)
 	dir := filepath.Join(r.Library, "one")
 	write(t, filepath.Join(dir, "SKILL.md"), skillMD("one", "Mine"))
 	write(t, filepath.Join(dir, "mine.md"), "written here")
 	got, _ := stageLocal(t, r, twoSkills)
-
-	_, err := InstallStaged(r, got.ID, []string{"two", "one"}, ScopeUser, nil, false)
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "one") {
-		t.Fatalf("err = %v, want a refusal naming the skill", err)
-	}
-	// Nothing of the batch landed, and the fetch is still there to retry.
-	if !reflect.DeepEqual(entries(t, r.Library), []string{"one"}) || read(t, filepath.Join(dir, "mine.md")) != "written here" {
-		t.Errorf("library holds %v after a refusal", entries(t, r.Library))
+	if one := got.Skills[0]; one.Name != "one" || !one.Installed || got.Skills[1].Installed {
+		t.Fatalf("staged = %+v", got.Skills)
 	}
 
-	placed, err := InstallStaged(r, got.ID, []string{"two", "one"}, ScopeUser, nil, true)
+	placed, err := InstallStaged(r, got.ID, []string{"two", "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +135,9 @@ func TestInstallOverASkillAlreadyThere(t *testing.T) {
 	if !reflect.DeepEqual(entries(t, r.Library), []string{RecordFile, "one", "two"}) {
 		t.Errorf("library holds %v", entries(t, r.Library))
 	}
+	if d := byName(t, mustDiscover(t, r))["one"]; d.Description != "The first" {
+		t.Errorf("listed as %+v", d)
+	}
 }
 
 func TestInstallRefusals(t *testing.T) {
@@ -178,21 +145,12 @@ func TestInstallRefusals(t *testing.T) {
 		name    string
 		prepare func(t *testing.T, r Roots)
 		names   []string
-		scope   string
-		link    []Harness
-		replace bool
 	}{
-		{name: "nothing picked", scope: ScopeUser},
-		{name: "a skill that was not fetched", names: []string{"one", "three"}, scope: ScopeUser},
-		{name: "a path for a name", names: []string{"../one"}, scope: ScopeUser},
-		{name: "a harness nobody has heard of", names: []string{"one"}, scope: ScopeUser, link: []Harness{"cursor"}},
-		{name: "a scope that is not a library", names: []string{"one"}, scope: ScopePlugin},
-		{name: "a file where the skill would go", names: []string{"one"}, scope: ScopeUser, replace: true,
+		{name: "nothing picked"},
+		{name: "a skill that was not fetched", names: []string{"one", "three"}},
+		{name: "a path for a name", names: []string{"../one"}},
+		{name: "a file where the skill would go", names: []string{"two", "one"},
 			prepare: func(t *testing.T, r Roots) { write(t, filepath.Join(r.Library, "one"), "a file") }},
-		{name: "a harness with its own skill of that name", names: []string{"two", "one"}, scope: ScopeUser, link: []Harness{Claude},
-			prepare: func(t *testing.T, r Roots) {
-				write(t, filepath.Join(r.ClaudeConfigDir, "skills", "one", "SKILL.md"), skillMD("one", "Claude's own"))
-			}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -203,7 +161,7 @@ func TestInstallRefusals(t *testing.T) {
 			}
 			before := entries(t, r.Library)
 			got, _ := stageLocal(t, r, twoSkills)
-			if placed, err := InstallStaged(r, got.ID, tt.names, tt.scope, tt.link, tt.replace); !errors.Is(err, ErrInvalid) {
+			if placed, err := InstallStaged(r, got.ID, tt.names); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("placed %+v, err %v", placed, err)
 			}
 			if after := entries(t, r.Library); !reflect.DeepEqual(after, before) {
@@ -213,36 +171,6 @@ func TestInstallRefusals(t *testing.T) {
 				t.Error("a refused install dropped the fetch")
 			}
 		})
-	}
-}
-
-func TestInstallLinksOnlyWhereALinkIsNeeded(t *testing.T) {
-	staging(t)
-	r := machine(t)
-	r.Library = filepath.Join(r.Home, "library")
-	claude := filepath.Join(r.ClaudeConfigDir, "skills")
-	// A link an earlier copy of the skill left behind is reused, not a clash.
-	mkdir(t, filepath.Join(r.Library, "two"))
-	link(t, filepath.Join(r.Library, "two"), filepath.Join(claude, "two"))
-	if err := os.Remove(filepath.Join(r.Library, "two")); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := stageLocal(t, r, twoSkills)
-
-	placed, err := InstallStaged(r, got.ID, []string{"one", "two"}, ScopeUser, []Harness{Claude}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range placed {
-		if !reflect.DeepEqual(s.Harnesses, []Harness{Claude}) {
-			t.Errorf("%s is seen by %v, want only the harness asked for", s.Name, s.Harnesses)
-		}
-	}
-	if !isSymlink(filepath.Join(claude, "one")) || read(t, filepath.Join(claude, "two", "SKILL.md")) != twoSkills["two/SKILL.md"] {
-		t.Errorf("claude's dir holds %v", entries(t, claude))
-	}
-	if exists(filepath.Join(r.Home, ".agents", "skills")) {
-		t.Error("a link was made for a harness that was not asked for")
 	}
 }
 

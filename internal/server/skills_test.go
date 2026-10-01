@@ -3,13 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
-	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
 // commandConn is a connection that can execute commands against a server
@@ -44,90 +44,42 @@ func run(t *testing.T, c *conn, command string, args any) (any, error) {
 	return c.execute(context.Background(), clientFrame{Command: command, Args: raw})
 }
 
-func TestTheGeneralSettingsScreenCannotChangeTheSkillsSetup(t *testing.T) {
-	c, _ := commandConn(t)
-	onDisk := userconfig.SkillsConfig{Library: "~/dot/skills", ProjectLibrary: "tools/skills", CLIVersion: "2.0.0"}
-	if _, err := userconfig.Update(func(cfg *userconfig.Config) error { cfg.Skills = onDisk; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	for name, sent := range map[string]userconfig.SkillsConfig{
-		"a client that does not know about skills": {},
-		"a client echoing a stale setup":           {Library: "~/elsewhere"},
-	} {
-		if _, err := run(t, c, "save_user_config", saveUserConfigArgs{Config: userconfig.Config{DefaultLevel: "edits", Skills: sent}}); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		cfg, err := userconfig.Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Skills != onDisk || cfg.DefaultLevel != "edits" {
-			t.Errorf("%s: skills = %+v, level = %q", name, cfg.Skills, cfg.DefaultLevel)
-		}
-	}
-}
-
-func TestSaveSkillsSetup(t *testing.T) {
+func TestSkillSwitchesOverTheWire(t *testing.T) {
 	c, home := commandConn(t)
-	if _, err := userconfig.Update(func(cfg *userconfig.Config) error { cfg.DefaultLevel = "edits"; return nil }); err != nil {
-		t.Fatal(err)
+	type listed struct {
+		Skills       []skills.Skill `json:"skills"`
+		ClaudeSync   bool           `json:"claudeSync"`
+		CodexBundled bool           `json:"codexBundled"`
+		ProjectRoot  *string        `json:"projectRoot"`
+	}
+	created := call[skills.Skill](t, c, "create_skill", map[string]any{"name": "mine", "description": "Written here"})
+	got := call[listed](t, c, "list_skills", map[string]any{})
+	if len(got.Skills) != 1 || got.Skills[0].Mode != skills.ModeOn || !got.ClaudeSync || !got.CodexBundled || got.ProjectRoot != nil {
+		t.Fatalf("listed = %+v", got)
 	}
 
-	for name, a := range map[string]skillArgs{
-		"a relative library":                 {Library: "skills"},
-		"a project library outside the repo": {ProjectLibrary: "../skills"},
-		"an absolute project library":        {ProjectLibrary: "/srv/skills"},
-		"a version that is really a flag":    {CLIVersion: "--registry=evil"},
-	} {
-		if _, err := run(t, c, "save_skills_setup", a); err == nil {
-			t.Errorf("%s: saved", name)
+	for _, mode := range []string{skills.ModeOff, skills.ModeManual, skills.ModeOn} {
+		if s := call[skills.Skill](t, c, "set_skill_mode", map[string]any{"dir": created.Dir, "mode": mode}); s.Mode != mode {
+			t.Errorf("set %s, got %s", mode, s.Mode)
 		}
-		if cfg, _ := userconfig.Load(); cfg.Skills != (userconfig.SkillsConfig{}) {
-			t.Fatalf("%s: a refused save still wrote %+v", name, cfg.Skills)
+		if s := call[listed](t, c, "list_skills", map[string]any{}).Skills[0]; s.Mode != mode {
+			t.Errorf("set %s, listed %s", mode, s.Mode)
 		}
 	}
-
-	result, err := run(t, c, "save_skills_setup", skillArgs{Library: "~/dot/skills", ProjectLibrary: "tools/skills", CLIVersion: "2.0.0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	setup := result.(map[string]any)["setup"].(skills.Setup)
-	if setup.LibraryDir != filepath.Join(home, "dot", "skills") || setup.ProjectLibrary != "tools/skills" || setup.CLIVersion != "2.0.0" {
-		t.Errorf("setup after saving = %+v", setup)
-	}
-	cfg, err := userconfig.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DefaultLevel != "edits" {
-		t.Errorf("saving the skills setup changed the rest of the config: %+v", cfg)
+	if _, err := run(t, c, "set_skill_mode", map[string]any{"dir": created.Dir, "mode": "sometimes"}); err == nil {
+		t.Error("set a mode that does not exist")
 	}
 
-	// The next read is of the library that was just chosen.
-	if _, err := run(t, c, "link_library", skillArgs{Harness: "claude"}); err != nil {
-		t.Fatal(err)
+	if got := call[map[string]bool](t, c, "set_codex_bundled", map[string]any{"on": false}); got["codexBundled"] {
+		t.Errorf("set_codex_bundled off = %v", got)
 	}
-	if _, err := run(t, c, "create_skill", skillArgs{Scope: skills.ScopeUser, Name: "fresh", Description: "A new skill"}); err != nil {
-		t.Fatal(err)
+	if call[listed](t, c, "list_skills", map[string]any{}).CodexBundled {
+		t.Error("listed as bundled after turning it off")
 	}
-	result, err = run(t, c, "list_skills", skillArgs{})
-	if err != nil {
-		t.Fatal(err)
+	if got := call[map[string]bool](t, c, "set_claude_sync", map[string]any{"on": false}); got["claudeSync"] {
+		t.Errorf("set_claude_sync off = %v", got)
 	}
-	listed := result.(map[string]any)
-	found := listed["skills"].([]skills.Skill)
-	if len(found) != 1 || found[0].Dir != filepath.Join(home, "dot", "skills", "fresh") {
-		t.Errorf("skills = %+v", found)
-	}
-	if setup := listed["setup"].(skills.Setup); !setup.Exists || setup.Links[0].State != skills.LinkDirect {
-		t.Errorf("setup = %+v", setup)
-	}
-
-	// Emptying the fields goes back to the defaults.
-	if _, err := run(t, c, "save_skills_setup", skillArgs{}); err != nil {
-		t.Fatal(err)
-	}
-	if cfg, _ := userconfig.Load(); cfg.Skills != (userconfig.SkillsConfig{}) {
-		t.Errorf("skills config after clearing = %+v", cfg.Skills)
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); err != nil {
+		t.Errorf("the bundled switch was not written to the temp home: %v", err)
 	}
 }

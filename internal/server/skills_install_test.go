@@ -97,10 +97,14 @@ func TestInstallAndUpdateASkillOverTheWire(t *testing.T) {
 	}
 
 	placed := call[skillsResult](t, c, "install_staged", map[string]any{
-		"id": staged.ID, "skills": []string{"show-me"}, "scope": "user", "link": []string{"claude"},
+		"id": staged.ID, "skills": []string{"show-me"},
 	})
-	if len(placed.Skills) != 1 || placed.Skills[0].Dir != installed || len(placed.Skills[0].Harnesses) != 3 {
+	if len(placed.Skills) != 1 || placed.Skills[0].Dir != installed {
 		t.Fatalf("placed = %+v", placed)
+	}
+	// Every agent sees it: Codex and pi read the library, Claude through a link.
+	if real, err := filepath.EvalSymlinks(filepath.Join(home, ".claude", "skills", "show-me")); err != nil || real != installed {
+		t.Errorf("Claude's skills dir has %q (%v)", real, err)
 	}
 	if _, err := run(t, c, "read_staged_file", map[string]any{"id": staged.ID, "skill": "show-me", "path": "notes.md"}); err == nil {
 		t.Error("the fetch outlived the install")
@@ -108,11 +112,8 @@ func TestInstallAndUpdateASkillOverTheWire(t *testing.T) {
 
 	// Fetched again for nothing: discarded, and the installed copy stays.
 	again := call[skills.Staged](t, c, "stage_skills", map[string]any{"source": "owner/repo"})
-	if !again.Skills[0].InUser {
+	if !again.Skills[0].Installed {
 		t.Errorf("a second fetch does not say the skill is installed: %+v", again.Skills[0])
-	}
-	if _, err := run(t, c, "install_staged", map[string]any{"id": again.ID, "skills": []string{"show-me"}, "scope": "user"}); err == nil {
-		t.Error("installed over a skill without being told to replace it")
 	}
 	if _, err := run(t, c, "discard_staged", map[string]any{"id": again.ID}); err != nil {
 		t.Fatal(err)
@@ -150,7 +151,7 @@ func TestCommitTheSkillsLibraryOverTheWire(t *testing.T) {
 	}
 
 	library := filepath.Join(home, ".agents", "skills")
-	call[skills.Skill](t, c, "create_skill", map[string]any{"scope": "user", "name": "mine", "description": "Written here"})
+	call[skills.Skill](t, c, "create_skill", map[string]any{"name": "mine", "description": "Written here"})
 	// A library that is no repository has nothing to show, which is not an
 	// error: the screen just leaves the commit bar out.
 	if got := call[gitResult](t, c, "skills_git_status", map[string]any{}); got.Git != nil {
@@ -170,7 +171,7 @@ func TestCommitTheSkillsLibraryOverTheWire(t *testing.T) {
 			t.Skipf("git %v: %v", args, err)
 		}
 	}
-	call[skills.Skill](t, c, "create_skill", map[string]any{"scope": "user", "name": "other", "description": "Also here"})
+	call[skills.Skill](t, c, "create_skill", map[string]any{"name": "other", "description": "Also here"})
 
 	status := call[gitResult](t, c, "skills_git_status", map[string]any{})
 	if status.Git == nil || len(status.Git.Changes) != 2 {

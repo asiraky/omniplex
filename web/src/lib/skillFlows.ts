@@ -1,21 +1,9 @@
-import {
-  byName,
-  HARNESSES,
-  type GitChange,
-  type GitStatus,
-  type InstallScope,
-  type Setup,
-  type SkillHarness,
-  type Staged,
-  type StagedSkill,
-  type UpdateSkill,
-  type UpdateStage,
-} from "~/lib/skills";
+import { byName, type GitChange, type GitStatus, type Staged, type StagedSkill, type UpdateStage } from "~/lib/skills";
 
 // What the install, commit and update flows work out from the wire types in
 // `skills.ts`. Kept apart from it so none of this rides in the entry bundle.
 
-/** Go's nil slices arrive as null; see normalizeSkill. */
+/** Go's nil slices arrive as null. */
 export function normalizeStaged(staged: Staged): Staged {
   return { ...staged, skills: (staged.skills ?? []).map((s) => ({ ...s, files: s.files ?? [] })) };
 }
@@ -39,70 +27,14 @@ export function sourceLabel(source: string): string {
 }
 
 /**
- * The skills ticked when a staged source first shows: the ones the pasted
+ * The skills ticked when a fetched source first shows: the ones the pasted
  * command named, or the only one there is. A repo of many with none named
  * starts with nothing ticked, since installing all of it is rarely the intent.
+ * One that would replace a skill already installed always starts unticked.
  */
 export function defaultStagedTicks(skills: StagedSkill[]): string[] {
-  if (skills.length === 1) return [skills[0].name];
-  return skills.filter((s) => s.picked).map((s) => s.name);
-}
-
-/** The ticked skills whose name is already taken in the library being installed into. */
-export function stagedClashes(skills: StagedSkill[], ticked: Iterable<string>, scope: InstallScope): string[] {
-  const chosen = new Set(ticked);
-  return skills.filter((s) => chosen.has(s.name) && (scope === "user" ? s.inUser : s.inProject)).map((s) => s.name);
-}
-
-/** The folder an install of this scope lands in, as a path the reader can recognise. */
-export function installPath(scope: InstallScope, setup?: Setup, projectRoot?: string): string {
-  if (!setup) return "";
-  if (scope === "user") return setup.libraryDir || setup.library;
-  return projectRoot ? `${projectRoot.replace(/\/+$/, "")}/${setup.projectLibrary}` : setup.projectLibrary;
-}
-
-export interface InstallLink {
-  harness: SkillHarness;
-  /** The harness reads the library itself, so installing there is enough. */
-  direct: boolean;
-  /** Where the symlink goes when it does not. */
-  dir: string;
-  text: string;
-}
-
-/** The folder each harness reads inside a project, relative to its root. */
-const PROJECT_LINK_DIR: Record<SkillHarness, string> = {
-  claude: ".claude/skills",
-  codex: ".agents/skills",
-  pi: ".agents/skills",
-};
-
-const trimRelative = (path: string) => path.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
-
-/**
- * What installing does for each harness. For the personal library the server
- * has detected it (`setup.links`). For a project it reports nothing, but the
- * rule is fixed: a harness reads the project library exactly when that is the
- * folder it looks in, and gets a per-skill symlink in its own folder otherwise.
- */
-export function installLinks(setup: Setup | undefined, scope: InstallScope): InstallLink[] {
-  if (!setup) return [];
-  const out: InstallLink[] = [];
-  for (const { id } of HARNESSES) {
-    let direct: boolean;
-    let dir: string;
-    if (scope === "project") {
-      dir = PROJECT_LINK_DIR[id];
-      direct = trimRelative(setup.projectLibrary) === dir;
-    } else {
-      const link = (setup.links ?? []).find((l) => l.harness === id);
-      if (!link) continue;
-      dir = link.dir;
-      direct = link.state === "direct";
-    }
-    out.push({ harness: id, direct, dir, text: direct ? "Already reads the library" : `Adds a symlink in ${dir}` });
-  }
-  return out;
+  const wanted = skills.length === 1 ? skills : skills.filter((s) => s.picked);
+  return wanted.filter((s) => !s.installed).map((s) => s.name);
 }
 
 export function normalizeGitStatus(git: GitStatus | null | undefined): GitStatus | null {
@@ -138,16 +70,6 @@ export function defaultCommitMessage(changes: GitChange[]): string {
   return `skills: ${parts.join("; ")}`;
 }
 
-/** The last segment of a path: a repo's folder name is what people call it. */
-export function baseName(path: string): string {
-  return path.replace(/\/+$/, "").split("/").pop() || path;
-}
-
 export function normalizeUpdateStage(stage: UpdateStage): UpdateStage {
   return { ...stage, skills: (stage.skills ?? []).map((s) => ({ ...s, files: s.files ?? [] })) };
-}
-
-/** The skills an update would change that have not been updated yet. */
-export function pendingUpdates(stage: UpdateStage, applied: ReadonlySet<string>): UpdateSkill[] {
-  return stage.skills.filter((s) => s.changed && !s.gone && !applied.has(s.dir));
 }

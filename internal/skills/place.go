@@ -125,44 +125,11 @@ func stamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-func knownHarness(h Harness) bool {
-	return containsHarness(AllHarnesses, h)
-}
-
-// linkConflict reports a harness that could not be given a link to a skill
-// about to be placed at target: its own skills dir already has something else
-// under that name.
-func linkConflict(r Roots, h Harness, scope, target string) error {
-	if LinkState(r, h, scope).State == LinkDirect {
-		return nil
-	}
-	into := linkDir(r, h, scope)
-	if into == "" {
-		return fmt.Errorf("%w: no skills folder for %s", ErrInvalid, h)
-	}
-	at := filepath.Join(into, filepath.Base(target))
-	info, err := os.Lstat(at)
-	if err != nil {
-		return nil
-	}
-	// A link left behind by an earlier copy of the same skill is no conflict.
-	if info.Mode()&fs.ModeSymlink != 0 {
-		if to, err := os.Readlink(at); err == nil {
-			if !filepath.IsAbs(to) {
-				to = filepath.Join(resolve(into), to)
-			}
-			if filepath.Clean(to) == target {
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("%w: %s already has a different %s in %s", ErrInvalid, h, filepath.Base(target), into)
-}
-
 // InstallStaged copies the picked skills out of a staging dir into the
-// library for the scope, records where they came from, links them for the
-// harnesses asked for, and drops the staging dir.
-func InstallStaged(r Roots, id string, names []string, scope string, link []Harness, replace bool) ([]Skill, error) {
+// personal library, over any skill of the same name already there, records
+// where they came from, makes them visible to every harness, and drops the
+// staging dir.
+func InstallStaged(r Roots, id string, names []string) ([]Skill, error) {
 	st, err := openStage(id)
 	if err != nil {
 		return nil, err
@@ -173,15 +140,10 @@ func InstallStaged(r Roots, id string, names []string, scope string, link []Harn
 	if len(names) == 0 {
 		return nil, fmt.Errorf("%w: pick at least one skill", ErrInvalid)
 	}
-	for _, h := range link {
-		if !knownHarness(h) {
-			return nil, fmt.Errorf("%w: unknown harness %q", ErrInvalid, h)
-		}
+	if r.Library == "" {
+		return nil, fmt.Errorf("%w: no home directory", ErrInvalid)
 	}
-	library, err := LibraryDir(r, scope)
-	if err != nil {
-		return nil, err
-	}
+	library := r.Library
 	if err := os.MkdirAll(library, 0o755); err != nil {
 		return nil, err
 	}
@@ -217,18 +179,8 @@ func InstallStaged(r Roots, id string, names []string, scope string, link []Harn
 			return nil, err
 		}
 		target := filepath.Join(library, sf.Name)
-		if info, err := os.Lstat(target); err == nil {
-			if !replace {
-				return nil, fmt.Errorf("%w: %s is already in %s", ErrInvalid, sf.Name, abbreviate(library, r.Home))
-			}
-			if !info.IsDir() {
-				return nil, fmt.Errorf("%w: %s in %s is not a folder this can replace", ErrInvalid, sf.Name, abbreviate(library, r.Home))
-			}
-		}
-		for _, h := range link {
-			if err := linkConflict(r, h, scope, target); err != nil {
-				return nil, err
-			}
+		if info, err := os.Lstat(target); err == nil && !info.IsDir() {
+			return nil, fmt.Errorf("%w: %s in %s is not a folder this can replace", ErrInvalid, sf.Name, abbreviate(library, r.Home))
 		}
 		hash, err := HashDir(folder)
 		if err != nil {
@@ -251,14 +203,7 @@ func InstallStaged(r Roots, id string, names []string, scope string, link []Harn
 		tmps = append(tmps, tmp)
 	}
 	for i, p := range plan {
-		place := swapIn
-		if !replace {
-			// Not swapIn: the check above was a while ago, and a skill of
-			// the same name placed since then is not ours to overwrite. A
-			// rename onto a folder with anything in it fails.
-			place = os.Rename
-		}
-		if err := place(tmps[i], p.target); err != nil {
+		if err := swapIn(tmps[i], p.target); err != nil {
 			return nil, fmt.Errorf("%s: %w", p.sf.Name, err)
 		}
 	}
@@ -280,17 +225,12 @@ func InstallStaged(r Roots, id string, names []string, scope string, link []Harn
 
 	out := make([]Skill, 0, len(plan))
 	for _, p := range plan {
+		reachEveryAgent(r, p.target)
+	}
+	for _, p := range plan {
 		s, err := find(r, p.target)
 		if err != nil {
 			return nil, fmt.Errorf("installed %s but it is not discoverable: %w", p.sf.Name, err)
-		}
-		for _, h := range link {
-			if containsHarness(s.Harnesses, h) {
-				continue
-			}
-			if s, err = LinkSkill(r, p.target, h); err != nil {
-				return nil, fmt.Errorf("installed %s but could not link it for %s: %w", p.sf.Name, h, err)
-			}
 		}
 		out = append(out, s)
 	}

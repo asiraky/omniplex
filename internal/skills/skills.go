@@ -1,10 +1,10 @@
 // Package skills finds the Agent Skills each harness can see on disk, and
 // reads, edits and creates them.
 //
-// Every harness has its own roots (see the table in Discover). One physical
-// skill is often reachable through several of them via symlinks, so a skill's
-// identity is its symlink-resolved directory, and the harnesses that can see
-// it are the union over every path that reaches it.
+// Every harness has its own roots (see roots). One physical skill is often
+// reachable through several of them via symlinks, so a skill's identity is
+// its symlink-resolved directory, and the harnesses that can see it are the
+// union over every path that reaches it.
 package skills
 
 import (
@@ -47,25 +47,23 @@ type Roots struct {
 	PiAgentDir      string // PI_CODING_AGENT_DIR, else ~/.pi/agent
 	ProjectRoot     string // "" when there is no project
 
-	// Library is the one personal directory Omniplex writes skills into, and
-	// ProjectLibrary the one inside the project ("" when there is no project).
-	// Both absolute. A harness reaches a library through its own roots or
-	// through symlinks; nothing is ever installed into a harness dir.
+	// Library is the one personal directory Omniplex writes skills into,
+	// <home>/.agents/skills, and ProjectLibrary the project's own
+	// <project>/.agents/skills ("" when there is no project), which is only
+	// listed. Codex and pi read both directly; Claude is given links.
 	Library        string
 	ProjectLibrary string
-	// CLIVersion is the `skills` npm package version a fetch runs.
-	CLIVersion string
 	// CLILock is the skills CLI's own global lock file, read for the
 	// provenance of skills installed from a terminal.
 	CLILock string
 }
 
-// What a machine with no skills settings gets. The library is where the
-// skills CLI and two of the three harnesses already look.
+// The libraries are where the skills CLI and two of the three harnesses
+// already look.
 const (
-	DefaultLibrary        = ".agents/skills" // under the home folder
-	DefaultProjectLibrary = ".agents/skills" // under the project root
-	DefaultCLIVersion     = "1.7.0"
+	libraryDir = ".agents/skills" // under the home folder, and under a project root
+	// CLIVersion is the `skills` npm package version a fetch runs.
+	CLIVersion = "1.7.0"
 )
 
 // DefaultRoots resolves the per-harness config dirs the way the harnesses do.
@@ -97,8 +95,7 @@ func DefaultRoots(home string, env map[string]string, projectRoot string) Roots 
 		ClaudeConfigDir: dir("CLAUDE_CONFIG_DIR", ".claude"),
 		CodexHome:       dir("CODEX_HOME", ".codex"),
 		PiAgentDir:      dir("PI_CODING_AGENT_DIR", ".pi", "agent"),
-		Library:         filepath.Join(home, filepath.FromSlash(DefaultLibrary)),
-		CLIVersion:      DefaultCLIVersion,
+		Library:         filepath.Join(home, filepath.FromSlash(libraryDir)),
 		CLILock:         filepath.Join(home, ".agents", ".skill-lock.json"),
 	}
 	// The skills CLI runs from the user's own shell, so the overlay does not
@@ -108,25 +105,10 @@ func DefaultRoots(home string, env map[string]string, projectRoot string) Roots 
 	}
 	if projectRoot != "" {
 		r.ProjectRoot = filepath.Clean(projectRoot)
-		r.ProjectLibrary = filepath.Join(r.ProjectRoot, filepath.FromSlash(DefaultProjectLibrary))
+		r.ProjectLibrary = filepath.Join(r.ProjectRoot, filepath.FromSlash(libraryDir))
 	}
 	return r
 }
-
-// HarnessState is how one harness that can see a skill will use it.
-type HarnessState struct {
-	Mode string `json:"mode"`         // auto | name-only | manual | off
-	By   string `json:"by,omitempty"` // "settings" when harness config, not the skill's files, decides
-}
-
-const (
-	ModeAuto     = "auto"
-	ModeNameOnly = "name-only"
-	ModeManual   = "manual"
-	ModeOff      = "off"
-
-	BySettings = "settings"
-)
 
 // Source is where a skill was installed from.
 type Source struct {
@@ -140,23 +122,23 @@ type Source struct {
 }
 
 type Skill struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Dir         string    `json:"dir"`
-	Scope       string    `json:"scope"`
-	Plugin      string    `json:"plugin,omitempty"`
-	Paths       []string  `json:"paths"`
-	Harnesses   []Harness `json:"harnesses"`
-	Editable    bool      `json:"editable"`
-	Problem     string    `json:"problem,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Dir         string `json:"dir"`
+	Scope       string `json:"scope"`
+	Plugin      string `json:"plugin,omitempty"`
+	Editable    bool   `json:"editable"`
+	Problem     string `json:"problem,omitempty"`
 	// Synced marks a claude.ai-synced skill (synced/<account>/<skill>).
 	Synced bool `json:"synced,omitempty"`
-	// Invocation has one entry per harness in Harnesses.
-	Invocation map[Harness]HarnessState `json:"invocation"`
-	Source     *Source                  `json:"source,omitempty"`
-	// Manual is what the skill's own files say, both of them: the manual-only
-	// switch's state when no harness reads the files to say it for them.
-	Manual bool `json:"manual,omitempty"`
+	// Mode is on, manual or off: see policy.mode.
+	Mode   string  `json:"mode"`
+	Source *Source `json:"source,omitempty"`
+
+	// paths is every path the skill was found at, and harnesses every harness
+	// that reaches it through one of them.
+	paths     []string
+	harnesses []Harness
 }
 
 type File struct {
@@ -205,7 +187,6 @@ func (r Roots) ownRoots() []root {
 			root{path: filepath.Join(p, ".codex", "skills"), scope: ScopeProject, harnesses: []Harness{Codex}},
 			root{path: filepath.Join(p, ".pi", "skills"), scope: ScopeProject, harnesses: []Harness{Pi}},
 		)
-		out = appendLibrary(out, r.ProjectLibrary, ScopeProject)
 	}
 	if r.ClaudeConfigDir != "" {
 		out = append(out, root{path: filepath.Join(r.ClaudeConfigDir, "skills"), scope: ScopeUser, harnesses: []Harness{Claude}, synced: true})
@@ -219,22 +200,7 @@ func (r Roots) ownRoots() []root {
 	if r.PiAgentDir != "" {
 		out = append(out, root{path: filepath.Join(r.PiAgentDir, "skills"), scope: ScopeUser, harnesses: []Harness{Pi}})
 	}
-	return appendLibrary(out, r.Library, ScopeUser)
-}
-
-// appendLibrary lists a library as a root of its own, read by no harness, so
-// a library nothing links to still shows its skills. It adds nothing when a
-// harness root is already that path.
-func appendLibrary(out []root, path, scope string) []root {
-	if path == "" {
-		return out
-	}
-	for _, rt := range out {
-		if rt.path == path {
-			return out
-		}
-	}
-	return append(out, root{path: path, scope: scope})
+	return out
 }
 
 // claudePluginRoots reads Claude's installed_plugins.json: a user-scoped
@@ -354,7 +320,6 @@ func hasSkillFile(dir string) bool {
 // Sorted project, user, plugin, system; by name within each.
 func Discover(r Roots) ([]Skill, error) {
 	byDir := map[string]*Skill{}
-	manual := map[string]bool{} // real dir -> frontmatter says manual-only
 	var order []string
 	// With the sync off Claude Code no longer loads what it synced, even
 	// before its next start moves the folders out of the way.
@@ -365,12 +330,12 @@ func Discover(r Roots) ([]Skill, error) {
 			return
 		}
 		if s, ok := byDir[real]; ok {
-			if !contains(s.Paths, path) {
-				s.Paths = append(s.Paths, path)
+			if !contains(s.paths, path) {
+				s.paths = append(s.paths, path)
 			}
 			for _, h := range rt.harnesses {
-				if !containsHarness(s.Harnesses, h) {
-					s.Harnesses = append(s.Harnesses, h)
+				if !containsHarness(s.harnesses, h) {
+					s.harnesses = append(s.harnesses, h)
 				}
 			}
 			return
@@ -379,12 +344,12 @@ func Discover(r Roots) ([]Skill, error) {
 			Dir:       real,
 			Scope:     rt.scope,
 			Plugin:    rt.plugin,
-			Paths:     []string{path},
-			Harnesses: append([]Harness{}, rt.harnesses...),
+			paths:     []string{path},
+			harnesses: append([]Harness{}, rt.harnesses...),
 			Editable:  !rt.readonly && !synced,
 			Synced:    synced,
 		}
-		manual[real] = fillMeta(s, filepath.Base(path))
+		fillMeta(s, filepath.Base(path))
 		byDir[real] = s
 		order = append(order, real)
 	}
@@ -414,12 +379,8 @@ func Discover(r Roots) ([]Skill, error) {
 	out := make([]Skill, 0, len(order))
 	for _, dir := range order {
 		s := byDir[dir]
-		sort.Slice(s.Harnesses, func(i, j int) bool { return harnessRank(s.Harnesses[i]) < harnessRank(s.Harnesses[j]) })
-		s.Invocation = policy.invocation(s, manual[dir])
-		if s.Editable {
-			frontmatter, openai := FileManual(dir)
-			s.Manual = frontmatter && openai
-		}
+		sort.Slice(s.harnesses, func(i, j int) bool { return harnessRank(s.harnesses[i]) < harnessRank(s.harnesses[j]) })
+		s.Mode = policy.mode(s)
 		s.Source = sources.lookup(s)
 		out = append(out, *s)
 	}
@@ -456,21 +417,19 @@ func validateDescription(desc string) error {
 }
 
 // fillMeta reads SKILL.md's frontmatter into the skill and records anything
-// a harness would warn about or skip over. It reports whether the frontmatter
-// keeps the skill out of the model's hands.
-func fillMeta(s *Skill, dirName string) (manual bool) {
+// a harness would warn about or skip over.
+func fillMeta(s *Skill, dirName string) {
 	s.Name = dirName
 	data, err := os.ReadFile(filepath.Join(s.Dir, "SKILL.md"))
 	if err != nil {
 		s.Problem = "SKILL.md is unreadable: " + err.Error()
-		return false
+		return
 	}
 	fields, _, err := parseFrontmatter(string(data))
 	if err != nil {
 		s.Problem = err.Error()
-		return false
+		return
 	}
-	manual = frontmatterManual(string(data))
 	var problems []string
 	if name := strings.TrimSpace(fields["name"]); name != "" {
 		s.Name = name
@@ -489,7 +448,6 @@ func fillMeta(s *Skill, dirName string) (manual bool) {
 		problems = append(problems, "description is over 1024 characters")
 	}
 	s.Problem = strings.Join(problems, "; ")
-	return manual
 }
 
 func scopeRank(scope string) int {

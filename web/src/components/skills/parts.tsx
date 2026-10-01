@@ -1,62 +1,10 @@
 import { TriangleAlertIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { Checkbox } from "~/components/ui/checkbox";
-import {
-  harnessLabel,
-  invocationSummary,
-  joinWords,
-  originLabel,
-  skillOrigin,
-  type Setup,
-  type Skill,
-  type SkillGroup,
-  type SkillsList,
-} from "~/lib/skills";
+import { MODE_LABEL, type SkillMode } from "~/lib/skills";
 import { cn } from "~/lib/utils";
 
 export type SkillsCommand = <T = unknown>(name: string, args: Record<string, unknown>) => Promise<T>;
-
-/** What a slot is handed: enough to call the server and fold the answer back into the list. */
-export interface SkillsContext {
-  command: SkillsCommand;
-  /** `threadId` / `projectId`, to spread into every command's args. */
-  scopeArgs: Record<string, unknown>;
-  /**
-   * A new object after every load and after every write the surface folds in
-   * (`upsert`, a removal), so watching it is how a slot hears that something
-   * on disk changed.
-   */
-  list: SkillsList | null;
-  setup?: Setup;
-  /** True when there is a project to install into. */
-  projectAvailable: boolean;
-  /** Ask the server for the list again. */
-  refresh: () => void;
-  /** Put skills the server just returned into the list, replacing by dir. */
-  upsert: (skills: Skill[]) => void;
-  /** Open the "New skill" dialog; see `SkillsSlots.install`. */
-  newSkill: () => void;
-}
-
-/**
- * Where the install, commit and update flows attach. Each is rendered only
- * when given, so the surface works without any of them.
- */
-export interface SkillsSlots {
-  /**
-   * Toolbar: the Install action. It stands in for the surface's own "New
-   * skill" button, which it offers itself through `ctx.newSkill`: the two
-   * side by side, next to the view switch, do not fit a phone's width.
-   */
-  install?: (ctx: SkillsContext) => ReactNode;
-  /** Between the toolbar and the list: the commit bar. */
-  commitBar?: (ctx: SkillsContext) => ReactNode;
-  /** Right end of a source repo group's header. Not rendered for other groups. */
-  groupAction?: (group: SkillGroup, ctx: SkillsContext) => ReactNode;
-  /** Detail view actions, between Edit and Remove. Only asked for a skill with a source. */
-  update?: (skill: Skill, ctx: SkillsContext) => ReactNode;
-}
 
 /** A small pill for the exceptions a row carries; rows with nothing to say have none. */
 export function Marker({ tone = "quiet", children }: { tone?: "quiet" | "attention"; children: ReactNode }) {
@@ -74,39 +22,10 @@ export function Marker({ tone = "quiet", children }: { tone?: "quiet" | "attenti
   );
 }
 
-/**
- * The exceptions only: most skills are in every prompt and seen everywhere,
- * and say nothing. "Not in" is kept to skills that could be linked; a plugin
- * skill being Claude-only is what a plugin is, not news.
- */
-export function SkillMarkers({ skill }: { skill: Skill }) {
-  const { state, missing } = invocationSummary(skill);
-  return (
-    <>
-      {state === "manual" && <Marker>manual</Marker>}
-      {state === "off" && <Marker>off</Marker>}
-      {state === "mixed" && <Marker tone="attention">harnesses differ</Marker>}
-      {state === "unseen" && <Marker tone="attention">no harness reads it</Marker>}
-      {state !== "unseen" && skill.editable && missing.length > 0 && (
-        <Marker>not in {joinWords(missing.map(harnessLabel))}</Marker>
-      )}
-    </>
-  );
-}
-
-export function OriginBadge({ skill }: { skill: Skill }) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 rounded-full border px-1.5 py-px text-[10.5px] font-medium whitespace-nowrap",
-        skillOrigin(skill).kind === "project"
-          ? "border-primary/40 bg-primary/10 text-foreground"
-          : "text-muted-foreground",
-      )}
-    >
-      {originLabel(skill)}
-    </span>
-  );
+/** A row's chip, only for a skill that is not on. */
+export function ModeChip({ mode }: { mode: SkillMode }) {
+  if (mode === "on") return null;
+  return <Marker>{MODE_LABEL[mode]}</Marker>;
 }
 
 /** A skill's problem as text on the page: a phone has no hover to hide it behind. */
@@ -130,78 +49,56 @@ export function ErrorLine({ message, className }: { message: string; className?:
 }
 
 /**
- * A tick box whose whole row is the target: 44px tall, where the box alone is
- * a 16px thing to hit with a thumb.
+ * A two-or-more-way switch in the app's pill style (see Usage). Tabs by
+ * default; `radio` for a setting, where the choice is a value, not a view.
  */
-export function TickRow({
-  checked,
-  onChange,
-  disabled,
-  className,
-  children,
-}: {
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  disabled?: boolean;
-  className?: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className={cn("flex min-h-11 min-w-0 items-start gap-3 py-2", !disabled && "cursor-pointer", className)}>
-      <Checkbox
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={(v) => onChange(v === true)}
-        className="mt-0.5 size-5 md:size-4"
-      />
-      <span className="min-w-0 flex-1">{children}</span>
-    </label>
-  );
-}
-
-export function SectionHeading({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <h3 className={cn("text-muted-foreground mb-1.5 text-[11px] font-semibold tracking-wide uppercase", className)}>
-      {children}
-    </h3>
-  );
-}
-
-/** A two-or-more-way switch in the app's pill style (see Usage). */
 export function Segmented<T extends string>({
   label,
   value,
   options,
   onChange,
+  radio = false,
+  disabled = false,
   className,
 }: {
   label: string;
   value: T;
   options: { id: T; label: string; count?: number }[];
   onChange: (value: T) => void;
+  radio?: boolean;
+  disabled?: boolean;
   className?: string;
 }) {
   return (
-    <div role="tablist" aria-label={label} className={cn("bg-secondary/60 flex rounded-full p-0.5", className)}>
-      {options.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          role="tab"
-          aria-selected={value === o.id}
-          onClick={() => onChange(o.id)}
-          className={cn(
-            // Thumb-sized on a phone; a pointer gets the compact pill. Each
-            // tab starts from its own label's width: split evenly, the longer
-            // label is cut short while the row still has room to spare.
-            "focus-visible:ring-ring min-h-11 min-w-0 flex-auto truncate rounded-full px-3 py-1 text-[12.5px] font-medium whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-0 md:px-2.5 md:text-[12px]",
-            value === o.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {o.label}
-          {o.count !== undefined && <span className="text-muted-foreground ml-1 tabular-nums">{o.count}</span>}
-        </button>
-      ))}
+    <div
+      role={radio ? "radiogroup" : "tablist"}
+      aria-label={label}
+      className={cn("bg-secondary/60 flex rounded-full p-0.5", className)}
+    >
+      {options.map((o) => {
+        const selected = value === o.id;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role={radio ? "radio" : "tab"}
+            aria-selected={radio ? undefined : selected}
+            aria-checked={radio ? selected : undefined}
+            disabled={disabled}
+            onClick={() => onChange(o.id)}
+            className={cn(
+              // Thumb-sized on a phone; a pointer gets the compact pill. Each
+              // tab starts from its own label's width: split evenly, the longer
+              // label is cut short while the row still has room to spare.
+              "focus-visible:ring-ring min-h-11 min-w-0 flex-auto truncate rounded-full px-3 py-1 text-[12.5px] font-medium whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-default md:min-h-0 md:px-2.5 md:text-[12px]",
+              selected ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {o.label}
+            {o.count !== undefined && <span className="text-muted-foreground ml-1 tabular-nums">{o.count}</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }
