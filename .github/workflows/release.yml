@@ -69,9 +69,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Omniplex $version (publish: $publish, prerelease: $prerelease)"
 
-      # An unsigned app puts a security warning in front of the people this
-      # release is for. A dry run may build unsigned; a tag may not.
-      - name: Require signing secrets
+      # Until the signing accounts exist, a tag publishes an unsigned app:
+      # Gatekeeper and SmartScreen warn, and Mac auto-update cannot verify the
+      # new build. Say so on the run rather than failing it.
+      - name: Check signing secrets
         if: steps.version.outputs.publish == 'true'
         env:
           RELEASE_WINDOWS: ${{ vars.RELEASE_WINDOWS }}
@@ -99,8 +100,7 @@ jobs:
             [ -n "${!name:-}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
-            echo "::error::A tagged release must be signed. Missing secrets:$missing. See docs/release.md."
-            exit 1
+            echo "::warning::This release is unsigned. Missing secrets:$missing. See docs/release.md."
           fi
 
       - name: Create draft release
@@ -252,18 +252,12 @@ jobs:
             printf '%s' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY"
             echo "Signing with the Developer ID certificate and notarizing."
           else
-            # prepare has already failed a tag without these, so this is a dry
-            # run. The desktop config signs ad hoc when CSC_LINK is unset.
+            # The desktop config signs ad hoc when CSC_LINK is unset.
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER
             echo "::warning::No Apple signing secrets: this build is ad-hoc signed and Gatekeeper will block it."
           fi
           publish=never
-          if [ "$PUBLISH" = true ]; then
-            publish=always
-            # Belt and braces with prepare's check: electron-builder refuses to
-            # produce an unsigned app.
-            export OMNIPLEX_REQUIRE_SIGNING=1
-          fi
+          [ "$PUBLISH" = true ] && publish=always
           npm exec --workspace desktop -- electron-builder --config electron-builder.config.cjs \
             --mac --arm64 --x64 --publish "$publish"
 
@@ -360,10 +354,7 @@ jobs:
             echo "::warning::No Azure signing secrets: this build is unsigned and SmartScreen will warn."
           fi
           publish=never
-          if [ "$PUBLISH" = true ]; then
-            publish=always
-            export OMNIPLEX_REQUIRE_SIGNING=1
-          fi
+          [ "$PUBLISH" = true ] && publish=always
           npm exec --workspace desktop -- electron-builder --config electron-builder.config.cjs \
             --win --x64 --publish "$publish"
 

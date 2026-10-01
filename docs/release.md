@@ -43,9 +43,9 @@ A published version is never rebuilt. Tag the next one.
 
 ## What the workflow does
 
-1. `prepare` reads the version from the tag and checks it is semver. On a tag it fails straight away
-   if any signing secret is missing, because an unsigned app shows exactly the security warning the
-   desktop app exists to avoid. Then it creates a draft release with generated notes.
+1. `prepare` reads the version from the tag and checks it is semver. If a signing secret is missing
+   it warns and carries on: for now a tag publishes an unsigned app, so macOS Gatekeeper blocks the
+   first open (right-click, Open) and Mac auto-update cannot verify new builds. Then it creates a draft release with generated notes.
 2. `server` builds the bundled server (web UI and Claude sidecar compiled in, so the machine needs no
    Node) for darwin-arm64, darwin-amd64, linux-amd64 and linux-arm64 on one Ubuntu runner. Go
    cross-compiles because CGO is off and SQLite is modernc. `bun build --compile --target=...`
