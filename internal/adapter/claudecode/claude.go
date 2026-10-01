@@ -266,20 +266,15 @@ type sidecarConfig struct {
 	// EnvKeys names every variable the host set on the bridge. The bridge
 	// passes exactly those on to Claude Code; resolved.command fills it.
 	EnvKeys []string `json:"envKeys,omitempty"`
-	// MCPServers are omniplex's own tool servers, keyed by name as the SDK
-	// wants them. AllowedTools pre-approves their tools: asking a human
-	// whether the agent may show a file in their own session is noise.
+	// MCPServers are the session's MCP servers, keyed by name as the SDK wants
+	// them, without their header and env values: those travel in
+	// OMNIPLEX_MCP_SECRETS (see mcp.go). AllowedTools pre-approves the tools
+	// a server declares: asking a human whether the agent may show a file in
+	// their own session is noise.
 	MCPServers   map[string]sdkMCPServer `json:"mcpServers,omitempty"`
 	AllowedTools []string                `json:"allowedTools,omitempty"`
 	// AdditionalDirectories are folders outside Cwd the agent may work in.
 	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
-}
-
-type sdkMCPServer struct {
-	Type    string            `json:"type"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env,omitempty"`
 }
 
 // conversationID resolves which Claude conversation a CreateSession call names
@@ -324,15 +319,11 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		ClaudePath:                      r.claudePath,
 		AdditionalDirectories:           o.ExtraDirs,
 	}
-	for _, m := range o.MCPServers {
-		if cfg.MCPServers == nil {
-			cfg.MCPServers = map[string]sdkMCPServer{}
-		}
-		cfg.MCPServers[m.Name] = sdkMCPServer{Type: "stdio", Command: m.Command, Args: m.Args, Env: m.Env}
-		for _, t := range m.Tools {
-			cfg.AllowedTools = append(cfg.AllowedTools, "mcp__"+m.Name+"__"+t)
-		}
+	servers, secrets, err := sidecarMCP(o.MCPServers)
+	if err != nil {
+		return nil, err
 	}
+	cfg.MCPServers, cfg.AllowedTools = servers, mcpAllowedTools(o.MCPServers)
 	// One field or the other, never both — the SDK rejects the pair.
 	if o.Resume {
 		cfg.Resume = sessionID
@@ -348,6 +339,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	var extra []string
 	if !strings.Contains(o.Model, "[1m]") {
 		extra = append(extra, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
+	}
+	if secrets != "" {
+		extra = append(extra, mcpSecretsEnv+"="+secrets)
 	}
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, or

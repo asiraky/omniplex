@@ -8,7 +8,8 @@
 // Wire format: JSON-RPC 2.0, one object per line, over stdin/stdout.
 //
 //   host -> here (notifications):  prompt (text + image paths), interrupt
-//   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands, stopTask
+//   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands, stopTask,
+//                                  mcpStatus, reconnectMcp
 //   here -> host (notifications):  message, models, fatal
 //   here -> host (request):        permission  -> {behavior, updatedInput?, message?}
 
@@ -58,6 +59,34 @@ process.on("unhandledRejection", (err) => {
 // ---------------------------------------------------------------------------
 const config = JSON.parse(process.argv[2] ?? "{}");
 
+// MCP servers. argv carries each server without its credentials (it is
+// world-readable); header and env values arrive in one variable, which is read
+// here and dropped before anything is spawned. The SDK would put its
+// mcpServers option on Claude Code's own argv (--mcp-config), so the merged
+// set never goes there: it is handed over with setMcpServers, which travels on
+// the control pipe. mcpServers is the whole set this session has, secrets
+// included; reconnectMcp swaps one entry and hands the set over again.
+const MCP_SECRETS = "OMNIPLEX_MCP_SECRETS";
+const mcpSecrets = (() => {
+  const raw = process.env[MCP_SECRETS];
+  delete process.env[MCP_SECRETS];
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+})();
+const withSecrets = (name, server) => {
+  const secret = mcpSecrets[name] ?? {};
+  if (server.url) {
+    return secret.headers ? { ...server, headers: secret.headers } : server;
+  }
+  return secret.env ? { ...server, env: secret.env } : server;
+};
+let mcpServers = Object.fromEntries(
+  Object.entries(config.mcpServers ?? {}).map(([name, server]) => [name, withSecrets(name, server)]),
+);
+
 // The environment Claude Code gets is the one the host gave this process, and
 // nothing else. Bun — as a script runtime and inside a compiled bundle —
 // loads the .env files of its cwd into process.env, and the cwd is the user's
@@ -68,7 +97,9 @@ const config = JSON.parse(process.argv[2] ?? "{}");
 // overwrites a variable that was already set, so the named values are intact.
 const hostEnv = Array.isArray(config.envKeys)
   ? Object.fromEntries(
-      config.envKeys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]),
+      config.envKeys
+        .filter((key) => key !== MCP_SECRETS && process.env[key] !== undefined)
+        .map((key) => [key, process.env[key]]),
     )
   : undefined;
 
@@ -256,8 +287,8 @@ const session = query({
     // the host's UI confirms with the human before ever selecting bypass.
     ...(config.allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
     ...(config.effort ? { effort: config.effort } : {}),
-    // omniplex's own tools (publishing artefacts), pre-approved.
-    ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
+    // MCP servers are not passed here (see mcpServers above); their tools,
+    // omniplex's own above all, are still pre-approved by name.
     ...(config.allowedTools?.length ? { allowedTools: config.allowedTools } : {}),
     ...(config.additionalDirectories?.length ? { additionalDirectories: config.additionalDirectories } : {}),
     // Echo each user message back on the stream at the moment the CLI reads
@@ -273,6 +304,38 @@ const session = query({
     ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
   },
 });
+
+// Written right behind the SDK's initialize request and before any prompt can
+// be, so the CLI has the servers before it reads the first turn. A server
+// that fails to connect shows in mcpStatus; it does not end the session.
+if (Object.keys(mcpServers).length > 0) {
+  session.setMcpServers(mcpServers).catch((e) => process.stderr.write(`setMcpServers: ${e?.message ?? e}\n`));
+}
+
+// mcpReport is what the host gets for each server: no config, which carries
+// the headers.
+const mcpReport = (statuses) =>
+  (statuses ?? []).map((s) => ({ name: s.name, status: s.status, ...(s.error ? { error: s.error } : {}) }));
+
+// reconnectMcp takes one server's current definition (a fresh token in its
+// headers). A changed definition is swapped in, which the CLI reconnects by
+// itself; an unchanged one is reconnected explicitly.
+const canonical = (v) =>
+  Array.isArray(v)
+    ? v.map(canonical)
+    : v && typeof v === "object"
+      ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]))
+      : v;
+const reconnectMcp = async ({ name, server }) => {
+  const changed = JSON.stringify(canonical(mcpServers[name])) !== JSON.stringify(canonical(server));
+  if (changed) {
+    mcpServers = { ...mcpServers, [name]: server };
+    const result = await session.setMcpServers(mcpServers);
+    if (result?.errors?.[name]) throw new Error(result.errors[name]);
+    return;
+  }
+  await session.reconnectMcpServer(name);
+};
 
 // ---------------------------------------------------------------------------
 // host -> here
@@ -375,6 +438,25 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         .supportedCommands()
         .then((commands) => {
           if (frame.id !== undefined) respond(frame.id, { commands });
+        })
+        .catch((e) => {
+          if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
+        });
+      break;
+    case "mcpStatus":
+      session
+        .mcpServerStatus()
+        .then((statuses) => {
+          if (frame.id !== undefined) respond(frame.id, { servers: mcpReport(statuses) });
+        })
+        .catch((e) => {
+          if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
+        });
+      break;
+    case "reconnectMcp":
+      reconnectMcp(frame.params ?? {})
+        .then(() => {
+          if (frame.id !== undefined) respond(frame.id, {});
         })
         .catch((e) => {
           if (frame.id !== undefined) respondError(frame.id, e?.message ?? String(e));
