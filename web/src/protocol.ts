@@ -737,6 +737,121 @@ export interface AuthFlowEvent {
   error?: string;
 }
 
+/** auth_begin's argument: a provider method, an MCP server, or a CLI account. */
+export type AuthBeginArgs =
+  | { instanceId: string; methodId: string }
+  | { mcpServer: string; origin: string }
+  | { cli: string; account: string };
+
+// ---- MCP servers and sign-ins (Settings → Connections) ----
+
+export type McpKind = "stdio" | "http";
+
+/** An agent that can be given MCP servers, and which kinds it runs. */
+export interface McpHarness {
+  id: string;
+  name: string;
+  transports: McpKind[];
+}
+
+export type McpServerStatus = "connected" | "sign_in" | "failed" | "unchecked";
+
+/** One of Omniplex's own MCP servers. Env and header values never travel. */
+export interface McpServer {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  envNames: string[];
+  headerNames: string[];
+  /** Agent ids that do not get this server. */
+  off: string[];
+  /** Signed in through Omniplex. */
+  oauth: boolean;
+  status: McpServerStatus;
+  error?: string;
+  checkedAt?: string;
+}
+
+/**
+ * A server definition on its way to save_mcp_server. An env or header present
+ * with an empty value keeps the stored one; an absent one is deleted.
+ */
+export interface McpDraft {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env: Record<string, string>;
+  headers: Record<string, string>;
+}
+
+/** set_mcp_server_off: change only which agents do not get a server. */
+export interface SetMcpServerOffArgs {
+  name: string;
+  off: string[];
+}
+
+/** A server already in an agent's own config, listed read-only. */
+export interface FoundServer {
+  name: string;
+  /** The agent id it was found in. */
+  harness: string;
+  /** Where in that agent's config, as the agent describes it. */
+  origin: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  added: boolean;
+}
+
+export type CliAccountStatus = "signed_in" | "signed_out" | "failed" | "unchecked";
+
+export interface CliAccount {
+  name: string;
+  env: Record<string, string>;
+  status: CliAccountStatus;
+  detail?: string;
+  checkedAt?: string;
+}
+
+/** A command-line tool that keeps its own sign-in, one per account. */
+export interface Cli {
+  id: string;
+  name: string;
+  statusCommand: string;
+  signedInPattern: string;
+  signInCommand: string;
+  prepareCommand: string;
+  accountEnv: Record<string, string>;
+  accounts: CliAccount[];
+}
+
+/** save_cli's shape: accounts carry no statuses. */
+export type CliSpec = Omit<Cli, "accounts"> & { accounts: Pick<CliAccount, "name" | "env">[] };
+
+export interface Connections {
+  harnesses: McpHarness[];
+  servers: McpServer[];
+  found: FoundServer[];
+  clis: Cli[];
+}
+
+export type ThreadMcpStatus = "connected" | "needs_auth" | "failed" | "pending" | "disabled";
+
+/** The live session's own report on one server. */
+export interface ThreadMcp {
+  name: string;
+  status: ThreadMcpStatus;
+  error?: string;
+}
+
+/** thread_mcp_status / thread_mcp_reconnect. Live false: no running session. */
+export interface ThreadMcpReport {
+  live: boolean;
+  servers: ThreadMcp[];
+}
+
 export interface HarnessMeta {
   id: string;
   name: string;

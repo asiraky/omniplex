@@ -204,6 +204,9 @@ export function App() {
           state={state}
           panel={panel}
           pr={pr}
+          onOpenConnections={(server) =>
+            screens.setSettings({ at: { kind: "connections", server } })
+          }
         />
       )}
 

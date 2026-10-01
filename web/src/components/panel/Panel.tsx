@@ -7,6 +7,7 @@ import {
   Maximize2Icon,
   Minimize2Icon,
   PackageIcon,
+  PlugIcon,
   PlusIcon,
   TerminalIcon,
   XIcon,
@@ -21,6 +22,7 @@ import { SkillsSurface } from "~/components/skills/SkillsSurface";
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
 import { JobsSurface } from "~/components/panel/JobsSurface";
+import { McpSurface } from "~/components/panel/McpSurface";
 import { TerminalSurface } from "~/components/panel/TerminalSurface";
 import {
   DropdownMenu,
@@ -84,6 +86,8 @@ export interface PanelProps {
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
   pr?: PullRequest | null;
+  /** Open Settings → Connections on an MCP server, to sign in to it. */
+  onOpenConnections?: (server: string) => void;
 }
 
 function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
@@ -92,6 +96,8 @@ function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
       return "Artefacts";
     case "skills":
       return "Skills";
+    case "mcp":
+      return "MCP";
     case "artefact":
       return artefacts.find((a) => a.id === s.artefactId)?.name ?? "Artefact";
     case "diff":
@@ -173,6 +179,8 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
       return <FileIcon className={className} />;
     case "skills":
       return <BookOpenIcon className={className} />;
+    case "mcp":
+      return <PlugIcon className={className} />;
     case "terminal":
       return <TerminalIcon className={className} />;
     case "file": {
@@ -197,6 +205,7 @@ function PanelBody({
   loadFile,
   request,
   pr,
+  onOpenConnections,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per thread so the panel reopens as it was left.
@@ -417,6 +426,9 @@ function PanelBody({
               <DropdownMenuItem onSelect={() => addSurface({ id: "skills", kind: "skills" })}>
                 <BookOpenIcon className="size-3.5" /> Skills
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => addSurface({ id: "mcp", kind: "mcp" })}>
+                <PlugIcon className="size-3.5" /> MCP
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setPanel((p) => openSurface(p, newTerminalSurface(p)))}>
                 <TerminalIcon className="size-3.5" /> Terminal
               </DropdownMenuItem>
@@ -486,6 +498,9 @@ function PanelBody({
             </div>
           ))}
         {active?.kind === "skills" && <SkillsSurface command={command} threadId={threadId} />}
+        {active?.kind === "mcp" && (
+          <McpSurface threadId={threadId} command={command} onOpenConnections={onOpenConnections} />
+        )}
         {/* Terminals stay mounted while inactive: unmounting one hangs up its
             shell, and a tab switch must not kill a running command. */}
         {panel.surfaces
