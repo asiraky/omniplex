@@ -188,6 +188,8 @@ export function ServerDetail({
       {header}
       <div className="scroll-thin min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-3 py-3">
         <div className="space-y-3">
+          {/* With accounts, the server's own sign-in is a row among them. */}
+          {!hasAccounts && (
           <div
             className={cn(
               "space-y-1.5 rounded-lg border px-3 py-2",
@@ -196,7 +198,6 @@ export function ServerDetail({
             )}
           >
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-snug">
-              {hasAccounts && <code className="font-mono text-[12.5px]">{server.name}</code>}
               <MarkChip mark={mark} />
               <span>{statusText(server)}</span>
               {server.checkedAt && (
@@ -207,11 +208,12 @@ export function ServerDetail({
             </p>
             {server.error && <FoldedProblem problem={server.error} tone={server.status === "failed" ? "bad" : "attention"} />}
           </div>
+          )}
 
           {error && <ErrorLine message={error} />}
 
           <div className="flex flex-wrap items-center gap-2">
-            {offerSignIn && (
+            {offerSignIn && !hasAccounts && (
               // Loud only when the server asked for it; after a plain failure
               // it is one thing to try among others.
               <Button
@@ -228,10 +230,10 @@ export function ServerDetail({
             {kind === "http" && (
               <Button variant="outline" size="sm" className={ACTION} disabled={busy !== null} onClick={() => void run("check", "check_mcp_server")}>
                 {busy === "check" ? <Spinner className="size-3.5" /> : <RefreshCwIcon className="size-3.5" />}
-                Check
+                {hasAccounts ? "Check all" : "Check"}
               </Button>
             )}
-            {server.oauth && (
+            {server.oauth && !hasAccounts && (
               <Button variant="outline" size="sm" className={ACTION} disabled={busy !== null} onClick={() => void run("signout", "sign_out_mcp_server")}>
                 {busy === "signout" ? <Spinner className="size-3.5" /> : <LogOutIcon className="size-3.5" />}
                 Sign out
@@ -261,7 +263,7 @@ export function ServerDetail({
           </div>
         </div>
 
-        {live.length > 0 && (
+        {!hasAccounts && live.length > 0 && (
           <section aria-label="In this thread" className="space-y-1.5">
             <DetailHeading>In this thread</DetailHeading>
             <ul className="divide-y rounded-lg border">
@@ -270,11 +272,8 @@ export function ServerDetail({
                 return (
                   <li key={l.name} className="space-y-1.5 px-3 py-2">
                     <div className="flex min-h-8 flex-wrap items-center gap-2">
-                      {hasAccounts && <code className="font-mono text-[12.5px]">{l.name}</code>}
                       <MarkChip mark={liveMark(l.status)} />
-                      {!hasAccounts && (
-                        <span className="text-muted-foreground min-w-0 flex-1 text-[12.5px]">What the agent reports.</span>
-                      )}
+                      <span className="text-muted-foreground min-w-0 flex-1 text-[12.5px]">What the agent reports.</span>
                       {canReconnect(l.status) && (
                         <Button
                           variant="outline"
@@ -300,7 +299,16 @@ export function ServerDetail({
           </section>
         )}
 
-        <ServerAccounts server={server} command={command} onSaved={(s) => onSaved(s)} onSignIn={onSignIn} />
+        <ServerAccounts
+          server={server}
+          command={command}
+          live={live}
+          reconnecting={reconnecting}
+          reconnectError={reconnectError}
+          onReconnect={onReconnect}
+          onSaved={(s) => onSaved(s)}
+          onSignIn={onSignIn}
+        />
 
         <section aria-label="Agents that get it" className="space-y-1.5">
           <DetailHeading>Agents that get it</DetailHeading>

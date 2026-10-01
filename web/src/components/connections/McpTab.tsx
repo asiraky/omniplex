@@ -170,7 +170,7 @@ export function McpTab({
                         }
                         sub={
                           s.accounts.length > 0
-                            ? `${serverWhere(s)} · ${s.accounts.length + 1} accounts`
+                            ? `${serverWhere(s)} · default, ${s.accounts.map((a) => a.label).join(", ")}`
                             : serverWhere(s)
                         }
                         dim={only === "Off"}
@@ -308,11 +308,7 @@ export function McpTab({
         <FlowDialog
           wires={wires}
           title={`Sign in to ${signIn}`}
-          description={
-            ours?.some((o) => o.name !== o.server && (o.name === signIn || o.server === signIn))
-              ? "Open the sign-in page and sign in as the account you want here. If it signs you straight in as someone else, copy the link into a private window. This closes by itself."
-              : "Open the sign-in page and approve. This closes by itself."
-          }
+          description={signInNote(signIn, conn?.servers ?? [])}
           begin={{ mcpServer: signIn, origin: window.location.origin }}
           onFinished={() => void afterSignIn(signIn)}
           onClose={() => setSignIn(null)}
@@ -320,6 +316,18 @@ export function McpTab({
       )}
     </div>
   );
+}
+
+/**
+ * What the sign-in dialog says. Once a server has several accounts it names
+ * the one being signed in, and the way out when the provider skips its
+ * login page and reuses whoever the browser is signed in as.
+ */
+function signInNote(name: string, servers: McpServer[]): string {
+  const s = servers.find((x) => x.name === name || x.accounts.some((a) => a.name === name));
+  if (!s || s.accounts.length === 0) return "Open the sign-in page and approve. This closes by itself.";
+  const which = s.accounts.find((a) => a.name === name)?.label ?? "default";
+  return `Sign in with the ${s.name} login you want as ${which}. If the page skips the login and signs you in as someone else, tap Copy URL and open it in a private window. This closes by itself.`;
 }
 
 function Gone({ onBack }: { onBack: () => void }) {
@@ -386,10 +394,11 @@ function LiveSection({
             const owner = ours?.find((o) => o.name === s.name)?.server ?? s.name;
             const failed = live.failed?.name === s.name ? `Reconnect failed. ${live.failed.error}` : undefined;
             return (
-              <li key={s.name}>
+              <li key={s.name} className="py-0.5">
                 <ListRow
                   title={s.name}
-                  markers={<MarkChip mark={liveMark(s.status)} />}
+                  // A Sign in button says it already.
+                  markers={action === "sign_in" ? undefined : <MarkChip mark={liveMark(s.status)} />}
                   sub={
                     source === "built_in"
                       ? "Built into Omniplex"

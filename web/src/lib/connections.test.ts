@@ -349,7 +349,9 @@ describe("server accounts", () => {
 
   it("marks a server's row for the worst of its accounts", () => {
     expect(serverMark(srv)).toBeNull();
-    expect(serverMark({ ...srv, accounts: [account({ status: "sign_in" })] })?.label).toBe("Sign in");
+    expect(serverMark({ ...srv, accounts: [] , status: "sign_in" })?.label).toBe("Sign in");
+    expect(serverMark({ ...srv, accounts: [account({ status: "sign_in" })] })?.label).toBe("1 needs sign-in");
+    expect(serverMark({ ...srv, status: "sign_in", accounts: [account({ status: "sign_in" })] })?.label).toBe("2 need sign-in");
     expect(serverMark({ ...srv, status: "sign_in", accounts: [account({ status: "failed" })] })?.label).toBe("Failed");
   });
 

@@ -244,6 +244,14 @@ function valueNames(s: McpServer): string[] {
   return serverKind(s) === "http" ? s.headerNames : s.envNames;
 }
 
+/**
+ * A label as it is typed: lowercase, spaces as dashes, so what the form
+ * previews is the name agents will really get.
+ */
+export function typedLabel(typed: string): string {
+  return typed.toLowerCase().replace(/\s/g, "-");
+}
+
 export function accountForm(s: McpServer, a?: McpServerAccount): AccountForm {
   const own = new Set(a ? (serverKind(s) === "http" ? a.headerNames : a.envNames) : []);
   return {
@@ -359,12 +367,17 @@ export function statusMark(status: McpServerStatus): Mark | null {
   return null;
 }
 
-/** A server's row speaks for the worst of its accounts, the first included. */
+/**
+ * A server's row speaks for the worst of its accounts, the first included,
+ * and with several says how many want signing in.
+ */
 export function serverMark(s: McpServer): Mark | null {
   const all = [s.status, ...(s.accounts ?? []).map((a) => a.status)];
   if (all.includes("failed")) return statusMark("failed");
-  if (all.includes("sign_in")) return statusMark("sign_in");
-  return null;
+  const n = all.filter((x) => x === "sign_in").length;
+  if (n === 0) return null;
+  if (all.length === 1) return statusMark("sign_in");
+  return { label: n === 1 ? "1 needs sign-in" : `${n} need sign-in`, tone: "attention" };
 }
 
 /**
