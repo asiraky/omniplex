@@ -80,7 +80,7 @@ esac
 # read only the last banner in the log so a restart does not print a stale code.
 plain=$(sed -e 's/\x1b\[[0-9;]*m//g' -e 's/\r//g' "$LOG" | awk '/Omniplex — harness multiplexer/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}')
 
-url=$(printf '%s\n' "$plain" | grep -m1 "Tailscale" | awk '{print $NF}')
+url=$(printf '%s\n' "$plain" | grep -m1 -E "Tailscale.* https?://" | awk '{print $NF}')
 [ -n "$url" ] || url="http://127.0.0.1:$PORT"
 code=$(printf '%s\n' "$plain" | grep -m1 "and enter" | awk '{print $NF}')
 
