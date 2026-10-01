@@ -1,0 +1,10 @@
+// The landing page on Cloudflare: a Worker with no script, only the static files Astro builds.
+// The first `wrangler deploy` creates the Worker, the DNS record and the certificate for the domain.
+{
+  "name": "omniplex-site",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "./dist" },
+  "routes": [{ "pattern": "omniplex.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false
+}

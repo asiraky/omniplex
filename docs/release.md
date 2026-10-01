@@ -181,20 +181,25 @@ From then on a tag fails without the Azure secrets, and `publish` requires the W
 download page switches from "Windows is coming soon" to a Windows button on its own once a release
 has an `.exe`.
 
-### Download page (GitHub Pages)
+### Download page (Cloudflare)
 
-`site/` is a static page. It detects the visitor's OS and chip in the browser, asks the GitHub API
-for the latest release, and links straight to the matching installer. If the API fails or
-rate-limits (60 requests an hour per IP, unauthenticated), every link falls back to the releases
-page. A release never needs a redeploy.
+`site/` is the landing page, an Astro site built to static HTML (an npm workspace). It detects the
+visitor's OS and chip in the browser, asks the GitHub API for the latest release, and links straight
+to the matching installer. If the API fails or rate-limits (60 requests an hour per IP,
+unauthenticated), every link falls back to the releases page. A release never needs a redeploy.
 
-1. Settings, Pages, Source: **GitHub Actions**.
-2. Push a change under `site/` to main, or run the Pages workflow by hand. The page is at
-   `https://asiraky.github.io/omniplex/`.
+The page is served from Cloudflare at `https://omniplex.dev` as a Worker with static assets and no
+script (`site/wrangler.jsonc`). The Site workflow runs on a push to main that touches `site/`: it
+runs `npm run test:site` and `npm run build --workspace site`, then `wrangler deploy` uploads
+`site/dist`. The first deploy creates the Worker, the DNS record and the certificate. Locally,
+`npm run dev --workspace site` serves it on port 4399. To point the page at another release feed,
+say a local mock, build with `PUBLIC_LATEST_API_URL=<url>`.
 
-For a custom domain later: add a CNAME record pointing the domain at `asiraky.github.io`, enter the
-domain under Settings, Pages, and turn on Enforce HTTPS. Pages deployed from Actions do not need a
-`CNAME` file in the repo. Update the links in the README once the domain is live.
+One-time setup, two repository secrets under Settings, Secrets and variables, Actions:
+
+- `CLOUDFLARE_ACCOUNT_ID`: the account ID from the Cloudflare dashboard.
+- `CLOUDFLARE_API_TOKEN`: a token from My Profile, API Tokens, made with the "Edit Cloudflare
+  Workers" template and limited to this account and the `omniplex.dev` zone.
 
 ## Terminal install
 
@@ -220,8 +225,6 @@ the warning, which is one more reason the desktop app is the path for everyone e
 
 ## Open questions, and what the pipeline assumes meanwhile
 
-- **Where the download page lives.** GitHub Pages at `asiraky.github.io/omniplex` until a domain is
-  chosen. Moving it is a DNS record and a settings change.
 - **Personal or company signing accounts.** The pipeline does not care, the secret names are the
   same. Decide before the first public release anyway: the Apple team and the Windows publisher name
   are baked into every installed copy, and the updaters refuse an update signed by someone else. A

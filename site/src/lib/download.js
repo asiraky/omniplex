@@ -1,5 +1,5 @@
 // What to offer a visitor, given their machine and the latest GitHub release.
-// No DOM here: index.html does the rendering, download.test.js the checking.
+// No DOM here: src/scripts/downloads.ts does the rendering, download.test.js the checking.
 
 export const REPO = "asiraky/omniplex";
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
@@ -118,7 +118,7 @@ export function primaryDownload(release, { os, arch }) {
     return { kind: "terminal", os, title: "Install on Linux" };
   }
   if (os !== "mac" && os !== "windows") {
-    return { kind: "other-device", title: "Omniplex installs on a Mac or Windows computer" };
+    return { kind: "other-device", title: "Omniplex installs on a Mac or a Linux machine" };
   }
 
   const title = `Download for ${OS_LABEL[os]}`;

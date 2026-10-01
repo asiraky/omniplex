@@ -19,7 +19,7 @@ scripts, the readiness barrier, live setup output, and retryable cleanup.
 
 ### Desktop app (macOS)
 
-Download it from **https://asiraky.github.io/omniplex/**, which picks the right build for your
+Download it from **https://omniplex.dev**, which picks the right build for your
 machine, or from the [latest release](https://github.com/asiraky/omniplex/releases/latest). Open
 the dmg and drag Omniplex to Applications.
 

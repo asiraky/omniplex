@@ -15,7 +15,8 @@
   "workspaces": [
     "web",
     "internal/adapter/claudecode/sidecar",
-    "desktop"
+    "desktop",
+    "site"
   ],
   "scripts": {
     "dev": "./scripts/dev",
@@ -30,7 +31,7 @@
     "test": "npm run test:go && npm run test:web && npm run test:desktop && npm run test:site",
     "test:go": "go test -race ./...",
     "test:web": "./scripts/web tsc -b && ./scripts/web vitest run",
-    "test:site": "node --test site/download.test.js",
+    "test:site": "node --test site/src/lib/download.test.js",
     "clean": "rm -f omniplex omni && rm -rf cmd/omniplex/webdist && mkdir -p cmd/omniplex/webdist && touch cmd/omniplex/webdist/.gitkeep",
     "test:e2e:schedules": "npm run build:web && OMNIPLEX_BROWSER_TEST=1 go test ./internal/server -run TestSchedulesBrowser -count=1 -timeout=4m -v",
     "test:desktop": "npm run typecheck --workspace desktop && npm test --workspace desktop"

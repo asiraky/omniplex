@@ -7,6 +7,8 @@
 # Dependencies and generated frontend output
 node_modules/
 /web/dist/
+/site/dist/
+/site/.astro/
 # The build output, all of it. Only the placeholder that keeps the embed
 # directory present in a fresh clone is tracked.
 /cmd/omniplex/webdist/*
@@ -39,3 +41,4 @@ coverage/
 .DS_Store
 *.swp
 .worktree-scratch/
+/site/.wrangler/

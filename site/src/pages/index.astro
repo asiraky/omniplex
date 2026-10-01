@@ -1,0 +1,133 @@
+---
+// One board of unequal tiles, no sections. Most tiles are toys that show one fact when you poke them
+// (shut the lid, answer a prompt, kill the signal, drag to pair). Setup steps and downloads are tiles too.
+import "../styles/global.css";
+import fontUrl from "@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2?url";
+import LidTicker from "../components/LidTicker.tsx";
+import Permission from "../components/Permission.tsx";
+import Signal from "../components/Signal.tsx";
+import Flip from "../components/Flip.tsx";
+import Check from "../components/Check.tsx";
+import Pair from "../components/Pair.tsx";
+import Worktrees from "../components/Worktrees.tsx";
+import { INSTALL_COMMAND, LATEST_API_URL, RELEASES_URL, REPO } from "../lib/download.js";
+
+const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
+const apiOrigin = new URL(import.meta.env.PUBLIC_LATEST_API_URL || LATEST_API_URL).origin;
+const GH = `https://github.com/${REPO}`;
+const fontFace = `@font-face{font-family:"Space Grotesk";font-style:normal;font-weight:300 700;font-display:swap;src:url(${fontUrl}) format("woff2")}`;
+const description =
+  "Omniplex runs Claude Code and Codex on a machine you leave on. Close your laptop and open the same sessions on your phone. Free and open source.";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Omniplex: close the laptop, your agents keep working</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={new URL(base, Astro.site)} />
+    <meta property="og:title" content="Omniplex" />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={new URL(base, Astro.site)} />
+    <link rel="icon" href={`${base}favicon.svg`} type="image/svg+xml" />
+    <link rel="preload" href={fontUrl} as="font" type="font/woff2" crossorigin />
+    <link rel="preconnect" href={apiOrigin} crossorigin />
+    <meta name="theme-color" content="#3450ff" />
+    <style is:inline set:html={fontFace}></style>
+  </head>
+  <body>
+    <a href="#download" class="skip">Skip to download</a>
+
+    <main id="main" class="board">
+      <section class="tile tile-title bg-cream" aria-labelledby="headline">
+        <p class="brand">
+          <span class="brand-name">Omniplex</span>
+          <a class="brand-link" href={GH}>GitHub</a>
+        </p>
+        <h1 id="headline">Close the laptop. Your agents keep working.</h1>
+        <p class="lede">
+          Omniplex runs Claude Code and Codex on a computer you leave on. Walk away, then open the same sessions on
+          your phone. Everything on this page is a button. Press things.
+        </p>
+        <span class="sticker sticker-free" aria-hidden="true">free + MIT</span>
+      </section>
+
+      <section class="tile tile-download bg-green" id="download" aria-labelledby="download-title" data-dl>
+        <p class="step">Step 1</p>
+        <h2 id="download-title">Put it on a computer that stays on</h2>
+        <a class="big" data-dl-primary data-when="download" href={RELEASES_URL}>
+          <span data-dl-title>Download Omniplex</span>
+          <small data-dl-detail>From the GitHub releases page</small>
+        </a>
+        <a class="big" data-when="terminal" href="#terminal" hidden>
+          <span>Install from a terminal</span>
+          <small>Linux and servers, one line</small>
+        </a>
+        <p class="big big-flat" data-dl-status data-when="coming-soon other-device" hidden></p>
+        <p class="small" data-dl-alt hidden>
+          <span data-dl-alt-prompt></span>{" "}
+          <a data-dl-alt-link href={RELEASES_URL}>Download that build instead</a>.
+        </p>
+        <p class="small" data-dl-note data-when="coming-soon terminal other-device" hidden></p>
+        <p class="small">
+          The Mac app starts at login, lives in the menu bar and updates itself. Windows is coming soon. There is no
+          build yet.
+        </p>
+      </section>
+
+      <LidTicker client:load />
+      <Permission client:idle />
+      <Signal client:idle />
+      <Flip client:idle />
+      <Check client:idle />
+      <Pair client:idle />
+      <Worktrees client:idle />
+
+      <section class="tile tile-net bg-pink" aria-labelledby="net-title">
+        <h2 id="net-title">Not on the public internet</h2>
+        <p>It listens only on your machine and on private and Tailscale addresses.</p>
+        <ul class="checks">
+          <li><span class="check-box" data-ok="true">yes</span>Your machine</li>
+          <li><span class="check-box" data-ok="true">yes</span>Private and Tailscale addresses</li>
+          <li><span class="check-box" data-ok="no">no</span>Anything else</li>
+        </ul>
+        <span class="sticker sticker-lock" aria-hidden="true">private</span>
+      </section>
+
+      <section class="tile tile-cmd bg-black" id="terminal" aria-labelledby="cmd-title">
+        <h2 id="cmd-title">Linux or a server? One line.</h2>
+        <div class="command" data-copy-scope>
+          <code data-install-cmd>{INSTALL_COMMAND}</code>
+          <button type="button" class="press press-go" data-copy>Copy</button>
+        </div>
+        <p class="small">
+          Works on macOS too. It puts the server in <code>~/.local/bin</code>. Run <code>omniplex</code> and open the
+          URL it prints. There is no desktop app on Linux.
+        </p>
+      </section>
+
+      <section class="tile tile-gh bg-yellow" aria-labelledby="gh-title">
+        <h2 id="gh-title">Free. Open source. MIT.</h2>
+        <p>Read it, fork it, file an issue.</p>
+        <a class="press press-dark" href={GH}>{REPO} on GitHub</a>
+      </section>
+
+      <section class="tile tile-files bg-cream" aria-labelledby="files-title">
+        <h2 id="files-title">Every file in the latest release <span data-dl-version hidden></span></h2>
+        <ul class="files" data-dl-list>
+          <li class="file-empty">
+            The list loads from GitHub. If it does not, see <a href={RELEASES_URL}>the releases page</a>.
+          </li>
+        </ul>
+        <p class="small"><a href={RELEASES_URL}>All releases on GitHub</a></p>
+      </section>
+    </main>
+
+    <script>
+      import "../scripts/downloads.ts";
+    </script>
+  </body>
+</html>
