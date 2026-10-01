@@ -51,7 +51,12 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"skills": found, "subagents": subagents, "projectRoot": roots.ProjectRoot, "setup": skillsSetup(roots)}, nil
+		return map[string]any{"skills": found, "subagents": subagents, "projectRoot": roots.ProjectRoot, "setup": skillsSetup(roots), "claudeSync": skills.ClaudeSync(roots)}, nil
+	case "set_claude_sync":
+		if err := skills.SetClaudeSync(roots, a.On); err != nil {
+			return nil, err
+		}
+		return map[string]any{"claudeSync": skills.ClaudeSync(roots)}, nil
 	case "read_skill":
 		return skills.Read(roots, a.Dir)
 	case "read_skill_file":

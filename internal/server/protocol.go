@@ -188,6 +188,7 @@ type skillArgs struct {
 	Description string `json:"description"`
 	Harness     string `json:"harness"`
 	Manual      bool   `json:"manual"`
+	On          bool   `json:"on"` // set_claude_sync
 	// The skills setup: the libraries and the pinned skills CLI version.
 	Library        string `json:"library"`
 	ProjectLibrary string `json:"projectLibrary"`

@@ -5,6 +5,7 @@ import { IconButton } from "~/components/IconButton";
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { Spinner } from "~/components/ui/spinner";
+import { Switch } from "~/components/ui/switch";
 import {
   copiesOf,
   errorText,
@@ -144,6 +145,50 @@ function GroupSection({
         </CollapsibleContent>
       </Collapsible>
     </section>
+  );
+}
+
+/**
+ * Claude Code's own switch for the skills Anthropic syncs from the claude.ai
+ * account (syncClaudeAiSkills in its settings.json).
+ */
+function ClaudeSyncSwitch({
+  on,
+  command,
+  scopeArgs,
+  onChanged,
+}: {
+  on: boolean;
+  command: SkillsCommand;
+  scopeArgs: Record<string, unknown>;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const change = (next: boolean) => {
+    setBusy(true);
+    setError("");
+    command("set_claude_sync", { ...scopeArgs, on: next })
+      .then(onChanged)
+      .catch((e) => setError(errorText(e)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="mt-2 border-t px-1 pt-1">
+      <label className="flex min-h-11 cursor-pointer items-center gap-3 px-1">
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-medium">Skills from claude.ai</span>
+          <span className="text-muted-foreground block text-[12px] leading-snug">
+            {on
+              ? "Claude loads the skills enabled on your claude.ai account."
+              : "Off. Claude loads none of them, and downloads them again only if you turn this on."}
+          </span>
+        </span>
+        {busy && <Spinner className="size-3.5" />}
+        <Switch checked={on} disabled={busy} onCheckedChange={change} aria-label="Skills from claude.ai" />
+      </label>
+      {error && <ErrorLine message={error} className="px-1 pb-1" />}
+    </div>
   );
 }
 
@@ -400,6 +445,10 @@ export function SkillsSurface({ command, threadId, projectId, onUse, slots }: Sk
                   action={group.kind === "source" ? slots?.groupAction?.(group, ctx) : undefined}
                 />
               ))}
+
+              {list?.claudeSync !== undefined && !searching && (
+                <ClaudeSyncSwitch on={list.claudeSync} command={command} scopeArgs={scopeArgs} onChanged={refresh} />
+              )}
 
               {subagents.length > 0 && !searching && (
                 <Collapsible className="mt-2 border-t pt-1">

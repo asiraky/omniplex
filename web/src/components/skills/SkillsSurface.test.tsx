@@ -256,6 +256,43 @@ describe("SkillsSurface list", () => {
   });
 });
 
+describe("SkillsSurface claude.ai sync", () => {
+  it("turns the sync off and lists again, so the synced skills go", async () => {
+    let sync = true;
+    const synced = skill("docs", { synced: true, editable: false, harnesses: ["claude"] });
+    const command = mockCommand({
+      list_skills: (): SkillsList => ({ skills: sync ? [...SKILLS, synced] : SKILLS, subagents: [], claudeSync: sync }),
+      set_claude_sync: (args) => {
+        sync = args.on === true;
+        return { claudeSync: sync };
+      },
+    });
+    await renderSurface(command);
+    const toggle = screen.getByRole("switch", { name: "Skills from claude.ai" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Skills from claude.ai" }).getAttribute("aria-checked")).toBe("false"),
+    );
+    expect(calls(command, "set_claude_sync")).toEqual([{ threadId: "s1", on: false }]);
+    expect(screen.queryByRole("region", { name: "claude.ai synced" })).toBeNull();
+  });
+
+  it("keeps the switch where it was and says why when the write fails", async () => {
+    const command = mockCommand({
+      list_skills: (): SkillsList => ({ skills: SKILLS, subagents: [], claudeSync: true }),
+      set_claude_sync: () => {
+        throw new Error("settings.json is not JSON");
+      },
+    });
+    await renderSurface(command);
+    fireEvent.click(screen.getByRole("switch", { name: "Skills from claude.ai" }));
+    expect(await screen.findByText(/settings.json is not JSON/)).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Skills from claude.ai" }).getAttribute("aria-checked")).toBe("true");
+  });
+});
+
 describe("SkillsSurface in prompt", () => {
   const names = (list: HTMLElement) =>
     within(list)

@@ -356,6 +356,9 @@ func Discover(r Roots) ([]Skill, error) {
 	byDir := map[string]*Skill{}
 	manual := map[string]bool{} // real dir -> frontmatter says manual-only
 	var order []string
+	// With the sync off Claude Code no longer loads what it synced, even
+	// before its next start moves the folders out of the way.
+	syncOn := ClaudeSync(r)
 	add := func(rt root, path string, synced bool) {
 		real, err := filepath.EvalSymlinks(path)
 		if err != nil {
@@ -395,7 +398,7 @@ func Discover(r Roots) ([]Skill, error) {
 			// claude.ai-synced skills sit two levels down, under
 			// synced/<account-id>/<skill>. They are rewritten by the sync, so
 			// they are shown but not editable here.
-			if rt.synced && name == "synced" {
+			if rt.synced && syncOn && name == "synced" {
 				for _, account := range readDirs(dir) {
 					for _, skill := range readDirs(filepath.Join(dir, account)) {
 						if d := filepath.Join(dir, account, skill); hasSkillFile(d) {

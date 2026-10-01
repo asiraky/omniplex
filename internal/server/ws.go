@@ -896,7 +896,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 
 	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill",
 		"save_skills_setup", "link_library", "link_skill", "set_skill_invocation", "remove_skill",
-		"stage_skills", "read_staged_file", "install_staged", "discard_staged",
+		"set_claude_sync", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
 		"skills_git_status", "commit_skills", "stage_update", "read_update_file", "apply_update":
 		var a skillArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

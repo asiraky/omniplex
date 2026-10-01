@@ -104,6 +104,8 @@ export interface SkillsList {
   projectRoot?: string;
   /** Absent from an older server. */
   setup?: Setup;
+  /** Whether Claude loads the skills it syncs from the claude.ai account. */
+  claudeSync?: boolean;
 }
 
 export interface SkillFileContent {
