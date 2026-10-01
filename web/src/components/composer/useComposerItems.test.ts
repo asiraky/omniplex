@@ -47,4 +47,38 @@ describe("useComposerItems", () => {
     expect(first).toHaveBeenCalledTimes(1);
     unmount();
   });
+
+  it("shows nothing loaded under another scope while this one's is on its way", async () => {
+    let land!: (items: ComposerItem[]) => void;
+    const first = vi.fn<() => Promise<ComposerItem[]>>().mockResolvedValue([compact]);
+    const second = vi.fn(() => new Promise<ComposerItem[]>((resolve) => (land = resolve)));
+    const { result, rerender, unmount } = renderHook(
+      ({ load, scope }) => useComposerItems(load, scope),
+      { initialProps: { load: first, scope: "claude" } },
+    );
+    await waitFor(() => expect(result.current.items).toEqual([compact]));
+
+    rerender({ load: second, scope: "codex" });
+    expect(result.current.items).toEqual([]);
+    expect(result.current.ready).toBe(false);
+
+    await act(async () => land([]));
+    expect(result.current.ready).toBe(true);
+    expect(result.current.items).toEqual([]);
+    unmount();
+  });
+
+  it("keeps the old catalogue under the same scope until a new loader answers", async () => {
+    const first = vi.fn<() => Promise<ComposerItem[]>>().mockResolvedValue([compact]);
+    const second = vi.fn(() => new Promise<ComposerItem[]>(() => {}));
+    const { result, rerender, unmount } = renderHook(({ load }) => useComposerItems(load), {
+      initialProps: { load: first },
+    });
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    rerender({ load: second });
+    await waitFor(() => expect(second).toHaveBeenCalled());
+    expect(result.current.items).toEqual([compact]);
+    expect(result.current.ready).toBe(true);
+    unmount();
+  });
 });

@@ -78,17 +78,54 @@ func fixture(t *testing.T) Roots {
 	write(t, filepath.Join(project, ".agents", "skills", "not-a-skill", "README.md"), "no SKILL.md here")
 	link(t, "../.agents/skills", filepath.Join(project, ".claude", "skills"))
 
-	write(t, filepath.Join(dot, "claude-agents", "reviewer.md"), "---\nname: reviewer\ndescription: Reviews code\n---\nprompt\n")
-	write(t, filepath.Join(dot, "claude-agents", "nested", "helper.md"), "---\nname: helper\ndescription: Helps\n---\n")
-	link(t, "../dotfiles/agents/claude-agents", filepath.Join(home, ".claude", "agents"))
-	write(t, filepath.Join(home, ".codex", "agents", "sup.toml"), "name = \"supervisor\"\ndescription = '''\nWatches a PR\nto merge'''\ndeveloper_instructions = \"x\"\n[mcp_servers]\nname = \"nope\"\n")
-	write(t, filepath.Join(project, ".claude", "agents-real", "local.md"), "---\nname: local\ndescription: Project agent\n---\n")
-	link(t, "agents-real", filepath.Join(project, ".claude", "agents"))
-
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("PI_CODING_AGENT_DIR", "")
+	clearEnv(t)
 	return DefaultRoots(home, nil, project)
+}
+
+// clearEnv keeps the developer's own harness and XDG settings out of the
+// roots a test builds.
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "XDG_STATE_HOME"} {
+		t.Setenv(key, "")
+	}
+}
+
+// machine is an empty home and project with nothing linked, for a test that
+// lays out its own skills.
+func machine(t *testing.T) Roots {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, project := filepath.Join(base, "home"), filepath.Join(base, "project")
+	for _, dir := range []string{home, project} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearEnv(t)
+	return DefaultRoots(home, nil, project)
+}
+
+func read(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func isSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func byName(t *testing.T, list []Skill) map[string]Skill {
@@ -121,7 +158,8 @@ func TestDiscover(t *testing.T) {
 		problem   string
 	}{
 		{"shared", ScopeUser, "", []Harness{Claude, Codex, Pi}, true, 2, ""},
-		{"cloud-one", ScopeUser, "", []Harness{Claude}, false, 1, ""},
+		// Synced by claude.ai into a dir Codex and pi also search, to any depth.
+		{"cloud-one", ScopeUser, "", []Harness{Claude, Codex, Pi}, false, 2, ""},
 		{"codex-only", ScopeUser, "", []Harness{Codex}, true, 1, ""},
 		{"pi-only", ScopeUser, "", []Harness{Pi}, true, 1, ""},
 		{"sys-skill", ScopeSystem, "", []Harness{Codex}, false, 1, ""},
@@ -143,8 +181,8 @@ func TestDiscover(t *testing.T) {
 			if !reflect.DeepEqual(s.Harnesses, tt.harnesses) {
 				t.Errorf("harnesses = %v, want %v", s.Harnesses, tt.harnesses)
 			}
-			if len(s.Paths) != tt.paths {
-				t.Errorf("paths = %v, want %d", s.Paths, tt.paths)
+			if len(s.paths) != tt.paths {
+				t.Errorf("paths = %v, want %d", s.paths, tt.paths)
 			}
 			if tt.problem == "" && s.Problem != "" || !strings.Contains(s.Problem, tt.problem) {
 				t.Errorf("problem = %q, want containing %q", s.Problem, tt.problem)
@@ -199,10 +237,23 @@ func TestDefaultRoots(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/from/process")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", "/process/claude")
+	t.Setenv("XDG_STATE_HOME", "")
 	r := DefaultRoots("/h", map[string]string{"CLAUDE_CONFIG_DIR": "~/inst/a"}, "/p/")
-	want := Roots{Home: "/h", ClaudeConfigDir: "/h/inst/a", CodexHome: "/from/process", PiAgentDir: "/h/.pi/agent", ProjectRoot: "/p"}
-	if r != want {
-		t.Errorf("got %+v, want %+v", r, want)
+	got := [5]string{r.Home, r.ClaudeConfigDir, r.CodexHome, r.PiAgentDir, r.ProjectRoot}
+	want := [5]string{"/h", "/h/inst/a", "/from/process", "/h/.pi/agent", "/p"}
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if !strings.HasPrefix(r.Library, "/h/") || !strings.HasPrefix(r.ProjectLibrary, "/p/") || !strings.HasPrefix(r.CLILock, "/h/") {
+		t.Errorf("library %q, project library %q and lock %q should sit under the home and the project", r.Library, r.ProjectLibrary, r.CLILock)
+	}
+	if none := DefaultRoots("/h", nil, ""); none.ProjectLibrary != "" {
+		t.Errorf("project library %q with no project", none.ProjectLibrary)
+	}
+	// The skills CLI keeps its lock under XDG_STATE_HOME when that is set.
+	t.Setenv("XDG_STATE_HOME", "/state")
+	if lock := DefaultRoots("/h", nil, "").CLILock; !strings.HasPrefix(lock, "/state/") {
+		t.Errorf("lock = %q, want it under XDG_STATE_HOME", lock)
 	}
 }
 
@@ -237,7 +288,7 @@ func TestRead(t *testing.T) {
 	if !reflect.DeepEqual(d.Files, want) {
 		t.Errorf("files = %+v, want %+v", d.Files, want)
 	}
-	for _, dir := range []string{"", "relative", filepath.Join(r.Home, "dotfiles"), shared.Paths[0] + "/.."} {
+	for _, dir := range []string{"", "relative", filepath.Join(r.Home, "dotfiles"), shared.paths[0] + "/.."} {
 		if _, err := Read(r, dir); !errors.Is(err, ErrNotFound) {
 			t.Errorf("Read(%q) err = %v, want ErrNotFound", dir, err)
 		}
@@ -327,19 +378,22 @@ func TestReadFile(t *testing.T) {
 }
 
 func TestCreate(t *testing.T) {
-	t.Run("user scope, claude dir already shares .agents", func(t *testing.T) {
+	t.Run("claude dir already shares the library", func(t *testing.T) {
 		r := fixture(t)
-		s, err := Create(r, ScopeUser, "fresh", "A new skill: with a colon")
+		s, err := Create(r, "fresh", "A new skill: with a colon")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s.Name != "fresh" || s.Description != "A new skill: with a colon" || s.Scope != ScopeUser || !s.Editable || s.Problem != "" {
+		if s.Name != "fresh" || s.Description != "A new skill: with a colon" || s.Scope != ScopeUser || !s.Editable || s.Problem != "" || s.Mode != ModeOn {
 			t.Errorf("created %+v", s)
+		}
+		if s.Dir != filepath.Join(r.Home, "dotfiles", "agents", "skills", "fresh") {
+			t.Errorf("dir = %s", s.Dir)
 		}
 		if !reflect.DeepEqual(s.Harnesses, []Harness{Claude, Codex, Pi}) {
 			t.Errorf("harnesses = %v", s.Harnesses)
 		}
-		// ~/.claude/skills already resolves to the dotfiles dir: no extra link.
+		// ~/.claude/skills already resolves to the library: no extra link.
 		entries, _ := os.ReadDir(filepath.Join(r.Home, "dotfiles", "agents", "skills"))
 		for _, e := range entries {
 			if e.Type()&os.ModeSymlink != 0 {
@@ -348,10 +402,11 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("user scope, separate claude dir gets a relative link", func(t *testing.T) {
+	t.Run("a separate claude dir gets a relative link", func(t *testing.T) {
 		r := fixture(t)
 		r.ClaudeConfigDir = filepath.Join(r.Home, "instances", "a")
-		s, err := Create(r, ScopeUser, "linked", "Linked for Claude")
+		write(t, filepath.Join(r.ClaudeConfigDir, "skills", "own", "SKILL.md"), skillMD("own", "Claude's own"))
+		s, err := Create(r, "linked", "Linked for Claude")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -363,68 +418,32 @@ func TestCreate(t *testing.T) {
 		if real, _ := filepath.EvalSymlinks(linkPath); real != s.Dir {
 			t.Errorf("link resolves to %q, want %q", real, s.Dir)
 		}
-		if !reflect.DeepEqual(s.Harnesses, []Harness{Claude, Codex, Pi}) || len(s.Paths) != 2 {
-			t.Errorf("harnesses %v paths %v", s.Harnesses, s.Paths)
-		}
-	})
-
-	t.Run("project scope without a claude dir creates it", func(t *testing.T) {
-		r := fixture(t)
-		if err := os.Remove(filepath.Join(r.ProjectRoot, ".claude", "skills")); err != nil {
-			t.Fatal(err)
-		}
-		s, err := Create(r, ScopeProject, "proj-skill", "Project one")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s.Scope != ScopeProject || s.Dir != filepath.Join(r.ProjectRoot, ".agents", "skills", "proj-skill") {
-			t.Errorf("created %+v", s)
-		}
-		if fi, err := os.Lstat(filepath.Join(r.ProjectRoot, ".claude", "skills", "proj-skill")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-			t.Errorf("claude link missing: %v", err)
-		}
-		if !containsHarness(s.Harnesses, Claude) {
-			t.Errorf("harnesses = %v", s.Harnesses)
-		}
-	})
-
-	t.Run("project scope with .claude/skills linked to .agents/skills", func(t *testing.T) {
-		r := fixture(t)
-		if _, err := Create(r, ScopeProject, "proj-two", "Project two"); err != nil {
-			t.Fatal(err)
-		}
-		fi, err := os.Lstat(filepath.Join(r.ProjectRoot, ".agents", "skills", "proj-two"))
-		if err != nil || !fi.IsDir() {
-			t.Errorf("want a real dir, got %v %v", fi, err)
+		if !reflect.DeepEqual(s.Harnesses, []Harness{Claude, Codex, Pi}) || len(s.paths) != 2 {
+			t.Errorf("harnesses %v paths %v", s.Harnesses, s.paths)
 		}
 	})
 
 	refusals := []struct {
-		name, scope, skill, desc string
-		noProject                bool
+		name, skill, desc string
 	}{
-		{"existing in .agents", ScopeProject, "dev", "d", false},
-		{"existing only in claude dir", ScopeUser, "claude-only", "d", false},
-		{"uppercase", ScopeUser, "Bad", "d", false},
-		{"leading hyphen", ScopeUser, "-bad", "d", false},
-		{"trailing hyphen", ScopeUser, "bad-", "d", false},
-		{"double hyphen", ScopeUser, "a--b", "d", false},
-		{"too long", ScopeUser, strings.Repeat("a", 65), "d", false},
-		{"empty description", ScopeUser, "ok", "  ", false},
-		{"long description", ScopeUser, "ok", strings.Repeat("d", 1025), false},
-		{"bad scope", "plugin", "ok", "d", false},
-		{"project scope without project", ScopeProject, "ok", "d", true},
+		{"existing in the library", "shared", "d"},
+		{"existing only in claude dir", "claude-only", "d"},
+		{"existing only in codex dir", "codex-only", "d"},
+		{"uppercase", "Bad", "d"},
+		{"leading hyphen", "-bad", "d"},
+		{"trailing hyphen", "bad-", "d"},
+		{"double hyphen", "a--b", "d"},
+		{"too long", strings.Repeat("a", 65), "d"},
+		{"empty description", "ok", "  "},
+		{"long description", "ok", strings.Repeat("d", 1025)},
 	}
 	for _, tt := range refusals {
 		t.Run("refuses "+tt.name, func(t *testing.T) {
 			r := fixture(t)
 			r.ClaudeConfigDir = filepath.Join(r.Home, "instances", "b")
 			write(t, filepath.Join(r.ClaudeConfigDir, "skills", "claude-only", "SKILL.md"), skillMD("claude-only", "x"))
-			if tt.noProject {
-				r.ProjectRoot = ""
-			}
 			before := len(mustDiscover(t, r))
-			if _, err := Create(r, tt.scope, tt.skill, tt.desc); !errors.Is(err, ErrInvalid) {
+			if _, err := Create(r, tt.skill, tt.desc); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("err = %v, want ErrInvalid", err)
 			}
 			if after := len(mustDiscover(t, r)); after != before {
@@ -474,30 +493,36 @@ func TestYAMLScalarRoundTrips(t *testing.T) {
 	}
 }
 
-func TestDiscoverSubagents(t *testing.T) {
-	r := fixture(t)
-	list, err := DiscoverSubagents(r)
+func TestUserOnlyFollowsDisableModelInvocation(t *testing.T) {
+	base := t.TempDir()
+	project := filepath.Join(base, "project")
+	closed := filepath.Join(project, ".claude", "skills", "closed", "SKILL.md")
+	open := filepath.Join(project, ".claude", "skills", "open", "SKILL.md")
+	explicit := filepath.Join(project, ".claude", "skills", "explicit", "SKILL.md")
+	write(t, closed, "---\nname: closed\ndescription: People only\ndisable-model-invocation: True\n---\n")
+	write(t, open, skillMD("open", "Anyone"))
+	write(t, explicit, "---\nname: explicit\ndescription: Anyone\ndisable-model-invocation: false\n---\n")
+
+	found, err := Discover(Roots{ProjectRoot: project})
 	if err != nil {
 		t.Fatal(err)
 	}
-	type row struct {
-		Name, Description, Scope string
-		Harness                  Harness
+	got := map[string]bool{}
+	for _, s := range found {
+		got[s.Name] = s.UserOnly
 	}
-	var got []row
-	for _, a := range list {
-		got = append(got, row{a.Name, a.Description, a.Scope, a.Harness})
-		if !strings.HasPrefix(a.Path, r.Home) && !strings.HasPrefix(a.Path, r.ProjectRoot) {
-			t.Errorf("path %q is not under a discovery root", a.Path)
-		}
-	}
-	want := []row{
-		{"local", "Project agent", ScopeProject, Claude},
-		{"helper", "Helps", ScopeUser, Claude},
-		{"reviewer", "Reviews code", ScopeUser, Claude},
-		{"supervisor", "Watches a PR\nto merge", ScopeUser, Codex},
-	}
+	want := map[string]bool{"closed": true, "open": false, "explicit": false}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %+v\nwant %+v", got, want)
+		t.Fatalf("discovered userOnly = %v, want %v", got, want)
+	}
+
+	for path, want := range map[string]bool{
+		closed: true,
+		open:   false,
+		filepath.Join(base, "missing", "SKILL.md"): false,
+	} {
+		if got := UserOnly(path); got != want {
+			t.Errorf("UserOnly(%s) = %v, want %v", path, got, want)
+		}
 	}
 }

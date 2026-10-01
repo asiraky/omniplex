@@ -3,12 +3,23 @@ import { lazy, Suspense, useCallback, useMemo, type RefObject } from "react";
 import type { ProviderAuth } from "~/app/useProviderAuth";
 import type { Client } from "~/client";
 import { fetchSetup } from "~/lib/setup";
-import type { HarnessMeta, QuotaStatus, SetupCheck, UsageReport } from "~/protocol";
+import type { SkillsScope } from "~/lib/skills";
+import type { ToolsTab } from "~/lib/toolsTab";
+import type {
+  AuthFlowEvent,
+  HarnessMeta,
+  QuotaStatus,
+  SetupCheck,
+  UsageReport,
+} from "~/protocol";
+
+import type { AuthWires } from "./AuthFlowDialog";
 
 import { Spinner } from "./ui/spinner";
 
 const UsagePage = lazy(() => import("./Usage").then((m) => ({ default: m.UsagePage })));
 const SetupPage = lazy(() => import("./Setup").then((m) => ({ default: m.SetupPage })));
+const ToolsPage = lazy(() => import("./tools/ToolsPage").then((m) => ({ default: m.ToolsPage })));
 const ThemePreview = lazy(() =>
   import("./ThemePreview").then((m) => ({ default: m.ThemePreview })),
 );
@@ -60,6 +71,40 @@ export function UsageScreen({
         loadReport={loadReport}
         onClose={onClose}
       />
+    </Suspense>
+  );
+}
+
+/**
+ * The Skills page, with its MCP and Sign-ins tabs, over the whole viewport.
+ * `scope` says whose skills it lists and which thread's session it asks.
+ */
+export function ToolsScreen({
+  clientRef,
+  scope,
+  tab,
+  onClose,
+}: {
+  clientRef: RefObject<Client | null>;
+  scope: SkillsScope;
+  tab?: ToolsTab;
+  onClose: () => void;
+}) {
+  const command = useCallback(
+    (name: string, args: unknown) => clientRef.current!.command(name, args),
+    [clientRef],
+  );
+  const wires = useMemo<AuthWires>(
+    () => ({
+      command,
+      subscribe: (flowId: string, listener: (ev: AuthFlowEvent) => void) =>
+        clientRef.current?.onAuthFlow(flowId, listener) ?? (() => {}),
+    }),
+    [command, clientRef],
+  );
+  return (
+    <Suspense fallback={<PageSpinner />}>
+      <ToolsPage wires={wires} scope={scope} tab={tab} onClose={onClose} />
     </Suspense>
   );
 }

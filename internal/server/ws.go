@@ -322,6 +322,18 @@ func (c *conn) detachAll() {
 // wedged.
 const commandTimeout = 60 * time.Second
 
+// fetchCommandTimeout is for the two commands that do go out to the network:
+// fetching a skills source. It covers npx running out its own time and git
+// then being tried instead.
+const fetchCommandTimeout = 250 * time.Second
+
+func timeoutFor(command string) time.Duration {
+	if command == "stage_skills" || command == "stage_update" {
+		return fetchCommandTimeout
+	}
+	return commandTimeout
+}
+
 // threadOfArgs reads the thread a command is about out of its arguments.
 //
 // Clients address a thread inside args rather than on the frame, so the
@@ -367,7 +379,7 @@ func (c *conn) command(f clientFrame) {
 	// A command belongs to the user operation, not to the socket that happened
 	// to carry it. Let it finish and persist its result after a disconnect so a
 	// reconnect can recover the acknowledgement with the same command id.
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutFor(f.Command))
 	defer cancel()
 
 	for {
@@ -434,11 +446,22 @@ func ephemeralCommand(name string) bool {
 	// file), so replaying it is harmless and skipping the ledger costs nothing.
 	case "list_skills", "read_skill", "read_skill_file", "save_skill":
 		return true
+	// Previews out of a staging dir and the library's git status: reads of
+	// disk again. The fetches that make a staging dir are not here: a retried
+	// stage_skills gets the staging dir it already made, not a second fetch.
+	case "read_staged_file", "read_update_file", "skills_git_status":
+		return true
 	}
-	return false
+	// Connections: reads of live state (a stored answer would be stale),
+	// saves that carry credentials (which must not sit in a claimed row), and
+	// writes that are idempotent or refuse a repeat on their own.
+	return connectionCommands[name]
 }
 
 func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
+	if connectionCommands[f.Command] {
+		return c.srv.connectionsCommand(ctx, f.Command, f.Args)
+	}
 	switch f.Command {
 	case "create_thread":
 		var a createArgs
@@ -746,6 +769,17 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"items": items}, nil
 
+	case "list_draft_composer_items":
+		var a draftComposerItemsArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		items, err := c.srv.mgr.DraftComposerItems(ctx, a.Harness, a.Instance, a.ProjectID, a.FolderID, a.WorkspacePath)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": items}, nil
+
 	case "run_composer_action":
 		var a runComposerActionArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
@@ -877,7 +911,9 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"tree": tree}, nil
 
-	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill":
+	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill",
+		"set_skill_mode", "remove_skill", "set_claude_sync", "set_codex_bundled", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
+		"skills_git_status", "commit_skills", "stage_update", "read_update_file", "apply_update":
 		var a skillArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
@@ -1031,7 +1067,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		flowID, events, err := c.srv.mgr.BeginAuthFlow(a.InstanceID, a.MethodID)
+		flowID, events, err := c.beginFlow(a)
 		if err != nil {
 			return nil, err
 		}

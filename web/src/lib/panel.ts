@@ -1,11 +1,13 @@
 // The right panel's tab model. Surfaces are an ordered array with stable ids —
-// singletons (`diff`, `files`, `jobs`, `artefacts`, `skills`) plus any number
+// singletons (`diff`, `files`, `jobs`, `artefacts`) plus any number
 // of `file:<path>`, `artefact:<id>` and `terminal:<n>` tabs — persisted per thread, so the panel a thread was left
 // with is the panel it reopens to.
 
-export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact" | "skills";
+export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact";
 
-const KINDS: string[] = ["diff", "files", "jobs", "file", "terminal", "artefacts", "artefact", "skills"];
+// A saved panel naming a kind that is gone (the MCP tab moved to the Skills
+// page) loads without it.
+const KINDS: string[] = ["diff", "files", "jobs", "file", "terminal", "artefacts", "artefact"];
 
 export interface Surface {
   /** Stable id: the kind itself for singletons, `file:<path>`, `terminal:<n>`. */

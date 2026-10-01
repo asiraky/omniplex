@@ -104,7 +104,15 @@ export function useComposerMenu({
     () => (trigger ? rankComposerItems(items, trigger) : []),
     [items, trigger],
   );
-  const open = Boolean(trigger && triggerKey !== dismissedTrigger && !disabled && focused);
+  // Mid-prompt, a token with nothing to offer is prose — `/tmp` — and a menu
+  // saying so would only be in the way of it.
+  const open = Boolean(
+    trigger &&
+    (trigger.leading || matches.length > 0) &&
+    triggerKey !== dismissedTrigger &&
+    !disabled &&
+    focused,
+  );
 
   // A new trigger, or a new query under it, is a new list: start at its top.
   const [indexedTrigger, setIndexedTrigger] = useState(triggerKey);

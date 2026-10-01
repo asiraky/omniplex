@@ -24,9 +24,11 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/endpoints"
+	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/setup"
+	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
 )
@@ -61,7 +63,13 @@ type Server struct {
 	// open them outside the device gate. Both nil turns artefacts off.
 	artefacts *artefact.Store
 	signer    *artefact.Signer
-	logf      func(string, ...any)
+	// conns is the user's MCP servers and sign-ins. Nil turns those
+	// commands and the OAuth callback off.
+	conns *mcp.Connections
+	logf  func(string, ...any)
+	// skillFetch runs npx and git for a skills install. The zero value is the
+	// real thing; a test puts a fake runner in.
+	skillFetch skills.Fetcher
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -101,6 +109,9 @@ type Options struct {
 	// Version is the release version stamped at build time ("dev" when not a
 	// release build). Reported beside the commit, under the same gate.
 	Version string
+	// Connections is the user's MCP servers and sign-ins; nil turns the
+	// feature off.
+	Connections *mcp.Connections
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
@@ -121,6 +132,7 @@ func New(o Options) *Server {
 		signer:      o.ArtefactSigner,
 		commit:      o.Commit,
 		version:     o.Version,
+		conns:       o.Connections,
 		logf:        o.Logf,
 	}
 	if s.logf == nil {
@@ -182,6 +194,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, body)
 	})
+
+	// Public, through publicPaths: an authorization server sends the browser
+	// here, and the page completes only a sign-in a paired device began.
+	mux.HandleFunc("GET "+mcp.CallbackPath, s.handleOAuthCallback)
 
 	mux.HandleFunc("GET /api/devices", func(w http.ResponseWriter, r *http.Request) {
 		s.handleListDevices(w, r)
@@ -364,7 +380,7 @@ func isScriptExtension(name string) bool {
 // app, the API, the WebSocket — requires one.
 func publicPaths(path string) bool {
 	switch path {
-	case "/pair", "/api/pair", "/api/health":
+	case "/pair", "/api/pair", "/api/health", mcp.CallbackPath:
 		return true
 	}
 	return artefactPublicPath(path)

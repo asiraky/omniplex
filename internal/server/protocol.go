@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/asiraky/omniplex/internal/endpoints"
+	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
@@ -127,6 +128,17 @@ type listWorkspacesArgs struct {
 	FolderID  string `json:"folderId"`
 }
 
+// draftComposerItemsArgs names what a thread would be created with, for the
+// catalogue its composer shows before it exists.
+type draftComposerItemsArgs struct {
+	Harness   string `json:"harness"`
+	Instance  string `json:"instance"`
+	ProjectID string `json:"projectId"`
+	FolderID  string `json:"folderId"`
+	// WorkspacePath is the existing copy the thread would attach to, if any.
+	WorkspacePath string `json:"workspacePath"`
+}
+
 type saveUserConfigArgs struct {
 	Config userconfig.Config `json:"config"`
 }
@@ -183,9 +195,20 @@ type skillArgs struct {
 	Dir         string `json:"dir"`
 	Path        string `json:"path"`
 	Content     string `json:"content"`
-	Scope       string `json:"scope"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Mode        string `json:"mode"` // set_skill_mode
+	On          bool   `json:"on"`   // set_claude_sync, set_codex_bundled
+	// Installing: what was pasted, the staging dir a fetch made, and what to
+	// take out of it.
+	Source string   `json:"source"`
+	ID     string   `json:"id"`
+	Skill  string   `json:"skill"`
+	Skills []string `json:"skills"`
+	// Committing the library, and applying an update.
+	Names   []string `json:"names"`
+	Message string   `json:"message"`
+	Dirs    []string `json:"dirs"`
 }
 
 type threadArgs struct {
@@ -324,9 +347,16 @@ type instanceArgs struct {
 	InstanceID string `json:"instanceId"`
 }
 
+// authBeginArgs starts one of three kinds of sign-in: a provider instance's
+// method, an MCP server's OAuth (MCPServer, with the browser's Origin, which
+// decides where the authorization server sends it back), or a CLI account.
 type authBeginArgs struct {
 	InstanceID string `json:"instanceId"`
 	MethodID   string `json:"methodId"`
+	MCPServer  string `json:"mcpServer"`
+	Origin     string `json:"origin"`
+	CLI        string `json:"cli"`
+	Account    string `json:"account"`
 }
 
 // authRespondArgs answers one prompt of a running flow. Value may be a secret;
@@ -355,4 +385,47 @@ type modelSettingArgs struct {
 type logoutArgs struct {
 	InstanceID string `json:"instanceId"`
 	MethodID   string `json:"methodId"`
+}
+
+// saveMCPServerArgs carries a server with its env and header values. They
+// travel here on their way to the secret store and are never echoed back.
+type saveMCPServerArgs struct {
+	Server       mcp.Draft `json:"server"`
+	PreviousName string    `json:"previousName"`
+}
+
+type mcpServerArgs struct {
+	Name string `json:"name"`
+}
+
+type setMCPServerOffArgs struct {
+	Name string   `json:"name"`
+	Off  []string `json:"off"`
+}
+
+type parseMCPServerArgs struct {
+	Text string `json:"text"`
+}
+
+type addFoundServerArgs struct {
+	Harness string `json:"harness"`
+	Name    string `json:"name"`
+	// Where is the server's URL or command, which tells apart same-named
+	// servers in two instances' configs.
+	Where string `json:"where"`
+}
+
+type saveCLIArgs struct {
+	CLI        mcp.CLI `json:"cli"`
+	PreviousID string  `json:"previousId"`
+}
+
+type cliArgs struct {
+	ID      string `json:"id"`
+	Account string `json:"account"`
+}
+
+type threadMCPArgs struct {
+	ThreadID string `json:"threadId"`
+	Name     string `json:"name"`
 }

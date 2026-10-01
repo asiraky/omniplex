@@ -23,12 +23,14 @@ import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
-import { SetupScreen, ThemePreviewScreen, UsageScreen } from "./components/FullPageScreens";
+import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { ThreadView } from "./components/ThreadView";
+import { loadLastProject } from "./lib/lastProject";
+import { skillsScope } from "./lib/skills";
 import { cn } from "./lib/utils";
 import { useIsDesktop } from "./useMediaQuery";
 
@@ -111,6 +113,26 @@ export function App() {
     );
   }
 
+  // The Skills page, the same way. It lists what the open thread can use when
+  // there is one, else the project being started in or last used, else only
+  // the user's own; its MCP tab asks the open thread's session.
+  if (screens.tools) {
+    return (
+      <ToolsScreen
+        clientRef={clientRef}
+        tab={screens.tools.tab}
+        scope={skillsScope({
+          threadId: activeId,
+          threadProjectId: meta?.projectId,
+          draftProjectId: nav.creating?.projectId,
+          lastProjectId: loadLastProject() || undefined,
+          projects,
+        })}
+        onClose={() => screens.setTools(null)}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       <Sidebar
@@ -124,6 +146,7 @@ export function App() {
         onDelete={deletion.remove}
         onShowAccess={() => screens.setShowAccess(true)}
         onShowUsage={() => screens.setShowUsage(true)}
+        onShowSkills={() => screens.setTools({})}
         onShowSettings={() => screens.setSettings({})}
         accentOf={accentOf}
         projects={projects}
@@ -162,6 +185,7 @@ export function App() {
           harness={harness}
           copy={copy}
           panel={panel}
+          onShowMcp={() => screens.setTools({ tab: "mcp" })}
         />
 
         {state ? (
@@ -197,6 +221,7 @@ export function App() {
             onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
             onListWorkspaces={projectActions.listWorkspaces}
             onListIssues={projectActions.listIssues}
+            onListComposerItems={projectActions.listDraftComposerItems}
             onAddProject={() => screens.setNewProject(true)}
             onSettings={(p) => screens.setSettings({ at: { kind: "project", id: p.id } })}
             onRecheck={auth.recheck}

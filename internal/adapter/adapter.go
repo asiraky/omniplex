@@ -34,9 +34,11 @@ type CreateOptions struct {
 	Resume           bool
 	HarnessSessionID string
 
-	// MCPServers are stdio MCP servers omniplex runs beside the harness, the
-	// way it gives an agent tools of its own (showing a file). An adapter
-	// whose harness cannot take MCP servers ignores them.
+	// MCPServers are the MCP servers the session gets: omniplex's own tools
+	// (showing a file) and the servers the user added to omniplex. The core
+	// only sends user servers to an adapter that implements MCPHost, and only
+	// of the kinds it says it runs. An adapter whose harness cannot take MCP
+	// servers at all ignores them.
 	MCPServers []MCPServer
 
 	// ExtraDirs are folders outside Cwd the agent may read and write: the
@@ -45,16 +47,68 @@ type CreateOptions struct {
 	ExtraDirs []string
 }
 
-// MCPServer is one stdio MCP server. Tools lists the tool names it serves, so
-// an adapter can pre-approve them rather than ask a human about omniplex's own
-// tools.
+// MCPServer is one MCP server a session gets: a local process (Command) or a
+// remote streamable-HTTP endpoint (URL). Tools lists the tool names it serves,
+// so an adapter can pre-approve them rather than ask a human about omniplex's
+// own tools.
+//
+// Env values and Headers can be credentials. An adapter must never put them
+// on a command line, which any local user can read; it passes them through
+// the harness's environment instead.
 type MCPServer struct {
 	Name    string            `json:"name"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env"`
-	Tools   []string          `json:"tools"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Tools   []string          `json:"tools,omitempty"`
 }
+
+// MCPServerStatus is how a live session reports one of its MCP servers.
+type MCPServerStatus struct {
+	Name string `json:"name"`
+	// Status is connected, needs_auth, failed, pending or disabled.
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// MCPHost is implemented by adapters whose harness can take MCP servers from
+// omniplex. It is how a new harness opts in: implement it, honour
+// CreateOptions.MCPServers, and the user's servers reach it with no change to
+// the core or the UI.
+type MCPHost interface {
+	// MCPTransports lists the kinds of server the harness runs: "stdio" (a
+	// local process) and "http" (a remote streamable-HTTP endpoint).
+	MCPTransports() []string
+	// ConfiguredMCPServers lists the servers the harness's own config already
+	// defines, under a provider instance's environment overlay (nil means
+	// ambient), so the user can copy them into omniplex. It only reads, and a
+	// harness config that is not there is an empty list, not an error.
+	// Values in Env and Headers come back as they are in the file; the core
+	// never sends them to a client.
+	ConfiguredMCPServers(ctx context.Context, env map[string]string) ([]ConfiguredMCPServer, error)
+}
+
+// ConfiguredMCPServer is a server found in a harness's own config.
+type ConfiguredMCPServer struct {
+	MCPServer
+	// Origin says where it was found, for a person: "User settings",
+	// "Plugin cloudflare", "config.toml".
+	Origin string `json:"origin"`
+}
+
+// MCPControl is implemented by sessions whose harness can report on its MCP
+// servers and reconnect one. Reconnect takes the server's current definition,
+// so a fresh token reaches the harness without restarting the session; an
+// adapter that cannot swap the definition returns ErrMCPUnsupported.
+type MCPControl interface {
+	MCPStatus(ctx context.Context) ([]MCPServerStatus, error)
+	ReconnectMCP(ctx context.Context, server MCPServer) error
+}
+
+// ErrMCPUnsupported is returned by an MCPControl that cannot do what was asked.
+var ErrMCPUnsupported = errors.New("this agent cannot do that with its MCP servers")
 
 // PromptInput is one user turn.
 type PromptInput struct {
@@ -335,6 +389,10 @@ type ComposerItem struct {
 	Behavior    string   `json:"behavior"` // prompt | client-action | adapter-action
 	Action      string   `json:"action,omitempty"`
 	Aliases     []string `json:"aliases,omitempty"`
+	// Inline marks a token the harness acts on wherever it sits in a prompt.
+	// Without it the token only means something as the first thing in one, so
+	// a composer offers it there and nowhere else.
+	Inline bool `json:"inline,omitempty"`
 }
 
 const (
@@ -348,6 +406,16 @@ const (
 // version determine the real answer.
 type ComposerCataloguer interface {
 	ComposerItems(ctx context.Context) ([]ComposerItem, error)
+}
+
+// DraftCataloguer is an optional adapter capability: what a session started in
+// cwd under env would be able to invoke, answered without starting one, for a
+// thread that does not exist yet. It must be cheap — it runs while someone is
+// typing — so it reads what is on disk rather than spawning the harness, and
+// the live session's ComposerItems replaces its answer once there is one.
+// Every entry is ComposerPrompt: there is no thread for an action to act on.
+type DraftCataloguer interface {
+	DraftComposerItems(ctx context.Context, env map[string]string, cwd string) ([]ComposerItem, error)
 }
 
 // ComposerActionRunner handles catalogue entries that map to a provider RPC

@@ -1,5 +1,6 @@
 import {
   ActivityIcon,
+  BlocksIcon,
   FolderPlusIcon,
   SettingsIcon,
   PanelLeftIcon,
@@ -90,6 +91,8 @@ interface SidebarProps {
   onShowAccess: () => void;
   /** Opens the account-level Usage page: cost history, tokens, limits. */
   onShowUsage: () => void;
+  /** Opens the Skills page: what the harnesses can run, with or without a thread. */
+  onShowSkills: () => void;
   /** Opens settings: your defaults, providers and their sign-ins, each project. */
   onShowSettings: () => void;
   // Supplied by the server via the adapter; the sidebar knows no harness names.
@@ -444,6 +447,16 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>Usage and limits</TooltipContent>
         </Tooltip>
+        {/* Skills, MCP servers and sign-ins belong to the user and the project
+            before they belong to a thread, so the page is reachable from here
+            with nothing open. */}
+        <IconButton
+          label="Skills, MCP and sign-ins"
+          onClick={props.onShowSkills}
+          className="text-muted-foreground hover:text-foreground md:size-6"
+        >
+          <BlocksIcon />
+        </IconButton>
         <Tooltip>
           <TooltipTrigger asChild>
             <button

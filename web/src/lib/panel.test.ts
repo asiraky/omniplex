@@ -56,6 +56,17 @@ describe("panel persistence", () => {
     expect(loadPanel("s2")).toEqual(defaultPanel());
   });
 
+  it("loads a saved panel that names the removed MCP surface, without it", () => {
+    localStorage.setItem(
+      "omniplex.panel.v1:s5",
+      JSON.stringify({ surfaces: [{ id: "diff", kind: "diff" }, { id: "mcp", kind: "mcp" }], active: "mcp" }),
+    );
+    expect(loadPanel("s5")).toEqual({ surfaces: [{ id: "diff", kind: "diff" }], active: "diff" });
+
+    localStorage.setItem("omniplex.panel.v1:s6", JSON.stringify({ surfaces: [{ id: "mcp", kind: "mcp" }], active: "mcp" }));
+    expect(loadPanel("s6")).toEqual(defaultPanel());
+  });
+
   it("falls back cleanly on garbage", () => {
     localStorage.setItem("omniplex.panel.v1:s3", "not json");
     expect(loadPanel("s3")).toEqual(defaultPanel());

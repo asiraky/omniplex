@@ -16,7 +16,14 @@ import { Spinner } from "~/components/ui/spinner";
 import { answeredPrompt, applyAuthFlowEvent, emptyAuthFlowView } from "~/lib/authFlow";
 import type { AuthFlowView } from "~/lib/authFlow";
 import { useCopy } from "~/lib/clipboard";
-import type { AuthFlowEvent, AuthFlowNotice, AuthMethod, AuthStatus, InstanceAuth } from "~/protocol";
+import type {
+  AuthBeginArgs,
+  AuthFlowEvent,
+  AuthFlowNotice,
+  AuthMethod,
+  AuthStatus,
+  InstanceAuth,
+} from "~/protocol";
 import { useLatest } from "~/useLatest";
 
 /** The two client capabilities every piece of this surface needs. */
@@ -175,14 +182,16 @@ function PromptField({
  */
 export function AuthFlowRun({
   wires,
-  instanceId,
-  methodId,
+  begin,
+  finishOnSuccess,
   onFinished,
   onClose,
 }: {
   wires: AuthWires;
-  instanceId: string;
-  methodId: string;
+  /** What to sign in to: auth_begin's argument. */
+  begin: AuthBeginArgs;
+  /** Finish the moment the flow succeeds instead of waiting on a Done tap. */
+  finishOnSuccess?: boolean;
   /** Called on successful completion, after the user has seen it succeed. */
   onFinished: () => void;
   onClose: () => void;
@@ -192,6 +201,10 @@ export function AuthFlowRun({
   const flowIdRef = useRef<string | null>(null);
   // Read by the unmount cleanup, which must not cancel a finished flow.
   const doneRef = useLatest(view.done);
+  // A flow runs once per distinct argument, not once per object identity.
+  const beginKey = JSON.stringify(begin);
+  const beginRef = useLatest(begin);
+  const onFinishedRef = useLatest(onFinished);
 
   // react-doctor-disable-next-line react-doctor/effect-needs-cleanup, react-doctor/exhaustive-deps -- `cancelled` stops a late ack from subscribing and the cleanup unsubscribes an early one; the cleanup wants the newest doneRef, which is why it is a ref
   useEffect(() => {
@@ -199,7 +212,7 @@ export function AuthFlowRun({
     let unsubscribe: (() => void) | null = null;
     let startedFlow: string | null = null;
     wires
-      .command("auth_begin", { instanceId, methodId })
+      .command("auth_begin", beginRef.current)
       .then((result: { flowId?: string }) => {
         const id = result?.flowId;
         if (!id) throw new Error("the server did not return a flow id");
@@ -228,8 +241,8 @@ export function AuthFlowRun({
         void wires.command("auth_cancel", { flowId: startedFlow }).catch(() => {});
       }
     };
-    // A flow runs once per (instance, method) mount; changing either remounts.
-  }, [wires, instanceId, methodId, doneRef]);
+    // A flow runs once per begin argument; a different one starts over.
+  }, [wires, beginKey, beginRef, doneRef]);
 
   const answer = (value: string) => {
     const flowId = flowIdRef.current;
@@ -244,6 +257,10 @@ export function AuthFlowRun({
   };
 
   const succeeded = view.done && !view.error;
+
+  useEffect(() => {
+    if (succeeded && finishOnSuccess) onFinishedRef.current();
+  }, [succeeded, finishOnSuccess, onFinishedRef]);
 
   return (
     <div className="space-y-4">
@@ -372,8 +389,7 @@ export function AuthMethods({
               <p className="mb-3 text-[12px] font-medium">{m.label}</p>
               <AuthFlowRun
                 wires={wires}
-                instanceId={instanceId}
-                methodId={m.id}
+                begin={{ instanceId, methodId: m.id }}
                 onFinished={() => {
                   setRunning(null);
                   load();
@@ -485,6 +501,49 @@ export default function InstanceAuthDialog({
         </DialogHeader>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <AuthMethods wires={wires} instanceId={instanceId} onOpenTerminal={onOpenTerminal} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * A sign-in flow on its own: anything that is not a provider account (an MCP
+ * server, a command-line tool's account) opens this. It shows the link to
+ * open and the box to paste into, and closes itself once the flow succeeds.
+ */
+export function FlowDialog({
+  wires,
+  title,
+  description,
+  begin,
+  onFinished,
+  onClose,
+}: {
+  wires: AuthWires;
+  title: string;
+  description?: string;
+  begin: AuthBeginArgs;
+  onFinished: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent fullscreenOnMobile className="flex max-h-[min(90dvh,40rem)] flex-col gap-0 p-0 md:max-w-md">
+        <DialogHeader className="border-b px-6 py-4 pt-[calc(1rem+env(safe-area-inset-top))] pr-16 text-left md:pt-4 md:pr-6">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription className={description ? undefined : "sr-only"}>
+            {description ?? title}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <AuthFlowRun
+            wires={wires}
+            begin={begin}
+            finishOnSuccess
+            onFinished={onFinished}
+            onClose={onClose}
+          />
         </div>
       </DialogContent>
     </Dialog>

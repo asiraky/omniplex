@@ -156,6 +156,18 @@ func TestCheckServeDetectsOurProxy(t *testing.T) {
 	}
 }
 
+// A mapping on another https port is ours at that port, not at the default
+// one, which may well be another server's.
+func TestCheckServeKeepsTheHTTPSPort(t *testing.T) {
+	cli := fakeCLI(t, `{"Web":{
+	  "box.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}},
+	  "box.tail1.ts.net:9801":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8801"}}}}}`)
+	got := CheckServe(context.Background(), cli, 8801, "box.tail1.ts.net")
+	if !got.Enabled || got.URL != "https://box.tail1.ts.net:9801" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 // A serve mapping pointing somewhere else must not be claimed as ours, or the
 // UI offers to turn off something it did not turn on.
 func TestCheckServeIgnoresAnotherServicesMapping(t *testing.T) {

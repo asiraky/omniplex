@@ -215,12 +215,19 @@ func CheckServe(ctx context.Context, cli string, port int, dnsName string) Serve
 
 	target := httpTarget(port)
 	for host, web := range s.Web {
-		if !strings.HasPrefix(host, dnsName) {
+		// Keys are "name:port"; a mapping on any port but 443 is only
+		// reachable with that port in the address.
+		name, port, ok := strings.Cut(host, ":")
+		if !ok || name != dnsName {
 			continue
 		}
 		for _, h := range web.Handlers {
 			if h.Proxy == target {
-				return ServeStatus{Enabled: true, URL: "https://" + dnsName}
+				addr := "https://" + dnsName
+				if port != "443" {
+					addr += ":" + port
+				}
+				return ServeStatus{Enabled: true, URL: addr}
 			}
 		}
 	}

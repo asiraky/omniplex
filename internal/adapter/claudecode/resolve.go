@@ -48,6 +48,10 @@ func (r resolved) command(ctx context.Context, cfg sidecarConfig, overlay map[st
 	cfg.EnvKeys = make([]string, 0, len(env))
 	for _, kv := range env {
 		key, _, _ := strings.Cut(kv, "=")
+		// The bridge's own input, never Claude Code's.
+		if key == mcpSecretsEnv {
+			continue
+		}
 		cfg.EnvKeys = append(cfg.EnvKeys, key)
 	}
 	blob, err := json.Marshal(cfg)

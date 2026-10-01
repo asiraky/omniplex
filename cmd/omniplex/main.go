@@ -31,6 +31,7 @@ import (
 	"github.com/asiraky/omniplex/internal/banner"
 	"github.com/asiraky/omniplex/internal/datalock"
 	"github.com/asiraky/omniplex/internal/endpoints"
+	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/netinfo"
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/procgroup"
@@ -161,6 +162,14 @@ func main() {
 	// unknowable config degrades to defaults; it never stops the server.
 	configureProviders(mgr, logf)
 
+	// The user's own MCP servers and sign-ins. Set before any thread resumes,
+	// so every session starts with them; a store that will not open leaves
+	// the feature off rather than the server down.
+	conns := openConnections(mgr, plan.Port, logf)
+	if conns != nil {
+		thread.UserMCP = conns
+	}
+
 	// Work that was in flight when the last process stopped comes back now,
 	// rather than when someone opens a browser. A restart should cost an agent
 	// a turn boundary, not its task.
@@ -200,6 +209,7 @@ func main() {
 		ArtefactSigner: signer,
 		Commit:         buildCommit(),
 		Version:        version,
+		Connections:    conns,
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
@@ -335,6 +345,29 @@ func configureProviders(mgr *thread.Manager, logf func(string, ...any)) {
 		logf("sync secret store: %v", err)
 	}
 	mgr.ConfigureInstances(instances, secrets)
+}
+
+// openConnections opens connections.json and its secret store beside the
+// user config, and hands the MCP layer the harnesses that take MCP servers.
+func openConnections(mgr *thread.Manager, port int, logf func(string, ...any)) *mcp.Connections {
+	dir, err := mcp.Dir()
+	if err != nil {
+		logf("mcp servers: %v (feature off)", err)
+		return nil
+	}
+	st, err := mcp.OpenStore(dir)
+	if err != nil {
+		logf("mcp servers: %v (feature off)", err)
+		return nil
+	}
+	hosts := func() []mcp.Host {
+		var out []mcp.Host
+		for _, h := range mgr.MCPHosts() {
+			out = append(out, mcp.Host{ID: h.ID, Name: h.Name, Host: h.Host, Envs: h.Envs})
+		}
+		return out
+	}
+	return mcp.NewConnections(st, nil, port, hosts, logf)
 }
 
 // watchProxy keeps the guard's view of any reverse proxy current.

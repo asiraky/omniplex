@@ -217,7 +217,7 @@ func TestAThreadAcrossTheProjectReachesEveryFolder(t *testing.T) {
 		}
 	}
 
-	_, all := harnessExtras(ctx, mgr.store, store.ThreadMeta{ID: "t", ProjectID: p.ID}, home, t.Logf)
+	_, all := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID}, home, t.Logf)
 	if want := []string{repo, other}; !slices.Equal(all, want) {
 		t.Fatalf("whole-project thread reaches %v, want %v", all, want)
 	}
@@ -228,7 +228,7 @@ func TestAThreadAcrossTheProjectReachesEveryFolder(t *testing.T) {
 			repoID = f.ID
 		}
 	}
-	_, one := harnessExtras(ctx, mgr.store, store.ThreadMeta{ID: "t", ProjectID: p.ID, FolderID: repoID}, repo, t.Logf)
+	_, one := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID, FolderID: repoID}, repo, t.Logf)
 	if want := []string{home}; !slices.Equal(one, want) {
 		t.Fatalf("one-folder thread reaches %v, want %v", one, want)
 	}
