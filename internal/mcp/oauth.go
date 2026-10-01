@@ -74,6 +74,11 @@ type OAuth struct {
 	// locks serialise token writes per server, so two sessions starting at
 	// once refresh once (a rotated refresh token is single use).
 	locks map[string]*sync.Mutex
+	// current, when set, runs a token write only while name still names a
+	// server or account at url, and refuses it otherwise. A sign-in or a
+	// refresh that finishes after the server was removed, renamed or moved
+	// must not write its tokens back.
+	current func(name, url string, write func() error) error
 }
 
 // NewOAuth returns a client storing credentials in secrets. A nil client
@@ -158,12 +163,16 @@ func (o *OAuth) load(name string) (tokenRecord, bool) {
 	return rec, true
 }
 
-func (o *OAuth) save(name string, rec tokenRecord) error {
+func (o *OAuth) save(server Server, rec tokenRecord) error {
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	return o.secrets.Put(name, OAuthKey, string(b))
+	put := func() error { return o.secrets.Put(server.Name, OAuthKey, string(b)) }
+	if o.current == nil {
+		return put()
+	}
+	return o.current(server.Name, server.URL, put)
 }
 
 // SignedIn reports whether the server holds tokens from a sign-in through
@@ -249,7 +258,10 @@ func (o *OAuth) token(ctx context.Context, server Server, rejected string) (stri
 	if tr.Scope != "" {
 		rec.Scope = tr.Scope
 	}
-	if err := o.save(server.Name, rec); err != nil {
+	if err := o.save(server, rec); err != nil {
+		if errors.Is(err, ErrServerChanged) {
+			return "", ErrSignInNeeded
+		}
 		return "", err
 	}
 	return rec.AccessToken, nil
@@ -937,7 +949,7 @@ func (o *OAuth) exchange(ctx context.Context, server Server, d discovery, reg re
 	l := o.lockFor(server.Name)
 	l.Lock()
 	defer l.Unlock()
-	return o.save(server.Name, rec)
+	return o.save(server, rec)
 }
 
 type tokenResponse struct {

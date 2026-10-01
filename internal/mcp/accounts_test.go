@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -275,5 +276,96 @@ func TestSignInAsksForAFreshLoginOnceThereAreAccounts(t *testing.T) {
 		if got := prompt(name); got != "login" {
 			t.Errorf("%s: prompt=%q", name, got)
 		}
+	}
+}
+
+// Renaming a server onto one of its own accounts' names would hand one
+// member's secrets to another, so it is refused and nothing moves.
+func TestRenameOntoItsOwnAccountIsRefused(t *testing.T) {
+	c := newConns(t, nil)
+	const u = "https://cf.example.com/mcp"
+	save(t, c, Draft{Name: "cf", URL: u})
+	addAccount(t, c.store, "cf", AccountDraft{Label: "work"}, "")
+	addAccount(t, c.store, "cf", AccountDraft{Label: "a-b"}, "")
+	signIn(t, c, "cf", u, map[string]any{"accessToken": "tok-cf"})
+	signIn(t, c, "cf-work", u, map[string]any{"accessToken": "tok-work"})
+
+	// cf-work is the work account's own name. cf-a lands on no member:
+	// its accounts become cf-a-work and cf-a-a-b.
+	if _, err := c.store.SaveServer(Draft{Name: "cf-work", URL: u}, "cf"); err == nil {
+		t.Fatal("renamed onto its own account")
+	}
+	for name, want := range map[string]string{"cf": "tok-cf", "cf-work": "tok-work"} {
+		if v, _ := c.store.Secrets().Get(name, OAuthKey); !strings.Contains(v, want) {
+			t.Errorf("%s holds %q", name, v)
+		}
+	}
+	if _, err := c.store.SaveServer(Draft{Name: "cf-a", URL: u}, "cf"); err != nil {
+		t.Errorf("rename to a free prefix: %v", err)
+	}
+}
+
+// A sign-in that finishes after its server or account was removed, renamed
+// or moved writes nothing back; one that finishes on an unchanged account
+// is kept.
+func TestSignInFinishingAfterAChangeWritesNothing(t *testing.T) {
+	cases := map[string]struct {
+		name   string
+		change func(c *Connections, url string) error
+		kept   bool
+	}{
+		"unchanged": {name: "cf-work", change: func(*Connections, string) error { return nil }, kept: true},
+		"account removed": {name: "cf-work", change: func(c *Connections, _ string) error {
+			_, err := c.store.RemoveServerAccount("cf", "work")
+			return err
+		}},
+		"account relabelled": {name: "cf-work", change: func(c *Connections, _ string) error {
+			_, err := c.store.SaveServerAccount("cf", AccountDraft{Label: "job"}, "work")
+			return err
+		}},
+		"server renamed": {name: "cf", change: func(c *Connections, url string) error {
+			_, err := c.store.SaveServer(Draft{Name: "cf2", URL: url}, "cf")
+			return err
+		}},
+		"server moved": {name: "cf", change: func(c *Connections, url string) error {
+			_, err := c.store.SaveServer(Draft{Name: "cf", URL: url + "/v2"}, "cf")
+			return err
+		}},
+	}
+	for label, tc := range cases {
+		t.Run(label, func(t *testing.T) {
+			f := newOAFake(t)
+			c := newConns(t, nil)
+			u := f.server().URL
+			save(t, c, Draft{Name: "cf", URL: u})
+			addAccount(t, c.store, "cf", AccountDraft{Label: "work"}, "")
+
+			run, err := c.SignIn(tc.name, "http://localhost:4321")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ia := newOAIA()
+			done := make(chan error, 1)
+			go func() { done <- run(context.Background(), ia) }()
+			landed := f.authorize(ia.authURL(t))
+			if err := tc.change(c, u); err != nil {
+				t.Fatal(err)
+			}
+			ia.prompt(t).answer <- landed
+			err = waitErr(t, done)
+
+			stored := false
+			for _, n := range []string{"cf", "cf2", "cf-work", "cf-job"} {
+				if _, ok := c.store.Secrets().Get(n, OAuthKey); ok {
+					stored = true
+				}
+			}
+			if tc.kept && (err != nil || !stored) {
+				t.Errorf("unchanged account: err=%v stored=%v", err, stored)
+			}
+			if !tc.kept && (!errors.Is(err, ErrServerChanged) || stored) {
+				t.Errorf("err=%v stored=%v", err, stored)
+			}
+		})
 	}
 }

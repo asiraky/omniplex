@@ -62,9 +62,11 @@ func NewConnections(store *Store, client *http.Client, port int, hosts func() []
 	if hosts == nil {
 		hosts = func() []Host { return nil }
 	}
+	oauth := NewOAuth(store.Secrets(), client)
+	oauth.current = store.whileCurrent
 	return &Connections{
 		store:  store,
-		oauth:  NewOAuth(store.Secrets(), client),
+		oauth:  oauth,
 		prober: NewProber(client),
 		hosts:  hosts,
 		port:   port,

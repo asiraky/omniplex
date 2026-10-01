@@ -195,6 +195,30 @@ func (s *Store) Member(name string) (member, parent Server, ok bool, err error) 
 	return Server{}, Server{}, false, nil
 }
 
+// ErrServerChanged refuses a token for a server or account that was removed,
+// renamed or given a new URL while it was being signed in.
+var ErrServerChanged = errors.New("the server changed while signing in. Sign in again")
+
+// whileCurrent runs write under the store's lock if name still names a
+// server or account at url, else returns ErrServerChanged. Holding the lock
+// keeps a rename or removal from slipping in between the check and the write.
+func (s *Store) whileCurrent(name, url string, write func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.readLocked()
+	if err != nil {
+		return err
+	}
+	for _, srv := range f.Servers {
+		for _, m := range srv.members() {
+			if m.Name == name && m.URL == url {
+				return write()
+			}
+		}
+	}
+	return ErrServerChanged
+}
+
 // Values reads a server's env and header values out of the secret store. An
 // account gets the server's, with its own in their place.
 func (s *Store) Values(srv Server) (env, headers map[string]string) {
@@ -350,6 +374,23 @@ func (s *Store) SaveServer(d Draft, previous string) (Server, error) {
 		var old Server
 		if oldIdx >= 0 {
 			old = f.Servers[oldIdx]
+		}
+		// A rename onto one of its own accounts' names, foo to foo-work
+		// while foo has work, would move one member's secrets onto
+		// another's before they were read.
+		if old.Name != "" && old.Name != srv.Name {
+			was := map[string]bool{}
+			for _, m := range old.members() {
+				was[m.Name] = true
+			}
+			if was[srv.Name] {
+				return fmt.Errorf("%s already has an account named %q. Rename or remove that account first", old.Name, srv.Name)
+			}
+			for _, a := range old.Accounts {
+				if n := AccountName(srv.Name, a.Label); was[n] {
+					return fmt.Errorf("account %s would be named %q, which %s's accounts already use. Rename that account first", a.Label, n, old.Name)
+				}
+			}
 		}
 		// The accounts come along, keeping their own values for the
 		// names the server still has.
