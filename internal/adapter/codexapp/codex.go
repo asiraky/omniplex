@@ -200,7 +200,15 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 
 	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
-	mcp, secrets, refused := mcpConfig(o.MCPServers)
+	var native []string
+	if len(o.MCPServers) > 0 {
+		all, err := nativeServers(o.Env)
+		if err != nil {
+			return nil, err
+		}
+		native = sortedNames(all)
+	}
+	mcp, secrets, refused, mcpKeys := mcpConfig(o.MCPServers, native)
 	for _, r := range refused {
 		host.Logf("codex: MCP server left out: %s", r)
 	}
@@ -240,7 +248,13 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, fmt.Errorf("start %s app-server: %w", a.Bin, err)
 	}
 
+	mcpOurs := map[string]bool{}
+	for _, m := range o.MCPServers {
+		mcpOurs[m.Name] = true
+	}
 	s := &session{
+		mcpKeys:   mcpKeys,
+		mcpOurs:   mcpOurs,
 		host:      host,
 		cmd:       cmd,
 		tree:      tree,
@@ -348,6 +362,11 @@ type session struct {
 	threadID string
 	effort   string
 	model    string
+
+	// mcpKeys maps each config key omniplex gave an MCP server back to its
+	// name; mcpOurs holds those names.
+	mcpKeys map[string]string
+	mcpOurs map[string]bool
 
 	events chan proto.Emission
 	done   chan struct{}

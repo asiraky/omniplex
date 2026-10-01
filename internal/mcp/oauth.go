@@ -79,12 +79,9 @@ type OAuth struct {
 // NewOAuth returns a client storing credentials in secrets. A nil client
 // means http.DefaultClient.
 func NewOAuth(secrets Secrets, client *http.Client) *OAuth {
-	if client == nil {
-		client = http.DefaultClient
-	}
 	return &OAuth{
 		secrets: secrets,
-		client:  client,
+		client:  staysHome(client),
 		pending: map[string]*pendingFlow{},
 		locks:   map[string]*sync.Mutex{},
 	}

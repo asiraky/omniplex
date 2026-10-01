@@ -220,7 +220,7 @@ func TestAddFoundCopiesTheDefinition(t *testing.T) {
 	}}}
 	c := newConns(t, nil, Host{ID: "a", Host: h, Envs: []map[string]string{nil}})
 
-	v, err := c.AddFound(context.Background(), "a", "My Tools")
+	v, err := c.AddFound(context.Background(), "a", "My Tools", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,11 +231,28 @@ func TestAddFoundCopiesTheDefinition(t *testing.T) {
 	if env["K"] != "v" {
 		t.Errorf("env %v", env)
 	}
-	if _, err := c.AddFound(context.Background(), "a", "My Tools"); err == nil {
+	if _, err := c.AddFound(context.Background(), "a", "My Tools", ""); err == nil {
 		t.Error("added the same server twice")
 	}
-	if _, err := c.AddFound(context.Background(), "b", "remote"); err == nil {
+	if _, err := c.AddFound(context.Background(), "b", "remote", ""); err == nil {
 		t.Error("added from a harness that does not list it")
+	}
+}
+
+// Two instances can each define a server of the same name; the one picked is
+// the one imported.
+func TestAddFoundTellsInstancesApart(t *testing.T) {
+	h := &fakeHost{transports: []string{"stdio"}, byDir: map[string][]adapter.ConfiguredMCPServer{
+		"one": {{MCPServer: adapter.MCPServer{Name: "tools", Command: "first"}}},
+		"two": {{MCPServer: adapter.MCPServer{Name: "tools", Command: "second"}}},
+	}}
+	c := newConns(t, nil, Host{ID: "a", Host: h, Envs: []map[string]string{{"DIR": "one"}, {"DIR": "two"}}})
+	v, err := c.AddFound(context.Background(), "a", "tools", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Command != "second" {
+		t.Fatalf("imported %q, want the second instance's", v.Command)
 	}
 }
 
@@ -249,7 +266,7 @@ func TestAddFoundRemoteDropsCommandOnlyFields(t *testing.T) {
 		{MCPServer: adapter.MCPServer{Name: "remote", URL: mcpSrv.URL, Headers: map[string]string{"X-Key": "hk"}, Env: map[string]string{"IGNORED": "x"}, Args: []string{"x"}}},
 	}}}
 	c := newConns(t, mcpSrv.Client(), Host{ID: "a", Host: h, Envs: []map[string]string{nil}})
-	v, err := c.AddFound(context.Background(), "a", "remote")
+	v, err := c.AddFound(context.Background(), "a", "remote", "")
 	if err != nil {
 		t.Fatal(err)
 	}

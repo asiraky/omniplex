@@ -55,7 +55,7 @@ func noSecretOn(t *testing.T, argv []string, secrets ...string) {
 }
 
 func TestMCPConfigKeepsHeaderValuesOffArgv(t *testing.T) {
-	args, env, refused := mcpConfig([]adapter.MCPServer{{
+	args, env, refused, _ := mcpConfig([]adapter.MCPServer{{
 		Name: "remote",
 		URL:  "https://mcp.example/mcp",
 		Headers: map[string]string{
@@ -67,7 +67,7 @@ func TestMCPConfigKeepsHeaderValuesOffArgv(t *testing.T) {
 		URL:  "https://other.example/mcp",
 		// Not a bearer token: still a header, still off argv.
 		Headers: map[string]string{"authorization": "Basic basic-sekrit"},
-	}})
+	}}, nil)
 	if len(refused) != 0 {
 		t.Fatalf("refused %v", refused)
 	}
@@ -111,7 +111,7 @@ func TestMCPConfigStdioServerSeesItsOwnEnv(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the env wrapper needs sh")
 	}
-	args, env, refused := mcpConfig([]adapter.MCPServer{{
+	args, env, refused, _ := mcpConfig([]adapter.MCPServer{{
 		Name:    "my.tool",
 		Command: "/bin/sh",
 		Args:    []string{"-c", `printf '%s|%s|%s|' "$GH_TOKEN" "$OTHER" "$1"; env`, "zero", "a b"},
@@ -120,7 +120,7 @@ func TestMCPConfigStdioServerSeesItsOwnEnv(t *testing.T) {
 		Name:    "plain",
 		Command: "plain-server",
 		Args:    []string{"--flag"},
-	}})
+	}}, nil)
 	if len(refused) != 0 {
 		t.Fatalf("refused %v", refused)
 	}
@@ -164,10 +164,10 @@ func TestMCPConfigStdioServerSeesItsOwnEnv(t *testing.T) {
 }
 
 func TestMCPConfigRefusesWhatCannotStayOffArgv(t *testing.T) {
-	args, _, refused := mcpConfig([]adapter.MCPServer{
+	args, _, refused, _ := mcpConfig([]adapter.MCPServer{
 		{Name: "bad", Command: "srv", Env: map[string]string{"NOT-A-NAME": "bad-sekrit"}},
 		{Name: "good", Command: "srv"},
-	})
+	}, nil)
 	if len(refused) != 1 || !strings.HasPrefix(refused[0], "bad:") {
 		t.Fatalf("refused = %v", refused)
 	}
@@ -355,5 +355,56 @@ func TestMCPStatusAsksAboutThisThread(t *testing.T) {
 	}
 	if err := s.ReconnectMCP(context.Background(), adapter.MCPServer{Name: "omniplex"}); !errors.Is(err, adapter.ErrMCPUnsupported) {
 		t.Fatalf("reconnect = %v", err)
+	}
+}
+
+// Codex merges an override into config.toml's table key by key, so a server
+// sharing a name with a native one would inherit its headers. The native one
+// is turned off and ours goes in under a key nothing else uses.
+func TestMCPConfigShadowsANativeServerOfTheSameName(t *testing.T) {
+	args, _, _, keys := mcpConfig([]adapter.MCPServer{
+		{Name: "x", URL: "https://new.example/mcp"},
+		{Name: "y", URL: "https://y.example/mcp"},
+	}, []string{"x", "x-omniplex", "z"})
+	cfg := overrides(t, args)
+	all := cfg["mcp_servers"].(map[string]any)
+	if x := server(t, cfg, "x"); x["enabled"] != false || len(x) != 1 {
+		t.Fatalf("native x = %v; want only enabled=false", x)
+	}
+	if got := server(t, cfg, "x-omniplex-2")["url"]; got != "https://new.example/mcp" {
+		t.Fatalf("renamed x url = %v", got)
+	}
+	if got := server(t, cfg, "y")["url"]; got != "https://y.example/mcp" {
+		t.Fatalf("y url = %v", got)
+	}
+	if _, ok := all["z"]; ok {
+		t.Fatal("an unrelated native server was touched")
+	}
+	want := map[string]string{"x-omniplex-2": "x", "y": "y"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("keys = %v, want %v", keys, want)
+	}
+}
+
+func TestMCPStatusReportsARenamedServerUnderItsName(t *testing.T) {
+	entry := func(name, status string) map[string]any {
+		return map[string]any{"name": name, "authStatus": "unsupported", "runtimeStatus": status}
+	}
+	conn, _ := pairedConn(t, map[string]any{
+		"mcpServerStatus/list": map[string]any{"data": []any{
+			entry("x", "disabled"), entry("x-omniplex", "connected"), entry("y", "connected"), entry("z", "failed"),
+		}},
+	})
+	s := &session{conn: conn, threadID: "t", mcpKeys: map[string]string{"x-omniplex": "x", "y": "y"}, mcpOurs: map[string]bool{"x": true, "y": true}}
+	got, err := s.MCPStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, st := range got {
+		names = append(names, st.Name+"="+st.Status)
+	}
+	if want := []string{"x=connected", "y=connected", "z=failed"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("got %v, want %v", names, want)
 	}
 }

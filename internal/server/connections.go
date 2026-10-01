@@ -119,7 +119,7 @@ func (s *Server) connectionsCommand(ctx context.Context, name string, raw json.R
 		if err != nil {
 			return nil, err
 		}
-		return server(conns.AddFound(ctx, a.Harness, a.Name))
+		return server(conns.AddFound(ctx, a.Harness, a.Name, a.Where))
 
 	case "save_cli":
 		a, err := decode[saveCLIArgs](raw)

@@ -205,11 +205,7 @@ func (c *Connections) found(ctx context.Context) []foundServer {
 				continue
 			}
 			for _, s := range servers {
-				where := s.URL
-				if where == "" {
-					where = s.Command
-				}
-				key := h.ID + "\x00" + s.Name + "\x00" + where
+				key := h.ID + "\x00" + s.Name + "\x00" + foundWhere(s.MCPServer)
 				if seen[key] {
 					continue
 				}
@@ -264,12 +260,21 @@ func (c *Connections) Remove(name string) error {
 	return nil
 }
 
+// foundWhere tells apart same-named servers in different instances' configs.
+func foundWhere(s adapter.MCPServer) string {
+	if s.URL != "" {
+		return s.URL
+	}
+	return s.Command
+}
+
 // AddFound copies a server out of a harness's config into omniplex, values
-// included.
-func (c *Connections) AddFound(ctx context.Context, harness, name string) (ServerView, error) {
+// included. where is its URL or command, as listed: two instances of one
+// harness can each define a server of the same name.
+func (c *Connections) AddFound(ctx context.Context, harness, name, where string) (ServerView, error) {
 	var hit *adapter.ConfiguredMCPServer
 	for _, fs := range c.found(ctx) {
-		if fs.harness == harness && fs.server.Name == name {
+		if fs.harness == harness && fs.server.Name == name && (where == "" || foundWhere(fs.server.MCPServer) == where) {
 			hit = &fs.server
 			break
 		}

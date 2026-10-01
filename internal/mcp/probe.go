@@ -43,10 +43,27 @@ type Prober struct {
 
 // NewProber makes a prober; nil means http.DefaultClient.
 func NewProber(client *http.Client) *Prober {
+	return &Prober{client: staysHome(client), results: map[string]Check{}}
+}
+
+// staysHome copies client (nil is http.DefaultClient) so that it follows a
+// redirect only within the origin it started at. Go drops Authorization on a
+// cross-host hop but not a custom key header, and a 307 or 308 resends a token
+// request's body with its code, verifier or refresh token. A redirect
+// elsewhere comes back as the 3xx it is.
+func staysHome(client *http.Client) *http.Client {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Prober{client: client, results: map[string]Check{}}
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		first := via[0].URL
+		if len(via) >= 10 || req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	return &c
 }
 
 // Cached is the last answer for a server, if there is one.

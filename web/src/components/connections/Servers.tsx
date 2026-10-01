@@ -579,11 +579,11 @@ export function FoundList({
   const sources = joinNames([...new Set(conn.found.map((f) => agentName(f.harness)))]);
 
   const add = async (f: FoundServer) => {
-    const key = `${f.harness}:${f.name}`;
+    const key = `${f.harness}:${f.name}:${f.url ?? f.command ?? ""}`;
     setBusy(key);
     onError(null);
     try {
-      const res = (await command("add_found_server", { harness: f.harness, name: f.name })) as {
+      const res = (await command("add_found_server", { harness: f.harness, name: f.name, where: f.url ?? f.command ?? "" })) as {
         server?: McpServer;
       };
       if (res?.server) onAdded(res.server, f);
@@ -624,7 +624,7 @@ export function FoundList({
                     disabled={busy !== null}
                     onClick={() => void add(f)}
                   >
-                    {busy === `${f.harness}:${f.name}` ? <Spinner aria-hidden className="size-3.5" /> : null}
+                    {busy === key ? <Spinner aria-hidden className="size-3.5" /> : null}
                     Add to Omniplex
                   </Button>
                 )}

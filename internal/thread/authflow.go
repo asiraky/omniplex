@@ -56,8 +56,14 @@ type AuthFlowPrompt struct {
 
 type authFlow struct {
 	id     string
+	ctx    context.Context
 	cancel context.CancelFunc
 	events chan AuthFlowEvent
+	// sendMu guards closing events. An adapter may still be calling Notify or
+	// Prompt from a goroutine it left behind when the flow ended; that send
+	// must find the flow ended, not a closed channel.
+	sendMu sync.RWMutex
+	ended  bool
 
 	mu      sync.Mutex
 	pending map[string]chan string
@@ -67,6 +73,31 @@ type authFlow struct {
 	// message; every string leaving the flow is scrubbed against this list so
 	// a submitted secret can never ride out inside an event.
 	secrets []string
+}
+
+// send delivers one event, or reports false once the flow has ended.
+func (f *authFlow) send(ev AuthFlowEvent) bool {
+	f.sendMu.RLock()
+	defer f.sendMu.RUnlock()
+	if f.ended {
+		return false
+	}
+	select {
+	case f.events <- ev:
+		return true
+	case <-f.ctx.Done():
+		return false
+	}
+}
+
+// end closes events. The flow's context is cancelled first, so a send
+// waiting on a reader gives up and lets go of sendMu.
+func (f *authFlow) end() {
+	f.cancel()
+	f.sendMu.Lock()
+	f.ended = true
+	close(f.events)
+	f.sendMu.Unlock()
 }
 
 // noteSecret remembers a secret answer so scrub can redact it later.
@@ -99,7 +130,7 @@ func (ia interaction) Notify(ev adapter.AuthEvent) {
 	e := ev
 	e.Message = ia.f.scrub(e.Message)
 	e.Instructions = ia.f.scrub(e.Instructions)
-	ia.f.events <- AuthFlowEvent{FlowID: ia.f.id, Event: &e}
+	ia.f.send(AuthFlowEvent{FlowID: ia.f.id, Event: &e})
 }
 
 func (ia interaction) Prompt(ctx context.Context, p adapter.AuthPrompt) (string, error) {
@@ -115,7 +146,12 @@ func (ia interaction) Prompt(ctx context.Context, p adapter.AuthPrompt) (string,
 		ia.f.mu.Unlock()
 	}()
 
-	ia.f.events <- AuthFlowEvent{FlowID: ia.f.id, Prompt: &AuthFlowPrompt{ID: id, AuthPrompt: p}}
+	if ctx.Err() != nil || !ia.f.send(AuthFlowEvent{FlowID: ia.f.id, Prompt: &AuthFlowPrompt{ID: id, AuthPrompt: p}}) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return "", context.Canceled
+	}
 	select {
 	case v := <-answer:
 		if p.Secret {
@@ -170,6 +206,7 @@ func (m *Manager) BeginFlow(run func(ctx context.Context, ia adapter.AuthInterac
 	ctx, cancel := context.WithTimeout(context.Background(), authFlowTimeout)
 	f := &authFlow{
 		id:      uuid.NewString(),
+		ctx:     ctx,
 		cancel:  cancel,
 		events:  make(chan AuthFlowEvent, 16),
 		pending: map[string]chan string{},
@@ -179,12 +216,11 @@ func (m *Manager) BeginFlow(run func(ctx context.Context, ia adapter.AuthInterac
 	m.authMu.Unlock()
 
 	go func() {
-		defer close(f.events)
+		defer f.end()
 		defer func() {
 			m.authMu.Lock()
 			delete(m.authFlows, f.id)
 			m.authMu.Unlock()
-			cancel()
 		}()
 		err := run(ctx, interaction{f})
 		done := AuthFlowEvent{FlowID: f.id, Done: true}

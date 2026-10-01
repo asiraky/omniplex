@@ -33,10 +33,38 @@ import (
 // The generated names end in _TOKEN, which codex's default shell environment
 // policy keeps out of the agent's shell. A server whose values cannot be kept
 // off argv is refused, with the reason in refused, rather than passed.
-func mcpConfig(servers []adapter.MCPServer) (args []string, env map[string]string, refused []string) {
+//
+// Codex merges a -c table into config.toml's key by key, so an override can
+// never drop a field. A server whose name config.toml already uses would keep
+// that entry's headers, env or transport, and send its credentials wherever
+// the new URL points. So that entry is turned off and the server goes in under
+// another key; keys maps each key used back to the server's name.
+func mcpConfig(servers []adapter.MCPServer, native []string) (args []string, env map[string]string, refused []string, keys map[string]string) {
 	env = map[string]string{}
+	keys = map[string]string{}
+	taken := map[string]bool{}
+	for _, n := range native {
+		taken[n] = true
+	}
+	for _, m := range servers {
+		taken[m.Name] = true
+	}
+	shadowed := map[string]bool{}
+	for _, n := range native {
+		shadowed[n] = true
+	}
 	for si, m := range servers {
-		key := "mcp_servers." + tomlKey(m.Name)
+		name := m.Name
+		if shadowed[m.Name] {
+			args = append(args, "-c", "mcp_servers."+tomlKey(m.Name)+".enabled=false")
+			name = m.Name + "-omniplex"
+			for i := 2; taken[name]; i++ {
+				name = m.Name + "-omniplex-" + strconv.Itoa(i)
+			}
+			taken[name] = true
+		}
+		keys[name] = m.Name
+		key := "mcp_servers." + tomlKey(name)
 		secret := func(kind string, j int, value string) string {
 			name := fmt.Sprintf("OMNIPLEX_MCP_%d_%s_%s%d_TOKEN", si, envSafe(m.Name), kind, j)
 			env[name] = value
@@ -94,7 +122,7 @@ func mcpConfig(servers []adapter.MCPServer) (args []string, env map[string]strin
 			"-c", key+".env_vars="+tomlStrings(generated),
 		)
 	}
-	return args, env, refused
+	return args, env, refused, keys
 }
 
 var (
@@ -165,24 +193,13 @@ type codexServerTOML struct {
 // codex would resolve them: the instance's overlay over the ambient env.
 // Disabled servers are left out.
 func (a *Adapter) ConfiguredMCPServers(ctx context.Context, env map[string]string) ([]adapter.ConfiguredMCPServer, error) {
-	path := filepath.Join(skills.DefaultRoots(envHome(env), env, "").CodexHome, "config.toml")
-	var doc struct {
-		MCPServers map[string]codexServerTOML `toml:"mcp_servers"`
+	all, err := nativeServers(env)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := toml.DecodeFile(path, &doc); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	names := make([]string, 0, len(doc.MCPServers))
-	for name := range doc.MCPServers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 	var out []adapter.ConfiguredMCPServer
-	for _, name := range names {
-		s := doc.MCPServers[name]
+	for _, name := range sortedNames(all) {
+		s := all[name]
 		if s.Enabled != nil && !*s.Enabled {
 			continue
 		}
@@ -228,6 +245,31 @@ func (a *Adapter) ConfiguredMCPServers(ctx context.Context, env map[string]strin
 		out = append(out, adapter.ConfiguredMCPServer{MCPServer: m, Origin: "config.toml"})
 	}
 	return out, nil
+}
+
+// nativeServers reads every [mcp_servers.<name>] table of the instance's
+// config.toml ($CODEX_HOME, or ~/.codex), disabled ones included.
+func nativeServers(env map[string]string) (map[string]codexServerTOML, error) {
+	path := filepath.Join(skills.DefaultRoots(envHome(env), env, "").CodexHome, "config.toml")
+	var doc struct {
+		MCPServers map[string]codexServerTOML `toml:"mcp_servers"`
+	}
+	if _, err := toml.DecodeFile(path, &doc); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return doc.MCPServers, nil
+}
+
+func sortedNames(m map[string]codexServerTOML) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // envVarName reads one env_vars entry: a name, or {name = ..., source = ...}.
@@ -285,6 +327,15 @@ func (s *session) MCPStatus(ctx context.Context) ([]adapter.MCPServerStatus, err
 			return nil, err
 		}
 		for _, st := range res.Data {
+			// A config.toml entry that gave its name to one of omniplex's is
+			// off for this session, and the renamed one reports as itself.
+			name, ok := s.mcpKeys[st.Name]
+			if !ok && s.mcpOurs[st.Name] {
+				continue
+			}
+			if ok {
+				st.Name = name
+			}
 			out = append(out, codexStatus(st))
 		}
 		if res.NextCursor == nil || *res.NextCursor == "" || *res.NextCursor == cursor {

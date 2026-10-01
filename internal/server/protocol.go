@@ -399,6 +399,9 @@ type parseMCPServerArgs struct {
 type addFoundServerArgs struct {
 	Harness string `json:"harness"`
 	Name    string `json:"name"`
+	// Where is the server's URL or command, which tells apart same-named
+	// servers in two instances' configs.
+	Where string `json:"where"`
 }
 
 type saveCLIArgs struct {

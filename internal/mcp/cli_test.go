@@ -296,7 +296,7 @@ func TestSignInAccountCancelKillsCommand(t *testing.T) {
 	cliHome(t)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	cli := CLI{ID: "x", StatusCommand: "true",
-		SignInCommand: `echo "https://accounts.example/auth?x=1"; sleep 30 & echo $! > "$PIDFILE"; wait`}
+		SignInCommand: `sleep 30 & echo $! > "$PIDFILE"; echo "https://accounts.example/auth?x=1"; wait`}
 	ia := newOAIA()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

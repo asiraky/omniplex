@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,5 +136,48 @@ func TestProbeLeavesCommandsAlone(t *testing.T) {
 	}
 	if _, ok := p.Cached("s"); ok {
 		t.Error("kept an answer from when it was remote")
+	}
+}
+
+// A redirect may move within the server, never carry a key header or a token
+// request's body to another origin.
+func TestRedirectsStayWithinTheOrigin(t *testing.T) {
+	var elsewhere atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhere.Add(1)
+	}))
+	defer other.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/moved":
+			http.Redirect(w, r, "/here", http.StatusTemporaryRedirect)
+		case "/away":
+			http.Redirect(w, r, other.URL+"/token", http.StatusTemporaryRedirect)
+		case "/here":
+			w.Write([]byte(r.Header.Get("X-Key")))
+		}
+	}))
+	defer srv.Close()
+	c := staysHome(srv.Client())
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/moved", nil)
+	req.Header.Set("X-Key", "k")
+	res, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || string(body) != "k" {
+		t.Fatalf("same-origin hop: %d %q", res.StatusCode, body)
+	}
+
+	res, err = c.Post(srv.URL+"/away", "application/x-www-form-urlencoded", strings.NewReader("refresh_token=secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusTemporaryRedirect || elsewhere.Load() != 0 {
+		t.Fatalf("cross-origin hop followed: %d, %d requests elsewhere", res.StatusCode, elsewhere.Load())
 	}
 }
