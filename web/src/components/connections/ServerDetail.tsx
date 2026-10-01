@@ -1,5 +1,5 @@
 import { KeyRoundIcon, LogOutIcon, PencilIcon, RefreshCwIcon, RotateCwIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   ConfirmDialog,
@@ -85,9 +85,14 @@ export function ServerDetail({
   const [editing, setEditing] = useState<ServerForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
-  // The switches move at once and go back if the write fails.
+  // The switches move at once and go back if the write fails. Each write
+  // sends the whole list, so writes go one at a time, in order: two at once
+  // can land out of order and save the earlier choice.
   const [off, setOff] = useState(server.off);
   useEffect(() => setOff(server.off), [server.off]);
+  const writes = useRef<Promise<void>>(Promise.resolve());
+  const queued = useRef(0);
+  const confirmed = useRef<McpServer | null>(null);
 
   const kind = serverKind(server);
   const mark = serverMark(server);
@@ -105,17 +110,28 @@ export function ServerDetail({
     }
   };
 
-  const setAgents = async (next: string[]) => {
-    const before = off;
+  const setAgents = (next: string[]) => {
+    const name = server.name;
     setOff(next);
     setError("");
-    try {
-      const res = await command<{ server?: McpServer }>("set_mcp_server_off", { name: server.name, off: next });
-      if (res?.server) onSaved(res.server);
-    } catch (e) {
-      setOff(before);
-      setError(errorText(e));
-    }
+    queued.current++;
+    writes.current = writes.current.then(async () => {
+      try {
+        const res = await command<{ server?: McpServer }>("set_mcp_server_off", { name, off: next });
+        if (res?.server) confirmed.current = res.server;
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        // Only the last write settles the switches: an earlier answer would
+        // flick them back until the next one. After a failure they show what
+        // the server last confirmed.
+        if (--queued.current === 0) {
+          if (confirmed.current) onSaved(confirmed.current);
+          else setOff(server.off);
+          confirmed.current = null;
+        }
+      }
+    });
   };
 
   const save = async (form: ServerForm) => {
@@ -264,7 +280,7 @@ export function ServerDetail({
 
         <section aria-label="Agents that get it" className="space-y-1.5">
           <DetailHeading>Agents that get it</DetailHeading>
-          <AgentSwitches harnesses={harnessesFor(harnesses, kind)} off={off} onChange={(next) => void setAgents(next)} />
+          <AgentSwitches harnesses={harnessesFor(harnesses, kind)} off={off} onChange={setAgents} />
           <p className="text-muted-foreground px-1 text-[12px] leading-snug">Takes effect in threads started after the change.</p>
         </section>
 

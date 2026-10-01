@@ -318,12 +318,13 @@ func TestSignInAccountCancelKillsCommand(t *testing.T) {
 }
 
 func TestScrubTokens(t *testing.T) {
-	secrets := []string{"ya29.a0AfB_byC1234567890abcdefXYZ", "s3cr3tvalue", "eyJhbGciOiJIUzI1NiJ9", "qwerty"}
+	secrets := []string{"ya29.a0AfB_byC1234567890abcdefXYZ", "s3cr3tvalue", "eyJhbGciOiJIUzI1NiJ9", "qwerty", "abcdefghijklmnopqrstuvwxyz"}
 	in := []string{
 		"auth failed for ya29.a0AfB_byC1234567890abcdefXYZ",
 		"client_secret=s3cr3tvalue",
 		"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.abc",
 		"see https://example.com/cb?code=qwerty&state=1",
+		`{"access_token":"abcdefghijklmnopqrstuvwxyz","expires_in":3599}`,
 	}
 	for i, s := range in {
 		got := scrubTokens(s)

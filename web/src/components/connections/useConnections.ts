@@ -70,7 +70,8 @@ export function useConnections(command: PageCommand, wanted: boolean): Connectio
 
   // The server never probes on a list, so after a restart everything reads
   // unchecked. Check those once, so the markers mean something; after that
-  // only the Check buttons ask again.
+  // only the Check buttons ask again. An answer is dropped if its entry was
+  // removed, renamed or changed while the check ran: it describes the old one.
   useEffect(() => {
     if (!conn || checked.current) return;
     checked.current = true;
@@ -78,19 +79,25 @@ export function useConnections(command: PageCommand, wanted: boolean): Connectio
       if (s.url && s.status === "unchecked") {
         commandRef
           .current<{ server?: McpServer }>("check_mcp_server", { name: s.name })
-          .then((r) => r?.server && putServer(r.server))
+          .then((r) => {
+            const got = r?.server;
+            if (got) setConn((c) => c && (c.servers.includes(s) ? { ...c, servers: upsert(c.servers, got, byName) } : c));
+          })
           .catch(() => {});
       }
     }
-    for (const c of conn.clis) {
-      if (c.accounts.some((a) => a.status === "unchecked")) {
+    for (const cli of conn.clis) {
+      if (cli.accounts.some((a) => a.status === "unchecked")) {
         commandRef
-          .current<{ cli?: Cli }>("check_cli", { id: c.id })
-          .then((r) => r?.cli && putCli(r.cli))
+          .current<{ cli?: Cli }>("check_cli", { id: cli.id })
+          .then((r) => {
+            const got = r?.cli;
+            if (got) setConn((c) => c && (c.clis.includes(cli) ? { ...c, clis: upsert(c.clis, got, byId) } : c));
+          })
           .catch(() => {});
       }
     }
-  }, [conn, commandRef, putServer, putCli]);
+  }, [conn, commandRef]);
 
   const reload = useCallback(() => setSeq((n) => n + 1), []);
 

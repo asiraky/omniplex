@@ -427,7 +427,7 @@ func (w *urlWatcher) output() string { return w.String() }
 var (
 	ansiEscape  = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	urlInText   = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	secretPair  = regexp.MustCompile(`(?i)\b([a-z_-]*(?:token|secret|password|passwd|key)[a-z_-]*)(\s*[=:]\s*)("[^"]*"|\S+)`)
+	secretPair  = regexp.MustCompile(`(?i)\b([a-z_-]*(?:token|secret|password|passwd|key)[a-z_-]*)("?\s*[=:]\s*)("[^"]*"|\S+)`)
 	bearerValue = regexp.MustCompile(`(?i)\b(bearer|basic)\s+\S+`)
 	longRun     = regexp.MustCompile(`[A-Za-z0-9_+=-]{24,}`)
 	hasDigit    = regexp.MustCompile(`[0-9]`)

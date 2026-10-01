@@ -307,7 +307,7 @@ func claudeFixture(t *testing.T, claudeJSON, configDir string) {
 	writeJSON(t, filepath.Join(cf, ".claude-plugin", "plugin.json"), map[string]any{"name": "cloudflare", "mcpServers": "./servers.json"})
 	writeJSON(t, filepath.Join(cf, "servers.json"), map[string]any{"mcpServers": map[string]any{"cloudflare": map[string]any{"type": "http", "url": "https://mcp.cf.test/mcp"}}})
 	tool := filepath.Join(plugins, "tool", "2.0.0")
-	writeJSON(t, filepath.Join(tool, ".mcp.json"), map[string]any{"tooly": map[string]any{"command": "${CLAUDE_PLUGIN_ROOT}/bin/tooly", "args": []string{"${CLAUDE_PLUGIN_ROOT}/cfg"}}})
+	writeJSON(t, filepath.Join(tool, ".mcp.json"), map[string]any{"tooly": map[string]any{"command": "${CLAUDE_PLUGIN_ROOT}/bin/tooly", "args": []string{"${CLAUDE_PLUGIN_ROOT}/cfg"}, "env": map[string]string{"CONFIG_DIR": "${CLAUDE_PLUGIN_ROOT}/config"}}})
 	off := filepath.Join(plugins, "off", "1.0.0")
 	writeJSON(t, filepath.Join(off, ".mcp.json"), map[string]any{"offserver": map[string]any{"command": "x"}})
 	writeJSON(t, filepath.Join(configDir, "plugins", "installed_plugins.json"), map[string]any{
@@ -351,7 +351,7 @@ func TestConfiguredMCPServersUnderHome(t *testing.T) {
 		t.Errorf("cloudflare = %+v", c)
 	}
 	root := filepath.Join(home, ".claude", "plugins", "cache", "tool", "2.0.0")
-	if tl := got["tooly"]; tl.Command != root+"/bin/tooly" || tl.Args[0] != root+"/cfg" || tl.Origin != "Plugin tool" {
+	if tl := got["tooly"]; tl.Command != root+"/bin/tooly" || tl.Args[0] != root+"/cfg" || tl.Env["CONFIG_DIR"] != root+"/config" || tl.Origin != "Plugin tool" {
 		t.Errorf("tooly = %+v", tl)
 	}
 	for _, absent := range []string{"projonly", "offserver"} {

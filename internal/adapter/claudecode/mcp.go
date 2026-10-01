@@ -157,9 +157,15 @@ func configured(servers map[string]claudeServerJSON, origin, pluginRoot string) 
 		if s.URL != "" {
 			m.URL, m.Headers = s.URL, s.Headers
 		} else if s.Command != "" {
-			m.Command, m.Env = expand(s.Command), s.Env
+			m.Command = expand(s.Command)
 			for _, arg := range s.Args {
 				m.Args = append(m.Args, expand(arg))
+			}
+			if len(s.Env) > 0 {
+				m.Env = make(map[string]string, len(s.Env))
+				for k, v := range s.Env {
+					m.Env[k] = expand(v)
+				}
 			}
 		} else {
 			continue
