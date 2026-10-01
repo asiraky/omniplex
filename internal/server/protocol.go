@@ -194,9 +194,20 @@ type skillArgs struct {
 	Dir         string `json:"dir"`
 	Path        string `json:"path"`
 	Content     string `json:"content"`
-	Scope       string `json:"scope"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Mode        string `json:"mode"` // set_skill_mode
+	On          bool   `json:"on"`   // set_claude_sync, set_codex_bundled
+	// Installing: what was pasted, the staging dir a fetch made, and what to
+	// take out of it.
+	Source string   `json:"source"`
+	ID     string   `json:"id"`
+	Skill  string   `json:"skill"`
+	Skills []string `json:"skills"`
+	// Committing the library, and applying an update.
+	Names   []string `json:"names"`
+	Message string   `json:"message"`
+	Dirs    []string `json:"dirs"`
 }
 
 type threadArgs struct {

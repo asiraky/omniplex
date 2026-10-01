@@ -25,6 +25,7 @@ import (
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/projection"
+	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
 )
@@ -58,6 +59,9 @@ type Server struct {
 	artefacts *artefact.Store
 	signer    *artefact.Signer
 	logf      func(string, ...any)
+	// skillFetch runs npx and git for a skills install. The zero value is the
+	// real thing; a test puts a fake runner in.
+	skillFetch skills.Fetcher
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.

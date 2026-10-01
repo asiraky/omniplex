@@ -117,7 +117,7 @@ func writeAtomic(path string, data []byte) error {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".SKILL.md.*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -145,15 +145,21 @@ func ReadFile(r Roots, dir, rel string) (content string, binary bool, err error)
 	if err != nil {
 		return "", false, err
 	}
+	return readInside(s.Dir, rel)
+}
+
+// readInside reads rel under dir, a symlink-resolved skill folder: an
+// installed skill or a staged one.
+func readInside(dir, rel string) (content string, binary bool, err error) {
 	rel = filepath.FromSlash(rel)
 	if rel == "" || filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
 		return "", false, fmt.Errorf("%w: path must stay inside the skill", ErrInvalid)
 	}
-	real, err := filepath.EvalSymlinks(filepath.Join(s.Dir, rel))
+	real, err := filepath.EvalSymlinks(filepath.Join(dir, rel))
 	if err != nil {
 		return "", false, ErrNotFound
 	}
-	if inside, err := filepath.Rel(s.Dir, real); err != nil || !filepath.IsLocal(inside) {
+	if inside, err := filepath.Rel(dir, real); err != nil || !filepath.IsLocal(inside) {
 		return "", false, fmt.Errorf("%w: path must stay inside the skill", ErrInvalid)
 	}
 	f, err := os.Open(real)
@@ -184,10 +190,10 @@ func ReadFile(r Roots, dir, rel string) (content string, binary bool, err error)
 	return string(data), false, nil
 }
 
-// Create writes a new skill to <base>/.agents/skills/<name> — the directory
-// Codex and pi read — and links it into Claude's skills dir unless that dir
-// already resolves to the same place.
-func Create(r Roots, scope, name, description string) (Skill, error) {
+// Create writes a new skill into the personal library and makes it visible to
+// every harness. A name any harness already has a skill under is refused,
+// since the new one would not reach that harness.
+func Create(r Roots, name, description string) (Skill, error) {
 	if err := ValidateName(name); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -195,33 +201,24 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err := validateDescription(description); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	var agentsDir, claudeDir string
-	switch scope {
-	case ScopeUser:
-		if r.Home == "" || r.ClaudeConfigDir == "" {
-			return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
-		}
-		agentsDir = filepath.Join(r.Home, ".agents", "skills")
-		claudeDir = filepath.Join(r.ClaudeConfigDir, "skills")
-	case ScopeProject:
-		if r.ProjectRoot == "" {
-			return Skill{}, fmt.Errorf("%w: no project to create the skill in", ErrInvalid)
-		}
-		agentsDir = filepath.Join(r.ProjectRoot, ".agents", "skills")
-		claudeDir = filepath.Join(r.ProjectRoot, ".claude", "skills")
-	default:
-		return Skill{}, fmt.Errorf("%w: scope must be user or project", ErrInvalid)
+	library := r.Library
+	if library == "" {
+		return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
 	}
-	for _, d := range []string{agentsDir, claudeDir} {
+	taken := []string{library}
+	for _, d := range r.agentDirs() {
+		taken = append(taken, d)
+	}
+	for _, d := range taken {
 		if _, err := os.Lstat(filepath.Join(d, name)); err == nil {
-			return Skill{}, fmt.Errorf("%w: %s already exists in %s", ErrInvalid, name, d)
+			return Skill{}, fmt.Errorf("%w: %s already exists in %s", ErrInvalid, name, abbreviate(d, r.Home))
 		}
 	}
 
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+	if err := os.MkdirAll(library, 0o755); err != nil {
 		return Skill{}, err
 	}
-	dir := filepath.Join(agentsDir, name)
+	dir := filepath.Join(library, name)
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return Skill{}, err
 	}
@@ -235,9 +232,7 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	if err := linkForClaude(claudeDir, realDir, name); err != nil {
-		return Skill{}, err
-	}
+	reachEveryAgent(r, realDir)
 	s, err := find(r, realDir)
 	if errors.Is(err, ErrNotFound) {
 		return Skill{}, fmt.Errorf("created %s but it is not discoverable", realDir)
@@ -245,21 +240,33 @@ func Create(r Roots, scope, name, description string) (Skill, error) {
 	return s, err
 }
 
-func linkForClaude(claudeDir, realDir, name string) error {
-	if realClaude, err := filepath.EvalSymlinks(claudeDir); err == nil {
-		if realClaude == filepath.Dir(realDir) {
-			return nil // Claude's dir is the .agents dir already
+// Remove deletes an editable skill: the real directory, every path it was
+// discovered at that is itself a symlink to it, and its line in the library's
+// source record. A path that only reaches it through a symlinked parent goes
+// with the directory.
+func Remove(r Roots, dir string) error {
+	s, err := find(r, dir)
+	if err != nil {
+		return err
+	}
+	if !s.Editable {
+		return ErrNotEditable
+	}
+	for _, p := range s.paths {
+		if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(p); err != nil {
+				return err
+			}
 		}
-	} else if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	}
+	if err := os.RemoveAll(s.Dir); err != nil {
 		return err
 	}
-	realClaude, err := filepath.EvalSymlinks(claudeDir)
-	if err != nil {
-		return err
+	library := filepath.Dir(s.Dir)
+	for _, lib := range []string{r.ProjectLibrary, r.Library} {
+		if real, ok := realDir(lib); ok && real == library {
+			return forgetRecord(library, filepath.Base(s.Dir))
+		}
 	}
-	target, err := filepath.Rel(realClaude, realDir)
-	if err != nil {
-		target = realDir
-	}
-	return os.Symlink(target, filepath.Join(claudeDir, name))
+	return nil
 }

@@ -322,6 +322,18 @@ func (c *conn) detachAll() {
 // wedged.
 const commandTimeout = 60 * time.Second
 
+// fetchCommandTimeout is for the two commands that do go out to the network:
+// fetching a skills source. It covers npx running out its own time and git
+// then being tried instead.
+const fetchCommandTimeout = 250 * time.Second
+
+func timeoutFor(command string) time.Duration {
+	if command == "stage_skills" || command == "stage_update" {
+		return fetchCommandTimeout
+	}
+	return commandTimeout
+}
+
 // threadOfArgs reads the thread a command is about out of its arguments.
 //
 // Clients address a thread inside args rather than on the frame, so the
@@ -367,7 +379,7 @@ func (c *conn) command(f clientFrame) {
 	// A command belongs to the user operation, not to the socket that happened
 	// to carry it. Let it finish and persist its result after a disconnect so a
 	// reconnect can recover the acknowledgement with the same command id.
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutFor(f.Command))
 	defer cancel()
 
 	for {
@@ -433,6 +445,11 @@ func ephemeralCommand(name string) bool {
 	// answer would be stale. save_skill is idempotent (it writes the whole
 	// file), so replaying it is harmless and skipping the ledger costs nothing.
 	case "list_skills", "read_skill", "read_skill_file", "save_skill":
+		return true
+	// Previews out of a staging dir and the library's git status: reads of
+	// disk again. The fetches that make a staging dir are not here: a retried
+	// stage_skills gets the staging dir it already made, not a second fetch.
+	case "read_staged_file", "read_update_file", "skills_git_status":
 		return true
 	}
 	return false
@@ -888,7 +905,9 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"tree": tree}, nil
 
-	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill":
+	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill",
+		"set_skill_mode", "remove_skill", "set_claude_sync", "set_codex_bundled", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
+		"skills_git_status", "commit_skills", "stage_update", "read_update_file", "apply_update":
 		var a skillArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
