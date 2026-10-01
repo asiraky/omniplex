@@ -606,8 +606,11 @@ func (m *Manager) RecheckHarnesses() {
 	m.notifyList()
 }
 
-// expireProbesForTest ages every cached probe past its TTL.
-func (m *Manager) expireProbesForTest() {
+// ExpireProbes ages every cached probe past its TTL, so the next listing asks
+// every harness again. The setup screen uses it: someone who has just
+// installed or signed in to a harness and pressed "Check again" should not be
+// told it is still missing for another half-minute.
+func (m *Manager) ExpireProbes() {
 	m.probeMu.Lock()
 	defer m.probeMu.Unlock()
 	for id, p := range m.probes {

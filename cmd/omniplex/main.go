@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -27,6 +29,7 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
+	"github.com/asiraky/omniplex/internal/datalock"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/netinfo"
@@ -39,13 +42,25 @@ import (
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
+// exitDataInUse is the status when another server holds the database. The
+// desktop app (desktop/src/server.ts) knows it.
+const exitDataInUse = 17
+
 // web/dist is embedded when it has been built. The directory always contains a
 // placeholder so the build works without a UI bundle present.
 //
 //go:embed all:webdist
 var webdist embed.FS
 
+// version is the release this binary is, stamped by release builds with
+// -ldflags "-X main.version=1.2.3". Anything else is "dev".
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Println(version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		if err := runMCP(os.Stdin, os.Stdout); err != nil {
 			log.Fatalf("mcp: %v", err)
@@ -62,6 +77,8 @@ func main() {
 		addr       = flag.String("addr", "", "bind one specific address, e.g. 192.168.1.20:8787 (default: every private and overlay address)")
 		port       = flag.Int("port", envInt("OMNIPLEX_PORT", 8787), "port to listen on")
 		bindPublic = flag.Bool("bind-public", false, "also bind globally routable addresses, exposing omniplex to the internet")
+		stdinLife  = flag.Bool("exit-on-stdin-close", false, "shut down when stdin closes; for a parent process (the desktop app) that must not leave this server behind if it dies")
+		private    = flag.Bool("private", os.Getenv("OMNIPLEX_PRIVATE") == "1", "bind loopback and overlay (tailnet) addresses only, leaving out the local network")
 		dbPath     = flag.String("db", envStr("OMNIPLEX_DB", defaultDB()), "path to the event log database")
 		claudePath = flag.String("claude-path", "", "path to the Claude Code executable (default: discover it)")
 		codexBin   = flag.String("codex", "codex", "path to the codex CLI")
@@ -71,11 +88,13 @@ func main() {
 	)
 	flag.Parse()
 
-	plan, err := netinfo.Plan(netinfo.Options{
+	bindOpts := netinfo.Options{
 		Override:      *addr,
 		Port:          *port,
 		IncludePublic: *bindPublic,
-	})
+		Private:       *private,
+	}
+	plan, err := netinfo.Plan(bindOpts)
 	if err != nil {
 		log.Fatalf("choose addresses: %v", err)
 	}
@@ -83,6 +102,18 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o755); err != nil {
 		log.Fatalf("create data dir: %v", err)
 	}
+
+	dbLock, err := datalock.Acquire(*dbPath)
+	if errors.Is(err, datalock.ErrHeld) {
+		// A distinct status so the desktop app can say what is wrong rather
+		// than retrying a start that cannot succeed.
+		fmt.Fprintf(os.Stderr, "%s is in use by another Omniplex server; stop it first\n", *dbPath)
+		os.Exit(exitDataInUse)
+	}
+	if err != nil {
+		log.Fatalf("lock data: %v", err)
+	}
+	defer dbLock.Release()
 
 	st, err := store.Open(*dbPath)
 	if err != nil {
@@ -177,6 +208,7 @@ func main() {
 		Artefacts:      artefacts,
 		ArtefactSigner: signer,
 		Commit:         buildCommit(),
+		Version:        version,
 		Connections:    conns,
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
@@ -253,8 +285,27 @@ func main() {
 		}(ln)
 	}
 
+	// Chosen automatically, what to bind can grow after startup: at login the
+	// tailnet (or the wifi) often comes up after this process does, and a
+	// server that only ever bound loopback would never be reachable from the
+	// phone. A named address is exactly that address, so it is left alone.
+	if *addr == "" {
+		go watchAddrs(bindOpts, plan, httpSrv, guard, access)
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	// The desktop app holds our stdin open for as long as it lives. The pipe
+	// closes when it quits and when it crashes, so this is both the graceful
+	// stop on every platform (Windows has no SIGTERM to send) and what keeps an
+	// orphaned server from holding the port the next launch wants.
+	if *stdinLife {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			log.Println("stdin closed")
+			sig <- os.Interrupt
+		}()
+	}
 	<-sig
 
 	log.Println("shutting down; disposing harnesses")
@@ -349,6 +400,54 @@ func watchProxy(guard *auth.Guard, access *endpoints.Builder, port int) {
 			check()
 		}
 	}()
+}
+
+// watchAddrs binds addresses that appear after startup. Addresses that go
+// away keep their listener: it costs nothing idle, and it is back in service
+// if the address returns.
+func watchAddrs(opts netinfo.Options, bound netinfo.BindPlan, srv *http.Server, guard *auth.Guard, access *endpoints.Builder) {
+	// An address that will not bind (a tentative IPv6 address, one taken by
+	// another process) is retried slowly rather than logged every tick.
+	failed := map[string]time.Time{}
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		want, err := netinfo.Plan(opts)
+		if err != nil {
+			continue
+		}
+		var missing []netinfo.Addr
+		for _, a := range bound.Missing(want) {
+			if time.Since(failed[a.IP.String()]) > 5*time.Minute {
+				missing = append(missing, a)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		listeners, more, _ := netinfo.BindPlan{Addrs: missing, Port: bound.Port}.Listen()
+		for _, a := range bound.With(more).Missing(netinfo.BindPlan{Addrs: missing}) {
+			failed[a.IP.String()] = time.Now()
+		}
+		if len(listeners) == 0 {
+			continue
+		}
+		// Reachable before serving: a remote request must never be judged
+		// under the loopback policy.
+		if more.Reachable {
+			guard.SetReachable()
+		}
+		bound = bound.With(more)
+		access.SetPlan(bound)
+		for _, ln := range listeners {
+			log.Printf("now also listening on %s", ln.Addr())
+			go func(l net.Listener) {
+				if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
+					log.Printf("serve on %s stopped: %v", l.Addr(), err)
+				}
+			}(ln)
+		}
+	}
 }
 
 // embeddedUI returns the built bundle, or (nil, false) when only the

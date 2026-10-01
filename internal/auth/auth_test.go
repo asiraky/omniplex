@@ -491,3 +491,37 @@ func mustCode(t *testing.T, g *Guard) string {
 	}
 	return code
 }
+
+// A server that started bound to loopback alone (the tailnet was not up yet
+// at login) and has since bound a tailnet address must let paired devices in
+// from it — and still keep everyone else out.
+func TestLateReachabilityAdmitsPairedDevicesOnly(t *testing.T) {
+	g, _ := testGuard(t, false)
+	ctx := context.Background()
+
+	code, _ := g.NewPairingCode(ctx)
+	token, _, err := g.Redeem(ctx, "100.64.0.9", code, "phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired := func() *http.Request {
+		r := remoteRequest("/api/threads")
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+
+	if _, ok := g.Authorize(paired()); ok {
+		t.Fatal("loopback-only guard admitted a remote peer")
+	}
+
+	g.SetReachable()
+	if g.Policy() != PolicyReachable {
+		t.Fatalf("policy = %s after SetReachable", g.Policy())
+	}
+	if _, ok := g.Authorize(paired()); !ok {
+		t.Fatal("paired device refused once the server became reachable")
+	}
+	if _, ok := g.Authorize(remoteRequest("/api/threads")); ok {
+		t.Fatal("unpaired remote peer admitted once the server became reachable")
+	}
+}

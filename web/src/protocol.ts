@@ -613,6 +613,26 @@ export interface Availability {
 }
 
 /**
+ * One thing the machine needs before a thread can start, as GET /api/setup
+ * reports it. A "tool" is required; of the "harness" checks, any one ready is
+ * enough.
+ */
+export interface SetupCheck {
+  id: string;
+  name: string;
+  kind: "tool" | "harness";
+  availability: Availability;
+}
+
+/** GET /api/setup: what the first-run screen shows. */
+export interface SetupReport {
+  platform: "darwin" | "windows" | "linux";
+  /** Every tool ready and at least one harness ready. */
+  ready: boolean;
+  checks: SetupCheck[];
+}
+
+/**
  * Everything the UI knows about a harness comes from the server, which gets it
  * from the adapter. Nothing here is hardcoded per harness, so adding one needs
  * no client change.

@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# The desktop workspace depends on Electron; its tests are pure logic and
+# never launch it, so the ~100 MB binary download is skipped.
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

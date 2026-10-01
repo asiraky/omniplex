@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { SettingsSection } from "~/components/SettingsScreen";
 import type { ToolsTab } from "~/lib/toolsTab";
+
+export const SETUP_PATH = "/setup";
 
 export type Screens = ReturnType<typeof useScreens>;
 
@@ -29,6 +31,22 @@ export function useScreens() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  // The first-run setup page at /setup: what this computer still needs before
+  // a thread can start. The only screen with a path of its own, because the
+  // desktop app opens it by URL.
+  const [setup, setSetup] = useState(() => window.location.pathname === SETUP_PATH);
+  useEffect(() => {
+    const onPop = () => setSetup(window.location.pathname === SETUP_PATH);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  // Replaces rather than pushes: leaving setup is moving on, and Back landing
+  // on it again would be a step backwards.
+  const leaveSetup = useCallback(() => {
+    window.history.replaceState(null, "", "/");
+    setSetup(false);
+  }, []);
+
   return {
     settings,
     setSettings,
@@ -43,5 +61,7 @@ export function useScreens() {
     tools,
     setTools,
     themePreview,
+    setup,
+    leaveSetup,
   };
 }

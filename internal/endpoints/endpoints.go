@@ -9,6 +9,7 @@ package endpoints
 import (
 	"context"
 	"strconv"
+	"sync"
 
 	"github.com/asiraky/omniplex/internal/netinfo"
 	"github.com/asiraky/omniplex/internal/overlay"
@@ -65,12 +66,27 @@ type OverlayInfo struct {
 // rather than cached at startup because a laptop changes networks: the LAN
 // address it had when the process began may be gone.
 type Builder struct {
+	mu   sync.Mutex
 	plan netinfo.BindPlan
 	port int
 }
 
 func NewBuilder(plan netinfo.BindPlan, port int) *Builder {
 	return &Builder{plan: plan, port: port}
+}
+
+// SetPlan replaces what is bound, after the server has opened a listener on an
+// address that appeared since it started.
+func (b *Builder) SetPlan(plan netinfo.BindPlan) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.plan = plan
+}
+
+func (b *Builder) addrs() []netinfo.Addr {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.plan.Addrs
 }
 
 // Build assembles the current list. Overlay detection is best-effort: a
@@ -115,7 +131,7 @@ func (b *Builder) Build(ctx context.Context) Set {
 		})
 	}
 
-	for _, a := range b.plan.Addrs {
+	for _, a := range b.addrs() {
 		if a.IP == nil {
 			continue
 		}
@@ -147,7 +163,7 @@ func encryptedFor(r Reachability) bool {
 }
 
 func (b *Builder) hasOverlayAddr() bool {
-	for _, a := range b.plan.Addrs {
+	for _, a := range b.addrs() {
 		if a.Kind == netinfo.KindOverlay {
 			return true
 		}

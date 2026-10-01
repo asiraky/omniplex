@@ -14,7 +14,9 @@
   "type": "module",
   "workspaces": [
     "web",
-    "internal/adapter/claudecode/sidecar"
+    "internal/adapter/claudecode/sidecar",
+    "desktop",
+    "site"
   ],
   "scripts": {
     "dev": "./scripts/dev",
@@ -23,12 +25,16 @@
     "build:server": "go build -o omniplex ./cmd/omniplex && ln -sfn omniplex omni",
     "build:bundled": "npm run build:web && npm run build:sidecar && go build -tags bundled_sidecar -o omniplex ./cmd/omniplex && ln -sfn omniplex omni",
     "build:sidecar": "cd internal/adapter/claudecode/sidecar && npm install && bun build --compile sidecar.mjs --outfile dist/omniplex-claude-sidecar",
+    "build:desktop": "npm run build --workspace desktop",
+    "dist:desktop": "npm run dist --workspace desktop --",
     "start": "./omniplex",
-    "test": "npm run test:go && npm run test:web",
+    "test": "npm run test:go && npm run test:web && npm run test:desktop && npm run test:site",
     "test:go": "go test -race ./...",
     "test:web": "./scripts/web tsc -b && ./scripts/web vitest run",
+    "test:site": "node --test site/src/lib/download.test.js",
     "clean": "rm -f omniplex omni && rm -rf cmd/omniplex/webdist && mkdir -p cmd/omniplex/webdist && touch cmd/omniplex/webdist/.gitkeep",
-    "test:e2e:schedules": "npm run build:web && OMNIPLEX_BROWSER_TEST=1 go test ./internal/server -run TestSchedulesBrowser -count=1 -timeout=4m -v"
+    "test:e2e:schedules": "npm run build:web && OMNIPLEX_BROWSER_TEST=1 go test ./internal/server -run TestSchedulesBrowser -count=1 -timeout=4m -v",
+    "test:desktop": "npm run typecheck --workspace desktop && npm test --workspace desktop"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

@@ -92,10 +92,46 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 		)
 	}
 
+	// Installed is not usable: a signed-out Codex fails every session at
+	// start. `codex login status` is the only authority on that, and an older
+	// CLI that cannot answer claims nothing either way.
+	if signedOut(ctx, path, env) {
+		return adapter.Unavailable(
+			"Codex is not signed in.",
+			adapter.Remedy{Text: "Sign in", Command: "codex login", Action: adapter.RemedyLogin},
+		)
+	}
+
 	return adapter.Ready(map[string]string{
 		"codex":    path,
 		"codexVer": strings.TrimSpace(string(out)),
 	})
+}
+
+// signedOut reports whether `codex login status` positively says nobody is
+// signed in. Any other answer, including a failure to run it, is not taken as
+// signed out: the probe must not block a session on a question the CLI could
+// not answer.
+func signedOut(ctx context.Context, path string, env map[string]string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "login", "status")
+	cmd.Env = adapter.MergeEnv(os.Environ(), env)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(out)), "not logged in")
+}
+
+// LoginCommand starts Codex's own sign-in flow, which opens the browser and
+// waits for the callback on this machine.
+func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+	path, err := exec.LookPath(a.Bin)
+	if err != nil {
+		return nil, fmt.Errorf("the Codex CLI was not found on this machine")
+	}
+	return []string{path, "login"}, nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
