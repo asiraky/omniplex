@@ -190,6 +190,18 @@ func (o *OAuth) SignOut(name string) error {
 // dropped). A refresh that fails for another reason returns the old token
 // while it is still valid, else the error.
 func (o *OAuth) Token(ctx context.Context, server Server) (string, error) {
+	return o.token(ctx, server, "")
+}
+
+// Refresh is Token for a token the server has just turned away, which by its
+// own expiry still looks good: rejected is refreshed whatever its expiry
+// says. When the stored token is no longer rejected (another caller already
+// refreshed it) that one comes back as it is.
+func (o *OAuth) Refresh(ctx context.Context, server Server, rejected string) (string, error) {
+	return o.token(ctx, server, rejected)
+}
+
+func (o *OAuth) token(ctx context.Context, server Server, rejected string) (string, error) {
 	l := o.lockFor(server.Name)
 	l.Lock()
 	defer l.Unlock()
@@ -199,8 +211,12 @@ func (o *OAuth) Token(ctx context.Context, server Server) (string, error) {
 		return "", ErrSignInNeeded
 	}
 	now := time.Now()
-	if rec.Expiry.IsZero() || rec.Expiry.After(now.Add(refreshWindow)) {
+	force := rejected != "" && rec.AccessToken == rejected
+	if !force && (rec.Expiry.IsZero() || rec.Expiry.After(now.Add(refreshWindow))) {
 		return rec.AccessToken, nil
+	}
+	if force && rec.RefreshToken == "" {
+		return "", ErrSignInNeeded
 	}
 	if rec.RefreshToken == "" {
 		if rec.Expiry.After(now) {
@@ -223,7 +239,7 @@ func (o *OAuth) Token(ctx context.Context, server Server) (string, error) {
 			_ = o.secrets.Delete(server.Name, OAuthKey)
 			return "", fmt.Errorf("%w: %v", ErrSignInNeeded, err)
 		}
-		if rec.Expiry.After(now) {
+		if !force && rec.Expiry.After(now) {
 			return rec.AccessToken, nil
 		}
 		return "", err

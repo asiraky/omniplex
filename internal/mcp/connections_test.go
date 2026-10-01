@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -386,5 +387,62 @@ func TestCheckCLIRecordsEachAccount(t *testing.T) {
 
 	if _, err := c.SignInAccount("renamed", "nobody"); err == nil {
 		t.Error("began a sign-in for a missing account")
+	}
+}
+
+// A server can turn a token away before its expiry says so (it restarted, or
+// revoked it). Check and reconnect refresh it then, rather than handing the
+// session the same dead token.
+func TestRejectedTokenIsRefreshed(t *testing.T) {
+	var refreshes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			refreshes.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"good","token_type":"Bearer","expires_in":3600}`)
+		case "/mcp":
+			if r.Header.Get("Authorization") != "Bearer good" {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+		}
+	}))
+	defer srv.Close()
+
+	c := newConns(t, srv.Client())
+	url := srv.URL + "/mcp"
+	save(t, c, Draft{Name: "s", URL: url})
+	reset := func() {
+		signIn(t, c, "s", url, map[string]any{
+			"accessToken": "dead", "refreshToken": "r", "expiry": time.Now().Add(time.Hour),
+			"tokenEndpoint": srv.URL + "/token", "clientId": "cid",
+		})
+	}
+
+	reset()
+	view, err := c.Check(context.Background(), "s")
+	if err != nil || view.Status != StatusConnected {
+		t.Fatalf("check = %+v, %v", view, err)
+	}
+
+	reset()
+	def, err := c.Server(context.Background(), "x", []string{"http"}, "s")
+	if err != nil || def.Headers["Authorization"] != "Bearer good" {
+		t.Fatalf("reconnect got %+v, %v", def.Headers, err)
+	}
+	if n := refreshes.Load(); n != 2 {
+		t.Errorf("refreshes = %d, want one per rejection", n)
+	}
+
+	// A token the server takes is not refreshed.
+	if _, err := c.Server(context.Background(), "x", []string{"http"}, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if n := refreshes.Load(); n != 2 {
+		t.Errorf("refreshed a token the server accepted: %d", n)
 	}
 }

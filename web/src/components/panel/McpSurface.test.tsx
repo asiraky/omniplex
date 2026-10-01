@@ -28,14 +28,19 @@ function setup(report: ThreadMcpReport, servers: { name: string; url?: string; c
 const flush = () => act(async () => {});
 
 describe("McpSurface", () => {
-  it("offers reconnect only where the session can retry, and swaps in the answer", async () => {
-    const t = setup({
-      live: true,
-      servers: [
-        { name: "ok", status: "connected" },
-        { name: "broken", status: "failed", error: "boom" },
-      ],
-    });
+  it("offers reconnect only on our servers the session can retry, and swaps in the answer", async () => {
+    const t = setup(
+      {
+        live: true,
+        servers: [
+          { name: "ok", status: "connected" },
+          { name: "broken", status: "failed", error: "boom" },
+          { name: "theirs", status: "failed", error: "boom" },
+        ],
+      },
+      [{ name: "ok", url: "https://ok.example/mcp" }, { name: "broken", url: "https://b.example/mcp" }],
+    );
+    await flush();
     await flush();
 
     const buttons = screen.getAllByRole("button", { name: "Reconnect" });
@@ -47,7 +52,7 @@ describe("McpSurface", () => {
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
   });
 
-  it("links to the sign-in only for our own remote servers, and asks for them only when needed", async () => {
+  it("links to the sign-in only for our own remote servers", async () => {
     const t = setup(
       {
         live: true,
@@ -65,12 +70,6 @@ describe("McpSurface", () => {
     expect(signIns).toHaveLength(1);
     fireEvent.click(signIns[0]);
     expect(t.onOpenConnections).toHaveBeenCalledWith("ours");
-  });
-
-  it("does not fetch the server list when nothing needs a sign-in", async () => {
-    const t = setup({ live: true, servers: [{ name: "ok", status: "connected" }] });
-    await flush();
-    expect(t.command).not.toHaveBeenCalledWith("list_connections", expect.anything());
   });
 
   it("shows no server rows without a running session", async () => {

@@ -302,9 +302,32 @@ func (c *Connections) Check(ctx context.Context, name string) (ServerView, error
 
 func (c *Connections) check(ctx context.Context, s Server) ServerView {
 	if s.URL != "" {
-		c.prober.Probe(ctx, c.definition(ctx, s))
+		c.probed(ctx, s)
 	}
 	return c.view(s)
+}
+
+// probed checks a remote server as a session would get it and returns that
+// definition. An access token the server turns away is refreshed once and
+// checked again: its expiry is only the token's own claim, and a server can
+// stop honouring it sooner (a restart, a revocation).
+func (c *Connections) probed(ctx context.Context, s Server) adapter.MCPServer {
+	def, token := c.definition(ctx, s)
+	if c.prober.Probe(ctx, def).Status != StatusSignIn || token == "" {
+		return def
+	}
+	tctx, cancel := context.WithTimeout(ctx, tokenWait)
+	_, err := c.oauth.Refresh(tctx, s, token)
+	cancel()
+	if err != nil {
+		if !errors.Is(err, ErrSignInNeeded) {
+			c.logf("mcp server %s: refresh: %v", s.Name, err)
+		}
+		return def
+	}
+	def, _ = c.definition(ctx, s)
+	c.prober.Probe(ctx, def)
+	return def
 }
 
 // SignOut forgets a server's OAuth tokens and checks it again.
@@ -336,7 +359,7 @@ func (c *Connections) SignIn(name, origin string) (func(context.Context, adapter
 			return err
 		}
 		// So the list shows where it stands without another tap.
-		c.prober.Probe(ctx, c.definition(ctx, s))
+		c.probed(ctx, s)
 		return nil
 	}, nil
 }
@@ -354,17 +377,18 @@ func takes(s Server, harness string, transports []string) bool {
 }
 
 // definition is a server as a session gets it: values from the secret
-// store, and a current OAuth access token when there is one. A token that
-// cannot be had within tokenWait is left out.
-func (c *Connections) definition(ctx context.Context, s Server) adapter.MCPServer {
+// store, and a current OAuth access token when there is one, which comes
+// back too. A token that cannot be had within tokenWait is left out.
+func (c *Connections) definition(ctx context.Context, s Server) (def adapter.MCPServer, token string) {
 	env, headers := c.store.Values(s)
-	def := adapter.MCPServer{Name: s.Name, URL: s.URL, Command: s.Command, Args: s.Args}
+	def = adapter.MCPServer{Name: s.Name, URL: s.URL, Command: s.Command, Args: s.Args}
 	if len(env) > 0 && s.Command != "" {
 		def.Env = env
 	}
 	if s.URL != "" {
 		tctx, cancel := context.WithTimeout(ctx, tokenWait)
-		token, err := c.oauth.Token(tctx, s)
+		var err error
+		token, err = c.oauth.Token(tctx, s)
 		cancel()
 		switch {
 		case err == nil && token != "":
@@ -381,7 +405,7 @@ func (c *Connections) definition(ctx context.Context, s Server) adapter.MCPServe
 			def.Headers = headers
 		}
 	}
-	return def
+	return def, token
 }
 
 // Servers is what a session of the given harness gets, in the order the
@@ -405,7 +429,7 @@ func (c *Connections) Servers(ctx context.Context, harness string, transports []
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out[i] = c.definition(ctx, s)
+			out[i], _ = c.definition(ctx, s)
 		}()
 	}
 	wg.Wait()
@@ -413,7 +437,8 @@ func (c *Connections) Servers(ctx context.Context, harness string, transports []
 }
 
 // Server is one server's current definition for a session of the given
-// harness, for reconnecting it with a fresh token.
+// harness, for reconnecting it: checked first, so a token the server now
+// turns away is refreshed before the session gets it.
 func (c *Connections) Server(ctx context.Context, harness string, transports []string, name string) (adapter.MCPServer, error) {
 	s, err := c.server(name)
 	if err != nil {
@@ -422,7 +447,11 @@ func (c *Connections) Server(ctx context.Context, harness string, transports []s
 	if !takes(s, harness, transports) {
 		return adapter.MCPServer{}, fmt.Errorf("this thread's agent does not get %s", name)
 	}
-	return c.definition(ctx, s), nil
+	if s.URL != "" {
+		return c.probed(ctx, s), nil
+	}
+	def, _ := c.definition(ctx, s)
+	return def, nil
 }
 
 // --- sign-ins (CLI accounts) ---

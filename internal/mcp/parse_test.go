@@ -22,6 +22,11 @@ func TestParseTurnsPastesIntoDrafts(t *testing.T) {
 			want: Draft{Name: "observability-cloudflare", URL: "https://observability.mcp.cloudflare.com/mcp"},
 		},
 		{
+			name: "bare URL on a local address named by its port",
+			in:   "http://127.0.0.1:8123/mcp",
+			want: Draft{Name: "local-8123", URL: "http://127.0.0.1:8123/mcp"},
+		},
+		{
 			name: "claude remote with headers, options after the positionals",
 			in:   `claude mcp add sentry https://mcp.sentry.dev/mcp --transport http -H "X-Api-Key: abc" --header 'X-Org: acme'`,
 			want: Draft{Name: "sentry", URL: "https://mcp.sentry.dev/mcp", Headers: map[string]string{"X-Api-Key": "abc", "X-Org": "acme"}},

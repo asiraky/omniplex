@@ -37,8 +37,8 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-  // Omniplex's own servers, fetched only once some server needs a sign-in:
-  // it is the one case where the answer decides what to offer.
+  // Omniplex's own servers. Only those can be reconnected or signed in from
+  // here; the rest come from the agent's own config and are its business.
   const [ours, setOurs] = useState<McpServer[] | null>(null);
   const commandRef = useLatest(command);
 
@@ -54,9 +54,7 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
 
   useEffect(refresh, [refresh]);
 
-  const needsAuth = report?.servers.some((s) => s.status === "needs_auth") ?? false;
   useEffect(() => {
-    if (!needsAuth || ours || !onOpenConnections) return;
     let stale = false;
     commandRef
       .current("list_connections", {})
@@ -65,7 +63,7 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
     return () => {
       stale = true;
     };
-  }, [needsAuth, ours, onOpenConnections, commandRef]);
+  }, [commandRef]);
 
   const reconnect = async (name: string) => {
     setBusy(name);
@@ -113,8 +111,10 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
           <ul className="divide-y overflow-hidden rounded-lg border">
             {report.servers.map((s) => {
               const chip = CHIP[s.status];
+              const own = !!ours?.some((o) => o.name === s.name);
               const signIn =
                 s.status === "needs_auth" && !!onOpenConnections && !!ours && ownsSignIn(s.name, ours);
+              const again = own && canReconnect(s.status);
               return (
                 <li key={s.name} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
                   <div className="min-w-0 flex-1">
@@ -122,11 +122,12 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
                       <span className="truncate font-mono text-[12px]">{s.name}</span>
                       <StatusChip label={chip?.label} tone={chip?.tone} />
                     </p>
-                    {s.error && (
-                      <p className="text-muted-foreground text-[11px] break-words">{s.error}</p>
+                    {ours && !own && (
+                      <p className="text-muted-foreground text-[11px]">From the agent's own config</p>
                     )}
+                    {s.error && <Folded text={s.error} />}
                   </div>
-                  {(signIn || canReconnect(s.status)) && (
+                  {(signIn || again) && (
                     <div className="flex shrink-0 gap-2">
                       {signIn && (
                         <Button size="sm" onClick={() => onOpenConnections?.(s.name)}>
@@ -134,7 +135,7 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
                           Sign in
                         </Button>
                       )}
-                      {canReconnect(s.status) && (
+                      {again && (
                         <Button
                           size="sm"
                           variant="outline"
@@ -154,5 +155,23 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
         )}
       </div>
     </div>
+  );
+}
+
+/** A long error folded to two lines; a tap shows the rest. */
+function Folded({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen((o) => !o)}
+      aria-expanded={open}
+      className={cn(
+        "text-muted-foreground block w-full text-left text-[11px] break-words",
+        !open && "line-clamp-2",
+      )}
+    >
+      {text}
+    </button>
   );
 }

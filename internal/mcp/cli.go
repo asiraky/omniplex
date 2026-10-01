@@ -78,12 +78,14 @@ func CheckAccount(ctx context.Context, cli CLI, account Account) (status, detail
 		if pattern.MatchString(out) {
 			return AccountSignedIn, ""
 		}
-		return AccountSignedOut, detailLine(out)
+		return AccountSignedOut, ""
 	}
 	if code == 0 {
 		return AccountSignedIn, ""
 	}
-	return AccountSignedOut, detailLine(out)
+	// Signed out is an answer, not a failure: what the command printed
+	// saying so is no use to anyone.
+	return AccountSignedOut, ""
 }
 
 // SignInAccount signs one account in: it runs the prepare command, starts

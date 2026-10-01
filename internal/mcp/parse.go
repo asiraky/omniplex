@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path"
 	"regexp"
@@ -568,6 +569,11 @@ func nameFromURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
 		return ""
+	}
+	// An address or localhost says nothing about what the server is; the
+	// port at least tells two of them apart.
+	if net.ParseIP(u.Hostname()) != nil || u.Hostname() == "localhost" {
+		return slugName(strings.Join([]string{"local", u.Port()}, "-"))
 	}
 	labels := strings.Split(u.Hostname(), ".")
 	if len(labels) > 1 {

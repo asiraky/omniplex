@@ -185,6 +185,8 @@ export function ServerDetail({
 }) {
   const [busy, setBusy] = useState<"check" | "signout" | "agents" | null>(null);
   const kind = serverKind(server);
+  // Straight from saving, the sign-in is offered once, up top.
+  const prompt = !!justSaved && offersSignIn(server) && server.status === "sign_in";
 
   const run = async (what: NonNullable<typeof busy>, cmd: string, args: unknown, previous?: string) => {
     setBusy(what);
@@ -221,7 +223,7 @@ export function ServerDetail({
         </p>
       </div>
 
-      {justSaved && offersSignIn(server) && server.status === "sign_in" ? (
+      {prompt ? (
         <Alert>
           <AlertDescription className="flex flex-wrap items-center gap-2 text-[12px]">
             <span className="min-w-0 flex-1">Saved. This server wants you to sign in.</span>
@@ -257,7 +259,7 @@ export function ServerDetail({
             Check
           </Button>
         )}
-        {offersSignIn(server) && (
+        {offersSignIn(server) && !prompt && (
           <Button size="sm" disabled={busy !== null} onClick={onSignIn}>
             <KeyRoundIcon />
             Sign in
