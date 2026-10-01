@@ -102,6 +102,19 @@ export function Diff({
   className?: string;
 }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
+  return <DiffLines lines={lines} wrap={wrap} className={className} />;
+}
+
+/** The same view for lines that never were a patch: two versions compared in the browser. */
+export function DiffLines({
+  lines,
+  wrap = false,
+  className,
+}: {
+  lines: DiffLine[];
+  wrap?: boolean;
+  className?: string;
+}) {
   const rows = useMemo(() => keyed(lines), [lines]);
 
   if (lines.length === 0) {

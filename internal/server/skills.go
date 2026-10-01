@@ -10,21 +10,38 @@ import (
 )
 
 func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) (any, error) {
-	roots, err := s.mgr.SkillRoots(ctx, a.ThreadID, a.ProjectID)
+	roots, projectName, err := s.mgr.SkillRoots(ctx, a.ThreadID, a.ProjectID)
 	if err != nil {
 		return nil, err
 	}
 	switch command {
+	case "set_skill_mode":
+		return skills.SetMode(roots, a.Dir, a.Mode)
+	case "remove_skill":
+		if err := skills.Remove(roots, a.Dir); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 	case "list_skills":
 		found, err := skills.Discover(roots)
 		if err != nil {
 			return nil, err
 		}
-		subagents, err := skills.DiscoverSubagents(roots)
-		if err != nil {
+		out := map[string]any{"skills": found, "claudeSync": skills.ClaudeSync(roots), "codexBundled": skills.CodexBundled(roots)}
+		if roots.ProjectRoot != "" {
+			out["projectRoot"], out["projectName"] = roots.ProjectRoot, projectName
+		}
+		return out, nil
+	case "set_claude_sync":
+		if err := skills.SetClaudeSync(roots, a.On); err != nil {
 			return nil, err
 		}
-		return map[string]any{"skills": found, "subagents": subagents, "projectRoot": roots.ProjectRoot}, nil
+		return map[string]any{"claudeSync": skills.ClaudeSync(roots)}, nil
+	case "set_codex_bundled":
+		if err := skills.SetCodexBundled(roots, a.On); err != nil {
+			return nil, err
+		}
+		return map[string]any{"codexBundled": skills.CodexBundled(roots)}, nil
 	case "read_skill":
 		return skills.Read(roots, a.Dir)
 	case "read_skill_file":
@@ -39,7 +56,55 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		}
 		return map[string]any{"ok": true}, nil
 	case "create_skill":
-		return skills.Create(roots, a.Scope, a.Name, a.Description)
+		return skills.Create(roots, a.Name, a.Description)
+
+	case "stage_skills":
+		return s.skillFetch.Stage(ctx, roots, a.Source)
+	case "read_staged_file":
+		content, binary, err := skills.ReadStagedFile(a.ID, a.Skill, a.Path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"content": content, "binary": binary}, nil
+	case "install_staged":
+		placed, err := skills.InstallStaged(roots, a.ID, a.Skills)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"skills": placed}, nil
+	case "discard_staged":
+		if err := skills.DiscardStaged(a.ID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+
+	case "skills_git_status":
+		status, err := skills.LibraryStatus(ctx, roots)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"git": status}, nil
+	case "commit_skills":
+		commit, status, err := skills.CommitSkills(ctx, roots, a.Names, a.Message)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"commit": commit, "git": status}, nil
+
+	case "stage_update":
+		return s.skillFetch.StageUpdate(ctx, roots, a.Dir)
+	case "read_update_file":
+		before, after, binary, err := skills.ReadUpdateFile(roots, a.ID, a.Dir, a.Path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"old": before, "new": after, "binary": binary}, nil
+	case "apply_update":
+		updated, err := skills.ApplyUpdate(roots, a.ID, a.Dirs)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"skills": updated}, nil
 	}
 	return nil, fmt.Errorf("unknown skill command %q", command)
 }

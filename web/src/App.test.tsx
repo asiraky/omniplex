@@ -1076,6 +1076,72 @@ describe("recent skills on an empty transcript", () => {
   });
 });
 
+// The Skills page from the sidebar: whose skills it lists follows what is open.
+describe("the Skills page", () => {
+  const listed = {
+    name: "alpha",
+    description: "Run alpha workflow",
+    dir: "/lib/alpha",
+    scope: "user",
+    editable: true,
+    mode: "on",
+  };
+
+  const boot = async () => {
+    viewport("desktop");
+    command.mockImplementation(async (name: string) => {
+      if (name === "list_composer_items") return { items: [] };
+      if (name === "list_skills") return { skills: [listed], claudeSync: true, codexBundled: true };
+      if (name === "read_skill") return { ...listed, content: "# Alpha\n", files: [] };
+      return {} as any;
+    });
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+  };
+
+  const attachThread = () =>
+    act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", state("a", "default"));
+    });
+
+  const openPage = async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    return screen.findByRole("button", { name: /alpha/ });
+  };
+
+  const listArgs = () => command.mock.calls.filter(([name]) => name === "list_skills").map(([, args]) => args);
+
+  it("lists personal skills only when no project is known", async () => {
+    await boot();
+    fireEvent.click(await openPage());
+    await screen.findByRole("button", { name: "Back to skills" });
+
+    expect(listArgs()).toEqual([{}]);
+  });
+
+  it("lists the last project's skills when there is no thread open", async () => {
+    localStorage.setItem("omniplex.lastProject.v1", "p1");
+    await boot();
+    await openPage();
+    expect(listArgs()).toEqual([{ projectId: "p1" }]);
+  });
+
+  it("lists what the open thread sees and closes back to it", async () => {
+    await boot();
+    await attachThread();
+    await openPage();
+    expect(listArgs()).toEqual([{ threadId: "a" }]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close skills" }));
+    expect(screen.getByLabelText("Message")).toBeTruthy();
+  });
+});
+
 describe("attaching to a thread", () => {
   it("shows a centered loading state instead of the empty-thread action", async () => {
     viewport("desktop");

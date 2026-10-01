@@ -1,12 +1,12 @@
 // The right panel's tab model. Surfaces are an ordered array with stable ids —
-// singletons (`diff`, `files`, `jobs`, `artefacts`, `skills`, `mcp`) plus any number
+// singletons (`diff`, `files`, `jobs`, `artefacts`, `mcp`) plus any number
 // of `file:<path>`, `artefact:<id>` and `terminal:<n>` tabs — persisted per thread, so the panel a thread was left
 // with is the panel it reopens to.
 
 export type SurfaceKind =
-  "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact" | "skills" | "mcp";
+  "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact" | "mcp";
 
-const KINDS: string[] = ["diff", "files", "jobs", "file", "terminal", "artefacts", "artefact", "skills", "mcp"];
+const KINDS: string[] = ["diff", "files", "jobs", "file", "terminal", "artefacts", "artefact", "mcp"];
 
 export interface Surface {
   /** Stable id: the kind itself for singletons, `file:<path>`, `terminal:<n>`. */

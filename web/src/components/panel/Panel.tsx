@@ -1,5 +1,4 @@
 import {
-  BookOpenIcon,
   BotIcon,
   FileDiffIcon,
   FileIcon,
@@ -17,7 +16,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArtefactList } from "~/components/artefacts/ArtefactList";
 import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { IconButton } from "~/components/IconButton";
-import { SkillsSurface } from "~/components/skills/SkillsSurface";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
@@ -60,7 +58,7 @@ const DEFAULT_WIDTH = 460;
 
 /** An imperative ask from outside: put this on screen. */
 export interface PanelRequest {
-  kind: "diff" | "path" | "jobs" | "artefact" | "artefacts" | "skills";
+  kind: "diff" | "path" | "jobs" | "artefact" | "artefacts";
   path?: string;
   line?: number;
   artefactId?: string;
@@ -94,8 +92,6 @@ function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
   switch (s.kind) {
     case "artefacts":
       return "Artefacts";
-    case "skills":
-      return "Skills";
     case "mcp":
       return "MCP";
     case "artefact":
@@ -141,8 +137,7 @@ function routeRequest(
         reveal: path ? { path, nonce } : undefined,
       };
     case "jobs":
-    case "artefacts":
-    case "skills": {
+    case "artefacts": {
       const kind = request.kind;
       return { update: (p) => openSurface(p, { id: kind, kind }) };
     }
@@ -177,8 +172,6 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
       return <PackageIcon className={className} />;
     case "artefact":
       return <FileIcon className={className} />;
-    case "skills":
-      return <BookOpenIcon className={className} />;
     case "mcp":
       return <PlugIcon className={className} />;
     case "terminal":
@@ -423,9 +416,6 @@ function PanelBody({
               <DropdownMenuItem onSelect={() => addSurface({ id: "artefacts", kind: "artefacts" })}>
                 <PackageIcon className="size-3.5" /> Artefacts
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => addSurface({ id: "skills", kind: "skills" })}>
-                <BookOpenIcon className="size-3.5" /> Skills
-              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => addSurface({ id: "mcp", kind: "mcp" })}>
                 <PlugIcon className="size-3.5" /> MCP
               </DropdownMenuItem>
@@ -497,7 +487,6 @@ function PanelBody({
               This artefact is not in this thread.
             </div>
           ))}
-        {active?.kind === "skills" && <SkillsSurface command={command} threadId={threadId} />}
         {active?.kind === "mcp" && (
           <McpSurface threadId={threadId} command={command} onOpenConnections={onOpenConnections} />
         )}
