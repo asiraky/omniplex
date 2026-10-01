@@ -22,6 +22,40 @@ type Server struct {
 	// Every other harness that implements adapter.MCPHost and runs this kind
 	// of server does, including one added after the server was.
 	Off []string `json:"off,omitempty"`
+	// Accounts are more sign-ins to the same server, say a work and a
+	// personal Cloudflare. Each reaches the agent as a server of its own,
+	// named by AccountName, so its tools are told apart by name. The server
+	// itself stays the first account, under its own name.
+	Accounts []ServerAccount `json:"accounts,omitempty"`
+
+	// parent is set on an account as members gives it: the server whose
+	// definition and values it shares.
+	parent string
+}
+
+// ServerAccount is one more account of a server. It has its own OAuth
+// tokens and, for the names listed, its own header and env values in place
+// of the server's, kept in the secret store under its AccountName.
+type ServerAccount struct {
+	Label       string   `json:"label"`
+	EnvNames    []string `json:"envNames,omitempty"`
+	HeaderNames []string `json:"headerNames,omitempty"`
+}
+
+// AccountName is the name an account of a server goes to the agent under.
+func AccountName(server, label string) string { return server + "-" + label }
+
+// members is the server as sessions see it: itself, then one server per
+// account, sharing its definition and switches.
+func (s Server) members() []Server {
+	out := make([]Server, 0, 1+len(s.Accounts))
+	out = append(out, s)
+	for _, a := range s.Accounts {
+		m := s
+		m.Name, m.Accounts, m.parent = AccountName(s.Name, a.Label), nil, s.Name
+		out = append(out, m)
+	}
+	return out
 }
 
 // CLI is a command-line tool that holds its own sign-in, with one entry per

@@ -303,7 +303,11 @@ func (o *OAuth) claim(pf *pendingFlow) bool {
 // narrates the authorize URL through ia, then takes the code from whichever
 // arrives first: the callback route seeing this flow's state, or the address
 // the person pastes from their browser.
-func (o *OAuth) SignIn(ctx context.Context, ia adapter.AuthInteraction, server Server, redirectURI string) error {
+//
+// fresh asks the authorization server to sign the person in again rather
+// than take the browser's current session (OpenID Connect's prompt=login;
+// one that does not know it ignores it), for a server with several accounts.
+func (o *OAuth) SignIn(ctx context.Context, ia adapter.AuthInteraction, server Server, redirectURI string, fresh bool) error {
 	if server.URL == "" {
 		return fmt.Errorf("%s has no address to sign in to", server.Name)
 	}
@@ -338,6 +342,9 @@ func (o *OAuth) SignIn(ctx context.Context, ia adapter.AuthInteraction, server S
 	q.Set("resource", d.resource)
 	if d.scope != "" {
 		q.Set("scope", d.scope)
+	}
+	if fresh {
+		q.Set("prompt", "login")
 	}
 	authURL.RawQuery = q.Encode()
 

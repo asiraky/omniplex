@@ -10,10 +10,13 @@ import type {
   CliAccountStatus,
   CliSpec,
   FoundServer,
+  McpAccountDraft,
   McpDraft,
   McpHarness,
   McpKind,
   McpServer,
+  McpServerAccount,
+  McpServerStatus,
   ThreadMcp,
   ThreadMcpStatus,
 } from "~/protocol";
@@ -200,9 +203,82 @@ export function serverSaveArgs(
  * Sign in is on offer for a URL server Omniplex has not signed in to, and for
  * one whose stored sign-in no longer works (a refresh that failed).
  */
-export function offersSignIn(s: McpServer): boolean {
+export function offersSignIn(s: Pick<McpServer, "url" | "oauth" | "status">): boolean {
   if (!s.url) return false;
   return s.status === "sign_in" || (!s.oauth && s.status !== "connected");
+}
+
+// ---- a server's further accounts ----
+
+/** What agents get an account as. Mirrors mcp.AccountName. */
+export function accountName(server: string, label: string): string {
+  return `${server}-${label}`;
+}
+
+/**
+ * Every server a session gets from Omniplex: each server under its own name,
+ * then each of its accounts under theirs, with the server it belongs to.
+ */
+export function sessionServers(servers: McpServer[]): { name: string; url?: string; server: string }[] {
+  return servers.flatMap((s) => [
+    { name: s.name, url: s.url, server: s.name },
+    ...(s.accounts ?? []).map((a) => ({ name: a.name, url: s.url, server: s.name })),
+  ]);
+}
+
+/** One value an account may have of its own, for a name the server has. */
+export interface AccountValue {
+  name: string;
+  value: string;
+  /** The account has a stored value of its own; blank keeps it. */
+  own: boolean;
+}
+
+export interface AccountForm {
+  label: string;
+  values: AccountValue[];
+}
+
+/** The names an account can override: the server's headers, or its env. */
+function valueNames(s: McpServer): string[] {
+  return serverKind(s) === "http" ? s.headerNames : s.envNames;
+}
+
+export function accountForm(s: McpServer, a?: McpServerAccount): AccountForm {
+  const own = new Set(a ? (serverKind(s) === "http" ? a.headerNames : a.envNames) : []);
+  return {
+    label: a?.label ?? "",
+    values: valueNames(s).map((name) => ({ name, value: "", own: own.has(name) })),
+  };
+}
+
+/**
+ * The save_mcp_account argument, or what is wrong with the form. A typed
+ * value is the account's own; a blank one it already had is kept; any other
+ * name is left out, so the account uses the server's value.
+ */
+export function accountSaveArgs(
+  form: AccountForm,
+  s: McpServer,
+  previous?: McpServerAccount,
+): { args: { server: string; account: McpAccountDraft; previousLabel?: string } } | { error: string } {
+  const label = form.label.trim();
+  if (!label) return { error: "Give the account a label." };
+  if (!NAME_RULE.test(label)) {
+    return { error: "Use lowercase letters, digits, - and _ in the label, starting with a letter or digit." };
+  }
+  const name = accountName(s.name, label);
+  if (name.length > 48) {
+    return { error: `${name} is too long. Server name and label together get 47 characters.` };
+  }
+  if (s.accounts.some((a) => a.label === label && a.label !== previous?.label)) {
+    return { error: `${s.name} already has an account labelled ${label}.` };
+  }
+  const values: Record<string, string> = {};
+  for (const v of form.values) if (v.value || v.own) values[v.name] = v.value;
+  const http = serverKind(s) === "http";
+  const account: McpAccountDraft = { label, env: http ? {} : values, headers: http ? values : {} };
+  return { args: previous ? { server: s.name, account, previousLabel: previous.label } : { server: s.name, account } };
 }
 
 // ---- the sign-in (CLI) form ----
@@ -276,10 +352,18 @@ export interface Mark {
   tone: "quiet" | "good" | "attention" | "bad";
 }
 
-/** A row in the list says something only when the server needs a hand. */
+/** A status says something only when it needs a hand. */
+export function statusMark(status: McpServerStatus): Mark | null {
+  if (status === "sign_in") return { label: "Sign in", tone: "attention" };
+  if (status === "failed") return { label: "Failed", tone: "bad" };
+  return null;
+}
+
+/** A server's row speaks for the worst of its accounts, the first included. */
 export function serverMark(s: McpServer): Mark | null {
-  if (s.status === "sign_in") return { label: "Sign in", tone: "attention" };
-  if (s.status === "failed") return { label: "Failed", tone: "bad" };
+  const all = [s.status, ...(s.accounts ?? []).map((a) => a.status)];
+  if (all.includes("failed")) return statusMark("failed");
+  if (all.includes("sign_in")) return statusMark("sign_in");
   return null;
 }
 

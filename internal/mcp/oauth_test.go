@@ -301,7 +301,7 @@ const oaRedirect = "http://localhost:4321/oauth/callback"
 
 func startSignIn(o *OAuth, ia adapter.AuthInteraction, s Server, redirect string) <-chan error {
 	done := make(chan error, 1)
-	go func() { done <- o.SignIn(context.Background(), ia, s, redirect) }()
+	go func() { done <- o.SignIn(context.Background(), ia, s, redirect, false) }()
 	return done
 }
 
@@ -548,7 +548,7 @@ func TestOAuthRejectsInsecureAuthorizationServer(t *testing.T) {
 	}))
 	defer mcp.Close()
 	o := NewOAuth(newOASecrets(), nil)
-	err := o.SignIn(context.Background(), newOAIA(), Server{Name: "x", URL: mcp.URL}, oaRedirect)
+	err := o.SignIn(context.Background(), newOAIA(), Server{Name: "x", URL: mcp.URL}, oaRedirect, false)
 	if err == nil {
 		t.Fatal("an http authorization server off this machine must be refused")
 	}
@@ -694,7 +694,7 @@ func TestOAuthCancelledSignInReleasesState(t *testing.T) {
 	ia := newOAIA()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- o.SignIn(ctx, ia, f.server(), oaRedirect) }()
+	go func() { done <- o.SignIn(ctx, ia, f.server(), oaRedirect, false) }()
 	landed := f.authorize(ia.authURL(t))
 	cancel()
 	if err := waitErr(t, done); !errors.Is(err, context.Canceled) {

@@ -101,6 +101,22 @@ type ServerView struct {
 	Status      string     `json:"status"`
 	Error       string     `json:"error,omitempty"`
 	CheckedAt   *time.Time `json:"checkedAt,omitempty"`
+	// Accounts are the server's further accounts. The fields above are its
+	// first, under its own name.
+	Accounts []ServerAccountView `json:"accounts"`
+}
+
+// ServerAccountView is one further account of a server: the name the agent
+// gets it under, the values it has of its own, and how it last checked.
+type ServerAccountView struct {
+	Label       string     `json:"label"`
+	Name        string     `json:"name"`
+	EnvNames    []string   `json:"envNames"`
+	HeaderNames []string   `json:"headerNames"`
+	OAuth       bool       `json:"oauth"`
+	Status      string     `json:"status"`
+	Error       string     `json:"error,omitempty"`
+	CheckedAt   *time.Time `json:"checkedAt,omitempty"`
 }
 
 // FoundView is a server a harness's own config defines.
@@ -174,16 +190,31 @@ func (c *Connections) view(s Server) ServerView {
 	v := ServerView{
 		Name: s.Name, URL: s.URL, Command: s.Command, Args: s.Args,
 		EnvNames: nonNil(s.EnvNames), HeaderNames: nonNil(s.HeaderNames), Off: nonNil(s.Off),
-		OAuth: s.URL != "" && c.oauth.SignedIn(s.Name), Status: StatusUnchecked,
+		Accounts: []ServerAccountView{},
 	}
-	if s.URL == "" {
-		return v
-	}
-	if ch, ok := c.prober.Cached(s.Name); ok {
-		at := ch.At
-		v.Status, v.Error, v.CheckedAt = ch.Status, ch.Error, &at
+	v.OAuth, v.Status, v.Error, v.CheckedAt = c.state(s, s.Name)
+	for _, a := range s.Accounts {
+		av := ServerAccountView{
+			Label: a.Label, Name: AccountName(s.Name, a.Label),
+			EnvNames: nonNil(a.EnvNames), HeaderNames: nonNil(a.HeaderNames),
+		}
+		av.OAuth, av.Status, av.Error, av.CheckedAt = c.state(s, av.Name)
+		v.Accounts = append(v.Accounts, av)
 	}
 	return v
+}
+
+// state is how one of a server's members last checked.
+func (c *Connections) state(s Server, name string) (oauth bool, status, errText string, at *time.Time) {
+	if s.URL == "" {
+		return false, StatusUnchecked, "", nil
+	}
+	oauth, status = c.oauth.SignedIn(name), StatusUnchecked
+	if ch, ok := c.prober.Cached(name); ok {
+		t := ch.At
+		status, errText, at = ch.Status, ch.Error, &t
+	}
+	return oauth, status, errText, at
 }
 
 type foundServer struct {
@@ -219,15 +250,25 @@ func (c *Connections) found(ctx context.Context) []foundServer {
 
 // --- servers ---
 
-func (c *Connections) server(name string) (Server, error) {
-	s, ok, err := c.store.Server(name)
+// member finds a server or one of its accounts by the name the agent gets
+// it under, with the server it belongs to.
+func (c *Connections) member(name string) (member, parent Server, err error) {
+	m, p, ok, err := c.store.Member(name)
 	if err != nil {
-		return Server{}, err
+		return Server{}, Server{}, err
 	}
 	if !ok {
-		return Server{}, fmt.Errorf("no MCP server named %q", name)
+		return Server{}, Server{}, fmt.Errorf("no MCP server named %q", name)
 	}
-	return s, nil
+	return m, p, nil
+}
+
+// forget drops what the prober remembers of a server and its accounts.
+func (c *Connections) forget(name string, accounts []ServerAccount) {
+	c.prober.Forget(name)
+	for _, a := range accounts {
+		c.prober.Forget(AccountName(name, a.Label))
+	}
 }
 
 // Save stores a server (see Store.SaveServer) and checks it.
@@ -237,9 +278,36 @@ func (c *Connections) Save(ctx context.Context, d Draft, previous string) (Serve
 		return ServerView{}, err
 	}
 	if previous != "" {
-		c.prober.Forget(previous)
+		c.forget(previous, s.Accounts)
 	}
-	return c.check(ctx, s), nil
+	return c.check(ctx, s, s.members()...), nil
+}
+
+// SaveServerAccount adds or changes one account of a server (see
+// Store.SaveServerAccount) and checks it.
+func (c *Connections) SaveServerAccount(ctx context.Context, server string, d AccountDraft, previous string) (ServerView, error) {
+	s, err := c.store.SaveServerAccount(server, d, previous)
+	if err != nil {
+		return ServerView{}, err
+	}
+	if previous != "" {
+		c.prober.Forget(AccountName(server, previous))
+	}
+	m, _, err := c.member(AccountName(server, strings.TrimSpace(d.Label)))
+	if err != nil {
+		return ServerView{}, err
+	}
+	return c.check(ctx, s, m), nil
+}
+
+// RemoveServerAccount removes one account of a server.
+func (c *Connections) RemoveServerAccount(server, label string) (ServerView, error) {
+	s, err := c.store.RemoveServerAccount(server, label)
+	if err != nil {
+		return ServerView{}, err
+	}
+	c.prober.Forget(AccountName(server, label))
+	return c.view(s), nil
 }
 
 // SetOff changes which harnesses do not get a server, and nothing else.
@@ -251,12 +319,18 @@ func (c *Connections) SetOff(name string, off []string) (ServerView, error) {
 	return c.view(s), nil
 }
 
-// Remove deletes a server and its secrets.
+// Remove deletes a server, its accounts and their secrets.
 func (c *Connections) Remove(name string) error {
+	s, ok, err := c.store.Server(name)
+	if err != nil {
+		return err
+	}
 	if err := c.store.RemoveServer(name); err != nil {
 		return err
 	}
-	c.prober.Forget(name)
+	if ok {
+		c.forget(name, s.Accounts)
+	}
 	return nil
 }
 
@@ -296,18 +370,31 @@ func (c *Connections) AddFound(ctx context.Context, harness, name, where string)
 	return c.Save(ctx, d, "")
 }
 
-// Check probes one server now.
+// Check probes a server now. A server's own name checks every account of
+// it; an account's name checks that account.
 func (c *Connections) Check(ctx context.Context, name string) (ServerView, error) {
-	s, err := c.server(name)
+	m, p, err := c.member(name)
 	if err != nil {
 		return ServerView{}, err
 	}
-	return c.check(ctx, s), nil
+	if m.parent == "" {
+		return c.check(ctx, p, p.members()...), nil
+	}
+	return c.check(ctx, p, m), nil
 }
 
-func (c *Connections) check(ctx context.Context, s Server) ServerView {
+// check probes the members of s given, at once, and answers with s.
+func (c *Connections) check(ctx context.Context, s Server, members ...Server) ServerView {
 	if s.URL != "" {
-		c.probed(ctx, s)
+		var wg sync.WaitGroup
+		for _, m := range members {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c.probed(ctx, m)
+			}()
+		}
+		wg.Wait()
 	}
 	return c.view(s)
 }
@@ -335,23 +422,28 @@ func (c *Connections) probed(ctx context.Context, s Server) adapter.MCPServer {
 	return def
 }
 
-// SignOut forgets a server's OAuth tokens and checks it again.
+// SignOut forgets the OAuth tokens of a server or one account of it, and
+// checks it again.
 func (c *Connections) SignOut(ctx context.Context, name string) (ServerView, error) {
-	s, err := c.server(name)
+	m, p, err := c.member(name)
 	if err != nil {
 		return ServerView{}, err
 	}
 	if err := c.oauth.SignOut(name); err != nil {
 		return ServerView{}, err
 	}
-	return c.check(ctx, s), nil
+	return c.check(ctx, p, m), nil
 }
 
 // SignIn returns the flow that signs in to a remote server, for the auth
 // flow engine to run. origin is the address the person's browser has this
 // server at; it decides where the authorization server sends them back.
+//
+// A server with more than one account asks the authorization server to sign
+// in afresh, so the browser's current session is not taken for whichever
+// account is being signed in.
 func (c *Connections) SignIn(name, origin string) (func(context.Context, adapter.AuthInteraction) error, error) {
-	s, err := c.server(name)
+	s, p, err := c.member(name)
 	if err != nil {
 		return nil, err
 	}
@@ -359,8 +451,9 @@ func (c *Connections) SignIn(name, origin string) (func(context.Context, adapter
 		return nil, fmt.Errorf("%s is run by a command and has no sign-in", name)
 	}
 	redirect := RedirectURI(origin, c.port)
+	fresh := len(p.Accounts) > 0
 	return func(ctx context.Context, ia adapter.AuthInteraction) error {
-		if err := c.oauth.SignIn(ctx, ia, s, redirect); err != nil {
+		if err := c.oauth.SignIn(ctx, ia, s, redirect, fresh); err != nil {
 			return err
 		}
 		// So the list shows where it stands without another tap.
@@ -425,7 +518,7 @@ func (c *Connections) Servers(ctx context.Context, harness string, transports []
 	var picked []Server
 	for _, s := range f.Servers {
 		if takes(s, harness, transports) {
-			picked = append(picked, s)
+			picked = append(picked, s.members()...)
 		}
 	}
 	out := make([]adapter.MCPServer, len(picked))
@@ -445,7 +538,7 @@ func (c *Connections) Servers(ctx context.Context, harness string, transports []
 // harness, for reconnecting it: checked first, so a token the server now
 // turns away is refreshed before the session gets it.
 func (c *Connections) Server(ctx context.Context, harness string, transports []string, name string) (adapter.MCPServer, error) {
-	s, err := c.server(name)
+	s, _, err := c.member(name)
 	if err != nil {
 		return adapter.MCPServer{}, err
 	}

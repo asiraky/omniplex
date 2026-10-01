@@ -28,6 +28,7 @@ import {
   serverMark,
   serverMatches,
   serverWhere,
+  sessionServers,
   sortLive,
 } from "~/lib/connections";
 import { cn, errorText } from "~/lib/utils";
@@ -95,7 +96,9 @@ export function McpTab({
   const setSectionOpen = (key: string, next: boolean) =>
     (searching ? setSearchFolds : setFolds)((f) => ({ ...f, [key]: next }));
 
-  const ours = conn?.servers ?? null;
+  // Every server a session gets from us, accounts included, so a live row for
+  // cf-work is known as ours and opens cf.
+  const ours = useMemo(() => (conn ? sessionServers(conn.servers) : null), [conn]);
   const liveRows = useMemo(
     () => sortLive((live.report?.servers ?? []).filter((s) => serverMatches(s, query))),
     [live.report, query],
@@ -103,7 +106,7 @@ export function McpTab({
   const servers = useMemo(
     () =>
       (conn?.servers ?? [])
-        .filter((s) => serverMatches(s, query))
+        .filter((s) => serverMatches(s, query) || s.accounts.some((a) => serverMatches(a, query)))
         .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
     [conn, query],
   );
@@ -165,7 +168,11 @@ export function McpTab({
                             <MarkChip mark={serverMark(s)} />
                           </>
                         }
-                        sub={serverWhere(s)}
+                        sub={
+                          s.accounts.length > 0
+                            ? `${serverWhere(s)} · ${s.accounts.length + 1} accounts`
+                            : serverWhere(s)
+                        }
                         dim={only === "Off"}
                         onOpen={() => go({ kind: "server", name: s.name })}
                       />
@@ -214,10 +221,14 @@ export function McpTab({
         server={s}
         harnesses={conn.harnesses}
         command={command}
-        live={live.report?.live ? live.report.servers.find((x) => x.name === s.name) : undefined}
-        reconnecting={live.busy === s.name}
-        reconnectError={live.failed?.name === s.name ? live.failed.error : undefined}
-        onReconnect={() => void live.reconnect(s.name)}
+        live={
+          live.report?.live
+            ? [s.name, ...s.accounts.map((a) => a.name)].flatMap((n) => live.report?.servers.filter((x) => x.name === n) ?? [])
+            : []
+        }
+        reconnecting={live.busy}
+        reconnectError={live.failed ?? undefined}
+        onReconnect={(name) => void live.reconnect(name)}
         onBack={() => go(null)}
         onSaved={(saved, previous) => {
           store.putServer(saved, previous);
@@ -227,7 +238,7 @@ export function McpTab({
           store.removeServer(name);
           go(null);
         }}
-        onSignIn={() => setSignIn(s.name)}
+        onSignIn={setSignIn}
       />
     ) : (
       <Gone onBack={() => go(null)} />
@@ -297,7 +308,11 @@ export function McpTab({
         <FlowDialog
           wires={wires}
           title={`Sign in to ${signIn}`}
-          description="Open the sign-in page and approve. This closes by itself."
+          description={
+            ours?.some((o) => o.name !== o.server && (o.name === signIn || o.server === signIn))
+              ? "Open the sign-in page and sign in as the account you want here. If it signs you straight in as someone else, copy the link into a private window. This closes by itself."
+              : "Open the sign-in page and approve. This closes by itself."
+          }
           begin={{ mcpServer: signIn, origin: window.location.origin }}
           onFinished={() => void afterSignIn(signIn)}
           onClose={() => setSignIn(null)}
@@ -329,7 +344,7 @@ function LiveSection({
 }: {
   live: LiveReport;
   rows: ThreadMcp[];
-  ours: McpServer[] | null;
+  ours: { name: string; server: string }[] | null;
   searching: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -368,6 +383,7 @@ function LiveSection({
             const action = ours ? liveAction(s, ours) : null;
             const source = ours ? liveSource(s.name, ours) : null;
             const own = source === "ours";
+            const owner = ours?.find((o) => o.name === s.name)?.server ?? s.name;
             const failed = live.failed?.name === s.name ? `Reconnect failed. ${live.failed.error}` : undefined;
             return (
               <li key={s.name}>
@@ -386,7 +402,7 @@ function LiveSection({
                   problem={failed ?? s.error}
                   foldProblem
                   problemTone={failed || s.status === "failed" ? "bad" : "attention"}
-                  onOpen={own ? () => onOpenServer(s.name) : undefined}
+                  onOpen={own ? () => onOpenServer(owner) : undefined}
                   action={
                     action === "sign_in" ? (
                       <Button size="sm" className={ACTION} onClick={() => onSignIn(s.name)}>
