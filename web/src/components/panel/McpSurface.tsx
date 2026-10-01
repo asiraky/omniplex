@@ -122,8 +122,10 @@ export function McpSurface({ threadId, command, onOpenConnections }: McpSurfaceP
                       <span className="truncate font-mono text-[12px]">{s.name}</span>
                       <StatusChip label={chip?.label} tone={chip?.tone} />
                     </p>
-                    {ours && !own && (
-                      <p className="text-muted-foreground text-[11px]">From the agent's own config</p>
+                    {ours && !own && canReconnect(s.status) && (
+                      <p className="text-muted-foreground text-[11px]">
+                        From the agent's own config. Fix it there.
+                      </p>
                     )}
                     {s.error && <Folded text={s.error} />}
                   </div>
