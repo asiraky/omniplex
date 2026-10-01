@@ -21,14 +21,15 @@ import { Spinner } from "~/components/ui/spinner";
 import {
   foundByHarness,
   foundWhere,
+  joinNames,
   liveAction,
   liveSource,
   liveMark,
   offSummary,
+  sameHost,
   serverMark,
   serverMatches,
   serverWhere,
-  sessionServers,
   sortLive,
 } from "~/lib/connections";
 import { cn, errorText } from "~/lib/utils";
@@ -96,9 +97,7 @@ export function McpTab({
   const setSectionOpen = (key: string, next: boolean) =>
     (searching ? setSearchFolds : setFolds)((f) => ({ ...f, [key]: next }));
 
-  // Every server a session gets from us, accounts included, so a live row for
-  // cf-work is known as ours and opens cf.
-  const ours = useMemo(() => (conn ? sessionServers(conn.servers) : null), [conn]);
+  const ours = conn?.servers ?? null;
   const liveRows = useMemo(
     () => sortLive((live.report?.servers ?? []).filter((s) => serverMatches(s, query))),
     [live.report, query],
@@ -106,7 +105,7 @@ export function McpTab({
   const servers = useMemo(
     () =>
       (conn?.servers ?? [])
-        .filter((s) => serverMatches(s, query) || s.accounts.some((a) => serverMatches(a, query)))
+        .filter((s) => serverMatches(s, query))
         .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())),
     [conn, query],
   );
@@ -168,11 +167,7 @@ export function McpTab({
                             <MarkChip mark={serverMark(s)} />
                           </>
                         }
-                        sub={
-                          s.accounts.length > 0
-                            ? `${serverWhere(s)} · default, ${s.accounts.map((a) => a.label).join(", ")}`
-                            : serverWhere(s)
-                        }
+                        sub={serverWhere(s)}
                         dim={only === "Off"}
                         onOpen={() => go({ kind: "server", name: s.name })}
                       />
@@ -221,14 +216,10 @@ export function McpTab({
         server={s}
         harnesses={conn.harnesses}
         command={command}
-        live={
-          live.report?.live
-            ? [s.name, ...s.accounts.map((a) => a.name)].flatMap((n) => live.report?.servers.filter((x) => x.name === n) ?? [])
-            : []
-        }
-        reconnecting={live.busy}
-        reconnectError={live.failed ?? undefined}
-        onReconnect={(name) => void live.reconnect(name)}
+        live={live.report?.live ? live.report.servers.find((x) => x.name === s.name) : undefined}
+        reconnecting={live.busy === s.name}
+        reconnectError={live.failed?.name === s.name ? live.failed.error : undefined}
+        onReconnect={() => void live.reconnect(s.name)}
         onBack={() => go(null)}
         onSaved={(saved, previous) => {
           store.putServer(saved, previous);
@@ -238,7 +229,7 @@ export function McpTab({
           store.removeServer(name);
           go(null);
         }}
-        onSignIn={setSignIn}
+        onSignIn={() => setSignIn(s.name)}
       />
     ) : (
       <Gone onBack={() => go(null)} />
@@ -318,16 +309,10 @@ export function McpTab({
   );
 }
 
-/**
- * What the sign-in dialog says. Once a server has several accounts it names
- * the one being signed in, and the way out when the provider skips its
- * login page and reuses whoever the browser is signed in as.
- */
 function signInNote(name: string, servers: McpServer[]): string {
-  const s = servers.find((x) => x.name === name || x.accounts.some((a) => a.name === name));
-  if (!s || s.accounts.length === 0) return "Open the sign-in page and approve. This closes by itself.";
-  const which = s.accounts.find((a) => a.name === name)?.label ?? "default";
-  return `Sign in with the ${s.name} login you want as ${which}. If the page skips the login and signs you in as someone else, tap Copy URL and open it in a private window. This closes by itself.`;
+  const others = sameHost(name, servers);
+  if (others.length === 0) return "Open the sign-in page and approve. This closes by itself.";
+  return `${joinNames(others)} ${others.length === 1 ? "uses" : "use"} the same host, so sign in with the login you want for ${name}. If the page skips the login and signs you in as someone else, tap Copy URL and open it in a private window. This closes by itself.`;
 }
 
 function Gone({ onBack }: { onBack: () => void }) {
@@ -352,7 +337,7 @@ function LiveSection({
 }: {
   live: LiveReport;
   rows: ThreadMcp[];
-  ours: { name: string; server: string }[] | null;
+  ours: McpServer[] | null;
   searching: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -391,14 +376,12 @@ function LiveSection({
             const action = ours ? liveAction(s, ours) : null;
             const source = ours ? liveSource(s.name, ours) : null;
             const own = source === "ours";
-            const owner = ours?.find((o) => o.name === s.name)?.server ?? s.name;
             const failed = live.failed?.name === s.name ? `Reconnect failed. ${live.failed.error}` : undefined;
             return (
-              <li key={s.name} className="py-0.5">
+              <li key={s.name}>
                 <ListRow
                   title={s.name}
-                  // A Sign in button says it already.
-                  markers={action === "sign_in" ? undefined : <MarkChip mark={liveMark(s.status)} />}
+                  markers={<MarkChip mark={liveMark(s.status)} />}
                   sub={
                     source === "built_in"
                       ? "Built into Omniplex"
@@ -411,7 +394,7 @@ function LiveSection({
                   problem={failed ?? s.error}
                   foldProblem
                   problemTone={failed || s.status === "failed" ? "bad" : "attention"}
-                  onOpen={own ? () => onOpenServer(owner) : undefined}
+                  onOpen={own ? () => onOpenServer(s.name) : undefined}
                   action={
                     action === "sign_in" ? (
                       <Button size="sm" className={ACTION} onClick={() => onSignIn(s.name)}>

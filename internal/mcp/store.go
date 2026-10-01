@@ -178,30 +178,13 @@ func (s *Store) Server(name string) (Server, bool, error) {
 	return f.Servers[i], true, nil
 }
 
-// Member finds a server or one of its accounts (see Server.members) by the
-// name sessions know it by, with the server it belongs to.
-func (s *Store) Member(name string) (member, parent Server, ok bool, err error) {
-	f, err := s.Read()
-	if err != nil {
-		return Server{}, Server{}, false, err
-	}
-	for _, srv := range f.Servers {
-		for _, m := range srv.members() {
-			if m.Name == name {
-				return m, srv, true, nil
-			}
-		}
-	}
-	return Server{}, Server{}, false, nil
-}
-
-// ErrServerChanged refuses a token for a server or account that was removed,
-// renamed or given a new URL while it was being signed in.
+// ErrServerChanged refuses a token for a server that was removed, renamed or
+// given a new URL while it was being signed in.
 var ErrServerChanged = errors.New("the server changed while signing in. Sign in again")
 
 // whileCurrent runs write under the store's lock if name still names a
-// server or account at url, else returns ErrServerChanged. Holding the lock
-// keeps a rename or removal from slipping in between the check and the write.
+// server at url, else returns ErrServerChanged. Holding the lock keeps a
+// rename or removal from slipping in between the check and the write.
 func (s *Store) whileCurrent(name, url string, write func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -209,86 +192,26 @@ func (s *Store) whileCurrent(name, url string, write func() error) error {
 	if err != nil {
 		return err
 	}
-	for _, srv := range f.Servers {
-		for _, m := range srv.members() {
-			if m.Name == name && m.URL == url {
-				return write()
-			}
-		}
+	if slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Name == name && x.URL == url }) {
+		return write()
 	}
 	return ErrServerChanged
 }
 
-// Values reads a server's env and header values out of the secret store. An
-// account gets the server's, with its own in their place.
+// Values reads a server's env and header values out of the secret store.
 func (s *Store) Values(srv Server) (env, headers map[string]string) {
 	env, headers = map[string]string{}, map[string]string{}
-	ids := []string{srv.Name}
-	if srv.parent != "" {
-		ids = []string{srv.parent, srv.Name}
-	}
-	for _, id := range ids {
-		for _, n := range srv.EnvNames {
-			if v, ok := s.secrets.Get(id, envKey+n); ok {
-				env[n] = v
-			}
+	for _, n := range srv.EnvNames {
+		if v, ok := s.secrets.Get(srv.Name, envKey+n); ok {
+			env[n] = v
 		}
-		for _, n := range srv.HeaderNames {
-			if v, ok := s.secrets.Get(id, headerKey+n); ok {
-				headers[n] = v
-			}
+	}
+	for _, n := range srv.HeaderNames {
+		if v, ok := s.secrets.Get(srv.Name, headerKey+n); ok {
+			headers[n] = v
 		}
 	}
 	return env, headers
-}
-
-// taken lists every name sessions see, servers and accounts alike, leaving
-// out the server at index skip.
-func taken(f *File, skip int) map[string]bool {
-	out := map[string]bool{}
-	for i, srv := range f.Servers {
-		if i == skip {
-			continue
-		}
-		for _, m := range srv.members() {
-			out[m.Name] = true
-		}
-	}
-	return out
-}
-
-// carry moves what is stored under one secret id to another (which may be
-// the same id), keeping only the env and header values named and, with
-// oauth, the sign-in. Anything else stored under either id is dropped.
-func (s *Store) carry(from, to string, env, headers []string, oauth bool) error {
-	kept := map[string]string{}
-	keys := make([]string, 0, len(env)+len(headers)+1)
-	for _, n := range env {
-		keys = append(keys, envKey+n)
-	}
-	for _, n := range headers {
-		keys = append(keys, headerKey+n)
-	}
-	if oauth {
-		keys = append(keys, OAuthKey)
-	}
-	for _, k := range keys {
-		if v, ok := s.secrets.Get(from, k); ok {
-			kept[k] = v
-		}
-	}
-	if err := s.secrets.Purge(from); err != nil {
-		return err
-	}
-	if err := s.secrets.Purge(to); err != nil {
-		return err
-	}
-	for k, v := range kept {
-		if err := s.secrets.Put(to, k, v); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // checkDraft validates a draft's shape, returning its env and header names
@@ -367,53 +290,15 @@ func (s *Store) SaveServer(d Draft, previous string) (Server, error) {
 				return fmt.Errorf("no MCP server named %q", previous)
 			}
 		}
-		others := taken(f, oldIdx)
-		if others[d.Name] {
+		if previous != d.Name && slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Name == d.Name }) {
 			return fmt.Errorf("there is already an MCP server named %q", d.Name)
 		}
 		var old Server
 		if oldIdx >= 0 {
 			old = f.Servers[oldIdx]
 		}
-		// A rename onto one of its own accounts' names, foo to foo-work
-		// while foo has work, would move one member's secrets onto
-		// another's before they were read.
-		if old.Name != "" && old.Name != srv.Name {
-			was := map[string]bool{}
-			for _, m := range old.members() {
-				was[m.Name] = true
-			}
-			if was[srv.Name] {
-				return fmt.Errorf("%s already has an account named %q. Rename or remove that account first", old.Name, srv.Name)
-			}
-			for _, a := range old.Accounts {
-				if n := AccountName(srv.Name, a.Label); was[n] {
-					return fmt.Errorf("account %s would be named %q, which %s's accounts already use. Rename that account first", a.Label, n, old.Name)
-				}
-			}
-		}
-		// The accounts come along, keeping their own values for the
-		// names the server still has.
-		for _, a := range old.Accounts {
-			name := AccountName(srv.Name, a.Label)
-			if err := CheckName(name); err != nil {
-				return fmt.Errorf("account %s: %w", a.Label, err)
-			}
-			if others[name] {
-				return fmt.Errorf("account %s would be named %q, which another server has", a.Label, name)
-			}
-			a.EnvNames = keepOnly(a.EnvNames, srv.EnvNames)
-			a.HeaderNames = keepOnly(a.HeaderNames, srv.HeaderNames)
-			srv.Accounts = append(srv.Accounts, a)
-		}
 		if err := s.moveSecrets(old, srv, d); err != nil {
 			return err
-		}
-		keepOAuth := old.URL != "" && old.URL == srv.URL
-		for _, a := range srv.Accounts {
-			if err := s.carry(AccountName(old.Name, a.Label), AccountName(srv.Name, a.Label), a.EnvNames, a.HeaderNames, keepOAuth); err != nil {
-				return err
-			}
 		}
 		if oldIdx >= 0 {
 			f.Servers[oldIdx] = srv
@@ -508,144 +393,16 @@ func (s *Store) SetOff(name string, off []string) (Server, error) {
 	return out, err
 }
 
-// RemoveServer deletes a server, its accounts, and every secret they have.
+// RemoveServer deletes a server and every secret it has.
 func (s *Store) RemoveServer(name string) error {
 	return s.update(func(f *File) error {
 		i := slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == name })
 		if i < 0 {
 			return fmt.Errorf("no MCP server named %q", name)
 		}
-		members := f.Servers[i].members()
 		f.Servers = slices.Delete(f.Servers, i, i+1)
-		for _, m := range members {
-			if err := s.secrets.Purge(m.Name); err != nil {
-				return err
-			}
-		}
-		return nil
+		return s.secrets.Purge(name)
 	})
-}
-
-// AccountDraft is an account of a server as the user types it. A value
-// given is the account's own; a name present with an empty value keeps the
-// account's own value if it has one; a name left out uses the server's.
-type AccountDraft struct {
-	Label   string            `json:"label"`
-	Env     map[string]string `json:"env"`
-	Headers map[string]string `json:"headers"`
-}
-
-// SaveServerAccount adds an account to a server, or replaces the one
-// labelled previous (which may be relabelled, keeping its sign-in).
-func (s *Store) SaveServerAccount(server string, d AccountDraft, previous string) (Server, error) {
-	d.Label = strings.TrimSpace(d.Label)
-	if err := CheckName(d.Label); err != nil {
-		return Server{}, err
-	}
-	var out Server
-	err := s.update(func(f *File) error {
-		i := slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == server })
-		if i < 0 {
-			return fmt.Errorf("no MCP server named %q", server)
-		}
-		srv := &f.Servers[i]
-		prev := -1
-		if previous != "" {
-			prev = slices.IndexFunc(srv.Accounts, func(a ServerAccount) bool { return a.Label == previous })
-			if prev < 0 {
-				return fmt.Errorf("%s has no account %q", server, previous)
-			}
-		}
-		name := AccountName(server, d.Label)
-		if err := CheckName(name); err != nil {
-			return fmt.Errorf("the account would be named %q, which is too long; use a shorter label", name)
-		}
-		if previous != d.Label {
-			if slices.ContainsFunc(srv.Accounts, func(a ServerAccount) bool { return a.Label == d.Label }) {
-				return fmt.Errorf("%s already has an account %q", server, d.Label)
-			}
-			if taken(f, -1)[name] {
-				return fmt.Errorf("there is already an MCP server named %q", name)
-			}
-		}
-		var old ServerAccount
-		oldName := name
-		if prev >= 0 {
-			old = srv.Accounts[prev]
-			oldName = AccountName(server, previous)
-		}
-		acct := ServerAccount{Label: d.Label}
-		values := map[string]string{}
-		pick := func(prefix string, given map[string]string, allowed, had []string, kind string) ([]string, error) {
-			var names []string
-			for n, v := range given {
-				if !slices.Contains(allowed, n) {
-					return nil, fmt.Errorf("%s has no %s %q", server, kind, n)
-				}
-				if v == "" {
-					stored, ok := s.secrets.Get(oldName, prefix+n)
-					if !ok || !slices.Contains(had, n) {
-						continue
-					}
-					v = stored
-				}
-				values[prefix+n] = v
-				names = append(names, n)
-			}
-			sort.Strings(names)
-			return names, nil
-		}
-		var err error
-		if acct.EnvNames, err = pick(envKey, d.Env, srv.EnvNames, old.EnvNames, "environment variable"); err != nil {
-			return err
-		}
-		if acct.HeaderNames, err = pick(headerKey, d.Headers, srv.HeaderNames, old.HeaderNames, "header"); err != nil {
-			return err
-		}
-		if prev >= 0 {
-			if v, ok := s.secrets.Get(oldName, OAuthKey); ok {
-				values[OAuthKey] = v
-			}
-		}
-		if err := s.secrets.Purge(oldName); err != nil {
-			return err
-		}
-		if err := s.secrets.Purge(name); err != nil {
-			return err
-		}
-		for k, v := range values {
-			if err := s.secrets.Put(name, k, v); err != nil {
-				return err
-			}
-		}
-		if prev >= 0 {
-			srv.Accounts[prev] = acct
-		} else {
-			srv.Accounts = append(srv.Accounts, acct)
-		}
-		out = *srv
-		return nil
-	})
-	return out, err
-}
-
-// RemoveServerAccount removes one account of a server and its secrets.
-func (s *Store) RemoveServerAccount(server, label string) (Server, error) {
-	var out Server
-	err := s.update(func(f *File) error {
-		i := slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == server })
-		if i < 0 {
-			return fmt.Errorf("no MCP server named %q", server)
-		}
-		j := slices.IndexFunc(f.Servers[i].Accounts, func(a ServerAccount) bool { return a.Label == label })
-		if j < 0 {
-			return fmt.Errorf("%s has no account %q", server, label)
-		}
-		f.Servers[i].Accounts = slices.Delete(f.Servers[i].Accounts, j, j+1)
-		out = f.Servers[i]
-		return s.secrets.Purge(AccountName(server, label))
-	})
-	return out, err
 }
 
 // SaveCLI adds a CLI, or replaces the one with id previous (which may be
@@ -772,17 +529,6 @@ func (s *Store) changeCLI(id string, fn func(*CLI) error) (CLI, error) {
 		out.Accounts = []Account{}
 	}
 	return out, err
-}
-
-// keepOnly is names, less any not in allowed.
-func keepOnly(names, allowed []string) []string {
-	var out []string
-	for _, n := range names {
-		if slices.Contains(allowed, n) {
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // cleanList sorts and dedupes, dropping empties.

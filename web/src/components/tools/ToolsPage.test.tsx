@@ -16,7 +16,6 @@ const server = (over: Partial<McpServer> = {}): McpServer => ({
   off: [],
   oauth: false,
   status: "connected",
-  accounts: [],
   ...over,
 });
 

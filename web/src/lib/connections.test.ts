@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { Cli, FoundServer, McpHarness, McpServer, McpServerAccount, ThreadMcp } from "~/protocol";
+import type { Cli, FoundServer, McpHarness, McpServer, ThreadMcp } from "~/protocol";
 
 import {
-  accountForm,
-  accountSaveArgs,
   cliForm,
   cliMark,
   cliMatches,
@@ -22,10 +20,9 @@ import {
   offSummary,
   offersSignIn,
   ownsSignIn,
-  serverMark,
+  sameHost,
   serverMatches,
   serverSaveArgs,
-  sessionServers,
   serverWhere,
   sortLive,
   toggleOff,
@@ -47,7 +44,6 @@ function server(over: Partial<McpServer> = {}): McpServer {
     off: [],
     oauth: false,
     status: "unchecked",
-    accounts: [],
     ...over,
   };
 }
@@ -188,6 +184,23 @@ describe("ownsSignIn", () => {
   });
 });
 
+describe("sameHost", () => {
+  it("names the other servers on this one's host, whatever the path", () => {
+    const servers = [
+      server({ name: "cf-work", url: "https://mcp.cloudflare.com/mcp" }),
+      server({ name: "cf-home", url: "https://mcp.cloudflare.com/sse" }),
+      server({ name: "gh", url: "https://api.github.com/mcp" }),
+      server({ name: "local", url: undefined, command: "x" }),
+      server({ name: "broken", url: "not a url" }),
+    ];
+    expect(sameHost("cf-work", servers)).toEqual(["cf-home"]);
+    expect(sameHost("gh", servers)).toEqual([]);
+    expect(sameHost("local", servers)).toEqual([]);
+    expect(sameHost("broken", servers)).toEqual([]);
+    expect(sameHost("missing", servers)).toEqual([]);
+  });
+});
+
 describe("serverWhere and joinNames", () => {
   it("shows a URL's host and a command with its arguments", () => {
     expect(serverWhere({ url: "https://mcp.example.com:8443/mcp" })).toBe("mcp.example.com:8443");
@@ -299,67 +312,5 @@ describe("liveAction", () => {
     expect(liveSource(BUILT_IN_MCP, ours)).toBe("built_in");
     expect(liveSource("remote", ours)).toBe("ours");
     expect(liveSource("other", ours)).toBe("theirs");
-  });
-});
-
-function account(over: Partial<McpServerAccount> = {}): McpServerAccount {
-  return { label: "work", name: "srv-work", envNames: [], headerNames: [], oauth: false, status: "unchecked", ...over };
-}
-
-describe("server accounts", () => {
-  const srv = server({
-    headerNames: ["X-Key", "X-Team"],
-    accounts: [account({ headerNames: ["X-Key"] }), account({ label: "home", name: "srv-home" })],
-  });
-
-  it("sends a typed value, keeps a blank own one, and leaves the rest to the server", () => {
-    const form = accountForm(srv, srv.accounts[0]);
-    expect(form.values).toEqual([
-      { name: "X-Key", value: "", own: true },
-      { name: "X-Team", value: "", own: false },
-    ]);
-    expect(accountSaveArgs(form, srv, srv.accounts[0])).toEqual({
-      args: { server: "srv", account: { label: "work", env: {}, headers: { "X-Key": "" } }, previousLabel: "work" },
-    });
-
-    const cleared = { ...form, values: [{ name: "X-Key", value: "", own: false }, { name: "X-Team", value: "t2", own: false }] };
-    expect(accountSaveArgs(cleared, srv, srv.accounts[0])).toMatchObject({ args: { account: { headers: { "X-Team": "t2" } } } });
-  });
-
-  it("puts a command server's values in env", () => {
-    const local = server({ url: undefined, command: "x", envNames: ["TOKEN"], headerNames: [], accounts: [] });
-    const form = accountForm(local);
-    form.label = "b";
-    form.values[0]!.value = "v";
-    expect(accountSaveArgs(form, local)).toEqual({ args: { server: "srv", account: { label: "b", env: { TOKEN: "v" }, headers: {} } } });
-  });
-
-  it("refuses labels that would not make a server name, or that the server already has", () => {
-    const tryLabel = (label: string, previous?: McpServerAccount) =>
-      "error" in accountSaveArgs({ ...accountForm(srv), label }, srv, previous);
-    expect(tryLabel("")).toBe(true);
-    expect(tryLabel("Work")).toBe(true);
-    expect(tryLabel("x".repeat(45))).toBe(true);
-    expect(tryLabel("x".repeat(44))).toBe(false);
-    expect(tryLabel("home")).toBe(true);
-    // Saving an account under its own label is no clash.
-    expect(tryLabel("work", srv.accounts[0])).toBe(false);
-    expect(tryLabel("home", srv.accounts[0])).toBe(true);
-  });
-
-  it("marks a server's row for the worst of its accounts", () => {
-    expect(serverMark(srv)).toBeNull();
-    expect(serverMark({ ...srv, accounts: [] , status: "sign_in" })?.label).toBe("Sign in");
-    expect(serverMark({ ...srv, accounts: [account({ status: "sign_in" })] })?.label).toBe("1 needs sign-in");
-    expect(serverMark({ ...srv, status: "sign_in", accounts: [account({ status: "sign_in" })] })?.label).toBe("2 need sign-in");
-    expect(serverMark({ ...srv, status: "sign_in", accounts: [account({ status: "failed" })] })?.label).toBe("Failed");
-  });
-
-  it("knows an account in a thread's report as ours, with the server it belongs to", () => {
-    const ours = sessionServers([srv, server({ name: "local", url: undefined, command: "x", accounts: [account({ name: "local-b" })] })]);
-    expect(ours.map((o) => `${o.name}>${o.server}`)).toEqual(["srv>srv", "srv-work>srv", "srv-home>srv", "local>local", "local-b>local"]);
-    expect(liveSource("srv-home", ours)).toBe("ours");
-    expect(liveAction({ name: "srv-home", status: "needs_auth" }, ours)).toBe("sign_in");
-    expect(liveAction({ name: "local-b", status: "needs_auth" }, ours)).toBe("reconnect");
   });
 });

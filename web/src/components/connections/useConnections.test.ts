@@ -15,7 +15,6 @@ function server(over: Partial<McpServer> = {}): McpServer {
     off: [],
     oauth: false,
     status: "unchecked",
-    accounts: [],
     ...over,
   };
 }

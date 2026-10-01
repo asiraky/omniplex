@@ -75,9 +75,9 @@ type OAuth struct {
 	// once refresh once (a rotated refresh token is single use).
 	locks map[string]*sync.Mutex
 	// current, when set, runs a token write only while name still names a
-	// server or account at url, and refuses it otherwise. A sign-in or a
-	// refresh that finishes after the server was removed, renamed or moved
-	// must not write its tokens back.
+	// server at url, and refuses it otherwise. A sign-in or a refresh that
+	// finishes after the server was removed, renamed or moved must not
+	// write its tokens back.
 	current func(name, url string, write func() error) error
 }
 
@@ -318,7 +318,7 @@ func (o *OAuth) claim(pf *pendingFlow) bool {
 //
 // fresh asks the authorization server to sign the person in again rather
 // than take the browser's current session (OpenID Connect's prompt=login;
-// one that does not know it ignores it), for a server with several accounts.
+// one that does not know it ignores it).
 func (o *OAuth) SignIn(ctx context.Context, ia adapter.AuthInteraction, server Server, redirectURI string, fresh bool) error {
 	if server.URL == "" {
 		return fmt.Errorf("%s has no address to sign in to", server.Name)

@@ -771,36 +771,6 @@ export interface McpServer {
   status: McpServerStatus;
   error?: string;
   checkedAt?: string;
-  /**
-   * Further accounts. Each reaches agents as a server of its own, under
-   * `name`; the fields above are the first account, under the plain name.
-   */
-  accounts: McpServerAccount[];
-}
-
-/** One further account of a server, with its own sign-in and own values. */
-export interface McpServerAccount {
-  label: string;
-  /** What agents get it as: `<server>-<label>`. */
-  name: string;
-  /** The env and header names it has a value of its own for. */
-  envNames: string[];
-  headerNames: string[];
-  oauth: boolean;
-  status: McpServerStatus;
-  error?: string;
-  checkedAt?: string;
-}
-
-/**
- * An account on its way to save_mcp_account. A name with a value is the
- * account's own; present and empty keeps its stored one; absent means the
- * server's value.
- */
-export interface McpAccountDraft {
-  label: string;
-  env: Record<string, string>;
-  headers: Record<string, string>;
 }
 
 /**

@@ -403,19 +403,6 @@ type setMCPServerOffArgs struct {
 	Off  []string `json:"off"`
 }
 
-// saveMCPAccountArgs carries an account of a server with its own header and
-// env values, on their way to the secret store; they are never echoed back.
-type saveMCPAccountArgs struct {
-	Server        string           `json:"server"`
-	Account       mcp.AccountDraft `json:"account"`
-	PreviousLabel string           `json:"previousLabel"`
-}
-
-type mcpAccountArgs struct {
-	Server string `json:"server"`
-	Label  string `json:"label"`
-}
-
 type parseMCPServerArgs struct {
 	Text string `json:"text"`
 }

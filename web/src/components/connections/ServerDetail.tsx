@@ -20,8 +20,8 @@ import {
   liveMark,
   offersSignIn,
   serverKind,
+  serverMark,
   serverSaveArgs,
-  statusMark,
   type ServerForm,
 } from "~/lib/connections";
 import { formatAge } from "~/lib/usageFormat";
@@ -29,7 +29,6 @@ import { cn, errorText } from "~/lib/utils";
 import type { McpHarness, McpServer, ThreadMcp } from "~/protocol";
 
 import { AgentSwitches, MarkChip, ServerFields } from "./parts";
-import { ServerAccounts } from "./ServerAccounts";
 
 const ACTION = "h-11 text-[13px] md:h-8 md:text-[12px]";
 
@@ -69,18 +68,16 @@ export function ServerDetail({
   server: McpServer;
   harnesses: McpHarness[];
   command: PageCommand;
-  /** The open thread's reports on this server and its accounts, when it has them. */
-  live: ThreadMcp[];
-  /** The name being reconnected, if any. */
-  reconnecting: string | null;
-  /** The last reconnect that failed, and why. */
-  reconnectError?: { name: string; error: string };
-  onReconnect: (name: string) => void;
+  /** The open thread's report on this server, when it has one. */
+  live?: ThreadMcp;
+  reconnecting: boolean;
+  /** Why the last reconnect of this server failed. */
+  reconnectError?: string;
+  onReconnect: () => void;
   onBack: () => void;
   onSaved: (s: McpServer, previousName?: string) => void;
   onRemoved: (name: string) => void;
-  /** Sign in the server, or one of its accounts, by the name agents get it under. */
-  onSignIn: (name: string) => void;
+  onSignIn: () => void;
 }) {
   const formId = useId();
   const [busy, setBusy] = useState<"check" | "signout" | null>(null);
@@ -98,9 +95,7 @@ export function ServerDetail({
   const confirmed = useRef<McpServer | null>(null);
 
   const kind = serverKind(server);
-  // The box at the top is the server's own sign-in; its accounts speak below.
-  const mark = statusMark(server.status);
-  const hasAccounts = server.accounts.length > 0;
+  const mark = serverMark(server);
 
   const run = async (what: NonNullable<typeof busy>, cmd: string) => {
     setBusy(what);
@@ -188,8 +183,6 @@ export function ServerDetail({
       {header}
       <div className="scroll-thin min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-3 py-3">
         <div className="space-y-3">
-          {/* With accounts, the server's own sign-in is a row among them. */}
-          {!hasAccounts && (
           <div
             className={cn(
               "space-y-1.5 rounded-lg border px-3 py-2",
@@ -208,19 +201,18 @@ export function ServerDetail({
             </p>
             {server.error && <FoldedProblem problem={server.error} tone={server.status === "failed" ? "bad" : "attention"} />}
           </div>
-          )}
 
           {error && <ErrorLine message={error} />}
 
           <div className="flex flex-wrap items-center gap-2">
-            {offerSignIn && !hasAccounts && (
+            {offerSignIn && (
               // Loud only when the server asked for it; after a plain failure
               // it is one thing to try among others.
               <Button
                 variant={server.status === "sign_in" ? "default" : "outline"}
                 size="sm"
                 className={ACTION}
-                onClick={() => onSignIn(server.name)}
+                onClick={onSignIn}
                 disabled={busy !== null}
               >
                 <KeyRoundIcon className="size-3.5" />
@@ -230,10 +222,10 @@ export function ServerDetail({
             {kind === "http" && (
               <Button variant="outline" size="sm" className={ACTION} disabled={busy !== null} onClick={() => void run("check", "check_mcp_server")}>
                 {busy === "check" ? <Spinner className="size-3.5" /> : <RefreshCwIcon className="size-3.5" />}
-                {hasAccounts ? "Check all" : "Check"}
+                Check
               </Button>
             )}
-            {server.oauth && !hasAccounts && (
+            {server.oauth && (
               <Button variant="outline" size="sm" className={ACTION} disabled={busy !== null} onClick={() => void run("signout", "sign_out_mcp_server")}>
                 {busy === "signout" ? <Spinner className="size-3.5" /> : <LogOutIcon className="size-3.5" />}
                 Sign out
@@ -263,59 +255,33 @@ export function ServerDetail({
           </div>
         </div>
 
-        {!hasAccounts && live.length > 0 && (
+        {live && (
           <section aria-label="In this thread" className="space-y-1.5">
             <DetailHeading>In this thread</DetailHeading>
-            <ul className="divide-y rounded-lg border">
-              {live.map((l) => {
-                const failed = reconnectError?.name === l.name ? reconnectError.error : undefined;
-                return (
-                  <li key={l.name} className="space-y-1.5 px-3 py-2">
-                    <div className="flex min-h-8 flex-wrap items-center gap-2">
-                      <MarkChip mark={liveMark(l.status)} />
-                      <span className="text-muted-foreground min-w-0 flex-1 text-[12.5px]">What the agent reports.</span>
-                      {canReconnect(l.status) && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className={cn(ACTION, "ml-auto")}
-                          disabled={reconnecting !== null}
-                          onClick={() => onReconnect(l.name)}
-                        >
-                          {reconnecting === l.name ? <Spinner className="size-3.5" /> : <RotateCwIcon className="size-3.5" />}
-                          Reconnect
-                        </Button>
-                      )}
-                    </div>
-                    {failed ? (
-                      <FoldedProblem problem={`Reconnect failed. ${failed}`} tone="bad" />
-                    ) : (
-                      l.error && <FoldedProblem problem={l.error} tone={l.status === "failed" ? "bad" : "attention"} />
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+            <div className="space-y-1.5 rounded-lg border px-3 py-2">
+              <div className="flex min-h-8 flex-wrap items-center gap-2">
+                <MarkChip mark={liveMark(live.status)} />
+                <span className="text-muted-foreground min-w-0 flex-1 text-[12.5px]">What the agent reports.</span>
+                {canReconnect(live.status) && (
+                  <Button variant="outline" size="sm" className={ACTION} disabled={reconnecting} onClick={onReconnect}>
+                    {reconnecting ? <Spinner className="size-3.5" /> : <RotateCwIcon className="size-3.5" />}
+                    Reconnect
+                  </Button>
+                )}
+              </div>
+              {reconnectError ? (
+                <FoldedProblem problem={`Reconnect failed. ${reconnectError}`} tone="bad" />
+              ) : (
+                live.error && <FoldedProblem problem={live.error} tone={live.status === "failed" ? "bad" : "attention"} />
+              )}
+            </div>
           </section>
         )}
-
-        <ServerAccounts
-          server={server}
-          command={command}
-          live={live}
-          reconnecting={reconnecting}
-          reconnectError={reconnectError}
-          onReconnect={onReconnect}
-          onSaved={(s) => onSaved(s)}
-          onSignIn={onSignIn}
-        />
 
         <section aria-label="Agents that get it" className="space-y-1.5">
           <DetailHeading>Agents that get it</DetailHeading>
           <AgentSwitches harnesses={harnessesFor(harnesses, kind)} off={off} onChange={setAgents} />
-          <p className="text-muted-foreground px-1 text-[12px] leading-snug">
-            {hasAccounts && "Its accounts go to the same agents. "}Takes effect in threads started after the change.
-          </p>
+          <p className="text-muted-foreground px-1 text-[12px] leading-snug">Takes effect in threads started after the change.</p>
         </section>
 
         <section aria-label="Details" className="space-y-1.5">
@@ -336,11 +302,7 @@ export function ServerDetail({
         open={removing}
         onOpenChange={setRemoving}
         title={`Remove ${server.name}?`}
-        description={
-          hasAccounts
-            ? "Every agent loses it and its accounts from the next thread on, and their stored sign-ins and values are deleted."
-            : "Every agent loses it from the next thread on, and its stored sign-in and values are deleted."
-        }
+        description="Every agent loses it from the next thread on, and its stored sign-in and values are deleted."
         confirmLabel="Remove server"
         onConfirm={async () => {
           await command("remove_mcp_server", { name: server.name });

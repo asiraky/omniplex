@@ -24,8 +24,6 @@ var connectionCommands = map[string]bool{
 	"check_mcp_server":     true,
 	"sign_out_mcp_server":  true,
 	"set_mcp_server_off":   true,
-	"save_mcp_account":     true,
-	"remove_mcp_account":   true,
 	"save_cli":             true,
 	"remove_cli":           true,
 	"add_cli_account":      true,
@@ -115,20 +113,6 @@ func (s *Server) connectionsCommand(ctx context.Context, name string, raw json.R
 			return nil, err
 		}
 		return server(conns.SetOff(a.Name, a.Off))
-
-	case "save_mcp_account":
-		a, err := decode[saveMCPAccountArgs](raw)
-		if err != nil {
-			return nil, err
-		}
-		return server(conns.SaveServerAccount(ctx, a.Server, a.Account, a.PreviousLabel))
-
-	case "remove_mcp_account":
-		a, err := decode[mcpAccountArgs](raw)
-		if err != nil {
-			return nil, err
-		}
-		return server(conns.RemoveServerAccount(a.Server, a.Label))
 
 	case "add_found_server":
 		a, err := decode[addFoundServerArgs](raw)
