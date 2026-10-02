@@ -15,7 +15,7 @@ import (
 
 // The omniplex MCP server: `omniplex mcp`, run by a harness as a stdio MCP
 // server beside each thread. It gives the agent omniplex's own tools. Today
-// that is one, show_file.
+// that is one, show_file, and the instructions for when to make an artefact.
 //
 // It is configured entirely by environment, set by the server that started
 // the harness: where that server is, a token that lets this process show
@@ -23,34 +23,36 @@ import (
 
 const mcpShowTool = "show_file"
 
-// showDescription tells the agent what the tool is for. home is where the
-// thread keeps what it makes; cwd is where the agent works.
-func showDescription(home, cwd string) string {
-	var b strings.Builder
-	b.WriteString(`Show the user a file or folder you made for them: a report, a write-up, a plan, a mockup, a clickable prototype, a diagram, a chart, a data export. The user may not be at your machine and cannot browse its files, so this is how they see your work. It appears as a card in the conversation and opens in omniplex's viewer: HTML runs in a sandboxed mini browser, markdown renders, and PDF, images, SVG, audio, video, CSV, JSON and code all preview. Other types download.
-
-The file stays where it is and the viewer reads it live. There are no copies and no versions. To revise it, edit the same file in place, then call show_file again with the same path and a note saying what changed. Never make report-v2.md next to report.md: overwrite report.md.
-
-`)
+// serverInstructions go to the agent with the server, before any tool is
+// loaded. Harnesses that defer MCP tools show only the tool's name until the
+// agent searches for it, so the choice between an artefact and a code change
+// has to be made here, not in the tool description. home is the project
+// folder artefacts live in.
+func serverInstructions(home string) string {
+	where := "the project folder"
 	if home != "" {
-		fmt.Fprintf(&b, "Where to put it. Put what you make for the user in %s, the project's folder for these things, unless they asked for it somewhere else. Give each one a clear name, since that is the title the user sees.", home)
-		if cwd != "" && !within(home, cwd) {
-			b.WriteString(" Your working directory is a git repository or a copy of one. Files you make there show up in the user's diff and can get committed, so do not put deliverables in it.")
-		}
-		b.WriteString("\n\n")
+		where += ", " + home
 	}
-	b.WriteString(`What to show. Deliverables meant for a person: reports, specs, plans, briefs, research summaries, comparisons, mockups and prototypes, diagrams, charts, data exports, drafts of emails or documents, generated images or audio. Not: scratch or intermediate files, logs, test or build output, dependencies, secrets. When the task is a change to the code (a fix, a feature, a refactor), the diff is the deliverable: edit the project and show nothing. Show something when the user wants to read it, look at it or decide on it. A file the user attached is already in front of them; show it again only after you have changed it.
+	return `You have two kinds of output: code changes and artefacts. An artefact is a self-contained file the user opens from the conversation: a report, plan, spec, research write-up, comparison, design, mockup, prototype, diagram, chart, data export or draft. Choose the kind before you start work.
 
-Formats. Prefer what the viewer renders: markdown for documents, HTML for anything interactive or visually designed, CSV for tables, SVG or PNG for diagrams and charts. A multi-file HTML prototype is a folder with index.html in it: show the folder, and relative links, scripts, styles and images work. Keep it self-contained, with no build step and no server. Hidden files and node_modules are never part of a folder.
+- A request for something to read, look at or decide on: artefact.
+- A request that changes how a codebase behaves (a fix, a feature, a refactor): code change.
+- In a repository, a design request can be either a new look to explore (artefact) or a change to the app's UI (code change). Judge from the request, and ask the user when it could be either.
 
-Only the user shares. Sharing takes a snapshot for a link; your later edits reach it only when they update the link.`)
-	return b.String()
+Artefacts live in ` + where + `. Use markdown for documents, HTML for anything visual or interactive, CSV for tables, SVG for diagrams. An HTML artefact opens directly in a browser: one file with inline CSS and JS, or a folder with index.html when it needs images. Write it there, then present it with mcp__omniplex__` + mcpShowTool + `.`
 }
 
-func within(root, p string) bool {
-	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
+// showDescription is how to present an artefact once the agent has chosen to
+// make one. When to make one is in serverInstructions.
+const showDescription = `Present an artefact to the user: a file or folder you made for them. It appears as a card in the conversation and opens in omniplex's viewer: HTML runs in a sandboxed mini browser, markdown renders, and PDF, images, SVG, audio, video, CSV, JSON and code all preview. Other types download.
+
+The file stays where it is and the viewer reads it live. There are no copies and no versions. To revise it, edit the same file in place, then call show_file again with the same path and a note saying what changed: overwrite report.md rather than writing report-v2.md beside it.
+
+For a folder, show the folder: it opens on its index.html, and relative links, scripts, styles and images work. Hidden files and node_modules are never part of a folder.
+
+A file the user attached is already in front of them; show it again only after you have changed it.
+
+Only the user shares. Sharing takes a snapshot for a link; your later edits reach it only when they update the link.`
 
 type rpcMsg struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -68,7 +70,6 @@ func runMCP(in io.Reader, out io.Writer) error {
 	base := os.Getenv("OMNIPLEX_URL")
 	token := os.Getenv("OMNIPLEX_AGENT_TOKEN")
 	home := os.Getenv("OMNIPLEX_HOME")
-	cwd, _ := os.Getwd()
 	enc := json.NewEncoder(out)
 	reply := func(id json.RawMessage, result any, e *rpcErr) {
 		msg := map[string]any{"jsonrpc": "2.0", "id": id}
@@ -102,13 +103,14 @@ func runMCP(in io.Reader, out io.Writer) error {
 				"protocolVersion": p.ProtocolVersion,
 				"capabilities":    map[string]any{"tools": map[string]any{}},
 				"serverInfo":      map[string]any{"name": "omniplex", "version": "0.1.0"},
+				"instructions":    serverInstructions(home),
 			}, nil)
 		case "ping":
 			reply(m.ID, map[string]any{}, nil)
 		case "tools/list":
 			reply(m.ID, map[string]any{"tools": []any{map[string]any{
 				"name":        mcpShowTool,
-				"description": showDescription(home, cwd),
+				"description": showDescription,
 				"inputSchema": map[string]any{
 					"type":     "object",
 					"required": []string{"path"},
