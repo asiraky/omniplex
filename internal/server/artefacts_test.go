@@ -334,3 +334,54 @@ func TestSharedPageGetsAViewportOnlyWhenItHasNone(t *testing.T) {
 		t.Fatalf("a viewport after the head counted: %q", late)
 	}
 }
+
+func TestRootRelativeURLsStayInsideTheArtefact(t *testing.T) {
+	r := newArtefactRig(t)
+	site := r.write(t, "site", map[string]string{
+		"dist/index.html":          `<html><head><link rel="stylesheet" href="/style.css"><link rel="icon" href="/favicon.svg"></head><body><a href="/insights/">i</a></body></html>`,
+		"dist/style.css":           `body{background:url(/bg.png)}`,
+		"dist/insights/index.html": `<html><body>insights</body></html>`,
+		"README.md":                "x",
+	})
+	_, shown := r.show(t, r.agent, site)
+	id := shown["artefactId"].(string)
+	page := post(t, r.api(id)+"/preview", "")["url"].(string)
+	prefix := strings.Join(strings.Split(page, "/")[:3], "/") // /p/<token>
+	share := send(t, "POST", r.api(id)+"/share")["share"].(map[string]any)["url"].(string)
+	_, entry := get(t, share) // follows the redirect to the entry
+	sharePrefix := strings.TrimPrefix(strings.TrimSuffix(share, "/"), r.local.URL)
+
+	for _, route := range []struct{ prefix, origin, body string }{
+		{prefix, r.remote.URL, ""},
+		{sharePrefix, r.local.URL, entry},
+	} {
+		body := route.body
+		if body == "" {
+			_, body = get(t, route.origin+route.prefix+"/dist/index.html")
+		}
+		root := route.prefix + "/dist/"
+		for _, want := range []string{`href="` + root + `style.css"`, `href="` + root + `favicon.svg"`, `href="` + root + `insights/"`} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s: page lacks %s: %s", route.prefix, want, body)
+			}
+		}
+		if _, css := get(t, route.origin+root+"style.css"); css != "body{background:url("+root+"bg.png)}" {
+			t.Fatalf("%s: stylesheet %q", route.prefix, css)
+		}
+		// A folder opens on its index.html, with or without its slash.
+		for _, p := range []string{"insights/", "insights"} {
+			res, body := get(t, route.origin+root+p)
+			if res.StatusCode != 200 || !strings.Contains(body, "insights") || !strings.HasSuffix(res.Request.URL.Path, "/insights/") {
+				t.Fatalf("%s%s: %d at %s", route.prefix, p, res.StatusCode, res.Request.URL.Path)
+			}
+		}
+		// A file the artefact does not have is not the app's.
+		if res, _ := get(t, route.origin+root+"favicon.svg"); res.StatusCode != 404 {
+			t.Fatalf("%s: missing favicon: %d", route.prefix, res.StatusCode)
+		}
+	}
+	// The bare preview root opens the entry.
+	if res, _ := get(t, r.remote.URL+prefix+"/"); res.StatusCode != 200 || !strings.HasSuffix(res.Request.URL.Path, "/dist/index.html") {
+		t.Fatalf("preview root: %d at %s", res.StatusCode, res.Request.URL.Path)
+	}
+}

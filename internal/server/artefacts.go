@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,9 +26,10 @@ const (
 	// sandboxCSP makes a served document its own opaque origin: its scripts
 	// run, but cannot read the app's cookies, storage or API.
 	sandboxCSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
-	// bridgeLimit caps the HTML the token routes will read into memory to
-	// add the bridge. Anything larger is served as it is, without one.
-	bridgeLimit = 8 << 20
+	// rewriteLimit caps the HTML and CSS the token routes will read into
+	// memory to add the bridge and point root-relative URLs at the artefact.
+	// Anything larger is served as it is.
+	rewriteLimit = 8 << 20
 )
 
 func (s *Server) routeArtefacts(mux *http.ServeMux) {
@@ -140,7 +142,7 @@ func (s *Server) handleRawArtefact(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	serveArtefactFile(w, r, p, false)
+	serveArtefactFile(w, r, p, "")
 }
 
 // handlePreviewArtefact mints a short-lived URL for the in-app viewer. The
@@ -246,12 +248,9 @@ func (s *Server) handlePreviewToken(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	p, err := artefact.Resolve(a.Path, a.Dir, r.PathValue("path"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	serveArtefactFile(w, r, p, true)
+	serveTokenPath(w, r, "/p/"+r.PathValue("token"), a.Entry, func(rel string) (string, error) {
+		return artefact.Resolve(a.Path, a.Dir, rel)
+	})
 }
 
 // handleShareToken serves a share's snapshot to whoever holds the link.
@@ -270,26 +269,58 @@ func (s *Server) handleShareToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, deadLink, http.StatusNotFound)
 		return
 	}
+	serveTokenPath(w, r, "/s/"+r.PathValue("token"), sh.Entry, func(rel string) (string, error) {
+		return s.artefacts.OpenShared(c.Thread, c.Artefact, rel)
+	})
+}
+
+// serveTokenPath serves a path on a token route, under prefix ("/p/<token>").
+// The page is the site there, so paths resolve as a web server would: the
+// bare root opens the entry, a folder its index.html, and a folder named
+// without its trailing slash gets one, so the page's relative URLs resolve
+// inside it.
+func serveTokenPath(w http.ResponseWriter, r *http.Request, prefix, entry string, resolve func(rel string) (string, error)) {
 	rel := r.PathValue("path")
+	query := ""
+	if r.URL.RawQuery != "" {
+		query = "?" + r.URL.RawQuery
+	}
 	if rel == "" {
-		// The bare link, or one missing its trailing slash: send it to the
-		// entry so relative URLs inside resolve under the token.
-		http.Redirect(w, r, "/s/"+r.PathValue("token")+"/"+escapePath(sh.Entry), http.StatusFound)
+		http.Redirect(w, r, prefix+"/"+escapePath(entry)+query, http.StatusFound)
 		return
 	}
-	p, err := s.artefacts.OpenShared(c.Thread, c.Artefact, rel)
+	if strings.HasSuffix(rel, "/") {
+		rel += "index.html"
+	}
+	p, err := resolve(rel)
 	if err != nil {
+		if _, ierr := resolve(rel + "/index.html"); ierr == nil {
+			http.Redirect(w, r, prefix+"/"+escapePath(rel)+"/"+query, http.StatusFound)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
-	serveArtefactFile(w, r, p, true)
+	serveArtefactFile(w, r, p, siteRoot(prefix, entry))
+}
+
+// siteRoot is the URL a page's root-relative links ("/style.css") are
+// served from: the folder its entry is in, under the token. A folder whose
+// index.html is in dist/ is a site rooted at dist/.
+func siteRoot(prefix, entry string) string {
+	if dir := path.Dir(entry); dir != "." {
+		return prefix + "/" + escapePath(dir) + "/"
+	}
+	return prefix + "/"
 }
 
 // serveArtefactFile writes one file. The raw route is same-origin with the
 // app, so a document served there is sandboxed with no scripts at all; the
-// token routes let scripts run in an opaque origin. bridge adds the viewer
-// bridge to HTML.
-func serveArtefactFile(w http.ResponseWriter, r *http.Request, p string, bridge bool) {
+// token routes let scripts run in an opaque origin. root is where a token
+// route serves the page's site from, and empty on the raw route; on a token
+// route HTML gets the viewer bridge, and HTML and CSS have their root-relative
+// URLs pointed at root.
+func serveArtefactFile(w http.ResponseWriter, r *http.Request, p string, root string) {
 	f, err := os.Open(p)
 	if err != nil {
 		http.NotFound(w, r)
@@ -308,7 +339,7 @@ func serveArtefactFile(w http.ResponseWriter, r *http.Request, p string, bridge 
 	// The files are live: the agent revises them in place. Revalidate every
 	// time; an unchanged file costs a 304.
 	h.Set("Cache-Control", "private, no-cache")
-	tokenised := strings.HasPrefix(r.URL.Path, "/p/") || strings.HasPrefix(r.URL.Path, "/s/")
+	tokenised := root != ""
 	if tokenised {
 		// The token is the whole credential: a link out of the page must not
 		// carry it to another site in the Referer.
@@ -329,10 +360,16 @@ func serveArtefactFile(w http.ResponseWriter, r *http.Request, p string, bridge 
 	if r.URL.Query().Get("download") == "1" {
 		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(p)}))
 	}
-	if bridge && strings.HasPrefix(mediaType, "text/html") && info.Size() <= bridgeLimit {
+	html, css := strings.HasPrefix(mediaType, "text/html"), strings.HasPrefix(mediaType, "text/css")
+	if tokenised && (html || css) && info.Size() <= rewriteLimit {
 		body, err := io.ReadAll(f)
 		if err == nil {
-			http.ServeContent(w, r, "", info.ModTime(), bytes.NewReader(injectBridge(body)))
+			if html {
+				body = injectBridge(rootURLsHTML(body, root))
+			} else {
+				body = rootURLsCSS(body, root)
+			}
+			http.ServeContent(w, r, "", info.ModTime(), bytes.NewReader(body))
 			return
 		}
 	}
