@@ -43,6 +43,7 @@ const FOLDED: Record<SectionKind, boolean> = {
   private: false,
   project: false,
   synced: true,
+  omniplex: true,
   claude: true,
   system: true,
   plugins: true,
@@ -355,6 +356,11 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
         if (!searching) {
           note = !list.claudeSync ? "Off. Claude won't load these." : skills.length === 0 ? "None synced yet." : undefined;
         }
+        break;
+      case "omniplex":
+        if (skills.length === 0) return null;
+        title = "Omniplex";
+        if (!searching) note = "Ships with Omniplex and reaches every session. Read-only.";
         break;
       case "claude":
         title = "Claude Code built-in";

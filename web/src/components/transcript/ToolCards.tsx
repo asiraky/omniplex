@@ -68,7 +68,7 @@ export function ToolCard({ item }: { item: Item }) {
         <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">
           {item.title || "tool"}
         </span>
-        <StatusMark status={item.status} />
+        <StatusMark status={item.status as ToolStatus | undefined} />
         {output && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
             {open ? "hide" : `${output.split("\n").length} lines`}

@@ -2,7 +2,7 @@
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Artefact, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
+import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 
 export function emptyState(threadId: string): ThreadState {
@@ -434,20 +434,43 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         pendingPermissions: s.pendingPermissions.filter((x) => x.requestId !== p.requestId),
       };
 
-	case "elicitation.requested":
-		return {
-			...s,
-			pendingElicitations: [
-				...(s.pendingElicitations ?? []),
-				{ requestId: p.requestId, prompt: p.prompt, schema: p.schema ?? {} },
-			],
-		};
+    case "elicitation.requested": {
+      const pendingElicitations = [
+        ...(s.pendingElicitations ?? []),
+        { requestId: p.requestId, prompt: p.prompt, schema: p.schema ?? {}, ...(p.card ? { card: p.card } : {}) },
+      ];
+      if (!p.card) return { ...s, pendingElicitations };
+      // A card is also a row in the transcript, where it stays once answered
+      // to say what was done. Mirrors internal/projection/state.go.
+      return {
+        ...s,
+        pendingElicitations,
+        items: upsert(s, `card:${p.requestId}`, (it) => {
+          it.kind = "card";
+          it.receivedAt ??= ev.timestamp;
+          it.turnId = p.turnId || undefined;
+          it.card = p.card;
+          it.status = "pending";
+        }),
+      };
+    }
 
-	case "elicitation.resolved":
-		return {
-			...s,
-			pendingElicitations: (s.pendingElicitations ?? []).filter((x) => x.requestId !== p.requestId),
-		};
+    case "elicitation.resolved": {
+      const pendingElicitations = (s.pendingElicitations ?? []).filter((x) => x.requestId !== p.requestId);
+      const id = `card:${p.requestId}`;
+      // Only a card row this window holds: one paged out is updated on the
+      // server, and an upsert here would append an orphan at the tail.
+      if (!s.items.some((it) => it.id === id)) return { ...s, pendingElicitations };
+      const outcome = p.value as CardOutcome | undefined;
+      return {
+        ...s,
+        pendingElicitations,
+        items: upsert(s, id, (it) => {
+          it.status = outcome?.result ?? (p.action === "decline" ? "declined" : "cancelled");
+          it.outcome = outcome;
+        }),
+      };
+    }
 
     default:
       return s;

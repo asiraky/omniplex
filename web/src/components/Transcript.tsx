@@ -4,6 +4,7 @@ import { useLayoutEffect } from "react";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import type { Artefact } from "~/lib/artefacts";
+import type { CardSignIn } from "~/lib/cards";
 import { cn } from "~/lib/utils";
 import type { ComposerItem, Job, PullRequest, ThreadState, Turn } from "~/protocol";
 import { useAutoScroll } from "~/useAutoScroll";
@@ -90,6 +91,8 @@ type TranscriptProps = {
   onPickRecent?: (item: ComposerItem) => void;
   /** Takes a queued prompt back before it runs. */
   onDequeue?: (queueId: string) => void;
+  /** Opens the sign-in a saved card offers. */
+  onCardSignIn?: (target: CardSignIn) => void;
 };
 
 // Anchored to the scroller rather than to the content, so it sits in
@@ -139,6 +142,7 @@ export function Transcript({
   recentsSeeded = false,
   onPickRecent,
   onDequeue,
+  onCardSignIn,
   ...interruptedProps
 }: TranscriptProps) {
   // Follow the tail unless the reader has scrolled up; the button below is
@@ -235,6 +239,7 @@ export function Transcript({
               jobs={jobs}
               onOpenJobs={onOpenJobs}
               recoveredTurns={recoveredTurns}
+              onCardSignIn={onCardSignIn}
             />
           ))}
 

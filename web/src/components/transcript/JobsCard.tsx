@@ -49,7 +49,7 @@ export function JobsCard({
                 : job.status === "failed"
                   ? "failed"
                   : "cancelled"
-            : item.status;
+            : (item.status as ToolStatus | undefined);
           const tokens = job?.usage.totalTokens;
           return (
             <li key={item.id} className="flex min-w-0 items-center gap-2 text-[13px]">

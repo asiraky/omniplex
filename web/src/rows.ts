@@ -102,6 +102,7 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       // not share a key.
       let hidden: Item[] = [];
       const produced: Item[] = [];
+      const decided: Item[] = [];
       const flush = () => {
         if (hidden.length > 0)
           rows.push({ kind: "fold", id: `fold:${hidden[0].id}`, turn: turnById.get(turnId)!, items: hidden });
@@ -112,6 +113,12 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
         if (it === answer) continue;
         if (it.kind === "artefact") {
           produced.push(it);
+          continue;
+        }
+        // A change the agent proposed was the user's decision: what they
+        // decided stays in view, under the answer.
+        if (it.kind === "card") {
+          decided.push(it);
           continue;
         }
         // The prompt stays where the reader can see what was asked.
@@ -131,6 +138,7 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       }
       flush();
       if (answer) rows.push({ kind: "item", item: answer });
+      for (const it of decided) rows.push({ kind: "item", item: it });
       if (produced.length > 0)
         rows.push({ kind: "artefacts", id: `artefacts:${produced[0].id}`, items: latestPerArtefact(produced) });
       i = j;

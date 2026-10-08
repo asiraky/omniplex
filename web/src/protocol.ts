@@ -51,7 +51,7 @@ export interface PromptImage {
 
 export interface Item {
   id: string;
-  kind: "message" | "tool" | "notice" | "artefact";
+  kind: "message" | "tool" | "notice" | "artefact" | "card";
   turnId?: string;
   /** The Task/Agent tool call this item's work happened inside, for subagents. */
   parentId?: string;
@@ -64,7 +64,8 @@ export interface Item {
   images?: PromptImage[];
   toolKind?: ToolKind;
   title?: string;
-  status?: ToolStatus;
+  /** A tool's status, or for a card "pending" until answered, then its result. */
+  status?: ToolStatus | CardResult;
   input?: unknown;
   content?: ToolContent[];
   // notice
@@ -77,6 +78,9 @@ export interface Item {
   artefactId?: string;
   mediaType?: string;
   size?: number;
+  // card: what the agent proposed, and once answered, what happened
+  card?: Card;
+  outcome?: CardOutcome;
 }
 
 /** One file the thread changed, aggregated across the whole thread. */
@@ -233,6 +237,125 @@ export interface PendingElicitation {
     required?: string[];
     "x-url"?: string;
   };
+  /** Set when the agent raised this through Omniplex's own tools: a change to
+      Omniplex itself, answered with resolve_card rather than as a question. */
+  card?: Card;
+}
+
+// ---- cards: changes an agent proposes through `omniplex mcp` ----
+//
+// A card is an elicitation with a `card`. It never carries a secret value: a
+// value the agent passed is held in the server's memory with the pending card,
+// and the card says only that one is held.
+
+export type CardKind =
+  | "add_mcp_server"
+  | "remove_mcp_server"
+  | "install_skill"
+  | "create_skill"
+  | "remove_skill"
+  | "add_sign_in"
+  | "add_account";
+
+export type CardScope = "project" | "everywhere";
+
+/** An env var or header the server needs. Held: the agent passed a value. */
+export interface CardSecret {
+  name: string;
+  held: boolean;
+}
+
+export interface CardServer {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: CardSecret[];
+  headers?: CardSecret[];
+}
+
+export interface CardStagedSkill {
+  name: string;
+  description: string;
+  files: { path: string; size: number }[];
+  picked?: boolean;
+  problem?: string;
+}
+
+/** Where a skill can go; the same shape as the Skills page's destinations. */
+export interface CardDestination {
+  kind: "project" | "repo" | "personal";
+  /** "" for personal. */
+  folder: string;
+  label: string;
+  main?: boolean;
+}
+
+/** A sign-in definition as the agent proposed it. */
+export interface CardCli {
+  id?: string;
+  name: string;
+  statusCommand: string;
+  signedInPattern?: string;
+  signInCommand: string;
+  prepareCommand?: string;
+  accountEnv?: Record<string, string>;
+  accounts?: string[];
+}
+
+export interface Card {
+  kind: CardKind;
+  /** The thread's project; "" when it has none, and only everywhere is possible. */
+  projectId?: string;
+  projectName?: string;
+  // add_mcp_server
+  scope?: CardScope;
+  server?: CardServer;
+  /** A server of that name already exists in the proposed scope. */
+  replaces?: boolean;
+  /** Who gets it. */
+  harnesses?: { id: string; name: string }[];
+  // remove_mcp_server, remove_skill
+  remove?: { name: string; detail?: string; scope?: string };
+  // install_skill
+  staged?: { id: string; source: string; skills: CardStagedSkill[] };
+  // create_skill
+  skill?: { name: string; description: string; content: string };
+  // install_skill, create_skill: a destination's folder, "" for personal
+  destination?: string;
+  destinations?: CardDestination[];
+  // add_sign_in
+  cli?: CardCli;
+  // add_account
+  account?: { cli: string; cliName?: string; name: string };
+}
+
+export type CardResult = "pending" | "saved" | "declined" | "cancelled";
+
+/** What became of a card: resolve_card's reply, and the stored resolution. */
+export interface CardOutcome {
+  result: Exclude<CardResult, "pending">;
+  edited?: boolean;
+  summary?: string;
+  server?: { name: string; project?: string };
+  /** A remote server that signs in with OAuth: offer Sign in. */
+  needsSignIn?: boolean;
+  /** A sign-in or account was saved: offer Sign in on each account. */
+  cli?: { id: string; name?: string; accounts: string[] };
+  skills?: string[];
+  destination?: string;
+  live?: "now" | "next_turn" | "next_session";
+}
+
+/** resolve_card's edits: only what the user changed. Values are never echoed back. */
+export interface CardEdits {
+  scope?: CardScope;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  skills?: string[];
+  destination?: string;
+  cli?: Partial<CardCli>;
+  name?: string;
 }
 
 export interface Usage {
