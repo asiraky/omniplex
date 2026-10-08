@@ -4,7 +4,7 @@ import { useState } from "react";
 import { DestinationPicker } from "~/components/skills/parts";
 import { ProblemText } from "~/components/tools/parts";
 import { Checkbox } from "~/components/ui/checkbox";
-import { createEdits, installEdits, startTicks } from "~/lib/cards";
+import { createEdits, installEdits, pickedFirst, startTicks } from "~/lib/cards";
 import { fmtSize } from "~/lib/skills";
 import { cn } from "~/lib/utils";
 import type { Card, CardStagedSkill } from "~/protocol";
@@ -13,7 +13,7 @@ import { CardFrame, Code, Fact, HarnessFact, type CardControl } from "./CardFram
 
 /** install_skill: what the source holds, which of it to install, and where. */
 export function InstallCard({ card, ctl }: { card: Card; ctl: CardControl }) {
-  const skills = card.staged?.skills ?? [];
+  const skills = pickedFirst(card.staged?.skills ?? []);
   const [ticked, setTicked] = useState<string[]>(() => startTicks(skills));
   const [destination, setDestination] = useState(card.destination ?? "");
   const [expanded, setExpanded] = useState<string | null>(null);

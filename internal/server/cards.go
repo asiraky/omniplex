@@ -556,10 +556,10 @@ func (s *Server) applySkillCard(ctx context.Context, c *heldCard, e cardEdits, h
 		folder = *e.Destination
 		changed = append(changed, "the destination")
 	}
-	label := ""
+	label, phrase := "", ""
 	for _, d := range roots.Destinations() {
 		if d.Folder == folder {
-			label = d.Label
+			label, phrase = d.Label, d.Phrase()
 		}
 	}
 	if label == "" {
@@ -598,7 +598,7 @@ func (s *Server) applySkillCard(ctx context.Context, c *heldCard, e cardEdits, h
 		verb = "Created "
 	}
 	return cardOutcome{
-		Summary:     verb + strings.Join(names, ", ") + " in " + label,
+		Summary:     verb + strings.Join(names, ", ") + " in " + phrase,
 		Skills:      names,
 		Destination: label,
 		Live:        skillLive(harness, c.claudeHad[folder]),

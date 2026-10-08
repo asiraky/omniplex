@@ -9,6 +9,7 @@ import {
   signInEdits,
   signInTargets,
   startScope,
+  pickedFirst,
   startTicks,
   type McpChoices,
 } from "~/lib/cards";
@@ -113,6 +114,15 @@ describe("startTicks", () => {
 
   it("ticks nothing in a source of many when the agent picked none", () => {
     expect(startTicks([staged("a"), staged("b")])).toEqual([]);
+  });
+});
+
+describe("pickedFirst", () => {
+  it("lists the agent's picks first and keeps source order within each group", () => {
+    const names = pickedFirst([staged("a"), staged("b", { picked: true }), staged("c"), staged("d", { picked: true })]).map(
+      (s) => s.name,
+    );
+    expect(names).toEqual(["b", "d", "a", "c"]);
   });
 });
 

@@ -665,9 +665,9 @@ func (s *Server) proposeSkill(ctx context.Context, t toolThread, c *heldCard, ca
 	card.Destination = &folder
 	card.Destinations = roots.Destinations()
 	if c.kind == cardCreateSkill {
-		return "Create the skill " + a.Name + " in " + dest.Label, nil
+		return "Create the skill " + a.Name + " in " + dest.Phrase(), nil
 	}
-	return "Install skills from " + card.Staged.Source + " into " + dest.Label, nil
+	return "Install skills from " + card.Staged.Source + " into " + dest.Phrase(), nil
 }
 
 func (s *Server) proposeRemoveSkill(ctx context.Context, t toolThread, c *heldCard, card *cardJSON, body []byte) (string, error) {

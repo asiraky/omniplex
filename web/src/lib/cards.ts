@@ -108,6 +108,11 @@ export function startTicks(skills: CardStagedSkill[]): string[] {
   return picked;
 }
 
+/** The agent's picks first, so they are not buried in a source of dozens; otherwise in source order. */
+export function pickedFirst(skills: CardStagedSkill[]): CardStagedSkill[] {
+  return [...skills.filter((s) => s.picked), ...skills.filter((s) => !s.picked)];
+}
+
 export function installEdits(card: Card, ticked: string[], destination: string): CardEdits | undefined {
   const edits: CardEdits = {};
   // Measured against what the server would install unasked, not against the
