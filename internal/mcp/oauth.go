@@ -71,14 +71,14 @@ type OAuth struct {
 	// pending are the sign-ins waiting for their code, keyed by state.
 	// Completing one removes it, so a state is good for exactly one code.
 	pending map[string]*pendingFlow
-	// locks serialise token writes per server, so two sessions starting at
-	// once refresh once (a rotated refresh token is single use).
+	// locks serialise token writes per server key, so two sessions
+	// starting at once refresh once (a rotated refresh token is single use).
 	locks map[string]*sync.Mutex
-	// current, when set, runs a token write only while name still names a
-	// server at url, and refuses it otherwise. A sign-in or a refresh that
-	// finishes after the server was removed, renamed or moved must not
+	// current, when set, runs a token write only while key is still the key
+	// of a server at url, and refuses it otherwise. A sign-in or a refresh
+	// that finishes after the server was removed, renamed or moved must not
 	// write its tokens back.
-	current func(name, url string, write func() error) error
+	current func(key, url string, write func() error) error
 }
 
 // NewOAuth returns a client storing credentials in secrets. A nil client
@@ -103,7 +103,7 @@ func RedirectURI(origin string, port int) string {
 	return "http://localhost:" + strconv.Itoa(port) + CallbackPath
 }
 
-// tokenRecord is the `oauth` secret of one server.
+// tokenRecord is the `oauth` secret of one server, under its key.
 type tokenRecord struct {
 	AccessToken   string    `json:"accessToken"`
 	RefreshToken  string    `json:"refreshToken,omitempty"`
@@ -140,19 +140,19 @@ func registrationKey(issuer, redirectURI string) string {
 	return "client." + hex.EncodeToString(sum[:16])
 }
 
-func (o *OAuth) lockFor(name string) *sync.Mutex {
+func (o *OAuth) lockFor(key string) *sync.Mutex {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	l, ok := o.locks[name]
+	l, ok := o.locks[key]
 	if !ok {
 		l = &sync.Mutex{}
-		o.locks[name] = l
+		o.locks[key] = l
 	}
 	return l
 }
 
-func (o *OAuth) load(name string) (tokenRecord, bool) {
-	raw, ok := o.secrets.Get(name, OAuthKey)
+func (o *OAuth) load(key string) (tokenRecord, bool) {
+	raw, ok := o.secrets.Get(secretID(key), OAuthKey)
 	if !ok {
 		return tokenRecord{}, false
 	}
@@ -168,26 +168,28 @@ func (o *OAuth) save(server Server, rec tokenRecord) error {
 	if err != nil {
 		return err
 	}
-	put := func() error { return o.secrets.Put(server.Name, OAuthKey, string(b)) }
+	key := server.Key()
+	put := func() error { return o.secrets.Put(secretID(key), OAuthKey, string(b)) }
 	if o.current == nil {
 		return put()
 	}
-	return o.current(server.Name, server.URL, put)
+	return o.current(key, server.URL, put)
 }
 
-// SignedIn reports whether the server holds tokens from a sign-in through
-// Omniplex.
-func (o *OAuth) SignedIn(name string) bool {
-	_, ok := o.load(name)
+// SignedIn reports whether the server with this key (see Server.Key) holds
+// tokens from a sign-in through Omniplex.
+func (o *OAuth) SignedIn(key string) bool {
+	_, ok := o.load(key)
 	return ok
 }
 
-// SignOut forgets the server's tokens. Its other secrets stay.
-func (o *OAuth) SignOut(name string) error {
-	l := o.lockFor(name)
+// SignOut forgets the tokens of the server with this key. Its other secrets
+// stay.
+func (o *OAuth) SignOut(key string) error {
+	l := o.lockFor(key)
 	l.Lock()
 	defer l.Unlock()
-	return o.secrets.Delete(name, OAuthKey)
+	return o.secrets.Delete(secretID(key), OAuthKey)
 }
 
 // Token returns a usable access token for the server, refreshing it when it
@@ -208,11 +210,12 @@ func (o *OAuth) Refresh(ctx context.Context, server Server, rejected string) (st
 }
 
 func (o *OAuth) token(ctx context.Context, server Server, rejected string) (string, error) {
-	l := o.lockFor(server.Name)
+	key := server.Key()
+	l := o.lockFor(key)
 	l.Lock()
 	defer l.Unlock()
 
-	rec, ok := o.load(server.Name)
+	rec, ok := o.load(key)
 	if !ok || server.URL == "" || !sameOrigin(rec.URL, server.URL) {
 		return "", ErrSignInNeeded
 	}
@@ -242,7 +245,7 @@ func (o *OAuth) token(ctx context.Context, server Server, rejected string) (stri
 	if err != nil {
 		var te *tokenError
 		if errors.As(err, &te) && te.refused() {
-			_ = o.secrets.Delete(server.Name, OAuthKey)
+			_ = o.secrets.Delete(secretID(key), OAuthKey)
 			return "", fmt.Errorf("%w: %v", ErrSignInNeeded, err)
 		}
 		if !force && rec.Expiry.After(now) {
@@ -946,7 +949,7 @@ func (o *OAuth) exchange(ctx context.Context, server Server, d discovery, reg re
 	if rec.Scope == "" {
 		rec.Scope = d.scope
 	}
-	l := o.lockFor(server.Name)
+	l := o.lockFor(server.Key())
 	l.Lock()
 	defer l.Unlock()
 	return o.save(server, rec)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -40,8 +41,11 @@ type Connections struct {
 	oauth  *OAuth
 	prober *Prober
 	hosts  func() []Host
-	port   int
-	logf   func(string, ...any)
+	// folders lists the paths of a project's folders; an unknown project
+	// is an error.
+	folders func(ctx context.Context, projectID string) ([]string, error)
+	port    int
+	logf    func(string, ...any)
 
 	cliMu  sync.Mutex
 	checks map[string]map[string]accountCheck
@@ -54,24 +58,31 @@ type accountCheck struct {
 
 // NewConnections ties the store to an OAuth client and a prober sharing
 // client (nil means http.DefaultClient). port is this server's, for the
-// loopback OAuth callback; hosts lists the harnesses that take MCP servers.
-func NewConnections(store *Store, client *http.Client, port int, hosts func() []Host, logf func(string, ...any)) *Connections {
+// loopback OAuth callback; hosts lists the harnesses that take MCP servers,
+// and folders the paths of a project's folders (nil knows no projects).
+func NewConnections(store *Store, client *http.Client, port int, hosts func() []Host, folders func(context.Context, string) ([]string, error), logf func(string, ...any)) *Connections {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	if hosts == nil {
 		hosts = func() []Host { return nil }
 	}
+	if folders == nil {
+		folders = func(_ context.Context, id string) ([]string, error) {
+			return nil, fmt.Errorf("no project %q", id)
+		}
+	}
 	oauth := NewOAuth(store.Secrets(), client)
 	oauth.current = store.whileCurrent
 	return &Connections{
-		store:  store,
-		oauth:  oauth,
-		prober: NewProber(client),
-		hosts:  hosts,
-		port:   port,
-		logf:   logf,
-		checks: map[string]map[string]accountCheck{},
+		store:   store,
+		oauth:   oauth,
+		prober:  NewProber(client),
+		hosts:   hosts,
+		folders: folders,
+		port:    port,
+		logf:    logf,
+		checks:  map[string]map[string]accountCheck{},
 	}
 }
 
@@ -90,22 +101,25 @@ type HarnessView struct {
 }
 
 // ServerView is a server as a client sees it: names of its credentials,
-// never their values.
+// never their values. Project is empty for one that goes everywhere.
 type ServerView struct {
 	Name        string     `json:"name"`
+	Project     string     `json:"project,omitempty"`
 	URL         string     `json:"url,omitempty"`
 	Command     string     `json:"command,omitempty"`
 	Args        []string   `json:"args,omitempty"`
 	EnvNames    []string   `json:"envNames"`
 	HeaderNames []string   `json:"headerNames"`
 	Off         []string   `json:"off"`
+	OffIn       []string   `json:"offIn"`
 	OAuth       bool       `json:"oauth"`
 	Status      string     `json:"status"`
 	Error       string     `json:"error,omitempty"`
 	CheckedAt   *time.Time `json:"checkedAt,omitempty"`
 }
 
-// FoundView is a server a harness's own config defines.
+// FoundView is a server a harness's own config defines. Project is set on
+// one found in a project's folder; adding it adds it to that project.
 type FoundView struct {
 	Name    string   `json:"name"`
 	Harness string   `json:"harness"`
@@ -113,6 +127,7 @@ type FoundView struct {
 	URL     string   `json:"url,omitempty"`
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
+	Project string   `json:"project,omitempty"`
 	Added   bool     `json:"added"`
 }
 
@@ -146,8 +161,11 @@ type Listing struct {
 }
 
 // List answers from what is stored and cached; it never checks a server or
-// an account.
-func (c *Connections) List(ctx context.Context) (Listing, error) {
+// an account. With a project it shows that project's servers and those that
+// go everywhere, and finds servers in the project's folders as well as the
+// harnesses' own config; without, it shows every server and finds only in
+// the harnesses' own config.
+func (c *Connections) List(ctx context.Context, projectID string) (Listing, error) {
 	f, err := c.store.Read()
 	if err != nil {
 		return Listing{}, err
@@ -157,13 +175,15 @@ func (c *Connections) List(ctx context.Context) (Listing, error) {
 		out.Harnesses = append(out.Harnesses, HarnessView{ID: h.ID, Name: h.Name, Transports: nonNil(h.Host.MCPTransports())})
 	}
 	for _, s := range f.Servers {
-		out.Servers = append(out.Servers, c.view(s))
+		if projectID == "" || s.Project == "" || s.Project == projectID {
+			out.Servers = append(out.Servers, c.view(s))
+		}
 	}
-	for _, fs := range c.found(ctx) {
-		v := FoundView{Name: fs.server.Name, Harness: fs.harness, Origin: fs.server.Origin, URL: fs.server.URL, Command: fs.server.Command, Args: fs.server.Args}
-		// By name, fitted to the naming rule the way AddFound fits it.
-		added := slugName(fs.server.Name)
-		v.Added = slices.ContainsFunc(f.Servers, func(s Server) bool { return s.Name == added })
+	for _, fs := range c.found(ctx, projectID) {
+		v := FoundView{Name: fs.server.Name, Harness: fs.harness, Origin: fs.server.Origin, URL: fs.server.URL, Command: fs.server.Command, Args: fs.server.Args, Project: fs.project}
+		// By name, fitted to the naming rule the way AddFound fits it, in
+		// the scope AddFound would add it to.
+		v.Added = slices.ContainsFunc(f.Servers, named(slugName(fs.server.Name), fs.project))
 		out.Found = append(out.Found, v)
 	}
 	for _, cli := range f.CLIs {
@@ -174,14 +194,14 @@ func (c *Connections) List(ctx context.Context) (Listing, error) {
 
 func (c *Connections) view(s Server) ServerView {
 	v := ServerView{
-		Name: s.Name, URL: s.URL, Command: s.Command, Args: s.Args,
-		EnvNames: nonNil(s.EnvNames), HeaderNames: nonNil(s.HeaderNames), Off: nonNil(s.Off),
-		OAuth: s.URL != "" && c.oauth.SignedIn(s.Name), Status: StatusUnchecked,
+		Name: s.Name, Project: s.Project, URL: s.URL, Command: s.Command, Args: s.Args,
+		EnvNames: nonNil(s.EnvNames), HeaderNames: nonNil(s.HeaderNames), Off: nonNil(s.Off), OffIn: nonNil(s.OffIn),
+		OAuth: s.URL != "" && c.oauth.SignedIn(s.Key()), Status: StatusUnchecked,
 	}
 	if s.URL == "" {
 		return v
 	}
-	if ch, ok := c.prober.Cached(s.Name); ok {
+	if ch, ok := c.prober.Cached(s.Key()); ok {
 		at := ch.At
 		v.Status, v.Error, v.CheckedAt = ch.Status, ch.Error, &at
 	}
@@ -190,16 +210,28 @@ func (c *Connections) view(s Server) ServerView {
 
 type foundServer struct {
 	harness string
+	// project is set on a server found in one of that project's folders.
+	project string
 	server  adapter.ConfiguredMCPServer
 }
 
 // found asks every provider instance of every harness that takes MCP
-// servers for the ones its own config defines. Instances can share a config
-// folder, so the same server is listed once.
-func (c *Connections) found(ctx context.Context) []foundServer {
+// servers for the ones its own config defines and, given a project, the
+// ones it would load in each of the project's folders. Instances can share
+// a config folder, so the same server is listed once.
+func (c *Connections) found(ctx context.Context, projectID string) []foundServer {
 	var out []foundServer
 	seen := map[string]bool{}
-	for _, h := range c.hosts() {
+	add := func(harness, project string, s adapter.ConfiguredMCPServer) {
+		key := harness + "\x00" + project + "\x00" + s.Name + "\x00" + foundWhere(s.MCPServer)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, foundServer{harness: harness, project: project, server: s})
+	}
+	hosts := c.hosts()
+	for _, h := range hosts {
 		for _, env := range h.Envs {
 			servers, err := h.Host.ConfiguredMCPServers(ctx, env)
 			if err != nil {
@@ -207,12 +239,33 @@ func (c *Connections) found(ctx context.Context) []foundServer {
 				continue
 			}
 			for _, s := range servers {
-				key := h.ID + "\x00" + s.Name + "\x00" + foundWhere(s.MCPServer)
-				if seen[key] {
+				add(h.ID, "", s)
+			}
+		}
+	}
+	if projectID == "" {
+		return out
+	}
+	dirs, err := c.folders(ctx, projectID)
+	if err != nil {
+		c.logf("mcp servers in project %s: %v", projectID, err)
+		return out
+	}
+	for _, h := range hosts {
+		for _, env := range h.Envs {
+			for _, dir := range dirs {
+				servers, err := h.Host.ProjectMCPServers(ctx, env, dir)
+				if err != nil {
+					c.logf("mcp servers for %s in %s: %v", h.ID, dir, err)
 					continue
 				}
-				seen[key] = true
-				out = append(out, foundServer{harness: h.ID, server: s})
+				for _, s := range servers {
+					// Several folders can each have a .mcp.json; say whose.
+					if len(dirs) > 1 {
+						s.Origin = filepath.Base(dir) + ": " + s.Origin
+					}
+					add(h.ID, projectID, s)
+				}
 			}
 		}
 	}
@@ -221,32 +274,70 @@ func (c *Connections) found(ctx context.Context) []foundServer {
 
 // --- servers ---
 
-func (c *Connections) server(name string) (Server, error) {
-	s, ok, err := c.store.Server(name)
+func (c *Connections) server(name, project string) (Server, error) {
+	s, ok, err := c.store.Server(name, project)
 	if err != nil {
 		return Server{}, err
 	}
 	if !ok {
-		return Server{}, fmt.Errorf("no MCP server named %q", name)
+		return Server{}, noServer(name, project)
 	}
 	return s, nil
 }
 
+// projectExists refuses a project ID that names no project, so no server
+// is left behind in a project nothing will ever delete.
+func (c *Connections) projectExists(ctx context.Context, projectID string) error {
+	if _, err := c.folders(ctx, projectID); err != nil {
+		return fmt.Errorf("project %q: %w", projectID, err)
+	}
+	return nil
+}
+
 // Save stores a server (see Store.SaveServer) and checks it.
 func (c *Connections) Save(ctx context.Context, d Draft, previous string) (ServerView, error) {
+	if d.Project != "" {
+		if err := c.projectExists(ctx, d.Project); err != nil {
+			return ServerView{}, err
+		}
+	}
 	s, err := c.store.SaveServer(d, previous)
 	if err != nil {
 		return ServerView{}, err
 	}
+	// The project can be deleted between that check and this write, after
+	// its servers were already removed. Look again, and take this one with
+	// it if so.
+	if d.Project != "" {
+		if err := c.projectExists(ctx, d.Project); err != nil {
+			if rmErr := c.store.RemoveServer(s.Name, s.Project); rmErr != nil {
+				c.logf("mcp server %s of deleted project: %v", s.Key(), rmErr)
+			}
+			return ServerView{}, err
+		}
+	}
 	if previous != "" {
-		c.prober.Forget(previous)
+		c.prober.Forget(ServerKey(previous, s.Project))
 	}
 	return c.check(ctx, s), nil
 }
 
 // SetOff changes which harnesses do not get a server, and nothing else.
-func (c *Connections) SetOff(name string, off []string) (ServerView, error) {
-	s, err := c.store.SetOff(name, off)
+func (c *Connections) SetOff(name, project string, off []string) (ServerView, error) {
+	s, err := c.store.SetOff(name, project, off)
+	if err != nil {
+		return ServerView{}, err
+	}
+	return c.view(s), nil
+}
+
+// SetProjectOff keeps a server that goes everywhere out of one project
+// (off), or lets it back in, and changes nothing else.
+func (c *Connections) SetProjectOff(ctx context.Context, name, projectID string, off bool) (ServerView, error) {
+	if err := c.projectExists(ctx, projectID); err != nil {
+		return ServerView{}, err
+	}
+	s, err := c.store.SetProjectOff(name, projectID, off)
 	if err != nil {
 		return ServerView{}, err
 	}
@@ -254,12 +345,22 @@ func (c *Connections) SetOff(name string, off []string) (ServerView, error) {
 }
 
 // Remove deletes a server and its secrets.
-func (c *Connections) Remove(name string) error {
-	if err := c.store.RemoveServer(name); err != nil {
+func (c *Connections) Remove(name, project string) error {
+	if err := c.store.RemoveServer(name, project); err != nil {
 		return err
 	}
-	c.prober.Forget(name)
+	c.prober.Forget(ServerKey(name, project))
 	return nil
+}
+
+// RemoveProject deletes a project's servers and their secrets; it is for
+// after the project itself is gone.
+func (c *Connections) RemoveProject(projectID string) error {
+	gone, err := c.store.RemoveProject(projectID)
+	for _, s := range gone {
+		c.prober.Forget(s.Key())
+	}
+	return err
 }
 
 // foundWhere tells apart same-named servers in different instances' configs.
@@ -272,11 +373,12 @@ func foundWhere(s adapter.MCPServer) string {
 
 // AddFound copies a server out of a harness's config into omniplex, values
 // included. where is its URL or command, as listed: two instances of one
-// harness can each define a server of the same name.
-func (c *Connections) AddFound(ctx context.Context, harness, name, where string) (ServerView, error) {
+// harness can each define a server of the same name. With a project, the
+// server is one found in that project's folders, and is added to it.
+func (c *Connections) AddFound(ctx context.Context, harness, name, where, project string) (ServerView, error) {
 	var hit *adapter.ConfiguredMCPServer
-	for _, fs := range c.found(ctx) {
-		if fs.harness == harness && fs.server.Name == name && (where == "" || foundWhere(fs.server.MCPServer) == where) {
+	for _, fs := range c.found(ctx, project) {
+		if fs.harness == harness && fs.project == project && fs.server.Name == name && (where == "" || foundWhere(fs.server.MCPServer) == where) {
 			hit = &fs.server
 			break
 		}
@@ -284,13 +386,13 @@ func (c *Connections) AddFound(ctx context.Context, harness, name, where string)
 	if hit == nil {
 		return ServerView{}, fmt.Errorf("no server named %q in that agent's config", name)
 	}
-	d := Draft{Name: slugName(name), URL: hit.URL, Command: hit.Command, Args: hit.Args, Env: hit.Env, Headers: hit.Headers}
+	d := Draft{Name: slugName(name), Project: project, URL: hit.URL, Command: hit.Command, Args: hit.Args, Env: hit.Env, Headers: hit.Headers}
 	if d.URL != "" {
 		d.Env, d.Args, d.Command = nil, nil, ""
 	} else {
 		d.Headers = nil
 	}
-	if _, ok, err := c.store.Server(d.Name); err != nil {
+	if _, ok, err := c.store.Server(d.Name, project); err != nil {
 		return ServerView{}, err
 	} else if ok {
 		return ServerView{}, fmt.Errorf("there is already an MCP server named %q", d.Name)
@@ -299,8 +401,8 @@ func (c *Connections) AddFound(ctx context.Context, harness, name, where string)
 }
 
 // Check probes one server now.
-func (c *Connections) Check(ctx context.Context, name string) (ServerView, error) {
-	s, err := c.server(name)
+func (c *Connections) Check(ctx context.Context, name, project string) (ServerView, error) {
+	s, err := c.server(name, project)
 	if err != nil {
 		return ServerView{}, err
 	}
@@ -320,7 +422,7 @@ func (c *Connections) check(ctx context.Context, s Server) ServerView {
 // stop honouring it sooner (a restart, a revocation).
 func (c *Connections) probed(ctx context.Context, s Server) adapter.MCPServer {
 	def, token := c.definition(ctx, s)
-	if c.prober.Probe(ctx, def).Status != StatusSignIn || token == "" {
+	if c.prober.Probe(ctx, s.Key(), def).Status != StatusSignIn || token == "" {
 		return def
 	}
 	tctx, cancel := context.WithTimeout(ctx, tokenWait)
@@ -328,22 +430,22 @@ func (c *Connections) probed(ctx context.Context, s Server) adapter.MCPServer {
 	cancel()
 	if err != nil {
 		if !errors.Is(err, ErrSignInNeeded) {
-			c.logf("mcp server %s: refresh: %v", s.Name, err)
+			c.logf("mcp server %s: refresh: %v", s.Key(), err)
 		}
 		return def
 	}
 	def, _ = c.definition(ctx, s)
-	c.prober.Probe(ctx, def)
+	c.prober.Probe(ctx, s.Key(), def)
 	return def
 }
 
 // SignOut forgets a server's OAuth tokens and checks it again.
-func (c *Connections) SignOut(ctx context.Context, name string) (ServerView, error) {
-	s, err := c.server(name)
+func (c *Connections) SignOut(ctx context.Context, name, project string) (ServerView, error) {
+	s, err := c.server(name, project)
 	if err != nil {
 		return ServerView{}, err
 	}
-	if err := c.oauth.SignOut(name); err != nil {
+	if err := c.oauth.SignOut(s.Key()); err != nil {
 		return ServerView{}, err
 	}
 	return c.check(ctx, s), nil
@@ -352,8 +454,8 @@ func (c *Connections) SignOut(ctx context.Context, name string) (ServerView, err
 // SignIn returns the flow that signs in to a remote server, for the auth
 // flow engine to run. origin is the address the person's browser has this
 // server at; it decides where the authorization server sends them back.
-func (c *Connections) SignIn(name, origin string) (func(context.Context, adapter.AuthInteraction) error, error) {
-	s, err := c.server(name)
+func (c *Connections) SignIn(name, project, origin string) (func(context.Context, adapter.AuthInteraction) error, error) {
+	s, err := c.server(name, project)
 	if err != nil {
 		return nil, err
 	}
@@ -362,13 +464,14 @@ func (c *Connections) SignIn(name, origin string) (func(context.Context, adapter
 	}
 	redirect := RedirectURI(origin, c.port)
 	// Another server on the same host is another login there, say a
-	// work and a personal one. Without a fresh login the provider would
-	// take the browser's session and sign this one in as the other.
+	// work and a personal one, or one project's and another's. Without a
+	// fresh login the provider would take the browser's session and sign
+	// this one in as the other.
 	f, err := c.store.Read()
 	if err != nil {
 		return nil, err
 	}
-	fresh := slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Name != s.Name && x.URL != "" && sameOrigin(x.URL, s.URL) })
+	fresh := slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Key() != s.Key() && x.URL != "" && sameOrigin(x.URL, s.URL) })
 	return func(ctx context.Context, ia adapter.AuthInteraction) error {
 		if err := c.oauth.SignIn(ctx, ia, s, redirect, fresh); err != nil {
 			return err
@@ -389,6 +492,30 @@ func takes(s Server, harness string, transports []string) bool {
 		kind = "stdio"
 	}
 	return slices.Contains(transports, kind) && !slices.Contains(s.Off, harness)
+}
+
+// sessionSet is what a thread in project gets before the per-harness
+// switches: the project's own servers, then those that go everywhere,
+// except the ones kept out of the project and the ones a project server of
+// the same name replaces (switched off for a harness or not). A thread in
+// no project gets the ones that go everywhere.
+func sessionSet(all []Server, project string) []Server {
+	var out []Server
+	own := map[string]bool{}
+	if project != "" {
+		for _, s := range all {
+			if s.Project == project {
+				out = append(out, s)
+				own[s.Name] = true
+			}
+		}
+	}
+	for _, s := range all {
+		if s.Project == "" && !own[s.Name] && !slices.Contains(s.OffIn, project) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // definition is a server as a session gets it: values from the secret
@@ -414,7 +541,7 @@ func (c *Connections) definition(ctx context.Context, s Server) (def adapter.MCP
 			}
 			headers["Authorization"] = "Bearer " + token
 		case err != nil && !errors.Is(err, ErrSignInNeeded):
-			c.logf("mcp server %s: token: %v", s.Name, err)
+			c.logf("mcp server %s: token: %v", s.Key(), err)
 		}
 		if len(headers) > 0 {
 			def.Headers = headers
@@ -423,17 +550,18 @@ func (c *Connections) definition(ctx context.Context, s Server) (def adapter.MCP
 	return def, token
 }
 
-// Servers is what a session of the given harness gets, in the order the
-// user added them. Tokens are fetched concurrently, so the slowest one, not
-// their sum, bounds the wait.
-func (c *Connections) Servers(ctx context.Context, harness string, transports []string) []adapter.MCPServer {
+// Servers is what a session of the given harness in the given project ("" for
+// none) gets: the project's servers, then the ones that go everywhere (see
+// sessionSet), each in the order the user added them. Tokens are fetched
+// concurrently, so the slowest one, not their sum, bounds the wait.
+func (c *Connections) Servers(ctx context.Context, harness string, transports []string, projectID string) []adapter.MCPServer {
 	f, err := c.store.Read()
 	if err != nil {
 		c.logf("mcp servers: %v", err)
 		return nil
 	}
 	var picked []Server
-	for _, s := range f.Servers {
+	for _, s := range sessionSet(f.Servers, projectID) {
 		if takes(s, harness, transports) {
 			picked = append(picked, s)
 		}
@@ -451,14 +579,22 @@ func (c *Connections) Servers(ctx context.Context, harness string, transports []
 	return out
 }
 
-// Server is one server's current definition for a session of the given
-// harness, for reconnecting it: checked first, so a token the server now
-// turns away is refreshed before the session gets it.
-func (c *Connections) Server(ctx context.Context, harness string, transports []string, name string) (adapter.MCPServer, error) {
-	s, err := c.server(name)
+// Server is the current definition of the server called name that a session
+// of the given harness in the given project gets, for reconnecting it: in a
+// project, its own server of that name wins over the one that goes
+// everywhere. It is checked first, so a token the server now turns away is
+// refreshed before the session gets it.
+func (c *Connections) Server(ctx context.Context, harness string, transports []string, projectID, name string) (adapter.MCPServer, error) {
+	f, err := c.store.Read()
 	if err != nil {
 		return adapter.MCPServer{}, err
 	}
+	set := sessionSet(f.Servers, projectID)
+	i := slices.IndexFunc(set, func(x Server) bool { return x.Name == name })
+	if i < 0 {
+		return adapter.MCPServer{}, fmt.Errorf("this thread does not get an MCP server named %q", name)
+	}
+	s := set[i]
 	if !takes(s, harness, transports) {
 		return adapter.MCPServer{}, fmt.Errorf("this thread's agent does not get %s", name)
 	}

@@ -93,6 +93,11 @@ type MCPHost interface {
 	// Values in Env and Headers come back as they are in the file; the core
 	// never sends them to a client.
 	ConfiguredMCPServers(ctx context.Context, env map[string]string) ([]ConfiguredMCPServer, error)
+	// ProjectMCPServers lists the servers the harness loads in a session
+	// whose working directory is dir, beyond ConfiguredMCPServers: the
+	// repo's own config and any user config keyed to that folder. Same
+	// rules as ConfiguredMCPServers otherwise.
+	ProjectMCPServers(ctx context.Context, env map[string]string, dir string) ([]ConfiguredMCPServer, error)
 }
 
 // ConfiguredMCPServer is a server found in a harness's own config.

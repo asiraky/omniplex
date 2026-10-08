@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -100,19 +101,11 @@ func (a *Adapter) MCPTransports() []string { return []string{"stdio", "http"} }
 // ConfiguredMCPServers lists the servers Claude Code itself is configured
 // with for every project: the user's own (top-level mcpServers in
 // .claude.json) and those of user-scoped plugins that are enabled. Servers
-// scoped to one project (projects.<path>.mcpServers, a repo's .mcp.json) are
-// not listed: they belong to that project, not to the account.
+// scoped to one folder are ProjectMCPServers.
 func (a *Adapter) ConfiguredMCPServers(ctx context.Context, env map[string]string) ([]adapter.ConfiguredMCPServer, error) {
-	home := envHome(env)
-	configDir := skills.DefaultRoots(home, env, "").ClaudeConfigDir
-
+	configDir := skills.DefaultRoots(envHome(env), env, "").ClaudeConfigDir
 	var out []adapter.ConfiguredMCPServer
-	// .claude.json sits in the config dir when CLAUDE_CONFIG_DIR moves it,
-	// and in the home dir otherwise.
-	userFile := filepath.Join(home, ".claude.json")
-	if v, ok := lookupEnv(env, "CLAUDE_CONFIG_DIR"); ok && strings.TrimSpace(v) != "" {
-		userFile = filepath.Join(configDir, ".claude.json")
-	}
+	userFile := claudeJSON(env)
 	if data, err := os.ReadFile(userFile); err == nil {
 		var doc struct {
 			MCPServers map[string]claudeServerJSON `json:"mcpServers"`
@@ -124,6 +117,72 @@ func (a *Adapter) ConfiguredMCPServers(ctx context.Context, env map[string]strin
 	}
 	out = append(out, pluginServers(configDir)...)
 	return out, nil
+}
+
+// ProjectMCPServers lists the servers Claude Code adds for a session in dir:
+// the folder's .mcp.json, and its local scope in .claude.json
+// (projects.<path>.mcpServers). Claude keys the local scope by the main
+// checkout's git root, so a worktree shares its repo's entry; an entry under
+// dir itself is read too, for the names the root's entry lacks.
+func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, dir string) ([]adapter.ConfiguredMCPServer, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	// The local scope comes first: Claude prefers it to .mcp.json, so where
+	// both define a server the local one is what a session gets, and what
+	// adding it should copy.
+	var out []adapter.ConfiguredMCPServer
+	userFile := claudeJSON(env)
+	if data, err := os.ReadFile(userFile); err == nil {
+		var doc struct {
+			Projects map[string]struct {
+				MCPServers map[string]claudeServerJSON `json:"mcpServers"`
+			} `json:"projects"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("read %s: %w", userFile, err)
+		}
+		local := map[string]claudeServerJSON{}
+		for _, key := range []string{filepath.Clean(dir), gitRoot(ctx, dir)} {
+			for name, s := range doc.Projects[key].MCPServers {
+				local[name] = s
+			}
+		}
+		out = append(out, configured(local, "Local settings", "")...)
+	}
+
+	repoFile := filepath.Join(dir, ".mcp.json")
+	if data, err := os.ReadFile(repoFile); err == nil {
+		var doc struct {
+			MCPServers map[string]claudeServerJSON `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("read %s: %w", repoFile, err)
+		}
+		out = append(out, configured(doc.MCPServers, ".mcp.json", "")...)
+	}
+	return out, nil
+}
+
+// claudeJSON is the user's .claude.json: in the config dir when
+// CLAUDE_CONFIG_DIR moves it, and in the home dir otherwise.
+func claudeJSON(env map[string]string) string {
+	home := envHome(env)
+	if v, ok := lookupEnv(env, "CLAUDE_CONFIG_DIR"); ok && strings.TrimSpace(v) != "" {
+		return filepath.Join(skills.DefaultRoots(home, env, "").ClaudeConfigDir, ".claude.json")
+	}
+	return filepath.Join(home, ".claude.json")
+}
+
+// gitRoot is the root of the main checkout dir belongs to, a worktree's
+// included, or dir itself outside a git repo.
+func gitRoot(ctx context.Context, dir string) string {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	common := filepath.Clean(strings.TrimSpace(string(out)))
+	if err != nil || filepath.Base(common) != ".git" {
+		return filepath.Clean(dir)
+	}
+	return filepath.Dir(common)
 }
 
 // claudeServerJSON is one server in Claude's config files.

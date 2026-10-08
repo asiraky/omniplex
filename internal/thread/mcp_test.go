@@ -14,15 +14,17 @@ import (
 )
 
 // fakeMCP is the user's servers: one per transport, and it records what it
-// was asked.
+// was asked and for which project.
 type fakeMCP struct {
-	mu    sync.Mutex
-	asked []string
+	mu       sync.Mutex
+	asked    []string
+	projects []string
 }
 
-func (f *fakeMCP) Servers(_ context.Context, harness string, transports []string) []adapter.MCPServer {
+func (f *fakeMCP) Servers(_ context.Context, harness string, transports []string, projectID string) []adapter.MCPServer {
 	f.mu.Lock()
 	f.asked = append(f.asked, fmt.Sprintf("%s %v", harness, transports))
+	f.projects = append(f.projects, projectID)
 	f.mu.Unlock()
 	var out []adapter.MCPServer
 	for _, tr := range transports {
@@ -31,7 +33,10 @@ func (f *fakeMCP) Servers(_ context.Context, harness string, transports []string
 	return out
 }
 
-func (f *fakeMCP) Server(_ context.Context, harness string, transports []string, name string) (adapter.MCPServer, error) {
+func (f *fakeMCP) Server(_ context.Context, harness string, transports []string, projectID, name string) (adapter.MCPServer, error) {
+	f.mu.Lock()
+	f.projects = append(f.projects, projectID)
+	f.mu.Unlock()
 	if name != "user-http" || !slices.Contains(transports, "http") {
 		return adapter.MCPServer{}, errors.New("not this harness's")
 	}
@@ -61,6 +66,10 @@ type mcpAdapter struct {
 func (m *mcpAdapter) MCPTransports() []string { return m.transports }
 
 func (m *mcpAdapter) ConfiguredMCPServers(context.Context, map[string]string) ([]adapter.ConfiguredMCPServer, error) {
+	return nil, nil
+}
+
+func (m *mcpAdapter) ProjectMCPServers(context.Context, map[string]string, string) ([]adapter.ConfiguredMCPServer, error) {
 	return nil, nil
 }
 
@@ -222,5 +231,46 @@ func TestReconnectNeedsAnMCPHost(t *testing.T) {
 	}
 	if err := mgr.ReconnectMCP(ctx, actor.ID, "user-http"); !errors.Is(err, adapter.ErrMCPUnsupported) {
 		t.Errorf("reconnect err = %v", err)
+	}
+}
+
+// A thread in a project asks for that project's servers when its session
+// starts and when it reconnects one; a thread in none asks for none's.
+func TestAThreadAsksForItsProjectsServers(t *testing.T) {
+	src := &fakeMCP{}
+	useUserMCP(t, src)
+	ctx := context.Background()
+	st, p := testProject(t, t.TempDir())
+	host := &mcpAdapter{fakeAdapter: &fakeAdapter{}, transports: []string{"http"}, control: true}
+	mgr := NewManager(st, t.Logf, host)
+	t.Cleanup(mgr.Shutdown)
+
+	inProject, err := mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: p.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := func(n int) func() bool {
+		return func() bool {
+			src.mu.Lock()
+			defer src.mu.Unlock()
+			return len(src.projects) == n
+		}
+	}
+	waitFor(t, asked(1))
+	plain, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, asked(2))
+	waitFor(t, func() bool { return inProject.Head() >= 1 && plain.Head() >= 1 })
+	for _, a := range []*Actor{inProject, plain} {
+		if err := mgr.ReconnectMCP(ctx, a.ID, "user-http"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if want := []string{p.ID, "", p.ID, ""}; !slices.Equal(src.projects, want) {
+		t.Errorf("asked for projects %q, want %q", src.projects, want)
 	}
 }

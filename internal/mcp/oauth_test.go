@@ -584,6 +584,49 @@ func TestOAuthTokenRefreshesNearExpiry(t *testing.T) {
 	}
 }
 
+// A project server's sign-in and refreshes live under its key, apart from a
+// server of the same name that goes everywhere.
+func TestOAuthProjectServerKeepsTokensUnderItsKey(t *testing.T) {
+	f := newOAFake(t)
+	f.expiresIn = 60
+	sec := newOASecrets()
+	o := NewOAuth(sec, nil)
+	srv := f.server()
+	srv.Project = "p1"
+	ia := newOAIA()
+	done := startSignIn(o, ia, srv, oaRedirect)
+	ia.prompt(t).answer <- f.authorize(ia.authURL(t))
+	if err := waitErr(t, done); err != nil {
+		t.Fatal(err)
+	}
+	stored := func(id string) string {
+		raw, _ := sec.Get(id, OAuthKey)
+		var rec tokenRecord
+		json.Unmarshal([]byte(raw), &rec)
+		return rec.AccessToken
+	}
+	if got := stored("p1.cf"); got != "at-1" {
+		t.Fatalf("p1.cf holds %q", got)
+	}
+	if !o.SignedIn("p1/cf") || o.SignedIn("cf") {
+		t.Errorf("signed in: p1/cf %v, cf %v", o.SignedIn("p1/cf"), o.SignedIn("cf"))
+	}
+
+	// Near expiry: the refresh is stored under the same key.
+	if tok, err := o.Token(context.Background(), srv); err != nil || tok != "at-2" {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+	if got := stored("p1.cf"); got != "at-2" {
+		t.Errorf("after refresh p1.cf holds %q", got)
+	}
+	if _, err := o.Token(context.Background(), f.server()); !errors.Is(err, ErrSignInNeeded) {
+		t.Errorf("the cf that goes everywhere got p1's token: %v", err)
+	}
+	if err := o.SignOut("p1/cf"); err != nil || o.SignedIn("p1/cf") {
+		t.Errorf("sign out: %v", err)
+	}
+}
+
 func TestOAuthTokenFreshIsNotRefreshed(t *testing.T) {
 	f, o, _ := signedIn(t, 3600)
 	if tok, err := o.Token(context.Background(), f.server()); err != nil || tok != "at-1" {

@@ -242,6 +242,19 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		if err != nil {
 			return nil, err
 		}
+		// The cwd is trusted, so codex also loads the repo's own
+		// .codex/config.toml layers, and a server there shadows like one in
+		// the user's config.
+		project, err := projectServers(o.Env, o.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		if all == nil {
+			all = map[string]codexServerTOML{}
+		}
+		for name, s := range project {
+			all[name] = s
+		}
 		native = sortedNames(all)
 	}
 	mcp, secrets, refused, mcpKeys := mcpConfig(o.MCPServers, native)

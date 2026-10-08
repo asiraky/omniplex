@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -197,60 +198,177 @@ func (a *Adapter) ConfiguredMCPServers(ctx context.Context, env map[string]strin
 	if err != nil {
 		return nil, err
 	}
+	return found(env, all, "config.toml"), nil
+}
+
+// ProjectMCPServers lists the servers of the .codex/config.toml layers codex
+// loads for a session in dir, resolved as ConfiguredMCPServers resolves them.
+func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, dir string) ([]adapter.ConfiguredMCPServer, error) {
+	all, err := projectServers(env, dir)
+	if err != nil {
+		return nil, err
+	}
+	return found(env, all, ".codex/config.toml"), nil
+}
+
+// found turns a config's servers into the found list, sorted by name.
+func found(env map[string]string, all map[string]codexServerTOML, origin string) []adapter.ConfiguredMCPServer {
 	var out []adapter.ConfiguredMCPServer
 	for _, name := range sortedNames(all) {
-		s := all[name]
-		if s.Enabled != nil && !*s.Enabled {
-			continue
+		if m, ok := resolveServer(env, name, all[name]); ok {
+			out = append(out, adapter.ConfiguredMCPServer{MCPServer: m, Origin: origin})
 		}
-		m := adapter.MCPServer{Name: name}
-		switch {
-		case s.URL != "":
-			m.URL = s.URL
-			headers := map[string]string{}
-			for k, v := range s.HTTPHeaders {
-				headers[k] = v
-			}
-			for k, v := range s.EnvHTTPHeaders {
-				if val, ok := lookupEnv(env, v); ok && val != "" {
-					headers[k] = val
-				}
-			}
-			if s.BearerTokenEnvVar != "" {
-				if val, ok := lookupEnv(env, s.BearerTokenEnvVar); ok && val != "" {
-					headers["Authorization"] = "Bearer " + val
-				}
-			}
-			if len(headers) > 0 {
-				m.Headers = headers
-			}
-		case s.Command != "":
-			m.Command, m.Args = s.Command, s.Args
-			vars := map[string]string{}
-			for _, v := range s.EnvVars {
-				n := envVarName(v)
-				if val, ok := lookupEnv(env, n); ok && n != "" {
-					vars[n] = val
-				}
-			}
-			for k, v := range s.Env {
-				vars[k] = v
-			}
-			if len(vars) > 0 {
-				m.Env = vars
-			}
-		default:
-			continue
-		}
-		out = append(out, adapter.ConfiguredMCPServer{MCPServer: m, Origin: "config.toml"})
 	}
-	return out, nil
+	return out
+}
+
+// resolveServer reads one server with the values codex would take from its
+// environment filled in. A disabled server, or one with neither a URL nor a
+// command, is not one.
+func resolveServer(env map[string]string, name string, s codexServerTOML) (adapter.MCPServer, bool) {
+	if s.Enabled != nil && !*s.Enabled {
+		return adapter.MCPServer{}, false
+	}
+	m := adapter.MCPServer{Name: name}
+	switch {
+	case s.URL != "":
+		m.URL = s.URL
+		headers := map[string]string{}
+		for k, v := range s.HTTPHeaders {
+			headers[k] = v
+		}
+		for k, v := range s.EnvHTTPHeaders {
+			if val, ok := lookupEnv(env, v); ok && val != "" {
+				headers[k] = val
+			}
+		}
+		if s.BearerTokenEnvVar != "" {
+			if val, ok := lookupEnv(env, s.BearerTokenEnvVar); ok && val != "" {
+				headers["Authorization"] = "Bearer " + val
+			}
+		}
+		if len(headers) > 0 {
+			m.Headers = headers
+		}
+	case s.Command != "":
+		m.Command, m.Args = s.Command, s.Args
+		vars := map[string]string{}
+		for _, v := range s.EnvVars {
+			n := envVarName(v)
+			if val, ok := lookupEnv(env, n); ok && n != "" {
+				vars[n] = val
+			}
+		}
+		for k, v := range s.Env {
+			vars[k] = v
+		}
+		if len(vars) > 0 {
+			m.Env = vars
+		}
+	default:
+		return adapter.MCPServer{}, false
+	}
+	return m, true
 }
 
 // nativeServers reads every [mcp_servers.<name>] table of the instance's
 // config.toml ($CODEX_HOME, or ~/.codex), disabled ones included.
 func nativeServers(env map[string]string) (map[string]codexServerTOML, error) {
-	path := filepath.Join(skills.DefaultRoots(envHome(env), env, "").CodexHome, "config.toml")
+	return readServers(filepath.Join(codexHome(env), "config.toml"))
+}
+
+// projectServers reads every [mcp_servers.<name>] table of the project layers
+// codex loads for a session in dir, disabled ones included: each
+// .codex/config.toml from the project root (the nearest ancestor holding
+// .git, or dir itself when none does) down to dir. Layers merge the way
+// codex merges them: a deeper layer's tables merge key by key into the
+// shallower one's, and any other value replaces it, so a nested config can
+// add a header to a server the root defines. The instance's own codex home is
+// not a project layer, even when dir is the home folder.
+func projectServers(env map[string]string, dir string) (map[string]codexServerTOML, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	root := dir
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			root = d
+			break
+		}
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	// The layers run root first, so walk up from dir and read them in reverse.
+	var layers []string
+	for d := dir; ; d = filepath.Dir(d) {
+		layers = append(layers, d)
+		if d == root || filepath.Dir(d) == d {
+			break
+		}
+	}
+	home := filepath.Clean(codexHome(env))
+	merged := map[string]any{}
+	for i := len(layers) - 1; i >= 0; i-- {
+		layer := filepath.Join(layers[i], ".codex")
+		if layer == home {
+			continue
+		}
+		path := filepath.Join(layer, "config.toml")
+		var doc map[string]any
+		if _, err := toml.DecodeFile(path, &doc); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		if servers, ok := doc["mcp_servers"].(map[string]any); ok {
+			mergeTOML(merged, servers)
+		}
+	}
+	// Back through the encoder, so the merged tables decode exactly as one
+	// file's would.
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(map[string]any{"mcp_servers": merged}); err != nil {
+		return nil, err
+	}
+	var doc struct {
+		MCPServers map[string]codexServerTOML `toml:"mcp_servers"`
+	}
+	if _, err := toml.Decode(buf.String(), &doc); err != nil {
+		return nil, err
+	}
+	return doc.MCPServers, nil
+}
+
+// mergeTOML merges src into dst as codex merges config layers: tables
+// recursively, everything else replaced.
+func mergeTOML(dst, src map[string]any) {
+	for k, v := range src {
+		sub, ok := v.(map[string]any)
+		if !ok {
+			dst[k] = v
+			continue
+		}
+		into, ok := dst[k].(map[string]any)
+		if !ok {
+			into = map[string]any{}
+			dst[k] = into
+		}
+		mergeTOML(into, sub)
+	}
+}
+
+func codexHome(env map[string]string) string {
+	return skills.DefaultRoots(envHome(env), env, "").CodexHome
+}
+
+// readServers reads one config.toml's servers; a missing file has none.
+func readServers(path string) (map[string]codexServerTOML, error) {
 	var doc struct {
 		MCPServers map[string]codexServerTOML `toml:"mcp_servers"`
 	}

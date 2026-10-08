@@ -82,11 +82,14 @@ export function UsageScreen({
 export function ToolsScreen({
   clientRef,
   scope,
+  projects,
   tab,
   onClose,
 }: {
   clientRef: RefObject<Client | null>;
   scope: SkillsScope;
+  /** For naming the projects MCP servers belong to. */
+  projects: { id: string; name: string }[];
   tab?: ToolsTab;
   onClose: () => void;
 }) {
@@ -104,7 +107,7 @@ export function ToolsScreen({
   );
   return (
     <Suspense fallback={<PageSpinner />}>
-      <ToolsPage wires={wires} scope={scope} tab={tab} onClose={onClose} />
+      <ToolsPage wires={wires} scope={scope} projects={projects} tab={tab} onClose={onClose} />
     </Suspense>
   );
 }

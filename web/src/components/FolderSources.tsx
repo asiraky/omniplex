@@ -103,7 +103,7 @@ export function FolderBrowser({
 }
 
 /**
- * A repository to clone: pasted, or picked from what `gh repo list` knows
+ * A repository to clone: pasted, or picked from the repositories gh knows
  * about. The list is fetched when this opens, not before, since most people
  * adding a project never look at it.
  */

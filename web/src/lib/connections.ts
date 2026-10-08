@@ -107,6 +107,8 @@ export function rowsToRecord(
 // ---- the server form ----
 
 export interface ServerForm {
+  /** The scope it is saved in: a project ID, or absent for everywhere. */
+  project?: string;
   name: string;
   kind: McpKind;
   url: string;
@@ -119,13 +121,14 @@ export interface ServerForm {
   off: string[];
 }
 
-export function emptyServerForm(): ServerForm {
-  return { name: "", kind: "http", url: "", command: "", args: "", headers: [], env: [], off: [] };
+export function emptyServerForm(project?: string): ServerForm {
+  return { project, name: "", kind: "http", url: "", command: "", args: "", headers: [], env: [], off: [] };
 }
 
 /** A parsed paste becomes a form with every value filled in. */
-export function formFromDraft(draft: McpDraft): ServerForm {
+export function formFromDraft(draft: McpDraft, project?: string): ServerForm {
   return {
+    project,
     name: draft.name ?? "",
     kind: serverKind(draft),
     url: draft.url ?? "",
@@ -140,6 +143,7 @@ export function formFromDraft(draft: McpDraft): ServerForm {
 /** A stored server becomes a form whose values are blank, meaning unchanged. */
 export function formFromServer(s: McpServer): ServerForm {
   return {
+    project: s.project,
     name: s.name,
     kind: serverKind(s),
     url: s.url ?? "",
@@ -191,6 +195,7 @@ export function serverSaveArgs(
       .filter(Boolean);
     draft = { name, command, args, env: env.record, headers: {} };
   }
+  if (form.project) draft.project = form.project;
   const args: SaveServerArgs = { server: { ...draft, off: form.off } };
   if (previousName) args.previousName = previousName;
   return { args };
@@ -256,6 +261,76 @@ export function cliSaveArgs(
     accounts: (existing?.accounts ?? []).map(({ name, env }) => ({ name, env })),
   };
   return { args: existing ? { cli, previousId: existing.id } : { cli } };
+}
+
+// ---- which server: a name is unique only within its scope ----
+
+type Scoped = { name: string; project?: string };
+
+/** A server's identity on the client: the name alone everywhere, else project/name. */
+export function serverKey(s: Scoped): string {
+  return s.project ? `${s.project}/${s.name}` : s.name;
+}
+
+/** What every command naming a server sends: the name, and the project when it has one. */
+export function serverRef(s: Scoped): { name: string; project?: string } {
+  return s.project ? { name: s.name, project: s.project } : { name: s.name };
+}
+
+/** A project's name for the page, or the start of its ID when the app does not know it. */
+export function projectLabel(id: string, projects: { id: string; name: string }[]): string {
+  return projects.find((p) => p.id === id)?.name || id.slice(0, 8);
+}
+
+/** A server scoped everywhere is on in this project unless the project is in its offIn. */
+export function onInProject(s: Pick<McpServer, "offIn">, projectId: string): boolean {
+  return !s.offIn.includes(projectId);
+}
+
+export interface ServerGroups {
+  /** The project in view's own servers; empty outside a project. */
+  here: McpServer[];
+  everywhere: McpServer[];
+  /** Outside a project: every project's servers, a group each, by project ID. */
+  projects: { project: string; servers: McpServer[] }[];
+}
+
+/**
+ * The MCP tab's groups. In a project: its servers and the ones everywhere.
+ * Outside one: the ones everywhere and each project's, so all of them can be
+ * found in one place. Each group is sorted by name.
+ */
+export function groupServers(servers: McpServer[], projectId: string | undefined): ServerGroups {
+  const sorted = [...servers].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  const everywhere = sorted.filter((s) => !s.project);
+  if (projectId) return { here: sorted.filter((s) => s.project === projectId), everywhere, projects: [] };
+  const byProject = new Map<string, McpServer[]>();
+  for (const s of sorted) if (s.project) byProject.set(s.project, [...(byProject.get(s.project) ?? []), s]);
+  return { here: [], everywhere, projects: [...byProject].map(([project, list]) => ({ project, servers: list })) };
+}
+
+/**
+ * Whether a server takes another's place in this project: a project server
+ * with a name also used everywhere "replaces" that one, which is "replaced".
+ */
+export function shadowing(s: McpServer, servers: McpServer[], projectId: string | undefined): "replaces" | "replaced" | null {
+  if (!projectId) return null;
+  if (s.project === projectId) return servers.some((o) => !o.project && o.name === s.name) ? "replaces" : null;
+  if (!s.project) return servers.some((o) => o.project === projectId && o.name === s.name) ? "replaced" : null;
+  return null;
+}
+
+/**
+ * The servers a thread's session gets from Omniplex, as the server builds
+ * the set: the project's own, then those everywhere the project has not
+ * turned off and whose name none of its own uses. No project: everywhere only.
+ * Names are unique in the result, so the live report's names resolve here.
+ */
+export function threadServers(servers: McpServer[], projectId: string | undefined): McpServer[] {
+  if (!projectId) return servers.filter((s) => !s.project);
+  const own = servers.filter((s) => s.project === projectId);
+  const taken = new Set(own.map((s) => s.name));
+  return [...own, ...servers.filter((s) => !s.project && onInProject(s, projectId) && !taken.has(s.name))];
 }
 
 // ---- keeping the fetched list current without fetching it again ----
@@ -380,7 +455,8 @@ export function sortLive(servers: ThreadMcp[]): ThreadMcp[] {
 /**
  * What a live row offers. Sign in for our remote server that wants it,
  * reconnect for our server that failed, and for a server from the agent's
- * own config only the word that it is not ours to fix.
+ * own config only the word that it is not ours to fix. `ours` is the
+ * thread's own set (threadServers), where names are unique.
  */
 export function liveAction(
   s: ThreadMcp,
@@ -399,7 +475,7 @@ export function liveAction(
  */
 export const BUILT_IN_MCP = "omniplex";
 
-/** Where a server in a thread's report came from. */
+/** Where a server in a thread's report came from; `ours` as for liveAction. */
 export function liveSource(name: string, ours: Pick<McpServer, "name">[]): "ours" | "built_in" | "theirs" {
   if (name === BUILT_IN_MCP) return "built_in";
   return ours.some((o) => o.name === name) ? "ours" : "theirs";
@@ -420,13 +496,15 @@ function origin(url: string | undefined): string | null {
 }
 
 /**
- * The other servers on the same host as this one: other logins there, say
- * work and personal. Signing in to any of them asks for a fresh login.
+ * The other servers on the same host as this one, in any scope: other logins
+ * there, say work and a client's. Signing in to any of them asks for a fresh
+ * login.
  */
-export function sameHost(name: string, servers: Pick<McpServer, "name" | "url">[]): string[] {
-  const host = origin(servers.find((s) => s.name === name)?.url);
+export function sameHost<T extends Pick<McpServer, "name" | "project" | "url">>(target: T, servers: T[]): T[] {
+  const host = origin(target.url);
   if (!host) return [];
-  return servers.filter((s) => s.name !== name && origin(s.url) === host).map((s) => s.name);
+  const key = serverKey(target);
+  return servers.filter((s) => serverKey(s) !== key && origin(s.url) === host);
 }
 
 /** Omniplex holds the sign-in for this server: it is ours, and remote. */

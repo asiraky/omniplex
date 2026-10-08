@@ -123,40 +123,84 @@ func TestCloneLogsRawOutputServerSide(t *testing.T) {
 }
 
 func TestNormalizeRemote(t *testing.T) {
-	ok := []struct{ in, want string }{
-		{"asiraky/omniplex", "https://github.com/asiraky/omniplex.git"},
-		{"  asiraky/omniplex  ", "https://github.com/asiraky/omniplex.git"},
-		{"asiraky/omniplex.git", "https://github.com/asiraky/omniplex.git"},
-		{"https://github.com/asiraky/omniplex.git", "https://github.com/asiraky/omniplex.git"},
-		{"https://github.com/asiraky/omniplex", "https://github.com/asiraky/omniplex"},
-		{"git://example.com/o/r.git", "git://example.com/o/r.git"},
-		{"ssh://git@example.com:22/o/r.git", "ssh://git@example.com:22/o/r.git"},
-		{"git@github.com:asiraky/omniplex.git", "git@github.com:asiraky/omniplex.git"},
-		{"file:///srv/repos/r.git", "file:///srv/repos/r.git"},
-		{"/srv/repos/r", "/srv/repos/r"},
+	// The shorthand follows gh's git_protocol; an unset protocol is HTTPS.
+	shorthand := []struct{ in, protocol, want string }{
+		{"asiraky/omniplex", "", "https://github.com/asiraky/omniplex.git"},
+		{"asiraky/omniplex", "https", "https://github.com/asiraky/omniplex.git"},
+		{"asiraky/omniplex", "ssh", "git@github.com:asiraky/omniplex.git"},
+		{"  asiraky/omniplex  ", "https", "https://github.com/asiraky/omniplex.git"},
+		{"  asiraky/omniplex  ", "ssh", "git@github.com:asiraky/omniplex.git"},
+		{"asiraky/omniplex.git", "https", "https://github.com/asiraky/omniplex.git"},
+		{"asiraky/omniplex.git", "ssh", "git@github.com:asiraky/omniplex.git"},
 	}
-	for _, c := range ok {
-		got, err := NormalizeRemote(c.in)
+	for _, c := range shorthand {
+		got, err := NormalizeRemote(c.in, c.protocol)
 		if err != nil {
-			t.Errorf("NormalizeRemote(%q): %v", c.in, err)
+			t.Errorf("NormalizeRemote(%q, %q): %v", c.in, c.protocol, err)
 			continue
 		}
 		if got != c.want {
-			t.Errorf("NormalizeRemote(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("NormalizeRemote(%q, %q) = %q, want %q", c.in, c.protocol, got, c.want)
 		}
 	}
-	bad := []string{"", "   ", "--upload-pack=x", "-x", "o/r\nrm -rf /", "a\x00b"}
-	for _, in := range bad {
-		if got, err := NormalizeRemote(in); err == nil {
-			t.Errorf("NormalizeRemote(%q) = %q, want an error", in, got)
+	for _, protocol := range []string{"https", "ssh"} {
+		bad := []string{"", "   ", "--upload-pack=x", "-x", "o/r\nrm -rf /", "a\x00b"}
+		for _, in := range bad {
+			if got, err := NormalizeRemote(in, protocol); err == nil {
+				t.Errorf("NormalizeRemote(%q, %q) = %q, want an error", in, protocol, got)
+			}
+		}
+		// Anything that is not the strict shorthand is git's business, not
+		// ours: it goes through untouched whatever gh prefers, so a pasted
+		// HTTPS URL stays HTTPS on an SSH machine.
+		passed := []string{
+			"https://github.com/asiraky/omniplex.git",
+			"https://github.com/asiraky/omniplex",
+			"git://example.com/o/r.git",
+			"ssh://git@example.com:22/o/r.git",
+			"git@github.com:asiraky/omniplex.git",
+			"file:///srv/repos/r.git",
+			"/srv/repos/r",
+			"a/b/c", "own er/repo", "./local/repo",
+		}
+		for _, in := range passed {
+			if got, err := NormalizeRemote(in, protocol); err != nil || got != in {
+				t.Errorf("NormalizeRemote(%q, %q) = %q, %v; want it passed through", in, protocol, got, err)
+			}
 		}
 	}
-	// Anything that is not the strict shorthand is git's business, not ours:
-	// it goes through untouched rather than being rewritten into a GitHub URL.
-	for _, in := range []string{"a/b/c", "own er/repo", "./local/repo"} {
-		if got, err := NormalizeRemote(in); err != nil || got != in {
-			t.Errorf("NormalizeRemote(%q) = %q, %v; want it passed through", in, got, err)
+}
+
+// An HTTPS github.com clone that cannot sign in names the SSH URL to try;
+// any other remote gets the generic advice and names nothing.
+func TestClassifySuggestsSSHForGitHubHTTPS(t *testing.T) {
+	const noUser = "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+	for _, url := range []string{
+		"https://github.com/dvandort/nidaHR",
+		"https://github.com/dvandort/nidaHR.git",
+		"https://github.com/dvandort/nidaHR/",
+		"https://www.github.com/dvandort/nidaHR",
+	} {
+		err := classify(url, noUser)
+		if err == nil || !strings.Contains(err.Error(), "git@github.com:dvandort/nidaHR.git") {
+			t.Errorf("classify(%q) = %v, want it to suggest git@github.com:dvandort/nidaHR.git", url, err)
 		}
+	}
+	for _, url := range []string{
+		"https://gitlab.com/dvandort/nidaHR",
+		"https://token@github.com/dvandort/nidaHR",
+		"https://github.com/dvandort/nidaHR/tree/main",
+		"git@github.com:dvandort/nidaHR.git",
+	} {
+		err := classify(url, noUser)
+		if err == nil || !strings.Contains(err.Error(), "could not sign in") || strings.Contains(err.Error(), "git@github.com:") {
+			t.Errorf("classify(%q) = %v, want the generic sign-in advice", url, err)
+		}
+	}
+	// A repository that is not there is not a sign-in problem.
+	err := classify("https://github.com/dvandort/nidaHR", "remote: Repository not found.")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("classify on a missing repo = %v, want not found", err)
 	}
 }
 

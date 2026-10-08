@@ -66,7 +66,7 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 	if ToolServers != nil {
 		x.mcp = ToolServers(meta.ID, home)
 	}
-	x.mcp = append(x.mcp, userMCPServers(ctx, ad)...)
+	x.mcp = append(x.mcp, userMCPServers(ctx, ad, meta.ProjectID)...)
 	return x
 }
 

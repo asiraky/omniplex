@@ -351,12 +351,14 @@ type instanceArgs struct {
 }
 
 // authBeginArgs starts one of three kinds of sign-in: a provider instance's
-// method, an MCP server's OAuth (MCPServer, with the browser's Origin, which
-// decides where the authorization server sends it back), or a CLI account.
+// method, an MCP server's OAuth (MCPServer, in project MCPProject or
+// everywhere, with the browser's Origin, which decides where the
+// authorization server sends it back), or a CLI account.
 type authBeginArgs struct {
 	InstanceID string `json:"instanceId"`
 	MethodID   string `json:"methodId"`
 	MCPServer  string `json:"mcpServer"`
+	MCPProject string `json:"mcpProject"`
 	Origin     string `json:"origin"`
 	CLI        string `json:"cli"`
 	Account    string `json:"account"`
@@ -397,13 +399,30 @@ type saveMCPServerArgs struct {
 	PreviousName string    `json:"previousName"`
 }
 
+// listConnectionsArgs scopes the listing to one project; empty lists all.
+type listConnectionsArgs struct {
+	ProjectID string `json:"projectId"`
+}
+
+// mcpServerArgs names a server: Project is its project, or empty for one
+// that goes everywhere.
 type mcpServerArgs struct {
-	Name string `json:"name"`
+	Name    string `json:"name"`
+	Project string `json:"project"`
 }
 
 type setMCPServerOffArgs struct {
-	Name string   `json:"name"`
-	Off  []string `json:"off"`
+	Name    string   `json:"name"`
+	Project string   `json:"project"`
+	Off     []string `json:"off"`
+}
+
+// setMCPServerProjectOffArgs keeps a server that goes everywhere out of one
+// project, or lets it back in.
+type setMCPServerProjectOffArgs struct {
+	Name      string `json:"name"`
+	ProjectID string `json:"projectId"`
+	Off       bool   `json:"off"`
 }
 
 type parseMCPServerArgs struct {
@@ -416,6 +435,9 @@ type addFoundServerArgs struct {
 	// Where is the server's URL or command, which tells apart same-named
 	// servers in two instances' configs.
 	Where string `json:"where"`
+	// Project is set for a server found in that project's folders, which
+	// is added to the project.
+	Project string `json:"project"`
 }
 
 type saveCLIArgs struct {
@@ -428,7 +450,10 @@ type cliArgs struct {
 	Account string `json:"account"`
 }
 
+// threadMCPArgs names a thread and one of its servers. Project is what the
+// client believes the server's project is; the thread's own project decides.
 type threadMCPArgs struct {
 	ThreadID string `json:"threadId"`
 	Name     string `json:"name"`
+	Project  string `json:"project"`
 }

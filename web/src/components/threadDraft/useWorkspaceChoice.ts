@@ -22,13 +22,15 @@ const issuesFailed = (e: unknown): IssueListing => ({
 
 /** What the Git chip says: where the thread will work. */
 function labelFor(kind: WorkspaceKind, choice: WorkspaceChoice, attachable: Workspace[]) {
-  if (kind === "main") return "In the folder";
+  if (kind === "main") return "Main checkout";
   if (kind === "attach") {
     const attached = attachable.find((w) => w.path === choice.attachPath);
-    return attached ? `Copy: ${attached.branch || folderName(attached.path)}` : "Existing copy";
+    return attached
+      ? `Worktree: ${attached.branch || folderName(attached.path)}`
+      : "Existing worktree";
   }
   const branch = choice.branch.trim();
-  return branch ? `New copy: ${branch}` : "New copy";
+  return branch ? `New worktree: ${branch}` : "New worktree";
 }
 
 /** The workspace fields a new thread is created with. */
@@ -46,9 +48,9 @@ function sentFor(kind: WorkspaceKind, choice: WorkspaceChoice, baseRef: string) 
 }
 
 /**
- * Where in a git folder the thread works: in the folder itself, on a new copy
- * (optionally with a named branch and base), or on a copy that already
- * exists. Starts on whatever the project last did.
+ * Which checkout of a git folder the thread works in: the main checkout, a new
+ * worktree (optionally with a named branch and base), or a worktree that
+ * already exists. Starts on whatever the project last did.
  */
 export function useWorkspaceChoice({
   project,
@@ -70,7 +72,7 @@ export function useWorkspaceChoice({
   const [baseRef, setBaseRef] = useState("");
 
   // Every choice here belongs to one git folder, so another folder starts
-  // over rather than carrying a branch or a copy that means nothing there.
+  // over rather than carrying a branch or a worktree that means nothing there.
   const scopeKey = JSON.stringify([project?.id, gitScope?.id]);
   const [choiceScope, setChoiceScope] = useState(scopeKey);
   if (choiceScope !== scopeKey) {
@@ -81,8 +83,8 @@ export function useWorkspaceChoice({
     setNaming(false);
   }
 
-  // Copies and issues belong to a git folder, re-read whenever the scope
-  // changes so a stale list cannot offer a copy that has since gone.
+  // Worktrees and issues belong to a git folder, re-read whenever the scope
+  // changes so a stale list cannot offer a worktree that has since gone.
   const spaces = useFolderListing(
     onListWorkspaces,
     project?.id,
@@ -94,11 +96,11 @@ export function useWorkspaceChoice({
   const issues = useFolderListing(onListIssues, project?.id, gitScope?.id, NO_ISSUES, issuesFailed);
 
   const workspaces = spaces.value;
-  // The folder itself is its own choice, so it is not offered again as a copy.
+  // The main checkout is its own choice, so it is not offered again as a worktree.
   const attachable = workspaces.filter((w) => !w.isRoot);
-  const lastCopy = remembered?.copy ?? project?.defaults.workspace === "managed";
-  const kind: WorkspaceKind = !gitScope ? "main" : chosenKind || (lastCopy ? "branch" : "main");
-  // Branches already on disk are the useful bases: stacking on another copy's
+  const lastWorktree = remembered?.copy ?? project?.defaults.workspace === "managed";
+  const kind: WorkspaceKind = !gitScope ? "main" : chosenKind || (lastWorktree ? "branch" : "main");
+  // Branches already on disk are the useful bases: stacking on another worktree's
   // work is what the field is for.
   const baseChoices = Array.from(
     new Set(workspaces.map((w) => w.branch).filter((b): b is string => !!b)),
@@ -111,6 +113,8 @@ export function useWorkspaceChoice({
     naming,
     baseRef,
     attachable,
+    /** The branch the main checkout is on, once the worktree list is in. */
+    mainBranch: workspaces.find((w) => w.isRoot)?.branch ?? "",
     baseChoices,
     issues: issues.value,
     loadingSpaces: spaces.loading,

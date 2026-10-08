@@ -56,23 +56,23 @@ function blockerFor({
   status,
   project,
   ready,
-  missingCopy,
+  missingWorktree,
   loadingSpaces,
   starting,
 }: {
   status: ConnectionStatus;
   project: Project | undefined;
   ready: boolean;
-  missingCopy: boolean;
+  missingWorktree: boolean;
   loadingSpaces: boolean;
   starting: boolean;
 }) {
   if (status !== "online") return "Reconnecting…";
   if (!project) return "Add a project first";
   if (!ready) return "Sign in to a model to start";
-  if (missingCopy) return "Pick a copy to continue on";
+  if (missingWorktree) return "Pick a worktree to continue on";
   // The busy warning is made of this list, so wait for it.
-  if (loadingSpaces) return "Loading copies…";
+  if (loadingSpaces) return "Loading worktrees…";
   if (starting) return "Starting…";
   return "";
 }
@@ -86,6 +86,7 @@ function blockerFor({
 export function ThreadDraft({
   projects,
   activeProjectId,
+  onProjectChange,
   harnesses,
   userConfig,
   status,
@@ -106,6 +107,8 @@ export function ThreadDraft({
 }: {
   projects: Project[];
   activeProjectId?: string;
+  /** The person picked another project for this draft. */
+  onProjectChange?: (projectId: string) => void;
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
   status: ConnectionStatus;
@@ -124,7 +127,7 @@ export function ThreadDraft({
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
   /** What the chosen provider completes where the thread would start — the
-      chosen folder, or the existing copy of it — before a thread is there to
+      chosen folder, or the existing worktree of it — before a thread is there to
       ask. */
   onListComposerItems: (
     harness: string,
@@ -166,8 +169,8 @@ export function ThreadDraft({
   const instanceId = agent.instance?.id ?? "";
   const projectId = project?.id ?? "";
   const folderId = scope?.id ?? "";
-  // An existing copy is on its own branch, with its own project skills.
-  const copyPath = git.sent.workspacePath;
+  // An existing worktree is on its own branch, with its own project skills.
+  const worktreePath = git.sent.workspacePath;
   const loadComposerItems = useCallback(
     async () =>
       harnessId && projectId
@@ -176,14 +179,14 @@ export function ThreadDraft({
             instanceId,
             projectId,
             folderId,
-            copyPath,
+            worktreePath,
           )
         : [],
-    [onListComposerItems, harnessId, instanceId, projectId, folderId, copyPath],
+    [onListComposerItems, harnessId, instanceId, projectId, folderId, worktreePath],
   );
   const listed = useComposerItems(
     loadComposerItems,
-    [harnessId, instanceId, projectId, folderId, copyPath].join("\n"),
+    [harnessId, instanceId, projectId, folderId, worktreePath].join("\n"),
   );
   // Every entry listed for a draft is prompt text, so there is nothing a
   // message starting with a slash has to wait to find out.
@@ -193,7 +196,7 @@ export function ThreadDraft({
     status,
     project,
     ready: agent.instance?.availability?.state === "ready",
-    missingCopy: git.kind === "attach" && !git.choice.attachPath,
+    missingWorktree: git.kind === "attach" && !git.choice.attachPath,
     loadingSpaces: git.loadingSpaces,
     starting,
   });
@@ -304,7 +307,10 @@ export function ThreadDraft({
               <ProjectChip
                 projects={projects}
                 project={project}
-                onPick={where.pickProject}
+                onPick={(id) => {
+                  where.pickProject(id);
+                  onProjectChange?.(id);
+                }}
                 onSettings={onSettings}
                 onAddProject={onAddProject}
               />

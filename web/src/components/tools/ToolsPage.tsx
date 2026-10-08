@@ -22,11 +22,14 @@ import { Segmented, type PageCommand } from "./parts";
 export function ToolsPage({
   wires,
   scope,
+  projects = [],
   tab: asked,
   onClose,
 }: {
   wires: AuthWires;
   scope: SkillsScope;
+  /** For naming the projects MCP servers belong to. */
+  projects?: { id: string; name: string }[];
   /** Open on this tab rather than the last one used. */
   tab?: ToolsTab;
   onClose: () => void;
@@ -34,7 +37,7 @@ export function ToolsPage({
   const [tab, setTab] = useState<ToolsTab>(() => asked ?? loadToolsTab());
   const [seen, setSeen] = useState<ReadonlySet<ToolsTab>>(() => new Set([tab]));
   const command = wires.command as PageCommand;
-  const store = useConnections(command, tab !== "skills");
+  const store = useConnections(command, tab !== "skills", scope.projectId);
 
   const choose = (next: ToolsTab) => {
     setTab(next);
@@ -80,7 +83,14 @@ export function ToolsPage({
             <SkillsTab command={command} scope={scope} />
           ))}
           {panel("mcp", "MCP servers", () => (
-            <McpTab wires={wires} store={store} threadId={scope.threadId} shown={tab === "mcp"} />
+            <McpTab
+              wires={wires}
+              store={store}
+              threadId={scope.threadId}
+              projectId={scope.projectId}
+              projects={projects}
+              shown={tab === "mcp"}
+            />
           ))}
           {panel("signins", "Sign-ins", () => (
             <SignInsTab wires={wires} store={store} />

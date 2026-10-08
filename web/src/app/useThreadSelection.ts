@@ -87,6 +87,12 @@ export function useThreadSelection({
     if (!isDesktop) setSidebarOpen(false);
   }, [activeRef, clientRef, dropResume, isDesktop, setState, threads]);
 
+  // The draft's own project pick, kept here so the Skills page reads the
+  // project being drafted in and the draft comes back on it.
+  const pickDraftProject = useCallback((projectId: string) => {
+    setCreating((c) => c && { ...c, projectId });
+  }, []);
+
   // Letting go of the attached thread because it is gone. On a phone that
   // leaves nothing behind the sidebar, so it comes back.
   const release = useCallback(() => {
@@ -162,5 +168,6 @@ export function useThreadSelection({
     setSidebarOpen,
     select,
     startNew,
+    pickDraftProject,
   };
 }

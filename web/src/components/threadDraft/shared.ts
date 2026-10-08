@@ -1,4 +1,4 @@
-/** Work in the folder, on a new copy of it, or on a copy that already exists. */
+/** Work in the main checkout, in a new worktree, or in a worktree that already exists. */
 export type WorkspaceKind = "main" | "branch" | "attach";
 
 export function folderName(path: string) {
