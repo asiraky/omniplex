@@ -11,46 +11,82 @@ import (
 	"sync"
 )
 
-// syncKey is Claude Code's switch for the skills enabled on a claude.ai
-// account. Only false means anything: true is the same as leaving it out.
-const syncKey = "syncClaudeAiSkills"
+// Claude Code's two switches for whole sets of skills in the user settings.
+// syncKey is for the skills enabled on a claude.ai account: only false means
+// anything, true is the same as leaving it out. bundledKey is for the skills
+// that ship inside the CLI: only true means anything.
+const (
+	syncKey    = "syncClaudeAiSkills"
+	bundledKey = "disableBundledSkills"
+)
 
 func claudeSettingsPath(r Roots) string {
 	return filepath.Join(r.ClaudeConfigDir, "settings.json")
 }
 
-// ClaudeSync reports whether Claude Code loads the skills it syncs from the
-// claude.ai account: on unless the user settings say false.
-func ClaudeSync(r Roots) bool {
+// claudeSetting is a top-level key of the user settings as raw JSON, "" when
+// it is not there or the file cannot be read.
+func claudeSetting(r Roots, key string) string {
 	if r.ClaudeConfigDir == "" {
-		return true
+		return ""
 	}
 	data, err := os.ReadFile(claudeSettingsPath(r))
 	if err != nil {
-		return true
+		return ""
 	}
 	var settings map[string]json.RawMessage
 	if json.Unmarshal(data, &settings) != nil {
-		return true
+		return ""
 	}
-	return string(settings[syncKey]) != "false"
+	return string(settings[key])
 }
 
-// SetClaudeSync turns the sync off by writing false into the user settings,
-// or on by taking the key out. The rest of the file is left as it was, and a
+// setClaudeSetting writes a top-level key of the user settings, or takes it
+// out when value is nil. The rest of the file is left as it was, and a
 // settings.json that is a link is written through to what it points at.
-func SetClaudeSync(r Roots, on bool) error {
+func setClaudeSetting(r Roots, key string, value *string) error {
 	if r.ClaudeConfigDir == "" {
 		return errors.New("no Claude config dir")
 	}
+	return editSettings(claudeSettingsPath(r), func(content string) (string, error) {
+		return setTopKey(content, key, value)
+	})
+}
+
+// ClaudeSync reports whether Claude Code loads the skills it syncs from the
+// claude.ai account: on unless the user settings say false.
+func ClaudeSync(r Roots) bool {
+	return claudeSetting(r, syncKey) != "false"
+}
+
+// SetClaudeSync turns the sync off by writing false into the user settings,
+// or on by taking the key out.
+func SetClaudeSync(r Roots, on bool) error {
 	var value *string
 	if !on {
 		f := "false"
 		value = &f
 	}
-	return editSettings(claudeSettingsPath(r), func(content string) (string, error) {
-		return setTopKey(content, syncKey, value)
-	})
+	return setClaudeSetting(r, syncKey, value)
+}
+
+// ClaudeBundled reports whether Claude Code loads the skills it ships with:
+// on unless the user settings say disableBundledSkills is true. Off beats
+// every skillOverrides entry, so a bundled skill set on there stays off.
+func ClaudeBundled(r Roots) bool {
+	return claudeSetting(r, bundledKey) != "true"
+}
+
+// SetClaudeBundled turns the CLI's own skills off by writing true into the
+// user settings, or on by taking the key out. Per-skill entries in
+// skillOverrides are left alone, so turning the set back on restores them.
+func SetClaudeBundled(r Roots, on bool) error {
+	var value *string
+	if !on {
+		t := "true"
+		value = &t
+	}
+	return setClaudeSetting(r, bundledKey, value)
 }
 
 // editSettings edits a JSON settings file in place. A missing file is

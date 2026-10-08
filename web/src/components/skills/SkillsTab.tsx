@@ -7,6 +7,7 @@ import {
   Loading,
   LoadError,
   Marker,
+  RowSwitch,
   Section,
   type PageCommand,
 } from "~/components/tools/parts";
@@ -21,8 +22,10 @@ import {
   SECTION_ORDER,
   sectionOf,
   sectionSkills,
+  type ClaudeBuiltin,
   type SectionKind,
   type Skill,
+  type SkillMode,
   type SkillsList,
   type SkillsScope,
 } from "~/lib/skills";
@@ -40,6 +43,7 @@ const FOLDED: Record<SectionKind, boolean> = {
   private: false,
   project: false,
   synced: true,
+  claude: true,
   system: true,
   plugins: true,
 };
@@ -62,6 +66,58 @@ function SkillRow({ skill, aside, onOpen }: { skill: Skill; aside?: string; onOp
       problem={skill.problem}
       dim={skill.mode === "off"}
       onOpen={() => onOpen(skill)}
+    />
+  );
+}
+
+/**
+ * A skill an agent ships with: on or off at the end of its row. The switch
+ * moves at once and goes back if the write fails. With the whole set off it
+ * shows off and stays put, and each skill's own switch comes back with the set.
+ */
+function BuiltinRow({
+  name,
+  description,
+  mode,
+  groupOn,
+  problem,
+  onOpen,
+  onChange,
+}: {
+  name: string;
+  description?: string;
+  mode: SkillMode;
+  groupOn: boolean;
+  problem?: string;
+  onOpen?: () => void;
+  onChange: (on: boolean) => Promise<void>;
+}) {
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState("");
+  const change = (next: boolean) => {
+    setPending(next);
+    setError("");
+    onChange(next)
+      .catch((e) => setError(errorText(e)))
+      .finally(() => setPending(null));
+  };
+  const on = pending ?? mode !== "off";
+  return (
+    <ListRow
+      title={name}
+      markers={
+        <>
+          {pending !== null && <Spinner className="size-3.5" />}
+          {/* Off is the switch's to say; manual it cannot. */}
+          {mode === "manual" && <ModeChip mode={mode} />}
+        </>
+      }
+      sub={description}
+      problem={error || problem}
+      problemTone={error ? "bad" : undefined}
+      dim={!on}
+      onOpen={onOpen}
+      action={<RowSwitch label={name} checked={on} disabled={!groupOn || pending !== null} onCheckedChange={change} />}
     />
   );
 }
@@ -145,7 +201,7 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
       .then((l) => {
         if (stale) return;
         const skills = l.skills ?? [];
-        setList({ ...l, skills });
+        setList({ ...l, skills, claudeBuiltins: l.claudeBuiltins ?? [] });
         setLoads((n) => n + 1);
         setLoading(false);
         // The open skill follows the list: a write elsewhere can change its mode.
@@ -211,6 +267,26 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
     refresh();
   };
 
+  const setClaudeBundled = async (on: boolean) => {
+    const res = await command<{ claudeBundled: boolean }>("set_claude_bundled", { ...scopeArgs, on });
+    setList((l) => (l ? { ...l, claudeBundled: res.claudeBundled } : l));
+    refresh();
+  };
+
+  const setClaudeBuiltin = async (name: string, on: boolean) => {
+    const res = await command<ClaudeBuiltin>("set_claude_builtin", { ...scopeArgs, name, on });
+    setList((l) =>
+      l ? { ...l, claudeBuiltins: l.claudeBuiltins.map((b) => (b.name === res.name ? res : b)) } : l,
+    );
+    refresh();
+  };
+
+  /** A Codex built-in is on or off; its files are Codex's, so manual is not offered. */
+  const setCodexBuiltin = async (skill: Skill, on: boolean) => {
+    const res = await command<Skill>("set_skill_mode", { ...scopeArgs, dir: skill.dir, mode: on ? "on" : "off" });
+    upsert([res]);
+  };
+
   const setCodexBundled = async (on: boolean) => {
     const res = await command<{ codexBundled: boolean }>("set_codex_bundled", { ...scopeArgs, on });
     setList((l) => (l ? { ...l, codexBundled: res.codexBundled } : l));
@@ -222,6 +298,10 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
     () => sectionSkills((list?.skills ?? []).filter((s) => matchesQuery(s, query))),
     [list, query],
   );
+  const claudeBuiltins = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (list?.claudeBuiltins ?? []).filter((b) => b.name.toLowerCase().includes(q));
+  }, [list, query]);
 
   const changeQuery = (next: string) => {
     setQuery(next);
@@ -240,13 +320,15 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
   const renderSection = (kind: SectionKind) => {
     if (!list) return null;
     const skills = sections[kind];
+    const count = kind === "claude" ? claudeBuiltins.length : skills.length;
     // A search shows only where it found something.
-    if (searching && skills.length === 0) return null;
+    if (searching && count === 0) return null;
 
     let title: string;
     let action: ReactNode;
     let note: string | undefined;
     let asideOf: ((skill: Skill) => string | undefined) | undefined;
+    let rows: ReactNode = null;
     switch (kind) {
       case "yours":
         title = "Yours";
@@ -274,12 +356,40 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
           note = !list.claudeSync ? "Off. Claude won't load these." : skills.length === 0 ? "None synced yet." : undefined;
         }
         break;
+      case "claude":
+        title = "Claude Code built-in";
+        action = <SectionSwitch label="Claude Code built-in skills" on={list.claudeBundled} onChange={setClaudeBundled} />;
+        if (!searching && !list.claudeBundled) note = "Off. Claude won't load these.";
+        rows = claudeBuiltins.map((b) => (
+          <li key={b.name}>
+            <BuiltinRow
+              name={b.name}
+              mode={b.mode}
+              groupOn={list.claudeBundled}
+              onChange={(on) => setClaudeBuiltin(b.name, on)}
+            />
+          </li>
+        ));
+        break;
       case "system":
         title = "Codex built-in";
         action = <SectionSwitch label="Codex built-in skills" on={list.codexBundled} onChange={setCodexBundled} />;
         if (!searching) {
           note = !list.codexBundled ? "Off. Codex won't load these." : skills.length === 0 ? "None found." : undefined;
         }
+        rows = skills.map((skill) => (
+          <li key={skill.dir}>
+            <BuiltinRow
+              name={skill.name}
+              description={skill.description}
+              mode={skill.mode}
+              groupOn={list.codexBundled}
+              problem={skill.problem}
+              onOpen={() => openSkill(skill)}
+              onChange={(on) => setCodexBuiltin(skill, on)}
+            />
+          </li>
+        ));
         break;
       case "plugins":
         if (skills.length === 0) return null;
@@ -292,19 +402,20 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
       <Section
         key={kind}
         title={title}
-        count={skills.length}
+        count={count}
         open={sectionOpen(kind)}
         onOpenChange={(next) => setSectionOpen(kind, next)}
         action={action}
         note={note}
       >
-        {skills.length > 0 && (
+        {count > 0 && (
           <ul>
-            {skills.map((skill) => (
-              <li key={skill.dir}>
-                <SkillRow skill={skill} aside={asideOf?.(skill)} onOpen={(s) => openSkill(s)} />
-              </li>
-            ))}
+            {rows ??
+              skills.map((skill) => (
+                <li key={skill.dir}>
+                  <SkillRow skill={skill} aside={asideOf?.(skill)} onOpen={(s) => openSkill(s)} />
+                </li>
+              ))}
           </ul>
         )}
       </Section>

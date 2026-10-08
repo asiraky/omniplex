@@ -198,7 +198,7 @@ type skillArgs struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Mode        string `json:"mode"` // set_skill_mode
-	On          bool   `json:"on"`   // set_claude_sync, set_codex_bundled
+	On          bool   `json:"on"`   // set_claude_sync, set_claude_bundled, set_claude_builtin, set_codex_bundled
 	// Installing: what was pasted, the staging dir a fetch made, and what to
 	// take out of it.
 	Source string   `json:"source"`

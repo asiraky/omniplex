@@ -912,7 +912,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		return map[string]any{"tree": tree}, nil
 
 	case "list_skills", "read_skill", "read_skill_file", "save_skill", "create_skill",
-		"set_skill_mode", "remove_skill", "set_claude_sync", "set_codex_bundled", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
+		"set_skill_mode", "remove_skill", "set_claude_sync", "set_claude_bundled", "set_claude_builtin", "set_codex_bundled", "stage_skills", "read_staged_file", "install_staged", "discard_staged",
 		"skills_git_status", "commit_skills", "stage_update", "read_update_file", "apply_update":
 		var a skillArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

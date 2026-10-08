@@ -2,7 +2,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Destination, GitChange, Skill, SkillDetail, SkillsList } from "~/lib/skills";
+import type { ClaudeBuiltin, Destination, GitChange, Skill, SkillDetail, SkillsList } from "~/lib/skills";
 import { render } from "~/test/harness";
 
 import type { PageCommand } from "~/components/tools/parts";
@@ -33,16 +33,26 @@ function server(overrides: Record<string, Handler> = {}, initial: Skill[] = [ski
     skills: initial,
     claudeSync: true,
     codexBundled: true,
+    claudeBundled: true,
+    // Each built-in's own switch, under the group's.
+    claudeOff: new Set<string>(),
+    claudeNames: ["loop", "simplify"],
     changes: [] as GitChange[],
     destinations: undefined as Destination[] | undefined,
     defaultDestination: undefined as string | undefined,
   };
   const find = (dir: unknown) => state.skills.find((s) => s.dir === dir)!;
+  const builtin = (name: string): ClaudeBuiltin => ({
+    name,
+    mode: !state.claudeBundled || state.claudeOff.has(name) ? "off" : "on",
+  });
   const handlers: Record<string, Handler> = {
     list_skills: (): SkillsList => ({
       skills: state.skills,
       claudeSync: state.claudeSync,
       codexBundled: state.codexBundled,
+      claudeBundled: state.claudeBundled,
+      claudeBuiltins: state.claudeNames.map(builtin),
       destinations: state.destinations,
       defaultDestination: state.defaultDestination,
     }),
@@ -55,6 +65,16 @@ function server(overrides: Record<string, Handler> = {}, initial: Skill[] = [ski
     set_claude_sync: (args) => {
       state.claudeSync = Boolean(args.on);
       return { claudeSync: state.claudeSync };
+    },
+    set_claude_bundled: (args) => {
+      state.claudeBundled = Boolean(args.on);
+      return { claudeBundled: state.claudeBundled };
+    },
+    set_claude_builtin: (args) => {
+      const name = String(args.name);
+      if (args.on) state.claudeOff.delete(name);
+      else state.claudeOff.add(name);
+      return builtin(name);
     },
     set_codex_bundled: (args) => {
       state.codexBundled = Boolean(args.on);
@@ -168,6 +188,88 @@ describe("the section switches", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("config.toml is read-only");
     expect(sw.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("built-in skills", () => {
+  const codexSystem = () => [skill("alpha"), skill("imagegen", { dir: "/codex/.system/imagegen", scope: "system", editable: false })];
+
+  it("turns one Claude Code built-in off, and back on", async () => {
+    const { command } = server();
+    renderPage(command);
+    fireEvent.click(await screen.findByRole("button", { name: /Claude Code built-in/ }));
+    const sw = screen.getByRole("switch", { name: "simplify" });
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(sw);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "simplify" }).getAttribute("aria-checked")).toBe("false"));
+    fireEvent.click(screen.getByRole("switch", { name: "simplify" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "simplify" }).getAttribute("aria-checked")).toBe("true"));
+
+    expect(calls(command, "set_claude_builtin")).toEqual([
+      { name: "simplify", on: false },
+      { name: "simplify", on: true },
+    ]);
+    expect(screen.getByRole("switch", { name: "loop" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("holds every row off while the group is off, and gives each its own back with the group", async () => {
+    const { command, state } = server();
+    state.claudeBundled = false;
+    state.claudeOff.add("loop");
+    renderPage(command);
+    fireEvent.click(await screen.findByRole("button", { name: /Claude Code built-in/ }));
+    for (const name of ["loop", "simplify"]) {
+      const sw = screen.getByRole("switch", { name });
+      expect(sw.getAttribute("aria-checked")).toBe("false");
+      expect(sw.hasAttribute("disabled")).toBe(true);
+    }
+
+    fireEvent.click(screen.getByRole("switch", { name: "Claude Code built-in skills" }));
+
+    await waitFor(() => expect(screen.getByRole("switch", { name: "simplify" }).getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByRole("switch", { name: "loop" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("switch", { name: "loop" }).hasAttribute("disabled")).toBe(false);
+    expect(calls(command, "set_claude_bundled")).toEqual([{ on: true }]);
+  });
+
+  it("puts a row's switch back and says why when the write fails", async () => {
+    const { command } = server({
+      set_claude_builtin: () => {
+        throw new Error("settings.json is not valid JSON");
+      },
+    });
+    renderPage(command);
+    fireEvent.click(await screen.findByRole("button", { name: /Claude Code built-in/ }));
+
+    fireEvent.click(screen.getByRole("switch", { name: "loop" }));
+
+    expect(await screen.findByText(/settings.json is not valid JSON/)).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "loop" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("switches a Codex built-in off as a mode, and still opens it", async () => {
+    const { command } = server({}, codexSystem());
+    renderPage(command);
+    fireEvent.click(await screen.findByRole("button", { name: /Codex built-in/ }));
+
+    fireEvent.click(screen.getByRole("switch", { name: "imagegen" }));
+
+    await waitFor(() => expect(screen.getByRole("switch", { name: "imagegen" }).getAttribute("aria-checked")).toBe("false"));
+    expect(calls(command, "set_skill_mode")).toEqual([{ dir: "/codex/.system/imagegen", mode: "off" }]);
+    await openSkill("imagegen");
+  });
+
+  it("finds Claude Code built-ins by name", async () => {
+    const { command } = server();
+    renderPage(command);
+    await screen.findByRole("button", { name: /^alpha\b/ });
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search skills" }), { target: { value: "simp" } });
+
+    expect(screen.getByRole("switch", { name: "simplify" })).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "loop" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^alpha\b/ })).toBeNull();
   });
 });
 

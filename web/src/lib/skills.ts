@@ -42,6 +42,13 @@ export interface Skill {
   uncommitted?: boolean;
 }
 
+/** A skill that ships inside the Claude Code CLI: a name and a switch, no files. */
+export interface ClaudeBuiltin {
+  name: string;
+  /** Off whenever the whole set is. */
+  mode: SkillMode;
+}
+
 export interface SkillFile {
   /** Relative to the skill dir, slash-separated. */
   path: string;
@@ -76,6 +83,10 @@ export interface SkillsList {
   claudeSync: boolean;
   /** Whether Codex loads its own built-in skills. */
   codexBundled: boolean;
+  /** Whether Claude Code loads the skills it ships with. */
+  claudeBundled: boolean;
+  /** The skills Claude Code ships with, by name. */
+  claudeBuiltins: ClaudeBuiltin[];
 }
 
 export interface SkillFileContent {
@@ -96,12 +107,13 @@ export function matchesQuery(skill: Skill, query: string): boolean {
 
 // ---- the list's sections ----
 
-// "private" is the project home's skills, "project" the repos'.
-export type SectionKind = "yours" | "private" | "project" | "synced" | "system" | "plugins";
+// "private" is the project home's skills, "project" the repos'. "claude" is
+// Claude Code's built-ins, which are not Skills: see ClaudeBuiltin.
+export type SectionKind = "yours" | "private" | "project" | "synced" | "claude" | "system" | "plugins";
 
 // The project's own sit next to the repos' so the two read as a pair; Yours
 // stays first, as the one section that is always there.
-export const SECTION_ORDER: SectionKind[] = ["yours", "private", "project", "synced", "system", "plugins"];
+export const SECTION_ORDER: SectionKind[] = ["yours", "private", "project", "synced", "claude", "system", "plugins"];
 
 export function sectionOf(skill: Skill): SectionKind {
   if (skill.synced) return "synced";
@@ -118,7 +130,15 @@ export const byName = (a: string, b: string) => a.toLowerCase().localeCompare(b.
  * stay apart: each directory is its own row. Plugins sort by plugin first.
  */
 export function sectionSkills(skills: Skill[]): Record<SectionKind, Skill[]> {
-  const out: Record<SectionKind, Skill[]> = { yours: [], private: [], project: [], synced: [], system: [], plugins: [] };
+  const out: Record<SectionKind, Skill[]> = {
+    yours: [],
+    private: [],
+    project: [],
+    synced: [],
+    claude: [],
+    system: [],
+    plugins: [],
+  };
   for (const skill of skills) out[sectionOf(skill)].push(skill);
   for (const kind of SECTION_ORDER) {
     out[kind].sort(

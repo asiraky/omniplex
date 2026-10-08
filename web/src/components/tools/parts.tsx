@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "~/components/ui/dialog";
 import { Spinner } from "~/components/ui/spinner";
+import { Switch } from "~/components/ui/switch";
 import { cn, errorText } from "~/lib/utils";
 
 // The pieces every tab of the Skills page is built from: Skills, MCP servers
@@ -490,5 +491,33 @@ export function ConfirmDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * A switch at the end of a list row. Its padding is part of it, so a thumb
+ * finds it on a phone, and stops short of the row's own button.
+ */
+export function RowSwitch({
+  label,
+  checked,
+  onCheckedChange,
+  disabled,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (on: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <span className="flex h-11 items-center px-2 md:h-8">
+      <Switch
+        aria-label={label}
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        disabled={disabled}
+        className="relative after:absolute after:-inset-x-2 after:-inset-y-3.5 md:after:-inset-y-2"
+      />
+    </span>
   );
 }

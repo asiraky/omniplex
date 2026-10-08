@@ -30,7 +30,9 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		skills.MarkUncommitted(ctx, roots, found)
 		out := map[string]any{
 			"skills": found, "claudeSync": skills.ClaudeSync(roots), "codexBundled": skills.CodexBundled(roots),
-			"destinations": roots.Destinations(), "defaultDestination": roots.DefaultDestination(),
+			"claudeBundled":  skills.ClaudeBundled(roots),
+			"claudeBuiltins": skills.ClaudeBuiltins(roots, s.claudeBundled.Names(), found),
+			"destinations":   roots.Destinations(), "defaultDestination": roots.DefaultDestination(),
 		}
 		if roots.ProjectRoot != "" {
 			out["projectRoot"], out["projectName"] = roots.ProjectRoot, projectName
@@ -41,6 +43,13 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 			return nil, err
 		}
 		return map[string]any{"claudeSync": skills.ClaudeSync(roots)}, nil
+	case "set_claude_bundled":
+		if err := skills.SetClaudeBundled(roots, a.On); err != nil {
+			return nil, err
+		}
+		return map[string]any{"claudeBundled": skills.ClaudeBundled(roots)}, nil
+	case "set_claude_builtin":
+		return skills.SetClaudeBuiltin(roots, a.Name, a.On)
 	case "set_codex_bundled":
 		if err := skills.SetCodexBundled(roots, a.On); err != nil {
 			return nil, err

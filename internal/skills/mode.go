@@ -2,6 +2,7 @@ package skills
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -138,6 +139,7 @@ func filesManual(s *Skill) bool {
 // harness. On and manual are the skill's own files, and take away any off the
 // harnesses' settings hold for it; off is written into Claude's settings.json
 // and Codex's config.toml, and into the files as manual, since pi has no off.
+// A skill Codex ships is on or off in config.toml alone: see setBuiltinMode.
 func SetMode(r Roots, dir, mode string) (Skill, error) {
 	if mode != ModeOn && mode != ModeManual && mode != ModeOff {
 		return Skill{}, fmt.Errorf("%w: mode must be on, manual or off", ErrInvalid)
@@ -145,6 +147,9 @@ func SetMode(r Roots, dir, mode string) (Skill, error) {
 	s, err := find(r, dir)
 	if err != nil {
 		return Skill{}, err
+	}
+	if s.Scope == ScopeSystem {
+		return setBuiltinMode(r, s, mode)
 	}
 	if !s.Editable {
 		return Skill{}, ErrNotEditable
@@ -164,7 +169,7 @@ func SetMode(r Roots, dir, mode string) (Skill, error) {
 	}
 	if r.ClaudeConfigDir != "" {
 		if err := editSettings(claudeSettingsPath(r), func(content string) (string, error) {
-			return setClaudeOff(content, s, off)
+			return setClaudeOff(content, []string{s.Name, filepath.Base(s.Dir)}, off)
 		}); err != nil {
 			return Skill{}, err
 		}
@@ -179,13 +184,38 @@ func SetMode(r Roots, dir, mode string) (Skill, error) {
 	return find(r, s.Dir)
 }
 
-// setClaudeOff writes skillOverrides[name] = "off", or takes away an entry
-// that turns the skill off or makes it manual. Any other value is the user's
-// own and stays.
-func setClaudeOff(content string, s Skill, off bool) (string, error) {
+// setBuiltinMode switches one of the skills Codex ships on or off. Its files
+// are Codex's own and read-only, and config.toml has no manual for a skill, so
+// on and off are all there is, written as a [[skills.config]] table and
+// nothing else.
+func setBuiltinMode(r Roots, s Skill, mode string) (Skill, error) {
+	if mode == ModeManual {
+		return Skill{}, fmt.Errorf("%w: a built-in skill is on or off", ErrInvalid)
+	}
+	if r.CodexHome == "" {
+		return Skill{}, errors.New("no Codex home")
+	}
+	off := mode == ModeOff
+	if err := editThrough(codexConfigPath(r), func(content string, _ bool) (string, error) {
+		if off {
+			if err := codexSkillsElsewhere(content); err != nil {
+				return "", err
+			}
+		}
+		return editCodexSkill(content, s.Dir, off), nil
+	}); err != nil {
+		return Skill{}, err
+	}
+	return find(r, s.Dir)
+}
+
+// setClaudeOff writes skillOverrides[names[0]] = "off", or takes away an
+// entry under any of names that turns the skill off or makes it manual. Any
+// other value is the user's own and stays.
+func setClaudeOff(content string, names []string, off bool) (string, error) {
 	if off {
 		v := jsonString(overrideOff)
-		return setNestedKey(content, overridesKey, s.Name, &v)
+		return setNestedKey(content, overridesKey, names[0], &v)
 	}
 	var settings struct {
 		SkillOverrides map[string]json.RawMessage `json:"skillOverrides"`
@@ -193,7 +223,7 @@ func setClaudeOff(content string, s Skill, off bool) (string, error) {
 	if err := json.Unmarshal([]byte(content), &settings); err != nil {
 		return "", err
 	}
-	for _, name := range []string{s.Name, filepath.Base(s.Dir)} {
+	for _, name := range names {
 		var v string
 		if json.Unmarshal(settings.SkillOverrides[name], &v) != nil || (v != overrideOff && v != overrideManualOnly) {
 			continue

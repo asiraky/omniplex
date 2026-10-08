@@ -70,6 +70,9 @@ type Server struct {
 	// skillFetch runs npx and git for a skills install. The zero value is the
 	// real thing; a test puts a fake runner in.
 	skillFetch skills.Fetcher
+	// claudeBundled is what the installed Claude Code says it ships. Nil
+	// lists only the names known without asking it.
+	claudeBundled *skills.BundledProbe
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -112,28 +115,31 @@ type Options struct {
 	// Connections is the user's MCP servers and sign-ins; nil turns the
 	// feature off.
 	Connections *mcp.Connections
+	// ClaudeBundled is the cached list of the skills Claude Code ships with.
+	ClaudeBundled *skills.BundledProbe
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
 
 func New(o Options) *Server {
 	s := &Server{
-		live:        map[*conn]struct{}{},
-		termLive:    map[*websocket.Conn]string{},
-		id:          uuid.NewString(),
-		mgr:         o.Manager,
-		store:       o.Store,
-		guard:       o.Guard,
-		endpoints:   o.Endpoints,
-		webFS:       o.WebFS,
-		allowAny:    o.AllowAnyOrigin,
-		attachments: o.Attachments,
-		artefacts:   o.Artefacts,
-		signer:      o.ArtefactSigner,
-		commit:      o.Commit,
-		version:     o.Version,
-		conns:       o.Connections,
-		logf:        o.Logf,
+		live:          map[*conn]struct{}{},
+		termLive:      map[*websocket.Conn]string{},
+		id:            uuid.NewString(),
+		mgr:           o.Manager,
+		store:         o.Store,
+		guard:         o.Guard,
+		endpoints:     o.Endpoints,
+		webFS:         o.WebFS,
+		allowAny:      o.AllowAnyOrigin,
+		attachments:   o.Attachments,
+		artefacts:     o.Artefacts,
+		signer:        o.ArtefactSigner,
+		commit:        o.Commit,
+		version:       o.Version,
+		conns:         o.Connections,
+		claudeBundled: o.ClaudeBundled,
+		logf:          o.Logf,
 	}
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}

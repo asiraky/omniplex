@@ -37,6 +37,7 @@ import (
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/server"
+	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
@@ -135,8 +136,9 @@ func main() {
 	// before this one starts any of its own.
 	procgroup.Sweep()
 
+	claude := claudecode.New(*claudePath)
 	mgr := thread.NewManager(st, logf,
-		claudecode.New(*claudePath),
+		claude,
 		codexapp.New(*codexBin),
 		piapp.New(*piBin),
 	)
@@ -176,6 +178,13 @@ func main() {
 	mgr.ResumeInterrupted()
 	mgr.StartScheduler()
 
+	// The skills Claude Code ships with are asked of the CLI in the
+	// background, once per version it updates itself to.
+	claudeBundled := skills.NewBundledProbe(filepath.Join(filepath.Dir(*dbPath), "claude-bundled-skills.json"), claude.Executable)
+	watchCtx, stopWatching := context.WithCancel(context.Background())
+	defer stopWatching()
+	go claudeBundled.Watch(watchCtx, time.Hour, logf)
+
 	webFS, hasUI := embeddedUI()
 
 	// In development the UI comes from Vite through this server rather than
@@ -210,6 +219,7 @@ func main() {
 		Commit:         buildCommit(),
 		Version:        version,
 		Connections:    conns,
+		ClaudeBundled:  claudeBundled,
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
