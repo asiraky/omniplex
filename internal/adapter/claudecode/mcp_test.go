@@ -384,3 +384,94 @@ func TestConfiguredMCPServersMissingFiles(t *testing.T) {
 		t.Fatalf("found %v, %v", found, err)
 	}
 }
+
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// A worktree's session gets its own .mcp.json and the local scope Claude
+// keeps under the main checkout's root, with that entry winning over one
+// under the worktree's own path.
+func TestProjectMCPServersInAWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	home := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(home))
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q", "-b", "main")
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "start")
+	wt := filepath.Join(home, "wt")
+	git(t, repo, "worktree", "add", "-q", "-b", "side", wt)
+	if r, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = r
+	}
+	writeJSON(t, filepath.Join(wt, ".mcp.json"), map[string]any{"mcpServers": map[string]any{
+		"shared": map[string]any{"type": "http", "url": "https://repo.test/mcp"},
+	}})
+	writeJSON(t, filepath.Join(home, ".claude.json"), map[string]any{
+		"mcpServers": map[string]any{"user": map[string]any{"command": "u"}},
+		"projects": map[string]any{
+			repo:     map[string]any{"mcpServers": map[string]any{"db": map[string]any{"command": "db", "args": []string{"--root"}}}},
+			wt:       map[string]any{"mcpServers": map[string]any{"db": map[string]any{"command": "db", "args": []string{"--wt"}}, "extra": map[string]any{"command": "x"}}},
+			"/other": map[string]any{"mcpServers": map[string]any{"elsewhere": map[string]any{"command": "e"}}},
+		},
+	})
+
+	found, err := (&Adapter{}).ProjectMCPServers(context.Background(), map[string]string{"HOME": home, "CLAUDE_CONFIG_DIR": ""}, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range found {
+		got = append(got, f.Origin+":"+f.Name+":"+f.URL+f.Command+strings.Join(f.Args, " "))
+	}
+	want := []string{
+		".mcp.json:shared:https://repo.test/mcp",
+		"Local settings:db:db--root",
+		"Local settings:extra:x",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+// Outside a git repo the local scope is the folder's own entry; a missing
+// file is no servers and a broken one is an error.
+func TestProjectMCPServersOutsideGit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(home))
+	dir := filepath.Join(home, "plain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"HOME": home, "CLAUDE_CONFIG_DIR": ""}
+	found, err := (&Adapter{}).ProjectMCPServers(context.Background(), env, dir)
+	if err != nil || len(found) != 0 {
+		t.Fatalf("no files: %v, %v", found, err)
+	}
+
+	writeJSON(t, filepath.Join(home, ".claude.json"), map[string]any{
+		"projects": map[string]any{dir: map[string]any{"mcpServers": map[string]any{"mine": map[string]any{"command": "m"}}}},
+	})
+	found, err = (&Adapter{}).ProjectMCPServers(context.Background(), env, dir)
+	if err != nil || len(found) != 1 || found[0].Name != "mine" || found[0].Origin != "Local settings" {
+		t.Fatalf("local entry: %+v, %v", found, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Adapter{}).ProjectMCPServers(context.Background(), env, dir); err == nil || !strings.Contains(err.Error(), ".mcp.json") {
+		t.Fatalf("broken .mcp.json: %v", err)
+	}
+}
