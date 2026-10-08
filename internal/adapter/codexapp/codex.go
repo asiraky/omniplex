@@ -321,6 +321,14 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		_ = s.Close()
 		return nil, err
 	}
+	// Codex does not look for skills in its writable roots. The list is
+	// process-wide, which is this session's alone: every session runs its own
+	// app-server. A codex too old for the method runs without them.
+	if len(o.SkillDirs) > 0 {
+		if err := s.conn.Call(ctx, "skills/extraRoots/set", map[string]any{"extraRoots": o.SkillDirs}, nil); err != nil {
+			host.Logf("codex: project skills left out: %v", err)
+		}
+	}
 
 	startParams := map[string]any{
 		"cwd":            o.Cwd,
@@ -407,6 +415,11 @@ type session struct {
 	events chan proto.Emission
 	done   chan struct{}
 	closed sync.Once
+	// emitMu orders every send on events before the close in watchExit: the
+	// sends come from other goroutines (CreateSession's, the quota read's),
+	// and a close concurrent with a send is a race even when it loses it.
+	emitMu       sync.RWMutex
+	eventsClosed bool
 
 	mu sync.Mutex
 	// turnID is omniplex's own turn id, echoed onto emitted events. serverTurnID is
@@ -632,7 +645,10 @@ func (s *session) watchExit() {
 			TurnID: turn, StopReason: proto.StopError, Error: "harness exited",
 		}))
 	}
+	s.emitMu.Lock()
+	s.eventsClosed = true
 	close(s.events)
+	s.emitMu.Unlock()
 }
 
 func (s *session) drainStderr(r io.ReadCloser) {
@@ -645,6 +661,11 @@ func (s *session) drainStderr(r io.ReadCloser) {
 }
 
 func (s *session) emit(e proto.Emission) {
+	s.emitMu.RLock()
+	defer s.emitMu.RUnlock()
+	if s.eventsClosed {
+		return
+	}
 	select {
 	case s.events <- e:
 	case <-s.done:

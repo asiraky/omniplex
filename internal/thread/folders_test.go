@@ -217,7 +217,7 @@ func TestAThreadAcrossTheProjectReachesEveryFolder(t *testing.T) {
 		}
 	}
 
-	_, all := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID}, home, t.Logf)
+	all := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID}, home, t.Logf).extraDirs
 	if want := []string{repo, other}; !slices.Equal(all, want) {
 		t.Fatalf("whole-project thread reaches %v, want %v", all, want)
 	}
@@ -228,8 +228,70 @@ func TestAThreadAcrossTheProjectReachesEveryFolder(t *testing.T) {
 			repoID = f.ID
 		}
 	}
-	_, one := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID, FolderID: repoID}, repo, t.Logf)
+	one := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID, FolderID: repoID}, repo, t.Logf).extraDirs
 	if want := []string{home}; !slices.Equal(one, want) {
 		t.Fatalf("one-folder thread reaches %v, want %v", one, want)
+	}
+}
+
+// A project's private skills live in its home and reach a thread working
+// anywhere else, in either of its repos or a worktree of one, with the home's
+// .claude/skills already there for Claude to watch. A thread in the home
+// itself, or with no project, gets no extra skills folder.
+func TestPrivateProjectSkillsReachEveryThreadOutsideTheHome(t *testing.T) {
+	mgr, _ := projectsIn(t)
+	ctx := context.Background()
+	p, err := mgr.NewProject(ctx, NewProjectOptions{Name: "Bowerbird"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := p.Home
+	web, webTree, _ := gitRepo(t)
+	api, _, _ := gitRepo(t)
+	for _, path := range []string{web, api} {
+		if p, err = mgr.AddFolder(ctx, p.ID, AddFolderOptions{Path: path}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	folder := map[string]string{}
+	for _, f := range p.Folders {
+		folder[f.Path] = f.ID
+	}
+
+	want := []string{filepath.Join(home, ".agents", "skills")}
+	for _, tc := range []struct{ name, cwd, folder string }{
+		{"web", web, web},
+		{"api", api, api},
+		{"web worktree", webTree, web},
+	} {
+		got := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID, FolderID: folder[tc.folder]}, tc.cwd, t.Logf).skillDirs
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: skill dirs %v, want %v", tc.name, got, want)
+		}
+	}
+	for _, d := range []string{want[0], filepath.Join(home, ".claude", "skills")} {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			t.Errorf("%s not made before the session: %v", d, err)
+		}
+	}
+
+	if got := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: p.ID}, home, t.Logf).skillDirs; got != nil {
+		t.Errorf("whole-project thread in the home got %v", got)
+	}
+
+	plain := t.TempDir()
+	pp, err := mgr.NewProject(ctx, NewProjectOptions{Path: plain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t", ProjectID: pp.ID, FolderID: pp.Folders[0].ID}, plain, t.Logf).skillDirs; got != nil {
+		t.Errorf("plain-folder thread in its home got %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(plain, ".claude")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a thread in the home made .claude there: %v", err)
+	}
+
+	if got := harnessExtras(ctx, mgr.store, nil, store.ThreadMeta{ID: "t"}, t.TempDir(), t.Logf).skillDirs; got != nil {
+		t.Errorf("thread with no project got %v", got)
 	}
 }

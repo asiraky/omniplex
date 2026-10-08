@@ -28,14 +28,22 @@ import (
 // needs it and none of them has the manager.
 var ToolServers func(threadID, home string) []adapter.MCPServer
 
+// extras is what a harness gets beside its working directory.
+type extras struct {
+	mcp       []adapter.MCPServer
+	extraDirs []string
+	skillDirs []string
+}
+
 // harnessExtras is what every harness gets beside its working directory: the
 // tool servers, then the user's MCP servers the adapter takes, and the
 // folders it may write in outside it. That is the thread's home folder when
 // it works somewhere else (a repo, a worktree), so an agent in a repo can put
 // what it makes for you outside the repo. A thread scoped to the whole
 // project also gets every folder of the project that is not already inside
-// another.
-func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, cwd string, logf func(string, ...any)) ([]adapter.MCPServer, []string) {
+// another. A project's thread working outside the home also gets the home's
+// private skills; a harness in the home finds them by itself.
+func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, cwd string, logf func(string, ...any)) extras {
 	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
 		logf("home folder for %s: %v", meta.ID, err)
@@ -51,12 +59,30 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 			}
 		}
 	}
-	extra := extraDirs(cwd, dirs)
-	var servers []adapter.MCPServer
-	if ToolServers != nil {
-		servers = ToolServers(meta.ID, home)
+	x := extras{extraDirs: extraDirs(cwd, dirs)}
+	if meta.ProjectID != "" && cwd != "" && filepath.Clean(cwd) != filepath.Clean(home) {
+		x.skillDirs = []string{projectSkills(home, logf)}
 	}
-	return append(servers, userMCPServers(ctx, ad)...), extra
+	if ToolServers != nil {
+		x.mcp = ToolServers(meta.ID, home)
+	}
+	x.mcp = append(x.mcp, userMCPServers(ctx, ad)...)
+	return x
+}
+
+// projectSkills readies a project home's private skills folder for a session
+// working elsewhere and returns it. Claude reaches it through the home's
+// .claude/skills and only watches skills folders that existed when it
+// started, so both are made now, empty or not: a skill installed mid-session
+// then shows up without a restart.
+func projectSkills(home string, logf func(string, ...any)) string {
+	skills := filepath.Join(home, ".agents", "skills")
+	for _, d := range []string{skills, filepath.Join(home, ".claude", "skills")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			logf("project skills folder: %v", err)
+		}
+	}
+	return skills
 }
 
 // extraDirs drops what the agent can already reach: anything inside cwd, or
