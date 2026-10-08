@@ -11,7 +11,7 @@ export interface ProjectPrefs {
   byHarness: Record<string, HarnessPrefs>;
   /** The folder the last thread started in; "" is the whole project. */
   folderId?: string;
-  /** Whether the last thread in a git folder worked in it or on a copy. */
+  /** Whether the last thread in a git folder worked in a worktree rather than the main checkout. */
   copy?: boolean;
 }
 export type ThreadPrefs = Record<string, ProjectPrefs>;

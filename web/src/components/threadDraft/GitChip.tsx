@@ -16,20 +16,24 @@ import type { Folder, UserConfig } from "~/protocol";
 import { Chip } from "./parts";
 import type { WorkspaceChoiceState } from "./useWorkspaceChoice";
 
-// The Base dropdown's "use the folder default" option. A Radix Select item
+// The Base dropdown's "use the default base" option. A Radix Select item
 // cannot carry an empty value, and the space makes it an impossible branch name.
-const BASE_DEFAULT = "folder default";
+const BASE_DEFAULT = "default base";
 
 const linkClass = "h-8 px-0 text-[12px]";
 
-/** In the folder, or on a copy of it. Continuing an existing copy is a copy too. */
+/** The main checkout, or a worktree. Continuing an existing worktree is a worktree too. */
 function KindChoice({ folder, git }: { folder: Folder; git: WorkspaceChoiceState }) {
   const kinds = [
-    { id: "main", label: "Work in the folder", hint: folder.path },
+    {
+      id: "main",
+      label: "Main checkout",
+      hint: git.mainBranch ? `${git.mainBranch} · ${folder.path}` : folder.path,
+    },
     {
       id: "branch",
-      label: "Work on a copy",
-      hint: "A checkout of its own on a new branch. The folder stays as it is.",
+      label: "New worktree",
+      hint: "New branch in its own git worktree. The main checkout is untouched.",
     },
   ] as const;
   return (
@@ -61,8 +65,8 @@ function KindChoice({ folder, git }: { folder: Folder; git: WorkspaceChoiceState
   );
 }
 
-/** A new copy: its branch name and what it branches from, both optional. */
-function NewCopyFields({
+/** A new worktree: its branch name and what it branches from, both optional. */
+function NewWorktreeFields({
   folder,
   git,
   userConfig,
@@ -92,7 +96,7 @@ function NewCopyFields({
             className={linkClass}
             onClick={() => git.pickKind("attach")}
           >
-            Continue on an existing copy
+            Use an existing worktree
           </Button>
         )}
       </div>
@@ -125,7 +129,7 @@ function NewCopyFields({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={BASE_DEFAULT}>
-                  Folder default
+                  Default
                   {folder.baseBranch ? ` (${folder.baseBranch})` : ""}
                 </SelectItem>
                 {git.baseChoices.map((b) => (
@@ -142,8 +146,8 @@ function NewCopyFields({
   );
 }
 
-/** A copy another thread already made, to carry on its work. */
-function ExistingCopyField({
+/** A worktree another thread already made, to carry on its work. */
+function ExistingWorktreeField({
   git,
   userConfig,
 }: {
@@ -153,7 +157,7 @@ function ExistingCopyField({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label htmlFor="new-thread-attach">Existing copy</Label>
+        <Label htmlFor="new-thread-attach">Worktree</Label>
         <Button
           type="button"
           variant="link"
@@ -161,7 +165,7 @@ function ExistingCopyField({
           className={linkClass}
           onClick={() => git.pickKind("branch")}
         >
-          Start a new copy instead
+          New worktree instead
         </Button>
       </div>
       <WorkspacePicker
@@ -174,13 +178,13 @@ function ExistingCopyField({
         issuesError={git.issues.issuesError}
         userConfig={userConfig}
         loading={git.loadingSpaces}
-        placeholder="Search copies"
+        placeholder="Search worktrees"
       />
     </div>
   );
 }
 
-/** Where in a git folder the thread works. */
+/** Which checkout of a git repo the thread works in. */
 export function GitChip({
   folder,
   git,
@@ -200,9 +204,9 @@ export function GitChip({
       <PopoverContent align="start" className="w-[min(22rem,calc(100vw-2rem))] space-y-2">
         <KindChoice folder={folder} git={git} />
         {git.kind === "branch" && (
-          <NewCopyFields folder={folder} git={git} userConfig={userConfig} />
+          <NewWorktreeFields folder={folder} git={git} userConfig={userConfig} />
         )}
-        {git.kind === "attach" && <ExistingCopyField git={git} userConfig={userConfig} />}
+        {git.kind === "attach" && <ExistingWorktreeField git={git} userConfig={userConfig} />}
       </PopoverContent>
     </Popover>
   );
