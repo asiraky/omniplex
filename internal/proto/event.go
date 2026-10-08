@@ -661,12 +661,17 @@ type ElicitationRequestedPayload struct {
 	TurnID    string          `json:"turnId,omitempty"`
 	Prompt    string          `json:"prompt"`
 	Schema    json.RawMessage `json:"schema"`
+	// Card is set when the agent raised this through omniplex's own tools: a
+	// proposal (an MCP server, a skill, a sign-in) the user saves, edits or
+	// declines. It is not tied to the turn and never holds a secret value.
+	Card json.RawMessage `json:"card,omitempty"`
 }
 
 type ElicitationResolvedPayload struct {
-	RequestID string          `json:"requestId"`
-	Action    string          `json:"action"` // accept | decline | cancel
-	Value     json.RawMessage `json:"value,omitempty"`
+	RequestID string `json:"requestId"`
+	Action    string `json:"action"` // accept | decline | cancel
+	// Value is the answer; for a card, its outcome. Never a secret value.
+	Value json.RawMessage `json:"value,omitempty"`
 }
 
 // DefaultPermissionOptions is the option set offered when a harness does not
