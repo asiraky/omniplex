@@ -462,12 +462,15 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // server, and an upsert here would append an orphan at the tail.
       if (!s.items.some((it) => it.id === id)) return { ...s, pendingElicitations };
       const outcome = p.value as CardOutcome | undefined;
+      // The outcome's own result, else what the action implies: cardResult.
+      const result =
+        outcome?.result ?? (p.action === "accept" ? "saved" : p.action === "decline" ? "declined" : "cancelled");
       return {
         ...s,
         pendingElicitations,
         items: upsert(s, id, (it) => {
-          it.status = outcome?.result ?? (p.action === "decline" ? "declined" : "cancelled");
-          it.outcome = outcome;
+          it.status = result;
+          if (outcome) it.outcome = outcome;
         }),
       };
     }

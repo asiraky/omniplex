@@ -223,3 +223,61 @@ describe("a sent prompt", () => {
     expect(s.items[0].images).toHaveLength(1);
   });
 });
+
+describe("cards", () => {
+  const card = { kind: "add_mcp_server", projectId: "p1", server: { name: "linear" } };
+  const requested = (seq: number, requestId: string, over: Record<string, unknown> = {}) =>
+    ev(seq, "elicitation.requested", { requestId, turnId: "t1", prompt: "Add linear", schema: {}, card, ...over }, 5000);
+
+  it("adds a pending elicitation and a pending card item for the turn", () => {
+    const s = applyEvent(emptyState("s1"), requested(1, "r1"));
+    expect(s.pendingElicitations).toEqual([{ requestId: "r1", prompt: "Add linear", schema: {}, card }]);
+    expect(s.items).toEqual([
+      { id: "card:r1", kind: "card", turnId: "t1", card, status: "pending", receivedAt: 5000 },
+    ]);
+  });
+
+  it("adds no item for an ordinary question", () => {
+    const s = applyEvent(emptyState("s1"), ev(1, "elicitation.requested", { requestId: "q1", prompt: "Which?", schema: {} }));
+    expect(s.pendingElicitations).toHaveLength(1);
+    expect(s.items).toHaveLength(0);
+  });
+
+  it("settles the card item with the outcome and drops the pending request", () => {
+    let s = applyEvent(emptyState("s1"), requested(1, "r1"));
+    s = applyEvent(s, requested(2, "r2"));
+    const outcome = { result: "saved", summary: "Saved linear for this project", needsSignIn: true };
+    s = applyEvent(s, ev(3, "elicitation.resolved", { requestId: "r1", action: "accept", value: outcome }));
+
+    expect(s.pendingElicitations.map((e) => e.requestId)).toEqual(["r2"]);
+    const item = s.items.find((it) => it.id === "card:r1")!;
+    expect(item.status).toBe("saved");
+    expect(item.outcome).toEqual(outcome);
+    expect(s.items.find((it) => it.id === "card:r2")!.status).toBe("pending");
+  });
+
+  it.each([
+    ["accept", "saved"],
+    ["decline", "declined"],
+    ["cancel", "cancelled"],
+  ])("falls back on the action when the resolution carries no outcome: %s is %s", (action, status) => {
+    let s = applyEvent(emptyState("s1"), requested(1, "r1"));
+    s = applyEvent(s, ev(2, "elicitation.resolved", { requestId: "r1", action }));
+    expect(s.items[0].status).toBe(status);
+    expect(s.items[0].outcome).toBeUndefined();
+  });
+
+  it("does not append a card item this window never held", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t2", prompt: "go" }));
+    s = applyEvent(s, ev(2, "elicitation.resolved", { requestId: "r-old", action: "accept", value: { result: "saved" } }));
+    expect(s.items.map((it) => it.id)).not.toContain("card:r-old");
+  });
+
+  it("leaves a pending card alone when its turn stops", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, requested(2, "r1"));
+    s = applyEvent(s, ev(3, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+    expect(s.items.find((it) => it.id === "card:r1")!.status).toBe("pending");
+    expect(s.pendingElicitations).toHaveLength(1);
+  });
+});

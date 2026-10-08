@@ -214,3 +214,37 @@ describe("labels", () => {
     expect(formatDuration(3_720_000)).toBe("1h 2m");
   });
 });
+
+describe("buildRows with cards", () => {
+  function card(status: Item["status"] = "saved", over: Partial<Item> = {}): Item {
+    return { id: `card:r${n++}`, kind: "card", status, turnId: "turn1", card: { kind: "add_mcp_server" }, ...over };
+  }
+
+  it("keeps a finished turn's card out of the fold, under the answer", () => {
+    const c = card();
+    const rows = buildRows([prompt("add linear"), tool(), c, tool(), msg("Added.")], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "fold(2)", "message:agent", "card:tool"]);
+    expect(rows[3]).toEqual({ kind: "item", item: c });
+  });
+
+  it("keeps a card still waiting after its turn stopped", () => {
+    const c = card("pending");
+    const rows = buildRows([prompt("add linear"), tool(), c], [turn("turn1", { stopReason: "cancelled" })], "idle");
+    expect(rows).toContainEqual({ kind: "item", item: c });
+  });
+
+  it("gives a card in a running turn its own row between tool runs", () => {
+    const c = card("pending");
+    const rows = buildRows(
+      [prompt("add linear"), tool(), tool(), c, tool()],
+      [turn("turn1", { done: false })],
+      "turn",
+    );
+    expect(shape(rows)).toEqual(["message:user", "run(2)", "card:tool", "live(1)"]);
+    expect(rows[2]).toEqual({ kind: "item", item: c });
+  });
+
+  it("belongs to its turn, for the changed-files card", () => {
+    expect(rowTurnID({ kind: "item", item: card() })).toBe("turn1");
+  });
+});

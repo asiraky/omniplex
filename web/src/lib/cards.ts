@@ -223,8 +223,10 @@ export function signInTargets(outcome: CardOutcome | undefined, origin: string):
   }
   const cli = outcome.cli;
   if (cli?.id) {
-    const many = cli.accounts.length > 1;
-    for (const account of cli.accounts) {
+    // Go sends an empty slice as null.
+    const accounts = cli.accounts ?? [];
+    const many = accounts.length > 1;
+    for (const account of accounts) {
       out.push({
         key: `cli:${cli.id}:${account}`,
         label: many ? `Sign in ${account}` : "Sign in",

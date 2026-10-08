@@ -77,6 +77,8 @@ function StagedRow({
   onOpen: (open: boolean) => void;
   disabled: boolean;
 }) {
+  // Go sends an empty slice as null.
+  const files = skill.files ?? [];
   return (
     <li className="px-1">
       <div className="flex items-start">
@@ -100,7 +102,7 @@ function StagedRow({
           <span className="flex w-full min-w-0 items-center gap-1.5">
             <span className="min-w-0 font-mono text-[13px] wrap-anywhere">{skill.name}</span>{" "}
             <span className="text-muted-foreground ml-auto shrink-0 text-[11.5px]">
-              {skill.files.length} {skill.files.length === 1 ? "file" : "files"}
+              {files.length} {files.length === 1 ? "file" : "files"}
             </span>
             <ChevronRightIcon
               aria-hidden
@@ -117,7 +119,7 @@ function StagedRow({
       </div>
       {open && (
         <ul aria-label={`${skill.name} files`} className="mb-2 ml-11 space-y-0.5 pr-2">
-          {skill.files.map((f) => (
+          {files.map((f) => (
             <li key={f.path} className="flex items-baseline gap-2 text-[12px]">
               <Code className="min-w-0 flex-1">{f.path}</Code>
               <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums">{fmtSize(f.size)}</span>

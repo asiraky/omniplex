@@ -100,7 +100,10 @@ export function CardFrame({
               {ctl.prompt}
             </p>
           </div>
+          {/* type="button": inside the form, a bare button submits, and
+              folding the card would accept it. */}
           <IconButton
+            type="button"
             label={ctl.open ? "Fold this card" : "Open this card"}
             aria-expanded={ctl.open}
             aria-controls={bodyId}
