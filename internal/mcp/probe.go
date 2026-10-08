@@ -34,7 +34,8 @@ type Check struct {
 	At     time.Time
 }
 
-// Prober checks remote servers and remembers the answers in memory.
+// Prober checks remote servers and remembers the answers in memory, by
+// server key (see Server.Key).
 type Prober struct {
 	client  *http.Client
 	mu      sync.Mutex
@@ -66,32 +67,33 @@ func staysHome(client *http.Client) *http.Client {
 	return &c
 }
 
-// Cached is the last answer for a server, if there is one.
-func (p *Prober) Cached(name string) (Check, bool) {
+// Cached is the last answer for the server with this key, if there is one.
+func (p *Prober) Cached(key string) (Check, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	c, ok := p.results[name]
+	c, ok := p.results[key]
 	return c, ok
 }
 
-// Forget drops a server's answer.
-func (p *Prober) Forget(name string) {
+// Forget drops the answer for the server with this key.
+func (p *Prober) Forget(key string) {
 	p.mu.Lock()
-	delete(p.results, name)
+	delete(p.results, key)
 	p.mu.Unlock()
 }
 
-// Probe checks a server as a session would get it, headers included, and
-// remembers the answer. A server run by a command is never checked.
-func (p *Prober) Probe(ctx context.Context, def adapter.MCPServer) Check {
+// Probe checks the server with this key as a session would get it (def),
+// headers included, and remembers the answer. A server run by a command is
+// never checked.
+func (p *Prober) Probe(ctx context.Context, key string, def adapter.MCPServer) Check {
 	if def.URL == "" {
-		p.Forget(def.Name)
+		p.Forget(key)
 		return Check{Status: StatusUnchecked}
 	}
 	c := p.probe(ctx, def)
 	c.At = time.Now()
 	p.mu.Lock()
-	p.results[def.Name] = c
+	p.results[key] = c
 	p.mu.Unlock()
 	return c
 }

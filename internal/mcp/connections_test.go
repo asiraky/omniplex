@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,7 +22,10 @@ type fakeHost struct {
 	transports []string
 	// byDir is what ConfiguredMCPServers returns for env["DIR"].
 	byDir map[string][]adapter.ConfiguredMCPServer
-	fail  bool
+	// inFolder is what ProjectMCPServers returns for a folder, whatever the
+	// env.
+	inFolder map[string][]adapter.ConfiguredMCPServer
+	fail     bool
 }
 
 func (h *fakeHost) MCPTransports() []string { return h.transports }
@@ -32,12 +38,26 @@ func (h *fakeHost) ConfiguredMCPServers(_ context.Context, env map[string]string
 }
 
 func (h *fakeHost) ProjectMCPServers(_ context.Context, _ map[string]string, dir string) ([]adapter.ConfiguredMCPServer, error) {
-	return nil, nil
+	if h.fail {
+		return nil, errors.New("config unreadable")
+	}
+	return h.inFolder[dir], nil
+}
+
+// withProjects gives c these projects, by ID, with their folders' paths.
+func withProjects(c *Connections, projects map[string][]string) {
+	c.folders = func(_ context.Context, id string) ([]string, error) {
+		dirs, ok := projects[id]
+		if !ok {
+			return nil, fmt.Errorf("no project %q", id)
+		}
+		return dirs, nil
+	}
 }
 
 func newConns(t *testing.T, client *http.Client, hosts ...Host) *Connections {
 	t.Helper()
-	return NewConnections(newStore(t), client, 4321, func() []Host { return hosts }, t.Logf)
+	return NewConnections(newStore(t), client, 4321, func() []Host { return hosts }, nil, t.Logf)
 }
 
 func save(t *testing.T, c *Connections, d Draft) {
@@ -47,11 +67,12 @@ func save(t *testing.T, c *Connections, d Draft) {
 	}
 }
 
-func signIn(t *testing.T, c *Connections, name, url string, rec map[string]any) {
+// signIn stores tokens for the server with this key.
+func signIn(t *testing.T, c *Connections, key, url string, rec map[string]any) {
 	t.Helper()
 	rec["url"] = url
 	b, _ := json.Marshal(rec)
-	if err := c.store.Secrets().Put(name, OAuthKey, string(b)); err != nil {
+	if err := c.store.Secrets().Put(secretID(key), OAuthKey, string(b)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -83,19 +104,19 @@ func TestServersFiltersByTransportAndOff(t *testing.T) {
 		{"e", nil, ""},
 	}
 	for _, tc := range cases {
-		got := strings.Join(names(c.Servers(context.Background(), tc.harness, tc.transports)), ",")
+		got := strings.Join(names(c.Servers(context.Background(), tc.harness, tc.transports, "")), ",")
 		if got != tc.want {
 			t.Errorf("%s %v: got %q, want %q", tc.harness, tc.transports, got, tc.want)
 		}
 	}
 
-	if _, err := c.Server(context.Background(), "a", []string{"http"}, "not-for-a"); err == nil {
+	if _, err := c.Server(context.Background(), "a", []string{"http"}, "", "not-for-a"); err == nil {
 		t.Error("Server handed a harness a server switched off for it")
 	}
-	if _, err := c.Server(context.Background(), "a", []string{"http"}, "local"); err == nil {
+	if _, err := c.Server(context.Background(), "a", []string{"http"}, "", "local"); err == nil {
 		t.Error("Server handed a harness a kind it does not run")
 	}
-	if d, err := c.Server(context.Background(), "b", []string{"http"}, "not-for-a"); err != nil || d.URL == "" {
+	if d, err := c.Server(context.Background(), "b", []string{"http"}, "", "not-for-a"); err != nil || d.URL == "" {
 		t.Errorf("Server = %+v, %v", d, err)
 	}
 }
@@ -110,7 +131,7 @@ func TestServersCarryValuesAndToken(t *testing.T) {
 	// Signed in at an address the server has since moved from.
 	signIn(t, c, "moved", "https://old.example.com/mcp", map[string]any{"accessToken": "old-tok"})
 
-	defs := c.Servers(context.Background(), "x", []string{"http", "stdio"})
+	defs := c.Servers(context.Background(), "x", []string{"http", "stdio"}, "")
 	if len(defs) != 4 {
 		t.Fatalf("%+v", defs)
 	}
@@ -154,7 +175,7 @@ func TestServersDoNotWaitLongForATokenRefresh(t *testing.T) {
 		})
 	}
 	start := time.Now()
-	defs := c.Servers(context.Background(), "x", []string{"http"})
+	defs := c.Servers(context.Background(), "x", []string{"http"}, "")
 	took := time.Since(start)
 	if !hit.Load() {
 		t.Fatal("the refresh never reached the authorization server")
@@ -188,7 +209,7 @@ func TestListShowsFoundServersOnce(t *testing.T) {
 	)
 	save(t, c, Draft{Name: "cloud-flare", URL: "https://elsewhere.example.com/mcp", Headers: map[string]string{"X-Key": "stored-secret"}})
 
-	l, err := c.List(context.Background())
+	l, err := c.List(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +245,7 @@ func TestAddFoundCopiesTheDefinition(t *testing.T) {
 	}}}
 	c := newConns(t, nil, Host{ID: "a", Host: h, Envs: []map[string]string{nil}})
 
-	v, err := c.AddFound(context.Background(), "a", "My Tools", "")
+	v, err := c.AddFound(context.Background(), "a", "My Tools", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,10 +256,10 @@ func TestAddFoundCopiesTheDefinition(t *testing.T) {
 	if env["K"] != "v" {
 		t.Errorf("env %v", env)
 	}
-	if _, err := c.AddFound(context.Background(), "a", "My Tools", ""); err == nil {
+	if _, err := c.AddFound(context.Background(), "a", "My Tools", "", ""); err == nil {
 		t.Error("added the same server twice")
 	}
-	if _, err := c.AddFound(context.Background(), "b", "remote", ""); err == nil {
+	if _, err := c.AddFound(context.Background(), "b", "remote", "", ""); err == nil {
 		t.Error("added from a harness that does not list it")
 	}
 }
@@ -251,7 +272,7 @@ func TestAddFoundTellsInstancesApart(t *testing.T) {
 		"two": {{MCPServer: adapter.MCPServer{Name: "tools", Command: "second"}}},
 	}}
 	c := newConns(t, nil, Host{ID: "a", Host: h, Envs: []map[string]string{{"DIR": "one"}, {"DIR": "two"}}})
-	v, err := c.AddFound(context.Background(), "a", "tools", "second")
+	v, err := c.AddFound(context.Background(), "a", "tools", "second", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +291,7 @@ func TestAddFoundRemoteDropsCommandOnlyFields(t *testing.T) {
 		{MCPServer: adapter.MCPServer{Name: "remote", URL: mcpSrv.URL, Headers: map[string]string{"X-Key": "hk"}, Env: map[string]string{"IGNORED": "x"}, Args: []string{"x"}}},
 	}}}
 	c := newConns(t, mcpSrv.Client(), Host{ID: "a", Host: h, Envs: []map[string]string{nil}})
-	v, err := c.AddFound(context.Background(), "a", "remote", "")
+	v, err := c.AddFound(context.Background(), "a", "remote", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +326,7 @@ func TestSaveChecksAndSetOffDoesNot(t *testing.T) {
 	}
 
 	signIn(t, c, "s", mcpSrv.URL, map[string]any{"accessToken": "tok"})
-	v, err = c.Check(context.Background(), "s")
+	v, err = c.Check(context.Background(), "s", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +335,7 @@ func TestSaveChecksAndSetOffDoesNot(t *testing.T) {
 	}
 
 	before := posts.Load()
-	v, err = c.SetOff("s", []string{"a"})
+	v, err = c.SetOff("s", "", []string{"a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +346,7 @@ func TestSaveChecksAndSetOffDoesNot(t *testing.T) {
 		t.Errorf("SetOff view %+v", v)
 	}
 
-	v, err = c.SignOut(context.Background(), "s")
+	v, err = c.SignOut(context.Background(), "s", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +361,7 @@ func TestSaveChecksAndSetOffDoesNot(t *testing.T) {
 	if _, ok := c.prober.Cached("s"); ok {
 		t.Error("old name's check survived the rename")
 	}
-	if err := c.Remove("t"); err != nil {
+	if err := c.Remove("t", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := c.prober.Cached("t"); ok {
@@ -351,10 +372,10 @@ func TestSaveChecksAndSetOffDoesNot(t *testing.T) {
 func TestSignInRefusesCommandServers(t *testing.T) {
 	c := newConns(t, nil)
 	save(t, c, Draft{Name: "local", Command: "run"})
-	if _, err := c.SignIn("local", "http://localhost:4321"); err == nil {
+	if _, err := c.SignIn("local", "", "http://localhost:4321"); err == nil {
 		t.Error("began a sign-in for a command server")
 	}
-	if _, err := c.SignIn("missing", "http://localhost:4321"); err == nil {
+	if _, err := c.SignIn("missing", "", "http://localhost:4321"); err == nil {
 		t.Error("began a sign-in for a missing server")
 	}
 }
@@ -398,7 +419,7 @@ func TestCheckCLIRecordsEachAccount(t *testing.T) {
 	if _, err := c.SaveCLI(cli, "tool"); err != nil {
 		t.Fatal(err)
 	}
-	l, err := c.List(context.Background())
+	l, err := c.List(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,13 +466,13 @@ func TestRejectedTokenIsRefreshed(t *testing.T) {
 	}
 
 	reset()
-	view, err := c.Check(context.Background(), "s")
+	view, err := c.Check(context.Background(), "s", "")
 	if err != nil || view.Status != StatusConnected {
 		t.Fatalf("check = %+v, %v", view, err)
 	}
 
 	reset()
-	def, err := c.Server(context.Background(), "x", []string{"http"}, "s")
+	def, err := c.Server(context.Background(), "x", []string{"http"}, "", "s")
 	if err != nil || def.Headers["Authorization"] != "Bearer good" {
 		t.Fatalf("reconnect got %+v, %v", def.Headers, err)
 	}
@@ -460,10 +481,271 @@ func TestRejectedTokenIsRefreshed(t *testing.T) {
 	}
 
 	// A token the server takes is not refreshed.
-	if _, err := c.Server(context.Background(), "x", []string{"http"}, "s"); err != nil {
+	if _, err := c.Server(context.Background(), "x", []string{"http"}, "", "s"); err != nil {
 		t.Fatal(err)
 	}
 	if n := refreshes.Load(); n != 2 {
 		t.Errorf("refreshed a token the server accepted: %d", n)
+	}
+}
+
+// what a session in each project gets: its own servers first, then the
+// ones that go everywhere that it neither keeps out nor replaces.
+func TestServersFollowTheThreadsProject(t *testing.T) {
+	c := newConns(t, nil)
+	save(t, c, Draft{Name: "everywhere", Command: "e"})
+	save(t, c, Draft{Name: "linear", URL: "https://linear.example.com/mcp", Headers: map[string]string{"X-Key": "mine"}})
+	save(t, c, Draft{Name: "gmail", Command: "gmail"})
+	save(t, c, Draft{Name: "shadow", Command: "global-shadow"})
+	save(t, c, Draft{Name: "linear", Project: "p1", URL: "https://linear.example.com/mcp", Headers: map[string]string{"X-Key": "client"}})
+	save(t, c, Draft{Name: "sentry", Project: "p1", Command: "sentry"})
+	save(t, c, Draft{Name: "db", Project: "p1", Command: "db", Off: []string{"x"}})
+	// Replaces the global shadow in p1 even for x, which it is off for.
+	save(t, c, Draft{Name: "shadow", Project: "p1", Command: "p1-shadow", Off: []string{"x"}})
+	save(t, c, Draft{Name: "recipes", Project: "p2", Command: "recipes"})
+	if _, err := c.store.SetProjectOff("gmail", "p1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	all := []string{"http", "stdio"}
+	cases := []struct {
+		project, harness, want string
+	}{
+		{"", "x", "everywhere,linear,gmail,shadow"},
+		{"p1", "y", "linear,sentry,db,shadow,everywhere"},
+		{"p1", "x", "linear,sentry,everywhere"},
+		{"p2", "x", "recipes,everywhere,linear,gmail,shadow"},
+	}
+	for _, tc := range cases {
+		defs := c.Servers(context.Background(), tc.harness, all, tc.project)
+		if got := strings.Join(names(defs), ","); got != tc.want {
+			t.Errorf("%q/%s: got %q, want %q", tc.project, tc.harness, got, tc.want)
+		}
+		for _, d := range defs {
+			if d.Name == "linear" {
+				want := "mine"
+				if tc.project == "p1" {
+					want = "client"
+				}
+				if d.Headers["X-Key"] != want {
+					t.Errorf("%q/%s: linear went in with %v", tc.project, tc.harness, d.Headers)
+				}
+			}
+		}
+	}
+
+	// Reconnecting resolves the same way.
+	ctx := context.Background()
+	if d, err := c.Server(ctx, "y", all, "p1", "linear"); err != nil || d.Headers["X-Key"] != "client" {
+		t.Errorf("p1 linear = %+v, %v", d, err)
+	}
+	if d, err := c.Server(ctx, "y", all, "", "linear"); err != nil || d.Headers["X-Key"] != "mine" {
+		t.Errorf("linear = %+v, %v", d, err)
+	}
+	if _, err := c.Server(ctx, "y", all, "p1", "gmail"); err == nil {
+		t.Error("reconnected a server kept out of the project")
+	}
+	if _, err := c.Server(ctx, "x", all, "p1", "shadow"); err == nil {
+		t.Error("fell back to the global server a project server replaces")
+	}
+	if _, err := c.Server(ctx, "y", all, "p2", "sentry"); err == nil {
+		t.Error("reconnected another project's server")
+	}
+}
+
+// Two projects' servers of one name have their own values and their own
+// sign-ins.
+func TestProjectServersKeepTheirOwnCredentials(t *testing.T) {
+	c := newConns(t, nil)
+	url := "https://linear.example.com/mcp"
+	for _, p := range []string{"", "p1", "p2"} {
+		save(t, c, Draft{Name: "linear", Project: p, URL: url, Headers: map[string]string{"X-Key": "key-" + p}})
+		signIn(t, c, ServerKey("linear", p), url, map[string]any{"accessToken": "tok-" + p})
+	}
+	for _, p := range []string{"", "p1", "p2"} {
+		defs := c.Servers(context.Background(), "x", []string{"http"}, p)
+		if len(defs) != 1 {
+			t.Fatalf("%q: %+v", p, defs)
+		}
+		if h := defs[0].Headers; h["X-Key"] != "key-"+p || h["Authorization"] != "Bearer tok-"+p {
+			t.Errorf("%q got %v", p, h)
+		}
+	}
+
+	// Signing one out and removing another leaves the rest as they were.
+	if _, err := c.SignOut(context.Background(), "linear", "p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Remove("linear", "p2"); err != nil {
+		t.Fatal(err)
+	}
+	l, err := c.List(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedIn := map[string]bool{}
+	for _, v := range l.Servers {
+		signedIn[ServerKey(v.Name, v.Project)] = v.OAuth
+	}
+	if want := map[string]bool{"linear": true, "p1/linear": false}; !maps.Equal(signedIn, want) {
+		t.Errorf("signed in %v, want %v", signedIn, want)
+	}
+	if h := c.Servers(context.Background(), "x", []string{"http"}, "")[0].Headers; h["Authorization"] != "Bearer tok-" {
+		t.Errorf("global after the others changed: %v", h)
+	}
+}
+
+func TestListForAProject(t *testing.T) {
+	user := adapter.ConfiguredMCPServer{MCPServer: adapter.MCPServer{Name: "fs", Command: "fs"}, Origin: "User settings"}
+	repoTools := adapter.ConfiguredMCPServer{MCPServer: adapter.MCPServer{Name: "Repo Tools", Command: "tools", Env: map[string]string{"K": "repo-secret"}}, Origin: ".mcp.json"}
+	docs := adapter.ConfiguredMCPServer{MCPServer: adapter.MCPServer{Name: "docs", URL: "https://docs.example.com/mcp"}, Origin: "Local settings"}
+	h := &fakeHost{
+		transports: []string{"http", "stdio"},
+		byDir:      map[string][]adapter.ConfiguredMCPServer{"": {user}},
+		inFolder: map[string][]adapter.ConfiguredMCPServer{
+			"/src/app": {repoTools},
+			"/src/api": {docs},
+			"/src/one": {repoTools},
+		},
+	}
+	c := newConns(t, nil, Host{ID: "a", Name: "A", Host: h, Envs: []map[string]string{nil}})
+	withProjects(c, map[string][]string{"p1": {"/src/app", "/src/api"}, "p2": {"/src/one"}})
+	save(t, c, Draft{Name: "everywhere", Command: "e"})
+	save(t, c, Draft{Name: "mine", Project: "p1", Command: "m"})
+	save(t, c, Draft{Name: "theirs", Project: "p2", Command: "t"})
+
+	found := func(l Listing) []string {
+		var out []string
+		for _, f := range l.Found {
+			out = append(out, fmt.Sprintf("%s|%s|%s|%v", f.Name, f.Origin, f.Project, f.Added))
+		}
+		return out
+	}
+	servers := func(l Listing) []string {
+		var out []string
+		for _, s := range l.Servers {
+			out = append(out, ServerKey(s.Name, s.Project))
+		}
+		return out
+	}
+
+	l, err := c.List(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := servers(l); !slices.Equal(got, []string{"everywhere", "p1/mine", "p2/theirs"}) {
+		t.Errorf("all servers %v", got)
+	}
+	if got := found(l); !slices.Equal(got, []string{"fs|User settings||false"}) {
+		t.Errorf("found with no project %v", got)
+	}
+
+	l, err = c.List(context.Background(), "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := servers(l); !slices.Equal(got, []string{"everywhere", "p1/mine"}) {
+		t.Errorf("p1 servers %v", got)
+	}
+	want := []string{"fs|User settings||false", "Repo Tools|app: .mcp.json|p1|false", "docs|api: Local settings|p1|false"}
+	if got := found(l); !slices.Equal(got, want) {
+		t.Errorf("found in p1 %v, want %v", got, want)
+	}
+
+	// Adding one adds it to the project it was found in, values and all.
+	v, err := c.AddFound(context.Background(), "a", "Repo Tools", "tools", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Name != "repo-tools" || v.Project != "p1" {
+		t.Errorf("added %+v", v)
+	}
+	srv, ok, err := c.store.Server("repo-tools", "p1")
+	if env, _ := c.store.Values(srv); !ok || err != nil || env["K"] != "repo-secret" {
+		t.Errorf("stored %+v %v: env %v", srv, err, env)
+	}
+	// It is added in p1 only: p2 finds the same server, not yet added.
+	l, _ = c.List(context.Background(), "p1")
+	if got := found(l)[1]; got != "Repo Tools|app: .mcp.json|p1|true" {
+		t.Errorf("p1 after adding %v", got)
+	}
+	l, _ = c.List(context.Background(), "p2")
+	if got := found(l); !slices.Equal(got, []string{"fs|User settings||false", "Repo Tools|.mcp.json|p2|false"}) {
+		t.Errorf("found in p2 %v", got)
+	}
+	if _, err := c.AddFound(context.Background(), "a", "Repo Tools", "tools", "p1"); err == nil {
+		t.Error("added the same server to p1 twice")
+	}
+	if _, err := c.AddFound(context.Background(), "a", "docs", "", ""); err == nil {
+		t.Error("added a project folder's server everywhere")
+	}
+
+	// A project that does not exist takes no servers.
+	if _, err := c.Save(context.Background(), Draft{Name: "x", Project: "gone", Command: "x"}, ""); err == nil {
+		t.Error("saved a server into a missing project")
+	}
+	if _, err := c.SetProjectOff(context.Background(), "everywhere", "gone", true); err == nil {
+		t.Error("kept a server out of a missing project")
+	}
+}
+
+// A sign-in to a project server stores its tokens under that server's key,
+// beside a server of the same name everywhere at the same address.
+func TestSignInToAProjectServer(t *testing.T) {
+	f := newOAFake(t)
+	c := newConns(t, nil)
+	u := f.server().URL
+	save(t, c, Draft{Name: "cf", URL: u})
+	save(t, c, Draft{Name: "cf", Project: "p1", URL: u})
+
+	run, err := c.SignIn("cf", "p1", "http://localhost:4321")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ia := newOAIA()
+	done := make(chan error, 1)
+	go func() { done <- run(context.Background(), ia) }()
+	authURL := ia.authURL(t)
+	// The other cf is another login at the same host.
+	if q, _ := neturl.Parse(authURL); q.Query().Get("prompt") != "login" {
+		t.Errorf("no fresh login asked for: %s", authURL)
+	}
+	ia.prompt(t).answer <- f.authorize(authURL)
+	if err := waitErr(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.store.Secrets().Get("p1.cf", OAuthKey); !ok {
+		t.Error("no tokens under p1's cf")
+	}
+	if _, ok := c.store.Secrets().Get("cf", OAuthKey); ok {
+		t.Error("tokens went to the cf that goes everywhere")
+	}
+	defs := c.Servers(context.Background(), "x", []string{"http"}, "p1")
+	if len(defs) != 1 || defs[0].Headers["Authorization"] != "Bearer at-1" {
+		t.Errorf("p1 session got %+v", defs)
+	}
+	if defs := c.Servers(context.Background(), "x", []string{"http"}, ""); len(defs) != 1 || defs[0].Headers != nil {
+		t.Errorf("a session in no project got %+v", defs)
+	}
+}
+
+func TestRemoveProjectForgetsItsChecks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	c := newConns(t, srv.Client())
+	withProjects(c, map[string][]string{"p1": nil})
+	for _, p := range []string{"", "p1"} {
+		if _, err := c.Save(context.Background(), Draft{Name: "s", Project: p, URL: srv.URL}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.RemoveProject("p1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.prober.Cached("p1/s"); ok {
+		t.Error("the removed project's check survived")
+	}
+	if _, ok := c.prober.Cached("s"); !ok {
+		t.Error("the check of the server that goes everywhere went too")
 	}
 }

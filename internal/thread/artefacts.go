@@ -56,7 +56,7 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 	if ToolServers != nil {
 		servers = ToolServers(meta.ID, home)
 	}
-	return append(servers, userMCPServers(ctx, ad)...), extra
+	return append(servers, userMCPServers(ctx, ad, meta.ProjectID)...), extra
 }
 
 // extraDirs drops what the agent can already reach: anything inside cwd, or

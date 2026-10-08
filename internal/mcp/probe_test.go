@@ -52,7 +52,7 @@ func TestProbeOutcomes(t *testing.T) {
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
 			p := NewProber(srv.Client())
-			c := p.Probe(context.Background(), adapter.MCPServer{Name: "s", URL: srv.URL})
+			c := p.Probe(context.Background(), "s", adapter.MCPServer{Name: "s", URL: srv.URL})
 			if c.Status != tc.status || !strings.Contains(c.Error, tc.errHas) {
 				t.Fatalf("got %+v", c)
 			}
@@ -82,7 +82,7 @@ func TestProbeSendsHeadersAndEndsItsSession(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := NewProber(srv.Client()).Probe(context.Background(), adapter.MCPServer{Name: "s", URL: srv.URL, Headers: map[string]string{"X-Key": "k"}})
+	c := NewProber(srv.Client()).Probe(context.Background(), "s", adapter.MCPServer{Name: "s", URL: srv.URL, Headers: map[string]string{"X-Key": "k"}})
 	if c.Status != StatusConnected {
 		t.Fatalf("%+v", c)
 	}
@@ -108,7 +108,7 @@ func TestProbeTimesOut(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 	start := time.Now()
-	c := NewProber(srv.Client()).Probe(context.Background(), adapter.MCPServer{Name: "s", URL: srv.URL})
+	c := NewProber(srv.Client()).Probe(context.Background(), "s", adapter.MCPServer{Name: "s", URL: srv.URL})
 	if c.Status != StatusFailed || c.Error == "" {
 		t.Fatalf("%+v", c)
 	}
@@ -121,7 +121,7 @@ func TestProbeUnreachable(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close()
-	c := NewProber(nil).Probe(context.Background(), adapter.MCPServer{Name: "s", URL: url})
+	c := NewProber(nil).Probe(context.Background(), "s", adapter.MCPServer{Name: "s", URL: url})
 	if c.Status != StatusFailed || c.Error == "" || strings.Contains(c.Error, url) {
 		t.Fatalf("%+v", c)
 	}
@@ -130,7 +130,7 @@ func TestProbeUnreachable(t *testing.T) {
 func TestProbeLeavesCommandsAlone(t *testing.T) {
 	p := NewProber(nil)
 	p.results["s"] = Check{Status: StatusConnected}
-	c := p.Probe(context.Background(), adapter.MCPServer{Name: "s", Command: "never-run"})
+	c := p.Probe(context.Background(), "s", adapter.MCPServer{Name: "s", Command: "never-run"})
 	if c.Status != StatusUnchecked {
 		t.Fatalf("%+v", c)
 	}

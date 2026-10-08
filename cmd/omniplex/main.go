@@ -165,7 +165,7 @@ func main() {
 	// The user's own MCP servers and sign-ins. Set before any thread resumes,
 	// so every session starts with them; a store that will not open leaves
 	// the feature off rather than the server down.
-	conns := openConnections(mgr, plan.Port, logf)
+	conns := openConnections(mgr, st, plan.Port, logf)
 	if conns != nil {
 		thread.UserMCP = conns
 	}
@@ -348,14 +348,15 @@ func configureProviders(mgr *thread.Manager, logf func(string, ...any)) {
 }
 
 // openConnections opens connections.json and its secret store beside the
-// user config, and hands the MCP layer the harnesses that take MCP servers.
-func openConnections(mgr *thread.Manager, port int, logf func(string, ...any)) *mcp.Connections {
+// user config, and hands the MCP layer the harnesses that take MCP servers
+// and the folders of each project.
+func openConnections(mgr *thread.Manager, st *store.Store, port int, logf func(string, ...any)) *mcp.Connections {
 	dir, err := mcp.Dir()
 	if err != nil {
 		logf("mcp servers: %v (feature off)", err)
 		return nil
 	}
-	st, err := mcp.OpenStore(dir)
+	mst, err := mcp.OpenStore(dir)
 	if err != nil {
 		logf("mcp servers: %v (feature off)", err)
 		return nil
@@ -367,7 +368,18 @@ func openConnections(mgr *thread.Manager, port int, logf func(string, ...any)) *
 		}
 		return out
 	}
-	return mcp.NewConnections(st, nil, port, hosts, logf)
+	folders := func(ctx context.Context, projectID string) ([]string, error) {
+		p, err := st.Project(ctx, projectID)
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for _, f := range p.Folders {
+			out = append(out, f.Path)
+		}
+		return out, nil
+	}
+	return mcp.NewConnections(mst, nil, port, hosts, folders, logf)
 }
 
 // watchProxy keeps the guard's view of any reverse proxy current.

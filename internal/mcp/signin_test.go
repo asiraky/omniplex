@@ -11,7 +11,7 @@ import (
 // sends the person to, then abandons the flow.
 func signInURL(t *testing.T, c *Connections, name string) *url.URL {
 	t.Helper()
-	run, err := c.SignIn(name, "http://localhost:4321")
+	run, err := c.SignIn(name, "", "http://localhost:4321")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestSignInFinishingAfterAChangeWritesNothing(t *testing.T) {
 		kept   bool
 	}{
 		"unchanged": {change: func(*Connections, string) error { return nil }, kept: true},
-		"removed":   {change: func(c *Connections, _ string) error { return c.store.RemoveServer("cf") }},
+		"removed":   {change: func(c *Connections, _ string) error { return c.store.RemoveServer("cf", "") }},
 		"renamed": {change: func(c *Connections, url string) error {
 			_, err := c.store.SaveServer(Draft{Name: "cf2", URL: url}, "cf")
 			return err
@@ -71,7 +71,7 @@ func TestSignInFinishingAfterAChangeWritesNothing(t *testing.T) {
 			u := f.server().URL
 			save(t, c, Draft{Name: "cf", URL: u})
 
-			run, err := c.SignIn("cf", "http://localhost:4321")
+			run, err := c.SignIn("cf", "", "http://localhost:4321")
 			if err != nil {
 				t.Fatal(err)
 			}

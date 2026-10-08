@@ -16,6 +16,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/mcp"
+	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
 )
@@ -23,6 +24,13 @@ import (
 // connServer is a server with connections set up, its MCP files in a temp
 // folder; client is what it checks remote servers with.
 func connServer(t *testing.T, client *http.Client) (http.Handler, *mcp.Connections) {
+	h, conns, _ := connServerWithStore(t, client)
+	return h, conns
+}
+
+// connServerWithStore is connServer that also hands back its thread store,
+// whose projects the connections know.
+func connServerWithStore(t *testing.T, client *http.Client) (http.Handler, *mcp.Connections, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "conns.db"))
 	if err != nil {
@@ -33,11 +41,15 @@ func connServer(t *testing.T, client *http.Client) (http.Handler, *mcp.Connectio
 	if err != nil {
 		t.Fatal(err)
 	}
-	conns := mcp.NewConnections(mst, client, auth.DefaultPort, nil, t.Logf)
+	folders := func(ctx context.Context, id string) ([]string, error) {
+		_, err := st.Project(ctx, id)
+		return nil, err
+	}
+	conns := mcp.NewConnections(mst, client, auth.DefaultPort, nil, folders, t.Logf)
 	mgr := thread.NewManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), Connections: conns})
-	return srv.Handler(), conns
+	return srv.Handler(), conns, st
 }
 
 type wsClient struct {
@@ -159,10 +171,10 @@ func TestConnectionCommandsEndToEnd(t *testing.T) {
 	if !equalStrings(saved.Server.Off, []string{"x"}) || probes.Load() != before {
 		t.Errorf("set off %+v, probes %d -> %d", saved.Server, before, probes.Load())
 	}
-	if got := conns.Servers(context.Background(), "x", []string{"http"}); len(got) != 0 {
+	if got := conns.Servers(context.Background(), "x", []string{"http"}, ""); len(got) != 0 {
 		t.Errorf("harness switched off still gets %+v", got)
 	}
-	if got := conns.Servers(context.Background(), "y", []string{"http"}); len(got) != 1 || got[0].Headers["X-Key"] != "hunter2" {
+	if got := conns.Servers(context.Background(), "y", []string{"http"}, ""); len(got) != 1 || got[0].Headers["X-Key"] != "hunter2" {
 		t.Errorf("harness y gets %+v", got)
 	}
 
@@ -205,6 +217,89 @@ func TestConnectionCommandsEndToEnd(t *testing.T) {
 	res = c.ok("thread_mcp_status", map[string]string{"threadId": "no-such-thread"}, &status)
 	if status.Live || status.Servers == nil {
 		t.Errorf("status of a thread with no session %s", res)
+	}
+}
+
+// Every command that names a server reaches the one in the scope it names,
+// and deleting a project takes its servers with it.
+func TestProjectScopedConnectionCommands(t *testing.T) {
+	h, conns, st := connServerWithStore(t, nil)
+	ctx := context.Background()
+	for _, id := range []string{"p1", "p2"} {
+		if err := st.CreateProject(ctx, project.Project{ID: id, Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := dialWS(t, h)
+	saveIn := func(project, value string) {
+		d := mcp.Draft{Name: "tools", Project: project, Command: "tools", Env: map[string]string{"KEY": value}}
+		c.ok("save_mcp_server", map[string]any{"server": d}, nil)
+	}
+	saveIn("", "global")
+	saveIn("p1", "one")
+	saveIn("p2", "two")
+	c.ok("save_mcp_server", map[string]any{"server": mcp.Draft{Name: "gmail", Command: "gmail"}}, nil)
+	if _, e := c.do("save_mcp_server", map[string]any{"server": mcp.Draft{Name: "x", Project: "nope", Command: "x"}}); e == "" {
+		t.Error("saved into a project that does not exist")
+	}
+
+	var list mcp.Listing
+	c.ok("list_connections", map[string]string{"projectId": "p1"}, &list)
+	var keys []string
+	for _, s := range list.Servers {
+		keys = append(keys, s.Project+"/"+s.Name)
+		if s.OffIn == nil {
+			t.Errorf("%s has no offIn", s.Name)
+		}
+	}
+	if strings.Join(keys, ",") != "/tools,p1/tools,/gmail" {
+		t.Errorf("p1 lists %v", keys)
+	}
+
+	var saved struct{ Server mcp.ServerView }
+	c.ok("set_mcp_server_project_off", map[string]any{"name": "gmail", "projectId": "p1", "off": true}, &saved)
+	if !equalStrings(saved.Server.OffIn, []string{"p1"}) {
+		t.Errorf("offIn %v", saved.Server.OffIn)
+	}
+	c.ok("set_mcp_server_off", map[string]any{"name": "tools", "project": "p2", "off": []string{"y"}}, &saved)
+	if saved.Server.Project != "p2" || !equalStrings(saved.Server.Off, []string{"y"}) {
+		t.Errorf("set off %+v", saved.Server)
+	}
+
+	got := func(harness, project string) string {
+		var out []string
+		for _, d := range conns.Servers(ctx, harness, []string{"stdio"}, project) {
+			out = append(out, d.Name+"="+d.Env["KEY"])
+		}
+		return strings.Join(out, ",")
+	}
+	if g := got("x", "p1"); g != "tools=one" {
+		t.Errorf("p1 session gets %s", g)
+	}
+	if g := got("y", "p2"); g != "gmail=" {
+		t.Errorf("p2 session on y gets %s", g)
+	}
+	c.ok("set_mcp_server_project_off", map[string]any{"name": "gmail", "projectId": "p1", "off": false}, &saved)
+	if g := got("x", "p1"); g != "tools=one,gmail=" {
+		t.Errorf("p1 session after letting gmail back gets %s", g)
+	}
+
+	c.ok("remove_mcp_server", map[string]string{"name": "tools", "project": "p1"}, nil)
+	if g := got("x", "p1"); g != "tools=global,gmail=" {
+		t.Errorf("p1 session after removing its tools gets %s", g)
+	}
+
+	if _, e := c.do("delete_project", map[string]string{"projectId": "p2"}); e != "" {
+		t.Fatal(e)
+	}
+	list = mcp.Listing{}
+	c.ok("list_connections", nil, &list)
+	keys = nil
+	for _, s := range list.Servers {
+		keys = append(keys, s.Project+"/"+s.Name)
+	}
+	if strings.Join(keys, ",") != "/tools,/gmail" {
+		t.Errorf("after deleting p2 %v", keys)
 	}
 }
 
