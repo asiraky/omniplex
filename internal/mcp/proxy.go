@@ -48,15 +48,12 @@ func newProxy(client *http.Client, port int) *proxy {
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
 	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-	// Redirects go back to the harness as they came: following one here
-	// would send the token wherever the server pointed. No overall timeout,
-	// since a GET stream stays open for as long as the session listens.
-	c := *client
+	// A redirect on the server's own origin is followed here, as the checks
+	// follow it, since the harness would follow it to this server instead.
+	// One to anywhere else goes back as it came, without the token. No
+	// overall timeout: a GET stream stays open while the session listens.
+	c := *staysHome(client)
 	c.Timeout = 0
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &proxy{key: hex.EncodeToString(b), base: "http://127.0.0.1:" + strconv.Itoa(port), client: &c}
 }
 

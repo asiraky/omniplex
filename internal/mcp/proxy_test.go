@@ -228,3 +228,26 @@ func TestProxyStreamsEvents(t *testing.T) {
 		t.Fatalf("first event %q, %v", line, err)
 	}
 }
+
+// A server that moves its endpoint on its own origin is followed there, with
+// the request's body and credentials, rather than the harness being sent to
+// a path on this server.
+func TestProxyFollowsARedirectOnTheServersOrigin(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			http.Redirect(w, r, "/mcp/", http.StatusTemporaryRedirect)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		fmt.Fprintf(w, "%s %s %s", r.Method, r.Header.Get("Authorization"), b)
+	}))
+	defer upstream.Close()
+	c := newConns(t, upstream.Client())
+	save(t, c, Draft{Name: "s", URL: upstream.URL + "/mcp"})
+	signIn(t, c, "s", upstream.URL+"/mcp", map[string]any{"accessToken": "tok"})
+
+	resp, body := do(t, proxyFor(t, c)("POST", "s", `{"id":1}`))
+	if resp.StatusCode != http.StatusOK || body != `POST Bearer tok {"id":1}` {
+		t.Errorf("%d %q", resp.StatusCode, body)
+	}
+}
