@@ -112,8 +112,12 @@ func TestInstallAndUpdateASkillOverTheWire(t *testing.T) {
 
 	// Fetched again for nothing: discarded, and the installed copy stays.
 	again := call[skills.Staged](t, c, "stage_skills", map[string]any{"source": "owner/repo"})
-	if !again.Skills[0].Installed {
-		t.Errorf("a second fetch does not say the skill is installed: %+v", again.Skills[0])
+	if in := again.Skills[0].InstalledIn; len(in) != 1 || in[0] != "" {
+		t.Errorf("a second fetch does not say the skill is in the personal library: %+v", again.Skills[0])
+	}
+	// The destination is the client's to name, but only from what is offered.
+	if _, err := run(t, c, "install_staged", map[string]any{"id": again.ID, "skills": []string{"show-me"}, "destination": home}); err == nil {
+		t.Error("installed into a folder that was not offered")
 	}
 	if _, err := run(t, c, "discard_staged", map[string]any{"id": again.ID}); err != nil {
 		t.Fatal(err)

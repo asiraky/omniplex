@@ -244,11 +244,8 @@ func TestDefaultRoots(t *testing.T) {
 	if got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
-	if !strings.HasPrefix(r.Library, "/h/") || !strings.HasPrefix(r.ProjectLibrary, "/p/") || !strings.HasPrefix(r.CLILock, "/h/") {
-		t.Errorf("library %q, project library %q and lock %q should sit under the home and the project", r.Library, r.ProjectLibrary, r.CLILock)
-	}
-	if none := DefaultRoots("/h", nil, ""); none.ProjectLibrary != "" {
-		t.Errorf("project library %q with no project", none.ProjectLibrary)
+	if !strings.HasPrefix(r.Library, "/h/") || !strings.HasPrefix(r.CLILock, "/h/") {
+		t.Errorf("library %q and lock %q should sit under the home", r.Library, r.CLILock)
 	}
 	// The skills CLI keeps its lock under XDG_STATE_HOME when that is set.
 	t.Setenv("XDG_STATE_HOME", "/state")
@@ -380,7 +377,7 @@ func TestReadFile(t *testing.T) {
 func TestCreate(t *testing.T) {
 	t.Run("claude dir already shares the library", func(t *testing.T) {
 		r := fixture(t)
-		s, err := Create(r, "fresh", "A new skill: with a colon")
+		s, err := Create(r, "fresh", "A new skill: with a colon", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -406,7 +403,7 @@ func TestCreate(t *testing.T) {
 		r := fixture(t)
 		r.ClaudeConfigDir = filepath.Join(r.Home, "instances", "a")
 		write(t, filepath.Join(r.ClaudeConfigDir, "skills", "own", "SKILL.md"), skillMD("own", "Claude's own"))
-		s, err := Create(r, "linked", "Linked for Claude")
+		s, err := Create(r, "linked", "Linked for Claude", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -443,7 +440,7 @@ func TestCreate(t *testing.T) {
 			r.ClaudeConfigDir = filepath.Join(r.Home, "instances", "b")
 			write(t, filepath.Join(r.ClaudeConfigDir, "skills", "claude-only", "SKILL.md"), skillMD("claude-only", "x"))
 			before := len(mustDiscover(t, r))
-			if _, err := Create(r, tt.skill, tt.desc); !errors.Is(err, ErrInvalid) {
+			if _, err := Create(r, tt.skill, tt.desc, ""); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("err = %v, want ErrInvalid", err)
 			}
 			if after := len(mustDiscover(t, r)); after != before {

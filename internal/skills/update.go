@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 )
@@ -44,7 +46,10 @@ const (
 // updatePlan is the part of a staging manifest that ties a fetch to the
 // installed skills it would replace.
 type updatePlan struct {
-	Library string         `json:"library"` // symlink-resolved
+	Library string `json:"library"` // symlink-resolved
+	// Folder is the project folder whose lock the library's provenance is
+	// in; "" for the personal library and its record.
+	Folder  string         `json:"folder,omitempty"`
 	Repo    string         `json:"repo"`
 	Ref     string         `json:"ref,omitempty"`
 	Targets []updateTarget `json:"targets"`
@@ -58,16 +63,46 @@ type updateTarget struct {
 	Hash string `json:"hash"`
 }
 
-// libraryOf is the library a skill is installed in, or "" when it sits
-// somewhere Omniplex does not manage.
-func libraryOf(r Roots, s Skill) string {
+// libraryOf is the library a skill is installed in, symlink-resolved, and
+// the project folder it belongs to ("" for the personal library). The library
+// is "" when the skill sits somewhere Omniplex does not manage.
+func libraryOf(r Roots, s Skill) (library, folder string) {
 	parent := filepath.Dir(s.Dir)
-	for _, lib := range []string{r.ProjectLibrary, r.Library} {
-		if real, ok := realDir(lib); ok && real == parent {
-			return real
-		}
+	if real, ok := realDir(r.Library); ok && real == parent {
+		return real, ""
 	}
-	return ""
+	if folder := r.projectFolderOf(s.Dir); folder != "" {
+		return parent, folder
+	}
+	return "", ""
+}
+
+// provenance is what a library says about how its skills were installed:
+// the personal record's HashDir, or a project lock's cliHash.
+type provenance struct {
+	hash func(dir string) (string, error)
+	// installed is the hash of a skill as it was last fetched, "" when unknown.
+	installed func(s Skill) string
+}
+
+func provenanceOf(library, folder string) (provenance, error) {
+	if folder != "" {
+		lock := readProjectLock(folder)
+		return provenance{hash: cliHash, installed: func(s Skill) string {
+			if key := lockKey(lock, s); key != "" {
+				return lock[key].ComputedHash
+			}
+			return ""
+		}}, nil
+	}
+	rec, err := LoadRecord(library)
+	if err != nil {
+		return provenance{}, err
+	}
+	return provenance{hash: HashDir, installed: func(s Skill) string {
+		e, _ := rec.Get(filepath.Base(s.Dir))
+		return e.Hash
+	}}, nil
 }
 
 // sourceOf turns a recorded source back into something to fetch. The whole
@@ -100,7 +135,7 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 	if s.Source == nil {
 		return UpdateStage{}, fmt.Errorf("%w: %s was not installed from anywhere", ErrInvalid, s.Name)
 	}
-	library := libraryOf(r, s)
+	library, folder := libraryOf(r, s)
 	if library == "" {
 		return UpdateStage{}, fmt.Errorf("%w: %s is not in a skills library", ErrInvalid, s.Name)
 	}
@@ -112,7 +147,7 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 	if err != nil {
 		return UpdateStage{}, err
 	}
-	rec, err := LoadRecord(library)
+	prov, err := provenanceOf(library, folder)
 	if err != nil {
 		return UpdateStage{}, err
 	}
@@ -122,7 +157,7 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 		return UpdateStage{}, err
 	}
 	out := UpdateStage{ID: st.id, Repo: s.Source.Repo, Skills: []UpdateSkill{}}
-	st.m.Update = &updatePlan{Library: library, Repo: s.Source.Repo, Ref: s.Source.Ref}
+	st.m.Update = &updatePlan{Library: library, Folder: folder, Repo: s.Source.Repo, Ref: s.Source.Ref}
 	for _, inst := range all {
 		if !inst.Editable || inst.Source == nil || filepath.Dir(inst.Dir) != library ||
 			inst.Source.Repo != s.Source.Repo || inst.Source.Ref != s.Source.Ref {
@@ -130,13 +165,13 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 		}
 		u := UpdateSkill{Name: inst.Name, Dir: inst.Dir, Files: []FileChange{}}
 		sf, ok := st.match(inst)
-		folder, err := st.folder(sf)
+		staged, err := st.folder(sf)
 		if !ok || err != nil {
 			u.Gone = true
 			out.Skills = append(out.Skills, u)
 			continue
 		}
-		upstream, err := HashDir(folder)
+		upstream, err := prov.hash(staged)
 		if err != nil {
 			_ = os.RemoveAll(st.dir)
 			return UpdateStage{}, err
@@ -145,8 +180,8 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 		// so the diff shows what applying will really write. A copy that
 		// cannot take it is shown as upstream has it; applying says why.
 		frontmatter, openai := FileManual(inst.Dir)
-		_ = keepManual(folder, frontmatter, openai)
-		files, err := diffDirs(inst.Dir, folder)
+		_ = keepManual(staged, frontmatter, openai)
+		files, err := diffDirs(inst.Dir, staged)
 		if err != nil {
 			_ = os.RemoveAll(st.dir)
 			return UpdateStage{}, err
@@ -158,9 +193,7 @@ func (f Fetcher) StageUpdate(ctx context.Context, r Roots, dir string) (UpdateSt
 		u.Changed = len(files) > 0
 		if u.Changed {
 			u.Files = files
-			if e, ok := rec.Get(filepath.Base(inst.Dir)); ok && e.Hash == upstream {
-				u.Local = true
-			}
+			u.Local = prov.installed(inst) == upstream
 		}
 		st.m.Update.Targets = append(st.m.Update.Targets, updateTarget{Dir: filepath.Base(inst.Dir), Skill: sf.Name, Hash: upstream})
 		out.Skills = append(out.Skills, u)
@@ -396,8 +429,10 @@ func ReadUpdateFile(r Roots, id, dir, rel string) (before, after string, binary 
 }
 
 // ApplyUpdate replaces installed skills with their staged copies. Each keeps
-// the manual-only choice it had, whatever upstream now says, and ends up in
-// our own record: a skill only the skills CLI's lock knew about is adopted.
+// the manual-only choice it had, whatever upstream now says. A personal skill
+// ends up in our own record, so one only the skills CLI's global lock knew
+// about is adopted; a project skill's entry in its folder's lock is brought
+// up to date.
 // The staging dir stays, so the rest of an update can be applied later.
 func ApplyUpdate(r Roots, id string, dirs []string) ([]Skill, error) {
 	if len(dirs) == 0 {
@@ -448,6 +483,29 @@ func ApplyUpdate(r Roots, id string, dirs []string) ([]Skill, error) {
 		if err := swapIn(tmp, p.s.Dir); err != nil {
 			_ = os.RemoveAll(tmp)
 			return nil, err
+		}
+		if folder := p.st.m.Update.Folder; folder != "" {
+			err = updateProjectLock(folder, func(skills map[string]json.RawMessage) error {
+				key := lockKey(skills, p.s)
+				if key == "" {
+					// Gone from the lock since the check: written as new.
+					key = name
+					setLockEntry(skills, key, lockEntryFor(folder, p.st.m.Method, p.s.Source.Repo, p.s.Source.Ref, p.sf.Path, p.target.Hash))
+					return nil
+				}
+				// Source and ref stay as the CLI or an install wrote them.
+				patchLockEntry(skills, key, map[string]string{"skillPath": path.Join(p.sf.Path, "SKILL.md"), "computedHash": p.target.Hash})
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			s, err := find(r, p.s.Dir)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, s)
+			continue
 		}
 		now := stamp()
 		err = UpdateRecord(library, func(rec *Record) error {

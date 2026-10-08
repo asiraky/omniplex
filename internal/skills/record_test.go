@@ -243,12 +243,12 @@ func TestSkillSource(t *testing.T) {
 		{"the project lock does not speak for a personal skill", func(t *testing.T, r Roots) {
 			write(t, ProjectCLILock(r.ProjectRoot), projectLock)
 		}, "pi-only", nil},
-		{"the project library's record beats the project lock", func(t *testing.T, r Roots) {
+		{"a record in a project library is not its provenance", func(t *testing.T, r Roots) {
 			write(t, ProjectCLILock(r.ProjectRoot), projectLock)
-			if err := SaveRecord(r.ProjectLibrary, ours("our/project")); err != nil {
+			if err := SaveRecord(filepath.Join(r.ProjectRoot, ".agents", "skills"), ours("our/project")); err != nil {
 				t.Fatal(err)
 			}
-		}, "dev", &Source{Method: MethodGit, Repo: "our/project", Managed: true}},
+		}, "dev", &Source{Method: MethodNpx, Repo: "cli/project", Ref: "v2", Path: "dev"}},
 		{"a library's record only covers its own skills", func(t *testing.T, r Roots) {
 			if err := SaveRecord(r.Library, ours("our/personal")); err != nil {
 				t.Fatal(err)

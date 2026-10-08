@@ -205,6 +205,9 @@ type skillArgs struct {
 	ID     string   `json:"id"`
 	Skill  string   `json:"skill"`
 	Skills []string `json:"skills"`
+	// Destination is the folder create_skill and install_staged write
+	// into, one of list_skills' destinations; "" is the personal library.
+	Destination string `json:"destination"`
 	// Committing the library, and applying an update.
 	Names   []string `json:"names"`
 	Message string   `json:"message"`

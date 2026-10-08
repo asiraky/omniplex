@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -43,7 +44,7 @@ func addBoth(t *testing.T) map[string]add {
 	return map[string]add{
 		"create": func(t *testing.T, r Roots, name string) Skill {
 			t.Helper()
-			s, err := Create(r, name, "A new skill")
+			s, err := Create(r, name, "A new skill", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,7 +54,7 @@ func addBoth(t *testing.T) map[string]add {
 			t.Helper()
 			staging(t)
 			got, _ := stageLocal(t, r, map[string]string{name + "/SKILL.md": skillMD(name, "Fetched")})
-			placed, err := InstallStaged(r, got.ID, []string{name})
+			placed, err := InstallStaged(r, got.ID, []string{name}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +126,7 @@ func TestInstallLeavesAnAgentsOwnSkillOfTheSameName(t *testing.T) {
 	// A link an earlier copy left behind, pointing nowhere now.
 	link(t, filepath.Join(r.Home, "gone", "two"), filepath.Join(r.ClaudeConfigDir, "skills", "two"))
 	got, _ := stageLocal(t, r, twoSkills)
-	if _, err := InstallStaged(r, got.ID, []string{"one", "two"}); err != nil {
+	if _, err := InstallStaged(r, got.ID, []string{"one", "two"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if isSymlink(filepath.Dir(own)) || read(t, own) != skillMD("one", "Claude's own") {
@@ -150,7 +151,7 @@ func TestALinkThatCannotBeMadeDoesNotFailTheInstall(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(claude, 0o755) })
 	got, _ := stageLocal(t, r, twoSkills)
-	placed, err := InstallStaged(r, got.ID, []string{"one"})
+	placed, err := InstallStaged(r, got.ID, []string{"one"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestRemove(t *testing.T) {
 	t.Run("takes the per-skill links and the record entry with it", func(t *testing.T) {
 		r := machine(t)
 		write(t, filepath.Join(r.ClaudeConfigDir, "skills", "claude-own", "SKILL.md"), skillMD("claude-own", "Claude's"))
-		s, err := Create(r, "lib-skill", "In the library")
+		s, err := Create(r, "lib-skill", "In the library", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,19 +225,26 @@ func TestRemove(t *testing.T) {
 		}
 	})
 
-	t.Run("a project skill's entry leaves the project library's record", func(t *testing.T) {
+	t.Run("a project skill's entry leaves its folder's lock", func(t *testing.T) {
 		r := fixture(t)
-		for _, lib := range []string{r.Library, r.ProjectLibrary} {
-			if err := SaveRecord(lib, Record{Skills: map[string]RecordEntry{"dev": entry}}); err != nil {
-				t.Fatal(err)
-			}
+		if err := SaveRecord(r.Library, Record{Skills: map[string]RecordEntry{"dev": entry}}); err != nil {
+			t.Fatal(err)
 		}
+		lock := ProjectCLILock(r.ProjectRoot)
+		write(t, lock, `{"version":1,"skills":{"dev":{"source":"a/b","sourceType":"github","computedHash":"h"},`+
+			`"elsewhere":{"source":"c/d","sourceType":"github","computedHash":"h","pinned":true}},"note":"theirs"}`)
 		dev := byName(t, mustDiscover(t, r))["dev"]
 		if err := Remove(r, dev.Dir); err != nil {
 			t.Fatal(err)
 		}
-		if rec, _ := LoadRecord(r.ProjectLibrary); len(rec.Skills) != 0 {
-			t.Errorf("project record = %+v", rec.Skills)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(read(t, lock)), &got); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"version": 1.0, "note": "theirs", "skills": map[string]any{
+			"elsewhere": map[string]any{"source": "c/d", "sourceType": "github", "computedHash": "h", "pinned": true}}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("lock = %v", got)
 		}
 		// The personal library's entry of the same name is another skill's.
 		if rec, _ := LoadRecord(r.Library); len(rec.Skills) != 1 {
