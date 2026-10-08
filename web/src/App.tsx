@@ -121,6 +121,7 @@ export function App() {
       <ToolsScreen
         clientRef={clientRef}
         tab={screens.tools.tab}
+        projects={projects}
         scope={skillsScope({
           threadId: activeId,
           threadProjectId: meta?.projectId,
@@ -210,6 +211,7 @@ export function App() {
           <ThreadDraft
             projects={projects}
             activeProjectId={nav.creating.projectId}
+            onProjectChange={nav.pickDraftProject}
             harnesses={harnesses}
             userConfig={wire.userConfig}
             status={wire.status}

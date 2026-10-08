@@ -1195,6 +1195,13 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := c.srv.mgr.DeleteProject(ctx, a.ProjectID); err != nil {
 			return nil, err
 		}
+		// Its MCP servers go with it. The project is gone either way, so a
+		// failure here is logged rather than reported.
+		if c.srv.conns != nil {
+			if err := c.srv.conns.RemoveProject(a.ProjectID); err != nil {
+				c.srv.logf("mcp servers of deleted project %s: %v", a.ProjectID, err)
+			}
+		}
 		return map[string]any{"status": "deleted"}, nil
 
 	case "retry_provision":

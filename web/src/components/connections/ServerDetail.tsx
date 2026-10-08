@@ -12,15 +12,19 @@ import {
   type PageCommand,
 } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
+import { Label } from "~/components/ui/label";
 import { Spinner } from "~/components/ui/spinner";
+import { Switch } from "~/components/ui/switch";
 import {
   canReconnect,
   formFromServer,
   harnessesFor,
   liveMark,
   offersSignIn,
+  onInProject,
   serverKind,
   serverMark,
+  serverRef,
   serverSaveArgs,
   type ServerForm,
 } from "~/lib/connections";
@@ -29,6 +33,7 @@ import { cn, errorText } from "~/lib/utils";
 import type { McpHarness, McpServer, ThreadMcp } from "~/protocol";
 
 import { AgentSwitches, MarkChip, ServerFields } from "./parts";
+import { useProjectOff } from "./useConnections";
 
 const ACTION = "h-11 text-[13px] md:h-8 md:text-[12px]";
 
@@ -50,12 +55,16 @@ function statusText(s: McpServer): string {
 
 /**
  * One of Omniplex's servers: how it is doing, here and in the open thread,
- * which agents get it, and what it is. Edit swaps the body for the form.
+ * where and which agents get it, and what it is. Edit swaps the body for the
+ * form; a server's scope stays as it is.
  */
 export function ServerDetail({
   server,
+  scope,
   harnesses,
   command,
+  project,
+  shadow,
   live,
   reconnecting,
   reconnectError,
@@ -66,8 +75,14 @@ export function ServerDetail({
   onSignIn,
 }: {
   server: McpServer;
+  /** Where it applies, for the reader: a project's name, or Everywhere. */
+  scope: string;
   harnesses: McpHarness[];
   command: PageCommand;
+  /** The project in view, for a server everywhere: it gets a switch for it. */
+  project?: { id: string; name: string };
+  /** It takes the place of, or is replaced by, a server of the same name. */
+  shadow?: "replaces" | "replaced" | null;
   /** The open thread's report on this server, when it has one. */
   live?: ThreadMcp;
   reconnecting: boolean;
@@ -76,7 +91,7 @@ export function ServerDetail({
   onReconnect: () => void;
   onBack: () => void;
   onSaved: (s: McpServer, previousName?: string) => void;
-  onRemoved: (name: string) => void;
+  onRemoved: (s: { name: string; project?: string }) => void;
   onSignIn: () => void;
 }) {
   const formId = useId();
@@ -93,6 +108,7 @@ export function ServerDetail({
   const writes = useRef<Promise<void>>(Promise.resolve());
   const queued = useRef(0);
   const confirmed = useRef<McpServer | null>(null);
+  const projectOff = useProjectOff(command, (s) => onSaved(s));
 
   const kind = serverKind(server);
   const mark = serverMark(server);
@@ -101,7 +117,7 @@ export function ServerDetail({
     setBusy(what);
     setError("");
     try {
-      const res = await command<{ server?: McpServer }>(cmd, { name: server.name });
+      const res = await command<{ server?: McpServer }>(cmd, serverRef(server));
       if (res?.server) onSaved(res.server);
     } catch (e) {
       setError(errorText(e));
@@ -111,13 +127,13 @@ export function ServerDetail({
   };
 
   const setAgents = (next: string[]) => {
-    const name = server.name;
+    const ref = serverRef(server);
     setOff(next);
     setError("");
     queued.current++;
     writes.current = writes.current.then(async () => {
       try {
-        const res = await command<{ server?: McpServer }>("set_mcp_server_off", { name, off: next });
+        const res = await command<{ server?: McpServer }>("set_mcp_server_off", { ...ref, off: next });
         if (res?.server) confirmed.current = res.server;
       } catch (e) {
         setError(errorText(e));
@@ -154,7 +170,14 @@ export function ServerDetail({
     }
   };
 
-  const header = <DetailHeader backLabel="Back to MCP servers" onBack={onBack} title={server.name} sub={kind === "http" ? "Remote server" : "Runs as a command"} />;
+  const header = (
+    <DetailHeader
+      backLabel="Back to MCP servers"
+      onBack={onBack}
+      title={server.name}
+      sub={`${kind === "http" ? "Remote server" : "Runs as a command"} · ${scope}`}
+    />
+  );
 
   if (editing) {
     return (
@@ -278,6 +301,34 @@ export function ServerDetail({
           </section>
         )}
 
+        {(project || shadow) && (
+          <section aria-label="This project" className="space-y-1.5">
+            <DetailHeading>This project</DetailHeading>
+            {project && (
+              <div className="rounded-lg border">
+                <div className="flex min-h-11 items-center gap-2 px-3 md:min-h-10">
+                  <Label htmlFor={`${formId}-project`} className="min-w-0 flex-1 text-[13px] font-normal break-words">
+                    {project.name} gets it
+                  </Label>
+                  <Switch
+                    id={`${formId}-project`}
+                    checked={onInProject(server, project.id)}
+                    onCheckedChange={(on) => void projectOff.set(server, project.id, on)}
+                  />
+                </div>
+              </div>
+            )}
+            {projectOff.error && <ErrorLine message={projectOff.error} />}
+            {shadow && (
+              <p className="text-muted-foreground px-1 text-[12px] leading-snug">
+                {shadow === "replaces"
+                  ? `There is a ${server.name} everywhere too. This project's threads get this one instead.`
+                  : `This project has its own ${server.name}, and its threads get that one instead.`}
+              </p>
+            )}
+          </section>
+        )}
+
         <section aria-label="Agents that get it" className="space-y-1.5">
           <DetailHeading>Agents that get it</DetailHeading>
           <AgentSwitches harnesses={harnessesFor(harnesses, kind)} off={off} onChange={setAgents} />
@@ -302,11 +353,11 @@ export function ServerDetail({
         open={removing}
         onOpenChange={setRemoving}
         title={`Remove ${server.name}?`}
-        description="Every agent loses it from the next thread on, and its stored sign-in and values are deleted."
+        description={`${server.project ? `${scope}'s threads lose` : "Every agent loses"} it from the next thread on, and its stored sign-in and values are deleted.`}
         confirmLabel="Remove server"
         onConfirm={async () => {
-          await command("remove_mcp_server", { name: server.name });
-          onRemoved(server.name);
+          await command("remove_mcp_server", serverRef(server));
+          onRemoved(serverRef(server));
         }}
       />
     </div>

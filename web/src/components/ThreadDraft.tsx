@@ -86,6 +86,7 @@ function blockerFor({
 export function ThreadDraft({
   projects,
   activeProjectId,
+  onProjectChange,
   harnesses,
   userConfig,
   status,
@@ -106,6 +107,8 @@ export function ThreadDraft({
 }: {
   projects: Project[];
   activeProjectId?: string;
+  /** The person picked another project for this draft. */
+  onProjectChange?: (projectId: string) => void;
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
   status: ConnectionStatus;
@@ -304,7 +307,10 @@ export function ThreadDraft({
               <ProjectChip
                 projects={projects}
                 project={project}
-                onPick={where.pickProject}
+                onPick={(id) => {
+                  where.pickProject(id);
+                  onProjectChange?.(id);
+                }}
                 onSettings={onSettings}
                 onAddProject={onAddProject}
               />

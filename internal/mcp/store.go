@@ -30,7 +30,10 @@ type File struct {
 // Draft is a server as the user types it: values included. An env variable
 // or header present with an empty value keeps whatever is stored for it.
 type Draft struct {
-	Name    string            `json:"name"`
+	Name string `json:"name"`
+	// Project is the scope the server is saved in: a project ID, or empty
+	// for everywhere. An edit stays in the scope it was made in.
+	Project string            `json:"project,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
@@ -51,9 +54,12 @@ const (
 const ReservedName = "omniplex"
 
 var (
-	nameRule   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,47}$`)
-	envRule    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	headerRule = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+	nameRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,47}$`)
+	// projectRule keeps a project ID fit to be part of a secret store id,
+	// and free of the dot and slash that server keys use.
+	projectRule = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+	envRule     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	headerRule  = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 )
 
 // CheckName refuses a server name or CLI id outside the naming rule.
@@ -165,13 +171,34 @@ func writeAtomic(path string, b []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// Server returns one server by name.
-func (s *Store) Server(name string) (Server, bool, error) {
+// checkProject refuses a project ID that cannot be part of a server key.
+func checkProject(project string) error {
+	if !projectRule.MatchString(project) {
+		return fmt.Errorf("%q is not a project ID", project)
+	}
+	return nil
+}
+
+// named matches the server called name in project ("" for everywhere).
+func named(name, project string) func(Server) bool {
+	return func(x Server) bool { return x.Name == name && x.Project == project }
+}
+
+// noServer is the error for a server missing from its scope.
+func noServer(name, project string) error {
+	if project == "" {
+		return fmt.Errorf("no MCP server named %q", name)
+	}
+	return fmt.Errorf("this project has no MCP server named %q", name)
+}
+
+// Server returns the server called name in project ("" for everywhere).
+func (s *Store) Server(name, project string) (Server, bool, error) {
 	f, err := s.Read()
 	if err != nil {
 		return Server{}, false, err
 	}
-	i := slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == name })
+	i := slices.IndexFunc(f.Servers, named(name, project))
 	if i < 0 {
 		return Server{}, false, nil
 	}
@@ -182,17 +209,17 @@ func (s *Store) Server(name string) (Server, bool, error) {
 // given a new URL while it was being signed in.
 var ErrServerChanged = errors.New("the server changed while signing in. Sign in again")
 
-// whileCurrent runs write under the store's lock if name still names a
-// server at url, else returns ErrServerChanged. Holding the lock keeps a
+// whileCurrent runs write under the store's lock if key is still the key of
+// a server at url, else returns ErrServerChanged. Holding the lock keeps a
 // rename or removal from slipping in between the check and the write.
-func (s *Store) whileCurrent(name, url string, write func() error) error {
+func (s *Store) whileCurrent(key, url string, write func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f, err := s.readLocked()
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Name == name && x.URL == url }) {
+	if slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Key() == key && x.URL == url }) {
 		return write()
 	}
 	return ErrServerChanged
@@ -201,13 +228,14 @@ func (s *Store) whileCurrent(name, url string, write func() error) error {
 // Values reads a server's env and header values out of the secret store.
 func (s *Store) Values(srv Server) (env, headers map[string]string) {
 	env, headers = map[string]string{}, map[string]string{}
+	id := secretID(srv.Key())
 	for _, n := range srv.EnvNames {
-		if v, ok := s.secrets.Get(srv.Name, envKey+n); ok {
+		if v, ok := s.secrets.Get(id, envKey+n); ok {
 			env[n] = v
 		}
 	}
 	for _, n := range srv.HeaderNames {
-		if v, ok := s.secrets.Get(srv.Name, headerKey+n); ok {
+		if v, ok := s.secrets.Get(id, headerKey+n); ok {
 			headers[n] = v
 		}
 	}
@@ -222,6 +250,11 @@ func checkDraft(d Draft) (envNames, headerNames []string, err error) {
 	}
 	if d.Name == ReservedName {
 		return nil, nil, fmt.Errorf("%q is the name of omniplex's own server; choose another", d.Name)
+	}
+	if d.Project != "" {
+		if err := checkProject(d.Project); err != nil {
+			return nil, nil, err
+		}
 	}
 	switch {
 	case d.URL != "" && d.Command != "":
@@ -266,10 +299,11 @@ func checkDraft(d Draft) (envNames, headerNames []string, err error) {
 	return envNames, headerNames, nil
 }
 
-// SaveServer adds a server, or replaces the one named previous (which may be
-// renamed). Values travel to the secret store: an empty value keeps the
-// stored one, and a name left out is deleted. Renaming moves the secrets;
-// changing the URL drops the OAuth sign-in, which was for the old one.
+// SaveServer adds a server to the draft's scope, or replaces the one named
+// previous there (which may be renamed). Values travel to the secret store:
+// an empty value keeps the stored one, and a name left out is deleted.
+// Renaming moves the secrets; changing the URL drops the OAuth sign-in,
+// which was for the old one.
 func (s *Store) SaveServer(d Draft, previous string) (Server, error) {
 	d.Name = strings.TrimSpace(d.Name)
 	d.URL = strings.TrimSpace(d.URL)
@@ -279,23 +313,27 @@ func (s *Store) SaveServer(d Draft, previous string) (Server, error) {
 		return Server{}, err
 	}
 	srv := Server{
-		Name: d.Name, URL: d.URL, Command: d.Command, Args: d.Args,
+		Name: d.Name, Project: d.Project, URL: d.URL, Command: d.Command, Args: d.Args,
 		EnvNames: envNames, HeaderNames: headerNames, Off: cleanList(d.Off),
 	}
 	err = s.update(func(f *File) error {
 		oldIdx := -1
 		if previous != "" {
-			oldIdx = slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == previous })
+			oldIdx = slices.IndexFunc(f.Servers, named(previous, d.Project))
 			if oldIdx < 0 {
-				return fmt.Errorf("no MCP server named %q", previous)
+				return noServer(previous, d.Project)
 			}
 		}
-		if previous != d.Name && slices.ContainsFunc(f.Servers, func(x Server) bool { return x.Name == d.Name }) {
+		if previous != d.Name && slices.ContainsFunc(f.Servers, named(d.Name, d.Project)) {
+			if d.Project != "" {
+				return fmt.Errorf("this project already has an MCP server named %q", d.Name)
+			}
 			return fmt.Errorf("there is already an MCP server named %q", d.Name)
 		}
 		var old Server
 		if oldIdx >= 0 {
 			old = f.Servers[oldIdx]
+			srv.OffIn = old.OffIn
 		}
 		if err := s.moveSecrets(old, srv, d); err != nil {
 			return err
@@ -315,24 +353,25 @@ func (s *Store) SaveServer(d Draft, previous string) (Server, error) {
 
 // moveSecrets writes the new server's values, reading kept ones from the old
 // server (empty Name means there was none), and removes what the new one no
-// longer has.
+// longer has. Both are in the same scope, so only a rename moves the key.
 func (s *Store) moveSecrets(old, srv Server, d Draft) error {
+	oldID, newID := secretID(old.Key()), secretID(srv.Key())
 	if old.Name == "" {
 		// Nothing left behind by an earlier server of this name survives.
-		if err := s.secrets.Purge(srv.Name); err != nil {
+		if err := s.secrets.Purge(newID); err != nil {
 			return err
 		}
 	}
 	put := func(key, value string, had bool) error {
 		if value == "" && had {
-			if v, ok := s.secrets.Get(old.Name, key); ok {
-				if old.Name == srv.Name {
+			if v, ok := s.secrets.Get(oldID, key); ok {
+				if oldID == newID {
 					return nil
 				}
 				value = v
 			}
 		}
-		return s.secrets.Put(srv.Name, key, value)
+		return s.secrets.Put(newID, key, value)
 	}
 	for _, n := range srv.EnvNames {
 		if err := put(envKey+n, d.Env[n], slices.Contains(old.EnvNames, n)); err != nil {
@@ -345,64 +384,120 @@ func (s *Store) moveSecrets(old, srv Server, d Draft) error {
 		}
 	}
 	keepOAuth := old.Name != "" && old.URL != "" && old.URL == srv.URL
-	if old.Name != "" && old.Name != srv.Name {
+	if old.Name != "" && oldID != newID {
 		if keepOAuth {
-			if v, ok := s.secrets.Get(old.Name, OAuthKey); ok {
-				if err := s.secrets.Put(srv.Name, OAuthKey, v); err != nil {
+			if v, ok := s.secrets.Get(oldID, OAuthKey); ok {
+				if err := s.secrets.Put(newID, OAuthKey, v); err != nil {
 					return err
 				}
 			}
 		}
-		return s.secrets.Purge(old.Name)
+		return s.secrets.Purge(oldID)
 	}
 	if old.Name == "" {
 		return nil
 	}
 	for _, n := range old.EnvNames {
 		if !slices.Contains(srv.EnvNames, n) {
-			if err := s.secrets.Delete(old.Name, envKey+n); err != nil {
+			if err := s.secrets.Delete(oldID, envKey+n); err != nil {
 				return err
 			}
 		}
 	}
 	for _, n := range old.HeaderNames {
 		if !slices.Contains(srv.HeaderNames, n) {
-			if err := s.secrets.Delete(old.Name, headerKey+n); err != nil {
+			if err := s.secrets.Delete(oldID, headerKey+n); err != nil {
 				return err
 			}
 		}
 	}
 	if !keepOAuth {
-		return s.secrets.Delete(old.Name, OAuthKey)
+		return s.secrets.Delete(oldID, OAuthKey)
 	}
 	return nil
 }
 
-// SetOff changes only which harnesses do not get a server.
-func (s *Store) SetOff(name string, off []string) (Server, error) {
+// SetOff changes only which harnesses do not get the server called name in
+// project ("" for everywhere).
+func (s *Store) SetOff(name, project string, off []string) (Server, error) {
+	return s.changeServer(name, project, func(x *Server) { x.Off = cleanList(off) })
+}
+
+// SetProjectOff keeps the server called name that goes everywhere out of
+// one project's threads (off), or lets it back in.
+func (s *Store) SetProjectOff(name, projectID string, off bool) (Server, error) {
+	if err := checkProject(projectID); err != nil {
+		return Server{}, err
+	}
+	return s.changeServer(name, "", func(x *Server) {
+		in := slices.DeleteFunc(slices.Clone(x.OffIn), func(p string) bool { return p == projectID })
+		if off {
+			in = append(in, projectID)
+		}
+		x.OffIn = cleanList(in)
+	})
+}
+
+func (s *Store) changeServer(name, project string, fn func(*Server)) (Server, error) {
 	var out Server
 	err := s.update(func(f *File) error {
-		i := slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == name })
+		i := slices.IndexFunc(f.Servers, named(name, project))
 		if i < 0 {
-			return fmt.Errorf("no MCP server named %q", name)
+			return noServer(name, project)
 		}
-		f.Servers[i].Off = cleanList(off)
+		fn(&f.Servers[i])
 		out = f.Servers[i]
 		return nil
 	})
 	return out, err
 }
 
-// RemoveServer deletes a server and every secret it has.
-func (s *Store) RemoveServer(name string) error {
+// RemoveServer deletes the server called name in project ("" for
+// everywhere) and every secret it has.
+func (s *Store) RemoveServer(name, project string) error {
 	return s.update(func(f *File) error {
-		i := slices.IndexFunc(f.Servers, func(x Server) bool { return x.Name == name })
+		i := slices.IndexFunc(f.Servers, named(name, project))
 		if i < 0 {
-			return fmt.Errorf("no MCP server named %q", name)
+			return noServer(name, project)
 		}
+		key := f.Servers[i].Key()
 		f.Servers = slices.Delete(f.Servers, i, i+1)
-		return s.secrets.Purge(name)
+		return s.secrets.Purge(secretID(key))
 	})
+}
+
+// RemoveProject deletes a project's servers and their secrets, and forgets
+// the project in what goes everywhere. It returns the servers it deleted.
+func (s *Store) RemoveProject(projectID string) ([]Server, error) {
+	if err := checkProject(projectID); err != nil {
+		return nil, err
+	}
+	var gone []Server
+	err := s.update(func(f *File) error {
+		kept := f.Servers[:0]
+		for _, x := range f.Servers {
+			if x.Project == projectID {
+				gone = append(gone, x)
+				continue
+			}
+			x.OffIn = slices.DeleteFunc(x.OffIn, func(p string) bool { return p == projectID })
+			if len(x.OffIn) == 0 {
+				x.OffIn = nil
+			}
+			kept = append(kept, x)
+		}
+		f.Servers = kept
+		for _, x := range gone {
+			if err := s.secrets.Purge(secretID(x.Key())); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return gone, nil
 }
 
 // SaveCLI adds a CLI, or replaces the one with id previous (which may be

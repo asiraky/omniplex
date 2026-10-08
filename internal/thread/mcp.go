@@ -10,12 +10,13 @@ import (
 
 // MCPSource is the user's own MCP servers, as sessions get them: values
 // filled in and OAuth tokens fresh. Only adapters implementing
-// adapter.MCPHost are asked about, with the kinds of server they run.
+// adapter.MCPHost are asked about, with the kinds of server they run, and
+// the thread's project ("" for none).
 type MCPSource interface {
-	// Servers is everything a session of the harness gets.
-	Servers(ctx context.Context, harness string, transports []string) []adapter.MCPServer
+	// Servers is everything a session of the harness in the project gets.
+	Servers(ctx context.Context, harness string, transports []string, projectID string) []adapter.MCPServer
 	// Server is one of them, for reconnecting it.
-	Server(ctx context.Context, harness string, transports []string, name string) (adapter.MCPServer, error)
+	Server(ctx context.Context, harness string, transports []string, projectID, name string) (adapter.MCPServer, error)
 }
 
 // UserMCP supplies the user's MCP servers. Set once at startup, before any
@@ -26,7 +27,7 @@ var UserMCP MCPSource
 // mcpTimeout bounds one status read or reconnect through a live session.
 const mcpTimeout = 30 * time.Second
 
-func userMCPServers(ctx context.Context, ad adapter.Adapter) []adapter.MCPServer {
+func userMCPServers(ctx context.Context, ad adapter.Adapter, projectID string) []adapter.MCPServer {
 	if UserMCP == nil || ad == nil {
 		return nil
 	}
@@ -34,7 +35,7 @@ func userMCPServers(ctx context.Context, ad adapter.Adapter) []adapter.MCPServer
 	if !ok {
 		return nil
 	}
-	return UserMCP.Servers(ctx, ad.ID(), host.MCPTransports())
+	return UserMCP.Servers(ctx, ad.ID(), host.MCPTransports(), projectID)
 }
 
 // MCPHarness is a harness whose adapter takes MCP servers, with the env
@@ -96,7 +97,8 @@ func (m *Manager) MCPStatus(ctx context.Context, threadID string) (live bool, se
 
 // ReconnectMCP hands the live session the server's current definition, with
 // a fresh token, and has it reconnect. Only the user's own servers can be
-// reconnected from here: omniplex has no definition for the others.
+// reconnected from here: omniplex has no definition for the others. The
+// thread's project decides which server of that name it is.
 func (m *Manager) ReconnectMCP(ctx context.Context, threadID, name string) error {
 	a, ok := m.Peek(threadID)
 	if !ok {
@@ -109,7 +111,11 @@ func (m *Manager) ReconnectMCP(ctx context.Context, threadID, name string) error
 	if !ok {
 		return adapter.ErrMCPUnsupported
 	}
-	def, err := UserMCP.Server(ctx, a.Harness, host.MCPTransports(), name)
+	meta, err := m.store.Thread(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	def, err := UserMCP.Server(ctx, a.Harness, host.MCPTransports(), meta.ProjectID, name)
 	if err != nil {
 		return err
 	}

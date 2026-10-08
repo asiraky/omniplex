@@ -78,7 +78,7 @@ describe("skillsScope", () => {
   it("follows the open thread and names its project", () => {
     expect(
       skillsScope({ threadId: "t1", threadProjectId: "p2", draftProjectId: "p1", lastProjectId: "p1", projects }),
-    ).toEqual({ kind: "thread", threadId: "t1", projectName: "site" });
+    ).toEqual({ kind: "thread", threadId: "t1", projectId: "p2", projectName: "site" });
   });
 
   it("falls back to the project being drafted in, then the last one used", () => {

@@ -11,6 +11,7 @@ import {
   formFromDraft,
   foundByHarness,
   formFromServer,
+  groupServers,
   harnessesFor,
   joinNames,
   BUILT_IN_MCP,
@@ -21,10 +22,13 @@ import {
   offersSignIn,
   ownsSignIn,
   sameHost,
+  serverKey,
   serverMatches,
   serverSaveArgs,
   serverWhere,
+  shadowing,
   sortLive,
+  threadServers,
   toggleOff,
   upsert,
 } from "./connections";
@@ -42,6 +46,7 @@ function server(over: Partial<McpServer> = {}): McpServer {
     envNames: [],
     headerNames: [],
     off: [],
+    offIn: [],
     oauth: false,
     status: "unchecked",
     ...over,
@@ -105,6 +110,14 @@ describe("serverSaveArgs", () => {
         server: { name: "local", command: "npx", args: ["-y", "pkg with space"], env: { TOKEN: "t" }, headers: {}, off: ["b"] },
       },
     });
+  });
+
+  it("saves an edited server in its own project, and a new one where the form says", () => {
+    const edited = serverSaveArgs(formFromServer(server({ project: "p1" })), "srv");
+    expect(edited).toHaveProperty("args.server.project", "p1");
+    const base = { ...emptyServerForm("p2"), name: "new", url: "https://x.example/mcp" };
+    expect(serverSaveArgs(base)).toHaveProperty("args.server.project", "p2");
+    expect(serverSaveArgs({ ...base, project: undefined })).not.toHaveProperty("args.server.project");
   });
 
   it("rejects bad names, the reserved name, and a missing address", () => {
@@ -173,6 +186,94 @@ describe("upsert", () => {
     expect(upsert(list, { name: "c", v: 2 }, key, "a")).toEqual([{ name: "c", v: 2 }, { name: "b", v: 1 }]);
     expect(upsert(list, { name: "d", v: 2 }, key)).toHaveLength(3);
   });
+
+  it("keeps two projects' servers of one name and the one everywhere apart", () => {
+    const list = [server({ name: "linear" }), server({ name: "linear", project: "p1" }), server({ name: "linear", project: "p2" })];
+    const next = upsert(list, server({ name: "linear", project: "p1", status: "connected" }), serverKey);
+    expect(next.map((s) => [s.project, s.status])).toEqual([
+      [undefined, "unchecked"],
+      ["p1", "connected"],
+      ["p2", "unchecked"],
+    ]);
+    // A rename in p2 replaces p2's only.
+    const renamed = upsert(list, server({ name: "linear-b", project: "p2" }), serverKey, serverKey({ name: "linear", project: "p2" }));
+    expect(renamed.map(serverKey)).toEqual(["linear", "p1/linear", "p2/linear-b"]);
+  });
+});
+
+describe("groupServers", () => {
+  const servers = [
+    server({ name: "zeta" }),
+    server({ name: "Alpha" }),
+    server({ name: "sentry", project: "p1" }),
+    server({ name: "db", project: "p1" }),
+    server({ name: "linear", project: "p2" }),
+  ];
+
+  it("in a project, splits its own from the ones everywhere, each by name", () => {
+    const g = groupServers(servers, "p1");
+    expect(g.here.map((s) => s.name)).toEqual(["db", "sentry"]);
+    expect(g.everywhere.map((s) => s.name)).toEqual(["Alpha", "zeta"]);
+    expect(g.projects).toEqual([]);
+  });
+
+  it("outside a project, puts every project's servers in a group of their own", () => {
+    const g = groupServers(servers, undefined);
+    expect(g.here).toEqual([]);
+    expect(g.everywhere.map((s) => s.name)).toEqual(["Alpha", "zeta"]);
+    expect(g.projects.map((p) => [p.project, p.servers.map((s) => s.name)])).toEqual([
+      ["p1", ["db", "sentry"]],
+      ["p2", ["linear"]],
+    ]);
+  });
+});
+
+describe("shadowing", () => {
+  const servers = [
+    server({ name: "linear" }),
+    server({ name: "gmail" }),
+    server({ name: "linear", project: "p1" }),
+    server({ name: "sentry", project: "p1" }),
+    server({ name: "gmail", project: "p2" }),
+  ];
+
+  it("marks both sides of a project server named like one everywhere, in that project only", () => {
+    const [linear, gmail, p1Linear, sentry] = servers;
+    expect(shadowing(p1Linear, servers, "p1")).toBe("replaces");
+    expect(shadowing(linear, servers, "p1")).toBe("replaced");
+    expect(shadowing(sentry, servers, "p1")).toBeNull();
+    // p2's gmail replaces gmail in p2, not in p1.
+    expect(shadowing(gmail, servers, "p1")).toBeNull();
+    expect(shadowing(gmail, servers, "p2")).toBe("replaced");
+    expect(shadowing(linear, servers, undefined)).toBeNull();
+  });
+});
+
+describe("threadServers", () => {
+  const linear = server({ name: "linear", url: "https://mcp.linear.app/mcp" });
+  const gmail = server({ name: "gmail", offIn: ["p1"] });
+  const p1Linear = server({ name: "linear", project: "p1", url: "https://client.example/mcp" });
+  const p2Db = server({ name: "db", project: "p2" });
+  const servers = [linear, gmail, p1Linear, p2Db];
+
+  it("gives a project's thread its own, then the ones everywhere it has not replaced or turned off", () => {
+    expect(threadServers(servers, "p1")).toEqual([p1Linear]);
+    expect(threadServers(servers, "p2")).toEqual([p2Db, linear, gmail]);
+  });
+
+  it("gives a thread with no project the ones everywhere only", () => {
+    expect(threadServers(servers, undefined)).toEqual([linear, gmail]);
+  });
+
+  it("resolves the thread's report to the project's server when it shadows one everywhere", () => {
+    // The project's linear is a command; the one everywhere is remote. A
+    // project thread must not be offered a sign-in that belongs to the other.
+    const local = server({ name: "linear", project: "p1", url: undefined, command: "./linear" });
+    const ours = threadServers([linear, local], "p1");
+    expect(liveAction({ name: "linear", status: "needs_auth" }, ours)).toBe("reconnect");
+    expect(liveAction({ name: "linear", status: "needs_auth" }, threadServers([linear, local], undefined))).toBe("sign_in");
+    expect(ours.find((s) => s.name === "linear")?.project).toBe("p1");
+  });
 });
 
 describe("ownsSignIn", () => {
@@ -193,11 +294,18 @@ describe("sameHost", () => {
       server({ name: "local", url: undefined, command: "x" }),
       server({ name: "broken", url: "not a url" }),
     ];
-    expect(sameHost("cf-work", servers)).toEqual(["cf-home"]);
-    expect(sameHost("gh", servers)).toEqual([]);
-    expect(sameHost("local", servers)).toEqual([]);
-    expect(sameHost("broken", servers)).toEqual([]);
-    expect(sameHost("missing", servers)).toEqual([]);
+    const names = (target: McpServer) => sameHost(target, servers).map((s) => s.name);
+    expect(names(servers[0])).toEqual(["cf-home"]);
+    expect(names(servers[2])).toEqual([]);
+    expect(names(servers[3])).toEqual([]);
+    expect(names(servers[4])).toEqual([]);
+  });
+
+  it("counts a server of the same name in another scope as another login", () => {
+    const mine = server({ name: "linear", url: "https://mcp.linear.app/mcp" });
+    const client = server({ name: "linear", project: "p1", url: "https://mcp.linear.app/mcp" });
+    expect(sameHost(client, [mine, client])).toEqual([mine]);
+    expect(sameHost(mine, [mine, client])).toEqual([client]);
   });
 });
 

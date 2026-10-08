@@ -760,7 +760,7 @@ export interface AuthFlowEvent {
 /** auth_begin's argument: a provider method, an MCP server, or a CLI account. */
 export type AuthBeginArgs =
   | { instanceId: string; methodId: string }
-  | { mcpServer: string; origin: string }
+  | { mcpServer: string; mcpProject?: string; origin: string }
   | { cli: string; account: string };
 
 // ---- MCP servers and sign-ins (the Skills page's MCP and Sign-ins tabs) ----
@@ -776,9 +776,16 @@ export interface McpHarness {
 
 export type McpServerStatus = "connected" | "sign_in" | "failed" | "unchecked";
 
-/** One of Omniplex's own MCP servers. Env and header values never travel. */
+/**
+ * One of Omniplex's own MCP servers. Env and header values never travel. A
+ * name is unique within its scope only: (project, name) is the identity.
+ */
 export interface McpServer {
   name: string;
+  /** The project whose threads alone get it; absent means every thread. */
+  project?: string;
+  /** For a server everywhere: the projects that do not get it. */
+  offIn: string[];
   url?: string;
   command?: string;
   args?: string[];
@@ -799,6 +806,8 @@ export interface McpServer {
  */
 export interface McpDraft {
   name: string;
+  /** Set on a new server, it belongs to that project; an edit keeps its scope. */
+  project?: string;
   url?: string;
   command?: string;
   args?: string[];
@@ -809,6 +818,7 @@ export interface McpDraft {
 /** set_mcp_server_off: change only which agents do not get a server. */
 export interface SetMcpServerOffArgs {
   name: string;
+  project?: string;
   off: string[];
 }
 
@@ -819,6 +829,8 @@ export interface FoundServer {
   harness: string;
   /** Where in that agent's config, as the agent describes it. */
   origin: string;
+  /** Found in this project's folders: adding it adds it to the project. */
+  project?: string;
   url?: string;
   command?: string;
   args?: string[];

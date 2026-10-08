@@ -16,21 +16,22 @@ import (
 // skip the command ledger (see ephemeralCommand) and run through
 // connectionsCommand; one list keeps the two in step.
 var connectionCommands = map[string]bool{
-	"list_connections":     true,
-	"parse_mcp_server":     true,
-	"save_mcp_server":      true,
-	"remove_mcp_server":    true,
-	"add_found_server":     true,
-	"check_mcp_server":     true,
-	"sign_out_mcp_server":  true,
-	"set_mcp_server_off":   true,
-	"save_cli":             true,
-	"remove_cli":           true,
-	"add_cli_account":      true,
-	"remove_cli_account":   true,
-	"check_cli":            true,
-	"thread_mcp_status":    true,
-	"thread_mcp_reconnect": true,
+	"list_connections":           true,
+	"parse_mcp_server":           true,
+	"save_mcp_server":            true,
+	"remove_mcp_server":          true,
+	"add_found_server":           true,
+	"check_mcp_server":           true,
+	"sign_out_mcp_server":        true,
+	"set_mcp_server_off":         true,
+	"set_mcp_server_project_off": true,
+	"save_cli":                   true,
+	"remove_cli":                 true,
+	"add_cli_account":            true,
+	"remove_cli_account":         true,
+	"check_cli":                  true,
+	"thread_mcp_status":          true,
+	"thread_mcp_reconnect":       true,
 }
 
 var errNoConnections = errors.New("MCP servers and sign-ins are not set up on this server")
@@ -84,7 +85,11 @@ func (s *Server) connectionsCommand(ctx context.Context, name string, raw json.R
 
 	switch name {
 	case "list_connections":
-		return conns.List(ctx)
+		a, err := decode[listConnectionsArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return conns.List(ctx, a.ProjectID)
 
 	case "save_mcp_server":
 		a, err := decode[saveMCPServerArgs](raw)
@@ -100,11 +105,11 @@ func (s *Server) connectionsCommand(ctx context.Context, name string, raw json.R
 		}
 		switch name {
 		case "remove_mcp_server":
-			return ok(conns.Remove(a.Name))
+			return ok(conns.Remove(a.Name, a.Project))
 		case "check_mcp_server":
-			return server(conns.Check(ctx, a.Name))
+			return server(conns.Check(ctx, a.Name, a.Project))
 		default:
-			return server(conns.SignOut(ctx, a.Name))
+			return server(conns.SignOut(ctx, a.Name, a.Project))
 		}
 
 	case "set_mcp_server_off":
@@ -112,14 +117,21 @@ func (s *Server) connectionsCommand(ctx context.Context, name string, raw json.R
 		if err != nil {
 			return nil, err
 		}
-		return server(conns.SetOff(a.Name, a.Off))
+		return server(conns.SetOff(a.Name, a.Project, a.Off))
+
+	case "set_mcp_server_project_off":
+		a, err := decode[setMCPServerProjectOffArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		return server(conns.SetProjectOff(ctx, a.Name, a.ProjectID, a.Off))
 
 	case "add_found_server":
 		a, err := decode[addFoundServerArgs](raw)
 		if err != nil {
 			return nil, err
 		}
-		return server(conns.AddFound(ctx, a.Harness, a.Name, a.Where))
+		return server(conns.AddFound(ctx, a.Harness, a.Name, a.Where, a.Project))
 
 	case "save_cli":
 		a, err := decode[saveCLIArgs](raw)
@@ -181,7 +193,7 @@ func (c *conn) beginFlow(a authBeginArgs) (string, <-chan thread.AuthFlowEvent, 
 		err error
 	)
 	if a.MCPServer != "" {
-		run, err = conns.SignIn(a.MCPServer, a.Origin)
+		run, err = conns.SignIn(a.MCPServer, a.MCPProject, a.Origin)
 	} else {
 		run, err = conns.SignInAccount(a.CLI, a.Account)
 	}

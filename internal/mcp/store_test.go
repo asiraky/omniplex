@@ -19,7 +19,7 @@ func newStore(t *testing.T) *Store {
 
 func values(t *testing.T, st *Store, name string) (env, headers map[string]string) {
 	t.Helper()
-	srv, ok, err := st.Server(name)
+	srv, ok, err := st.Server(name, "")
 	if err != nil || !ok {
 		t.Fatalf("server %s: ok=%v err=%v", name, ok, err)
 	}
@@ -136,7 +136,7 @@ func TestSaveServerRenameMovesSecrets(t *testing.T) {
 	if _, err := st.SaveServer(Draft{Name: "new", URL: "https://a.example.com/mcp", Headers: map[string]string{"X-Key": ""}}, "old"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := st.Server("old"); ok {
+	if _, ok, _ := st.Server("old", ""); ok {
 		t.Error("old name still listed")
 	}
 	_, headers := values(t, st, "new")
@@ -255,7 +255,7 @@ func TestSetOffChangesOnlyOff(t *testing.T) {
 	if err := st.Secrets().Put("a", OAuthKey, "tok"); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := st.SetOff("a", []string{"b", " a ", "b", ""})
+	srv, err := st.SetOff("a", "", []string{"b", " a ", "b", ""})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestSetOffChangesOnlyOff(t *testing.T) {
 	if _, ok := st.Secrets().Get("a", OAuthKey); !ok {
 		t.Error("sign-in dropped")
 	}
-	if _, err := st.SetOff("missing", nil); err == nil {
+	if _, err := st.SetOff("missing", "", nil); err == nil {
 		t.Error("set off on a missing server")
 	}
 }
@@ -282,7 +282,7 @@ func TestRemoveServerPurgesSecrets(t *testing.T) {
 	if err := st.Secrets().Put("a", OAuthKey, "tok"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RemoveServer("a"); err != nil {
+	if err := st.RemoveServer("a", ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{headerKey + "X-Key", OAuthKey} {
@@ -290,8 +290,181 @@ func TestRemoveServerPurgesSecrets(t *testing.T) {
 			t.Errorf("%s survived", key)
 		}
 	}
-	if err := st.RemoveServer("a"); err == nil {
+	if err := st.RemoveServer("a", ""); err == nil {
 		t.Error("removed a missing server")
+	}
+}
+
+// mustSave saves d, failing the test on a refusal.
+func mustSave(t *testing.T, st *Store, d Draft, previous string) Server {
+	t.Helper()
+	srv, err := st.SaveServer(d, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv
+}
+
+func scopedValues(t *testing.T, st *Store, name, project string) map[string]string {
+	t.Helper()
+	srv, ok, err := st.Server(name, project)
+	if err != nil || !ok {
+		t.Fatalf("server %s in %q: ok=%v err=%v", name, project, ok, err)
+	}
+	_, headers := st.Values(srv)
+	return headers
+}
+
+func TestServerNamesAreUniquePerScope(t *testing.T) {
+	st := newStore(t)
+	for _, p := range []string{"", "p1", "p2"} {
+		mustSave(t, st, Draft{Name: "linear", Project: p, URL: "https://l.example.com/mcp", Headers: map[string]string{"X-Key": "k-" + p}}, "")
+	}
+	if _, err := st.SaveServer(Draft{Name: "linear", Project: "p1", Command: "x"}, ""); err == nil {
+		t.Error("saved a second linear in p1")
+	}
+	if _, err := st.SaveServer(Draft{Name: "linear", Command: "x"}, ""); err == nil {
+		t.Error("saved a second linear everywhere")
+	}
+	for _, p := range []string{"", "p1", "p2"} {
+		if got := scopedValues(t, st, "linear", p)["X-Key"]; got != "k-"+p {
+			t.Errorf("linear in %q has X-Key %q", p, got)
+		}
+	}
+
+	// previous is looked up in the draft's scope only.
+	if _, err := st.SaveServer(Draft{Name: "only-p1", Project: "p1", Command: "x"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveServer(Draft{Name: "only-p1", Project: "p2", Command: "y"}, "only-p1"); err == nil {
+		t.Error("edited p1's server as p2's")
+	}
+	if _, err := st.SaveServer(Draft{Name: "only-p1", Command: "y"}, "only-p1"); err == nil {
+		t.Error("edited p1's server as one that goes everywhere")
+	}
+
+	// Renaming p1's linear moves its secrets within p1 and leaves the other
+	// two alone.
+	if err := st.Secrets().Put("p1.linear", OAuthKey, "tok-p1"); err != nil {
+		t.Fatal(err)
+	}
+	mustSave(t, st, Draft{Name: "client-linear", Project: "p1", URL: "https://l.example.com/mcp", Headers: map[string]string{"X-Key": ""}}, "linear")
+	if got := scopedValues(t, st, "client-linear", "p1")["X-Key"]; got != "k-p1" {
+		t.Errorf("renamed server has X-Key %q", got)
+	}
+	if v, ok := st.Secrets().Get("p1.client-linear", OAuthKey); !ok || v != "tok-p1" {
+		t.Errorf("sign-in after rename = %q, %v", v, ok)
+	}
+	if _, ok := st.Secrets().Get("p1.linear", headerKey+"X-Key"); ok {
+		t.Error("the old key's secrets survived the rename")
+	}
+	for _, p := range []string{"", "p2"} {
+		if got := scopedValues(t, st, "linear", p)["X-Key"]; got != "k-"+p {
+			t.Errorf("after p1's rename, linear in %q has X-Key %q", p, got)
+		}
+	}
+
+	for _, bad := range []string{"a/b", "a.b", "-a", " "} {
+		if _, err := st.SaveServer(Draft{Name: "x", Project: bad, Command: "x"}, ""); err == nil {
+			t.Errorf("saved into project %q", bad)
+		}
+	}
+}
+
+func TestSetProjectOff(t *testing.T) {
+	st := newStore(t)
+	mustSave(t, st, Draft{Name: "gmail", Command: "gmail-mcp"}, "")
+	mustSave(t, st, Draft{Name: "sentry", Project: "p1", Command: "sentry-mcp"}, "")
+
+	for _, step := range []struct {
+		project string
+		off     bool
+		want    []string
+	}{
+		{"p2", true, []string{"p2"}},
+		{"p1", true, []string{"p1", "p2"}},
+		{"p1", true, []string{"p1", "p2"}},
+		{"p2", false, []string{"p1"}},
+		{"p3", false, []string{"p1"}},
+	} {
+		srv, err := st.SetProjectOff("gmail", step.project, step.off)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(srv.OffIn, step.want) {
+			t.Errorf("%s off=%v: offIn %v, want %v", step.project, step.off, srv.OffIn, step.want)
+		}
+	}
+
+	// An edit keeps it.
+	srv := mustSave(t, st, Draft{Name: "gmail", Command: "gmail-mcp", Args: []string{"-v"}}, "gmail")
+	if !reflect.DeepEqual(srv.OffIn, []string{"p1"}) {
+		t.Errorf("after an edit offIn %v", srv.OffIn)
+	}
+
+	// Only servers that go everywhere have it.
+	if _, err := st.SetProjectOff("sentry", "p1", true); err == nil {
+		t.Error("set a project server off in a project")
+	}
+	if _, err := st.SetProjectOff("gmail", "", true); err == nil {
+		t.Error("set a server off in no project")
+	}
+}
+
+func TestRemoveProjectDeletesItsServersAndSecrets(t *testing.T) {
+	st := newStore(t)
+	mustSave(t, st, Draft{Name: "a", URL: "https://a.example.com/mcp", Headers: map[string]string{"X-Key": "global"}}, "")
+	mustSave(t, st, Draft{Name: "a", Project: "p1", URL: "https://a.example.com/mcp", Headers: map[string]string{"X-Key": "p1"}}, "")
+	mustSave(t, st, Draft{Name: "b", Project: "p1", Command: "b", Env: map[string]string{"TOKEN": "p1-env"}}, "")
+	mustSave(t, st, Draft{Name: "a", Project: "p2", URL: "https://a.example.com/mcp", Headers: map[string]string{"X-Key": "p2"}}, "")
+	for _, id := range []string{"a", "p1.a", "p2.a"} {
+		if err := st.Secrets().Put(id, OAuthKey, "tok"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{"p1", "p2"} {
+		if _, err := st.SetProjectOff("a", p, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gone, err := st.RemoveProject("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone) != 2 {
+		t.Errorf("removed %+v", gone)
+	}
+	f, err := st.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, s := range f.Servers {
+		left = append(left, s.Key())
+		if s.Project == "" && !reflect.DeepEqual(s.OffIn, []string{"p2"}) {
+			t.Errorf("%s offIn %v", s.Key(), s.OffIn)
+		}
+	}
+	if !reflect.DeepEqual(left, []string{"a", "p2/a"}) {
+		t.Errorf("left %v", left)
+	}
+	for _, sec := range []struct{ id, name string }{{"p1.a", OAuthKey}, {"p1.a", headerKey + "X-Key"}, {"p1.b", envKey + "TOKEN"}} {
+		if _, ok := st.Secrets().Get(sec.id, sec.name); ok {
+			t.Errorf("%s %s survived", sec.id, sec.name)
+		}
+	}
+	for _, id := range []string{"a", "p2.a"} {
+		if _, ok := st.Secrets().Get(id, OAuthKey); !ok {
+			t.Errorf("%s lost its sign-in", id)
+		}
+	}
+	if got := scopedValues(t, st, "a", "p2")["X-Key"]; got != "p2" {
+		t.Errorf("p2's a has X-Key %q", got)
+	}
+
+	if _, err := st.RemoveProject(""); err == nil {
+		t.Error("removed the servers of no project")
 	}
 }
 
