@@ -8,15 +8,25 @@ import { useComposerItems } from "~/components/composer/useComposerItems";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { saveLastProject } from "~/lib/lastProject";
-import type { ComposerItem, HarnessMeta, Project, UserConfig, Workspace } from "~/protocol";
+import type {
+  ComposerItem,
+  HarnessMeta,
+  Project,
+  UserConfig,
+  Workspace,
+} from "~/protocol";
 import { AgentTools } from "./threadDraft/AgentTools";
+import { DraftHero } from "./threadDraft/DraftHero";
 import { GitChip } from "./threadDraft/GitChip";
 import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
 import { FolderChip, ProjectChip } from "./threadDraft/ScopeChips";
 import { useAgentChoice } from "./threadDraft/useAgentChoice";
 import { useDraftScope } from "./threadDraft/useDraftScope";
 import { useRememberedChoices } from "./threadDraft/useRememberedChoices";
-import { useWorkspaceChoice, type IssueListing } from "./threadDraft/useWorkspaceChoice";
+import {
+  useWorkspaceChoice,
+  type IssueListing,
+} from "./threadDraft/useWorkspaceChoice";
 
 export type { IssueListing };
 
@@ -107,7 +117,10 @@ export function ThreadDraft({
   attachments?: Attachment[];
   onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
-  onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
+  onListWorkspaces: (
+    projectId: string,
+    folderId: string,
+  ) => Promise<Workspace[]>;
   /** Separate from the workspaces so `gh` being slow cannot hold anything up. */
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
   /** What the chosen provider completes where the thread would start — the
@@ -129,7 +142,11 @@ export function ThreadDraft({
   onManageProviders?: () => void;
 }) {
   const remembered = useRememberedChoices();
-  const where = useDraftScope(projects, activeProjectId, remembered.preferences);
+  const where = useDraftScope(
+    projects,
+    activeProjectId,
+    remembered.preferences,
+  );
   const { project, scope, gitScope } = where;
   const agent = useAgentChoice(
     { project, remembered: where.remembered, harnesses, userConfig },
@@ -154,7 +171,13 @@ export function ThreadDraft({
   const loadComposerItems = useCallback(
     async () =>
       harnessId && projectId
-        ? onListComposerItems(harnessId, instanceId, projectId, folderId, copyPath)
+        ? onListComposerItems(
+            harnessId,
+            instanceId,
+            projectId,
+            folderId,
+            copyPath,
+          )
         : [],
     [onListComposerItems, harnessId, instanceId, projectId, folderId, copyPath],
   );
@@ -225,12 +248,16 @@ export function ThreadDraft({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-6 pb-6 text-center">
-        <p className="text-[15px] font-medium">What are we working on?</p>
-        <p className="text-muted-foreground max-w-sm text-[13px] leading-relaxed">
-          Sending starts the thread. Omniplex prepares the workspace, then hands the agent your
-          message.
-        </p>
+      <div className="flex flex-1 flex-col items-center justify-center px-4 pb-6 text-center">
+        <DraftHero
+          project={project?.name ?? ""}
+          workspace={gitScope ? git.label : ""}
+          harness={agent.harnessId}
+          model={
+            agent.instance?.models.find((m) => m.id === agent.model)?.label ??
+            ""
+          }
+        />
       </div>
 
       <div className="mx-auto w-full max-w-3xl space-y-2 px-4 md:px-5">
@@ -243,7 +270,9 @@ export function ThreadDraft({
 
         {error && (
           <Alert variant="destructive">
-            <AlertDescription className="text-[12px] break-words">{error}</AlertDescription>
+            <AlertDescription className="text-[12px] break-words">
+              {error}
+            </AlertDescription>
           </Alert>
         )}
       </div>
@@ -280,9 +309,15 @@ export function ThreadDraft({
                 onAddProject={onAddProject}
               />
               {where.folders.length > 1 && (
-                <FolderChip folders={where.folders} scope={scope} onPick={where.pickFolder} />
+                <FolderChip
+                  folders={where.folders}
+                  scope={scope}
+                  onPick={where.pickFolder}
+                />
               )}
-              {gitScope && <GitChip folder={gitScope} git={git} userConfig={userConfig} />}
+              {gitScope && (
+                <GitChip folder={gitScope} git={git} userConfig={userConfig} />
+              )}
             </div>
           }
           draft={draft}
