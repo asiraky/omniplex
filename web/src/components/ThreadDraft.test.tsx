@@ -476,6 +476,16 @@ describe("scope", () => {
     expect(chip("Scope").textContent).toBe("site");
   });
 
+  it("tells the app which project the draft moved to", async () => {
+    const garden = { ...bowerbird, id: "p2", name: "garden" } as unknown as Project;
+    const onProjectChange = vi.fn();
+    open({ projects: [bowerbird, garden], onProjectChange });
+
+    menu("Project");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^garden/ }));
+    expect(onProjectChange).toHaveBeenCalledWith("p2");
+  });
+
   it("asks for a folder's copies afresh on coming back to it", async () => {
     const side = { path: "/tmp/bowerbird/.worktrees/side", branch: "issue/1-side" } as Workspace;
     const onListWorkspaces = vi

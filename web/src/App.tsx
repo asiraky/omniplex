@@ -211,6 +211,7 @@ export function App() {
           <ThreadDraft
             projects={projects}
             activeProjectId={nav.creating.projectId}
+            onProjectChange={nav.pickDraftProject}
             harnesses={harnesses}
             userConfig={wire.userConfig}
             status={wire.status}
