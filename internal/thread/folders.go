@@ -53,7 +53,7 @@ func (m *Manager) NewProject(ctx context.Context, o NewProjectOptions) (project.
 		}
 		folder = abs
 	case o.URL != "":
-		url, err := project.NormalizeRemote(o.URL)
+		url, err := project.NormalizeRemote(o.URL, project.GitHubProtocol(ctx))
 		if err != nil {
 			return project.Project{}, err
 		}
@@ -139,7 +139,7 @@ func (m *Manager) AddFolder(ctx context.Context, projectID string, o AddFolderOp
 			return project.Project{}, err
 		}
 	case o.URL != "":
-		url, err := project.NormalizeRemote(o.URL)
+		url, err := project.NormalizeRemote(o.URL, project.GitHubProtocol(ctx))
 		if err != nil {
 			return project.Project{}, err
 		}
@@ -250,36 +250,37 @@ func (m *Manager) RemoveFolder(ctx context.Context, projectID, folderID string) 
 	return m.store.Project(ctx, projectID)
 }
 
-// GitHubRepo is one row of `gh repo list`, trimmed to what the picker shows.
+// GitHubRepo is one repository the picker shows.
 type GitHubRepo struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Private     bool   `json:"private,omitempty"`
 }
 
-// GitHubRepos lists the signed-in GitHub user's repositories, most recently
-// pushed first, through the gh CLI on the machine running Omniplex.
+// GitHubRepos lists the repositories the signed-in GitHub user owns,
+// collaborates on, or can see through an organisation, most recently pushed
+// first, through the gh CLI on the machine running Omniplex.
 func (m *Manager) GitHubRepos(ctx context.Context) ([]GitHubRepo, error) {
-	cmd := exec.CommandContext(ctx, "gh", "repo", "list", "--limit", "100", "--json", "nameWithOwner,description,isPrivate")
+	cmd := exec.CommandContext(ctx, "gh", "api", "user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&per_page=100")
 	out, err := cmd.Output()
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, errors.New("the GitHub CLI (gh) is not installed on this machine")
 		}
-		m.logf("gh repo list: %v", err)
-		return nil, errors.New("gh repo list failed. Is gh signed in on this machine? Run gh auth login")
+		m.logf("gh api user/repos: %v", err)
+		return nil, errors.New("listing GitHub repositories failed. Is gh signed in on this machine? Run gh auth login")
 	}
 	var rows []struct {
-		NameWithOwner string `json:"nameWithOwner"`
-		Description   string `json:"description"`
-		IsPrivate     bool   `json:"isPrivate"`
+		FullName    string `json:"full_name"`
+		Description string `json:"description"`
+		Private     bool   `json:"private"`
 	}
 	if err := json.Unmarshal(out, &rows); err != nil {
 		return nil, err
 	}
 	repos := make([]GitHubRepo, len(rows))
 	for i, r := range rows {
-		repos[i] = GitHubRepo{Name: r.NameWithOwner, Description: r.Description, Private: r.IsPrivate}
+		repos[i] = GitHubRepo{Name: r.FullName, Description: r.Description, Private: r.Private}
 	}
 	return repos, nil
 }

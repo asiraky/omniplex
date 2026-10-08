@@ -474,7 +474,7 @@ export interface UserConfig {
   defaultLevel?: PermissionLevel | "";
 }
 
-/** One of the signed-in user's GitHub repositories, from `gh repo list`. */
+/** A GitHub repository the signed-in user owns, collaborates on, or sees through an organisation. */
 export interface GitHubRepo {
   /** owner/repo */
   name: string;
