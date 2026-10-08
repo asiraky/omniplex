@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -524,5 +525,34 @@ func TestCreateSessionShadowsARepoServer(t *testing.T) {
 	}
 	if got := server(t, cfg, "linear-omniplex")["url"]; got != "https://ours.example/mcp" {
 		t.Fatalf("our linear url = %v", got)
+	}
+}
+
+// A server that waits on a person gets its own tool timeout, under whatever
+// key it ends up with; the others keep codex's default.
+func TestMCPConfigToolTimeout(t *testing.T) {
+	args, _, _, keys := mcpConfig([]adapter.MCPServer{
+		{Name: "omniplex", Command: "/bin/omniplex", Args: []string{"mcp"}, ToolTimeout: 30 * time.Minute},
+		{Name: "linear", URL: "https://mcp.linear.app/mcp", ToolTimeout: 90 * time.Second},
+		{Name: "plain", Command: "plain"},
+	}, []string{"linear"})
+	cfg := overrides(t, args)
+	if v := server(t, cfg, "omniplex")["tool_timeout_sec"]; v != 1800.0 {
+		t.Fatalf("omniplex tool_timeout_sec = %v (%T)", v, v)
+	}
+	var shadow string
+	for key, name := range keys {
+		if name == "linear" {
+			shadow = key
+		}
+	}
+	if shadow == "linear" {
+		t.Fatalf("linear was not moved off the native key: %v", keys)
+	}
+	if v := server(t, cfg, shadow)["tool_timeout_sec"]; v != 90.0 {
+		t.Fatalf("%s tool_timeout_sec = %v", shadow, v)
+	}
+	if _, ok := server(t, cfg, "plain")["tool_timeout_sec"]; ok {
+		t.Fatal("a server without a timeout got one")
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/skills"
@@ -73,6 +75,31 @@ func mcpAllowedTools(servers []adapter.MCPServer) []string {
 		}
 	}
 	return out
+}
+
+// mcpToolTimeoutEnv is how long Claude Code waits on any MCP tool call, in
+// milliseconds. It is one setting for every server.
+const mcpToolTimeoutEnv = "MCP_TOOL_TIMEOUT"
+
+// mcpToolTimeout is the MCP_TOOL_TIMEOUT=ms assignment that lets the slowest
+// server's calls finish, or "" when no server asks for more than Claude
+// Code's default or the user already set it at least that high.
+func mcpToolTimeout(servers []adapter.MCPServer, overlay map[string]string) string {
+	var longest time.Duration
+	for _, m := range servers {
+		longest = max(longest, m.ToolTimeout)
+	}
+	if longest <= 0 {
+		return ""
+	}
+	have, ok := overlay[mcpToolTimeoutEnv]
+	if !ok {
+		have = os.Getenv(mcpToolTimeoutEnv)
+	}
+	if ms, err := strconv.ParseInt(strings.TrimSpace(have), 10, 64); err == nil && ms >= longest.Milliseconds() {
+		return ""
+	}
+	return mcpToolTimeoutEnv + "=" + strconv.FormatInt(longest.Milliseconds(), 10)
 }
 
 // sdkServerConfig is a server's whole definition as the SDK takes it, values

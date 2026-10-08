@@ -337,8 +337,13 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// Codex does not look for skills in its writable roots. The list is
 	// process-wide, which is this session's alone: every session runs its own
 	// app-server. A codex too old for the method runs without them.
-	if len(o.SkillDirs) > 0 {
-		if err := s.conn.Call(ctx, "skills/extraRoots/set", map[string]any{"extraRoots": o.SkillDirs}, nil); err != nil {
+	// A plugin's skills come the same way: codex has no session plugins.
+	extraRoots := append([]string{}, o.SkillDirs...)
+	for _, p := range o.Plugins {
+		extraRoots = append(extraRoots, adapter.PluginSkills(p))
+	}
+	if len(extraRoots) > 0 {
+		if err := s.conn.Call(ctx, "skills/extraRoots/set", map[string]any{"extraRoots": extraRoots}, nil); err != nil {
 			host.Logf("codex: project skills left out: %v", err)
 		}
 	}

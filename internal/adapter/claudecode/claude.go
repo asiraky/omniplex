@@ -275,6 +275,15 @@ type sidecarConfig struct {
 	AllowedTools []string                `json:"allowedTools,omitempty"`
 	// AdditionalDirectories are folders outside Cwd the agent may work in.
 	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
+	// Plugins load for this session only, never into the user's config.
+	Plugins []sdkPlugin `json:"plugins,omitempty"`
+}
+
+// sdkPlugin is the SDK's local plugin option: a folder holding
+// .claude-plugin/plugin.json and the plugin's skills.
+type sdkPlugin struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
 }
 
 // conversationID resolves which Claude conversation a CreateSession call names
@@ -324,6 +333,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 	cfg.MCPServers, cfg.AllowedTools = servers, mcpAllowedTools(o.MCPServers)
+	for _, p := range o.Plugins {
+		cfg.Plugins = append(cfg.Plugins, sdkPlugin{Type: "local", Path: p})
+	}
 	// One field or the other, never both — the SDK rejects the pair.
 	if o.Resume {
 		cfg.Resume = sessionID
@@ -342,6 +354,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 	if secrets != "" {
 		extra = append(extra, mcpSecretsEnv+"="+secrets)
+	}
+	if kv := mcpToolTimeout(o.MCPServers, o.Env); kv != "" {
+		extra = append(extra, kv)
 	}
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, or

@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -50,7 +52,16 @@ type CreateOptions struct {
 	// project home's .agents/skills when the session works somewhere else.
 	// An adapter whose harness finds them another way ignores them.
 	SkillDirs []string
+
+	// Plugins are folders laid out as a Claude plugin (.claude-plugin/ and
+	// skills/) that the session loads for itself alone: omniplex's own
+	// bundled skill. Claude loads each as a session plugin; a harness without
+	// plugins loads its skills/ folder as a skills root.
+	Plugins []string
 }
+
+// PluginSkills is the skills folder of a plugin in CreateOptions.Plugins.
+func PluginSkills(plugin string) string { return filepath.Join(plugin, "skills") }
 
 // MCPServer is one MCP server a session gets: a local process (Command) or a
 // remote streamable-HTTP endpoint (URL). Tools lists the tool names it serves,
@@ -68,6 +79,10 @@ type MCPServer struct {
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Tools   []string          `json:"tools,omitempty"`
+	// ToolTimeout is how long the harness waits on one of this server's tool
+	// calls; zero leaves the harness's default. omniplex's own tools wait on
+	// a person tapping a card, which takes far longer than any default.
+	ToolTimeout time.Duration `json:"-"`
 }
 
 // MCPServerStatus is how a live session reports one of its MCP servers.
