@@ -260,23 +260,30 @@ describe("ThreadDraft", () => {
 
   // The flag is the only thing that decides it: an Opus row the harness did
   // not flag gets no toggle, however Opus-shaped its name is.
-  it("offers an existing copy only when there is one, a level below the copy choice", async () => {
+  it("offers an existing worktree only when there is one, a level below the worktree choice", async () => {
     open();
     await openGit();
-    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/ }));
-    expect(screen.getByRole("radio", { name: /Work in the folder/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
+    await waitFor(() => screen.getByRole("radio", { name: /New worktree/ }));
+    expect(screen.getByRole("radio", { name: /Main checkout/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use an existing worktree" })).toBeNull();
     cleanup();
 
     const side = { path: "/tmp/repo/.worktrees/side", branch: "issue/1-side" } as Workspace;
     open({ onListWorkspaces: vi.fn(async () => [side]) });
     await openGit();
-    await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" }));
-    fireEvent.click(screen.getByRole("radio", { name: /Work in the folder/ }));
-    expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
+    await waitFor(() => screen.getByRole("button", { name: "Use an existing worktree" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Main checkout/ }));
+    expect(screen.queryByRole("button", { name: "Use an existing worktree" })).toBeNull();
   });
 
-  it("still offers the folder itself when another thread is on it", async () => {
+  it("names the branch the main checkout is on once the worktree list is in", async () => {
+    const root = { path: "/tmp/repo", branch: "main", isRoot: true } as Workspace;
+    open({ onListWorkspaces: vi.fn(async () => [root]) });
+    await openGit();
+    await waitFor(() => screen.getByRole("radio", { name: /^Main checkout.*main · \/tmp\/repo$/ }));
+  });
+
+  it("still offers the main checkout when another thread is on it", async () => {
     const root = {
       path: "/tmp/repo",
       isRoot: true,
@@ -292,7 +299,7 @@ describe("ThreadDraft", () => {
     });
 
     await openGit();
-    const choice = await waitFor(() => screen.getByRole("radio", { name: /Work in the folder/ }));
+    const choice = await waitFor(() => screen.getByRole("radio", { name: /Main checkout/ }));
     expect(choice.getAttribute("disabled")).toBeNull();
     fireEvent.click(choice);
 
@@ -304,13 +311,13 @@ describe("ThreadDraft", () => {
     expect(onCreate.mock.calls[0][0]).toMatchObject({ workspace: "local", branch: "" });
   });
 
-  it("works on a copy with a made-up branch when none is named", async () => {
+  it("works in a new worktree with a made-up branch when none is named", async () => {
     const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     open({ onCreate });
 
-    // The managed default lands on the copy; the branch name is optional.
+    // The managed default lands on a new worktree; the branch name is optional.
     await openGit();
-    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/, checked: true }));
+    await waitFor(() => screen.getByRole("radio", { name: /New worktree/, checked: true }));
     const start = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(start);
@@ -353,7 +360,7 @@ describe("ThreadDraft", () => {
     });
   });
 
-  it("continues on a copy another thread is already in", async () => {
+  it("continues in a worktree another thread is already in", async () => {
     const side = {
       path: "/tmp/repo/.worktrees/side",
       branch: "issue/1-side",
@@ -368,9 +375,9 @@ describe("ThreadDraft", () => {
 
     await openGit();
     fireEvent.click(
-      await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" })),
+      await waitFor(() => screen.getByRole("button", { name: "Use an existing worktree" })),
     );
-    fireEvent.click(screen.getByRole("combobox", { name: /Existing copy/ }));
+    fireEvent.click(screen.getByRole("combobox", { name: /^Worktree/ }));
     const row = await waitFor(() => screen.getByRole("option", { name: /issue\/1-side/ }));
     expect(row.hasAttribute("disabled")).toBe(false);
     fireEvent.click(row);
@@ -392,10 +399,10 @@ describe("ThreadDraft", () => {
     });
     open({ onListWorkspaces: vi.fn(() => pending) });
 
-    // The managed default lands on a copy with no name, so nothing but the
+    // The managed default lands on a new worktree with no name, so nothing but the
     // outstanding check is holding Send back.
     await openGit();
-    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/ }));
+    await waitFor(() => screen.getByRole("radio", { name: /New worktree/ }));
     expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
 
     release([]);
@@ -438,7 +445,7 @@ describe("scope", () => {
     expect(onListWorkspaces).not.toHaveBeenCalled();
   });
 
-  it("asks the git questions for a git folder and lists its copies", async () => {
+  it("asks the git questions for a git folder and lists its worktrees", async () => {
     const onCreate = vi.fn(async (_input: NewThreadInput) => {});
     const onListWorkspaces = vi.fn(async () => [] as Workspace[]);
     open({ projects: [bowerbird], onCreate, onListWorkspaces });
@@ -447,7 +454,7 @@ describe("scope", () => {
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
 
     await openGit();
-    await waitFor(() => screen.getByRole("radio", { name: /Work on a copy/, checked: true }));
+    await waitFor(() => screen.getByRole("radio", { name: /New worktree/, checked: true }));
     expect(onListWorkspaces).toHaveBeenCalledWith("p1", "f1");
     await start();
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
@@ -486,7 +493,7 @@ describe("scope", () => {
     expect(onProjectChange).toHaveBeenCalledWith("p2");
   });
 
-  it("asks for a folder's copies afresh on coming back to it", async () => {
+  it("asks for a folder's worktrees afresh on coming back to it", async () => {
     const side = { path: "/tmp/bowerbird/.worktrees/side", branch: "issue/1-side" } as Workspace;
     const onListWorkspaces = vi
       .fn<Props["onListWorkspaces"]>()
@@ -497,7 +504,7 @@ describe("scope", () => {
     menu("Scope");
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
     await openGit();
-    await waitFor(() => screen.getByRole("button", { name: "Continue on an existing copy" }));
+    await waitFor(() => screen.getByRole("button", { name: "Use an existing worktree" }));
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     menu("Scope");
@@ -505,11 +512,11 @@ describe("scope", () => {
     menu("Scope");
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^site/ }));
 
-    // The copy listed last time may have gone since; until the folder
+    // The worktree listed last time may have gone since; until the folder
     // answers again, nothing from the old list is offered or sent on.
     await openGit();
     expect(onListWorkspaces).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole("button", { name: "Continue on an existing copy" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use an existing worktree" })).toBeNull();
     expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
   });
 
@@ -582,7 +589,7 @@ describe("the command menu before the thread exists", () => {
     expect(screen.queryByRole("option", { name: /ship/ })).toBeNull();
   });
 
-  it("asks about the existing copy the thread would continue on", async () => {
+  it("asks about the existing worktree the thread would continue on", async () => {
     const side = { path: "/tmp/repo/.worktrees/side", branch: "issue/1-side" } as Workspace;
     const onListComposerItems = vi.fn<Props["onListComposerItems"]>(async (...asked) =>
       asked[4] === side.path ? [skill("theirs")] : [skill("ship")],
@@ -592,8 +599,8 @@ describe("the command menu before the thread exists", () => {
     await screen.findByRole("option", { name: /ship/ });
 
     await openGit();
-    fireEvent.click(await screen.findByRole("button", { name: "Continue on an existing copy" }));
-    fireEvent.click(screen.getByRole("combobox", { name: /Existing copy/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use an existing worktree" }));
+    fireEvent.click(screen.getByRole("combobox", { name: /^Worktree/ }));
     fireEvent.click(await screen.findByRole("option", { name: /issue\/1-side/ }));
 
     type("/");
