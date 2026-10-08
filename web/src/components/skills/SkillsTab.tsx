@@ -6,14 +6,20 @@ import {
   ListToolbar,
   Loading,
   LoadError,
+  Marker,
   Section,
   type PageCommand,
 } from "~/components/tools/parts";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import {
+  destinationsOf,
+  folderLabel,
   matchesQuery,
+  PROJECT_LABEL,
+  repoSectionTitle,
   SECTION_ORDER,
+  sectionOf,
   sectionSkills,
   type SectionKind,
   type Skill,
@@ -31,6 +37,7 @@ import { SkillDetailView } from "./SkillDetailView";
 /** Sections that are not ours to edit start folded; the reader came for their own. */
 const FOLDED: Record<SectionKind, boolean> = {
   yours: false,
+  private: false,
   project: false,
   synced: true,
   system: true,
@@ -39,13 +46,18 @@ const FOLDED: Record<SectionKind, boolean> = {
 
 const baseName = (path: string) => path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
 
-/** Name, two lines of description, a chip only when the skill is not on. */
-function SkillRow({ skill, showPlugin, onOpen }: { skill: Skill; showPlugin: boolean; onOpen: (skill: Skill) => void }) {
+/** Name, two lines of description, chips only for what is out of the ordinary. */
+function SkillRow({ skill, aside, onOpen }: { skill: Skill; aside?: string; onOpen: (skill: Skill) => void }) {
   return (
     <ListRow
       title={skill.name}
-      aside={showPlugin ? skill.plugin : undefined}
-      markers={<ModeChip mode={skill.mode} />}
+      aside={aside}
+      markers={
+        <>
+          {skill.uncommitted && <Marker tone="attention">Not committed</Marker>}
+          <ModeChip mode={skill.mode} />
+        </>
+      }
       sub={skill.description}
       problem={skill.problem}
       dim={skill.mode === "off"}
@@ -223,6 +235,7 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
 
   const projectName =
     list?.projectName || scope.projectName || (list?.projectRoot ? baseName(list.projectRoot) : "");
+  const { destinations, defaultDestination } = useMemo(() => destinationsOf(list), [list]);
 
   const renderSection = (kind: SectionKind) => {
     if (!list) return null;
@@ -233,15 +246,27 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
     let title: string;
     let action: ReactNode;
     let note: string | undefined;
+    let asideOf: ((skill: Skill) => string | undefined) | undefined;
     switch (kind) {
       case "yours":
         title = "Yours";
         if (skills.length === 0) note = "No skills yet. Add one to start.";
         break;
-      case "project":
-        if (!list.projectRoot || skills.length === 0) return null;
-        title = projectName ? `Project: ${projectName}` : "Project";
+      case "private":
+        if (skills.length === 0) return null;
+        title = PROJECT_LABEL;
         break;
+      case "project": {
+        if (skills.length === 0) return null;
+        // Titled by the full list, not the search's slice of it, so a search
+        // does not rename the section under the reader.
+        const repo = repoSectionTitle(list.skills.filter((s) => sectionOf(s) === "project"), destinations);
+        title = repo.title ?? (projectName ? `Project: ${projectName}` : "Project");
+        if (repo.perRow) {
+          asideOf = (s) => folderLabel(s.folder, destinations) ?? (s.folder ? baseName(s.folder) : undefined);
+        }
+        break;
+      }
       case "synced":
         title = "From claude.ai";
         action = <SectionSwitch label="Sync from claude.ai" on={list.claudeSync} onChange={setClaudeSync} />;
@@ -259,6 +284,7 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
       case "plugins":
         if (skills.length === 0) return null;
         title = "Plugins";
+        asideOf = (s) => s.plugin;
         break;
     }
 
@@ -276,7 +302,7 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
           <ul>
             {skills.map((skill) => (
               <li key={skill.dir}>
-                <SkillRow skill={skill} showPlugin={kind === "plugins"} onOpen={(s) => openSkill(s)} />
+                <SkillRow skill={skill} aside={asideOf?.(skill)} onOpen={(s) => openSkill(s)} />
               </li>
             ))}
           </ul>
@@ -322,6 +348,7 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
             command={command}
             scopeArgs={scopeArgs}
             skill={open.skill}
+            destinations={destinations}
             startEditing={open.edit}
             onBack={() => setOpen(null)}
             onChanged={upsert}
@@ -336,6 +363,8 @@ export function SkillsTab({ command, scope }: { command: PageCommand; scope: Ski
         onOpenChange={setAdding}
         command={command}
         scopeArgs={scopeArgs}
+        destinations={destinations}
+        defaultDestination={defaultDestination}
         onInstalled={upsert}
         onCreated={(skill) => {
           upsert([skill]);

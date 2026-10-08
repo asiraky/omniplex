@@ -190,10 +190,12 @@ func readInside(dir, rel string) (content string, binary bool, err error) {
 	return string(data), false, nil
 }
 
-// Create writes a new skill into the personal library and makes it visible to
-// every harness. A name any harness already has a skill under is refused,
-// since the new one would not reach that harness.
-func Create(r Roots, name, description string) (Skill, error) {
+// Create writes a new skill into a destination: the personal library, made
+// visible to every harness, or a project folder's library, linked in for
+// Claude and pi the way the skills CLI's project install does. A name a
+// harness already has a skill under there is refused, since the new one would
+// not reach that harness.
+func Create(r Roots, name, description, folder string) (Skill, error) {
 	if err := ValidateName(name); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -201,13 +203,26 @@ func Create(r Roots, name, description string) (Skill, error) {
 	if err := validateDescription(description); err != nil {
 		return Skill{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	library := r.Library
-	if library == "" {
-		return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
+	dest, err := r.destination(folder)
+	if err != nil {
+		return Skill{}, err
 	}
-	taken := []string{library}
-	for _, d := range r.agentDirs() {
-		taken = append(taken, d)
+	library := r.Library
+	var taken []string
+	if dest.Kind == DestPersonal {
+		if library == "" {
+			return Skill{}, fmt.Errorf("%w: no home directory", ErrInvalid)
+		}
+		taken = append(taken, library)
+		for _, d := range r.agentDirs() {
+			taken = append(taken, d)
+		}
+	} else {
+		if err := checkProjectPaths(dest.Folder); err != nil {
+			return Skill{}, err
+		}
+		library = projectLibrary(dest.Folder)
+		taken = []string{library, filepath.Join(dest.Folder, ".claude", "skills"), filepath.Join(dest.Folder, ".pi", "skills")}
 	}
 	for _, d := range taken {
 		if _, err := os.Lstat(filepath.Join(d, name)); err == nil {
@@ -232,7 +247,11 @@ func Create(r Roots, name, description string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	reachEveryAgent(r, realDir)
+	if dest.Kind == DestPersonal {
+		reachEveryAgent(r, realDir)
+	} else {
+		linkIntoProject(dest.Folder, name)
+	}
 	s, err := find(r, realDir)
 	if errors.Is(err, ErrNotFound) {
 		return Skill{}, fmt.Errorf("created %s but it is not discoverable", realDir)
@@ -241,8 +260,8 @@ func Create(r Roots, name, description string) (Skill, error) {
 }
 
 // Remove deletes an editable skill: the real directory, every path it was
-// discovered at that is itself a symlink to it, and its line in the library's
-// source record. A path that only reaches it through a symlinked parent goes
+// discovered at that is itself a symlink to it, and its line in the personal
+// library's record or its project folder's lock. A path that only reaches it through a symlinked parent goes
 // with the directory.
 func Remove(r Roots, dir string) error {
 	s, err := find(r, dir)
@@ -263,10 +282,11 @@ func Remove(r Roots, dir string) error {
 		return err
 	}
 	library := filepath.Dir(s.Dir)
-	for _, lib := range []string{r.ProjectLibrary, r.Library} {
-		if real, ok := realDir(lib); ok && real == library {
-			return forgetRecord(library, filepath.Base(s.Dir))
-		}
+	if real, ok := realDir(r.Library); ok && real == library {
+		return forgetRecord(library, filepath.Base(s.Dir))
+	}
+	if folder := s.lockFolder(r); folder != "" {
+		return forgetLockEntry(folder, s)
 	}
 	return nil
 }

@@ -46,16 +46,27 @@ type Roots struct {
 	CodexHome       string // CODEX_HOME, else ~/.codex
 	PiAgentDir      string // PI_CODING_AGENT_DIR, else ~/.pi/agent
 	ProjectRoot     string // "" when there is no project
+	// ProjectHome is the project's home folder, where its private skills
+	// live; "" without a project. It can be ProjectRoot itself.
+	ProjectHome string
+	// Repos are the project's git checkouts an install can target. Their
+	// skills are listed too.
+	Repos []Repo
 
 	// Library is the one personal directory Omniplex writes skills into,
-	// <home>/.agents/skills, and ProjectLibrary the project's own
-	// <project>/.agents/skills ("" when there is no project), which is only
-	// listed. Codex and pi read both directly; Claude is given links.
-	Library        string
-	ProjectLibrary string
+	// <home>/.agents/skills. Codex and pi read it directly; Claude is given
+	// links. A project folder's own <folder>/.agents/skills is its library.
+	Library string
 	// CLILock is the skills CLI's own global lock file, read for the
 	// provenance of skills installed from a terminal.
 	CLILock string
+}
+
+// Repo is a git checkout of the project a skill can be installed into.
+type Repo struct {
+	Dir  string // the checkout: the folder itself, or a thread's worktree of it
+	Name string // the folder's name, for labels
+	Main bool   // Dir is the folder's main checkout, not a worktree
 }
 
 // The libraries are where the skills CLI and two of the three harnesses
@@ -105,9 +116,37 @@ func DefaultRoots(home string, env map[string]string, projectRoot string) Roots 
 	}
 	if projectRoot != "" {
 		r.ProjectRoot = filepath.Clean(projectRoot)
-		r.ProjectLibrary = filepath.Join(r.ProjectRoot, filepath.FromSlash(libraryDir))
 	}
 	return r
+}
+
+// projectDirs is every project folder whose skills are listed: the root the
+// harness works in, each repo checkout and the home folder, each once.
+func (r Roots) projectDirs() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		dir = filepath.Clean(dir)
+		if real := resolve(dir); !seen[real] {
+			seen[real] = true
+			out = append(out, dir)
+		}
+	}
+	add(r.ProjectRoot)
+	for _, repo := range r.Repos {
+		add(repo.Dir)
+	}
+	add(r.ProjectHome)
+	return out
+}
+
+// private reports whether dir is the project's home folder, whose skills are
+// the project's own and never committed.
+func (r Roots) private(dir string) bool {
+	return r.ProjectHome != "" && resolve(dir) == resolve(r.ProjectHome)
 }
 
 // Source is where a skill was installed from.
@@ -140,6 +179,14 @@ type Skill struct {
 	// runs it.
 	UserOnly bool `json:"userOnly,omitempty"`
 
+	// Folder is the project folder, a checkout or the home, a project skill
+	// was found in. Private is set when that is the home: the project's own
+	// skill, never committed. Uncommitted is a repo skill in a main checkout
+	// that git has not committed, which a new worktree will not have.
+	Folder      string `json:"folder,omitempty"`
+	Private     bool   `json:"private,omitempty"`
+	Uncommitted bool   `json:"uncommitted,omitempty"`
+
 	// Harnesses is every harness that reaches the skill through one of paths,
 	// every path it was found at. Neither goes to the client.
 	Harnesses []Harness `json:"-"`
@@ -162,6 +209,7 @@ type root struct {
 	path      string
 	scope     string
 	plugin    string
+	folder    string // the project folder a project root is in
 	harnesses []Harness
 	readonly  bool
 	// synced also looks in synced/<account>/<skill>, where claude.ai's sync
@@ -187,13 +235,12 @@ func (r Roots) roots() []root {
 // live in, as opposed to what plugins and the harnesses ship.
 func (r Roots) ownRoots() []root {
 	var out []root
-	if r.ProjectRoot != "" {
-		p := r.ProjectRoot
+	for _, p := range r.projectDirs() {
 		out = append(out,
-			root{path: filepath.Join(p, ".claude", "skills"), scope: ScopeProject, harnesses: []Harness{Claude}},
-			root{path: filepath.Join(p, ".agents", "skills"), scope: ScopeProject, harnesses: []Harness{Codex, Pi}},
-			root{path: filepath.Join(p, ".codex", "skills"), scope: ScopeProject, harnesses: []Harness{Codex}},
-			root{path: filepath.Join(p, ".pi", "skills"), scope: ScopeProject, harnesses: []Harness{Pi}},
+			root{path: filepath.Join(p, ".claude", "skills"), scope: ScopeProject, folder: p, harnesses: []Harness{Claude}},
+			root{path: filepath.Join(p, ".agents", "skills"), scope: ScopeProject, folder: p, harnesses: []Harness{Codex, Pi}},
+			root{path: filepath.Join(p, ".codex", "skills"), scope: ScopeProject, folder: p, harnesses: []Harness{Codex}},
+			root{path: filepath.Join(p, ".pi", "skills"), scope: ScopeProject, folder: p, harnesses: []Harness{Pi}},
 		)
 	}
 	if r.ClaudeConfigDir != "" {
@@ -356,6 +403,8 @@ func Discover(r Roots) ([]Skill, error) {
 			Harnesses: append([]Harness{}, rt.harnesses...),
 			Editable:  !rt.readonly && !synced,
 			Synced:    synced,
+			Folder:    rt.folder,
+			Private:   rt.folder != "" && r.private(rt.folder),
 		}
 		fillMeta(s, filepath.Base(path))
 		byDir[real] = s

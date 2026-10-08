@@ -150,7 +150,7 @@ func TestSessionsGetUserServersOnlyThroughMCPHost(t *testing.T) {
 	// only the tool servers.
 	src.asked = nil
 	plain := &fakeAdapter{}
-	servers, _ := harnessExtras(ctx, newMCPManager(t, plain).store, plain, store.ThreadMeta{ID: "t"}, t.TempDir(), t.Logf)
+	servers := harnessExtras(ctx, newMCPManager(t, plain).store, plain, store.ThreadMeta{ID: "t"}, t.TempDir(), t.Logf).mcp
 	if len(servers) != 1 || servers[0].Name != "omniplex" || len(src.asked) != 0 {
 		t.Errorf("plain adapter got %v, source asked %v", servers, src.asked)
 	}

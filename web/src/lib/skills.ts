@@ -34,6 +34,12 @@ export interface Skill {
   synced?: boolean;
   mode: SkillMode;
   source?: Source;
+  /** The project folder a project skill is in: a checkout, or the project's home. */
+  folder?: string;
+  /** In the project's home: this project's own, never committed. */
+  private?: boolean;
+  /** A repo skill in a main checkout that git has not committed. */
+  uncommitted?: boolean;
 }
 
 export interface SkillFile {
@@ -48,10 +54,24 @@ export interface SkillDetail extends Skill {
   files: SkillFile[];
 }
 
+/** Where a new or installed skill can go. */
+export interface Destination {
+  kind: "project" | "repo" | "personal";
+  /** "" for personal. */
+  folder: string;
+  label: string;
+  /** A repo's main checkout: what lands there is not committed. */
+  main?: boolean;
+}
+
 export interface SkillsList {
   skills: Skill[];
   projectRoot?: string;
   projectName?: string;
+  /** Project first, then repos, personal last. Older servers send none. */
+  destinations?: Destination[] | null;
+  /** A destination's folder. */
+  defaultDestination?: string;
   /** Whether Claude loads the skills it syncs from the claude.ai account. */
   claudeSync: boolean;
   /** Whether Codex loads its own built-in skills. */
@@ -76,15 +96,18 @@ export function matchesQuery(skill: Skill, query: string): boolean {
 
 // ---- the list's sections ----
 
-export type SectionKind = "yours" | "project" | "synced" | "system" | "plugins";
+// "private" is the project home's skills, "project" the repos'.
+export type SectionKind = "yours" | "private" | "project" | "synced" | "system" | "plugins";
 
-export const SECTION_ORDER: SectionKind[] = ["yours", "project", "synced", "system", "plugins"];
+// The project's own sit next to the repos' so the two read as a pair; Yours
+// stays first, as the one section that is always there.
+export const SECTION_ORDER: SectionKind[] = ["yours", "private", "project", "synced", "system", "plugins"];
 
 export function sectionOf(skill: Skill): SectionKind {
   if (skill.synced) return "synced";
   if (skill.scope === "plugin") return "plugins";
   if (skill.scope === "system") return "system";
-  if (skill.scope === "project") return "project";
+  if (skill.scope === "project") return skill.private ? "private" : "project";
   return "yours";
 }
 
@@ -95,7 +118,7 @@ export const byName = (a: string, b: string) => a.toLowerCase().localeCompare(b.
  * stay apart: each directory is its own row. Plugins sort by plugin first.
  */
 export function sectionSkills(skills: Skill[]): Record<SectionKind, Skill[]> {
-  const out: Record<SectionKind, Skill[]> = { yours: [], project: [], synced: [], system: [], plugins: [] };
+  const out: Record<SectionKind, Skill[]> = { yours: [], private: [], project: [], synced: [], system: [], plugins: [] };
   for (const skill of skills) out[sectionOf(skill)].push(skill);
   for (const kind of SECTION_ORDER) {
     out[kind].sort(
@@ -108,8 +131,40 @@ export function sectionSkills(skills: Skill[]): Record<SectionKind, Skill[]> {
   return out;
 }
 
+export const PROJECT_LABEL = "This project";
+
+export const NOT_COMMITTED = "Not committed. Threads in new worktrees won't see it until it is.";
+
+const PERSONAL: Destination = { kind: "personal", folder: "", label: "Personal" };
+
+/** The list's destinations and the one to start on, for a server old enough to send neither too. */
+export function destinationsOf(list: SkillsList | null): { destinations: Destination[]; defaultDestination: string } {
+  const destinations = list?.destinations?.length ? list.destinations : [PERSONAL];
+  const wanted = list?.defaultDestination ?? "";
+  const start = destinations.find((d) => d.folder === wanted) ?? destinations[0];
+  return { destinations, defaultDestination: start.folder };
+}
+
+/** A project folder's name in the destination list, e.g. "omniplex repo". */
+export function folderLabel(folder: string | undefined, destinations: Destination[]): string | undefined {
+  if (!folder) return undefined;
+  return destinations.find((d) => d.kind !== "personal" && d.folder === folder)?.label;
+}
+
+/**
+ * What to call the repo skills' section: the one folder's label when they
+ * share it, "Repos" with each row naming its folder when they do not, and
+ * nothing when the folder is unknown, for the caller to fall back on.
+ */
+export function repoSectionTitle(skills: Skill[], destinations: Destination[]): { title?: string; perRow: boolean } {
+  const folders = new Set(skills.map((s) => s.folder ?? ""));
+  if (folders.size > 1) return { title: "Repos", perRow: true };
+  const [only] = folders;
+  return { title: folderLabel(only, destinations), perRow: false };
+}
+
 /** Where a skill is from, in the detail view's one line. */
-export function originText(skill: Skill): string {
+export function originText(skill: Skill, destinations: Destination[] = []): string {
   let text: string;
   switch (sectionOf(skill)) {
     case "synced":
@@ -121,8 +176,11 @@ export function originText(skill: Skill): string {
     case "system":
       text = "Codex built-in";
       break;
+    case "private":
+      text = PROJECT_LABEL;
+      break;
     case "project":
-      text = "Project";
+      text = folderLabel(skill.folder, destinations) ?? "Project";
       break;
     default:
       text = skill.source?.repo ? `Yours, from ${skill.source.repo}` : "Yours";
@@ -194,8 +252,8 @@ export interface StagedSkill {
   problem?: string;
   /** Named by --skill / -s in the pasted command. */
   picked?: boolean;
-  /** A skill of this name is already in the personal library. */
-  installed: boolean;
+  /** The destination folders that already hold a skill of this name; "" is personal. */
+  installedIn: string[];
 }
 
 /** A source fetched into a throwaway dir on the server, waiting to be installed or discarded. */

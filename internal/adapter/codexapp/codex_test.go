@@ -4,7 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -342,5 +348,104 @@ func TestTrustArgsGrantsProjectLocalConfig(t *testing.T) {
 func TestTrustArgsSkipsAnEmptyCwd(t *testing.T) {
 	if args := trustArgs(""); args != nil {
 		t.Fatalf("trustArgs(\"\") = %q, want nil", args)
+	}
+}
+
+// fakeAppServer stands in for `codex app-server`: it records every line it
+// reads under dir and answers each request with a thread, or refuses
+// skills/extraRoots/set when REFUSE_SKILLS is set, as a codex without it does.
+func fakeAppServer(t *testing.T, dir string) string {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+DIR=%q
+while IFS= read -r line; do
+  printf '%%s\n' "$line" >> "$DIR/lines"
+  id=$(printf '%%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9]*\),.*/\1/p')
+  [ -z "$id" ] && continue
+  case "$line" in
+    *'"method":"skills/extraRoots/set"'*)
+      if [ -n "$REFUSE_SKILLS" ]; then
+        printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32601,"message":"unknown method"}}\n' "$id"
+        continue
+      fi
+      ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"th-1"}}}\n' "$id"
+done
+`, dir)
+	bin := filepath.Join(dir, "codex")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// A project's private skills folder reaches codex before its thread starts or
+// resumes, so the first turn already sees them; a codex that refuses the
+// request still starts, and a session with none sends nothing.
+func TestSkillDirsReachCodexBeforeTheThread(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stand-in codex is a shell script")
+	}
+	skills := []string{"/home/p/Omniplex/bowerbird/.agents/skills"}
+	for _, tc := range []struct {
+		name   string
+		o      adapter.CreateOptions
+		thread string
+	}{
+		{"start", adapter.CreateOptions{SkillDirs: skills}, "thread/start"},
+		{"resume", adapter.CreateOptions{SkillDirs: skills, Resume: true, HarnessSessionID: "th-old"}, "thread/resume"},
+		{"refused", adapter.CreateOptions{SkillDirs: skills, Env: map[string]string{"REFUSE_SKILLS": "1"}}, "thread/start"},
+		{"none", adapter.CreateOptions{}, "thread/start"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.o.Cwd = dir
+			s, err := New(fakeAppServer(t, dir)).CreateSession(context.Background(), &elicitHost{}, tc.o)
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			_ = s.Close()
+
+			raw, err := os.ReadFile(filepath.Join(dir, "lines"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var methods []string
+			var roots struct {
+				ExtraRoots []string `json:"extraRoots"`
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				var m struct {
+					Method string          `json:"method"`
+					Params json.RawMessage `json:"params"`
+				}
+				if err := json.Unmarshal([]byte(line), &m); err != nil {
+					t.Fatalf("line %q: %v", line, err)
+				}
+				methods = append(methods, m.Method)
+				if m.Method == "skills/extraRoots/set" {
+					if err := json.Unmarshal(m.Params, &roots); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			set, thread := slices.Index(methods, "skills/extraRoots/set"), slices.Index(methods, tc.thread)
+			if thread < 0 {
+				t.Fatalf("no %s in %v", tc.thread, methods)
+			}
+			if len(tc.o.SkillDirs) == 0 {
+				if set >= 0 {
+					t.Fatalf("a session with no skill dirs set extra roots: %v", methods)
+				}
+				return
+			}
+			if set < 0 || set > thread {
+				t.Fatalf("extra roots not set before %s: %v", tc.thread, methods)
+			}
+			if !slices.Equal(roots.ExtraRoots, skills) {
+				t.Fatalf("extraRoots = %v, want %v", roots.ExtraRoots, skills)
+			}
+		})
 	}
 }

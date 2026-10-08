@@ -16,7 +16,7 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 	}
 	switch command {
 	case "set_skill_mode":
-		return skills.SetMode(roots, a.Dir, a.Mode)
+		return marked(ctx, roots)(skills.SetMode(roots, a.Dir, a.Mode))
 	case "remove_skill":
 		if err := skills.Remove(roots, a.Dir); err != nil {
 			return nil, err
@@ -27,7 +27,11 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		if err != nil {
 			return nil, err
 		}
-		out := map[string]any{"skills": found, "claudeSync": skills.ClaudeSync(roots), "codexBundled": skills.CodexBundled(roots)}
+		skills.MarkUncommitted(ctx, roots, found)
+		out := map[string]any{
+			"skills": found, "claudeSync": skills.ClaudeSync(roots), "codexBundled": skills.CodexBundled(roots),
+			"destinations": roots.Destinations(), "defaultDestination": roots.DefaultDestination(),
+		}
 		if roots.ProjectRoot != "" {
 			out["projectRoot"], out["projectName"] = roots.ProjectRoot, projectName
 		}
@@ -56,7 +60,7 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		}
 		return map[string]any{"ok": true}, nil
 	case "create_skill":
-		return skills.Create(roots, a.Name, a.Description)
+		return marked(ctx, roots)(skills.Create(roots, a.Name, a.Description, a.Destination))
 
 	case "stage_skills":
 		return s.skillFetch.Stage(ctx, roots, a.Source)
@@ -67,10 +71,11 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		}
 		return map[string]any{"content": content, "binary": binary}, nil
 	case "install_staged":
-		placed, err := skills.InstallStaged(roots, a.ID, a.Skills)
+		placed, err := skills.InstallStaged(roots, a.ID, a.Skills, a.Destination)
 		if err != nil {
 			return nil, err
 		}
+		skills.MarkUncommitted(ctx, roots, placed)
 		return map[string]any{"skills": placed}, nil
 	case "discard_staged":
 		if err := skills.DiscardStaged(a.ID); err != nil {
@@ -104,9 +109,23 @@ func (s *Server) skillCommand(ctx context.Context, command string, a skillArgs) 
 		if err != nil {
 			return nil, err
 		}
+		skills.MarkUncommitted(ctx, roots, updated)
 		return map[string]any{"skills": updated}, nil
 	}
 	return nil, fmt.Errorf("unknown skill command %q", command)
+}
+
+// marked passes on a skill a command just wrote, marked when that left it
+// uncommitted in a main checkout.
+func marked(ctx context.Context, roots skills.Roots) func(skills.Skill, error) (any, error) {
+	return func(s skills.Skill, err error) (any, error) {
+		if err != nil {
+			return nil, err
+		}
+		one := []skills.Skill{s}
+		skills.MarkUncommitted(ctx, roots, one)
+		return one[0], nil
+	}
 }
 
 // attachedFiles is the trailer a prompt carries for the files a human

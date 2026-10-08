@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // GitStatus is what the personal library has uncommitted, when it is kept in
@@ -169,4 +170,67 @@ func CommitSkills(ctx context.Context, r Roots, names []string, message string) 
 	}
 	after, err = LibraryStatus(ctx, r)
 	return strings.TrimSpace(sha), after, err
+}
+
+// MarkUncommitted sets Uncommitted on each skill in a repo's main checkout
+// that git has not committed, its folder or its link: a thread in a new
+// worktree of the repo will not have it. A repo git cannot answer for, in
+// time or at all, leaves its skills unmarked.
+func MarkUncommitted(ctx context.Context, r Roots, skills []Skill) {
+	for _, repo := range r.Repos {
+		if !repo.Main || repo.Dir == "" {
+			continue
+		}
+		dir := resolve(repo.Dir)
+		var in []int
+		for i, s := range skills {
+			if s.Folder != "" && resolve(s.Folder) == dir {
+				in = append(in, i)
+			}
+		}
+		if len(in) == 0 {
+			continue
+		}
+		changed, err := uncommittedSkills(ctx, repo.Dir)
+		if err != nil {
+			continue
+		}
+		for _, i := range in {
+			s := &skills[i]
+			for _, p := range append([]string{s.Dir}, s.paths...) {
+				if changed[filepath.Base(p)] {
+					s.Uncommitted = true
+				}
+			}
+		}
+	}
+}
+
+// uncommittedSkills names every skill folder or link under a checkout's
+// skills dirs that has something git has not committed. Ignored files count:
+// a new worktree does not get them either.
+func uncommittedSkills(ctx context.Context, dir string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := libraryGit(ctx, dir, "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--ignored",
+		"--", ".agents/skills", ".claude/skills", ".pi/skills")
+	if err != nil {
+		return nil, err
+	}
+	changed := map[string]bool{}
+	for _, entry := range strings.Split(out, "\x00") {
+		if len(entry) < 4 {
+			continue
+		}
+		// Paths are from the top of the repository, which the checkout
+		// folder need not be: the skill is whatever follows a skills dir.
+		parts := strings.Split(entry[3:], "/")
+		for i := 2; i < len(parts); i++ {
+			if parts[i-1] == "skills" && (parts[i-2] == ".agents" || parts[i-2] == ".claude" || parts[i-2] == ".pi") {
+				changed[parts[i]] = true
+				break
+			}
+		}
+	}
+	return changed, nil
 }

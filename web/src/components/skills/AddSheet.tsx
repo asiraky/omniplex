@@ -1,5 +1,5 @@
 import { ChevronRightIcon } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -8,10 +8,12 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
-import { defaultStagedTicks, normalizeStaged, sourceLabel } from "~/lib/skillFlows";
+import { defaultStagedTicks, normalizeStaged, retickStaged, sourceLabel } from "~/lib/skillFlows";
 import {
+  NOT_COMMITTED,
   skillDescriptionError,
   skillNameError,
+  type Destination,
   type Skill,
   type SkillFileContent,
   type Staged,
@@ -120,21 +122,89 @@ function StagedPreview({
   );
 }
 
+const DESTINATION_HINT: Record<Destination["kind"], string> = {
+  project: "Every folder and worktree of this project. Never committed.",
+  repo: "Shared with everyone who clones it.",
+  personal: "Every project.",
+};
+
+/**
+ * Where the skill goes. A list rather than a menu: the line under each choice
+ * is what tells them apart. With one place to go there is nothing to pick,
+ * but a main checkout's warning still shows.
+ */
+function DestinationPicker({
+  label,
+  destinations,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  destinations: Destination[];
+  value: string;
+  onChange: (folder: string) => void;
+  disabled?: boolean;
+}) {
+  const labelId = useId();
+  const chosen = destinations.find((d) => d.folder === value);
+  if (destinations.length < 2 && !chosen?.main) return null;
+  return (
+    <div className="space-y-1.5">
+      {destinations.length > 1 && (
+        <>
+          <p id={labelId} className="text-sm leading-none font-medium">
+            {label}
+          </p>
+          <div role="radiogroup" aria-labelledby={labelId} className="flex flex-col gap-1.5">
+            {destinations.map((d) => {
+              const picked = d.folder === value;
+              return (
+                <button
+                  key={`${d.kind}:${d.folder}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={picked}
+                  disabled={disabled}
+                  onClick={() => onChange(d.folder)}
+                  className={cn(
+                    "focus-visible:ring-ring flex min-h-11 flex-col justify-center gap-0.5 rounded-lg border px-3 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 disabled:cursor-default",
+                    picked ? "border-primary/60 bg-primary/10" : "hover:bg-accent/50",
+                  )}
+                >
+                  <span className="text-[13px] leading-tight">{d.label}</span>{" "}
+                  <span className="text-muted-foreground text-[11.5px] leading-tight">{DESTINATION_HINT[d.kind]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {chosen?.main && <ProblemText problem={NOT_COMMITTED} />}
+    </div>
+  );
+}
+
 /** Name and description for a skill written from scratch. */
 function NewSkillForm({
   formId,
   command,
   scopeArgs,
+  destination,
   busy,
   setBusy,
   onCreated,
+  children,
 }: {
   formId: string;
   command: PageCommand;
   scopeArgs: Record<string, unknown>;
+  destination: string;
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onCreated: (skill: Skill) => void;
+  /** The destination picker, under the fields. */
+  children: ReactNode;
 }) {
   const id = useId();
   const [name, setName] = useState("");
@@ -151,7 +221,12 @@ function NewSkillForm({
     setBusy(true);
     setError("");
     try {
-      const skill = await command<Skill>("create_skill", { ...scopeArgs, name, description: description.trim() });
+      const skill = await command<Skill>("create_skill", {
+        ...scopeArgs,
+        name,
+        description: description.trim(),
+        destination,
+      });
       onCreated(skill);
     } catch (e) {
       setError(errorText(e));
@@ -216,6 +291,7 @@ function NewSkillForm({
             : `Agents read this to decide when to use the skill. ${description.trim().length}/1024`}
         </p>
       </div>
+      {children}
       {error && <ErrorLine message={error} />}
     </form>
   );
@@ -231,6 +307,8 @@ export function AddSheet({
   onOpenChange,
   command,
   scopeArgs,
+  destinations,
+  defaultDestination,
   onInstalled,
   onCreated,
 }: {
@@ -238,6 +316,8 @@ export function AddSheet({
   onOpenChange: (open: boolean) => void;
   command: PageCommand;
   scopeArgs: Record<string, unknown>;
+  destinations: Destination[];
+  defaultDestination: string;
   /** The skills as the server installed them. */
   onInstalled: (skills: Skill[]) => void;
   onCreated: (skill: Skill) => void;
@@ -253,6 +333,10 @@ export function AddSheet({
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // The reader's pick; until there is one, the list's default, which can
+  // still arrive after the sheet opens.
+  const [picked, setPicked] = useState<string | null>(null);
+  const destination = picked !== null && destinations.some((d) => d.folder === picked) ? picked : defaultDestination;
 
   const staging = useStaging(command, scopeArgs);
 
@@ -272,7 +356,7 @@ export function AddSheet({
         return;
       }
       setStaged(next);
-      setTicked(new Set(defaultStagedTicks(next.skills)));
+      setTicked(new Set(defaultStagedTicks(next.skills, destination)));
       setExpanded(new Set());
     } catch (e) {
       if (!wanted()) return;
@@ -311,6 +395,7 @@ export function AddSheet({
         ...scopeArgs,
         id: staged.id,
         skills: chosen,
+        destination,
       });
       // Installing is what empties the fetched copy on the server.
       staging.forget();
@@ -332,6 +417,21 @@ export function AddSheet({
 
   const allTicked = staged !== null && chosen.length === staged.skills.length;
 
+  const pickDestination = (folder: string) => {
+    if (staged) setTicked(new Set(retickStaged(ticked, staged.skills, destination, folder)));
+    setPicked(folder);
+  };
+
+  const picker = (label: string) => (
+    <DestinationPicker
+      label={label}
+      destinations={destinations}
+      value={destination}
+      onChange={pickDestination}
+      disabled={busy}
+    />
+  );
+
   let body;
   let footer;
   if (mode === "new") {
@@ -340,13 +440,16 @@ export function AddSheet({
         formId={formId}
         command={command}
         scopeArgs={scopeArgs}
+        destination={destination}
         busy={busy}
         setBusy={setBusy}
         onCreated={(skill) => {
           onCreated(skill);
           onOpenChange(false);
         }}
-      />
+      >
+        {picker("Create in")}
+      </NewSkillForm>
     );
     footer = (
       <>
@@ -431,6 +534,7 @@ export function AddSheet({
   } else {
     body = (
       <div className="scroll-thin -mx-1 min-h-0 space-y-3 overflow-y-auto px-1">
+        {picker("Install into")}
         <div className="flex items-center gap-2">
           <p className="min-w-0 flex-1 text-[12.5px] leading-snug break-words">
             {staged.skills.length} {staged.skills.length === 1 ? "skill" : "skills"} in{" "}
@@ -451,6 +555,7 @@ export function AddSheet({
         <ul aria-label="Skills found" className="divide-y rounded-lg border">
           {staged.skills.map((s) => {
             const isOpen = expanded.has(s.name);
+            const replaces = s.installedIn.includes(destination);
             return (
               <li key={s.name} className="px-2">
                 <div className="flex items-start">
@@ -473,7 +578,9 @@ export function AddSheet({
                     <span className="flex w-full min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
                       {/* The spaces are for the button's spoken name; flex drops them on screen. */}
                       <span className="min-w-0 font-mono text-[13px] wrap-anywhere">{s.name}</span>{" "}
-                      {s.installed && <Marker tone="attention">replaces yours</Marker>}
+                      {replaces && (
+                        <Marker tone="attention">{destination === "" ? "replaces yours" : "replaces existing"}</Marker>
+                      )}
                       <ChevronRightIcon
                         aria-hidden
                         className={cn("text-muted-foreground ml-auto size-3.5 shrink-0 transition-transform", isOpen && "rotate-90")}

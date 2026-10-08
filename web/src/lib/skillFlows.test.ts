@@ -7,6 +7,7 @@ import {
   normalizeStaged,
   normalizeUpdateStage,
   RECORD_FILE,
+  retickStaged,
   sourceLabel,
 } from "~/lib/skillFlows";
 import type { GitChange, Staged, StagedSkill, UpdateStage } from "~/lib/skills";
@@ -16,7 +17,7 @@ const staged = (name: string, extra: Partial<StagedSkill> = {}): StagedSkill => 
   description: "",
   files: [{ path: "SKILL.md", size: 1 }],
   picked: false,
-  installed: false,
+  installedIn: [],
   ...extra,
 });
 
@@ -41,26 +42,51 @@ describe("sourceLabel", () => {
 
 describe("defaultStagedTicks", () => {
   it("ticks the only skill whether or not it was named", () => {
-    expect(defaultStagedTicks([staged("pdf")])).toEqual(["pdf"]);
+    expect(defaultStagedTicks([staged("pdf")], "")).toEqual(["pdf"]);
   });
 
   it("ticks just the named ones out of many", () => {
-    expect(defaultStagedTicks([staged("a"), staged("b", { picked: true }), staged("c", { picked: true })])).toEqual([
-      "b",
-      "c",
-    ]);
+    expect(
+      defaultStagedTicks([staged("a"), staged("b", { picked: true }), staged("c", { picked: true })], ""),
+    ).toEqual(["b", "c"]);
   });
 
   it("ticks nothing out of many when none was named, and nothing out of none", () => {
-    expect(defaultStagedTicks([staged("a"), staged("b")])).toEqual([]);
-    expect(defaultStagedTicks([])).toEqual([]);
+    expect(defaultStagedTicks([staged("a"), staged("b")], "")).toEqual([]);
+    expect(defaultStagedTicks([], "")).toEqual([]);
   });
 
-  it("leaves a skill that would replace an installed one unticked, named or alone", () => {
-    expect(defaultStagedTicks([staged("pdf", { installed: true })])).toEqual([]);
+  it("leaves a skill that would replace one in the destination unticked, named or alone", () => {
+    expect(defaultStagedTicks([staged("pdf", { installedIn: [""] })], "")).toEqual([]);
     expect(
-      defaultStagedTicks([staged("a", { picked: true, installed: true }), staged("b", { picked: true })]),
+      defaultStagedTicks([staged("a", { picked: true, installedIn: ["/home/p"] }), staged("b", { picked: true })], "/home/p"),
     ).toEqual(["b"]);
+  });
+
+  it("ticks a skill that is only installed somewhere else", () => {
+    expect(defaultStagedTicks([staged("pdf", { installedIn: [""] })], "/home/p")).toEqual(["pdf"]);
+  });
+});
+
+describe("retickStaged", () => {
+  const skills = [
+    staged("a", { picked: true, installedIn: [""] }),
+    staged("b", { picked: true, installedIn: ["/repo"] }),
+    staged("c", { installedIn: [""] }),
+  ];
+
+  it("unticks what would now replace a skill, and ticks what was held back only by the old one", () => {
+    // In personal: a and c would replace yours, so only b starts ticked.
+    expect(retickStaged(new Set(["b"]), skills, "", "/repo")).toEqual(["a"]);
+  });
+
+  it("does not tick a skill that was never wanted", () => {
+    expect(retickStaged(new Set<string>(), skills, "", "/home/p")).toEqual(["a"]);
+  });
+
+  it("keeps the reader's own choices where nothing changed", () => {
+    expect(retickStaged(new Set(["b", "c"]), skills, "/repo", "/home/p")).toEqual(["b", "c"]);
+    expect(retickStaged(new Set(["a", "c"]), skills, "/home/p", "/home/p")).toEqual(["a", "c"]);
   });
 });
 
@@ -104,6 +130,8 @@ describe("normalizing what Go sends as null", () => {
   it("fills a staged source's lists", () => {
     const raw = { id: "s", repo: "r", skills: [{ ...staged("a"), files: null }] } as unknown as Staged;
     expect(normalizeStaged(raw).skills[0].files).toEqual([]);
+    const noInstalls = { id: "s", repo: "r", skills: [{ ...staged("a"), installedIn: null }] } as unknown as Staged;
+    expect(normalizeStaged(noInstalls).skills[0].installedIn).toEqual([]);
     expect(normalizeStaged({ ...raw, skills: null } as unknown as Staged).skills).toEqual([]);
   });
 

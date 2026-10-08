@@ -46,9 +46,10 @@ type StagedSkill struct {
 	Files       []File `json:"files"`          // includes SKILL.md
 	Problem     string `json:"problem,omitempty"`
 	Picked      bool   `json:"picked"`
-	// Installed is set when the library already has a skill of this name,
-	// which installing this one replaces.
-	Installed bool `json:"installed"`
+	// InstalledIn is each destination folder ("" for personal) whose
+	// library already has a skill of this name, which installing this one
+	// there replaces.
+	InstalledIn []string `json:"installedIn"`
 }
 
 // manifest is what a staging dir knows about itself, so the commands that
@@ -332,7 +333,7 @@ func (st *stage) describe(r Roots, src ParsedSource, method, note string, found 
 		}
 		seen[s.Name] = true
 		s.Picked = picked["*"] || picked[s.Name] || picked[f.base]
-		s.Installed = inLibrary(r.Library, s.Name)
+		s.InstalledIn = installedIn(r, s.Name)
 		sf.Name = s.Name
 		if f.ref != "" {
 			refs[f.ref] = true
@@ -351,6 +352,20 @@ func (st *stage) describe(r Roots, src ParsedSource, method, note string, found 
 		}
 	}
 	return staged, st.save()
+}
+
+func installedIn(r Roots, name string) []string {
+	out := []string{}
+	for _, d := range r.Destinations() {
+		library := r.Library
+		if d.Kind != DestPersonal {
+			library = projectLibrary(d.Folder)
+		}
+		if inLibrary(library, name) {
+			out = append(out, d.Folder)
+		}
+	}
+	return out
 }
 
 func inLibrary(library, name string) bool {

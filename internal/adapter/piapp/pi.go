@@ -193,6 +193,11 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if o.Effort != "" {
 		args = append(args, "--thinking", o.Effort)
 	}
+	// Read once at start: pi does not rescan, so a skill added mid-session
+	// arrives with the next one.
+	for _, d := range o.SkillDirs {
+		args = append(args, "--skill", d)
+	}
 
 	bin, ok := a.findPi()
 	if !ok {

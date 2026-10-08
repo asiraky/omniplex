@@ -54,7 +54,7 @@ func (u *upstream) install(r Roots, source string, names ...string) {
 	if err != nil {
 		u.t.Fatal(err)
 	}
-	if _, err := InstallStaged(r, got.ID, names); err != nil {
+	if _, err := InstallStaged(r, got.ID, names, ""); err != nil {
 		u.t.Fatal(err)
 	}
 }
@@ -470,23 +470,18 @@ func TestAnUpdateCoversOnlySiblings(t *testing.T) {
 	show := filepath.Join(r.Library, "show-me")
 	// Same repo in the project's library, same repo at another ref, another
 	// repo, and a skill from nowhere.
+	projectLib := filepath.Join(r.ProjectRoot, ".agents", "skills")
 	for rel, content := range v1 {
 		if name, file, _ := strings.Cut(rel, "/"); name == "show-me" {
-			write(t, filepath.Join(r.ProjectLibrary, "show-me", filepath.FromSlash(file)), content)
+			write(t, filepath.Join(projectLib, "show-me", filepath.FromSlash(file)), content)
 		}
 	}
-	err := UpdateRecord(r.ProjectLibrary, func(rec *Record) error {
-		rec.Set("show-me", RecordEntry{Method: MethodNpx, Repo: "owner/repo", Path: "skills/show-me"})
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	write(t, ProjectCLILock(r.ProjectRoot), `{"version":1,"skills":{"show-me":{"source":"owner/repo","sourceType":"github","skillPath":"skills/show-me/SKILL.md","computedHash":"h"}}}`)
 	for _, name := range []string{"pinned", "stranger", "mine"} {
 		write(t, filepath.Join(r.Library, name, "SKILL.md"), skillMD(name, "d"))
 		write(t, filepath.Join(r.Library, name, "notes.md"), "v1")
 	}
-	err = UpdateRecord(r.Library, func(rec *Record) error {
+	err := UpdateRecord(r.Library, func(rec *Record) error {
 		rec.Set("pinned", RecordEntry{Method: MethodNpx, Repo: "owner/repo", Ref: "v1", Path: "skills/show-me"})
 		rec.Set("stranger", RecordEntry{Method: MethodNpx, Repo: "someone/else", Path: "skills/show-me"})
 		return nil
@@ -503,7 +498,7 @@ func TestAnUpdateCoversOnlySiblings(t *testing.T) {
 		t.Fatalf("update covers %v: %+v", names, got.Skills)
 	}
 	others := map[string]string{
-		"the project's copy": filepath.Join(r.ProjectLibrary, "show-me"),
+		"the project's copy": filepath.Join(projectLib, "show-me"),
 		"another ref":        filepath.Join(r.Library, "pinned"),
 		"another repo":       filepath.Join(r.Library, "stranger"),
 		"no source":          filepath.Join(r.Library, "mine"),
@@ -551,7 +546,7 @@ func TestUpdateFromALocalFolder(t *testing.T) {
 	staging(t)
 	r := machine(t)
 	got, src := stageLocal(t, r, twoSkills)
-	if _, err := InstallStaged(r, got.ID, []string{"one"}); err != nil {
+	if _, err := InstallStaged(r, got.ID, []string{"one"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	one := filepath.Join(r.Library, "one")
@@ -649,7 +644,7 @@ func TestAFetchIsForInstallingOrForUpdating(t *testing.T) {
 
 	// An update's fetch carries the choice written over upstream's files; it
 	// is not what install would record as fetched.
-	if _, err := InstallStaged(r, update.ID, []string{"show-me"}); !errors.Is(err, ErrInvalid) {
+	if _, err := InstallStaged(r, update.ID, []string{"show-me"}, ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("installing from an update's fetch: %v", err)
 	}
 	if _, err := ApplyUpdate(r, install.ID, []string{show}); !errors.Is(err, ErrInvalid) {
@@ -723,7 +718,7 @@ func TestAnUpdateCheckedBeforeTheSkillWasReplacedIsRefused(t *testing.T) {
 	if err := Remove(r, show); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Create(r, "show-me", "Mine now"); err != nil {
+	if _, err := Create(r, "show-me", "Mine now", ""); err != nil {
 		t.Fatal(err)
 	}
 	before := read(t, filepath.Join(show, "SKILL.md"))

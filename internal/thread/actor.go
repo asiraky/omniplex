@@ -238,10 +238,10 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 		logf:          logf,
 	}
 
-	mcp, extraDirs := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
+	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
-		MCPServers: mcp, ExtraDirs: extraDirs,
+		MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs,
 	})
 	if err != nil {
 		return nil, err
@@ -306,7 +306,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// needs.
 	a.recovery = planRecovery(state)
 
-	mcp, extraDirs := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
+	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
@@ -316,8 +316,9 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 		Resume:           true,
 		HarnessSessionID: state.HarnessSessionID,
 		Env:              env,
-		MCPServers:       mcp,
-		ExtraDirs:        extraDirs,
+		MCPServers:       x.mcp,
+		ExtraDirs:        x.extraDirs,
+		SkillDirs:        x.skillDirs,
 	})
 	if err != nil {
 		return nil, err
@@ -911,11 +912,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
-		mcp, extraDirs := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
+		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
 		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
-			MCPServers: mcp, ExtraDirs: extraDirs,
+			MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs,
 		})
 		if err != nil {
 			c.reply <- cmdResult{err: err}

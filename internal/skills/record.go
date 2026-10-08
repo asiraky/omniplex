@@ -209,6 +209,8 @@ type LockEntry struct {
 	SkillPath   string `json:"skillPath"`
 	InstalledAt string `json:"installedAt"`
 	UpdatedAt   string `json:"updatedAt"`
+	// ComputedHash is the project lock's cliHash of the skill as installed.
+	ComputedHash string `json:"computedHash"`
 }
 
 // ReadCLILock reads a skills CLI lock, global or project. It is someone
@@ -226,11 +228,6 @@ func ReadCLILock(file string) map[string]LockEntry {
 		return nil
 	}
 	return lock.Skills
-}
-
-// ProjectCLILock is where `npx skills` run inside a project keeps its lock.
-func ProjectCLILock(projectRoot string) string {
-	return filepath.Join(projectRoot, "skills-lock.json")
 }
 
 func (e LockEntry) source() *Source {
@@ -251,41 +248,42 @@ func (e LockEntry) source() *Source {
 // sourceIndex answers where a skill came from, reading each record and lock
 // once per discovery.
 type sourceIndex struct {
-	records map[string]Record // by symlink-resolved library dir
+	r       Roots
+	record  Record // the personal library's
+	library string // symlink-resolved
 	global  map[string]LockEntry
-	project map[string]LockEntry
+	project map[string]map[string]LockEntry // by project folder
 }
 
 func newSourceIndex(r Roots) *sourceIndex {
-	x := &sourceIndex{records: map[string]Record{}}
-	for _, lib := range []string{r.ProjectLibrary, r.Library} {
-		if lib == "" {
-			continue
-		}
-		real, err := filepath.EvalSymlinks(lib)
-		if err != nil {
-			continue
-		}
+	x := &sourceIndex{r: r, project: map[string]map[string]LockEntry{}}
+	if real, ok := realDir(r.Library); ok {
 		if rec, err := LoadRecord(real); err == nil {
-			x.records[real] = rec
+			x.library, x.record = real, rec
 		}
 	}
 	if r.CLILock != "" {
 		x.global = ReadCLILock(r.CLILock)
 	}
-	if r.ProjectRoot != "" {
-		x.project = ReadCLILock(ProjectCLILock(r.ProjectRoot))
-	}
 	return x
 }
 
-// lookup prefers our own record. The skills CLI's lock is the fallback for a
-// skill installed from a terminal before Omniplex had a hand in it: its
-// global lock speaks for personal skills, a project's for that project's.
+func (x *sourceIndex) projectLock(folder string) map[string]LockEntry {
+	lock, ok := x.project[folder]
+	if !ok {
+		lock = readProjectLock(folder)
+		x.project[folder] = lock
+	}
+	return lock
+}
+
+// lookup reads a personal skill's source from our own record, with the
+// skills CLI's global lock as the fallback for one installed from a terminal
+// before Omniplex had a hand in it. A project skill's is only ever in its
+// folder's skills-lock.json, which Omniplex and the CLI both keep.
 func (x *sourceIndex) lookup(s *Skill) *Source {
-	dirName := filepath.Base(s.Dir)
-	if rec, ok := x.records[filepath.Dir(s.Dir)]; ok {
-		if e, ok := rec.Get(dirName); ok {
+	if x.library != "" && filepath.Dir(s.Dir) == x.library {
+		if e, ok := x.record.Get(filepath.Base(s.Dir)); ok {
 			return e.source()
 		}
 	}
@@ -297,12 +295,12 @@ func (x *sourceIndex) lookup(s *Skill) *Source {
 	case ScopeUser:
 		lock = x.global
 	case ScopeProject:
-		lock = x.project
-	}
-	for _, name := range []string{dirName, s.Name} {
-		if e, ok := lock[name]; ok {
-			return e.source()
+		if folder := s.lockFolder(x.r); folder != "" {
+			lock = x.projectLock(folder)
 		}
+	}
+	if key := lockKey(lock, *s); key != "" {
+		return lock[key].source()
 	}
 	return nil
 }

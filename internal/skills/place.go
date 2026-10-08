@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -125,11 +126,13 @@ func stamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// InstallStaged copies the picked skills out of a staging dir into the
-// personal library, over any skill of the same name already there, records
-// where they came from, makes them visible to every harness, and drops the
-// staging dir.
-func InstallStaged(r Roots, id string, names []string) ([]Skill, error) {
+// InstallStaged copies the picked skills out of a staging dir into a
+// destination's library, over any skill of the same name already there,
+// records where they came from, makes them visible to the harnesses, and
+// drops the staging dir. folder "" is the personal library, its record and
+// every harness; a project folder gets the skills CLI's project layout and
+// its skills-lock.json, so `npx skills` there agrees.
+func InstallStaged(r Roots, id string, names []string, folder string) ([]Skill, error) {
 	st, err := openStage(id)
 	if err != nil {
 		return nil, err
@@ -140,10 +143,25 @@ func InstallStaged(r Roots, id string, names []string) ([]Skill, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("%w: pick at least one skill", ErrInvalid)
 	}
-	if r.Library == "" {
-		return nil, fmt.Errorf("%w: no home directory", ErrInvalid)
+	dest, err := r.destination(folder)
+	if err != nil {
+		return nil, err
 	}
-	library := r.Library
+	library, hashDir := r.Library, HashDir
+	if dest.Kind == DestPersonal {
+		if library == "" {
+			return nil, fmt.Errorf("%w: no home directory", ErrInvalid)
+		}
+	} else {
+		library, hashDir = projectLibrary(dest.Folder), cliHash
+		if err := checkProjectPaths(dest.Folder); err != nil {
+			return nil, err
+		}
+		// A lock this cannot write is refused before the folder is touched.
+		if _, _, err := loadProjectLock(dest.Folder); err != nil {
+			return nil, err
+		}
+	}
 	if err := os.MkdirAll(library, 0o755); err != nil {
 		return nil, err
 	}
@@ -184,7 +202,7 @@ func InstallStaged(r Roots, id string, names []string) ([]Skill, error) {
 		if info, err := os.Lstat(target); err == nil && !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			return nil, fmt.Errorf("%w: %s in %s is not a folder this can replace", ErrInvalid, sf.Name, abbreviate(library, r.Home))
 		}
-		hash, err := HashDir(folder)
+		hash, err := hashDir(folder)
 		if err != nil {
 			return nil, err
 		}
@@ -210,24 +228,39 @@ func InstallStaged(r Roots, id string, names []string) ([]Skill, error) {
 		}
 	}
 
-	now := stamp()
-	err = UpdateRecord(library, func(rec *Record) error {
-		for _, p := range plan {
-			ref := p.sf.Ref
-			if ref == "" {
-				ref = st.m.Ref
-			}
-			rec.Set(p.sf.Name, RecordEntry{Method: st.m.Method, Repo: st.m.Repo, Ref: ref, Path: p.sf.Path, Hash: p.hash, InstalledAt: now, UpdatedAt: now})
+	ref := func(sf stagedFolder) string {
+		if sf.Ref != "" {
+			return sf.Ref
 		}
-		return nil
-	})
+		return st.m.Ref
+	}
+	if dest.Kind == DestPersonal {
+		now := stamp()
+		err = UpdateRecord(library, func(rec *Record) error {
+			for _, p := range plan {
+				rec.Set(p.sf.Name, RecordEntry{Method: st.m.Method, Repo: st.m.Repo, Ref: ref(p.sf), Path: p.sf.Path, Hash: p.hash, InstalledAt: now, UpdatedAt: now})
+			}
+			return nil
+		})
+	} else {
+		err = updateProjectLock(dest.Folder, func(skills map[string]json.RawMessage) error {
+			for _, p := range plan {
+				setLockEntry(skills, p.sf.Name, lockEntryFor(dest.Folder, st.m.Method, st.m.Repo, ref(p.sf), p.sf.Path, p.hash))
+			}
+			return nil
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]Skill, 0, len(plan))
 	for _, p := range plan {
-		reachEveryAgent(r, p.target)
+		if dest.Kind == DestPersonal {
+			reachEveryAgent(r, p.target)
+		} else {
+			linkIntoProject(dest.Folder, p.sf.Name)
+		}
 	}
 	for _, p := range plan {
 		s, err := find(r, p.target)

@@ -5,7 +5,10 @@ import { byName, type GitChange, type GitStatus, type Staged, type StagedSkill, 
 
 /** Go's nil slices arrive as null. */
 export function normalizeStaged(staged: Staged): Staged {
-  return { ...staged, skills: (staged.skills ?? []).map((s) => ({ ...s, files: s.files ?? [] })) };
+  return {
+    ...staged,
+    skills: (staged.skills ?? []).map((s) => ({ ...s, files: s.files ?? [], installedIn: s.installedIn ?? [] })),
+  };
 }
 
 /**
@@ -26,15 +29,37 @@ export function sourceLabel(source: string): string {
   return text.replace(/#.*$/, "").replace(/\.git$/, "");
 }
 
+const wantedSkills = (skills: StagedSkill[]) => (skills.length === 1 ? skills : skills.filter((s) => s.picked));
+
 /**
  * The skills ticked when a fetched source first shows: the ones the pasted
  * command named, or the only one there is. A repo of many with none named
  * starts with nothing ticked, since installing all of it is rarely the intent.
- * One that would replace a skill already installed always starts unticked.
+ * One that would replace a skill already in the destination always starts
+ * unticked.
  */
-export function defaultStagedTicks(skills: StagedSkill[]): string[] {
-  const wanted = skills.length === 1 ? skills : skills.filter((s) => s.picked);
-  return wanted.filter((s) => !s.installed).map((s) => s.name);
+export function defaultStagedTicks(skills: StagedSkill[], destination: string): string[] {
+  return wantedSkills(skills)
+    .filter((s) => !s.installedIn.includes(destination))
+    .map((s) => s.name);
+}
+
+/**
+ * The ticks once the destination changes from `from` to `to`. One that would
+ * now replace a skill there is unticked; one held back only because it would
+ * have replaced one in `from` is ticked again if it was wanted. The rest keep
+ * what the reader chose.
+ */
+export function retickStaged(ticked: ReadonlySet<string>, skills: StagedSkill[], from: string, to: string): string[] {
+  const next = new Set(ticked);
+  const wanted = new Set(wantedSkills(skills).map((s) => s.name));
+  for (const s of skills) {
+    const before = s.installedIn.includes(from);
+    const after = s.installedIn.includes(to);
+    if (after && !before) next.delete(s.name);
+    if (before && !after && wanted.has(s.name)) next.add(s.name);
+  }
+  return skills.filter((s) => next.has(s.name)).map((s) => s.name);
 }
 
 export function normalizeGitStatus(git: GitStatus | null | undefined): GitStatus | null {

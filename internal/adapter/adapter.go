@@ -45,6 +45,11 @@ type CreateOptions struct {
 	// project's home folder, when the session works in a repo. An adapter
 	// whose harness has no such setting ignores them.
 	ExtraDirs []string
+
+	// SkillDirs are skills folders outside Cwd the harness should load: the
+	// project home's .agents/skills when the session works somewhere else.
+	// An adapter whose harness finds them another way ignores them.
+	SkillDirs []string
 }
 
 // MCPServer is one MCP server a session gets: a local process (Command) or a

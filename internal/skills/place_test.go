@@ -46,7 +46,7 @@ func TestInstallStaged(t *testing.T) {
 	r := machine(t)
 	got, src := stageLocal(t, r, twoSkills)
 
-	placed, err := InstallStaged(r, got.ID, []string{"one", "one"})
+	placed, err := InstallStaged(r, got.ID, []string{"one", "one"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestInstallStaged(t *testing.T) {
 	if left := stagingDirs(t, tmp); len(left) != 0 {
 		t.Errorf("staging left behind: %v", left)
 	}
-	if _, err := InstallStaged(r, got.ID, []string{"two"}); !errors.Is(err, ErrNotFound) {
+	if _, err := InstallStaged(r, got.ID, []string{"two"}, ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("installing from a fetch already used: %v", err)
 	}
 }
@@ -100,7 +100,7 @@ func TestInstallRecordsWhatTheCLIResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallStaged(r, got.ID, []string{"show-me"}); err != nil {
+	if _, err := InstallStaged(r, got.ID, []string{"show-me"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	rec, _ := LoadRecord(r.Library)
@@ -117,11 +117,11 @@ func TestInstallReplacesASkillAlreadyThere(t *testing.T) {
 	write(t, filepath.Join(dir, "SKILL.md"), skillMD("one", "Mine"))
 	write(t, filepath.Join(dir, "mine.md"), "written here")
 	got, _ := stageLocal(t, r, twoSkills)
-	if one := got.Skills[0]; one.Name != "one" || !one.Installed || got.Skills[1].Installed {
+	if one := got.Skills[0]; one.Name != "one" || !reflect.DeepEqual(one.InstalledIn, []string{""}) || len(got.Skills[1].InstalledIn) != 0 {
 		t.Fatalf("staged = %+v", got.Skills)
 	}
 
-	placed, err := InstallStaged(r, got.ID, []string{"two", "one"})
+	placed, err := InstallStaged(r, got.ID, []string{"two", "one"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestInstallRefusals(t *testing.T) {
 			}
 			before := entries(t, r.Library)
 			got, _ := stageLocal(t, r, twoSkills)
-			if placed, err := InstallStaged(r, got.ID, tt.names); !errors.Is(err, ErrInvalid) {
+			if placed, err := InstallStaged(r, got.ID, tt.names, ""); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("placed %+v, err %v", placed, err)
 			}
 			if after := entries(t, r.Library); !reflect.DeepEqual(after, before) {
@@ -264,10 +264,10 @@ func TestInstallReplacesALinkedSkill(t *testing.T) {
 	write(t, filepath.Join(elsewhere, "SKILL.md"), skillMD("one", "Mine"))
 	link(t, elsewhere, filepath.Join(r.Library, "one"))
 	got, _ := stageLocal(t, r, twoSkills)
-	if !got.Skills[0].Installed {
+	if len(got.Skills[0].InstalledIn) != 1 {
 		t.Fatalf("staged = %+v", got.Skills)
 	}
-	if _, err := InstallStaged(r, got.ID, []string{"one"}); err != nil {
+	if _, err := InstallStaged(r, got.ID, []string{"one"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if isSymlink(filepath.Join(r.Library, "one")) || read(t, filepath.Join(r.Library, "one", "notes.md")) != "fetched" {

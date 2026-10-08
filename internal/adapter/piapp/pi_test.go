@@ -116,10 +116,11 @@ func startSession(t *testing.T, dir string, o adapter.CreateOptions) adapter.Ses
 func TestCreateSessionHandshake(t *testing.T) {
 	dir := t.TempDir()
 	s := startSession(t, dir, adapter.CreateOptions{
-		ThreadID: "sess-1",
-		Model:    "anthropic/claude-x",
-		Effort:   "high",
-		Env:      map[string]string{"PI_TEST_MARKER": "overlay-applied"},
+		ThreadID:  "sess-1",
+		Model:     "anthropic/claude-x",
+		Effort:    "high",
+		Env:       map[string]string{"PI_TEST_MARKER": "overlay-applied"},
+		SkillDirs: []string{"/home/p/.agents/skills", "/other/skills"},
 	})
 
 	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })
@@ -132,7 +133,7 @@ func TestCreateSessionHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--mode\nrpc", "--session-id\nsess-1", "--model\nanthropic/claude-x", "--thinking\nhigh"} {
+	for _, want := range []string{"--mode\nrpc", "--session-id\nsess-1", "--model\nanthropic/claude-x", "--thinking\nhigh", "--skill\n/home/p/.agents/skills", "--skill\n/other/skills"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("argv missing %q; got:\n%s", want, args)
 		}

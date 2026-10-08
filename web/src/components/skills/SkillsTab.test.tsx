@@ -2,7 +2,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { GitChange, Skill, SkillDetail, SkillsList } from "~/lib/skills";
+import type { Destination, GitChange, Skill, SkillDetail, SkillsList } from "~/lib/skills";
 import { render } from "~/test/harness";
 
 import type { PageCommand } from "~/components/tools/parts";
@@ -18,6 +18,13 @@ const skill = (name: string, extra: Partial<Skill> = {}): Skill => ({
   ...extra,
 });
 
+const projectDestinations: Destination[] = [
+  { kind: "project", folder: "/home/p", label: "This project" },
+  { kind: "repo", folder: "/code/api", label: "api repo", main: true },
+  { kind: "repo", folder: "/code/web", label: "web repo" },
+  { kind: "personal", folder: "", label: "Personal" },
+];
+
 type Handler = (args: Record<string, unknown>) => unknown;
 
 /** A server with just enough state that a write shows on the next read. */
@@ -27,6 +34,8 @@ function server(overrides: Record<string, Handler> = {}, initial: Skill[] = [ski
     claudeSync: true,
     codexBundled: true,
     changes: [] as GitChange[],
+    destinations: undefined as Destination[] | undefined,
+    defaultDestination: undefined as string | undefined,
   };
   const find = (dir: unknown) => state.skills.find((s) => s.dir === dir)!;
   const handlers: Record<string, Handler> = {
@@ -34,6 +43,8 @@ function server(overrides: Record<string, Handler> = {}, initial: Skill[] = [ski
       skills: state.skills,
       claudeSync: state.claudeSync,
       codexBundled: state.codexBundled,
+      destinations: state.destinations,
+      defaultDestination: state.defaultDestination,
     }),
     read_skill: (args): SkillDetail => ({ ...find(args.dir), content: `# ${find(args.dir).name}\n`, files: [] }),
     set_skill_mode: (args) => {
@@ -202,9 +213,14 @@ describe("installing", () => {
     id: "stage-1",
     repo: "acme/skills",
     skills: [
-      { name: "pdf", description: "Reads PDFs", files: [{ path: "SKILL.md", size: 10 }], picked: true, installed: false },
-      { name: "alpha", description: "A newer alpha", files: [{ path: "SKILL.md", size: 10 }], picked: true, installed: true },
-      { name: "xlsx", description: "Reads sheets", files: [{ path: "SKILL.md", size: 10 }], installed: false },
+      { name: "pdf", description: "Reads PDFs", files: [{ path: "SKILL.md", size: 10 }], picked: true, installedIn: [] },
+      { name: "alpha", description: "A newer alpha", files: [{ path: "SKILL.md", size: 10 }], picked: true, installedIn: [""] },
+      {
+        name: "xlsx",
+        description: "Reads sheets",
+        files: [{ path: "SKILL.md", size: 10 }],
+        installedIn: ["/home/p"],
+      },
     ],
   };
 
@@ -243,7 +259,7 @@ describe("installing", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /^Install \d/ }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(calls(command, "install_staged")).toEqual([{ id: "stage-1", skills: ["pdf", "alpha"] }]);
+    expect(calls(command, "install_staged")).toEqual([{ id: "stage-1", skills: ["pdf", "alpha"], destination: "" }]);
     expect(await screen.findByRole("button", { name: /^pdf\b/ })).toBeTruthy();
     // Installing used the fetched copy up; there is nothing left to throw away.
     expect(calls(command, "discard_staged")).toEqual([]);
@@ -276,6 +292,60 @@ describe("installing", () => {
     expect(await within(dialog).findByText("# PDF reader body")).toBeTruthy();
     expect(calls(command, "read_staged_file")).toEqual([{ id: "stage-1", skill: "pdf", path: "SKILL.md" }]);
   });
+
+  it("installs into the server's default destination, or the one picked", async () => {
+    const { command, state } = server({ stage_skills: () => staged, install_staged: () => ({ skills: [] }) });
+    state.destinations = projectDestinations;
+    state.defaultDestination = "/home/p";
+    const dialog = await fetchSource(command);
+
+    const picker = within(dialog).getByRole("radiogroup", { name: "Install into" });
+    expect(within(picker).getByRole("radio", { name: /^This project/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(within(picker).getByRole("radio", { name: /^web repo/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Install \d/ }));
+
+    await waitFor(() => expect(calls(command, "install_staged")).toHaveLength(1));
+    expect(calls(command, "install_staged")[0].destination).toBe("/code/web");
+  });
+
+  it("marks and holds back only what would replace a skill in the chosen destination", async () => {
+    const { command, state } = server({ stage_skills: () => staged });
+    state.destinations = projectDestinations;
+    state.defaultDestination = "";
+    const dialog = await fetchSource(command);
+    const row = (name: string) => within(dialog).getByRole("button", { name: new RegExp(`^${name}\\b`) });
+    const ticked = (name: string) =>
+      within(dialog).getByRole("checkbox", { name: `Install ${name}` }).getAttribute("aria-checked");
+
+    expect(row("alpha").textContent).toContain("replaces yours");
+    expect(ticked("alpha")).toBe("false");
+    expect(row("xlsx").textContent).not.toContain("replaces");
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^This project/ }));
+
+    expect(row("alpha").textContent).not.toContain("replaces");
+    expect(ticked("alpha")).toBe("true");
+    expect(row("xlsx").textContent).toContain("replaces existing");
+  });
+
+  it("says a main checkout's install is not committed, and only there", async () => {
+    const { command, state } = server({ stage_skills: () => staged });
+    state.destinations = projectDestinations;
+    state.defaultDestination = "/home/p";
+    const dialog = await fetchSource(command);
+
+    expect(within(dialog).queryByText(/^Not committed/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^api repo/ }));
+    expect(within(dialog).getByText(/^Not committed/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^web repo/ }));
+    expect(within(dialog).queryByText(/^Not committed/)).toBeNull();
+  });
+
+  it("has nothing to pick with only one destination", async () => {
+    const { command } = server({ stage_skills: () => staged });
+    const dialog = await fetchSource(command);
+    expect(within(dialog).queryByRole("radiogroup")).toBeNull();
+  });
 });
 
 describe("writing a new skill", () => {
@@ -298,8 +368,28 @@ describe("writing a new skill", () => {
 
     const editor = (await screen.findByRole("textbox", { name: "SKILL.md source" })) as HTMLTextAreaElement;
     expect(editor.value).toBe("# review-migrations\n");
-    expect(calls(command, "create_skill")).toEqual([{ name: "review-migrations", description: "Checks migrations" }]);
+    expect(calls(command, "create_skill")).toEqual([
+      { name: "review-migrations", description: "Checks migrations", destination: "" },
+    ]);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("creates it in the destination picked", async () => {
+    const { command, state } = server({ create_skill: (args) => skill(String(args.name)) });
+    state.destinations = projectDestinations;
+    state.defaultDestination = "/home/p";
+    renderPage(command);
+    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /new skill/ }));
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "deploy" } });
+    fireEvent.change(within(dialog).getByLabelText("Description"), { target: { value: "Ships it" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: /^Personal/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(calls(command, "create_skill")).toHaveLength(1));
+    expect(calls(command, "create_skill")[0].destination).toBe("");
   });
 
   it("does not send a name the spec would reject", async () => {
@@ -413,5 +503,47 @@ describe("the commit strip", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Manual" }));
 
     await waitFor(() => expect(calls(command, "skills_git_status")).toHaveLength(2));
+  });
+});
+
+describe("project skills", () => {
+  const ours = skill("brief", { scope: "project", private: true, folder: "/home/p", dir: "/home/p/.agents/skills/brief" });
+  const api = skill("migrate", { scope: "project", folder: "/code/api", dir: "/code/api/.agents/skills/migrate" });
+  const web = skill("lint", { scope: "project", folder: "/code/web", dir: "/code/web/.agents/skills/lint" });
+
+  function renderProject(skills: Skill[]) {
+    const { command, state } = server({}, skills);
+    state.destinations = projectDestinations;
+    state.defaultDestination = "/home/p";
+    render(<SkillsTab command={command} scope={{ kind: "project", projectId: "p1", projectName: "p" }} />);
+    return command;
+  }
+
+  it("lists the project's own apart from the repo's, titled by its folder", async () => {
+    renderProject([ours, api]);
+
+    const project = await screen.findByRole("region", { name: "This project" });
+    expect(within(project).getByRole("button", { name: /^brief\b/ })).toBeTruthy();
+    const repo = screen.getByRole("region", { name: "api repo" });
+    expect(within(repo).getByRole("button", { name: /^migrate\b/ })).toBeTruthy();
+    expect(within(repo).queryByRole("button", { name: /^brief\b/ })).toBeNull();
+  });
+
+  it("names each row's repo when the skills are in several", async () => {
+    renderProject([api, web]);
+
+    const repos = await screen.findByRole("region", { name: "Repos" });
+    expect(within(repos).getByRole("button", { name: /^migrate\b/ }).textContent).toContain("api repo");
+    expect(within(repos).getByRole("button", { name: /^lint\b/ }).textContent).toContain("web repo");
+  });
+
+  it("says a skill is not committed, on its row and in full when opened", async () => {
+    renderProject([{ ...api, uncommitted: true }, web]);
+
+    expect((await screen.findByRole("button", { name: /^migrate\b/ })).textContent).toContain("Not committed");
+    expect(screen.getByRole("button", { name: /^lint\b/ }).textContent).not.toContain("Not committed");
+
+    await openSkill("migrate");
+    expect(screen.getByText(/won't see it until it is/).parentElement?.textContent).toContain("api repo");
   });
 });
