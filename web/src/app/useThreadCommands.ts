@@ -150,9 +150,9 @@ export function useThreadCommands({
     [activeId, clientRef],
   );
 
-  // After a sign-in, so a server the live session took before it had a
-  // token reconnects with one. Best effort: a session that has gone picks
-  // the token up when it starts again.
+  // After a sign-in, so a server the live session was turned away by
+  // reconnects now the proxy has a token for it. Best effort: a session that
+  // has gone reaches it when it starts again.
   const reconnectMcp = useCallback(
     (name: string, project?: string) => {
       if (!activeId) return;
