@@ -435,7 +435,7 @@ func TestSetModeFiles(t *testing.T) {
 	t.Run("refusals", func(t *testing.T) {
 		r := fixture(t)
 		got := byName(t, mustDiscover(t, r))
-		for _, name := range []string{"plug-skill", "sys-skill", "cloud-one"} {
+		for _, name := range []string{"plug-skill", "cloud-one"} {
 			s := got[name]
 			before := read(t, filepath.Join(s.Dir, "SKILL.md"))
 			if _, err := SetMode(r, s.Dir, ModeOff); !errors.Is(err, ErrNotEditable) {

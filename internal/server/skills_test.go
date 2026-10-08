@@ -83,3 +83,40 @@ func TestSkillSwitchesOverTheWire(t *testing.T) {
 		t.Errorf("the bundled switch was not written to the temp home: %v", err)
 	}
 }
+
+func TestClaudeBuiltinSwitchesOverTheWire(t *testing.T) {
+	c, _ := commandConn(t)
+	type listed struct {
+		ClaudeBundled  bool                   `json:"claudeBundled"`
+		ClaudeBuiltins []skills.ClaudeBuiltin `json:"claudeBuiltins"`
+	}
+	modeOf := func(l listed, name string) string {
+		for _, b := range l.ClaudeBuiltins {
+			if b.Name == name {
+				return b.Mode
+			}
+		}
+		return ""
+	}
+	// No probe: the names known without asking the CLI are still listed.
+	got := call[listed](t, c, "list_skills", map[string]any{})
+	if !got.ClaudeBundled || modeOf(got, "security-review") != skills.ModeOn {
+		t.Fatalf("listed = %+v", got)
+	}
+
+	if b := call[skills.ClaudeBuiltin](t, c, "set_claude_builtin", map[string]any{"name": "security-review", "on": false}); b.Mode != skills.ModeOff {
+		t.Errorf("set_claude_builtin off = %+v", b)
+	}
+	if got := call[map[string]bool](t, c, "set_claude_bundled", map[string]any{"on": false}); got["claudeBundled"] {
+		t.Errorf("set_claude_bundled off = %v", got)
+	}
+	got = call[listed](t, c, "list_skills", map[string]any{})
+	if got.ClaudeBundled || modeOf(got, "keybindings-help") != skills.ModeOff {
+		t.Errorf("listed with the group off = %+v", got)
+	}
+	call[map[string]bool](t, c, "set_claude_bundled", map[string]any{"on": true})
+	got = call[listed](t, c, "list_skills", map[string]any{})
+	if modeOf(got, "security-review") != skills.ModeOff || modeOf(got, "keybindings-help") != skills.ModeOn {
+		t.Errorf("the group came back without each skill's own switch: %+v", got)
+	}
+}

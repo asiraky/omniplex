@@ -139,6 +139,12 @@ func (a *Adapter) resolve(ctx context.Context) (resolved, adapter.Availability) 
 	})
 }
 
+// Executable is the Claude Code install this adapter drives, found the same
+// way a session finds it.
+func (a *Adapter) Executable() (string, bool) {
+	return a.findClaude()
+}
+
 // findClaude walks the places a Claude Code install can be, most explicit
 // first. It never falls back to something we ship, because we ship none.
 func (a *Adapter) findClaude() (string, bool) {
