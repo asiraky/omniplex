@@ -335,3 +335,8 @@ var (
 	_ adapter.MCPHost    = (*Adapter)(nil)
 	_ adapter.MCPControl = (*session)(nil)
 )
+
+// ProjectMCPServers is not written yet.
+func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, dir string) ([]adapter.ConfiguredMCPServer, error) {
+	return nil, nil
+}

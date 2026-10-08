@@ -391,6 +391,11 @@ func (s *session) ReconnectMCP(ctx context.Context, server adapter.MCPServer) er
 	return adapter.ErrMCPUnsupported
 }
 
+// ProjectMCPServers is not written yet.
+func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, dir string) ([]adapter.ConfiguredMCPServer, error) {
+	return nil, nil
+}
+
 var (
 	_ adapter.MCPHost    = (*Adapter)(nil)
 	_ adapter.MCPControl = (*session)(nil)

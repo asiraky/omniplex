@@ -31,6 +31,10 @@ func (h *fakeHost) ConfiguredMCPServers(_ context.Context, env map[string]string
 	return h.byDir[env["DIR"]], nil
 }
 
+func (h *fakeHost) ProjectMCPServers(_ context.Context, _ map[string]string, dir string) ([]adapter.ConfiguredMCPServer, error) {
+	return nil, nil
+}
+
 func newConns(t *testing.T, client *http.Client, hosts ...Host) *Connections {
 	t.Helper()
 	return NewConnections(newStore(t), client, 4321, func() []Host { return hosts }, t.Logf)

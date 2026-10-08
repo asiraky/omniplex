@@ -64,6 +64,10 @@ func (m *mcpAdapter) ConfiguredMCPServers(context.Context, map[string]string) ([
 	return nil, nil
 }
 
+func (m *mcpAdapter) ProjectMCPServers(context.Context, map[string]string, string) ([]adapter.ConfiguredMCPServer, error) {
+	return nil, nil
+}
+
 func (m *mcpAdapter) CreateSession(ctx context.Context, host adapter.HostServices, o adapter.CreateOptions) (adapter.Session, error) {
 	m.mu.Lock()
 	m.got = o.MCPServers
