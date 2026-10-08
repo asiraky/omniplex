@@ -31,7 +31,15 @@ re-read the link), waits for it to answer, and prints:
   log     .omniplex/dev.log
 ```
 
-Give the user all three lines. Reasoning:
+Give the user all three, as plain text: each URL bare on its own line, so the
+chat autolinks it and one tap opens it. Keep URLs out of code fences, backticks
+and `[label](url)` syntax: all three reach the user as unclickable text. Like this:
+
+open: http://omni.tailb9bafe.ts.net:8800
+pair: http://omni.tailb9bafe.ts.net:8800/pair#c=NLNKWRWAJEZV43WE
+code: NLNK-WRWA-JEZV-43WE
+
+Reasoning:
 
 - **open** is the tailnet address off the startup banner, which is the only one
   that works from the phone. Never hand over `127.0.0.1` or a `10.x`/`172.x`
