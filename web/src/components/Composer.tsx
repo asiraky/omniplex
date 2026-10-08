@@ -262,6 +262,8 @@ export function Composer({
         <CommandMenu
           open={menu.open}
           anchor={textarea}
+          anchorRef={textareaRef}
+          onDismiss={menu.dismiss}
           matches={menu.matches}
           activeIndex={menu.activeIndex}
           loading={catalogue.loading}

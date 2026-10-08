@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import type { ReactElement, RefObject } from "react";
 
 import {
   Command,
@@ -24,11 +24,16 @@ interface MenuListProps {
 export function CommandMenu({
   open,
   anchor,
+  anchorRef,
+  onDismiss,
   ...list
 }: MenuListProps & {
   open: boolean;
   /** The textarea the menu completes into. */
   anchor: ReactElement;
+  anchorRef: RefObject<HTMLElement | null>;
+  /** Keeps the menu shut for the current token. */
+  onDismiss: () => void;
 }) {
   return (
     <Popover open={open}>
@@ -39,7 +44,14 @@ export function CommandMenu({
         // Flipping below would cover the textarea; the list shrinks to fit instead.
         avoidCollisions={false}
         onOpenAutoFocus={(event) => event.preventDefault()}
-        className="w-[min(40rem,calc(100vw-2rem))] p-0"
+        // A phone has no Escape: a tap anywhere but the textarea closes the
+        // menu, and refocusing the same token must not bring it back.
+        onPointerDownOutside={(event) => {
+          if (!anchorRef.current?.contains(event.target as Node)) onDismiss();
+        }}
+        // Never wider than the textarea: with collisions off, nothing would
+        // shift a wider menu back on screen.
+        className="w-[min(40rem,var(--radix-popover-trigger-width))] p-0"
       >
         <MenuList {...list} />
       </PopoverContent>
@@ -50,6 +62,7 @@ export function CommandMenu({
 function MenuList({ matches, activeIndex, loading, onHover, onChoose }: MenuListProps) {
   return (
     <Command shouldFilter={false} className="bg-transparent">
+      {/* The 2px is the popover's border, so the list never overflows the space above. */}
       <CommandList className="max-h-[min(45dvh,18rem,calc(var(--radix-popover-content-available-height)-2px))]">
         <CommandEmpty>{loading ? "Loading commands…" : "No matching command."}</CommandEmpty>
         <CommandGroup>

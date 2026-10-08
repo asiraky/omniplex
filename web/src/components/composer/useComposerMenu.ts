@@ -203,6 +203,7 @@ export function useComposerMenu({
     setFocused,
     focusAt,
     choose,
+    dismiss,
     onKey,
   };
 }

@@ -695,7 +695,7 @@ describe("composer drafts", () => {
     expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
   });
 
-  it("dismisses completion with Escape on a phone", async () => {
+  it("dismisses completion with Escape", async () => {
     useCatalogue();
     await boot("phone");
     await open("a");
@@ -710,6 +710,36 @@ describe("composer drafts", () => {
     fireEvent.keyDown(composer(), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     expect(composer().value).toBe("$al");
+  });
+
+  it("keeps completion shut after a tap outside, until the token changes", async () => {
+    useCatalogue();
+    await boot("phone");
+    await open("a");
+
+    fireEvent.focus(composer());
+    fireEvent.change(composer(), { target: { value: "$al", selectionStart: 3 } });
+    await screen.findByRole("listbox");
+
+    // Radix arms its outside-press listener a tick after the menu opens, and
+    // holds a primary press until the click that completes it.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    const tap = (target: Element) => {
+      fireEvent.pointerDown(target, { button: 0, ctrlKey: false });
+      fireEvent.click(target);
+    };
+
+    // A tap in the textarea itself is moving the cursor, not closing the menu.
+    tap(composer());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+
+    tap(document.body);
+    fireEvent.blur(composer());
+    fireEvent.focus(composer());
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+
+    fireEvent.change(composer(), { target: { value: "$alp", selectionStart: 4 } });
+    expect(await screen.findByRole("listbox")).toBeTruthy();
   });
 
   it("keeps a new thread's draft while the list has not caught up with it", async () => {
