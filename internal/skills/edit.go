@@ -218,6 +218,9 @@ func Create(r Roots, name, description, folder string) (Skill, error) {
 			taken = append(taken, d)
 		}
 	} else {
+		if err := checkProjectPaths(dest.Folder); err != nil {
+			return Skill{}, err
+		}
 		library = projectLibrary(dest.Folder)
 		taken = []string{library, filepath.Join(dest.Folder, ".claude", "skills"), filepath.Join(dest.Folder, ".pi", "skills")}
 	}

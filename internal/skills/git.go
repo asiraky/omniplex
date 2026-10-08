@@ -207,11 +207,12 @@ func MarkUncommitted(ctx context.Context, r Roots, skills []Skill) {
 }
 
 // uncommittedSkills names every skill folder or link under a checkout's
-// skills dirs that has something git has not committed.
+// skills dirs that has something git has not committed. Ignored files count:
+// a new worktree does not get them either.
 func uncommittedSkills(ctx context.Context, dir string) (map[string]bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := libraryGit(ctx, dir, "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all",
+	out, err := libraryGit(ctx, dir, "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--ignored",
 		"--", ".agents/skills", ".claude/skills", ".pi/skills")
 	if err != nil {
 		return nil, err

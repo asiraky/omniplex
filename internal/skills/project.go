@@ -87,6 +87,46 @@ func projectLibrary(folder string) string {
 	return filepath.Join(folder, filepath.FromSlash(libraryDir))
 }
 
+// projectPaths are what a project install writes, under the folder.
+var projectPaths = []string{libraryDir, ".claude/skills", ".pi/skills", LockFile}
+
+// checkProjectPaths refuses a folder where one of projectPaths leads outside
+// it through a symlink. The folder is often somebody else's repo, and a
+// committed skills-lock.json or .agents/skills link would otherwise send our
+// writes anywhere on the machine.
+func checkProjectPaths(folder string) error {
+	for _, rel := range projectPaths {
+		if !landsInside(folder, filepath.FromSlash(rel)) {
+			return fmt.Errorf("%w: %s in %s leads outside it", ErrInvalid, rel, folder)
+		}
+	}
+	return nil
+}
+
+// landsInside reports whether rel under folder, followed through whatever
+// part of it exists, stays inside folder.
+func landsInside(folder, rel string) bool {
+	top, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		return false
+	}
+	want := filepath.Join(folder, rel)
+	for at := want; ; at = filepath.Dir(at) {
+		if real, err := filepath.EvalSymlinks(at); err == nil {
+			rest, err := filepath.Rel(at, want)
+			return err == nil && within(top, filepath.Join(real, rest))
+		}
+		// A dangling link is a link all the same: where it would lead is
+		// not ours to guess.
+		if info, err := os.Lstat(at); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		if at == folder || at == filepath.Dir(at) {
+			return false
+		}
+	}
+}
+
 // linkIntoProject gives Claude, and pi where the folder already has a .pi,
 // a link to a skill in the folder's library, as the skills CLI's project
 // install does. The link is written relative, so it survives a clone, a
@@ -219,6 +259,9 @@ var errUnchanged = errors.New("unchanged")
 // it back. The lock is the skills CLI's file as much as ours, so every entry
 // and field Omniplex did not write survives.
 func updateProjectLock(folder string, fn func(skills map[string]json.RawMessage) error) error {
+	if err := checkProjectPaths(folder); err != nil {
+		return err
+	}
 	recordMu.Lock()
 	defer recordMu.Unlock()
 	top, skills, err := loadProjectLock(folder)

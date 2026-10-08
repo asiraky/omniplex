@@ -217,6 +217,32 @@ func TestInstallRefusesALockItCannotRead(t *testing.T) {
 	}
 }
 
+func TestProjectWritesStayInTheFolder(t *testing.T) {
+	for _, rel := range []string{".agents", ".agents/skills", ".claude/skills", LockFile} {
+		t.Run(rel, func(t *testing.T) {
+			staging(t)
+			r := project(t)
+			outside := filepath.Join(t.TempDir(), "elsewhere")
+			mkdir(t, outside)
+			at := filepath.Join(r.ProjectRoot, filepath.FromSlash(rel))
+			mkdir(t, filepath.Dir(at))
+			if err := os.Symlink(outside, at); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := stageLocal(t, r, twoSkills)
+			if _, err := InstallStaged(r, got.ID, []string{"one"}, r.ProjectRoot); err == nil {
+				t.Error("installed through a link out of the folder")
+			}
+			if _, err := Create(r, "fresh", "New", r.ProjectRoot); err == nil {
+				t.Error("created through a link out of the folder")
+			}
+			if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+				t.Errorf("wrote outside the folder: %v", entries)
+			}
+		})
+	}
+}
+
 func TestADestinationNotOfferedIsRefused(t *testing.T) {
 	staging(t)
 	r := project(t)
@@ -433,6 +459,17 @@ func TestMarkUncommitted(t *testing.T) {
 	git(t, r.ProjectRoot, "commit", "-qm", "two")
 	if m := marked(r); !m["two"] {
 		t.Errorf("two's link is not committed: %v", m)
+	}
+
+	// Ignored is not committed either: a new worktree gets none of it.
+	write(t, filepath.Join(r.ProjectRoot, ".gitignore"), ".agents/skills/home-made/\n.claude/skills/home-made\n")
+	git(t, r.ProjectRoot, "add", ".")
+	git(t, r.ProjectRoot, "commit", "-qm", "ignore")
+	if _, err := Create(r, "home-made", "Ignored", r.ProjectRoot); err != nil {
+		t.Fatal(err)
+	}
+	if m := marked(r); !m["home-made"] {
+		t.Errorf("an ignored skill is not marked: %v", m)
 	}
 
 	// A worktree's checkout is not the main one: nothing to warn about.

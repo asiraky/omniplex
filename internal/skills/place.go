@@ -154,6 +154,9 @@ func InstallStaged(r Roots, id string, names []string, folder string) ([]Skill, 
 		}
 	} else {
 		library, hashDir = projectLibrary(dest.Folder), cliHash
+		if err := checkProjectPaths(dest.Folder); err != nil {
+			return nil, err
+		}
 		// A lock this cannot write is refused before the folder is touched.
 		if _, _, err := loadProjectLock(dest.Folder); err != nil {
 			return nil, err
