@@ -154,6 +154,7 @@ func newHeldCard(t toolThread, kind string) *heldCard {
 // discard lets go of what a card holds outside memory.
 func (c *heldCard) discard() {
 	if c.stagedID != "" {
+		skills.ReleaseStaged(c.stagedID)
 		_ = skills.DiscardStaged(c.stagedID)
 	}
 }
@@ -581,6 +582,7 @@ func (s *Server) applySkillCard(ctx context.Context, c *heldCard, e cardEdits, h
 		for _, p := range placed {
 			names = append(names, p.Name)
 		}
+		skills.ReleaseStaged(c.stagedID)
 		c.stagedID = "" // InstallStaged dropped it
 	} else {
 		created, err := skills.Create(roots, c.skillName, c.description, folder)

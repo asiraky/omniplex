@@ -207,6 +207,8 @@ export interface CardSignIn {
   title: string;
   description?: string;
   begin: AuthBeginArgs;
+  /** A server already in the thread's live session, which has to reconnect to use the sign-in. */
+  reconnect?: { name: string; project?: string };
 }
 
 /**
@@ -224,6 +226,7 @@ export function signInTargets(outcome: CardOutcome | undefined, origin: string):
       title: `Sign in to ${name}`,
       description: "Open the sign-in page and approve. This closes by itself.",
       begin: { mcpServer: name, ...(project ? { mcpProject: project } : {}), origin },
+      ...(outcome.live === "now" ? { reconnect: { name, ...(project ? { project } : {}) } } : {}),
     });
   }
   const cli = outcome.cli;

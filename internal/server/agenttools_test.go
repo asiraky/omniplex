@@ -1056,6 +1056,25 @@ func TestRedactAgentToolInput(t *testing.T) {
 	if got := string(RedactAgentToolInput("omniplex/add_mcp_server", unreadable)); strings.Contains(got, "hunter2") {
 		t.Errorf("an unreadable config kept its text: %s", got)
 	}
+	// Every server in a paste, though Parse reads only the first, and a value
+	// that JSON or TOML had to escape.
+	for _, cfg := range []string{
+		`{"mcpServers":{"a":{"url":"https://a.example/mcp","headers":{"Authorization":"Bearer first-key"}},` +
+			`"b":{"command":"b-server","env":{"B_TOKEN":"second-key"}},"c":{"url":"https://c.example","headers":{"X-Key":"q\"uote\\d"}}}}`,
+		"[mcp_servers.a]\nurl = \"https://a.example/mcp\"\nhttp_headers = { Authorization = \"Bearer first-key\" }\n" +
+			"[mcp_servers.b]\ncommand = \"b-server\"\nenv = { B_TOKEN = \"second-key\" }\n[mcp_servers.c]\nurl = \"https://c.example\"\nhttp_headers = { X-Key = \"q\\\"uote\\\\d\" }\n",
+	} {
+		in, _ := json.Marshal(map[string]string{"config": cfg})
+		got := string(RedactAgentToolInput("omniplex/add_mcp_server", in))
+		for _, secret := range []string{"first-key", "second-key", "uote"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("%s kept: %s", secret, got)
+			}
+		}
+		if !strings.Contains(got, "b-server") {
+			t.Errorf("masked more than the values: %s", got)
+		}
+	}
 	// A short value does not take bites out of words around it.
 	short, _ := json.Marshal(map[string]string{"config": "claude mcp add -e A=1 db -- server1 --port 1"})
 	if got := string(RedactAgentToolInput("omniplex/add_mcp_server", short)); !strings.Contains(got, "server1") || strings.Contains(got, "port 1\"") {

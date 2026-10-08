@@ -131,6 +131,7 @@ export function ThreadView({
             description={signIn.description}
             begin={signIn.begin}
             onFinished={() => {
+              if (signIn.reconnect) commands.reconnectMcp(signIn.reconnect.name, signIn.reconnect.project);
               setSignIn(null);
               toast.success("Signed in");
             }}

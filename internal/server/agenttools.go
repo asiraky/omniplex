@@ -12,10 +12,12 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/artefact"
@@ -625,6 +627,7 @@ func (s *Server) proposeSkill(ctx context.Context, t toolThread, c *heldCard, ca
 			return "", badArgs("could not fetch %s: %v", source, err)
 		}
 		c.stagedID = staged.ID
+		skills.HoldStaged(staged.ID)
 		if len(a.Skills) > 0 {
 			for _, name := range a.Skills {
 				if !slices.ContainsFunc(staged.Skills, func(sk skills.StagedSkill) bool { return sk.Name == name }) {
@@ -839,10 +842,14 @@ func RedactAgentToolInput(toolName string, input json.RawMessage) json.RawMessag
 			unreadable = true
 			continue
 		}
-		for _, values := range []map[string]string{d.Env, d.Headers} {
-			for _, val := range values {
-				secrets = append(secrets, secretForms(val)...)
+		values := configValues(cfg)
+		for _, m := range []map[string]string{d.Env, d.Headers} {
+			for _, val := range m {
+				values = append(values, val)
 			}
+		}
+		for _, val := range values {
+			secrets = append(secrets, secretForms(val)...)
 		}
 	}
 	// Longest first, so a value is masked whole before a part of it is.
@@ -872,16 +879,77 @@ func collectConfigs(v any, out *[]string) {
 	}
 }
 
+// configValues is every env and header value in a JSON or TOML config, of
+// every server in it: Parse reads only the first, and the others' values are
+// in the stored input all the same. Nil for a command line.
+func configValues(cfg string) []string {
+	cfg = strings.TrimSpace(cfg)
+	var doc any
+	switch {
+	case strings.HasPrefix(cfg, "{") || strings.HasPrefix(cfg, `"`):
+		if json.Unmarshal([]byte(cfg), &doc) != nil {
+			// A fragment copied out of a bigger file, as Parse takes it.
+			_ = json.Unmarshal([]byte("{"+strings.TrimSuffix(cfg, ",")+"}"), &doc)
+		}
+	case strings.HasPrefix(cfg, "[") || strings.HasPrefix(cfg, "mcp_servers."):
+		var m map[string]any
+		if _, err := toml.Decode(cfg, &m); err == nil {
+			doc = m
+		}
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, val := range x {
+				if values, ok := val.(map[string]any); ok && valueKeys[strings.ToLower(k)] {
+					for _, value := range values {
+						if s, ok := value.(string); ok {
+							out = append(out, s)
+						}
+					}
+					continue
+				}
+				walk(val)
+			}
+		case []any:
+			for _, val := range x {
+				walk(val)
+			}
+		}
+	}
+	walk(doc)
+	return out
+}
+
+// valueKeys are the keys a config keeps env and header values under.
+var valueKeys = map[string]bool{"env": true, "headers": true, "http_headers": true}
+
 // secretForms is a value and, for one with a scheme in front ("Bearer
-// abc"), the credential alone, which is how a config can give it.
+// abc"), the credential alone, which is how a config can give it. Each also
+// in the escaped form a JSON or TOML string writes it in, which is how it
+// stands in a config pasted as either.
 func secretForms(val string) []string {
 	val = strings.TrimSpace(val)
 	if val == "" {
 		return nil
 	}
-	out := []string{val}
+	plain := []string{val}
 	if _, rest, ok := strings.Cut(val, " "); ok && strings.TrimSpace(rest) != "" {
-		out = append(out, strings.TrimSpace(rest))
+		plain = append(plain, strings.TrimSpace(rest))
+	}
+	out := plain
+	for _, p := range plain {
+		quoted := strconv.Quote(p)
+		if esc := quoted[1 : len(quoted)-1]; esc != p {
+			out = append(out, esc)
+		}
+		if b, err := json.Marshal(p); err == nil {
+			if esc := string(b[1 : len(b)-1]); esc != p {
+				out = append(out, esc)
+			}
+		}
 	}
 	return out
 }

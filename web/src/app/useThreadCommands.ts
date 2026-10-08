@@ -150,6 +150,19 @@ export function useThreadCommands({
     [activeId, clientRef],
   );
 
+  // After a sign-in, so a server the live session took before it had a
+  // token reconnects with one. Best effort: a session that has gone picks
+  // the token up when it starts again.
+  const reconnectMcp = useCallback(
+    (name: string, project?: string) => {
+      if (!activeId) return;
+      clientRef.current
+        ?.command("thread_mcp_reconnect", { threadId: activeId, name, ...(project ? { project } : {}) })
+        .catch(() => {});
+    },
+    [activeId, clientRef],
+  );
+
   const loadComposerItems = useMemo(
     () => composerItemsLoader(clientRef, activeId, composerRevision),
     [clientRef, activeId, composerRevision],
@@ -207,6 +220,7 @@ export function useThreadCommands({
     resolvePermission,
     resolveElicitation,
     resolveCard,
+    reconnectMcp,
     loadComposerItems,
     runComposerAction,
     runClientComposerAction,

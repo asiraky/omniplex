@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -170,8 +171,35 @@ func within(parent, path string) bool {
 	return err == nil && rel != "." && filepath.IsLocal(rel)
 }
 
+// held is the staging dirs something still answers for, however old: a card
+// can wait on a phone for hours.
+var held = struct {
+	sync.Mutex
+	ids map[string]bool
+}{ids: map[string]bool{}}
+
+// HoldStaged keeps a staging dir from the sweep until ReleaseStaged.
+func HoldStaged(id string) {
+	held.Lock()
+	held.ids[id] = true
+	held.Unlock()
+}
+
+// ReleaseStaged hands a staging dir back to the sweep.
+func ReleaseStaged(id string) {
+	held.Lock()
+	delete(held.ids, id)
+	held.Unlock()
+}
+
+func isHeld(id string) bool {
+	held.Lock()
+	defer held.Unlock()
+	return held.ids[id]
+}
+
 // sweepStages removes staging dirs nobody came back for: a dialog closed by
-// killing the tab never sends its discard.
+// killing the tab never sends its discard. A held one stays.
 func sweepStages(now time.Time) {
 	tmp := os.TempDir()
 	entries, err := os.ReadDir(tmp)
@@ -180,7 +208,7 @@ func sweepStages(now time.Time) {
 	}
 	for _, e := range entries {
 		id, ok := strings.CutPrefix(e.Name(), stagePrefix)
-		if !ok || !stageIDRe.MatchString(id) {
+		if !ok || !stageIDRe.MatchString(id) || isHeld(id) {
 			continue
 		}
 		// Info is an lstat, so a symlink of that name is left alone.
