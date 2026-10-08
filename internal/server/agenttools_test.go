@@ -35,6 +35,8 @@ type mcpTestAdapter struct {
 	scheduleBrowserAdapter
 	id      string
 	control bool
+	// refuse has a reconnect fail as a server that wants a sign-in does.
+	refuse bool
 
 	mu         sync.Mutex
 	reconnects []adapter.MCPServer
@@ -78,6 +80,9 @@ func (s *mcpTestSession) ReconnectMCP(_ context.Context, def adapter.MCPServer) 
 	s.owner.mu.Lock()
 	s.owner.reconnects = append(s.owner.reconnects, def)
 	s.owner.mu.Unlock()
+	if s.owner.refuse {
+		return errors.New("HTTP 401")
+	}
 	return nil
 }
 
@@ -984,8 +989,27 @@ func TestARemoteServerThatWantsASignInSaysSo(t *testing.T) {
 		t.Fatal(errMsg)
 	}
 	wait(t, reply)
-	if !out.NeedsSignIn {
+	if !out.NeedsSignIn || out.Live != liveNow {
 		t.Errorf("outcome %+v", out)
+	}
+}
+
+func TestARemoteServerRefusedForWantOfASignInWaitsForIt(t *testing.T) {
+	r := newToolRig(t)
+	r.ctl.refuse = true
+	threadID, _ := r.projectThread(r.ctl.id)
+	reply := r.start(context.Background(), threadID, "add_mcp_server", map[string]any{"config": "https://" + signInHost + "/mcp"})
+	pending, _ := r.waitCard(threadID, 1)
+	out, errMsg := r.resolve(threadID, pending.RequestID, "accept", nil)
+	if errMsg != "" {
+		t.Fatal(errMsg)
+	}
+	got := wait(t, reply)
+	if !out.NeedsSignIn || out.Live != liveAfterSignIn {
+		t.Errorf("outcome %+v", out)
+	}
+	if !strings.Contains(got.text, "not a header to change") {
+		t.Errorf("the agent was told %q", got.text)
 	}
 }
 

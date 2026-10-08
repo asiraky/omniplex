@@ -42,6 +42,9 @@ const (
 	liveNow         = "now"
 	liveNextTurn    = "next_turn"
 	liveNextSession = "next_session"
+	// liveAfterSignIn is a server the live session took but cannot reach
+	// until the user signs in, and reconnects to once they have.
+	liveAfterSignIn = "after_sign_in"
 )
 
 // cardBook is the cards the server holds, by request id.
@@ -519,14 +522,16 @@ func (s *Server) applyAddServer(ctx context.Context, c *heldCard, e cardEdits, h
 			return out, changed, nil
 		}
 	}
-	out.Live = s.mcpLive(ctx, c.thread, harness, d)
+	out.Live = s.mcpLive(ctx, c.thread, harness, d, out.NeedsSignIn)
 	return out, changed, nil
 }
 
 // mcpLive pushes a saved server into the thread's live session when the
 // harness can take it there, and says when the agent gets it. "" when the
-// thread's harness does not run it at all.
-func (s *Server) mcpLive(ctx context.Context, threadID, harness string, d mcp.Draft) string {
+// thread's harness does not run it at all. A server that wants a sign-in is
+// refused until it has one (the proxy has no token to put on its requests),
+// but the session keeps it, and the card reconnects it after the sign-in.
+func (s *Server) mcpLive(ctx context.Context, threadID, harness string, d mcp.Draft, needsSignIn bool) string {
 	kind := "http"
 	if d.URL == "" {
 		kind = "stdio"
@@ -540,13 +545,17 @@ func (s *Server) mcpLive(ctx context.Context, threadID, harness string, d mcp.Dr
 	if !runs {
 		return ""
 	}
-	if err := s.mgr.ReconnectMCP(ctx, threadID, d.Name); err != nil {
-		if !errors.Is(err, adapter.ErrMCPUnsupported) {
-			s.logf("mcp %s into thread %s: %v", d.Name, threadID, err)
-		}
+	err := s.mgr.ReconnectMCP(ctx, threadID, d.Name)
+	switch {
+	case err == nil:
+		return liveNow
+	case errors.Is(err, adapter.ErrMCPUnsupported):
 		return liveNextSession
+	case needsSignIn:
+		return liveAfterSignIn
 	}
-	return liveNow
+	s.logf("mcp %s into thread %s: %v", d.Name, threadID, err)
+	return liveNextSession
 }
 
 func (s *Server) applySkillCard(ctx context.Context, c *heldCard, e cardEdits, harness string) (cardOutcome, []string, error) {
@@ -717,10 +726,12 @@ func savedText(c *heldCard, out cardOutcome, changed []string) string {
 			b.WriteString(" It is connected to this session now; its tools are yours to use.")
 		case out.Live == liveNextSession:
 			b.WriteString(" This session cannot take it while it runs: its tools arrive in the next session.")
+		case out.Live == liveAfterSignIn:
+			b.WriteString(" It needs a sign-in, which the user does from the card. Until then this session reports it as failed with an HTTP 401 about its Authorization header: that is the missing sign-in, not a header to change. Once the user signs in it reconnects to this session.")
 		default:
 			b.WriteString(" This thread's agent does not run this kind of MCP server.")
 		}
-		if out.NeedsSignIn {
+		if out.NeedsSignIn && out.Live != liveAfterSignIn {
 			b.WriteString(" It needs a sign-in, which the user does from the card; until then its tools fail.")
 		}
 	case cardRemoveServer:

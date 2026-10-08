@@ -196,6 +196,7 @@ export const LIVE_TEXT: Record<NonNullable<CardOutcome["live"]>, string> = {
   now: "In use now",
   next_turn: "From the next turn",
   next_session: "From the next session",
+  after_sign_in: "In use once you sign in",
 };
 
 export const SHADOWED_TEXT = "This project's own is used here";
@@ -232,7 +233,7 @@ export function signInTargets(outcome: CardOutcome | undefined, origin: string):
       title: `Sign in to ${name}`,
       description: "Open the sign-in page and approve. This closes by itself.",
       begin: { mcpServer: name, ...(project ? { mcpProject: project } : {}), origin },
-      ...(outcome.live === "now" || outcome.live === "next_session"
+      ...(outcome.live === "now" || outcome.live === "after_sign_in" || outcome.live === "next_session"
         ? { reconnect: { name, ...(project ? { project } : {}) } }
         : {}),
     });

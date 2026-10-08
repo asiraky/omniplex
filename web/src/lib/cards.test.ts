@@ -239,6 +239,7 @@ describe("signInTargets", () => {
   it("reconnects the live session after signing in when the thread's agent runs the server", () => {
     const base: CardOutcome = { result: "saved", server: { name: "linear", project: "p1" }, needsSignIn: true };
     expect(signInTargets({ ...base, live: "now" }, origin)[0].reconnect).toEqual({ name: "linear", project: "p1" });
+    expect(signInTargets({ ...base, live: "after_sign_in" }, origin)[0].reconnect).toEqual({ name: "linear", project: "p1" });
     // A push the server turned away before the sign-in is retried after it.
     expect(signInTargets({ ...base, live: "next_session" }, origin)[0].reconnect).toEqual({ name: "linear", project: "p1" });
     expect(signInTargets({ ...base, live: undefined }, origin)[0].reconnect).toBeUndefined();

@@ -344,7 +344,7 @@ export interface CardOutcome {
   cli?: { id: string; name?: string; accounts: string[] };
   skills?: string[];
   destination?: string;
-  live?: "now" | "next_turn" | "next_session";
+  live?: "now" | "next_turn" | "next_session" | "after_sign_in";
   /** A server saved everywhere that this project's own server of the same name stands in for here. */
   shadowed?: boolean;
 }
