@@ -29,11 +29,14 @@ function KindChoice({ folder, git }: { folder: Folder; git: WorkspaceChoiceState
       id: "main",
       label: "Main checkout",
       hint: git.mainBranch ? `${git.mainBranch} · ${folder.path}` : folder.path,
+      // A long path cuts off; the sentence below wraps rather than lose its end.
+      truncate: true,
     },
     {
       id: "branch",
       label: "New worktree",
       hint: "New branch in its own git worktree. The main checkout is untouched.",
+      truncate: false,
     },
   ] as const;
   return (
@@ -55,7 +58,12 @@ function KindChoice({ folder, git }: { folder: Folder; git: WorkspaceChoiceState
             )}
           >
             <span className="text-[13px] leading-tight">{k.label}</span>
-            <span className="text-muted-foreground truncate text-[11px] leading-tight">
+            <span
+              className={cn(
+                "text-muted-foreground text-[11px] leading-tight",
+                k.truncate && "truncate",
+              )}
+            >
               {k.hint}
             </span>
           </button>
