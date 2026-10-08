@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { PageCommand } from "~/components/tools/parts";
-import { upsert } from "~/lib/connections";
+import { serverKey, serverRef, upsert } from "~/lib/connections";
 import { errorText } from "~/lib/utils";
 import type { Cli, Connections, FoundServer, McpServer, ThreadMcpReport } from "~/protocol";
 import { useLatest } from "~/useLatest";
 
-const byName = (s: McpServer) => s.name;
 const byId = (c: Cli) => c.id;
 
 export interface ConnectionsStore {
@@ -14,32 +13,43 @@ export interface ConnectionsStore {
   error: string;
   loading: boolean;
   reload: () => void;
+  /** An edit names the server it was by `previousName`, in the same scope. */
   putServer: (s: McpServer, previousName?: string) => void;
-  removeServer: (name: string) => void;
+  removeServer: (s: { name: string; project?: string }) => void;
   /** A found server was added as `s`. */
   foundAdded: (from: FoundServer, s: McpServer) => void;
   putCli: (cli: Cli, previousId?: string) => void;
   removeCli: (id: string) => void;
 }
 
+/** A found entry is added into its project, or everywhere when it has none. */
+const sameScope = (a: { project?: string }, b: { project?: string }) => (a.project ?? "") === (b.project ?? "");
+
 /**
  * Omniplex's MCP servers, what each agent already has, and the sign-ins: read
- * once, the first time a tab that shows them is opened. Every change answers
- * with the changed entry, which is merged in rather than reading it all again.
+ * once, the first time a tab that shows them is opened, and again when the
+ * project in view changes. Every change answers with the changed entry, which
+ * is merged in rather than reading it all again. Servers are keyed by
+ * (project, name): two projects' `linear` and the one everywhere are three.
  */
-export function useConnections(command: PageCommand, wanted: boolean): ConnectionsStore {
+export function useConnections(command: PageCommand, wanted: boolean, projectId?: string): ConnectionsStore {
   const [conn, setConn] = useState<Connections | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [seq, setSeq] = useState(0);
   const commandRef = useLatest(command);
-  const checked = useRef(false);
+  // Servers and sign-ins already checked once, and whether the list in hand
+  // is a fresh read that has not been looked through yet.
+  const checked = useRef(new Set<string>());
+  const fresh = useRef(false);
+  const listedFor = useRef(projectId);
   // Latches on: hiding the tab again must not read the list again.
   const [on, setOn] = useState(wanted);
   if (wanted && !on) setOn(true);
 
   const putServer = useCallback((s: McpServer, previous?: string) => {
-    setConn((c) => c && { ...c, servers: upsert(c.servers, s, byName, previous) });
+    const prev = previous === undefined ? undefined : serverKey({ name: previous, project: s.project });
+    setConn((c) => c && { ...c, servers: upsert(c.servers, s, serverKey, prev) });
   }, []);
   const putCli = useCallback((cli: Cli, previous?: string) => {
     setConn((c) => c && { ...c, clis: upsert(c.clis, cli, byId, previous) });
@@ -48,12 +58,16 @@ export function useConnections(command: PageCommand, wanted: boolean): Connectio
   useEffect(() => {
     if (!on) return;
     let stale = false;
+    // Another project's list is not this one's, even for a moment.
+    if (listedFor.current !== projectId) setConn(null);
+    listedFor.current = projectId;
     setLoading(true);
     setError("");
     commandRef
-      .current<Connections>("list_connections", {})
+      .current<Connections>("list_connections", projectId ? { projectId } : {})
       .then((r) => {
         if (stale) return;
+        fresh.current = true;
         setConn({
           harnesses: r?.harnesses ?? [],
           servers: r?.servers ?? [],
@@ -66,28 +80,35 @@ export function useConnections(command: PageCommand, wanted: boolean): Connectio
     return () => {
       stale = true;
     };
-  }, [on, seq, commandRef]);
+  }, [on, seq, projectId, commandRef]);
 
   // The server never probes on a list, so after a restart everything reads
   // unchecked. Check those once, so the markers mean something; after that
-  // only the Check buttons ask again. An answer is dropped if its entry was
-  // removed, renamed or changed while the check ran: it describes the old one.
+  // only the Check buttons ask again. A read for another project brings new
+  // servers, which get their one check too. An answer is dropped if its entry
+  // was removed, renamed or changed while the check ran: it describes the old
+  // one.
   useEffect(() => {
-    if (!conn || checked.current) return;
-    checked.current = true;
+    if (!conn || !fresh.current) return;
+    fresh.current = false;
+    const once = (key: string) => {
+      if (checked.current.has(key)) return false;
+      checked.current.add(key);
+      return true;
+    };
     for (const s of conn.servers) {
-      if (s.url && s.status === "unchecked") {
+      if (s.url && s.status === "unchecked" && once(`server:${serverKey(s)}`)) {
         commandRef
-          .current<{ server?: McpServer }>("check_mcp_server", { name: s.name })
+          .current<{ server?: McpServer }>("check_mcp_server", serverRef(s))
           .then((r) => {
             const got = r?.server;
-            if (got) setConn((c) => c && (c.servers.includes(s) ? { ...c, servers: upsert(c.servers, got, byName) } : c));
+            if (got) setConn((c) => c && (c.servers.includes(s) ? { ...c, servers: upsert(c.servers, got, serverKey) } : c));
           })
           .catch(() => {});
       }
     }
     for (const cli of conn.clis) {
-      if (cli.accounts.some((a) => a.status === "unchecked")) {
+      if (cli.accounts.some((a) => a.status === "unchecked") && once(`cli:${cli.id}`)) {
         commandRef
           .current<{ cli?: Cli }>("check_cli", { id: cli.id })
           .then((r) => {
@@ -101,13 +122,14 @@ export function useConnections(command: PageCommand, wanted: boolean): Connectio
 
   const reload = useCallback(() => setSeq((n) => n + 1), []);
 
-  const removeServer = useCallback((name: string) => {
+  const removeServer = useCallback((gone: { name: string; project?: string }) => {
+    const key = serverKey(gone);
     setConn(
       (c) =>
         c && {
           ...c,
-          servers: c.servers.filter((s) => s.name !== name),
-          found: c.found.map((f) => (f.name === name ? { ...f, added: false } : f)),
+          servers: c.servers.filter((s) => serverKey(s) !== key),
+          found: c.found.map((f) => (f.name === gone.name && sameScope(f, gone) ? { ...f, added: false } : f)),
         },
     );
   }, []);
@@ -117,8 +139,10 @@ export function useConnections(command: PageCommand, wanted: boolean): Connectio
       (c) =>
         c && {
           ...c,
-          servers: upsert(c.servers, s, byName),
-          found: c.found.map((f) => (f.name === from.name || f.name === s.name ? { ...f, added: true } : f)),
+          servers: upsert(c.servers, s, serverKey),
+          found: c.found.map((f) =>
+            sameScope(f, s) && (f.name === from.name || f.name === s.name) ? { ...f, added: true } : f,
+          ),
         },
     );
   }, []);
@@ -134,12 +158,13 @@ export interface LiveReport {
   report: ThreadMcpReport | null;
   loading: boolean;
   error: string;
-  /** The server being reconnected. */
+  /** The server being reconnected, by name: names are unique in a session. */
   busy: string | null;
   /** The last reconnect that failed, kept with its server's row. */
   failed: { name: string; error: string } | null;
   refresh: () => void;
-  reconnect: (name: string) => Promise<void>;
+  /** `project` is the thread's server's own, for the server's information. */
+  reconnect: (name: string, project?: string) => Promise<void>;
 }
 
 /**
@@ -177,12 +202,15 @@ export function useLiveReport(command: PageCommand, threadId: string | undefined
   const refresh = useCallback(() => setSeq((n) => n + 1), []);
 
   const reconnect = useCallback(
-    async (name: string) => {
+    async (name: string, project?: string) => {
       if (!threadId) return;
       setBusy(name);
       setFailed(null);
       try {
-        const r = await commandRef.current<ThreadMcpReport>("thread_mcp_reconnect", { threadId, name });
+        const r = await commandRef.current<ThreadMcpReport>("thread_mcp_reconnect", {
+          threadId,
+          ...serverRef({ name, project }),
+        });
         setReport({ live: !!r?.live, servers: r?.servers ?? [] });
       } catch (e) {
         setFailed({ name, error: errorText(e) });
@@ -194,4 +222,48 @@ export function useLiveReport(command: PageCommand, threadId: string | undefined
   );
 
   return { report, loading, error, busy, failed, refresh, reconnect };
+}
+
+export interface ProjectOff {
+  error: string;
+  set: (s: McpServer, projectId: string, on: boolean) => Promise<void>;
+}
+
+/**
+ * Turns a server everywhere on or off in one project. The switch moves at
+ * once and goes back if the write fails. A server takes one write at a time,
+ * so two cannot land out of order: a tap while one is on its way is dropped.
+ */
+export function useProjectOff(command: PageCommand, onSaved: (s: McpServer) => void): ProjectOff {
+  const [error, setError] = useState("");
+  const inFlight = useRef(new Set<string>());
+  const commandRef = useLatest(command);
+  const savedRef = useLatest(onSaved);
+
+  const set = useCallback(
+    async (s: McpServer, projectId: string, on: boolean) => {
+      const key = serverKey(s);
+      if (inFlight.current.has(key)) return;
+      inFlight.current.add(key);
+      setError("");
+      const rest = s.offIn.filter((id) => id !== projectId);
+      savedRef.current({ ...s, offIn: on ? rest : [...rest, projectId] });
+      try {
+        const r = await commandRef.current<{ server?: McpServer }>("set_mcp_server_project_off", {
+          name: s.name,
+          projectId,
+          off: !on,
+        });
+        if (r?.server) savedRef.current(r.server);
+      } catch (e) {
+        savedRef.current(s);
+        setError(errorText(e));
+      } finally {
+        inFlight.current.delete(key);
+      }
+    },
+    [commandRef, savedRef],
+  );
+
+  return { error, set };
 }

@@ -14,6 +14,7 @@ const server = (over: Partial<McpServer> = {}): McpServer => ({
   envNames: [],
   headerNames: [],
   off: [],
+  offIn: [],
   oauth: false,
   status: "connected",
   ...over,
@@ -64,16 +65,29 @@ const calls = (command: Command, name: string) =>
 
 type Command = ReturnType<typeof backend>["command"];
 
-function renderPage(command: Command, tab: ToolsTab, threadId?: string) {
+const PROJECTS = [
+  { id: "p1", name: "Bowerbird" },
+  { id: "p2", name: "Recipe Site" },
+];
+
+function renderPage(command: Command, tab: ToolsTab, threadId?: string, projectId?: string) {
+  const scope = threadId
+    ? ({ kind: "thread", threadId, projectId } as const)
+    : projectId
+      ? ({ kind: "project", projectId } as const)
+      : ({ kind: "personal" } as const);
   return render(
     <ToolsPage
       wires={{ command, subscribe: () => () => {} }}
-      scope={threadId ? { kind: "thread", threadId } : { kind: "personal" }}
+      scope={scope}
+      projects={PROJECTS}
       tab={tab}
       onClose={() => {}}
     />,
   );
 }
+
+const region = (name: string) => screen.getByRole("region", { name });
 
 const liveSection = () => screen.getByRole("region", { name: "This thread" });
 
@@ -317,5 +331,171 @@ describe("sign-ins", () => {
     await act(async () => fireEvent.click(await screen.findByRole("button", { name: "Remove account" })));
     expect(calls(command, "remove_cli_account")).toEqual([{ id: "gws", account: "home" }]);
     await waitFor(() => expect(within(accounts).queryByText("home")).toBeNull());
+  });
+});
+
+describe("servers by project", () => {
+  /** Linear everywhere, Bowerbird's own linear and sentry, Gmail everywhere. */
+  function scoped(overrides: Record<string, Handler> = {}, live?: ThreadMcpReport) {
+    const b = backend(
+      {
+        set_mcp_server_project_off: (args) => {
+          const s = b.state.servers.find((x) => !x.project && x.name === args.name)!;
+          return { server: { ...s, offIn: args.off ? [args.projectId as string] : [] } };
+        },
+        ...overrides,
+      },
+      live,
+    );
+    b.state.servers = [
+      server({ name: "linear", url: "https://mcp.linear.app/mcp" }),
+      server({ name: "gmail" }),
+      server({ name: "linear", project: "p1", url: "https://client.example/mcp" }),
+      server({ name: "sentry", project: "p1" }),
+      server({ name: "db", project: "zz9876543210" }),
+    ];
+    return b;
+  }
+
+  it("in a project, lists its own and the ones everywhere, and says which replaces which", async () => {
+    const { command } = scoped();
+    renderPage(command, "mcp", undefined, "p1");
+    await screen.findByRole("region", { name: "This project" });
+    expect(calls(command, "list_connections")).toEqual([{ projectId: "p1" }]);
+
+    const here = region("This project");
+    const everywhere = region("Everywhere");
+    expect(within(here).getAllByRole("listitem").map((b) => b.textContent)).toEqual([
+      expect.stringMatching(/^linear.*instead of the Everywhere one/),
+      expect.stringMatching(/^sentry/),
+    ]);
+    expect(within(everywhere).getByRole("button", { name: /^linear\b/ }).textContent).toMatch(/uses its own instead/);
+    expect(within(everywhere).getByRole("button", { name: /^gmail\b/ }).textContent).not.toMatch(/instead/);
+    // Another project's server is not this project's business.
+    expect(screen.queryByRole("button", { name: /^db\b/ })).toBeNull();
+    // Only the ones everywhere get a switch for this project.
+    expect(within(here).queryAllByRole("switch")).toHaveLength(0);
+    expect(within(everywhere).getAllByRole("switch")).toHaveLength(2);
+  });
+
+  it("turns one everywhere off for this project at once, and back when the write fails", async () => {
+    let fail = false;
+    const { command } = scoped({
+      set_mcp_server_project_off: (args) => {
+        if (fail) throw new Error("disk full");
+        return { server: server({ name: "gmail", offIn: args.off ? ["p1"] : [] }) };
+      },
+    });
+    renderPage(command, "mcp", undefined, "p1");
+    const gmail = await screen.findByRole("switch", { name: "gmail in this project" });
+    expect(gmail.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => fireEvent.click(gmail));
+    expect(calls(command, "set_mcp_server_project_off")).toEqual([{ name: "gmail", projectId: "p1", off: true }]);
+    expect(screen.getByRole("switch", { name: "gmail in this project" }).getAttribute("aria-checked")).toBe("false");
+
+    fail = true;
+    await act(async () => fireEvent.click(screen.getByRole("switch", { name: "gmail in this project" })));
+    expect(calls(command, "set_mcp_server_project_off")[1]).toEqual({ name: "gmail", projectId: "p1", off: false });
+    expect(screen.getByRole("switch", { name: "gmail in this project" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("alert").textContent).toMatch(/disk full/);
+  });
+
+  it("outside a project, folds each project's servers under its name", async () => {
+    const { command } = scoped();
+    renderPage(command, "mcp");
+    await screen.findByRole("region", { name: "Everywhere" });
+    expect(calls(command, "list_connections")).toEqual([{}]);
+    expect(within(region("Everywhere")).getAllByRole("listitem").map((b) => b.textContent)).toEqual([
+      expect.stringMatching(/^gmail/),
+      expect.stringMatching(/^linear/),
+    ]);
+    // An unknown project goes by the start of its ID; each starts folded.
+    const bowerbird = region("Bowerbird");
+    region("zz987654");
+    expect(within(bowerbird).queryByRole("button", { name: /^sentry\b/ })).toBeNull();
+    fireEvent.click(within(bowerbird).getByRole("button", { name: /Bowerbird/ }));
+    expect(within(bowerbird).getByRole("button", { name: /^sentry\b/ })).toBeTruthy();
+    // Nothing replaces anything outside a project, and there are no project switches.
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+  });
+
+  it("acts on the project's own server when its name is used everywhere too", async () => {
+    const { command } = scoped({
+      check_mcp_server: (args) => ({ server: server({ name: String(args.name), project: args.project as string | undefined }) }),
+      remove_mcp_server: () => ({ ok: true }),
+    });
+    renderPage(command, "mcp", undefined, "p1");
+    fireEvent.click(await within(await screen.findByRole("region", { name: "This project" })).findByRole("button", { name: /^linear\b/ }));
+    await screen.findByText(/Remote server · Bowerbird/);
+    const checksBefore = calls(command, "check_mcp_server").length;
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Check" })));
+    expect(calls(command, "check_mcp_server").slice(checksBefore)).toEqual([{ name: "linear", project: "p1" }]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await act(async () => fireEvent.click(await screen.findByRole("button", { name: "Remove server" })));
+    expect(calls(command, "remove_mcp_server")).toEqual([{ name: "linear", project: "p1" }]);
+    // The one everywhere is still there.
+    await waitFor(() => expect(within(region("Everywhere")).getByRole("button", { name: /^linear\b/ })).toBeTruthy());
+    expect(within(region("This project")).queryByRole("button", { name: /^linear\b/ })).toBeNull();
+  });
+
+  it("reconnects the thread's own linear, the project's, not the one everywhere", async () => {
+    const { command } = scoped(
+      { thread_mcp_reconnect: () => ({ live: true, servers: [{ name: "linear", status: "connected" }] }) },
+      { live: true, servers: [{ name: "linear", status: "failed", error: "refused" }] },
+    );
+    renderPage(command, "mcp", "t1", "p1");
+    const reconnect = await waitFor(() => within(liveSection()).getByRole("button", { name: "Reconnect" }));
+    await act(async () => fireEvent.click(reconnect));
+    expect(calls(command, "thread_mcp_reconnect")).toEqual([{ threadId: "t1", name: "linear", project: "p1" }]);
+
+    // The row opens the project's linear.
+    fireEvent.click(within(liveSection()).getByRole("button", { name: /^linear\b/ }));
+    await screen.findByText(/Remote server · Bowerbird/);
+  });
+});
+
+describe("adding a server by project", () => {
+  async function toForm() {
+    await screen.findByRole("region", { name: "Everywhere" });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "or fill one in by hand" }));
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "notes" } });
+    fireEvent.change(within(dialog).getByLabelText("URL"), { target: { value: "https://notes.example/mcp" } });
+    return dialog;
+  }
+
+  const saving = () =>
+    backend({ save_mcp_server: (args) => ({ server: { ...server(), ...(args.server as object) } }) });
+
+  it("in a project, goes to that project", async () => {
+    const { command } = saving();
+    renderPage(command, "mcp", undefined, "p1");
+    const dialog = await toForm();
+    expect(within(dialog).getByRole("radio", { name: "This project" }).getAttribute("aria-checked")).toBe("true");
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Add server" })));
+    expect(calls(command, "save_mcp_server")[0]).toMatchObject({ server: { name: "notes", project: "p1" } });
+    await screen.findByText(/Remote server · Bowerbird/);
+  });
+
+  it("in a project, goes everywhere with one tap", async () => {
+    const { command } = saving();
+    renderPage(command, "mcp", undefined, "p1");
+    const dialog = await toForm();
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Everywhere" }));
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Add server" })));
+    expect(calls(command, "save_mcp_server")[0]?.server).not.toHaveProperty("project");
+    await screen.findByText(/Remote server · Everywhere/);
+  });
+
+  it("outside a project, goes everywhere unless a project is picked", async () => {
+    const { command } = saving();
+    renderPage(command, "mcp");
+    const dialog = await toForm();
+    expect(within(dialog).getByRole("combobox", { name: "Where it applies" }).textContent).toMatch(/Everywhere/);
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Add server" })));
+    expect(calls(command, "save_mcp_server")[0]?.server).not.toHaveProperty("project");
   });
 });

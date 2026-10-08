@@ -143,6 +143,10 @@ export const MODE_LABEL: Record<SkillMode, string> = { on: "On", manual: "Manual
 export interface SkillsScope {
   kind: "thread" | "project" | "personal";
   threadId?: string;
+  /**
+   * The project in view; for a thread, its project. Skills ask by thread
+   * when there is one; the MCP tab asks by project.
+   */
   projectId?: string;
   /** The project's name, when the app knows it. */
   projectName?: string;
@@ -162,7 +166,12 @@ export function skillsScope(input: {
 }): SkillsScope {
   const nameOf = (id?: string) => input.projects.find((p) => p.id === id)?.name;
   if (input.threadId) {
-    return { kind: "thread", threadId: input.threadId, projectName: nameOf(input.threadProjectId) };
+    return {
+      kind: "thread",
+      threadId: input.threadId,
+      projectId: input.threadProjectId || undefined,
+      projectName: nameOf(input.threadProjectId),
+    };
   }
   for (const id of [input.draftProjectId, input.lastProjectId]) {
     const name = nameOf(id);

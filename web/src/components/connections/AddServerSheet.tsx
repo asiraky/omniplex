@@ -1,15 +1,17 @@
 import { useId, useState } from "react";
 
-import { DetailHeading, ErrorLine, type PageCommand } from "~/components/tools/parts";
+import { DetailHeading, ErrorLine, Segmented, type PageCommand } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "~/components/ui/dialog";
 import { Label } from "~/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import {
   emptyServerForm,
   formFromDraft,
   harnessesFor,
+  projectLabel,
   serverSaveArgs,
   type ServerForm,
 } from "~/lib/connections";
@@ -18,28 +20,40 @@ import type { McpDraft, McpHarness, McpServer } from "~/protocol";
 
 import { AgentSwitches, ServerFields } from "./parts";
 
+/** Radix's Select keeps "" for no choice, so everywhere needs a value of its own. */
+const EVERYWHERE = "everywhere";
+
 /**
  * Add a server: paste what its docs give you, check what was read out of it,
- * save. Or skip the paste and fill the form in by hand. Keyed per opening by
- * the caller, so each one starts at the paste box.
+ * say where it applies, save. Or skip the paste and fill the form in by hand.
+ * Keyed per opening by the caller, so each one starts at the paste box.
  */
 export function AddServerSheet({
   open,
   onOpenChange,
   command,
   harnesses,
+  projectId,
+  projects,
   onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   command: PageCommand;
   harnesses: McpHarness[];
+  /** The project in view: a new server goes there unless moved everywhere. */
+  projectId?: string;
+  /** Outside a project, the ones a server can be put in instead. */
+  projects: { id: string; name: string }[];
   onSaved: (s: McpServer) => void;
 }) {
   const formId = useId();
   const pasteId = useId();
+  const scopeId = useId();
   const [text, setText] = useState("");
   const [form, setForm] = useState<ServerForm | null>(null);
+  // Chosen apart from the form, so going back to the paste keeps it.
+  const [project, setProject] = useState<string | undefined>(projectId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -64,7 +78,7 @@ export function AddServerSheet({
 
   const save = async () => {
     if (!form || busy) return;
-    const built = serverSaveArgs(form);
+    const built = serverSaveArgs({ ...form, project });
     if ("error" in built) {
       setError(built.error);
       return;
@@ -146,6 +160,13 @@ export function AddServerSheet({
         }}
       >
         <ServerFields form={form} onChange={(patch) => setForm((f) => f && { ...f, ...patch })} />
+        <ScopeField
+          id={scopeId}
+          projectId={projectId}
+          projects={projects}
+          value={project}
+          onChange={setProject}
+        />
         <section aria-label="Agents that get it" className="space-y-1.5">
           <DetailHeading>Agents that get it</DetailHeading>
           <AgentSwitches
@@ -191,5 +212,66 @@ export function AddServerSheet({
         <DialogFooter>{footer}</DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Where a new server applies. In a project: that project, one tap from
+ * everywhere. Outside one: everywhere, or any project picked from the list.
+ */
+function ScopeField({
+  id,
+  projectId,
+  projects,
+  value,
+  onChange,
+}: {
+  id: string;
+  projectId?: string;
+  projects: { id: string; name: string }[];
+  value: string | undefined;
+  onChange: (project: string | undefined) => void;
+}) {
+  if (!projectId && projects.length === 0) return null;
+  const hint = value
+    ? `Only ${projectLabel(value, projects)}'s threads get it.`
+    : "Every thread gets it, in every project.";
+  return (
+    <section aria-label="Where it applies" className="space-y-1.5">
+      {projectId ? (
+        <>
+          <DetailHeading>Where it applies</DetailHeading>
+          <Segmented
+            label="Where it applies"
+            radio
+            value={value ? "project" : EVERYWHERE}
+            options={[
+              { id: "project", label: "This project" },
+              { id: EVERYWHERE, label: "Everywhere" },
+            ]}
+            onChange={(v) => onChange(v === EVERYWHERE ? undefined : projectId)}
+            className="w-fit max-w-full"
+          />
+        </>
+      ) : (
+        <>
+          <Label htmlFor={id}>Where it applies</Label>
+          <Select value={value ?? EVERYWHERE} onValueChange={(v) => onChange(v === EVERYWHERE ? undefined : v)}>
+            <SelectTrigger id={id} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={EVERYWHERE}>Everywhere</SelectItem>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </>
+      )}
+      <p className="text-muted-foreground px-1 text-[12px] leading-snug">{hint}</p>
+    </section>
   );
 }

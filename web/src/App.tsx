@@ -121,6 +121,7 @@ export function App() {
       <ToolsScreen
         clientRef={clientRef}
         tab={screens.tools.tab}
+        projects={projects}
         scope={skillsScope({
           threadId: activeId,
           threadProjectId: meta?.projectId,
