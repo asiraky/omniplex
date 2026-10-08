@@ -1,25 +1,10 @@
 import { useEffect, useRef } from "react";
 
+import { titleToSave } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 
 /** The server caps a typed title at this many characters. */
 const MAX_TITLE = 200;
-
-/** True for the field TitleEditor renders, wherever it is on the page. */
-export function isTitleEditor(el: Element | null) {
-  return el instanceof HTMLElement && el.dataset.titleEditor !== undefined;
-}
-
-/**
- * Decides what a finished edit amounts to: the title to save, or null when
- * there is nothing to save. A blank field and an untouched one both mean
- * "keep the old name". Saving a blank would leave a thread with no name.
- */
-export function titleToSave(draft: string, current: string) {
-  const next = draft.replace(/\s+/g, " ").trim();
-  if (!next || next === current.trim()) return null;
-  return next;
-}
 
 /**
  * A thread title, edited where it is shown. Enter or clicking away saves it.

@@ -8,12 +8,13 @@ import {
   PlugIcon,
   TagIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 import type { PanelControls } from "~/app/usePanel";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { TranscriptCopy } from "~/app/useTranscriptCopy";
 import { liveJobCount } from "~/lib/jobs";
+import { threadTitle } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 import type { Label, ThreadMeta, ThreadState } from "~/protocol";
 
@@ -55,8 +56,6 @@ type Actions = {
   panel: PanelControls;
   /** The Skills page on its MCP tab, which asks this thread's session. */
   onShowMcp: () => void;
-  /** Turns the title into a field. */
-  onRename: () => void;
 };
 
 /** The bar above the content column: the thread's title and its actions. */
@@ -89,12 +88,10 @@ export function ThreadHeader({
   panel: PanelControls;
   onShowMcp: () => void;
 }) {
-  const [renaming, setRenaming] = useState(false);
-  // The list entry first: it is where a rename lands, and the attached state
-  // never hears about one. The state's title covers a new thread whose entry
-  // has not caught up with its first prompt yet.
-  const title = meta?.title || state?.title || "";
-  const startRename = () => activeId && setRenaming(true);
+  // The thread the title field is open on: switching threads closes it rather
+  // than opening the next thread's name for editing.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const actions = state && { state, activeId, meta, labels, copy, panel, onShowMcp };
   return (
     <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       {/* The open sidebar carries its own collapse button, so this one
@@ -107,48 +104,19 @@ export function ThreadHeader({
         <PanelLeftIcon className="size-3.5" />
       </IconButton>
 
-      {state ? (
+      {actions ? (
         <>
-          {renaming && activeId ? (
-            // Keyed to the thread: switching threads mid-edit drops the
-            // field rather than saving one thread's draft over another's.
-            <TitleEditor
-              key={activeId}
-              title={title}
-              label="Thread title"
-              onSave={(next) => onRename(activeId, next)}
-              onDone={() => setRenaming(false)}
-              className="h-8 flex-1 font-medium"
-            />
-          ) : (
-            <div className="group/title flex min-w-0 flex-1 items-center gap-0.5">
-              <p className="min-w-0 truncate text-[13px] font-medium">
-                {title || "Untitled thread"}
-              </p>
-              {/* Desktop only, and only on hover: it sits right after the
-                 text it edits. A phone reaches rename from the ⋯ menu,
-                 which has the room. */}
-              {isDesktop && activeId && (
-                <IconButton
-                  label="Rename thread"
-                  onClick={startRename}
-                  className="text-muted-foreground opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100 [&_svg]:size-3.5"
-                >
-                  <PencilIcon />
-                </IconButton>
-              )}
-            </div>
-          )}
-          {SHOW_MODE_SWITCHER && !state.closed && <ModeSwitcher harness={harness} />}
-          {isDesktop ? (
-            <DesktopActions
-              actions={{ state, activeId, meta, labels, copy, panel, onShowMcp, onRename: startRename }}
-            />
-          ) : (
-            <PhoneActions
-              actions={{ state, activeId, meta, labels, copy, panel, onShowMcp, onRename: startRename }}
-            />
-          )}
+          <HeaderTitle
+            threadId={activeId}
+            title={threadTitle(meta, actions.state)}
+            isDesktop={isDesktop}
+            editing={renamingId !== null && renamingId === activeId}
+            onEdit={() => setRenamingId(activeId)}
+            onDone={() => setRenamingId(null)}
+            onRename={onRename}
+          />
+          {SHOW_MODE_SWITCHER && !actions.state.closed && <ModeSwitcher harness={harness} />}
+          {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
         </>
       ) : (
         <span
@@ -161,6 +129,58 @@ export function ThreadHeader({
         </span>
       )}
     </header>
+  );
+}
+
+/**
+ * The open thread's name, and the pencil that turns it into a field. On a
+ * desktop the pencil waits for hover; a phone has no hover, so there it is
+ * always showing.
+ */
+function HeaderTitle({
+  threadId,
+  title,
+  isDesktop,
+  editing,
+  onEdit,
+  onDone,
+  onRename,
+}: {
+  threadId: string | null;
+  title: string;
+  isDesktop: boolean;
+  editing: boolean;
+  onEdit: () => void;
+  onDone: () => void;
+  onRename: (threadId: string, title: string) => void;
+}) {
+  if (editing && threadId) {
+    return (
+      <TitleEditor
+        title={title}
+        label="Thread title"
+        onSave={(next) => onRename(threadId, next)}
+        onDone={onDone}
+        className="h-8 flex-1 font-medium"
+      />
+    );
+  }
+  return (
+    <div className="group/title flex min-w-0 flex-1 items-center gap-0.5">
+      <p className="min-w-0 truncate text-[13px] font-medium">{title || "Untitled thread"}</p>
+      {threadId && (
+        <IconButton
+          label="Rename thread"
+          onClick={onEdit}
+          className={cn(
+            "text-muted-foreground [&_svg]:size-3.5",
+            isDesktop && "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
+          )}
+        >
+          <PencilIcon />
+        </IconButton>
+      )}
+    </div>
   );
 }
 
@@ -255,17 +275,10 @@ function DesktopActions({ actions }: { actions: Actions }) {
 // A phone has no room for a row of buttons, so the same actions sit in one
 // overflow menu.
 function PhoneActions({ actions }: { actions: Actions }) {
-  const { state, activeId, meta, labels, copy, panel, onShowMcp, onRename } = actions;
+  const { state, meta, labels, copy, panel, onShowMcp } = actions;
   const label = useThreadLabel(actions);
-  // A closing menu hands focus back to its trigger, which would blur the
-  // title field that Rename just opened. This says the close is ours.
-  const renameChosen = useRef(false);
   return (
-    // Not modal, for the same reason as the sidebar row's menu: a modal one
-    // traps focus while it closes, which pulls it out of the rename field,
-    // and the field has to take focus inside the tap for iOS to raise the
-    // keyboard.
-    <DropdownMenu modal={false}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
@@ -277,28 +290,7 @@ function PhoneActions({ actions }: { actions: Actions }) {
           <JobsBadge state={state} className="top-0.5 right-0.5" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="min-w-48"
-        onCloseAutoFocus={(e) => {
-          if (!renameChosen.current) return;
-          renameChosen.current = false;
-          e.preventDefault();
-        }}
-      >
-        {activeId && (
-          <>
-            <DropdownMenuItem
-              onSelect={() => {
-                renameChosen.current = true;
-                onRename();
-              }}
-            >
-              <PencilIcon /> Rename thread
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
+      <DropdownMenuContent align="end" className="min-w-48">
         <DropdownMenuItem onSelect={panel.show}>
           <PanelRightIcon /> Open panel
         </DropdownMenuItem>

@@ -38,7 +38,10 @@ import { useIsDesktop } from "./useMediaQuery";
 export function App() {
   const isDesktop = useIsDesktop();
   const wire = useWire();
-  const { clientRef, state, threads, projects, harnesses, labels } = wire;
+  const { clientRef, state, projects, harnesses, labels } = wire;
+  // The list as the user should see it: with their renames, before the
+  // server has confirmed them.
+  const { threads, rename: renameThread } = useRenameThread(wire);
   const screens = useScreens();
   const panel = usePanel(wire.stateRef);
   const scroll = useScrollMemory(wire.resume);
@@ -56,7 +59,6 @@ export function App() {
   const commands = useThreadCommands({ wire, activeId, store, openDiff: panel.openDiff });
   const setThreadUnread = useReadState(wire, activeId);
   const labelActions = useLabelActions(wire);
-  const renameThread = useRenameThread(wire);
   const projectActions = useProjectActions(wire);
   const auth = useProviderAuth(wire);
   const copy = useTranscriptCopy(wire);

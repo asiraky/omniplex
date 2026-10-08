@@ -2,7 +2,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { TitleEditor, titleToSave } from "./TitleEditor";
+import { TitleEditor } from "./TitleEditor";
 import { render } from "~/test/harness";
 
 function renderEditor(title = "Old name") {
@@ -11,16 +11,6 @@ function renderEditor(title = "Old name") {
   render(<TitleEditor title={title} label="Thread title" onSave={onSave} onDone={onDone} />);
   return { onSave, onDone, field: screen.getByRole("textbox", { name: "Thread title" }) };
 }
-
-describe("titleToSave", () => {
-  it("folds whitespace onto one line", () => {
-    expect(titleToSave("  New\n  name\t", "Old")).toBe("New name");
-  });
-  it("keeps the old name for a blank or untouched field", () => {
-    expect(titleToSave("   ", "Old")).toBeNull();
-    expect(titleToSave(" Old ", "Old")).toBeNull();
-  });
-});
 
 describe("TitleEditor", () => {
   it("mounts focused with the old name selected, ready to be typed over", () => {

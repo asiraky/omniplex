@@ -132,7 +132,6 @@ export function useWire() {
     activeRef,
     status,
     threads,
-    setThreads,
     threadsLoaded,
     harnesses,
     setHarnesses,
