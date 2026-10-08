@@ -27,11 +27,25 @@ const logLimit = 4000
 // untouched, so we never rewrite something the operator typed deliberately.
 var shorthand = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
+// GitHubProtocol is the protocol gh is configured to use for git operations
+// on github.com: "ssh", "https", or "" when gh is missing or says nothing.
+func GitHubProtocol(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "config", "get", "git_protocol", "-h", "github.com").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // NormalizeRemote turns what an operator pasted into something git can clone.
-// The only rewrite is the GitHub shorthand: everything else: https://,
-// git://, ssh://, scp-style git@host:owner/repo.git, and local paths and
-// file:// URLs, are git's business, not ours, and is passed through unchanged.
-func NormalizeRemote(input string) (string, error) {
+// The only rewrite is the GitHub shorthand, expanded over SSH when protocol
+// (gh's git_protocol) is "ssh" and over HTTPS otherwise. Everything else:
+// https://, git://, ssh://, scp-style git@host:owner/repo.git, and local
+// paths and file:// URLs, are git's business, not ours, and is passed
+// through unchanged.
+func NormalizeRemote(input, protocol string) (string, error) {
 	s := strings.TrimSpace(input)
 	if s == "" {
 		return "", errors.New("enter a repository URL")
@@ -47,9 +61,26 @@ func NormalizeRemote(input string) (string, error) {
 	}
 	if !strings.Contains(s, "://") && shorthand.MatchString(s) {
 		owner, repo, _ := strings.Cut(s, "/")
-		return "https://github.com/" + owner + "/" + strings.TrimSuffix(repo, ".git") + ".git", nil
+		path := owner + "/" + strings.TrimSuffix(repo, ".git") + ".git"
+		if protocol == "ssh" {
+			return "git@github.com:" + path, nil
+		}
+		return "https://github.com/" + path, nil
 	}
 	return s, nil
+}
+
+// githubHTTPS is an HTTPS github.com remote without credentials in it.
+var githubHTTPS = regexp.MustCompile(`^https://(?:www\.)?github\.com/([A-Za-z0-9][A-Za-z0-9_.-]*)/([A-Za-z0-9][A-Za-z0-9_.-]*?)(?:\.git)?/?$`)
+
+// sshAlternative is the SSH form of an HTTPS github.com remote, or "" when
+// url is anything else.
+func sshAlternative(url string) string {
+	m := githubHTTPS.FindStringSubmatch(strings.TrimSpace(url))
+	if m == nil {
+		return ""
+	}
+	return "git@github.com:" + m[1] + "/" + m[2] + ".git"
 }
 
 // DirectoryName reports the folder `git clone <url>` would create, or "" when
@@ -167,7 +198,7 @@ func Clone(ctx context.Context, url, dest string, logf func(string, ...any)) err
 	if ctx.Err() != nil {
 		return errors.New("clone cancelled")
 	}
-	return classify(raw)
+	return classify(url, raw)
 }
 
 func truncate(s string, n int) string {
@@ -179,8 +210,10 @@ func truncate(s string, n int) string {
 }
 
 // classify turns git's stderr into something worth showing. It deliberately
-// returns a fixed message per case rather than any part of the raw output.
-func classify(raw string) error {
+// returns a fixed message per case rather than any part of the raw output;
+// the only thing it may name is an SSH form of an HTTPS GitHub url, which
+// carries nothing the operator did not type.
+func classify(url, raw string) error {
 	low := strings.ToLower(raw)
 	has := func(needles ...string) bool {
 		for _, n := range needles {
@@ -193,6 +226,9 @@ func classify(raw string) error {
 	switch {
 	case has("authentication failed", "could not read Username", "could not read Password",
 		"Permission denied (publickey)", "terminal prompts disabled", "Authentication failed"):
+		if alt := sshAlternative(url); alt != "" {
+			return fmt.Errorf("could not sign in to github.com over HTTPS. Try %s, or run gh auth setup-git on this machine", alt)
+		}
 		return errors.New("could not sign in to that remote. Set up git credentials for it on this machine (gh auth setup-git does it for GitHub), or use an SSH URL with a key git already has")
 	case has("not found", "does not exist", "Repository not found", "repository does not exist"):
 		return errors.New("repository not found. Check the URL, and that this machine's git credentials can see it")
