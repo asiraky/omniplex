@@ -395,7 +395,8 @@ func git(t *testing.T, dir string, args ...string) {
 
 // A worktree's session gets its own .mcp.json and the local scope Claude
 // keeps under the main checkout's root, with that entry winning over one
-// under the worktree's own path.
+// under the worktree's own path. The local scope is listed first, since
+// Claude prefers it where both define a server.
 func TestProjectMCPServersInAWorktree(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
@@ -436,9 +437,9 @@ func TestProjectMCPServersInAWorktree(t *testing.T) {
 		got = append(got, f.Origin+":"+f.Name+":"+f.URL+f.Command+strings.Join(f.Args, " "))
 	}
 	want := []string{
-		".mcp.json:shared:https://repo.test/mcp",
 		"Local settings:db:db--root",
 		"Local settings:extra:x",
+		".mcp.json:shared:https://repo.test/mcp",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q\nwant %q", got, want)

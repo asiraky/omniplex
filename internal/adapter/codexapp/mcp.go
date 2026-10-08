@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -279,8 +280,10 @@ func nativeServers(env map[string]string) (map[string]codexServerTOML, error) {
 // projectServers reads every [mcp_servers.<name>] table of the project layers
 // codex loads for a session in dir, disabled ones included: each
 // .codex/config.toml from the project root (the nearest ancestor holding
-// .git, or dir itself when none does) down to dir. A deeper layer's server
-// replaces a shallower one of the same name. The instance's own codex home is
+// .git, or dir itself when none does) down to dir. Layers merge the way
+// codex merges them: a deeper layer's tables merge key by key into the
+// shallower one's, and any other value replaces it, so a nested config can
+// add a header to a server the root defines. The instance's own codex home is
 // not a project layer, even when dir is the home folder.
 func projectServers(env map[string]string, dir string) (map[string]codexServerTOML, error) {
 	if dir == "" {
@@ -309,21 +312,55 @@ func projectServers(env map[string]string, dir string) (map[string]codexServerTO
 		}
 	}
 	home := filepath.Clean(codexHome(env))
-	out := map[string]codexServerTOML{}
+	merged := map[string]any{}
 	for i := len(layers) - 1; i >= 0; i-- {
 		layer := filepath.Join(layers[i], ".codex")
 		if layer == home {
 			continue
 		}
-		servers, err := readServers(filepath.Join(layer, "config.toml"))
-		if err != nil {
-			return nil, err
+		path := filepath.Join(layer, "config.toml")
+		var doc map[string]any
+		if _, err := toml.DecodeFile(path, &doc); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		for name, s := range servers {
-			out[name] = s
+		if servers, ok := doc["mcp_servers"].(map[string]any); ok {
+			mergeTOML(merged, servers)
 		}
 	}
-	return out, nil
+	// Back through the encoder, so the merged tables decode exactly as one
+	// file's would.
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(map[string]any{"mcp_servers": merged}); err != nil {
+		return nil, err
+	}
+	var doc struct {
+		MCPServers map[string]codexServerTOML `toml:"mcp_servers"`
+	}
+	if _, err := toml.Decode(buf.String(), &doc); err != nil {
+		return nil, err
+	}
+	return doc.MCPServers, nil
+}
+
+// mergeTOML merges src into dst as codex merges config layers: tables
+// recursively, everything else replaced.
+func mergeTOML(dst, src map[string]any) {
+	for k, v := range src {
+		sub, ok := v.(map[string]any)
+		if !ok {
+			dst[k] = v
+			continue
+		}
+		into, ok := dst[k].(map[string]any)
+		if !ok {
+			into = map[string]any{}
+			dst[k] = into
+		}
+		mergeTOML(into, sub)
+	}
 }
 
 func codexHome(env map[string]string) string {

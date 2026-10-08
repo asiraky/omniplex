@@ -441,6 +441,9 @@ args = ["--svc"]
 [mcp_servers.quiet]
 command = "q"
 enabled = false
+
+[mcp_servers.remote.http_headers]
+X-Team = "svc"
 `)
 	env := map[string]string{"HOME": home, "CODEX_HOME": "", "R_TOKEN": "tok"}
 
@@ -452,7 +455,9 @@ enabled = false
 		MCPServer: adapter.MCPServer{Name: "db", Command: "db", Args: []string{"--svc"}},
 		Origin:    ".codex/config.toml",
 	}, {
-		MCPServer: adapter.MCPServer{Name: "remote", URL: "https://r.example/mcp", Headers: map[string]string{"Authorization": "Bearer tok"}},
+		// The svc layer adds a header to the root's server, which keeps its
+		// URL and token.
+		MCPServer: adapter.MCPServer{Name: "remote", URL: "https://r.example/mcp", Headers: map[string]string{"Authorization": "Bearer tok", "X-Team": "svc"}},
 		Origin:    ".codex/config.toml",
 	}}
 	if !reflect.DeepEqual(got, want) {

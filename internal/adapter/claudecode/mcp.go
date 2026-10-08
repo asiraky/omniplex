@@ -128,7 +128,29 @@ func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, 
 	if dir == "" {
 		return nil, nil
 	}
+	// The local scope comes first: Claude prefers it to .mcp.json, so where
+	// both define a server the local one is what a session gets, and what
+	// adding it should copy.
 	var out []adapter.ConfiguredMCPServer
+	userFile := claudeJSON(env)
+	if data, err := os.ReadFile(userFile); err == nil {
+		var doc struct {
+			Projects map[string]struct {
+				MCPServers map[string]claudeServerJSON `json:"mcpServers"`
+			} `json:"projects"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("read %s: %w", userFile, err)
+		}
+		local := map[string]claudeServerJSON{}
+		for _, key := range []string{filepath.Clean(dir), gitRoot(ctx, dir)} {
+			for name, s := range doc.Projects[key].MCPServers {
+				local[name] = s
+			}
+		}
+		out = append(out, configured(local, "Local settings", "")...)
+	}
+
 	repoFile := filepath.Join(dir, ".mcp.json")
 	if data, err := os.ReadFile(repoFile); err == nil {
 		var doc struct {
@@ -139,27 +161,7 @@ func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, 
 		}
 		out = append(out, configured(doc.MCPServers, ".mcp.json", "")...)
 	}
-
-	userFile := claudeJSON(env)
-	data, err := os.ReadFile(userFile)
-	if err != nil {
-		return out, nil
-	}
-	var doc struct {
-		Projects map[string]struct {
-			MCPServers map[string]claudeServerJSON `json:"mcpServers"`
-		} `json:"projects"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("read %s: %w", userFile, err)
-	}
-	local := map[string]claudeServerJSON{}
-	for _, key := range []string{filepath.Clean(dir), gitRoot(ctx, dir)} {
-		for name, s := range doc.Projects[key].MCPServers {
-			local[name] = s
-		}
-	}
-	return append(out, configured(local, "Local settings", "")...), nil
+	return out, nil
 }
 
 // claudeJSON is the user's .claude.json: in the config dir when

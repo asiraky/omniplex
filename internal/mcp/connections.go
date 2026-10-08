@@ -305,6 +305,17 @@ func (c *Connections) Save(ctx context.Context, d Draft, previous string) (Serve
 	if err != nil {
 		return ServerView{}, err
 	}
+	// The project can be deleted between that check and this write, after
+	// its servers were already removed. Look again, and take this one with
+	// it if so.
+	if d.Project != "" {
+		if err := c.projectExists(ctx, d.Project); err != nil {
+			if rmErr := c.store.RemoveServer(s.Name, s.Project); rmErr != nil {
+				c.logf("mcp server %s of deleted project: %v", s.Key(), rmErr)
+			}
+			return ServerView{}, err
+		}
+	}
 	if previous != "" {
 		c.prober.Forget(ServerKey(previous, s.Project))
 	}

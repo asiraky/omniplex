@@ -749,3 +749,26 @@ func TestRemoveProjectForgetsItsChecks(t *testing.T) {
 		t.Error("the check of the server that goes everywhere went too")
 	}
 }
+
+// A project deleted while one of its servers was being saved, after that
+// save checked for it, takes the server and its secrets with it.
+func TestSaveIntoAProjectDeletedMeanwhile(t *testing.T) {
+	c := newConns(t, http.DefaultClient)
+	checks := 0
+	c.folders = func(context.Context, string) ([]string, error) {
+		if checks++; checks > 1 {
+			return nil, errors.New("no project")
+		}
+		return []string{t.TempDir()}, nil
+	}
+	_, err := c.Save(context.Background(), Draft{Name: "db", Project: "p1", Command: "db", Env: map[string]string{"TOKEN": "t"}}, "")
+	if err == nil {
+		t.Fatal("saved into a deleted project")
+	}
+	if _, ok, _ := c.store.Server("db", "p1"); ok {
+		t.Error("the server outlived its project")
+	}
+	if _, ok := c.store.Secrets().Get("p1.db", envKey+"TOKEN"); ok {
+		t.Error("its secret outlived its project")
+	}
+}
