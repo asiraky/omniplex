@@ -695,21 +695,20 @@ describe("composer drafts", () => {
     expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
   });
 
-  it("dismisses completion with Escape and shows it as a bottom sheet on a phone", async () => {
+  it("dismisses completion with Escape on a phone", async () => {
     useCatalogue();
     await boot("phone");
     await open("a");
 
     fireEvent.focus(composer());
     fireEvent.change(composer(), { target: { value: "$al", selectionStart: 3 } });
-    const sheet = await screen.findByRole("dialog");
-    expect(within(sheet).getByText("Commands")).toBeTruthy();
-    // Scoped to the sheet: an empty transcript is also offering this command
+    const menu = await screen.findByRole("listbox");
+    // Scoped to the menu: an empty transcript is also offering this command
     // as a recent, so the bare text is no longer unique to the completion.
-    expect(within(sheet).getByText("Run alpha workflow")).toBeTruthy();
+    expect(within(menu).getByText("Run alpha workflow")).toBeTruthy();
 
     fireEvent.keyDown(composer(), { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     expect(composer().value).toBe("$al");
   });
 

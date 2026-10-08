@@ -260,10 +260,8 @@ export function Composer({
         )}
         <AttachmentStrip attachments={attachments} tooMuch={tooMuch} onRemove={onRemoveAttachment} />
         <CommandMenu
-          isDesktop={isDesktop}
           open={menu.open}
           anchor={textarea}
-          onDismiss={menu.dismiss}
           matches={menu.matches}
           activeIndex={menu.activeIndex}
           loading={catalogue.loading}
