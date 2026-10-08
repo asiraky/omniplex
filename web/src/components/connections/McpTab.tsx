@@ -13,6 +13,7 @@ import {
   Loading,
   LoadError,
   Marker,
+  RowSwitch,
   Section,
   type PageCommand,
 } from "~/components/tools/parts";
@@ -43,7 +44,7 @@ import { cn, errorText } from "~/lib/utils";
 import type { FoundServer, McpServer, ThreadMcp } from "~/protocol";
 
 import { AddServerSheet } from "./AddServerSheet";
-import { MarkChip, RowSwitch } from "./parts";
+import { MarkChip } from "./parts";
 import { ServerDetail } from "./ServerDetail";
 import { useLiveReport, useProjectOff, type ConnectionsStore, type LiveReport } from "./useConnections";
 

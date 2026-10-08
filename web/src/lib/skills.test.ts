@@ -97,7 +97,14 @@ const destinations: Destination[] = [
 ];
 
 describe("destinationsOf", () => {
-  const list = (extra: Partial<SkillsList>): SkillsList => ({ skills: [], claudeSync: true, codexBundled: true, ...extra });
+  const list = (extra: Partial<SkillsList>): SkillsList => ({
+    skills: [],
+    claudeSync: true,
+    codexBundled: true,
+    claudeBundled: true,
+    claudeBuiltins: [],
+    ...extra,
+  });
 
   it("takes the server's list and default", () => {
     expect(destinationsOf(list({ destinations, defaultDestination: "/code/web" }))).toEqual({

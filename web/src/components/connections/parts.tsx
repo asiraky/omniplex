@@ -287,28 +287,3 @@ export function CliFields({ form, onChange }: { form: CliForm; onChange: (patch:
     </div>
   );
 }
-
-/**
- * A switch at the end of a list row. Its padding is part of it, so a thumb
- * finds it on a phone, and stops short of the row's own button.
- */
-export function RowSwitch({
-  label,
-  checked,
-  onCheckedChange,
-}: {
-  label: string;
-  checked: boolean;
-  onCheckedChange: (on: boolean) => void;
-}) {
-  return (
-    <span className="flex h-11 items-center px-2 md:h-8">
-      <Switch
-        aria-label={label}
-        checked={checked}
-        onCheckedChange={onCheckedChange}
-        className="relative after:absolute after:-inset-x-2 after:-inset-y-3.5 md:after:-inset-y-2"
-      />
-    </span>
-  );
-}
