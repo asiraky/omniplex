@@ -134,7 +134,7 @@ func (a *Actor) dispatchScheduled(now int64) error {
 				return a.failSchedule(p, result.err)
 			}
 		}
-		if a.turnActive != "" || len(a.state.Pending) > 0 || len(a.state.Elicitations) > 0 || len(a.state.Queued) > 0 {
+		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || len(a.state.Queued) > 0 {
 			continue
 		}
 		a.mu.Lock()

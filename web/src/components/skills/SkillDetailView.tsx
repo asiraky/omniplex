@@ -16,6 +16,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "~/component
 import { Spinner } from "~/components/ui/spinner";
 import { fileIconFor } from "~/lib/fileIcons";
 import {
+  canEdit,
   fmtSize,
   MODE_LABEL,
   MODE_TEXT,
@@ -364,7 +365,8 @@ export function SkillDetailView({
   const docPath = doc ?? "SKILL.md";
   const viewingText = doc === null ? (detail?.content ?? null) : file && !file.binary ? file.content : null;
   const actionClass = "h-11 text-[13px] md:h-8 md:text-[12px]";
-  const hasButtons = skill.editable || Boolean(skill.source);
+  const editable = canEdit(skill);
+  const hasButtons = editable || Boolean(skill.source);
   const files = detail?.files ?? [];
 
   return (
@@ -378,7 +380,7 @@ export function SkillDetailView({
           </div>
         )}
 
-        {skill.editable ? (
+        {editable ? (
           <ModeSwitch skill={skill} command={command} scopeArgs={scopeArgs} onChanged={modeChanged} />
         ) : (
           skill.mode !== "on" && (
@@ -391,7 +393,7 @@ export function SkillDetailView({
         {hasButtons && (
           <div className="mt-4">
             <div className="flex flex-wrap items-center gap-2">
-              {skill.editable && (
+              {editable && (
                 <Button variant="outline" size="sm" className={actionClass} onClick={startEdit} disabled={!detail}>
                   <PencilIcon className="size-3.5" />
                   Edit
@@ -403,7 +405,7 @@ export function SkillDetailView({
                   Check for update
                 </Button>
               )}
-              {skill.editable && (
+              {editable && (
                 <Button
                   variant="outline"
                   size="sm"

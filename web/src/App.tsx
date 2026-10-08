@@ -203,6 +203,7 @@ export function App() {
             recents={recents}
             schedule={schedule}
             store={store}
+            authWires={auth.authWires}
             onLogin={auth.openInstanceAuth}
             onForceDelete={deletion.forceDelete}
             onFinish={deletion.deleteFlow.ask}

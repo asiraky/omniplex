@@ -2,11 +2,13 @@ import { Fragment } from "react";
 
 import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
+import type { CardSignIn } from "~/lib/cards";
 import type { Job, TurnDiff } from "~/protocol";
 import { rowTurnID, type Row } from "~/rows";
 
 import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
+import { CardRow } from "./CardRow";
 import { JobsCard } from "./JobsCard";
 import { Message } from "./Message";
 import { NoticeCard } from "./NoticeCard";
@@ -21,6 +23,8 @@ type RowContext = {
   jobs: Job[];
   onOpenJobs?: () => void;
   recoveredTurns: Map<string, "restart" | "continue">;
+  /** Opens the sign-in a saved card offers. */
+  onCardSignIn?: (target: CardSignIn) => void;
 };
 
 function RowBody({
@@ -32,6 +36,7 @@ function RowBody({
   jobs,
   onOpenJobs,
   recoveredTurns,
+  onCardSignIn,
 }: RowContext & { row: Row }) {
   if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} />;
   if (row.kind === "run") return <ToolRun items={row.items} live={row.live} />;
@@ -40,6 +45,7 @@ function RowBody({
     return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
   if (row.item.kind === "tool") return <ToolCard item={row.item} />;
   if (row.item.kind === "notice") return <NoticeCard item={row.item} />;
+  if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;
   return (
     <Message
       item={row.item}

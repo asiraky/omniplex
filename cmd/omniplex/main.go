@@ -29,6 +29,7 @@ import (
 	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/banner"
+	"github.com/asiraky/omniplex/internal/bundled"
 	"github.com/asiraky/omniplex/internal/datalock"
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/mcp"
@@ -157,6 +158,16 @@ func main() {
 	}
 	mgr.SetArtefacts(artefacts)
 	thread.ToolServers = artefactTools(signer, plan.Port)
+	// Values an agent passes to add_mcp_server stay out of the event log.
+	thread.RedactToolInput = server.RedactAgentToolInput
+
+	// omniplex's own skill ships in the binary. Each session loads it from
+	// beside the data, for itself alone; it never goes into a skills library.
+	if dir, err := bundled.Extract(filepath.Join(filepath.Dir(*dbPath), "plugin")); err != nil {
+		logf("bundled skill off: %v", err)
+	} else {
+		thread.BundledPlugin = dir
+	}
 	defer mgr.Shutdown()
 
 	// Provider instances: configured accounts layered over the default
@@ -556,7 +567,8 @@ func projectsDir() string {
 
 // artefactTools is the MCP server every harness gets: this binary, run as
 // `omniplex mcp`, pointed back at this server over loopback with a token for
-// its one thread.
+// its one thread. Every tool is pre-approved: the writes raise omniplex's own
+// card, which is the approval, and they wait on it for up to mcpToolTimeout.
 func artefactTools(signer *artefact.Signer, port int) func(threadID, home string) []adapter.MCPServer {
 	exe, err := os.Executable()
 	if err != nil {
@@ -573,7 +585,8 @@ func artefactTools(signer *artefact.Signer, port int) func(threadID, home string
 				"OMNIPLEX_AGENT_TOKEN": signer.Mint(artefact.Claims{Kind: artefact.KindAgent, Thread: threadID}),
 				"OMNIPLEX_HOME":        home,
 			},
-			Tools: []string{mcpShowTool},
+			Tools:       mcpToolNames(),
+			ToolTimeout: mcpToolTimeout,
 		}}
 	}
 }

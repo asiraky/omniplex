@@ -44,12 +44,18 @@ func (s *Server) routeArtefacts(mux *http.ServeMux) {
 	mux.HandleFunc("GET /s/{token}/{path...}", s.handleShareToken)
 	mux.HandleFunc("GET /s/{token}", s.handleShareToken)
 	mux.HandleFunc("POST /api/agent/artefacts", s.handleAgentShow)
+	mux.HandleFunc("POST /api/agent/tools/{name}", s.handleAgentTool)
 }
 
 // artefactPublicPath says whether a path carries its own token and so skips
 // the device gate.
 func artefactPublicPath(p string) bool {
-	return strings.HasPrefix(p, "/p/") || strings.HasPrefix(p, "/s/") || p == "/api/agent/artefacts"
+	if strings.HasPrefix(p, "/api/agent/") {
+		// Everything under it takes an agent token; a path that cleans to
+		// somewhere else is not under it.
+		return path.Clean(p) == p
+	}
+	return strings.HasPrefix(p, "/p/") || strings.HasPrefix(p, "/s/")
 }
 
 func (s *Server) artefactsOff(w http.ResponseWriter) bool {

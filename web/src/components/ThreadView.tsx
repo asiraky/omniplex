@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
@@ -8,10 +8,13 @@ import type { ScheduleEditor } from "~/app/useScheduleEditor";
 import type { ScrollPosition } from "~/app/useScrollMemory";
 import type { ThreadCommands } from "~/app/useThreadCommands";
 import type { ThreadHarness } from "~/app/useThreadHarness";
+import type { CardSignIn } from "~/lib/cards";
 import { liveJobCount } from "~/lib/jobs";
 import { OpenPathContext } from "~/lib/openPath";
-import type { HarnessMeta, PullRequest, ThreadMeta, ThreadState } from "~/protocol";
+import { toast } from "~/lib/toast";
+import type { HarnessMeta, PendingElicitation, PullRequest, ThreadMeta, ThreadState } from "~/protocol";
 
+import type { AuthWires } from "./AuthFlowDialog";
 import { Composer } from "./Composer";
 import { useComposerItems } from "./composer/useComposerItems";
 import { JobsStrip } from "./JobsStrip";
@@ -23,6 +26,12 @@ import { Transcript } from "./Transcript";
 // first paint, so they load on first use and stay out of the initial bundle.
 const ElicitationPrompt = lazy(() =>
   import("./ElicitationPrompt").then((m) => ({ default: m.ElicitationPrompt })),
+);
+// Cards and their sign-ins come from an agent asking to change the setup,
+// which most threads never do.
+const PendingCard = lazy(() => import("./cards/PendingCard"));
+const FlowDialog = lazy(() =>
+  import("./AuthFlowDialog").then((m) => ({ default: m.FlowDialog })),
 );
 const ScheduleDialog = lazy(() =>
   import("./ScheduleDialog").then((m) => ({ default: m.ScheduleDialog })),
@@ -45,6 +54,7 @@ export function ThreadView({
   recents,
   schedule,
   store,
+  authWires,
   onLogin,
   onForceDelete,
   onFinish,
@@ -64,12 +74,15 @@ export function ThreadView({
   recents: RecentSkills;
   schedule: ScheduleEditor;
   store: ComposerDrafts;
+  authWires: AuthWires;
   onLogin: (instanceId: string) => void;
   onForceDelete: (id: string) => void;
   onFinish: (meta: ThreadMeta) => void;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
   const provider = harness.activeProviderInstance;
+  // A sign-in a saved card offers from its row in the transcript.
+  const [signIn, setSignIn] = useState<CardSignIn | null>(null);
 
   return (
     <div ref={layoutRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -105,8 +118,27 @@ export function ThreadView({
           recentsSeeded={recents.seeded}
           onPickRecent={recents.pick}
           onDequeue={commands.dequeue}
+          onCardSignIn={setSignIn}
         />
       </OpenPathContext.Provider>
+
+      {signIn && (
+        <Suspense fallback={null}>
+          <FlowDialog
+            key={signIn.key}
+            wires={authWires}
+            title={signIn.title}
+            description={signIn.description}
+            begin={signIn.begin}
+            onFinished={() => {
+              if (signIn.reconnect) commands.reconnectMcp(signIn.reconnect.name, signIn.reconnect.project);
+              setSignIn(null);
+              toast.success("Signed in");
+            }}
+            onClose={() => setSignIn(null)}
+          />
+        </Suspense>
+      )}
 
       {/* The mirror of the header fade: content dissolves into the
           composer instead of sliding under a hard edge. It sits just
@@ -140,6 +172,10 @@ export function ThreadView({
       </div>
     </div>
   );
+}
+
+function hasCard(e: PendingElicitation): e is PendingElicitation & { card: NonNullable<PendingElicitation["card"]> } {
+  return Boolean(e.card);
 }
 
 // Preparing is not closed: the worktree is still being cut, but the user can
@@ -184,11 +220,30 @@ function ComposerDock({
   store: ComposerDrafts;
 }) {
   const pending = state.pendingPermissions?.[0];
-  const elicitation = state.pendingElicitations?.[0];
+  const elicitations = state.pendingElicitations ?? [];
+  // A card is a proposal, not a question: it does not hold the turn, so it
+  // shows beside a plain question rather than queueing behind it.
+  const cards = elicitations.filter(hasCard);
+  const card = cards[0];
+  const elicitation = elicitations.find((e) => !e.card);
   const workspace = workspaceStatus(state.phase);
   const editing = schedule.editing;
   return (
     <>
+      {card && (
+        <Suspense fallback={null}>
+          <PendingCard
+            key={card.requestId}
+            request={card}
+            position={cards.length > 1 ? `1 of ${cards.length}` : undefined}
+            // Folded to its one line when something that does hold the turn
+            // needs the room.
+            defaultOpen={!pending && !elicitation}
+            resolve={(action, edits) => commands.resolveCard(card.requestId, action, edits)}
+          />
+        </Suspense>
+      )}
+
       {pending && (
         <PermissionPrompt
           request={pending}

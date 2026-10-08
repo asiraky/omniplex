@@ -95,6 +95,11 @@ type Actor struct {
 	// the middle of. Recover consumes it; see recovery.go.
 	recovery *proto.TurnRecovery
 
+	// cardLive says whether the server still holds a card, so resuming the
+	// harness leaves it answerable. Set by the manager at adopt time; nil
+	// means none is held. Guarded by mu.
+	cardLive func(requestID string) bool
+
 	// imagePath finds the host path of a stored image by thread and id,
 	// for queued prompts whose images came back out of the log without one.
 	imagePath func(threadID, imageID string) (string, error)
@@ -145,6 +150,7 @@ type command struct {
 	account *accountSwitch
 	show    *Show
 	mcp     func(context.Context, adapter.MCPControl) (any, error)
+	card    *cardCmd
 }
 
 // accountSwitch is what the manager hands the actor to move the thread to
@@ -197,6 +203,8 @@ const (
 	cmdQuota         = "quota"
 	cmdSwitchAccount = "switch_account"
 	cmdMCP           = "mcp"
+	cmdRaiseCard     = "raise_card"
+	cmdResolveCard   = "resolve_card"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -241,7 +249,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
-		MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs,
+		MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs, Plugins: x.plugins,
 	})
 	if err != nil {
 		return nil, err
@@ -319,6 +327,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 		MCPServers:       x.mcp,
 		ExtraDirs:        x.extraDirs,
 		SkillDirs:        x.skillDirs,
+		Plugins:          x.plugins,
 	})
 	if err != nil {
 		return nil, err
@@ -916,7 +925,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
-			MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs,
+			MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs, Plugins: x.plugins,
 		})
 		if err != nil {
 			c.reply <- cmdResult{err: err}
@@ -932,7 +941,13 @@ func (a *Actor) handle(c command) (stop bool) {
 			for _, pending := range append([]projection.PendingPermission(nil), a.state.Pending...) {
 				a.append(proto.Emit(proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: pending.RequestID, Outcome: proto.OutcomeCancelled}))
 			}
+			// A card the server still holds is not the old process's: it
+			// stays answerable. One the server lost is cancelled with the
+			// rest.
 			for _, pending := range append([]projection.PendingElicitation(nil), a.state.Elicitations...) {
+				if pending.IsCard() && a.liveCard(pending.RequestID) {
+					continue
+				}
 				a.append(proto.Emit(proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: pending.RequestID, Action: "cancel"}))
 			}
 			for _, turn := range append([]projection.Turn(nil), a.state.Turns...) {
@@ -1311,6 +1326,10 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		c.reply <- cmdResult{value: "resolved"}
 
+	case cmdRaiseCard, cmdResolveCard:
+		v, err := a.handleCard(c)
+		c.reply <- cmdResult{value: v, err: err}
+
 	case cmdClose:
 		if c.hard {
 			a.append(proto.Emit(proto.ThreadClosed, proto.ThreadClosedPayload{Reason: c.prompt}))
@@ -1329,7 +1348,9 @@ func (a *Actor) switchAccount(sw *accountSwitch) error {
 		return errors.New("wait for the turn to finish before switching account")
 	case len(interruptedJobs(a.state)) > 0:
 		return errors.New("background work is still running; wait for it or stop it before switching account")
-	case len(a.state.Pending) > 0 || len(a.state.Elicitations) > 0:
+	case len(a.state.Pending) > 0 || a.state.Questions() > 0:
+		// A card is omniplex's to hold, not the harness's, so it does not
+		// stand in the way.
 		return errors.New("answer the waiting question before switching account")
 	}
 	// The harness writes its conversation as it goes, so it has to be gone
@@ -1563,6 +1584,7 @@ func (a *Actor) dropQueue() {
 // This is the only place any of those three happen.
 func (a *Actor) append(em proto.Emission) error {
 	ctx := context.Background()
+	em = a.redact(em)
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {

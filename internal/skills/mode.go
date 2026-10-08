@@ -95,9 +95,10 @@ func (p policy) mode(s *Skill) string {
 }
 
 // claudeOverride is Claude's skillOverrides value for a skill Claude sees.
-// Claude does not apply skillOverrides to a plugin's skills.
+// Claude does not apply skillOverrides to a plugin's skills, and omniplex's
+// bundled skill reaches Claude as a plugin.
 func (p policy) claudeOverride(s *Skill) string {
-	if !containsHarness(s.Harnesses, Claude) || s.Scope == ScopePlugin {
+	if !containsHarness(s.Harnesses, Claude) || s.Scope == ScopePlugin || s.Scope == ScopeOmniplex {
 		return ""
 	}
 	if v, ok := p.claude[s.Name]; ok {

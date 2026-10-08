@@ -327,9 +327,16 @@ const commandTimeout = 60 * time.Second
 // then being tried instead.
 const fetchCommandTimeout = 250 * time.Second
 
+// cardCommandTimeout is for answering a card, which can install skills, check
+// a server and connect it to a live session in one go.
+const cardCommandTimeout = 2 * time.Minute
+
 func timeoutFor(command string) time.Duration {
-	if command == "stage_skills" || command == "stage_update" {
+	switch command {
+	case "stage_skills", "stage_update":
 		return fetchCommandTimeout
+	case "resolve_card":
+		return cardCommandTimeout
 	}
 	return commandTimeout
 }
@@ -369,7 +376,7 @@ func (c *conn) command(f clientFrame) {
 	// than protect anything, and a row per poll would grow the table for as
 	// long as the tab stayed open. So a poll executes without a ledger entry.
 	if pollingCommand(f.Command) || ephemeralCommand(f.Command) {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeoutFor(f.Command))
 		defer cancel()
 		result, err := c.execute(ctx, f)
 		c.ack(f.CommandID, result, err)
@@ -450,6 +457,10 @@ func ephemeralCommand(name string) bool {
 	// disk again. The fetches that make a staging dir are not here: a retried
 	// stage_skills gets the staging dir it already made, not a second fetch.
 	case "read_staged_file", "read_update_file", "skills_git_status":
+		return true
+	// An answered card can carry the values the user typed into it, and a
+	// repeated answer gets the stored outcome from the card book instead.
+	case "resolve_card":
 		return true
 	}
 	// Connections: reads of live state (a stored answer would be stale),
@@ -832,6 +843,13 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"status": "resolved"}, nil
+
+	case "resolve_card":
+		a, err := decode[resolveCardArgs](f.Args)
+		if err != nil {
+			return nil, err
+		}
+		return c.srv.resolveCard(ctx, a)
 
 	case "enable_https":
 		return c.srv.setHTTPS(ctx, true)

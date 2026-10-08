@@ -98,6 +98,19 @@ func Save(r Roots, dir, content string) error {
 	return writeAtomic(target, []byte(content))
 }
 
+// CheckContent refuses a whole SKILL.md that Save would refuse, or whose
+// frontmatter names a skill other than name.
+func CheckContent(name, content string) error {
+	if err := validateContent(content); err != nil {
+		return err
+	}
+	fields, _, _ := parseFrontmatter(content)
+	if got := strings.TrimSpace(fields["name"]); got != name {
+		return fmt.Errorf("%w: the frontmatter names %q, not %q", ErrInvalid, got, name)
+	}
+	return nil
+}
+
 func validateContent(content string) error {
 	fields, _, err := parseFrontmatter(content)
 	if err != nil {

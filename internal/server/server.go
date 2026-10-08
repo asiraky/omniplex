@@ -73,6 +73,9 @@ type Server struct {
 	// claudeBundled is what the installed Claude Code says it ships. Nil
 	// lists only the names known without asking it.
 	claudeBundled *skills.BundledProbe
+	// cards is what the agent proposed through omniplex's tools, waiting
+	// on the user.
+	cards *cardBook
 
 	// live tracks open WebSockets so revoking a device can close the ones it
 	// already holds.
@@ -140,6 +143,10 @@ func New(o Options) *Server {
 		conns:         o.Connections,
 		claudeBundled: o.ClaudeBundled,
 		logf:          o.Logf,
+		cards:         newCardBook(),
+	}
+	if s.mgr != nil {
+		s.mgr.SetCardLive(s.cards.live)
 	}
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}

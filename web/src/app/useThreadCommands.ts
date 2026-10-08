@@ -3,7 +3,7 @@ import { useCallback, useMemo, type RefObject } from "react";
 import type { Client } from "~/client";
 import { sendPayload } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
-import type { ComposerItem, ThreadState } from "~/protocol";
+import type { CardEdits, CardOutcome, ComposerItem, ThreadState } from "~/protocol";
 
 import type { ComposerDrafts } from "./useComposerDrafts";
 import type { Wire } from "./useWire";
@@ -132,6 +132,37 @@ export function useThreadCommands({
     [activeId, clientRef],
   );
 
+  // Unlike the two above, the card waits on the answer: applying it can fail
+  // (a bad value, the network) and the card stays up to say why. Edits can
+  // carry secret values, which is why it skips the command ledger on the
+  // server, and why they are only ever in this frame.
+  const resolveCard = useCallback(
+    async (requestId: string, action: "accept" | "decline", edits?: CardEdits) => {
+      if (!activeId || !clientRef.current) throw new Error("Not connected");
+      const result = await clientRef.current.command("resolve_card", {
+        threadId: activeId,
+        requestId,
+        action,
+        ...(edits ? { edits } : {}),
+      });
+      return result?.outcome as CardOutcome | undefined;
+    },
+    [activeId, clientRef],
+  );
+
+  // After a sign-in, so a server the live session was turned away by
+  // reconnects now the proxy has a token for it. Best effort: a session that
+  // has gone reaches it when it starts again.
+  const reconnectMcp = useCallback(
+    (name: string, project?: string) => {
+      if (!activeId) return;
+      clientRef.current
+        ?.command("thread_mcp_reconnect", { threadId: activeId, name, ...(project ? { project } : {}) })
+        .catch(() => {});
+    },
+    [activeId, clientRef],
+  );
+
   const loadComposerItems = useMemo(
     () => composerItemsLoader(clientRef, activeId, composerRevision),
     [clientRef, activeId, composerRevision],
@@ -188,6 +219,8 @@ export function useThreadCommands({
     dequeue,
     resolvePermission,
     resolveElicitation,
+    resolveCard,
+    reconnectMcp,
     loadComposerItems,
     runComposerAction,
     runClientComposerAction,

@@ -30,6 +30,18 @@ type Destination struct {
 	Main bool `json:"main,omitempty"`
 }
 
+// Phrase is the destination as it reads inside a sentence: "this project",
+// "the omniplex repo", "your personal skills".
+func (d Destination) Phrase() string {
+	switch d.Kind {
+	case DestProject:
+		return "this project"
+	case DestRepo:
+		return "the " + d.Label
+	}
+	return "your personal skills"
+}
+
 const (
 	DestProject  = "project"
 	DestRepo     = "repo"

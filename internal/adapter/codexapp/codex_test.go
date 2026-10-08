@@ -392,11 +392,16 @@ func TestSkillDirsReachCodexBeforeTheThread(t *testing.T) {
 		name   string
 		o      adapter.CreateOptions
 		thread string
+		want   []string
 	}{
-		{"start", adapter.CreateOptions{SkillDirs: skills}, "thread/start"},
-		{"resume", adapter.CreateOptions{SkillDirs: skills, Resume: true, HarnessSessionID: "th-old"}, "thread/resume"},
-		{"refused", adapter.CreateOptions{SkillDirs: skills, Env: map[string]string{"REFUSE_SKILLS": "1"}}, "thread/start"},
-		{"none", adapter.CreateOptions{}, "thread/start"},
+		{"start", adapter.CreateOptions{SkillDirs: skills}, "thread/start", nil},
+		// omniplex's bundled plugin has no plugin host in codex: its skills
+		// folder is one more root.
+		{"plugin", adapter.CreateOptions{SkillDirs: skills, Plugins: []string{"/data/plugin"}}, "thread/start", append(skills, "/data/plugin/skills")},
+		{"plugin only", adapter.CreateOptions{Plugins: []string{"/data/plugin"}}, "thread/start", []string{"/data/plugin/skills"}},
+		{"resume", adapter.CreateOptions{SkillDirs: skills, Resume: true, HarnessSessionID: "th-old"}, "thread/resume", nil},
+		{"refused", adapter.CreateOptions{SkillDirs: skills, Env: map[string]string{"REFUSE_SKILLS": "1"}}, "thread/start", nil},
+		{"none", adapter.CreateOptions{}, "thread/start", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -434,7 +439,11 @@ func TestSkillDirsReachCodexBeforeTheThread(t *testing.T) {
 			if thread < 0 {
 				t.Fatalf("no %s in %v", tc.thread, methods)
 			}
-			if len(tc.o.SkillDirs) == 0 {
+			want := tc.want
+			if want == nil {
+				want = tc.o.SkillDirs
+			}
+			if len(want) == 0 {
 				if set >= 0 {
 					t.Fatalf("a session with no skill dirs set extra roots: %v", methods)
 				}
@@ -443,8 +452,8 @@ func TestSkillDirsReachCodexBeforeTheThread(t *testing.T) {
 			if set < 0 || set > thread {
 				t.Fatalf("extra roots not set before %s: %v", tc.thread, methods)
 			}
-			if !slices.Equal(roots.ExtraRoots, skills) {
-				t.Fatalf("extraRoots = %v, want %v", roots.ExtraRoots, skills)
+			if !slices.Equal(roots.ExtraRoots, want) {
+				t.Fatalf("extraRoots = %v, want %v", roots.ExtraRoots, want)
 			}
 		})
 	}

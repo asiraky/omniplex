@@ -1,6 +1,7 @@
 // Mirrors internal/skills: the JSON the skills WS commands return.
 
-export type SkillScope = "project" | "user" | "plugin" | "system";
+/** "omniplex" is the skill Omniplex ships and gives every session: never the user's to change. */
+export type SkillScope = "project" | "user" | "plugin" | "system" | "omniplex";
 
 /**
  * What agents do with a skill. `on`: they use it when it fits. `manual`: it
@@ -94,6 +95,15 @@ export interface SkillFileContent {
   binary: boolean;
 }
 
+/**
+ * Whether the user can edit, remove or switch the mode of a skill. Omniplex's
+ * own skill never is, whatever the server says: it ships with the binary and
+ * an edit would be gone at the next start.
+ */
+export function canEdit(skill: Skill): boolean {
+  return skill.editable && skill.scope !== "omniplex";
+}
+
 export function matchesQuery(skill: Skill, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -109,14 +119,15 @@ export function matchesQuery(skill: Skill, query: string): boolean {
 
 // "private" is the project home's skills, "project" the repos'. "claude" is
 // Claude Code's built-ins, which are not Skills: see ClaudeBuiltin.
-export type SectionKind = "yours" | "private" | "project" | "synced" | "claude" | "system" | "plugins";
+export type SectionKind = "yours" | "private" | "project" | "synced" | "omniplex" | "claude" | "system" | "plugins";
 
 // The project's own sit next to the repos' so the two read as a pair; Yours
 // stays first, as the one section that is always there.
-export const SECTION_ORDER: SectionKind[] = ["yours", "private", "project", "synced", "claude", "system", "plugins"];
+export const SECTION_ORDER: SectionKind[] = ["yours", "private", "project", "synced", "omniplex", "claude", "system", "plugins"];
 
 export function sectionOf(skill: Skill): SectionKind {
   if (skill.synced) return "synced";
+  if (skill.scope === "omniplex") return "omniplex";
   if (skill.scope === "plugin") return "plugins";
   if (skill.scope === "system") return "system";
   if (skill.scope === "project") return skill.private ? "private" : "project";
@@ -135,6 +146,7 @@ export function sectionSkills(skills: Skill[]): Record<SectionKind, Skill[]> {
     private: [],
     project: [],
     synced: [],
+    omniplex: [],
     claude: [],
     system: [],
     plugins: [],
@@ -196,6 +208,9 @@ export function originText(skill: Skill, destinations: Destination[] = []): stri
     case "system":
       text = "Codex built-in";
       break;
+    case "omniplex":
+      text = "Omniplex skill";
+      break;
     case "private":
       text = PROJECT_LABEL;
       break;
@@ -205,7 +220,7 @@ export function originText(skill: Skill, destinations: Destination[] = []): stri
     default:
       text = skill.source?.repo ? `Yours, from ${skill.source.repo}` : "Yours";
   }
-  return skill.editable ? text : `${text}, read-only`;
+  return canEdit(skill) ? text : `${text}, read-only`;
 }
 
 export const MODE_TEXT: Record<SkillMode, string> = {

@@ -123,6 +123,10 @@ const (
 	// conversation it showed it. Uploads get no item: they show on the
 	// message that carried them.
 	ItemArtefact = "artefact"
+	// ItemCard is a proposal the agent raised through omniplex's own tools,
+	// where it raised it. Its Status is pending until answered, then the
+	// outcome's result: saved, declined or cancelled.
+	ItemCard = "card"
 )
 
 // Item is one entry in the thread timeline, in the order it first appeared.
@@ -164,6 +168,11 @@ type Item struct {
 	ArtefactID string `json:"artefactId,omitempty"`
 	MediaType  string `json:"mediaType,omitempty"`
 	Size       int64  `json:"size,omitempty"`
+
+	// card: what was proposed, and once answered what became of it. Status
+	// is the outcome's result.
+	Card    json.RawMessage `json:"card,omitempty"`
+	Outcome json.RawMessage `json:"outcome,omitempty"`
 }
 
 // Artefact is a file or folder the thread has shown, as it was the last time
@@ -261,7 +270,29 @@ type PendingElicitation struct {
 	RequestID string          `json:"requestId"`
 	Prompt    string          `json:"prompt"`
 	Schema    json.RawMessage `json:"schema"`
+	// Card is set on a proposal the agent raised through omniplex's tools.
+	// Omniplex holds it, not the harness, so it does not hold the turn up.
+	Card json.RawMessage `json:"card,omitempty"`
 }
+
+// IsCard reports whether this is a proposal omniplex holds rather than a
+// question the harness is blocked on.
+func (p PendingElicitation) IsCard() bool { return len(p.Card) > 0 }
+
+// Questions counts the elicitations a harness is blocked on: cards are left
+// out, since they hold nothing up.
+func (s *State) Questions() int {
+	n := 0
+	for _, p := range s.Elicitations {
+		if !p.IsCard() {
+			n++
+		}
+	}
+	return n
+}
+
+// CardID is the timeline item id of the card a request raised.
+func CardID(requestID string) string { return "card:" + requestID }
 
 type WorkspaceState struct {
 	Phase              string         `json:"phase"`
@@ -358,6 +389,18 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 
 // jobIndex is a linear scan: a thread has a handful of jobs, not thousands,
 // and an index would be one more thing to rebuild after a snapshot.
+// ItemByID returns the timeline item with that id.
+func (s *State) ItemByID(id string) (Item, bool) {
+	if s.itemIndex == nil {
+		s.reindex()
+	}
+	i, ok := s.itemIndex[id]
+	if !ok {
+		return Item{}, false
+	}
+	return s.Items[i], true
+}
+
 func (s *State) job(id string) *Job {
 	for i := range s.Jobs {
 		if s.Jobs[i].ID == id {
@@ -913,8 +956,19 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.ElicitationRequestedPayload
 		decode(ev.Payload, &p)
 		s.Elicitations = append(s.Elicitations, PendingElicitation{
-			RequestID: p.RequestID, Prompt: p.Prompt, Schema: p.Schema,
+			RequestID: p.RequestID, Prompt: p.Prompt, Schema: p.Schema, Card: p.Card,
 		})
+		if len(p.Card) > 0 {
+			s.upsert(CardID(p.RequestID), func(it *Item) {
+				it.Kind = ItemCard
+				if it.ReceivedAt == 0 {
+					it.ReceivedAt = ev.Timestamp
+				}
+				it.TurnID = p.TurnID
+				it.Card = p.Card
+				it.Status = CardPending
+			})
+		}
 
 	case proto.ElicitationResolved:
 		var p proto.ElicitationResolvedPayload
@@ -926,7 +980,42 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 		s.Elicitations = out
+		if s.itemIndex == nil {
+			s.reindex()
+		}
+		if i, ok := s.itemIndex[CardID(p.RequestID)]; ok && s.Items[i].Kind == ItemCard {
+			s.Items[i].Status = cardResult(p)
+			if len(p.Value) > 0 {
+				s.Items[i].Outcome = p.Value
+			}
+		}
 	}
+}
+
+// Card statuses: pending until answered, then the outcome's result.
+const (
+	CardPending   = "pending"
+	CardSaved     = "saved"
+	CardDeclined  = "declined"
+	CardCancelled = "cancelled"
+)
+
+// cardResult is the status an answered card lands on: the outcome's own
+// result, else what the action implies.
+func cardResult(p proto.ElicitationResolvedPayload) string {
+	var o struct {
+		Result string `json:"result"`
+	}
+	if len(p.Value) > 0 && json.Unmarshal(p.Value, &o) == nil && o.Result != "" {
+		return o.Result
+	}
+	switch p.Action {
+	case "accept":
+		return CardSaved
+	case "decline":
+		return CardDeclined
+	}
+	return CardCancelled
 }
 
 func (s *State) queued(queueID string) *QueuedPrompt {
@@ -1033,6 +1122,12 @@ func (s *State) Clone() *State {
 		if len(it.Input) > 0 {
 			cp.Input = append(json.RawMessage(nil), it.Input...)
 		}
+		if len(it.Card) > 0 {
+			cp.Card = append(json.RawMessage(nil), it.Card...)
+		}
+		if len(it.Outcome) > 0 {
+			cp.Outcome = append(json.RawMessage(nil), it.Outcome...)
+		}
 		out.Items[i] = cp
 	}
 
@@ -1057,6 +1152,9 @@ func (s *State) Clone() *State {
 	for i, pending := range s.Elicitations {
 		out.Elicitations[i] = pending
 		out.Elicitations[i].Schema = append(json.RawMessage(nil), pending.Schema...)
+		if len(pending.Card) > 0 {
+			out.Elicitations[i].Card = append(json.RawMessage(nil), pending.Card...)
+		}
 	}
 
 	out.Scheduled = append([]proto.ScheduledPrompt(nil), s.Scheduled...)

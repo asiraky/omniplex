@@ -1321,3 +1321,47 @@ describe("the setup page", () => {
     );
   });
 });
+
+describe("a card the agent raised", () => {
+  const card = {
+    requestId: "c1",
+    prompt: "Add the MCP server linear to this project",
+    schema: {},
+    card: { kind: "add_mcp_server", projectId: "p1", scope: "project", server: { name: "linear", url: "https://x" } },
+  };
+  const question = {
+    requestId: "q1",
+    prompt: "Pick one",
+    schema: { type: "object", properties: { q0: { type: "string", title: "Which cache?" } } },
+  };
+
+  async function open(pendingElicitations: unknown[]) {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+    await act(async () => events.onState("a", { ...state("a", "default"), pendingElicitations }));
+  }
+
+  it("shows beside an ordinary question, and answers through resolve_card", async () => {
+    await open([card, question]);
+
+    const band = await screen.findByRole("form", { name: card.prompt });
+    expect(await screen.findByText("Which cache?")).toBeTruthy();
+
+    // Folded while the question holds the room; opened, it answers.
+    fireEvent.click(within(band).getByRole("button", { expanded: false }));
+    const resolves = () => command.mock.calls.filter(([name]) => name === "resolve_card");
+    fireEvent.click(within(band).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(resolves()).toEqual([["resolve_card", { threadId: "a", requestId: "c1", action: "accept" }]]));
+  });
+
+  it("opens on its own when nothing else is waiting", async () => {
+    await open([card]);
+    const band = await screen.findByRole("form", { name: card.prompt });
+    expect(within(band).getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+});

@@ -198,6 +198,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	for _, d := range o.SkillDirs {
 		args = append(args, "--skill", d)
 	}
+	for _, p := range o.Plugins {
+		args = append(args, "--skill", adapter.PluginSkills(p))
+	}
 
 	bin, ok := a.findPi()
 	if !ok {

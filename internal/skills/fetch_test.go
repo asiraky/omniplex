@@ -711,3 +711,28 @@ func TestRunCommandReportsWhyAProgramFailed(t *testing.T) {
 		t.Errorf("stdout = %q", out)
 	}
 }
+
+func TestSweepSparesAHeldStage(t *testing.T) {
+	tmp := staging(t)
+	kept, err := newStage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newStage(); err != nil {
+		t.Fatal(err)
+	}
+	HoldStaged(kept.id)
+	t.Cleanup(func() { ReleaseStaged(kept.id) })
+
+	later := time.Now().Add(2 * stageMaxAge)
+	sweepStages(later)
+	if got := stagingDirs(t, tmp); len(got) != 1 || filepath.Base(got[0]) != stagePrefix+kept.id {
+		t.Fatalf("after the sweep: %v, want only %s", got, kept.id)
+	}
+
+	ReleaseStaged(kept.id)
+	sweepStages(later)
+	if got := stagingDirs(t, tmp); len(got) != 0 {
+		t.Fatalf("a released stage outlived the sweep: %v", got)
+	}
+}

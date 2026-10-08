@@ -62,6 +62,9 @@ type Manager struct {
 
 	mu     sync.RWMutex
 	actors map[string]*Actor
+	// cardLive says whether the server still holds a card; see SetCardLive.
+	// Guarded by mu.
+	cardLive func(requestID string) bool
 	// lifecycle serialises resume, close, and delete for a thread. Without it,
 	// Close could remove an actor before it had marked the row closed and a
 	// concurrent Get could spawn a second writer in that window.
@@ -1239,6 +1242,7 @@ func (m *Manager) adopt(a *Actor) {
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
 	a.imagePath = m.imagePath
+	a.cardLive = m.liveCard
 	a.mu.Unlock()
 	m.bindQuota(a)
 	select {

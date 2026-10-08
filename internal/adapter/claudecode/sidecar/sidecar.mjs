@@ -291,6 +291,9 @@ const session = query({
     // omniplex's own above all, are still pre-approved by name.
     ...(config.allowedTools?.length ? { allowedTools: config.allowedTools } : {}),
     ...(config.additionalDirectories?.length ? { additionalDirectories: config.additionalDirectories } : {}),
+    // Session-only plugins: omniplex's bundled skill, never installed into
+    // the user's Claude config.
+    ...(config.plugins?.length ? { plugins: config.plugins } : {}),
     // Echo each user message back on the stream at the moment the CLI reads
     // it, with the uuid the host stamped on it. A prompt sent while a turn is
     // running is held by the CLI until its next model call; the echo is the

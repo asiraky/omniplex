@@ -66,6 +66,11 @@ func mcpConfig(servers []adapter.MCPServer, native []string) (args []string, env
 		}
 		keys[name] = m.Name
 		key := "mcp_servers." + tomlKey(name)
+		// Codex gives up on a tool call after 300 s by default
+		// (codex-mcp's DEFAULT_TOOL_TIMEOUT).
+		if m.ToolTimeout > 0 {
+			args = append(args, "-c", key+".tool_timeout_sec="+strconv.FormatFloat(m.ToolTimeout.Seconds(), 'f', 1, 64))
+		}
 		secret := func(kind string, j int, value string) string {
 			name := fmt.Sprintf("OMNIPLEX_MCP_%d_%s_%s%d_TOKEN", si, envSafe(m.Name), kind, j)
 			env[name] = value
