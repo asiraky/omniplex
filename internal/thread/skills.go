@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/skills"
 )
@@ -17,6 +18,10 @@ import (
 // the user-level roots on their own.
 func (m *Manager) SkillRoots(ctx context.Context, threadID, projectID string) (skills.Roots, string, error) {
 	roots, projectID, err := m.harnessRoots(ctx, threadID, projectID)
+	// Every session loads the bundled plugin, so every listing shows it.
+	if BundledPlugin != "" {
+		roots.Bundled = adapter.PluginSkills(BundledPlugin)
+	}
 	if err != nil || roots.ProjectRoot == "" {
 		return roots, "", err
 	}

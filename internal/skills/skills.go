@@ -30,6 +30,9 @@ const (
 	ScopeUser    = "user"
 	ScopePlugin  = "plugin"
 	ScopeSystem  = "system"
+	// ScopeOmniplex is omniplex's own bundled skill: every session gets it,
+	// and nothing here can change or remove it.
+	ScopeOmniplex = "omniplex"
 )
 
 var (
@@ -60,6 +63,11 @@ type Roots struct {
 	// CLILock is the skills CLI's own global lock file, read for the
 	// provenance of skills installed from a terminal.
 	CLILock string
+
+	// Bundled is the skills folder of omniplex's own plugin, which every
+	// session loads for itself; "" when there is none. Its skills are listed
+	// read-only and are never linked or copied anywhere.
+	Bundled string
 }
 
 // Repo is a git checkout of the project a skill can be installed into.
@@ -225,6 +233,9 @@ func (r Roots) roots() []root {
 	out := r.ownRoots()
 	out = append(out, r.claudePluginRoots()...)
 	out = append(out, r.codexPluginRoots()...)
+	if r.Bundled != "" {
+		out = append(out, root{path: r.Bundled, scope: ScopeOmniplex, harnesses: []Harness{Claude, Codex, Pi}, readonly: true})
+	}
 	if r.CodexHome != "" {
 		out = append(out, root{path: filepath.Join(r.CodexHome, "skills", ".system"), scope: ScopeSystem, harnesses: []Harness{Codex}, readonly: true})
 	}
@@ -372,7 +383,7 @@ func hasSkillFile(dir string) bool {
 }
 
 // Discover lists every skill reachable from r, one entry per real directory.
-// Sorted project, user, plugin, system; by name within each.
+// Sorted project, user, plugin, omniplex, system; by name within each.
 func Discover(r Roots) ([]Skill, error) {
 	byDir := map[string]*Skill{}
 	var order []string
@@ -532,8 +543,10 @@ func scopeRank(scope string) int {
 		return 1
 	case ScopePlugin:
 		return 2
-	default:
+	case ScopeOmniplex:
 		return 3
+	default:
+		return 4
 	}
 }
 

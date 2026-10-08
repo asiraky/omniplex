@@ -249,7 +249,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
-		MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs,
+		MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs, Plugins: x.plugins,
 	})
 	if err != nil {
 		return nil, err
@@ -327,6 +327,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 		MCPServers:       x.mcp,
 		ExtraDirs:        x.extraDirs,
 		SkillDirs:        x.skillDirs,
+		Plugins:          x.plugins,
 	})
 	if err != nil {
 		return nil, err
@@ -924,7 +925,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
-			MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs,
+			MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs, Plugins: x.plugins,
 		})
 		if err != nil {
 			c.reply <- cmdResult{err: err}

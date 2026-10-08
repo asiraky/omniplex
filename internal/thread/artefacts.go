@@ -28,11 +28,17 @@ import (
 // needs it and none of them has the manager.
 var ToolServers func(threadID, home string) []adapter.MCPServer
 
+// BundledPlugin is omniplex's own plugin folder (see package bundled),
+// extracted at startup; "" when there is none. Every session loads it for
+// itself alone. Set once at startup, like ToolServers.
+var BundledPlugin string
+
 // extras is what a harness gets beside its working directory.
 type extras struct {
 	mcp       []adapter.MCPServer
 	extraDirs []string
 	skillDirs []string
+	plugins   []string
 }
 
 // harnessExtras is what every harness gets beside its working directory: the
@@ -42,7 +48,8 @@ type extras struct {
 // what it makes for you outside the repo. A thread scoped to the whole
 // project also gets every folder of the project that is not already inside
 // another. A project's thread working outside the home also gets the home's
-// private skills; a harness in the home finds them by itself.
+// private skills; a harness in the home finds them by itself. Every thread
+// gets omniplex's bundled plugin.
 func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, cwd string, logf func(string, ...any)) extras {
 	home, err := ThreadHome(ctx, st, meta.ProjectID, cwd)
 	if err != nil {
@@ -62,6 +69,9 @@ func harnessExtras(ctx context.Context, st *store.Store, ad adapter.Adapter, met
 	x := extras{extraDirs: extraDirs(cwd, dirs)}
 	if meta.ProjectID != "" && cwd != "" && filepath.Clean(cwd) != filepath.Clean(home) {
 		x.skillDirs = []string{projectSkills(home, logf)}
+	}
+	if BundledPlugin != "" {
+		x.plugins = []string{BundledPlugin}
 	}
 	if ToolServers != nil {
 		x.mcp = ToolServers(meta.ID, home)
