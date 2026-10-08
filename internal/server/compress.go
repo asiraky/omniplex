@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/asiraky/omniplex/internal/mcp"
 )
 
 // compressHTTP negotiates gzip for text responses. It deliberately bypasses
@@ -16,7 +18,10 @@ func compressHTTP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !acceptsGzip(r.Header.Get("Accept-Encoding")) ||
 			r.Header.Get("Sec-WebSocket-Key") != "" ||
-			r.Header.Get("Range") != "" || r.Method == http.MethodHead {
+			r.Header.Get("Range") != "" || r.Method == http.MethodHead ||
+			// A proxied MCP event stream has to arrive event by event,
+			// and over loopback there is nothing to save.
+			strings.HasPrefix(r.URL.Path, mcp.ProxyPrefix) {
 			next.ServeHTTP(w, r)
 			return
 		}

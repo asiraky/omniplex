@@ -213,3 +213,13 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.conns.OAuth().HandleCallback(w, r)
 }
+
+// handleMCPProxy forwards a harness's request to one of the user's remote MCP
+// servers. The proxy checks its own key.
+func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
+	if s.conns == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.conns.ServeProxy(w, r, r.PathValue("id"))
+}

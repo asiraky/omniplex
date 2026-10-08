@@ -199,6 +199,10 @@ func (s *Server) Handler() http.Handler {
 	// here, and the page completes only a sign-in a paired device began.
 	mux.HandleFunc("GET "+mcp.CallbackPath, s.handleOAuthCallback)
 
+	// Public, through publicPaths: harnesses on this machine reach the
+	// user's remote MCP servers here, with the proxy's own key.
+	mux.HandleFunc(mcp.ProxyPrefix+"{id}", s.handleMCPProxy)
+
 	mux.HandleFunc("GET /api/devices", func(w http.ResponseWriter, r *http.Request) {
 		s.handleListDevices(w, r)
 	})
@@ -383,7 +387,7 @@ func publicPaths(path string) bool {
 	case "/pair", "/api/pair", "/api/health", mcp.CallbackPath:
 		return true
 	}
-	return artefactPublicPath(path)
+	return strings.HasPrefix(path, mcp.ProxyPrefix) || artefactPublicPath(path)
 }
 
 // gate refuses anything from an unpaired device before it reaches a handler.

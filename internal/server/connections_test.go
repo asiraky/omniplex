@@ -174,8 +174,31 @@ func TestConnectionCommandsEndToEnd(t *testing.T) {
 	if got := conns.Servers(context.Background(), "x", []string{"http"}, ""); len(got) != 0 {
 		t.Errorf("harness switched off still gets %+v", got)
 	}
-	if got := conns.Servers(context.Background(), "y", []string{"http"}, ""); len(got) != 1 || got[0].Headers["X-Key"] != "hunter2" {
-		t.Errorf("harness y gets %+v", got)
+	got := conns.Servers(context.Background(), "y", []string{"http"}, "")
+	if len(got) != 1 || got[0].Headers["X-Key"] != "" || !strings.Contains(got[0].URL, mcp.ProxyPrefix+"work") {
+		t.Fatalf("harness y gets %+v", got)
+	}
+
+	// A harness reaches the server through this server's proxy, which
+	// adds the header value, without pairing as a device.
+	proxied := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, mcp.ProxyPrefix+"work", strings.NewReader("{}"))
+		req.RemoteAddr = "127.0.0.1:5555"
+		req.Header.Set("Accept-Encoding", "gzip")
+		req.Header.Set("Authorization", key)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	before = probes.Load()
+	if rec := proxied(got[0].Headers["Authorization"]); rec.Code != http.StatusOK || rec.Header().Get("Content-Encoding") != "" {
+		t.Errorf("proxied: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	if probes.Load() != before+1 {
+		t.Error("the proxied request never reached the server")
+	}
+	if rec := proxied("Bearer guess"); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "proxy key") {
+		t.Errorf("wrong key: %d %s", rec.Code, rec.Body)
 	}
 
 	var list mcp.Listing

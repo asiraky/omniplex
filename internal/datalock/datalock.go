@@ -1,4 +1,5 @@
-// Package datalock keeps two servers off one database.
+// Package datalock keeps two servers off one database, and off one file of
+// their shared state at the same moment.
 //
 // A second server on the same database would treat the first one's running
 // turns as interrupted and resume them into the same worktrees. That is easy
@@ -11,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 )
 
 // ErrHeld means another process holds the lock.
@@ -32,6 +35,30 @@ func Acquire(dbPath string) (*Lock, error) {
 		return nil, err
 	}
 	return &Lock{f: f}, nil
+}
+
+// Wait takes the lock file at path, waiting up to wait for another process to
+// let go of it. It returns ErrHeld if none does in time.
+func Wait(path string, wait time.Duration) (*Lock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("lock folder: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		err := lock(f)
+		if err == nil {
+			return &Lock{f: f}, nil
+		}
+		if !errors.Is(err, ErrHeld) || time.Now().After(deadline) {
+			f.Close()
+			return nil, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (l *Lock) Release() {
