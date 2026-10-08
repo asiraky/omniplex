@@ -11,10 +11,11 @@ export function useThreadTitle(
   state: ThreadState | null,
   meta: ThreadMeta | undefined,
 ) {
-  // The list entry, not just the attached state: switching threads drops
-  // `state` until the snapshot lands, and on a slow connection that would
-  // leave every tab called "Omniplex" for exactly as long as it takes to
-  // reconnect, which is when telling them apart matters most.
+  // The list entry first: it carries a rename, which the attached state never
+  // hears about, and switching threads drops `state` until the snapshot
+  // lands, which on a slow connection would leave every tab called "Omniplex"
+  // for exactly as long as it takes to reconnect. The state's title covers a
+  // brand-new thread whose list entry has not caught up with its first prompt.
   const needsAttention = Boolean(state?.pendingPermissions?.[0] || state?.pendingElicitations?.[0]);
-  useDocumentTitle(activeId ? { title: state?.title ?? meta?.title, needsAttention } : null);
+  useDocumentTitle(activeId ? { title: meta?.title || state?.title, needsAttention } : null);
 }

@@ -387,6 +387,27 @@ func (s *Store) SetTitle(ctx context.Context, threadID, title string) error {
 	return err
 }
 
+// RenameThread replaces a thread's title with one the user chose. Unlike
+// SetTitle it overwrites: the user is the last word on what a thread is
+// called. updated_at is left alone for the same reason as labels — naming a
+// thread is not activity.
+func (s *Store) RenameThread(ctx context.Context, threadID, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE threads SET title = ? WHERE id = ?`, title, threadID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ReadEvents returns events in (afterSeq, afterSeq+limit], ordered by seq.
 func (s *Store) ReadEvents(ctx context.Context, threadID string, afterSeq int64, limit int) ([]proto.Event, error) {
 	rows, err := s.db.QueryContext(ctx,

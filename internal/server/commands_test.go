@@ -13,7 +13,7 @@ func TestOnlyPolledReadsSkipTheCommandLedger(t *testing.T) {
 		"prompt", "delete_thread", "force_delete_thread", "cleanup_thread",
 		"close_thread", "create_thread", "save_project", "save_user_config",
 		"resolve_permission", "cancel",
-		"create_label", "save_label", "delete_label", "set_thread_label",
+		"create_label", "save_label", "delete_label", "set_thread_label", "rename_thread",
 		"add_project", "delete_project",
 	} {
 		if pollingCommand(mutation) {

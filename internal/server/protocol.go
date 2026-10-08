@@ -297,6 +297,13 @@ type setThreadLabelArgs struct {
 	LabelID  string `json:"labelId"`
 }
 
+// renameThreadArgs names a thread. The server normalises the title to one
+// line; a title that is empty once normalised is refused.
+type renameThreadArgs struct {
+	ThreadID string `json:"threadId"`
+	Title    string `json:"title"`
+}
+
 // markViewedArgs records how far the user has actually read: seq is the head
 // the client had rendered when it reported, not the server's — events landing
 // mid-report stay unread.

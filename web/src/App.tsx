@@ -9,6 +9,7 @@ import { usePanel } from "./app/usePanel";
 import { useProjectActions } from "./app/useProjectActions";
 import { useProviderAuth } from "./app/useProviderAuth";
 import { useReadState } from "./app/useReadState";
+import { useRenameThread } from "./app/useRenameThread";
 import { useRecentSkills } from "./app/useRecentSkills";
 import { useScheduleEditor } from "./app/useScheduleEditor";
 import { usePruneScrollMemory, useScrollMemory } from "./app/useScrollMemory";
@@ -55,6 +56,7 @@ export function App() {
   const commands = useThreadCommands({ wire, activeId, store, openDiff: panel.openDiff });
   const setThreadUnread = useReadState(wire, activeId);
   const labelActions = useLabelActions(wire);
+  const renameThread = useRenameThread(wire);
   const projectActions = useProjectActions(wire);
   const auth = useProviderAuth(wire);
   const copy = useTranscriptCopy(wire);
@@ -158,6 +160,7 @@ export function App() {
         onManageLabels={() => screens.setManageLabels(true)}
         onNewProject={() => screens.setNewProject(true)}
         onSetUnread={setThreadUnread}
+        onRename={renameThread}
       />
 
       <DeleteThreadDialog flow={deletion.deleteFlow} />
@@ -176,6 +179,7 @@ export function App() {
           state={state}
           activeId={activeId}
           meta={meta}
+          onRename={renameThread}
           creating={!!nav.creating}
           isDesktop={isDesktop}
           labels={{
