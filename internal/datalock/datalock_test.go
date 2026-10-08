@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The lock has to hold across processes, which is the only case it exists
@@ -47,4 +48,24 @@ func TestSecondProcessIsTurnedAway(t *testing.T) {
 	if got := child(); got != 0 {
 		t.Fatalf("second process after release: exit %d, want 0", got)
 	}
+}
+
+func TestWaitTakesTheLockOnceItIsFree(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "locks", "s.lock")
+	held, err := Wait(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Wait(path, 50*time.Millisecond); !errors.Is(err, ErrHeld) {
+		t.Fatalf("while held: err = %v", err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		held.Release()
+	}()
+	l, err := Wait(path, 5*time.Second)
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	l.Release()
 }

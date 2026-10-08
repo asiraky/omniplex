@@ -121,74 +121,30 @@ func TestServersFiltersByTransportAndOff(t *testing.T) {
 	}
 }
 
-func TestServersCarryValuesAndToken(t *testing.T) {
+// A session gets no credential of a remote server's own: it reaches every
+// one through the proxy with the proxy's key. A command server still gets
+// its env values.
+func TestServersReachRemoteServersThroughTheProxy(t *testing.T) {
 	c := newConns(t, nil)
 	save(t, c, Draft{Name: "local", Command: "run", Args: []string{"-v"}, Env: map[string]string{"TOKEN": "env-secret"}})
 	save(t, c, Draft{Name: "keyed", URL: "https://k.example.com/mcp", Headers: map[string]string{"X-Key": "k", "authorization": "Bearer pasted"}})
-	save(t, c, Draft{Name: "moved", URL: "https://new.example.com/mcp"})
 	save(t, c, Draft{Name: "bare", URL: "https://b.example.com/mcp"})
 	signIn(t, c, "keyed", "https://k.example.com/mcp", map[string]any{"accessToken": "oauth-tok"})
-	// Signed in at an address the server has since moved from.
-	signIn(t, c, "moved", "https://old.example.com/mcp", map[string]any{"accessToken": "old-tok"})
 
 	defs := c.Servers(context.Background(), "x", []string{"http", "stdio"}, "")
-	if len(defs) != 4 {
-		t.Fatalf("%+v", defs)
-	}
-	local, keyed, moved, bare := defs[0], defs[1], defs[2], defs[3]
-	if local.Env["TOKEN"] != "env-secret" || local.Command != "run" || local.Args[0] != "-v" || local.Headers != nil {
-		t.Errorf("local %+v", local)
-	}
-	if len(keyed.Headers) != 2 || keyed.Headers["Authorization"] != "Bearer oauth-tok" || keyed.Headers["X-Key"] != "k" {
-		t.Errorf("keyed headers %v", keyed.Headers)
-	}
-	if moved.Headers != nil {
-		t.Errorf("token for another address went in: %v", moved.Headers)
-	}
-	if bare.Headers != nil || bare.Env != nil {
-		t.Errorf("bare %+v", bare)
-	}
-}
-
-func TestServersDoNotWaitLongForATokenRefresh(t *testing.T) {
-	old := tokenWait
-	tokenWait = 100 * time.Millisecond
-	defer func() { tokenWait = old }()
-	var hit atomic.Bool
-	release := make(chan struct{})
-	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hit.Store(true)
-		select {
-		case <-release:
-		case <-r.Context().Done():
-		}
-	}))
-	defer as.Close()
-	defer close(release)
-
-	c := newConns(t, as.Client())
-	for _, n := range []string{"one", "two", "three"} {
-		save(t, c, Draft{Name: n, URL: "https://" + n + ".example.com/mcp"})
-		signIn(t, c, n, "https://"+n+".example.com/mcp", map[string]any{
-			"accessToken": "expired", "refreshToken": "r", "expiry": time.Now().Add(-time.Hour),
-			"tokenEndpoint": as.URL + "/token", "clientId": "cid",
-		})
-	}
-	start := time.Now()
-	defs := c.Servers(context.Background(), "x", []string{"http"}, "")
-	took := time.Since(start)
-	if !hit.Load() {
-		t.Fatal("the refresh never reached the authorization server")
-	}
-	if took > time.Second {
-		t.Errorf("waited %v for three refreshes", took)
-	}
 	if len(defs) != 3 {
 		t.Fatalf("%+v", defs)
 	}
-	for _, d := range defs {
-		if d.Headers != nil {
-			t.Errorf("%s went in with %v", d.Name, d.Headers)
+	local, keyed, bare := defs[0], defs[1], defs[2]
+	if local.Env["TOKEN"] != "env-secret" || local.Command != "run" || local.Args[0] != "-v" || local.Headers != nil {
+		t.Errorf("local %+v", local)
+	}
+	for _, d := range []adapter.MCPServer{keyed, bare} {
+		if d.URL != "http://127.0.0.1:4321"+ProxyPrefix+d.Name {
+			t.Errorf("%s url %q", d.Name, d.URL)
+		}
+		if len(d.Headers) != 1 || d.Headers["Authorization"] != "Bearer "+c.proxy.key || d.Env != nil {
+			t.Errorf("%s gets %+v", d.Name, d)
 		}
 	}
 }
@@ -473,8 +429,8 @@ func TestRejectedTokenIsRefreshed(t *testing.T) {
 
 	reset()
 	def, err := c.Server(context.Background(), "x", []string{"http"}, "", "s")
-	if err != nil || def.Headers["Authorization"] != "Bearer good" {
-		t.Fatalf("reconnect got %+v, %v", def.Headers, err)
+	if err != nil || def.URL != c.proxy.url("s") {
+		t.Fatalf("reconnect got %+v, %v", def, err)
 	}
 	if n := refreshes.Load(); n != 2 {
 		t.Errorf("refreshes = %d, want one per rejection", n)
@@ -523,12 +479,12 @@ func TestServersFollowTheThreadsProject(t *testing.T) {
 		}
 		for _, d := range defs {
 			if d.Name == "linear" {
-				want := "mine"
+				want := "linear"
 				if tc.project == "p1" {
-					want = "client"
+					want = "p1/linear"
 				}
-				if d.Headers["X-Key"] != want {
-					t.Errorf("%q/%s: linear went in with %v", tc.project, tc.harness, d.Headers)
+				if d.URL != c.proxy.url(want) {
+					t.Errorf("%q/%s: linear reaches %s", tc.project, tc.harness, d.URL)
 				}
 			}
 		}
@@ -536,10 +492,10 @@ func TestServersFollowTheThreadsProject(t *testing.T) {
 
 	// Reconnecting resolves the same way.
 	ctx := context.Background()
-	if d, err := c.Server(ctx, "y", all, "p1", "linear"); err != nil || d.Headers["X-Key"] != "client" {
+	if d, err := c.Server(ctx, "y", all, "p1", "linear"); err != nil || d.URL != c.proxy.url("p1/linear") {
 		t.Errorf("p1 linear = %+v, %v", d, err)
 	}
-	if d, err := c.Server(ctx, "y", all, "", "linear"); err != nil || d.Headers["X-Key"] != "mine" {
+	if d, err := c.Server(ctx, "y", all, "", "linear"); err != nil || d.URL != c.proxy.url("linear") {
 		t.Errorf("linear = %+v, %v", d, err)
 	}
 	if _, err := c.Server(ctx, "y", all, "p1", "gmail"); err == nil {
@@ -554,21 +510,35 @@ func TestServersFollowTheThreadsProject(t *testing.T) {
 }
 
 // Two projects' servers of one name have their own values and their own
-// sign-ins.
+// sign-ins, and a session reaches each through the proxy with its own.
 func TestProjectServersKeepTheirOwnCredentials(t *testing.T) {
-	c := newConns(t, nil)
-	url := "https://linear.example.com/mcp"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s %s", r.Header.Get("X-Key"), r.Header.Get("Authorization"))
+	}))
+	defer upstream.Close()
+	c := newConns(t, upstream.Client())
+	url := upstream.URL + "/mcp"
 	for _, p := range []string{"", "p1", "p2"} {
 		save(t, c, Draft{Name: "linear", Project: p, URL: url, Headers: map[string]string{"X-Key": "key-" + p}})
 		signIn(t, c, ServerKey("linear", p), url, map[string]any{"accessToken": "tok-" + p})
 	}
-	for _, p := range []string{"", "p1", "p2"} {
-		defs := c.Servers(context.Background(), "x", []string{"http"}, p)
+	via := func(project string) string {
+		t.Helper()
+		defs := c.Servers(context.Background(), "x", []string{"http"}, project)
 		if len(defs) != 1 {
-			t.Fatalf("%q: %+v", p, defs)
+			t.Fatalf("%q: %+v", project, defs)
 		}
-		if h := defs[0].Headers; h["X-Key"] != "key-"+p || h["Authorization"] != "Bearer tok-"+p {
-			t.Errorf("%q got %v", p, h)
+		req := httptest.NewRequest("POST", defs[0].URL, strings.NewReader("{}"))
+		for k, v := range defs[0].Headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		c.ServeProxy(rec, req, strings.TrimPrefix(req.URL.Path, ProxyPrefix))
+		return rec.Body.String()
+	}
+	for _, p := range []string{"", "p1", "p2"} {
+		if got := via(p); got != "key-"+p+" Bearer tok-"+p {
+			t.Errorf("%q reached the server with %q", p, got)
 		}
 	}
 
@@ -590,8 +560,8 @@ func TestProjectServersKeepTheirOwnCredentials(t *testing.T) {
 	if want := map[string]bool{"linear": true, "p1/linear": false}; !maps.Equal(signedIn, want) {
 		t.Errorf("signed in %v, want %v", signedIn, want)
 	}
-	if h := c.Servers(context.Background(), "x", []string{"http"}, "")[0].Headers; h["Authorization"] != "Bearer tok-" {
-		t.Errorf("global after the others changed: %v", h)
+	if got := via(""); got != "key- Bearer tok-" {
+		t.Errorf("global after the others changed: %q", got)
 	}
 }
 
@@ -720,12 +690,12 @@ func TestSignInToAProjectServer(t *testing.T) {
 	if _, ok := c.store.Secrets().Get("cf", OAuthKey); ok {
 		t.Error("tokens went to the cf that goes everywhere")
 	}
-	defs := c.Servers(context.Background(), "x", []string{"http"}, "p1")
-	if len(defs) != 1 || defs[0].Headers["Authorization"] != "Bearer at-1" {
-		t.Errorf("p1 session got %+v", defs)
+	// What the proxy sends each one.
+	if _, tok := c.upstream(context.Background(), Server{Name: "cf", Project: "p1", URL: u}, time.Second); tok != "at-1" {
+		t.Errorf("p1's cf is reached with %q", tok)
 	}
-	if defs := c.Servers(context.Background(), "x", []string{"http"}, ""); len(defs) != 1 || defs[0].Headers != nil {
-		t.Errorf("a session in no project got %+v", defs)
+	if def, tok := c.upstream(context.Background(), Server{Name: "cf", URL: u}, time.Second); tok != "" || def.Headers != nil {
+		t.Errorf("the cf that goes everywhere is reached with %q, %v", tok, def.Headers)
 	}
 }
 

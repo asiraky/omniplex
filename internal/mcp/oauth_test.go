@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -786,5 +787,153 @@ func TestBearerParams(t *testing.T) {
 				t.Errorf("bearerParams(%q)[%s] = %q, want %q", c.in, k, got[k], v)
 			}
 		}
+	}
+}
+
+// Two Omniplex servers on one store (the live one and a dev one) each have
+// their own process lock. A refresh token is single use, so if both spend
+// it, the loser is refused and drops the sign-in for both. The lock file
+// lets one refresh and the other pick up its tokens.
+func TestOAuthTwoServersOnOneStoreRefreshOnce(t *testing.T) {
+	f, a, sec := signedIn(t, 60)
+	f.expiresIn = 3600
+	dir := t.TempDir()
+	a.lockDir = dir
+	b := NewOAuth(sec, nil)
+	b.lockDir = dir
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for i := range 16 {
+		o := a
+		if i%2 == 1 {
+			o = b
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := o.Token(context.Background(), f.server()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if f.refreshes != 1 {
+		t.Errorf("refreshes = %d, want one", f.refreshes)
+	}
+	if !a.SignedIn("cf") {
+		t.Error("the sign-in was lost")
+	}
+}
+
+// A caller that stops waiting must not abandon a refresh the authorization
+// server may already have acted on: its answer carries the only refresh
+// token that still works.
+func TestOAuthAbandonedRefreshIsStillSaved(t *testing.T) {
+	release := make(chan struct{})
+	var used atomic.Value
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		used.Store(r.PostForm.Get("refresh_token"))
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"at-new","token_type":"Bearer","refresh_token":"rt-new","expires_in":3600}`)
+	}))
+	defer as.Close()
+	sec := newOASecrets()
+	o := NewOAuth(sec, as.Client())
+	srv := Server{Name: "s", URL: "https://s.example.com/mcp"}
+	b, _ := json.Marshal(tokenRecord{
+		AccessToken: "at-old", RefreshToken: "rt-old", Expiry: time.Now().Add(-time.Minute),
+		TokenEndpoint: as.URL + "/token", ClientID: "cid", URL: srv.URL,
+	})
+	sec.Put("s", OAuthKey, string(b))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := o.Token(ctx, srv); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired token and a slow refresh: err = %v", err)
+	}
+	close(release)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rec, ok := o.load("s"); ok && rec.RefreshToken == "rt-new" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the refresh's answer was never saved")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if used.Load() != "rt-old" {
+		t.Errorf("refreshed with %v", used.Load())
+	}
+	if tok, err := o.Token(context.Background(), srv); err != nil || tok != "at-new" {
+		t.Errorf("token after = %q, %v", tok, err)
+	}
+}
+
+// A slow refresh of a token that is still good hands the caller that token
+// rather than nothing.
+func TestOAuthSlowRefreshFallsBackToAGoodToken(t *testing.T) {
+	release := make(chan struct{})
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer func() {
+		close(release)
+		as.Close()
+	}()
+	sec := newOASecrets()
+	o := NewOAuth(sec, as.Client())
+	srv := Server{Name: "s", URL: "https://s.example.com/mcp"}
+	b, _ := json.Marshal(tokenRecord{
+		AccessToken: "at-old", RefreshToken: "rt-old", Expiry: time.Now().Add(time.Minute),
+		TokenEndpoint: as.URL + "/token", ClientID: "cid", URL: srv.URL,
+	})
+	sec.Put("s", OAuthKey, string(b))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if tok, err := o.Token(ctx, srv); err != nil || tok != "at-old" {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+}
+
+// A refusal of a refresh token another server has already replaced (one
+// without the lock file) is about tokens nobody holds any more: the new ones
+// are used and the sign-in kept.
+func TestOAuthRefusalAfterAnotherServerRefreshedKeepsTheSignIn(t *testing.T) {
+	sec := newOASecrets()
+	srv := Server{Name: "s", URL: "https://s.example.com/mcp"}
+	var as *httptest.Server
+	record := func(at, rt string, expiry time.Time) string {
+		b, _ := json.Marshal(tokenRecord{
+			AccessToken: at, RefreshToken: rt, Expiry: expiry,
+			TokenEndpoint: as.URL + "/token", ClientID: "cid", URL: srv.URL,
+		})
+		return string(b)
+	}
+	as = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The other server got there first and saved its answer.
+		sec.Put("s", OAuthKey, record("at-other", "rt-other", time.Now().Add(time.Hour)))
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	}))
+	defer as.Close()
+	sec.Put("s", OAuthKey, record("at-old", "rt-old", time.Now().Add(-time.Minute)))
+
+	o := NewOAuth(sec, as.Client())
+	tok, err := o.Token(context.Background(), srv)
+	if err != nil || tok != "at-other" {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+	if !o.SignedIn("s") {
+		t.Error("the other server's sign-in was dropped")
 	}
 }

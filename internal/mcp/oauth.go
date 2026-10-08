@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/datalock"
 )
 
 // This file is Omniplex as an OAuth client of remote MCP servers, following
@@ -58,6 +60,10 @@ var (
 	// callbackWait bounds how long the callback page waits for the code
 	// exchange before answering.
 	callbackWait = 30 * time.Second
+	// lockWait bounds waiting for another Omniplex server on the same store
+	// to finish its refresh. Longer than one token request, so a refresh in
+	// flight elsewhere is waited out rather than raced.
+	lockWait = 2 * oauthRequestTimeout
 )
 
 const oauthMaxBody = 1 << 20
@@ -74,6 +80,14 @@ type OAuth struct {
 	// locks serialise token writes per server key, so two sessions
 	// starting at once refresh once (a rotated refresh token is single use).
 	locks map[string]*sync.Mutex
+	// lockDir, when set, holds a lock file per server that every Omniplex
+	// server sharing this store takes as well, so two servers (the live one
+	// and a dev one, say) never spend the same refresh token. Unset, only
+	// this process is serialised.
+	lockDir string
+	// logf reports what the person would otherwise never see, such as an
+	// authorization server refusing a refresh.
+	logf func(string, ...any)
 	// current, when set, runs a token write only while key is still the key
 	// of a server at url, and refuses it otherwise. A sign-in or a refresh
 	// that finishes after the server was removed, renamed or moved must not
@@ -89,6 +103,7 @@ func NewOAuth(secrets Secrets, client *http.Client) *OAuth {
 		client:  staysHome(client),
 		pending: map[string]*pendingFlow{},
 		locks:   map[string]*sync.Mutex{},
+		logf:    func(string, ...any) {},
 	}
 }
 
@@ -151,6 +166,26 @@ func (o *OAuth) lockFor(key string) *sync.Mutex {
 	return l
 }
 
+// hold takes the token lock of the server with this key: this process's,
+// then the lock file other servers on the same store take. Release with the
+// returned func.
+func (o *OAuth) hold(key string) (func(), error) {
+	l := o.lockFor(key)
+	l.Lock()
+	if o.lockDir == "" {
+		return l.Unlock, nil
+	}
+	fl, err := datalock.Wait(filepath.Join(o.lockDir, secretID(key)+".lock"), lockWait)
+	if err != nil {
+		l.Unlock()
+		return nil, fmt.Errorf("waiting for another Omniplex server to finish refreshing %s: %w", key, err)
+	}
+	return func() {
+		fl.Release()
+		l.Unlock()
+	}, nil
+}
+
 func (o *OAuth) load(key string) (tokenRecord, bool) {
 	raw, ok := o.secrets.Get(secretID(key), OAuthKey)
 	if !ok {
@@ -186,9 +221,11 @@ func (o *OAuth) SignedIn(key string) bool {
 // SignOut forgets the tokens of the server with this key. Its other secrets
 // stay.
 func (o *OAuth) SignOut(key string) error {
-	l := o.lockFor(key)
-	l.Lock()
-	defer l.Unlock()
+	release, err := o.hold(key)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return o.secrets.Delete(secretID(key), OAuthKey)
 }
 
@@ -209,12 +246,48 @@ func (o *OAuth) Refresh(ctx context.Context, server Server, rejected string) (st
 	return o.token(ctx, server, rejected)
 }
 
+// token runs the refresh apart from ctx: a caller that stops waiting must not
+// cut a refresh off after the authorization server has rotated the refresh
+// token but before its answer is saved, which would leave a spent refresh
+// token stored and the sign-in lost on the next refresh. The caller gets the
+// stored token, while it is still good, if it stops waiting first.
 func (o *OAuth) token(ctx context.Context, server Server, rejected string) (string, error) {
+	type result struct {
+		token string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		tok, err := o.refreshed(context.WithoutCancel(ctx), server, rejected)
+		done <- result{tok, err}
+	}()
 	key := server.Key()
-	l := o.lockFor(key)
-	l.Lock()
-	defer l.Unlock()
+	select {
+	case r := <-done:
+		return r.token, r.err
+	case <-ctx.Done():
+		if rec, ok := o.load(key); ok && server.URL != "" && sameOrigin(rec.URL, server.URL) &&
+			rec.AccessToken != rejected && (rec.Expiry.IsZero() || rec.Expiry.After(time.Now())) {
+			return rec.AccessToken, nil
+		}
+		return "", ctx.Err()
+	}
+}
 
+func (o *OAuth) refreshed(ctx context.Context, server Server, rejected string) (string, error) {
+	key := server.Key()
+	release, err := o.hold(key)
+	if err != nil {
+		if rec, ok := o.load(key); ok && server.URL != "" && sameOrigin(rec.URL, server.URL) &&
+			rec.AccessToken != rejected && rec.Expiry.After(time.Now()) {
+			return rec.AccessToken, nil
+		}
+		return "", err
+	}
+	defer release()
+
+	// Read under the lock: another server may have refreshed while this one
+	// waited, and its tokens are the ones to use.
 	rec, ok := o.load(key)
 	if !ok || server.URL == "" || !sameOrigin(rec.URL, server.URL) {
 		return "", ErrSignInNeeded
@@ -245,6 +318,13 @@ func (o *OAuth) token(ctx context.Context, server Server, rejected string) (stri
 	if err != nil {
 		var te *tokenError
 		if errors.As(err, &te) && te.refused() {
+			// A server without the lock file (an older build) may have
+			// refreshed meanwhile; its tokens are good, so only drop the
+			// sign-in this refusal is about.
+			if cur, ok := o.load(key); ok && cur.RefreshToken != rec.RefreshToken {
+				return cur.AccessToken, nil
+			}
+			o.logf("mcp server %s: %v; it needs signing in again", key, err)
 			_ = o.secrets.Delete(secretID(key), OAuthKey)
 			return "", fmt.Errorf("%w: %v", ErrSignInNeeded, err)
 		}
@@ -949,9 +1029,11 @@ func (o *OAuth) exchange(ctx context.Context, server Server, d discovery, reg re
 	if rec.Scope == "" {
 		rec.Scope = d.scope
 	}
-	l := o.lockFor(server.Key())
-	l.Lock()
-	defer l.Unlock()
+	release, err := o.hold(server.Key())
+	if err != nil {
+		return err
+	}
+	defer release()
 	return o.save(server, rec)
 }
 

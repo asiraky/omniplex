@@ -14,10 +14,10 @@ import (
 	"github.com/asiraky/omniplex/internal/adapter"
 )
 
-// tokenWait bounds fetching (and refreshing) one server's token when a
-// session starts. A slow authorization server must not hold the session up:
-// the server goes in without a token and the harness reports it needs auth.
-// Tests shorten it.
+// tokenWait bounds waiting for one server's token during a check, so a slow
+// authorization server does not hold the Connections screen up. A refresh
+// that outlasts it still finishes and is saved (see OAuth.token). Tests
+// shorten it.
 var tokenWait = 5 * time.Second
 
 // cliCheckWait backs up the status command's own timeout.
@@ -46,6 +46,9 @@ type Connections struct {
 	folders func(ctx context.Context, projectID string) ([]string, error)
 	port    int
 	logf    func(string, ...any)
+	// proxy is how sessions reach remote servers: through this server, which
+	// puts the current token on every request (see proxy.go).
+	proxy *proxy
 
 	cliMu  sync.Mutex
 	checks map[string]map[string]accountCheck
@@ -74,6 +77,8 @@ func NewConnections(store *Store, client *http.Client, port int, hosts func() []
 	}
 	oauth := NewOAuth(store.Secrets(), client)
 	oauth.current = store.whileCurrent
+	oauth.lockDir = filepath.Join(filepath.Dir(store.path), "mcp-locks")
+	oauth.logf = logf
 	return &Connections{
 		store:   store,
 		oauth:   oauth,
@@ -82,6 +87,7 @@ func NewConnections(store *Store, client *http.Client, port int, hosts func() []
 		folders: folders,
 		port:    port,
 		logf:    logf,
+		proxy:   newProxy(client, port),
 		checks:  map[string]map[string]accountCheck{},
 	}
 }
@@ -416,14 +422,14 @@ func (c *Connections) check(ctx context.Context, s Server) ServerView {
 	return c.view(s)
 }
 
-// probed checks a remote server as a session would get it and returns that
-// definition. An access token the server turns away is refreshed once and
-// checked again: its expiry is only the token's own claim, and a server can
-// stop honouring it sooner (a restart, a revocation).
-func (c *Connections) probed(ctx context.Context, s Server) adapter.MCPServer {
-	def, token := c.definition(ctx, s)
+// probed checks a remote server as the proxy reaches it. An access token the
+// server turns away is refreshed once and checked again: its expiry is only
+// the token's own claim, and a server can stop honouring it sooner (a
+// restart, a revocation).
+func (c *Connections) probed(ctx context.Context, s Server) {
+	def, token := c.upstream(ctx, s, tokenWait)
 	if c.prober.Probe(ctx, s.Key(), def).Status != StatusSignIn || token == "" {
-		return def
+		return
 	}
 	tctx, cancel := context.WithTimeout(ctx, tokenWait)
 	_, err := c.oauth.Refresh(tctx, s, token)
@@ -432,11 +438,10 @@ func (c *Connections) probed(ctx context.Context, s Server) adapter.MCPServer {
 		if !errors.Is(err, ErrSignInNeeded) {
 			c.logf("mcp server %s: refresh: %v", s.Key(), err)
 		}
-		return def
+		return
 	}
-	def, _ = c.definition(ctx, s)
+	def, _ = c.upstream(ctx, s, tokenWait)
 	c.prober.Probe(ctx, s.Key(), def)
-	return def
 }
 
 // SignOut forgets a server's OAuth tokens and checks it again.
@@ -518,64 +523,64 @@ func sessionSet(all []Server, project string) []Server {
 	return out
 }
 
-// definition is a server as a session gets it: values from the secret
-// store, and a current OAuth access token when there is one, which comes
-// back too. A token that cannot be had within tokenWait is left out.
-func (c *Connections) definition(ctx context.Context, s Server) (def adapter.MCPServer, token string) {
-	env, headers := c.store.Values(s)
-	def = adapter.MCPServer{Name: s.Name, URL: s.URL, Command: s.Command, Args: s.Args}
-	if len(env) > 0 && s.Command != "" {
+// definition is a server as a session gets it. A command server gets its
+// values from the secret store. A remote one is reached through the proxy,
+// with no credential of the server's own: the proxy adds the current one to
+// each request, so a session outlives the token it started with.
+func (c *Connections) definition(s Server) adapter.MCPServer {
+	def := adapter.MCPServer{Name: s.Name, URL: s.URL, Command: s.Command, Args: s.Args}
+	if s.URL != "" {
+		def.URL = c.proxy.url(s.Key())
+		def.Headers = map[string]string{"Authorization": "Bearer " + c.proxy.key}
+		return def
+	}
+	if env, _ := c.store.Values(s); len(env) > 0 && s.Command != "" {
 		def.Env = env
 	}
-	if s.URL != "" {
-		tctx, cancel := context.WithTimeout(ctx, tokenWait)
-		var err error
-		token, err = c.oauth.Token(tctx, s)
-		cancel()
-		switch {
-		case err == nil && token != "":
-			for k := range headers {
-				if strings.EqualFold(k, "Authorization") {
-					delete(headers, k)
-				}
+	return def
+}
+
+// upstream is a remote server as the proxy and the checks reach it: its
+// header values, and a current OAuth access token when there is one, which
+// comes back too. A token that cannot be had within wait is left out.
+func (c *Connections) upstream(ctx context.Context, s Server, wait time.Duration) (def adapter.MCPServer, token string) {
+	_, headers := c.store.Values(s)
+	def = adapter.MCPServer{Name: s.Name, URL: s.URL}
+	tctx, cancel := context.WithTimeout(ctx, wait)
+	token, err := c.oauth.Token(tctx, s)
+	cancel()
+	switch {
+	case err == nil && token != "":
+		for k := range headers {
+			if strings.EqualFold(k, "Authorization") {
+				delete(headers, k)
 			}
-			headers["Authorization"] = "Bearer " + token
-		case err != nil && !errors.Is(err, ErrSignInNeeded):
-			c.logf("mcp server %s: token: %v", s.Key(), err)
 		}
-		if len(headers) > 0 {
-			def.Headers = headers
-		}
+		headers["Authorization"] = "Bearer " + token
+	case err != nil && !errors.Is(err, ErrSignInNeeded):
+		c.logf("mcp server %s: token: %v", s.Key(), err)
+	}
+	if len(headers) > 0 {
+		def.Headers = headers
 	}
 	return def, token
 }
 
 // Servers is what a session of the given harness in the given project ("" for
 // none) gets: the project's servers, then the ones that go everywhere (see
-// sessionSet), each in the order the user added them. Tokens are fetched
-// concurrently, so the slowest one, not their sum, bounds the wait.
+// sessionSet), each in the order the user added them.
 func (c *Connections) Servers(ctx context.Context, harness string, transports []string, projectID string) []adapter.MCPServer {
 	f, err := c.store.Read()
 	if err != nil {
 		c.logf("mcp servers: %v", err)
 		return nil
 	}
-	var picked []Server
+	var out []adapter.MCPServer
 	for _, s := range sessionSet(f.Servers, projectID) {
 		if takes(s, harness, transports) {
-			picked = append(picked, s)
+			out = append(out, c.definition(s))
 		}
 	}
-	out := make([]adapter.MCPServer, len(picked))
-	var wg sync.WaitGroup
-	for i, s := range picked {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			out[i], _ = c.definition(ctx, s)
-		}()
-	}
-	wg.Wait()
 	return out
 }
 
@@ -599,10 +604,9 @@ func (c *Connections) Server(ctx context.Context, harness string, transports []s
 		return adapter.MCPServer{}, fmt.Errorf("this thread's agent does not get %s", name)
 	}
 	if s.URL != "" {
-		return c.probed(ctx, s), nil
+		c.probed(ctx, s)
 	}
-	def, _ := c.definition(ctx, s)
-	return def, nil
+	return c.definition(s), nil
 }
 
 // --- sign-ins (CLI accounts) ---
