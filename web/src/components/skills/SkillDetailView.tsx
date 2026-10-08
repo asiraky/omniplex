@@ -19,8 +19,10 @@ import {
   fmtSize,
   MODE_LABEL,
   MODE_TEXT,
+  NOT_COMMITTED,
   originText,
   splitFrontmatter,
+  type Destination,
   type Skill,
   type SkillDetail,
   type SkillFileContent,
@@ -137,6 +139,7 @@ export function SkillDetailView({
   command,
   scopeArgs,
   skill,
+  destinations,
   startEditing,
   onBack,
   onChanged,
@@ -145,6 +148,8 @@ export function SkillDetailView({
   command: PageCommand;
   scopeArgs: Record<string, unknown>;
   skill: Skill;
+  /** For a repo skill's folder, by its label. */
+  destinations: Destination[];
   /** Open straight into the editor, as after creating the skill. */
   startEditing?: boolean;
   onBack: () => void;
@@ -306,7 +311,23 @@ export function SkillDetailView({
     onRemoved(skill);
   };
 
-  const header = <DetailHeader backLabel="Back to skills" onBack={back} title={skill.name} sub={originText(skill)} />;
+  const origin = originText(skill, destinations);
+  const header = (
+    <DetailHeader
+      backLabel="Back to skills"
+      onBack={back}
+      title={skill.name}
+      sub={
+        skill.uncommitted ? (
+          <>
+            {origin}. <span className="text-attention-foreground">{NOT_COMMITTED}</span>
+          </>
+        ) : (
+          origin
+        )
+      }
+    />
+  );
 
   if (editing) {
     return (

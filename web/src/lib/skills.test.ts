@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { matchesQuery, sectionSkills, skillsScope, type Skill, type Source } from "~/lib/skills";
+import {
+  destinationsOf,
+  matchesQuery,
+  originText,
+  repoSectionTitle,
+  sectionSkills,
+  skillsScope,
+  type Destination,
+  type Skill,
+  type SkillsList,
+  type Source,
+} from "~/lib/skills";
 
 const skill = (name: string, extra: Partial<Skill> = {}): Skill => ({
   name,
@@ -50,6 +61,15 @@ describe("sectionSkills", () => {
     expect(names(out.plugins)).toEqual(["plug"]);
   });
 
+  it("keeps the project's own skills apart from the repos'", () => {
+    const out = sectionSkills([
+      skill("ours", { scope: "project", private: true, folder: "/home/p" }),
+      skill("shared", { scope: "project", folder: "/code/p" }),
+    ]);
+    expect(names(out.private)).toEqual(["ours"]);
+    expect(names(out.project)).toEqual(["shared"]);
+  });
+
   it("keeps same-name copies as separate rows, in a stable order", () => {
     const out = sectionSkills([skill("pdf", { dir: "/b/pdf" }), skill("pdf", { dir: "/a/pdf" })]);
     expect(out.yours.map((s) => s.dir)).toEqual(["/a/pdf", "/b/pdf"]);
@@ -66,6 +86,73 @@ describe("sectionSkills", () => {
 
   it("returns every section empty for no skills", () => {
     expect(Object.values(sectionSkills([])).every((list) => list.length === 0)).toBe(true);
+  });
+});
+
+const destinations: Destination[] = [
+  { kind: "project", folder: "/home/p", label: "This project" },
+  { kind: "repo", folder: "/code/api", label: "api repo", main: true },
+  { kind: "repo", folder: "/code/web", label: "web repo" },
+  { kind: "personal", folder: "", label: "Personal" },
+];
+
+describe("destinationsOf", () => {
+  const list = (extra: Partial<SkillsList>): SkillsList => ({ skills: [], claudeSync: true, codexBundled: true, ...extra });
+
+  it("takes the server's list and default", () => {
+    expect(destinationsOf(list({ destinations, defaultDestination: "/code/web" }))).toEqual({
+      destinations,
+      defaultDestination: "/code/web",
+    });
+  });
+
+  it("offers only personal when the server sends none", () => {
+    for (const l of [null, list({}), list({ destinations: null })]) {
+      expect(destinationsOf(l)).toEqual({
+        destinations: [{ kind: "personal", folder: "", label: "Personal" }],
+        defaultDestination: "",
+      });
+    }
+  });
+
+  it("starts on the first destination when the default is not one of them", () => {
+    expect(destinationsOf(list({ destinations, defaultDestination: "/gone" })).defaultDestination).toBe("/home/p");
+    expect(destinationsOf(list({ destinations: destinations.slice(0, 2) })).defaultDestination).toBe("/home/p");
+  });
+});
+
+describe("repoSectionTitle", () => {
+  const repo = (name: string, folder?: string) => skill(name, { scope: "project", folder });
+
+  it("names the one folder its skills share", () => {
+    expect(repoSectionTitle([repo("a", "/code/api"), repo("b", "/code/api")], destinations)).toEqual({
+      title: "api repo",
+      perRow: false,
+    });
+  });
+
+  it("names each row's folder when the skills are in several", () => {
+    expect(repoSectionTitle([repo("a", "/code/api"), repo("b", "/code/web")], destinations)).toEqual({
+      title: "Repos",
+      perRow: true,
+    });
+  });
+
+  it("leaves the title to the caller when the folder is not a destination", () => {
+    expect(repoSectionTitle([repo("a", "/elsewhere")], destinations).title).toBeUndefined();
+    expect(repoSectionTitle([repo("a")], destinations).title).toBeUndefined();
+  });
+});
+
+describe("originText", () => {
+  it("names a project skill by where it lives", () => {
+    expect(originText(skill("a", { scope: "project", private: true, folder: "/home/p" }), destinations)).toBe(
+      "This project",
+    );
+    expect(originText(skill("a", { scope: "project", folder: "/code/web" }), destinations)).toBe("web repo");
+    expect(originText(skill("a", { scope: "project", folder: "/elsewhere", editable: false }), destinations)).toBe(
+      "Project, read-only",
+    );
   });
 });
 
