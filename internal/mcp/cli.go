@@ -293,30 +293,39 @@ func loopbackRedirectPort(authURL string) int {
 var homeRef = regexp.MustCompile(`\$\{HOME\}|\$HOME\b`)
 
 // accountEnv is the server's environment with the account's env on top,
-// "~" and $HOME in the account's values expanded to the server's home.
+// expanded as ExpandAccountEnv does.
 func accountEnv(account Account) []string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home, _ = os.UserHomeDir()
-	}
 	env := os.Environ()
-	keys := make([]string, 0, len(account.Env))
-	for k := range account.Env {
+	values := ExpandAccountEnv(account.Env)
+	keys := make([]string, 0, len(values))
+	for k := range values {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		v := account.Env[k]
+		// exec keeps the last value of a duplicated key.
+		env = append(env, k+"="+values[k])
+	}
+	return env
+}
+
+// ExpandAccountEnv is an account's env as its commands get it: "~" and
+// $HOME in the values expanded to the server's home.
+func ExpandAccountEnv(in map[string]string) map[string]string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
 		if v == "~" {
 			v = home
 		} else if strings.HasPrefix(v, "~/") {
 			v = home + v[1:]
 		}
-		v = homeRef.ReplaceAllLiteralString(v, home)
-		// exec keeps the last value of a duplicated key.
-		env = append(env, k+"="+v)
+		out[k] = homeRef.ReplaceAllLiteralString(v, home)
 	}
-	return env
+	return out
 }
 
 // shellCommand prepares `sh -c script` in its own process tree, killed as a

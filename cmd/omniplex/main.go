@@ -158,6 +158,8 @@ func main() {
 	}
 	mgr.SetArtefacts(artefacts)
 	thread.ToolServers = artefactTools(signer, plan.Port)
+	// Values an agent passes to add_mcp_server stay out of the event log.
+	thread.RedactToolInput = server.RedactAgentToolInput
 
 	// omniplex's own skill ships in the binary. Each session loads it from
 	// beside the data, for itself alone; it never goes into a skills library.
