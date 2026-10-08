@@ -167,7 +167,7 @@ var agentTools = []agentTool{
 					"statusCommand":   str("Reports whether the account is signed in: exit status 0 means signed in, unless signedInPattern is set."),
 					"signedInPattern": str("A Go regexp that must match the status command's output for signed in."),
 					"signInCommand":   str("Signs in: usually prints a URL to open and waits for the browser to come back."),
-					"prepareCommand":  str("Runs before signInCommand, e.g. to put a client secret into a new account's config folder."),
+					"prepareCommand":  str("Runs before signInCommand, e.g. to copy a client secret file into a new account's config folder. Name files; never write a secret value into it: a sign-in's commands are stored and shown as plain text."),
 					"accountEnv":      map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Env that keeps each account apart, e.g. {\"GOOGLE_WORKSPACE_CLI_CONFIG_DIR\": \"~/.config/gws-{account}\"}. {account} becomes the account's name."},
 					"accounts":        strList("Accounts to create, e.g. [\"work\", \"personal\"]."),
 				},

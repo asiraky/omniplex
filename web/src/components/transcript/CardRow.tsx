@@ -2,7 +2,7 @@ import { BookOpenIcon, KeyRoundIcon, PlugIcon, UserPlusIcon, type LucideIcon } f
 
 import { Marker, type Tone } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
-import { cardSummary, LIVE_TEXT, resultText, signInTargets, type CardSignIn } from "~/lib/cards";
+import { cardSummary, LIVE_TEXT, resultText, SHADOWED_TEXT, signInTargets, type CardSignIn } from "~/lib/cards";
 import type { CardKind, CardResult, Item } from "~/protocol";
 
 const ICON: Record<CardKind, LucideIcon> = {
@@ -52,6 +52,7 @@ export function CardRow({
           <span className="flex flex-wrap items-center gap-1.5">
             <Marker tone={TONE[result] ?? "quiet"}>{resultText(card.kind, result)}</Marker>
             {result === "saved" && outcome?.live && <Marker>{LIVE_TEXT[outcome.live]}</Marker>}
+            {result === "saved" && outcome?.shadowed && <Marker>{SHADOWED_TEXT}</Marker>}
           </span>
         </div>
       </div>

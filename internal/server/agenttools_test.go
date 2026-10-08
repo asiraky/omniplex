@@ -945,6 +945,35 @@ func TestASavedServerReachesTheLiveSessionWhenItCan(t *testing.T) {
 	}
 }
 
+func TestAServerSavedEverywhereUnderAProjectServersNameIsNotPushed(t *testing.T) {
+	r := newToolRig(t)
+	threadID, p := r.projectThread(r.ctl.id)
+	save := func(scope string) cardOutcome {
+		reply := r.start(context.Background(), threadID, "add_mcp_server",
+			map[string]any{"config": "claude mcp add --transport stdio db -- db-server", "scope": scope})
+		pending, _ := r.waitCard(threadID, 1)
+		out, errMsg := r.resolve(threadID, pending.RequestID, "accept", nil)
+		if errMsg != "" {
+			t.Fatal(errMsg)
+		}
+		wait(t, reply)
+		return out
+	}
+	if out := save("project"); out.Live != liveNow || out.Shadowed {
+		t.Fatalf("the project's own: %+v", out)
+	}
+	out := save("everywhere")
+	if !out.Shadowed || out.Live != "" || len(r.ctl.reconnected()) != 1 {
+		t.Errorf("everywhere: %+v, reconnected %+v", out, r.ctl.reconnected())
+	}
+	if _, ok := r.server("db", ""); !ok {
+		t.Error("the everywhere server was not saved")
+	}
+	if _, ok := r.server("db", p.ID); !ok {
+		t.Error("the project's server went")
+	}
+}
+
 func TestARemoteServerThatWantsASignInSaysSo(t *testing.T) {
 	r := newToolRig(t)
 	threadID, _ := r.projectThread(r.ctl.id)
@@ -1055,6 +1084,16 @@ func TestRedactAgentToolInput(t *testing.T) {
 	unreadable, _ := json.Marshal(map[string]string{"config": "claude mcp add x \"unclosed hunter2"})
 	if got := string(RedactAgentToolInput("omniplex/add_mcp_server", unreadable)); strings.Contains(got, "hunter2") {
 		t.Errorf("an unreadable config kept its text: %s", got)
+	}
+	// A value written so no form of it is in the text masks the config whole.
+	for _, cfg := range []string{
+		`{"mcpServers":{"a":{"command":"a-server","env":{"A_KEY":"\u0068unter2"}}}}`,
+		"claude mcp add --transport stdio db --env 'DB_PASSWORD=hun''ter2' -- db-server",
+	} {
+		in, _ := json.Marshal(map[string]string{"config": cfg})
+		if got := string(RedactAgentToolInput("omniplex/add_mcp_server", in)); strings.Contains(got, "ter2") {
+			t.Errorf("an escaped value was kept: %s", got)
+		}
 	}
 	// Every server in a paste, though Parse reads only the first, and a value
 	// that JSON or TOML had to escape.

@@ -236,10 +236,12 @@ describe("signInTargets", () => {
     expect(signInTargets(outcome, origin).map((t) => t.begin)).toEqual([{ mcpServer: "linear", origin }]);
   });
 
-  it("reconnects the live session after signing in only when the server is in it", () => {
+  it("reconnects the live session after signing in when the thread's agent runs the server", () => {
     const base: CardOutcome = { result: "saved", server: { name: "linear", project: "p1" }, needsSignIn: true };
     expect(signInTargets({ ...base, live: "now" }, origin)[0].reconnect).toEqual({ name: "linear", project: "p1" });
-    expect(signInTargets({ ...base, live: "next_session" }, origin)[0].reconnect).toBeUndefined();
+    // A push the server turned away before the sign-in is retried after it.
+    expect(signInTargets({ ...base, live: "next_session" }, origin)[0].reconnect).toEqual({ name: "linear", project: "p1" });
+    expect(signInTargets({ ...base, live: undefined }, origin)[0].reconnect).toBeUndefined();
   });
 
   it("offers nothing for a saved server that does not need a sign-in", () => {

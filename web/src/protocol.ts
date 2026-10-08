@@ -345,6 +345,8 @@ export interface CardOutcome {
   skills?: string[];
   destination?: string;
   live?: "now" | "next_turn" | "next_session";
+  /** A server saved everywhere that this project's own server of the same name stands in for here. */
+  shadowed?: boolean;
 }
 
 /** resolve_card's edits: only what the user changed. Values are never echoed back. */

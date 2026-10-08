@@ -198,6 +198,8 @@ export const LIVE_TEXT: Record<NonNullable<CardOutcome["live"]>, string> = {
   next_session: "From the next session",
 };
 
+export const SHADOWED_TEXT = "This project's own is used here";
+
 /** A Sign in the outcome offers, and what auth_begin is told. */
 export interface CardSignIn {
   key: string;
@@ -207,7 +209,11 @@ export interface CardSignIn {
   title: string;
   description?: string;
   begin: AuthBeginArgs;
-  /** A server already in the thread's live session, which has to reconnect to use the sign-in. */
+  /**
+   * A server the thread's live session took, or failed to take before it had
+   * a sign-in, which has to reconnect to use it. Best effort: a harness that
+   * cannot reconnect one live refuses, and its next session has it anyway.
+   */
   reconnect?: { name: string; project?: string };
 }
 
@@ -226,7 +232,9 @@ export function signInTargets(outcome: CardOutcome | undefined, origin: string):
       title: `Sign in to ${name}`,
       description: "Open the sign-in page and approve. This closes by itself.",
       begin: { mcpServer: name, ...(project ? { mcpProject: project } : {}), origin },
-      ...(outcome.live === "now" ? { reconnect: { name, ...(project ? { project } : {}) } } : {}),
+      ...(outcome.live === "now" || outcome.live === "next_session"
+        ? { reconnect: { name, ...(project ? { project } : {}) } }
+        : {}),
     });
   }
   const cli = outcome.cli;

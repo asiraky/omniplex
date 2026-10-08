@@ -818,8 +818,8 @@ const redacted = "••••"
 
 // RedactAgentToolInput keeps the values an agent passed to add_mcp_server
 // out of a stored tool call: every env and header value its config holds is
-// masked wherever it appears in the input. A config that cannot be read is
-// masked whole, since what in it is a value cannot be told. Every other
+// masked wherever it appears in the input. A config that cannot be read, or
+// that holds a value in a form not found to mask, is masked whole. Every other
 // tool's input is returned as it is.
 func RedactAgentToolInput(toolName string, input json.RawMessage) json.RawMessage {
 	if !isAddServerTool(toolName) || len(input) == 0 {
@@ -849,7 +849,13 @@ func RedactAgentToolInput(toolName string, input json.RawMessage) json.RawMessag
 			}
 		}
 		for _, val := range values {
-			secrets = append(secrets, secretForms(val)...)
+			forms := secretForms(val)
+			// A value written some way no form matches (a \u escape, shell
+			// quotes) cannot be found to mask, so the config goes whole.
+			if len(forms) > 0 && !slices.ContainsFunc(forms, func(f string) bool { return strings.Contains(cfg, f) }) {
+				unreadable = true
+			}
+			secrets = append(secrets, forms...)
 		}
 	}
 	// Longest first, so a value is masked whole before a part of it is.

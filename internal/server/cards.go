@@ -256,6 +256,9 @@ type cardOutcome struct {
 	Skills      []string       `json:"skills,omitempty"`
 	Destination string         `json:"destination,omitempty"`
 	Live        string         `json:"live,omitempty"`
+	// Shadowed is a server saved everywhere that this project's own server
+	// of the same name stands in for here.
+	Shadowed bool `json:"shadowed,omitempty"`
 }
 
 type outcomeServer struct {
@@ -506,6 +509,16 @@ func (s *Server) applyAddServer(ctx context.Context, c *heldCard, e cardEdits, h
 		NeedsSignIn: view.Status == mcp.StatusSignIn,
 	}
 	c.scope = scope
+	// A server saved everywhere under the name of one this project has
+	// already is not what this project's sessions get: theirs stands.
+	if d.Project == "" && c.projectID != "" {
+		if _, ok, err := s.findServer(ctx, d.Name, c.projectID); err != nil {
+			return cardOutcome{}, nil, err
+		} else if ok {
+			out.Shadowed = true
+			return out, changed, nil
+		}
+	}
 	out.Live = s.mcpLive(ctx, c.thread, harness, d)
 	return out, changed, nil
 }
@@ -697,12 +710,14 @@ func savedText(c *heldCard, out cardOutcome, changed []string) string {
 	b.WriteString(".")
 	switch c.kind {
 	case cardAddServer:
-		switch out.Live {
-		case liveNow:
+		switch {
+		case out.Shadowed:
+			b.WriteString(" This project has its own server of that name, which its sessions keep using; this one reaches every other project.")
+		case out.Live == liveNow:
 			b.WriteString(" It is connected to this session now; its tools are yours to use.")
-		case liveNextSession:
+		case out.Live == liveNextSession:
 			b.WriteString(" This session cannot take it while it runs: its tools arrive in the next session.")
-		case "":
+		default:
 			b.WriteString(" This thread's agent does not run this kind of MCP server.")
 		}
 		if out.NeedsSignIn {
