@@ -172,12 +172,15 @@ function HeaderTitle({
         <IconButton
           label="Rename thread"
           onClick={onEdit}
+          // A 12px glyph, smaller than the 13px title, and faint until
+          // pointed at. On a phone the button keeps its 44px target but
+          // tucks in so the glyph sits just after the text, not 16px off.
           className={cn(
-            "text-muted-foreground [&_svg]:size-3.5",
+            "text-muted-foreground/70 hover:text-foreground -ml-3 hover:bg-transparent md:ml-0 md:size-6 dark:hover:bg-transparent",
             isDesktop && "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
           )}
         >
-          <PencilIcon />
+          <PencilIcon className="size-3" strokeWidth={1.75} />
         </IconButton>
       )}
     </div>
