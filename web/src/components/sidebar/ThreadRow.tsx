@@ -1,7 +1,9 @@
-import { CircleAlertIcon, FolderIcon, GitBranchIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, FolderIcon, GitBranchIcon, PencilIcon, XIcon } from "lucide-react";
+import { useRef, useState } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { LabelDot, LabelMenu } from "~/components/LabelMenu";
+import { TitleEditor } from "~/components/TitleEditor";
 import { Button } from "~/components/ui/button";
 import {
   ContextMenu,
@@ -94,11 +96,16 @@ function TitleLine({
         // desktop the line has to yield at all times too —
         // hover-only reservation would leave the title running
         // under a dot that is already there.
+        //
+        // Hover on desktop also brings the rename pencil, one
+        // control-width further left, so the hovered line yields
+        // to the pencil's glyph instead: pr-18 with the label dot
+        // beside it, pr-10 when the pencil sits next to the X.
         label
-          ? "pr-16 md:pr-12"
+          ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
           : labels.length > 0
-            ? "pr-16 md:pr-0 md:group-hover:pr-12 md:group-focus-within:pr-12 md:group-has-[[aria-expanded=true]]:pr-12"
-            : "pr-8 md:pr-0",
+            ? "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18 md:group-has-[[aria-expanded=true]]:pr-12"
+            : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
       )}
     >
       <span className="min-w-0 truncate text-[13px]">{s.title || "Untitled"}</span>
@@ -285,6 +292,45 @@ function LabelControl({
   );
 }
 
+/**
+ * The pencil that turns the title into a field. Desktop only, on hover like
+ * the X: a third always-visible control on a phone row would cost the title
+ * too much room, so touch reaches rename through the long-press menu, or the
+ * pencil in the thread header.
+ */
+function RenameControl({
+  s,
+  besideLabel,
+  onRename,
+}: {
+  s: ThreadMeta;
+  /** The label control is showing, so the pencil sits left of it. */
+  besideLabel: boolean;
+  onRename: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`Rename thread ${s.title || "Untitled"}`}
+          onClick={onRename}
+          className={cn(
+            "text-muted-foreground/70 hover:text-foreground absolute top-0.5 hidden size-8 shrink-0 hover:bg-transparent md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent",
+            besideLabel ? "right-16" : "right-8",
+          )}
+        >
+          {/* Smaller and fainter than the X beside it: renaming is the
+              quieter of the two, and the title it edits is 13px. */}
+          <PencilIcon className="size-3" strokeWidth={1.75} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Rename thread</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMeta) => void }) {
   return (
     <Tooltip>
@@ -330,6 +376,7 @@ export function ThreadRow({
   onSetLabel,
   onManageLabels,
   onSetUnread,
+  onRename,
   onDelete,
 }: {
   s: ThreadMeta;
@@ -346,8 +393,14 @@ export function ThreadRow({
   onSetLabel: (threadId: string, labelId: string) => void;
   onManageLabels: () => void;
   onSetUnread: (threadId: string, unread: boolean) => void;
+  onRename: (threadId: string, title: string) => void;
   onDelete: (s: ThreadMeta) => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  // Picking Rename from the context menu closes it, and a closing menu hands
+  // focus back to wherever it came from, which would blur the field it just
+  // opened. This says the close is ours, so the menu leaves focus alone.
+  const renameChosen = useRef(false);
   // The unread dot yields to every live indicator — a row that is working,
   // waiting or failed already says something stronger — and to the active
   // row, which is by definition being looked at.
@@ -375,10 +428,16 @@ export function ThreadRow({
       )}
     >
       {/* Right-click (long-press, on touch) for the row's quiet
-         actions. Only read-state today: everything else the row does
-         already has a control of its own. */}
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
+         actions: rename, which on touch has no control of its own,
+         and read-state. */}
+      {/* Not modal: a modal menu traps focus until it has finished
+         closing, so the rename field it opens would have its focus pulled
+         back and lose it. It has to take focus inside the tap itself, too,
+         or iOS will not raise the keyboard for it. */}
+      <ContextMenu modal={false}>
+        {/* While renaming, a right-click in the field is the browser's
+           own menu: cut, copy, paste. */}
+        <ContextMenuTrigger asChild disabled={renaming}>
           <div
             className={cn(
               // min-w-0: a grid item's automatic minimum size is its
@@ -400,37 +459,83 @@ export function ThreadRow({
               going && "pointer-events-none opacity-60",
             )}
           >
-            <button
-              type="button"
-              onClick={() => onSelect(s.id)}
-              aria-current={active ? "true" : undefined}
-              className="focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2"
-            >
-              {/* Two matched lines: text on the left, a small mark on the
-                  right — timestamp above, provider logo below. */}
-              <TitleLine s={s} label={label} labels={labels} showUnread={showUnread} />
-              <DetailLine
-                s={s}
-                showProject={showProject}
-                projectName={projectName}
-                accentOf={accentOf}
-              />
-            </button>
+            {renaming ? (
+              // The same box as the button below, so the row keeps its
+              // shape: the title line becomes the field, the detail line
+              // stays put. The row's controls step aside while it is open
+              // and the field takes the full width.
+              <div className="min-w-0 px-2.5 py-2">
+                <span className="flex">
+                  <TitleEditor
+                    title={s.title}
+                    label="Thread title"
+                    onSave={(title) => onRename(s.id, title)}
+                    onDone={() => setRenaming(false)}
+                    className="-mx-1 h-6 flex-1 md:h-5"
+                  />
+                </span>
+                <DetailLine
+                  s={s}
+                  showProject={showProject}
+                  projectName={projectName}
+                  accentOf={accentOf}
+                />
+              </div>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onSelect(s.id)}
+                  aria-current={active ? "true" : undefined}
+                  className="focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2"
+                >
+                  {/* Two matched lines: text on the left, a small mark on the
+                      right — timestamp above, provider logo below. */}
+                  <TitleLine s={s} label={label} labels={labels} showUnread={showUnread} />
+                  <DetailLine
+                    s={s}
+                    showProject={showProject}
+                    projectName={projectName}
+                    accentOf={accentOf}
+                  />
+                </button>
 
-            {labels.length > 0 && (
-              <LabelControl
-                s={s}
-                label={label}
-                labels={labels}
-                onSetLabel={onSetLabel}
-                onManageLabels={onManageLabels}
-              />
+                <RenameControl
+                  s={s}
+                  besideLabel={labels.length > 0}
+                  onRename={() => setRenaming(true)}
+                />
+
+                {labels.length > 0 && (
+                  <LabelControl
+                    s={s}
+                    label={label}
+                    labels={labels}
+                    onSetLabel={onSetLabel}
+                    onManageLabels={onManageLabels}
+                  />
+                )}
+
+                <DeleteControl s={s} onDelete={onDelete} />
+              </>
             )}
-
-            <DeleteControl s={s} onDelete={onDelete} />
           </div>
         </ContextMenuTrigger>
-        <ContextMenuContent>
+        <ContextMenuContent
+          onCloseAutoFocus={(e) => {
+            if (!renameChosen.current) return;
+            renameChosen.current = false;
+            e.preventDefault();
+          }}
+        >
+          <ContextMenuItem
+            onSelect={() => {
+              renameChosen.current = true;
+              setRenaming(true);
+            }}
+          >
+            Rename
+          </ContextMenuItem>
           {unread(s) ? (
             <ContextMenuItem onSelect={() => onSetUnread(s.id, false)}>Mark read</ContextMenuItem>
           ) : (

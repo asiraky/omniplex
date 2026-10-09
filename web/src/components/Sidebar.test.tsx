@@ -47,6 +47,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     onManageLabels: vi.fn(),
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
+    onRename: vi.fn(),
     ...over,
   };
   render(<Sidebar {...props} />);
@@ -81,6 +82,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     onManageLabels: vi.fn(),
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
+    onRename: vi.fn(),
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
@@ -159,6 +161,18 @@ describe("Sidebar", () => {
     expect(del.className).toContain("size-8");
     expect(del.className).toContain("after:-inset-1.5");
     expect(del.className).toContain("md:after:hidden");
+  });
+
+  it("renames a thread in place from the row's pencil", () => {
+    const props = renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "Rename thread Thread a" }));
+    const field = screen.getByRole("textbox", { name: "Thread title" });
+    fireEvent.change(field, { target: { value: "Release notes" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(props.onRename).toHaveBeenCalledWith("a", "Release notes");
+    // The row is a row again, not a field.
+    expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull();
+    expect(props.onSelect).not.toHaveBeenCalled();
   });
 
   it("starts a project from the header", () => {

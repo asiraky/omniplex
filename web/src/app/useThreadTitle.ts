@@ -1,3 +1,4 @@
+import { threadTitle } from "~/lib/threadTitle";
 import type { ThreadMeta, ThreadState } from "~/protocol";
 import { useDocumentTitle } from "~/useDocumentTitle";
 
@@ -16,5 +17,5 @@ export function useThreadTitle(
   // leave every tab called "Omniplex" for exactly as long as it takes to
   // reconnect, which is when telling them apart matters most.
   const needsAttention = Boolean(state?.pendingPermissions?.[0] || state?.pendingElicitations?.[0]);
-  useDocumentTitle(activeId ? { title: state?.title ?? meta?.title, needsAttention } : null);
+  useDocumentTitle(activeId ? { title: threadTitle(meta, state), needsAttention } : null);
 }

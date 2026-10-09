@@ -29,6 +29,7 @@ import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { visibleThreads } from "~/labelFilter";
+import { isTitleEditor } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 import { groupThreads, visibleByProject } from "~/projectGroups";
 import type { Label, Project, ThreadMeta } from "~/protocol";
@@ -118,6 +119,8 @@ interface SidebarProps {
   onNewProject: () => void;
   /** Flips the unread flag by hand — the row's "come back to this" action. */
   onSetUnread: (threadId: string, unread: boolean) => void;
+  /** Gives a thread the title the user typed. */
+  onRename: (threadId: string, title: string) => void;
 }
 
 /**
@@ -210,6 +213,7 @@ function ThreadList({
   onSetLabel,
   onManageLabels,
   onSetUnread,
+  onRename,
   hidden,
   onShowAll,
 }: Pick<
@@ -223,6 +227,7 @@ function ThreadList({
   | "onSetLabel"
   | "onManageLabels"
   | "onSetUnread"
+  | "onRename"
 > & {
   flow: DeleteFlow;
   /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
@@ -300,6 +305,7 @@ function ThreadList({
       onSetLabel={onSetLabel}
       onManageLabels={onManageLabels}
       onSetUnread={onSetUnread}
+      onRename={onRename}
       onDelete={ask}
     />
   );
@@ -418,6 +424,7 @@ function SidebarPanel({
           onSetLabel={props.onSetLabel}
           onManageLabels={props.onManageLabels}
           onSetUnread={props.onSetUnread}
+          onRename={props.onRename}
           hidden={hidden}
           onShowAll={onShowAll}
         />
@@ -555,6 +562,12 @@ export function Sidebar(props: SidebarProps) {
             onOpenAutoFocus={(e) => {
               e.preventDefault();
               (e.currentTarget as HTMLElement | null)?.focus();
+            }}
+            // Escape in a row's rename field means "keep the old name", not
+            // "close the drawer". Radix hears the key on the document before
+            // the field does, so the field cannot stop it on its own.
+            onEscapeKeyDown={(e) => {
+              if (isTitleEditor(document.activeElement)) e.preventDefault();
             }}
           >
             <SheetTitle className="sr-only">Threads</SheetTitle>

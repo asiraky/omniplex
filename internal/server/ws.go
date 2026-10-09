@@ -745,6 +745,17 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"labelId": a.LabelID}, nil
 
+	case "rename_thread":
+		var a renameThreadArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		title, err := c.srv.mgr.RenameThread(ctx, a.ThreadID, a.Title)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"title": title}, nil
+
 	case "mark_thread_viewed":
 		var a markViewedArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

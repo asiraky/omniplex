@@ -4,19 +4,23 @@ import {
   EllipsisIcon,
   PanelLeftIcon,
   PanelRightIcon,
+  PencilIcon,
   PlugIcon,
   TagIcon,
 } from "lucide-react";
+import { useState } from "react";
 
 import type { PanelControls } from "~/app/usePanel";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { TranscriptCopy } from "~/app/useTranscriptCopy";
 import { liveJobCount } from "~/lib/jobs";
+import { threadTitle } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 import type { Label, ThreadMeta, ThreadState } from "~/protocol";
 
 import { IconButton } from "./IconButton";
 import { LabelDot, LabelMenu, LabelMenuItems } from "./LabelMenu";
+import { TitleEditor } from "./TitleEditor";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -61,6 +65,7 @@ export function ThreadHeader({
   state,
   activeId,
   meta,
+  onRename,
   creating,
   isDesktop,
   labels,
@@ -74,6 +79,7 @@ export function ThreadHeader({
   state: ThreadState | null;
   activeId: string | null;
   meta: ThreadMeta | undefined;
+  onRename: (threadId: string, title: string) => void;
   creating: boolean;
   isDesktop: boolean;
   labels: HeaderLabels;
@@ -82,6 +88,10 @@ export function ThreadHeader({
   panel: PanelControls;
   onShowMcp: () => void;
 }) {
+  // The thread the title field is open on: switching threads closes it rather
+  // than opening the next thread's name for editing.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const actions = state && { state, activeId, meta, labels, copy, panel, onShowMcp };
   return (
     <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       {/* The open sidebar carries its own collapse button, so this one
@@ -94,17 +104,19 @@ export function ThreadHeader({
         <PanelLeftIcon className="size-3.5" />
       </IconButton>
 
-      {state ? (
+      {actions ? (
         <>
-          <p className="min-w-0 flex-1 truncate text-[13px] font-medium">
-            {state.title || "Untitled thread"}
-          </p>
-          {SHOW_MODE_SWITCHER && !state.closed && <ModeSwitcher harness={harness} />}
-          {isDesktop ? (
-            <DesktopActions actions={{ state, activeId, meta, labels, copy, panel, onShowMcp }} />
-          ) : (
-            <PhoneActions actions={{ state, activeId, meta, labels, copy, panel, onShowMcp }} />
-          )}
+          <HeaderTitle
+            threadId={activeId}
+            title={threadTitle(meta, actions.state)}
+            isDesktop={isDesktop}
+            editing={renamingId !== null && renamingId === activeId}
+            onEdit={() => setRenamingId(activeId)}
+            onDone={() => setRenamingId(null)}
+            onRename={onRename}
+          />
+          {SHOW_MODE_SWITCHER && !actions.state.closed && <ModeSwitcher harness={harness} />}
+          {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
         </>
       ) : (
         <span
@@ -117,6 +129,61 @@ export function ThreadHeader({
         </span>
       )}
     </header>
+  );
+}
+
+/**
+ * The open thread's name, and the pencil that turns it into a field. On a
+ * desktop the pencil waits for hover; a phone has no hover, so there it is
+ * always showing.
+ */
+function HeaderTitle({
+  threadId,
+  title,
+  isDesktop,
+  editing,
+  onEdit,
+  onDone,
+  onRename,
+}: {
+  threadId: string | null;
+  title: string;
+  isDesktop: boolean;
+  editing: boolean;
+  onEdit: () => void;
+  onDone: () => void;
+  onRename: (threadId: string, title: string) => void;
+}) {
+  if (editing && threadId) {
+    return (
+      <TitleEditor
+        title={title}
+        label="Thread title"
+        onSave={(next) => onRename(threadId, next)}
+        onDone={onDone}
+        className="h-8 flex-1 font-medium"
+      />
+    );
+  }
+  return (
+    <div className="group/title flex min-w-0 flex-1 items-center gap-0.5">
+      <p className="min-w-0 truncate text-[13px] font-medium">{title || "Untitled thread"}</p>
+      {threadId && (
+        <IconButton
+          label="Rename thread"
+          onClick={onEdit}
+          // A 12px glyph, smaller than the 13px title, and faint until
+          // pointed at. On a phone the button keeps its 44px target but
+          // tucks in so the glyph sits just after the text, not 16px off.
+          className={cn(
+            "text-muted-foreground/70 hover:text-foreground -ml-3 hover:bg-transparent md:ml-0 md:size-6 dark:hover:bg-transparent",
+            isDesktop && "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
+          )}
+        >
+          <PencilIcon className="size-3" strokeWidth={1.75} />
+        </IconButton>
+      )}
+    </div>
   );
 }
 

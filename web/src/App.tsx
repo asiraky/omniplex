@@ -9,6 +9,7 @@ import { usePanel } from "./app/usePanel";
 import { useProjectActions } from "./app/useProjectActions";
 import { useProviderAuth } from "./app/useProviderAuth";
 import { useReadState } from "./app/useReadState";
+import { useRenameThread } from "./app/useRenameThread";
 import { useRecentSkills } from "./app/useRecentSkills";
 import { useScheduleEditor } from "./app/useScheduleEditor";
 import { usePruneScrollMemory, useScrollMemory } from "./app/useScrollMemory";
@@ -37,7 +38,10 @@ import { useIsDesktop } from "./useMediaQuery";
 export function App() {
   const isDesktop = useIsDesktop();
   const wire = useWire();
-  const { clientRef, state, threads, projects, harnesses, labels } = wire;
+  const { clientRef, state, projects, harnesses, labels } = wire;
+  // The list as the user should see it: with their renames, before the
+  // server has confirmed them.
+  const { threads, rename: renameThread } = useRenameThread(wire);
   const screens = useScreens();
   const panel = usePanel(wire.stateRef);
   const scroll = useScrollMemory(wire.resume);
@@ -158,6 +162,7 @@ export function App() {
         onManageLabels={() => screens.setManageLabels(true)}
         onNewProject={() => screens.setNewProject(true)}
         onSetUnread={setThreadUnread}
+        onRename={renameThread}
       />
 
       <DeleteThreadDialog flow={deletion.deleteFlow} />
@@ -176,6 +181,7 @@ export function App() {
           state={state}
           activeId={activeId}
           meta={meta}
+          onRename={renameThread}
           creating={!!nav.creating}
           isDesktop={isDesktop}
           labels={{
