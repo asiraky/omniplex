@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { loadDeleteThreadDialog } from "./loadDeleteThreadDialog";
 import { Sidebar } from "./Sidebar";
 import { render, viewport } from "~/test/harness";
 import type { Label, Project, ThreadMeta } from "~/protocol";
+
+// The dialog loads after the first paint in the app; here it is on hand from
+// the first render, so a test can open it and look straight away.
+beforeAll(() => loadDeleteThreadDialog());
 
 const thread = (id: string, over: Partial<ThreadMeta> = {}): ThreadMeta =>
   ({
@@ -48,6 +53,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
+    onReorder: vi.fn(),
     ...over,
   };
   render(<Sidebar {...props} />);
@@ -83,6 +89,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
+    onReorder: vi.fn(),
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
@@ -173,6 +180,55 @@ describe("Sidebar", () => {
     // The row is a row again, not a field.
     expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull();
     expect(props.onSelect).not.toHaveBeenCalled();
+  });
+
+  describe("reordering", () => {
+    const ordered = [
+      thread("a", { position: 0 }),
+      thread("b", { position: 1 }),
+      thread("c", { position: 2 }),
+    ];
+
+    const startReordering = async () => {
+      fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
+    };
+
+    it("swaps the row's controls for a grip, and a tap opens nothing until Done", async () => {
+      viewport("phone");
+      const props = renderSidebar({ threads: ordered });
+      expect(screen.queryByRole("button", { name: /^Move thread/ })).toBeNull();
+      await startReordering();
+
+      expect(screen.queryByRole("button", { name: /^Delete thread/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Rename thread/ })).toBeNull();
+      expect(screen.getAllByRole("button", { name: /^Move thread/ })).toHaveLength(3);
+      fireEvent.click(screen.getByText("Thread a"));
+      expect(props.onSelect).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      expect(screen.queryByRole("button", { name: /^Move thread/ })).toBeNull();
+      fireEvent.click(screen.getByText("Thread a"));
+      expect(props.onSelect).toHaveBeenCalledWith("a");
+    });
+
+    it("steps a row with the arrow keys on its grip, writing only that row", async () => {
+      const props = renderSidebar({ threads: ordered });
+      await startReordering();
+
+      fireEvent.keyDown(screen.getByRole("button", { name: "Move thread Thread a" }), {
+        key: "ArrowDown",
+      });
+      expect(props.onReorder).toHaveBeenLastCalledWith("a", 1.5);
+      fireEvent.keyDown(screen.getByRole("button", { name: "Move thread Thread a" }), {
+        key: "ArrowUp",
+      });
+      // Already on top: nowhere to go, nothing sent.
+      expect(props.onReorder).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("starts a project from the header", () => {
@@ -496,7 +552,7 @@ describe("Sidebar", () => {
       { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
       { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
     ] as Project[];
-    // Most recently updated first, the way the server sends them.
+    // In the user's order, the way the server sends them.
     const mixed = [
       thread("a", { projectId: "p2" }),
       thread("b", { projectId: "p1" }),
@@ -510,10 +566,24 @@ describe("Sidebar", () => {
     it("groups under headers once two projects have threads on screen", () => {
       renderSidebar({ threads: mixed, projects });
 
-      // "worksauce" leads because its newest thread is the newest thread.
+      // "omniplex" leads because it leads the projects, though "worksauce"
+      // has the first thread.
       expect(header("worksauce", 2)).toBeTruthy();
       expect(header("omniplex", 1)).toBeTruthy();
-      expect(rowOrder()).toEqual(["Thread a", "Thread c", "Thread b"]);
+      expect(rowOrder()).toEqual(["Thread b", "Thread a", "Thread c"]);
+    });
+
+    it("lists every project's threads flat, in the user's order, with grouping off", async () => {
+      renderSidebar({ threads: mixed, projects });
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Filter threads" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Group by project" }));
+
+      expect(header("worksauce", 2)).toBeNull();
+      expect(header("omniplex", 1)).toBeNull();
+      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
     });
 
     it("shows no header when every thread on screen is one project's", () => {
@@ -564,7 +634,8 @@ describe("Sidebar", () => {
     it("ignores a stored id whose project has since been removed", () => {
       localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
       renderSidebar({ threads: mixed, projects: [projects[0]] });
-      expect(rowOrder()).toEqual(["Thread a", "Thread c", "Thread b"]);
+      // The orphaned threads come back, grouped after the projects that exist.
+      expect(rowOrder()).toEqual(["Thread b", "Thread a", "Thread c"]);
     });
   });
 });

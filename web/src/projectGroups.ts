@@ -1,6 +1,6 @@
 /**
  * Narrowing the sidebar to a set of projects, and carving what is left into
- * groups when — and only when — there is more than one project to see.
+ * groups when grouping is on and there is more than one project to see.
  *
  * Pure, like `labelFilter`: the sidebar hands in whatever list it is currently
  * rendering, including the delete flow's frozen ordering and its departing
@@ -10,17 +10,22 @@
  * The rules:
  * - The filter names what is *hidden*, not what is shown, so a project added
  *   on another device arrives visible rather than pre-hidden.
- * - Group order is the order the projects first appear in the list. The server
- *   sends threads newest-created first — a deliberately stable anchor, so
- *   activity never reorders the list (#157) — which makes first-appearance a
- *   stable per-project anchor for free: the project holding the youngest
- *   thread leads, and groups only move when a thread is created or deleted.
- *   No second sort to disagree with the first.
+ * - Rows inside a group keep the list's order, which is the user's own
+ *   (`threadOrder`): a drag inside a group is the only thing that moves one.
+ * - Groups go newest project first, by when the project was made — not by the
+ *   order their threads happen to appear in, and not by the registry's own
+ *   order, which follows the last edit. The user drags threads, not groups:
+ *   moving a thread to the top of its project, or saving a project's
+ *   settings, must not carry the whole project up past the others. A thread
+ *   whose project cannot be resolved comes after every real project, in
+ *   first-appearance order: there is no project to place it by.
  * - A group with no threads does not exist. Nothing else has to remember to
  *   suppress its header, because there is no group to have one.
  * - One group is not a grouping. Whether that is because one project was
  *   selected or because three were and only one has any threads is not a
- *   distinction worth drawing: what matters is what is on screen.
+ *   distinction worth drawing: what matters is what is on screen. Grouping
+ *   switched off (a per-device choice) gives one flat list in the user's
+ *   order, with each row naming its project.
  * - A thread whose project cannot be resolved falls back to its cwd, exactly
  *   as the row already does. Threads cannot be created without a project and
  *   a project owning threads cannot be deleted, so this is the pre-project
@@ -60,7 +65,8 @@ export function visibleByProject(
 }
 
 /**
- * The threads, carved by project, in the list's own stable order.
+ * The threads, carved by project: newest project first, rows in the list's
+ * own order.
  *
  * Returns one group per project that actually has threads here. A caller with
  * a single group in hand has nothing to group and should render the threads
@@ -77,15 +83,21 @@ export function groupThreads(threads: ThreadMeta[], projects: Project[]): Projec
     // in the same two segments are still two different things.
     const key = project ? project.id : `cwd:${s.cwd}`;
     const existing = groups.get(key);
-    if (existing) {
-      existing.threads.push(s);
-      continue;
-    }
-    // First appearance sets the order, and the list arrives newest-created
-    // first, so the project holding the youngest thread leads — and holds
-    // that position: activity reorders neither the list nor the groups.
-    groups.set(key, { key, name: project ? project.name : cwdName(s), threads: [s] });
+    if (existing) existing.threads.push(s);
+    else groups.set(key, { key, name: project ? project.name : cwdName(s), threads: [s] });
   }
 
-  return [...groups.values()];
+  // Creation time decides the order of every real project; a Map keeps
+  // insertion order, so what is left over keeps the order it first appeared.
+  const byAge = [...projects].sort(
+    (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  const ordered: ProjectGroup[] = [];
+  for (const p of byAge) {
+    const g = groups.get(p.id);
+    if (!g) continue;
+    ordered.push(g);
+    groups.delete(p.id);
+  }
+  return [...ordered, ...groups.values()];
 }

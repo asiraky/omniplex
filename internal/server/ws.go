@@ -756,6 +756,16 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"title": title}, nil
 
+	case "set_thread_position":
+		var a setThreadPositionArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.SetThreadPosition(ctx, a.ThreadID, a.Position); err != nil {
+			return nil, err
+		}
+		return map[string]any{"position": a.Position}, nil
+
 	case "mark_thread_viewed":
 		var a markViewedArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

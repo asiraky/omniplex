@@ -3,13 +3,14 @@ import { describe, expect, it } from "vitest";
 import { groupThreads, visibleByProject } from "./projectGroups";
 import type { Project, ThreadMeta } from "~/protocol";
 
-const project = (id: string, name: string): Project =>
-  ({ id, name, defaults: {}, folders: [] }) as unknown as Project;
+const project = (id: string, name: string, createdAt = 0, updatedAt = 0): Project =>
+  ({ id, name, defaults: {}, folders: [], createdAt, updatedAt }) as unknown as Project;
 
 const thread = (id: string, projectId?: string, cwd = "/src/somewhere/here") =>
   ({ id, projectId, cwd }) as ThreadMeta;
 
-const projects = [project("p1", "omniplex"), project("p2", "worksauce")];
+// omniplex is the newer project, so its group comes first.
+const projects = [project("p1", "omniplex", 2), project("p2", "worksauce", 1)];
 const ids = (list: ThreadMeta[]) => list.map((s) => s.id);
 const shape = (threads: ThreadMeta[], list = projects) =>
   groupThreads(threads, list).map((g) => [g.name, ids(g.threads)]);
@@ -35,12 +36,30 @@ describe("visibleByProject", () => {
 });
 
 describe("groupThreads", () => {
-  it("groups by project, most recently used project first", () => {
-    // The list arrives most-recently-updated first, so "worksauce" leads on
-    // the strength of thread "a" alone.
+  it("orders groups newest project first, not by which thread is on top", () => {
+    // "worksauce" holds the top thread, but moving a thread to the top of the
+    // list must not carry its whole project up past the others.
     expect(shape([thread("a", "p2"), thread("b", "p1"), thread("c", "p2")])).toEqual([
-      ["worksauce", ["a", "c"]],
       ["omniplex", ["b"]],
+      ["worksauce", ["a", "c"]],
+    ]);
+  });
+
+  it("keeps its group order when a project is edited and the registry reorders", () => {
+    const edited = [project("p2", "worksauce", 1, 99), project("p1", "omniplex", 2, 5)];
+    expect(shape([thread("a", "p1"), thread("b", "p2")], edited)).toEqual([
+      ["omniplex", ["a"]],
+      ["worksauce", ["b"]],
+    ]);
+  });
+
+  it("puts threads with no resolvable project after every real project", () => {
+    expect(
+      shape([thread("a", undefined, "/x/loose"), thread("b", "p2"), thread("c", "gone", "/y/other")]),
+    ).toEqual([
+      ["worksauce", ["b"]],
+      ["x/loose", ["a"]],
+      ["y/other", ["c"]],
     ]);
   });
 

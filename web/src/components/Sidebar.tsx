@@ -32,12 +32,14 @@ import { visibleThreads } from "~/labelFilter";
 import { isTitleEditor } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 import { groupThreads, visibleByProject } from "~/projectGroups";
+import { newCount } from "~/threadStatus";
 import type { Label, Project, ThreadMeta } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 import { Wordmark } from "./Logo";
 import { ProjectGroup } from "./sidebar/ProjectGroup";
+import { SortableRows, type RowDrag } from "./sidebar/SortableRows";
 import { ThreadRow } from "./sidebar/ThreadRow";
-import { useStoredKeys, withKey } from "./sidebar/useStoredKeys";
+import { useStoredFlag, useStoredKeys, withKey } from "./sidebar/useStoredKeys";
 
 // How long a row takes to fold away once it has left the list. Kept in step
 // with the duration on the row itself.
@@ -54,6 +56,10 @@ const FILTER_KEY = "omniplex.labelFilter";
 // and the desktop is not.
 const PROJECT_FILTER_KEY = "omniplex.projectFilter";
 const COLLAPSED_KEY = "omniplex.projectCollapsed";
+// Whether this device carves the list into project groups at all. Device-local
+// for the same reason again: a phone narrowed to one project has nothing to
+// group, and a desktop showing five may want the headers or may not.
+const GROUPED_KEY = "omniplex.groupByProject";
 
 /**
  * The project filter and the collapse state, threaded to the header and the
@@ -61,6 +67,9 @@ const COLLAPSED_KEY = "omniplex.projectCollapsed";
  * menu decides which groups exist and the headers decide which are open.
  */
 interface ProjectView {
+  /** Carve the list into project groups; off, it is one list in the user's order. */
+  grouped: boolean;
+  onToggleGrouped: (on: boolean) => void;
   /** Project ids switched off in the header menu. */
   hidden: Set<string>;
   /** Group keys folded shut. Remembered across reloads, per device. */
@@ -121,6 +130,12 @@ interface SidebarProps {
   onSetUnread: (threadId: string, unread: boolean) => void;
   /** Gives a thread the title the user typed. */
   onRename: (threadId: string, title: string) => void;
+  /**
+   * Moves a thread to a new place in the user's order. `threads` must already
+   * be in that order, and must show the move at once: the row the user just
+   * dropped stays where it landed rather than waiting for the server.
+   */
+  onReorder: (threadId: string, position: number) => void;
 }
 
 /**
@@ -187,7 +202,7 @@ function useDeleteFlow({
     if (!frozen) return threads;
     const rank = new Map(frozen.map((id, i) => [id, i]));
     // Anything the server has added since sorts ahead, which is where a new
-    // thread belongs in a newest-created-first list anyway.
+    // thread lands in the user's order anyway.
     const list = [...threads].sort((a, b) => (rank.get(a.id) ?? -1) - (rank.get(b.id) ?? -1));
     if (exiting && !threads.some((s) => s.id === exiting.id)) {
       const at = frozen.indexOf(exiting.id);
@@ -214,6 +229,8 @@ function ThreadList({
   onManageLabels,
   onSetUnread,
   onRename,
+  onReorder,
+  reordering,
   hidden,
   onShowAll,
 }: Pick<
@@ -228,8 +245,11 @@ function ThreadList({
   | "onManageLabels"
   | "onSetUnread"
   | "onRename"
+  | "onReorder"
 > & {
   flow: DeleteFlow;
+  /** Reorder mode: rows show a grip and open nothing when tapped. */
+  reordering: boolean;
   /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
   hidden: Set<string>;
   projectView: ProjectView;
@@ -247,9 +267,12 @@ function ThreadList({
     projects,
     projectView.hidden,
   );
-  const groups = groupThreads(shown, projects);
+  const groups = projectView.grouped ? groupThreads(shown, projects) : [];
   // One group is not a grouping, however it came to be the only one.
   const grouped = groups.length > 1;
+  // A delete holds the list still for its exit animation, frozen order and
+  // all; a drop computed against that order would land somewhere else.
+  const sortable = !deleting && !exiting;
 
   // No threads is no threads: labels are a way to narrow a list, not a
   // thing to show in place of one.
@@ -290,7 +313,7 @@ function ThreadList({
     );
   }
 
-  const row = (s: ThreadMeta, showProject: boolean) => (
+  const row = (s: ThreadMeta, showProject: boolean, drag: RowDrag | undefined) => (
     <ThreadRow
       key={s.id}
       s={s}
@@ -298,6 +321,8 @@ function ThreadList({
       active={s.id === activeId}
       leaving={exiting?.id === s.id}
       going={deleting?.id === s.id}
+      reordering={reordering}
+      drag={drag}
       labels={labels}
       accentOf={accentOf}
       projectName={projectName}
@@ -310,9 +335,18 @@ function ThreadList({
     />
   );
 
+  // A drag reorders among the rows it can see, so each run of rows is its own
+  // sortable list: the whole list when flat, one group's rows when grouped.
+  const run = (threads: ThreadMeta[], showProject: boolean) => (
+    <SortableRows rows={threads} enabled={sortable} onReorder={onReorder}>
+      {(s, drag) => row(s, showProject, drag)}
+    </SortableRows>
+  );
+
   // One project on screen has nothing to group: the header would name the
-  // only thing there is, on every row, forever.
-  if (!grouped) return <>{shown.map((s) => row(s, true))}</>;
+  // only thing there is, on every row, forever. Grouping switched off is the
+  // same flat list, and there the row naming its project is the point.
+  if (!grouped) return run(shown, true);
 
   return (
     <>
@@ -321,6 +355,7 @@ function ThreadList({
           key={g.key}
           name={g.name}
           count={g.threads.length}
+          newCount={newCount(g.threads, activeId)}
           folded={projectView.collapsed.has(g.key)}
           // The last thread in a group is taking the group with it. Without
           // this the row folds away and the header snaps out from under it a
@@ -328,7 +363,7 @@ function ThreadList({
           leaving={g.threads.length === 1 && g.threads[0].id === exiting?.id}
           onToggle={() => projectView.onToggleCollapse(g.key)}
         >
-          {g.threads.map((c) => row(c, false))}
+          {run(g.threads, false)}
         </ProjectGroup>
       ))}
     </>
@@ -351,6 +386,9 @@ function SidebarPanel({
   onToggleLabel: (key: string, show: boolean) => void;
   onShowAll: () => void;
 }) {
+  // Reorder mode is this panel's alone: closing the sheet ends it, so the
+  // next time the list opens its rows are for opening threads again.
+  const [reordering, setReordering] = useState(false);
   // Both filters, because the footer's job is to admit that threads are
   // missing and it cannot know which control removed them.
   const shownCount = visibleByProject(
@@ -382,36 +420,65 @@ function SidebarPanel({
           )}
         </div>
         <div className="flex items-center justify-end gap-1">
-          <IconButton
-            label="New thread"
-            onClick={props.onNew}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <SquarePenIcon />
-          </IconButton>
-          <IconButton
-            label="New project"
-            onClick={props.onNewProject}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <FolderPlusIcon />
-          </IconButton>
-          <ThreadFilter
-            projects={props.projects}
-            hiddenProjects={projectView.hidden}
-            onToggleProject={projectView.onToggle}
-            onShowAllProjects={projectView.onShowAll}
-            onHideAllProjects={projectView.onHideAll}
-            labels={props.labels}
-            hiddenLabels={hidden}
-            onToggleLabel={onToggleLabel}
-            onShowAllLabels={onShowAll}
-            onManageLabels={props.onManageLabels}
-          />
+          {/* While reordering it is the only thing in this row — a phone-width
+              sheet has no room for a hint, a Done and three icons — and the
+              way out is a word, not an icon, so it cannot be missed. */}
+          {reordering ? (
+            <>
+              <span className="text-muted-foreground mr-auto px-1.5 text-[12px]">
+                Drag the grips to reorder
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setReordering(false)}
+                className="h-11 px-4 md:h-8"
+              >
+                Done
+              </Button>
+            </>
+          ) : (
+            <>
+              <IconButton
+                label="New thread"
+                onClick={props.onNew}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <SquarePenIcon />
+              </IconButton>
+              <IconButton
+                label="New project"
+                onClick={props.onNewProject}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <FolderPlusIcon />
+              </IconButton>
+              <ThreadFilter
+                grouped={projectView.grouped}
+                onToggleGrouped={projectView.onToggleGrouped}
+                projects={props.projects}
+                hiddenProjects={projectView.hidden}
+                onToggleProject={projectView.onToggle}
+                onShowAllProjects={projectView.onShowAll}
+                onHideAllProjects={projectView.onHideAll}
+                labels={props.labels}
+                hiddenLabels={hidden}
+                onToggleLabel={onToggleLabel}
+                onShowAllLabels={onShowAll}
+                onManageLabels={props.onManageLabels}
+                onReorder={() => setReordering(true)}
+              />
+            </>
+          )}
         </div>
       </div>
 
-      <nav aria-label="Threads" className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <nav
+        aria-label="Threads"
+        // The scroller a drag nudges along when the row nears an edge.
+        data-reorder-scroll
+        className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 py-2"
+      >
         <ThreadList
           flow={flow}
           activeId={props.activeId}
@@ -425,6 +492,8 @@ function SidebarPanel({
           onManageLabels={props.onManageLabels}
           onSetUnread={props.onSetUnread}
           onRename={props.onRename}
+          onReorder={props.onReorder}
+          reordering={reordering}
           hidden={hidden}
           onShowAll={onShowAll}
         />
@@ -512,8 +581,11 @@ export function Sidebar(props: SidebarProps) {
   // arrives showing rather than pre-hidden.
   const [hiddenProjects, setHiddenProjects] = useStoredKeys(PROJECT_FILTER_KEY);
   const [collapsed, setCollapsed] = useStoredKeys(COLLAPSED_KEY);
+  const [grouped, setGrouped] = useStoredFlag(GROUPED_KEY, true);
 
   const projectView: ProjectView = {
+    grouped,
+    onToggleGrouped: setGrouped,
     hidden: hiddenProjects,
     collapsed,
     onToggle: useCallback(

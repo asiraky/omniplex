@@ -1,4 +1,4 @@
-import { ListFilterIcon, SettingsIcon } from "lucide-react";
+import { ArrowUpDownIcon, ListFilterIcon, SettingsIcon } from "lucide-react";
 
 import { LabelDot } from "~/components/LabelMenu";
 import { Button } from "~/components/ui/button";
@@ -27,8 +27,15 @@ import type { Label, Project } from "~/protocol";
  * "All projects" is there because turning everything back on is the common way
  * out, and unchecking it switches every project off, keeping it the same kind
  * of control as the rest. "Show all" clears both halves at once.
+ *
+ * "Group by project" leads the menu: it is not a filter, it decides how what
+ * the filters leave is laid out. It only means anything with more than one
+ * project to group, so it shows when the project choices do, and it never
+ * lights the trigger — a flat list hides nothing.
  */
 export function ThreadFilter({
+  grouped,
+  onToggleGrouped,
   projects,
   hiddenProjects,
   onToggleProject,
@@ -39,7 +46,11 @@ export function ThreadFilter({
   onToggleLabel,
   onShowAllLabels,
   onManageLabels,
+  onReorder,
 }: {
+  /** The list is carved into project groups; off, it is one flat list. */
+  grouped: boolean;
+  onToggleGrouped: (on: boolean) => void;
   projects: Project[];
   /** Project ids switched off. */
   hiddenProjects: Set<string>;
@@ -52,6 +63,8 @@ export function ThreadFilter({
   onToggleLabel: (key: string, show: boolean) => void;
   onShowAllLabels: () => void;
   onManageLabels: () => void;
+  /** Puts the list into reorder mode. */
+  onReorder: () => void;
 }) {
   // Only what is both hidden and still real counts: an id left behind by a
   // deleted project or label hides nothing, so it must not light the trigger.
@@ -92,8 +105,24 @@ export function ThreadFilter({
       </Tooltip>
 
       <DropdownMenuContent align="end" className="min-w-52">
+        {/* Not a filter, but this is the list's one menu, and reordering is
+            rare enough not to earn an icon of its own in the header. */}
+        <DropdownMenuItem onSelect={onReorder} className="text-[13px]">
+          <ArrowUpDownIcon className="text-muted-foreground" />
+          Reorder threads
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         {choosing && (
           <>
+            <DropdownMenuCheckboxItem
+              checked={grouped}
+              onSelect={stayOpen}
+              onCheckedChange={(on) => onToggleGrouped(on === true)}
+              className="text-[13px]"
+            >
+              Group by project
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-muted-foreground text-[11px] font-medium">
               Projects
             </DropdownMenuLabel>

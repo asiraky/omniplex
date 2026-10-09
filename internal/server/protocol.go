@@ -304,6 +304,14 @@ type renameThreadArgs struct {
 	Title    string `json:"title"`
 }
 
+// setThreadPositionArgs moves a thread in the sidebar order. The client
+// works out the midpoint of its new neighbours, so the frame is one id and
+// one number whatever the list's length.
+type setThreadPositionArgs struct {
+	ThreadID string  `json:"threadId"`
+	Position float64 `json:"position"`
+}
+
 // markViewedArgs records how far the user has actually read: seq is the head
 // the client had rendered when it reported, not the server's — events landing
 // mid-report stay unread.

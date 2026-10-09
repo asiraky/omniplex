@@ -254,6 +254,30 @@ func TestJobOutlivesTurn(t *testing.T) {
 	}
 }
 
+// A live shell alone is not work anyone waits on — a dev server started from
+// the thread runs for as long as it likes — so once the turn is over the thread
+// is the user's again. A subagent or a monitor still holds it in background.
+func TestBackgroundAttentionIgnoresShells(t *testing.T) {
+	for _, tc := range []struct {
+		taskType string
+		want     string
+	}{
+		{"local_bash", AttentionNeedsPrompt},
+		{"subagent", AttentionBackground},
+		{"monitor", AttentionBackground},
+	} {
+		t.Run(tc.taskType, func(t *testing.T) {
+			s := New("s1")
+			s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+			s.Apply(event(t, 2, proto.JobStarted, proto.JobPayload{JobID: "j1", TaskType: tc.taskType}))
+			s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+			if got := s.Attention(); got != tc.want {
+				t.Fatalf("attention with a live %s job = %q, want %q", tc.taskType, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestInjectedPromptJoinsTheTurn: a prompt the harness read into the running
 // turn leaves the queue and becomes a user message in that turn, placed after
 // the work already done, carrying the text and images the queue entry had.

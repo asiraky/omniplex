@@ -1,18 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
-import { Button } from "~/components/ui/button";
-import { Checkbox } from "~/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
-import { Label } from "~/components/ui/label";
-import { Spinner } from "~/components/ui/spinner";
 import type { ThreadMeta } from "~/protocol";
+import { busy as isBusy } from "~/threadStatus";
+
+import { loadDeleteThreadDialog, loadedDeleteThreadDialog } from "./loadDeleteThreadDialog";
 
 // How long a delete may take before the dialog stops holding the window shut.
 const STUCK_MS = 10_000;
@@ -90,10 +81,10 @@ export function useDeleteThread({
     !!confirming?.cwd &&
     !projectFolders(confirming.projectId).includes(confirming.cwd);
   const removable = hasWorktree && sharers.length === 0;
-  // A turn open, or agents and shells running beside one that is over: the
-  // delete cuts them off, which is worth a line before the button.
-  const running =
-    confirming?.attention === "working" || confirming?.attention === "background";
+  // A turn open, or a subagent or monitor running beside one that is over:
+  // the delete cuts them off, which is worth a line before the button. A
+  // live shell alone does not count; the server leaves it out of attention.
+  const running = !!confirming && isBusy(confirming);
 
   // The dialog is only "busy" for the thread it is currently asking about: it
   // can be dismissed once the wait has gone long and reopened on another row,
@@ -187,108 +178,20 @@ export type DeleteThread = ReturnType<typeof useDeleteThread>;
  * The confirmation, and then the wait. Rendered above whatever opened it — in
  * the sidebar's case above both of its shapes, so that neither the sheet
  * closing nor a change of breakpoint can take it away mid-delete.
+ *
+ * Nothing until its code has arrived. A delete asked for before then is not
+ * lost: `confirming` is held in the flow, and the dialog opens on it the
+ * moment it can.
  */
 export function DeleteThreadDialog({ flow }: { flow: DeleteThread }) {
-  // It stays put while the delete runs: closing it on the click would be
-  // claiming the thread is gone at the moment the work starts. The one way
-  // out is `stuck` — a teardown script that hangs must not take the window
-  // with it — and taking it only hides the progress. The delete carries on,
-  // and the row still leaves on its own.
-  const held = flow.busy && !flow.stuck;
-  return (
-    <Dialog open={flow.confirming !== null} onOpenChange={(open) => !open && flow.dismiss()}>
-      <DialogContent
-        className="sm:max-w-sm"
-        showCloseButton={!held}
-        onEscapeKeyDown={(e) => held && e.preventDefault()}
-        onInteractOutside={(e) => held && e.preventDefault()}
-      >
-        <DialogHeader>
-          <DialogTitle>Delete “{flow.confirming?.title || "Untitled"}”?</DialogTitle>
-          {/* Whatever else it says, it says plainly whether anything on disk
-              is at risk. The old copy promised a worktree removal that a
-              borrowed thread never performed. */}
-          <DialogDescription>
-            {flow.mode === "local"
-              ? "This permanently deletes the thread and its transcript. Your checkout is left untouched."
-              : "This permanently deletes the thread and its transcript."}
-          </DialogDescription>
-        </DialogHeader>
-
-        {flow.confirming && flow.hasWorktree && (
-          <div className="space-y-2 text-[12px]">
-            {flow.removable ? (
-              <>
-                <div className="flex items-start gap-2">
-                  {/* Settled the moment Delete was pressed: the request has
-                      already gone with the answer that was ticked then, so
-                      changing it now would only make the dialog lie about what
-                      is happening on disk. */}
-                  <Checkbox
-                    id="delete-remove-worktree"
-                    checked={flow.removeWorktree}
-                    onCheckedChange={(v) => flow.setRemoveWorktree(v === true)}
-                    disabled={flow.busy}
-                    className="mt-0.5"
-                  />
-                  <div className="min-w-0">
-                    <Label htmlFor="delete-remove-worktree" className="cursor-pointer">
-                      Also delete the worktree
-                    </Label>
-                    <span className="text-muted-foreground block font-mono text-[11px] break-all">
-                      {flow.confirming.cwd}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-muted-foreground text-[11px]">
-                  {flow.confirming.branch
-                    ? `The branch ${flow.confirming.branch} is kept either way.`
-                    : "Branches are never deleted."}
-                  {flow.mode === "borrowed" && " omniplex did not create this worktree."}
-                </p>
-              </>
-            ) : (
-              <p className="text-muted-foreground text-[11px]">
-                The worktree is left on disk: {flow.sharers.length} other thread
-                {flow.sharers.length === 1 ? "" : "s"} still
-                {flow.sharers.length === 1 ? " uses" : " use"} it
-                {flow.sharers[0]?.title ? ` (“${flow.sharers[0].title}”)` : ""}.
-              </p>
-            )}
-          </div>
-        )}
-
-        {flow.confirming && flow.running && (
-          <p className="text-attention-foreground text-[11px]">
-            This thread still has running jobs.
-          </p>
-        )}
-
-        {flow.stuck && (
-          <p className="text-muted-foreground text-[11px]">
-            This is taking longer than usual. You can close this — the delete keeps running, and
-            the thread goes when it finishes.
-          </p>
-        )}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={flow.dismiss} disabled={flow.busy}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={flow.startDelete} disabled={flow.busy}>
-            {flow.busy ? (
-              <>
-                <Spinner aria-hidden className="size-4" />
-                {/* Named, because tearing a worktree down is the slow part
-                    and the one worth waiting through. */}
-                {flow.removable && flow.removeWorktree ? "Deleting worktree…" : "Deleting…"}
-              </>
-            ) : (
-              "Delete"
-            )}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+  const [Confirm, setConfirm] = useState(loadedDeleteThreadDialog);
+  // Fetched on mount, and again on each delete asked for while it is still
+  // missing: a download that failed offline gets another go once the user
+  // actually wants the dialog.
+  const asking = flow.confirming !== null;
+  useEffect(() => {
+    if (Confirm) return;
+    void loadDeleteThreadDialog().then(() => setConfirm(() => loadedDeleteThreadDialog()));
+  }, [Confirm, asking]);
+  return Confirm ? <Confirm flow={flow} /> : null;
 }

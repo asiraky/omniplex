@@ -131,7 +131,15 @@ type ThreadMeta struct {
 	// attention, because "seen" is a fact about the user, not derivable from
 	// the log. Never omitted: zero is a meaning ("nothing read" — a fresh
 	// thread, or an explicit mark-unread), not an absence.
-	LastViewedSeq     int64           `json:"lastViewedSeq"`
+	LastViewedSeq int64 `json:"lastViewedSeq"`
+	// Position is the user's own order for the sidebar, smallest first. A new
+	// thread takes one below the smallest, so it lands at the top; after that
+	// only the user moves it — activity, status and renames never do, which
+	// is what lets the list be a map the user keeps in their head. Fractional
+	// on purpose: a move writes the midpoint of its new neighbours, so
+	// reordering one thread writes one row and nothing else shifts. Never
+	// omitted: zero is a real place in the order.
+	Position          float64         `json:"position"`
 	ProvisionScript   string          `json:"-"`
 	DeprovisionScript string          `json:"-"`
 	ProvisionResult   json.RawMessage `json:"-"`
@@ -194,6 +202,25 @@ func Open(path string) (*Store, error) {
 	} else if _, err := tx.Exec(`UPDATE threads SET last_viewed_seq = head_seq`); err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("backfill last_viewed_seq: %w", err)
+	} else if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	// position likewise, and for the same crash-safety reason. The backfill
+	// ranks the existing rows by the order the list used to have, newest
+	// created first, so the first start after the upgrade shows the sidebar
+	// exactly as the user left it.
+	if tx, err := db.Begin(); err != nil {
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	} else if _, err := tx.Exec(`ALTER TABLE threads ADD COLUMN position REAL NOT NULL DEFAULT 0`); err != nil {
+		tx.Rollback()
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return nil, fmt.Errorf("migrate schema: %w", err)
+		}
+	} else if _, err := tx.Exec(`UPDATE threads SET position = (
+		SELECT COUNT(*) FROM threads t
+		WHERE t.created_at > threads.created_at OR (t.created_at = threads.created_at AND t.id > threads.id))`); err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("backfill position: %w", err)
 	} else if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
@@ -305,9 +332,12 @@ func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
 		}
 	}
 
+	// The position is claimed inside the INSERT, one below the current top,
+	// so a new thread always lands first however the user has arranged the
+	// rest — and the store mutex means two creates cannot claim the same one.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script)
-		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script, position)
+		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MIN(position), 1) - 1 FROM threads))`,
 		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript); err != nil {
 		return err
 	}
@@ -476,8 +506,8 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
-		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
+		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
@@ -485,16 +515,17 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	return m, err
 }
 
-// ListThreads returns every thread, newest anchor first. The anchor is
-// created_at on purpose (T3 Code's rule): activity must never reorder the
-// list. A thread emitting an event bumps updated_at but holds its position,
-// so the sidebar only moves when a thread enters or leaves the list — the
-// sort a user can keep a mental map of. The id tie-break keeps two threads
-// created in the same millisecond in one stable order.
+// ListThreads returns every thread in the user's order. Activity must never
+// reorder the list (T3 Code's rule, kept): a thread emitting an event bumps
+// updated_at but holds its position, so the sidebar only moves when a thread
+// enters or leaves it, or the user drags one — the sort a user can keep a
+// mental map of. Positions can tie (a midpoint that ran out of precision), so
+// the old newest-created-first anchor breaks the tie, and the id after it
+// keeps two threads created in the same millisecond in one stable order.
 func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq
-		 FROM threads ORDER BY created_at DESC, id DESC`)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, position
+		 FROM threads ORDER BY position ASC, created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +534,7 @@ func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	out := []ThreadMeta{}
 	for rows.Next() {
 		var m ThreadMeta
-		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq); err != nil {
+		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.Position); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -652,6 +683,27 @@ func (s *Store) SetThreadLabel(ctx context.Context, threadID, labelID string) er
 		}
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE threads SET label_id=? WHERE id=?`, labelID, threadID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetThreadPosition moves one thread to a new place in the user's order. The
+// caller has already worked out the midpoint of its new neighbours, so this
+// is the whole write: one row, nothing renumbered. updated_at is left alone —
+// arranging the list is not activity.
+func (s *Store) SetThreadPosition(ctx context.Context, threadID string, position float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE threads SET position = ? WHERE id = ?`, position, threadID)
 	if err != nil {
 		return err
 	}
