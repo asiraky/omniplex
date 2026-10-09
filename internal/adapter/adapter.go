@@ -62,8 +62,7 @@ type CreateOptions struct {
 	// Instructions are omniplex's words to the agent: what Omniplex is, so a
 	// mention of it makes sense. An adapter adds them beside its harness's own
 	// prompt and never in place of it: Claude takes them as its custom system
-	// prompt, Codex as developer instructions. A harness with no way to take
-	// them ignores them.
+	// prompt, Codex as developer instructions. Pi doesn't take them yet.
 	Instructions string
 }
 

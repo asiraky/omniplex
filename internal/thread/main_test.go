@@ -16,8 +16,14 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	os.Setenv("HOME", home)
-	os.Unsetenv("OMNIPLEX_CONFIG")
+	if err := os.Setenv("HOME", home); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.Unsetenv("OMNIPLEX_CONFIG"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
