@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import type { ReactElement, RefObject } from "react";
 
 import {
   Command,
@@ -8,7 +8,6 @@ import {
   CommandList,
 } from "~/components/ui/command";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "~/components/ui/sheet";
 import type { ComposerItem } from "~/protocol";
 
 interface MenuListProps {
@@ -19,65 +18,52 @@ interface MenuListProps {
   onChoose: (item: ComposerItem) => void;
 }
 
-/** The completion menu around the textarea: a popover above it on a desktop,
-    a non-modal sheet from the bottom on a phone. */
+/** The completion menu, in a popover above the textarea. On a phone it must
+    not cover the textarea: the composer sits at the bottom of the screen, so
+    anything anchored there hides what is being typed. */
 export function CommandMenu({
-  isDesktop,
   open,
   anchor,
+  anchorRef,
   onDismiss,
   ...list
 }: MenuListProps & {
-  isDesktop: boolean;
   open: boolean;
   /** The textarea the menu completes into. */
   anchor: ReactElement;
+  anchorRef: RefObject<HTMLElement | null>;
+  /** Keeps the menu shut for the current token. */
   onDismiss: () => void;
 }) {
-  if (isDesktop) {
-    return (
-      <Popover open={open}>
-        <PopoverAnchor asChild>{anchor}</PopoverAnchor>
-        <PopoverContent
-          side="top"
-          align="start"
-          onOpenAutoFocus={(event) => event.preventDefault()}
-          className="w-[min(40rem,calc(100vw-2rem))] p-0"
-        >
-          <MenuList {...list} />
-        </PopoverContent>
-      </Popover>
-    );
-  }
   return (
-    <>
-      {anchor}
-      <Sheet
-        modal={false}
-        open={open}
-        onOpenChange={(next) => {
-          if (!next) onDismiss();
+    <Popover open={open}>
+      <PopoverAnchor asChild>{anchor}</PopoverAnchor>
+      <PopoverContent
+        side="top"
+        align="start"
+        // Flipping below would cover the textarea; the list shrinks to fit instead.
+        avoidCollisions={false}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        // A phone has no Escape: a tap anywhere but the textarea closes the
+        // menu, and refocusing the same token must not bring it back.
+        onPointerDownOutside={(event) => {
+          if (!anchorRef.current?.contains(event.target as Node)) onDismiss();
         }}
+        // Never wider than the textarea: with collisions off, nothing would
+        // shift a wider menu back on screen.
+        className="w-[min(40rem,var(--radix-popover-trigger-width))] p-0"
       >
-        <SheetContent
-          side="bottom"
-          onOpenAutoFocus={(event) => event.preventDefault()}
-          className="max-h-[70dvh] p-0 pb-[env(safe-area-inset-bottom)]"
-        >
-          <SheetHeader>
-            <SheetTitle>Commands</SheetTitle>
-          </SheetHeader>
-          <MenuList {...list} />
-        </SheetContent>
-      </Sheet>
-    </>
+        <MenuList {...list} />
+      </PopoverContent>
+    </Popover>
   );
 }
 
 function MenuList({ matches, activeIndex, loading, onHover, onChoose }: MenuListProps) {
   return (
     <Command shouldFilter={false} className="bg-transparent">
-      <CommandList className="max-h-[min(45dvh,18rem)]">
+      {/* The 2px is the popover's border, so the list never overflows the space above. */}
+      <CommandList className="max-h-[min(45dvh,18rem,calc(var(--radix-popover-content-available-height)-2px))]">
         <CommandEmpty>{loading ? "Loading commands…" : "No matching command."}</CommandEmpty>
         <CommandGroup>
           {matches.map((item, index) => (
@@ -90,7 +76,7 @@ function MenuList({ matches, activeIndex, loading, onHover, onChoose }: MenuList
               onMouseMove={() => onHover(index)}
               onSelect={() => onChoose(item)}
             >
-              <span className="min-w-0 flex-1">
+              <span className="line-clamp-2 min-w-0 flex-1">
                 <span className="font-medium">{item.insertText}</span>
                 {item.argsHint && (
                   <span className="text-muted-foreground ml-1">{item.argsHint}</span>
