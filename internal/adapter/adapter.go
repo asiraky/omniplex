@@ -58,6 +58,13 @@ type CreateOptions struct {
 	// bundled skill. Claude loads each as a session plugin; a harness without
 	// plugins loads its skills/ folder as a skills root.
 	Plugins []string
+
+	// Instructions are omniplex's words to the agent: what Omniplex is, so a
+	// mention of it makes sense. An adapter adds them beside its harness's own
+	// prompt and never in place of it: Claude takes them as its custom system
+	// prompt, Codex as developer instructions. A harness with no way to take
+	// them ignores them.
+	Instructions string
 }
 
 // PluginSkills is the skills folder of a plugin in CreateOptions.Plugins.

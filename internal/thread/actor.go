@@ -247,10 +247,9 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	}
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
+	sess, err := ad.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
-		MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs, Plugins: x.plugins,
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +314,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	a.recovery = planRecovery(state)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
+	sess, err := ad.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
 		Model:            state.Model,
@@ -324,11 +323,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 		Resume:           true,
 		HarnessSessionID: state.HarnessSessionID,
 		Env:              env,
-		MCPServers:       x.mcp,
-		ExtraDirs:        x.extraDirs,
-		SkillDirs:        x.skillDirs,
-		Plugins:          x.plugins,
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -922,11 +917,10 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
-		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, adapter.CreateOptions{
+		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
-			MCPServers: x.mcp, ExtraDirs: x.extraDirs, SkillDirs: x.skillDirs, Plugins: x.plugins,
-		})
+		}))
 		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false

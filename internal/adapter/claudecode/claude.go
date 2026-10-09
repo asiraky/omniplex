@@ -277,6 +277,10 @@ type sidecarConfig struct {
 	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
 	// Plugins load for this session only, never into the user's config.
 	Plugins []sdkPlugin `json:"plugins,omitempty"`
+	// Instructions become the SDK's custom system prompt. Unset, the SDK
+	// sends an empty one, not Claude Code's CLI preset, and these sit on that
+	// same minimal base.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // sdkPlugin is the SDK's local plugin option: a folder holding
@@ -327,6 +331,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		Effort:                          o.Effort,
 		ClaudePath:                      r.claudePath,
 		AdditionalDirectories:           o.ExtraDirs,
+		Instructions:                    o.Instructions,
 	}
 	servers, secrets, err := sidecarMCP(o.MCPServers)
 	if err != nil {

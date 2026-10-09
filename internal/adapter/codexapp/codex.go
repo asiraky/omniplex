@@ -359,6 +359,11 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if o.Model != "" {
 		startParams["model"] = o.Model
 	}
+	// Developer instructions sit beside Codex's own base prompt;
+	// baseInstructions would replace it.
+	if o.Instructions != "" {
+		startParams["developerInstructions"] = o.Instructions
+	}
 
 	method := "thread/start"
 	if o.HarnessSessionID != "" {
