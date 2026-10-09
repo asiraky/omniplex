@@ -2,7 +2,8 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { DeleteThreadDialog, loadDeleteThreadDialog, useDeleteThread } from "./DeleteThreadDialog";
+import { DeleteThreadDialog, useDeleteThread } from "./DeleteThreadDialog";
+import { loadDeleteThreadDialog } from "./loadDeleteThreadDialog";
 import { render, wrap } from "~/test/harness";
 import type { ThreadMeta } from "~/protocol";
 

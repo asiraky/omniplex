@@ -51,7 +51,6 @@ export function beginDrag(
   let lastY = startY;
   let live = false;
   let startScroll = 0;
-  let tops: number[] = [];
   let centers: number[] = [];
   let slot = 0;
   let to = from;
@@ -59,7 +58,7 @@ export function beginDrag(
 
   const measure = () => {
     const boxes = rows().map((c) => c.getBoundingClientRect());
-    tops = boxes.map((b) => b.top);
+    const tops = boxes.map((b) => b.top);
     centers = boxes.map((b) => b.top + b.height / 2);
     // The gap to the next row counts as part of the slot, or the rows
     // making room would close up a couple of pixels short.
@@ -76,11 +75,12 @@ export function beginDrag(
     // Measured in the scroller's content, so a list scrolling under a
     // still finger carries the row along with it.
     const scrolled = (scroller?.scrollTop ?? 0) - startScroll;
-    // Held inside its own run: the row can reach the first and last slot
-    // and no further, so it never appears to be headed for another group.
+    // Held inside its own run: its middle can reach the first and last
+    // row's and no further, so it never appears to be headed for another
+    // group, and rows of any height leave both end slots reachable.
     const dy = Math.min(
-      tops[tops.length - 1] - tops[from],
-      Math.max(tops[0] - tops[from], lastY - startY + scrolled),
+      centers[centers.length - 1] - centers[from],
+      Math.max(centers[0] - centers[from], lastY - startY + scrolled),
     );
     to = dropIndex(centers, from, centers[from] + dy);
     rows().forEach((row, i) => {

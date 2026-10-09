@@ -36,11 +36,6 @@ describe("rowStatus", () => {
     );
   });
 
-  it("falls back to phase when the server sends no attention", () => {
-    expect(rowStatus(thread({ phase: "turn", lastViewedSeq: 1 }))).toBe("busy");
-    expect(rowStatus(thread({ phase: "cleanup_failed" }))).toBe("failed");
-    expect(rowStatus(thread({ phase: "idle", lastViewedSeq: 1 }))).toBe("new");
-  });
 });
 
 describe("newCount", () => {

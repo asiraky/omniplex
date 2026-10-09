@@ -17,6 +17,11 @@ describe("dropIndex", () => {
     expect(dropIndex(centers, 0, 400)).toBe(3);
   });
 
+  it("reaches either end slot when held level with the end row", () => {
+    expect(dropIndex(centers, 0, 175)).toBe(3);
+    expect(dropIndex(centers, 3, 25)).toBe(0);
+  });
+
   it("moves up past a row whose middle it has crossed", () => {
     expect(dropIndex(centers, 3, 70)).toBe(1);
   });

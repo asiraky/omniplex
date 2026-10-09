@@ -7,7 +7,7 @@ import { cn } from "~/lib/utils";
 export function ProjectGroup({
   name,
   count,
-  fresh,
+  newCount,
   folded,
   leaving,
   onToggle,
@@ -16,7 +16,7 @@ export function ProjectGroup({
   name: string;
   count: number;
   /** Threads in the group that would show the `new` badge. */
-  fresh: number;
+  newCount: number;
   folded: boolean;
   /** The group's last thread is leaving, and taking the group with it. */
   leaving: boolean;
@@ -38,7 +38,7 @@ export function ProjectGroup({
           type="button"
           onClick={onToggle}
           aria-expanded={!folded}
-          aria-label={`${name}, ${count} thread${count === 1 ? "" : "s"}${fresh > 0 ? `, ${fresh} new` : ""}`}
+          aria-label={`${name}, ${count} thread${count === 1 ? "" : "s"}${newCount > 0 ? `, ${newCount} new` : ""}`}
           className="bg-sidebar text-muted-foreground hover:text-foreground focus-visible:ring-ring sticky top-0 z-10 flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 outline-none focus-visible:ring-2"
         >
           <ChevronRightIcon
@@ -54,15 +54,15 @@ export function ProjectGroup({
           <span className="truncate text-[12px] font-semibold">{name}</span>
           {/* Folding a group must not fold away the one signal the list
              exists to carry: the header takes the badge over for its rows. */}
-          {folded && fresh > 0 && (
-            <span className="bg-primary text-primary-foreground ml-auto shrink-0 rounded-full px-1.5 text-[10px] leading-[15px] font-semibold">
-              {fresh} new
+          {folded && newCount > 0 && (
+            <span className="bg-primary text-primary-foreground dark:text-background ml-auto shrink-0 rounded-full px-1.5 text-[10px] leading-[15px] font-semibold">
+              {newCount} new
             </span>
           )}
           <span
             className={cn(
               "shrink-0 pl-1.5 text-[11px] tabular-nums opacity-70",
-              !(folded && fresh > 0) && "ml-auto",
+              !(folded && newCount > 0) && "ml-auto",
             )}
           >
             {count}

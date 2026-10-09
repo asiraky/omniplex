@@ -13,11 +13,16 @@
  * Where the dragged row would land: one slot past every other row whose
  * middle it has passed. `centers` are the rows' resting midpoints, the
  * dragged one's included; `center` is the dragged row's midpoint now.
+ *
+ * Reaching a middle counts as passing it. The drag is held between the first
+ * and last row, so with rows of one height the dragged row's middle can only
+ * ever reach theirs, never cross it — and the end slots must still be
+ * reachable.
  */
 export function dropIndex(centers: number[], from: number, center: number): number {
   let to = 0;
   for (let i = 0; i < centers.length; i++) {
-    if (i !== from && centers[i] < center) to++;
+    if (i < from ? centers[i] < center : i > from && centers[i] <= center) to++;
   }
   return to;
 }

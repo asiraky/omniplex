@@ -32,14 +32,14 @@ function TitleLine({
   s,
   label,
   labels,
-  fresh,
+  isNew,
   reordering,
 }: {
   s: ThreadMeta;
   label: Label | undefined;
   labels: Label[];
   /** Unread and stopped: the title steps up alongside the badge. */
-  fresh: boolean;
+  isNew: boolean;
   /** The row's controls are put away for the handle, which the row's own
       padding already clears. */
   reordering: boolean;
@@ -85,7 +85,7 @@ function TitleLine({
               : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
       )}
     >
-      <span className={cn("min-w-0 truncate text-[13px]", fresh && "font-semibold")}>
+      <span className={cn("min-w-0 truncate text-[13px]", isNew && "font-semibold")}>
         {s.title || "Untitled"}
       </span>
       {!!s.scheduledCount && (
@@ -115,7 +115,10 @@ function StatusBadge({ badge }: { badge: Badge }) {
       aria-label={badge === "new" ? "New since you last looked" : "Workspace failed"}
       className={cn(
         "rounded-full px-1.5 font-sans text-[10px] leading-[15px] font-semibold",
+        // Dark mode's accents are light, so the 10px label goes dark on them
+        // to stay readable.
         badge === "new" ? "bg-primary text-primary-foreground" : "bg-destructive text-white",
+        "dark:text-background",
       )}
     >
       {badge}
@@ -513,7 +516,7 @@ export function ThreadRow({
                     s={s}
                     label={label}
                     labels={labels}
-                    fresh={badge === "new"}
+                    isNew={badge === "new"}
                     reordering={reordering}
                   />
                   <DetailLine

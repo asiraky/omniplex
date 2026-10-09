@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ThreadMeta } from "~/protocol";
 
-import type { DeleteThreadConfirm } from "./DeleteThreadConfirm";
+import { loadDeleteThreadDialog, loadedDeleteThreadDialog } from "./loadDeleteThreadDialog";
 
 // How long a delete may take before the dialog stops holding the window shut.
 const STUCK_MS = 10_000;
@@ -80,8 +80,9 @@ export function useDeleteThread({
     !!confirming?.cwd &&
     !projectFolders(confirming.projectId).includes(confirming.cwd);
   const removable = hasWorktree && sharers.length === 0;
-  // A turn open, or agents and shells running beside one that is over: the
-  // delete cuts them off, which is worth a line before the button.
+  // A turn open, or a subagent or monitor running beside one that is over:
+  // the delete cuts them off, which is worth a line before the button. A
+  // live shell alone does not count; the server leaves it out of attention.
   const running =
     confirming?.attention === "working" || confirming?.attention === "background";
 
@@ -173,25 +174,6 @@ export function useDeleteThread({
 
 export type DeleteThread = ReturnType<typeof useDeleteThread>;
 
-// The dialog itself, fetched once something that can delete is on screen
-// rather than with the first paint. Nobody deletes a thread in the first
-// second, and the initial bundle is what a phone on 4G waits for; by the time
-// an X is tapped it has long arrived.
-let Confirm: typeof DeleteThreadConfirm | undefined;
-let loading: Promise<void> | undefined;
-export function loadDeleteThreadDialog(): Promise<void> {
-  loading ??= import("./DeleteThreadConfirm").then(
-    (m) => {
-      Confirm = m.DeleteThreadConfirm;
-    },
-    () => {
-      // Offline, most likely: the next mount tries again.
-      loading = undefined;
-    },
-  );
-  return loading;
-}
-
 /**
  * The confirmation, and then the wait. Rendered above whatever opened it — in
  * the sidebar's case above both of its shapes, so that neither the sheet
@@ -202,9 +184,14 @@ export function loadDeleteThreadDialog(): Promise<void> {
  * moment it can.
  */
 export function DeleteThreadDialog({ flow }: { flow: DeleteThread }) {
-  const [ready, setReady] = useState(Confirm !== undefined);
+  const [Confirm, setConfirm] = useState(loadedDeleteThreadDialog);
+  // Fetched on mount, and again on each delete asked for while it is still
+  // missing: a download that failed offline gets another go once the user
+  // actually wants the dialog.
+  const asking = flow.confirming !== null;
   useEffect(() => {
-    if (!ready) void loadDeleteThreadDialog().then(() => setReady(Confirm !== undefined));
-  }, [ready]);
-  return ready && Confirm ? <Confirm flow={flow} /> : null;
+    if (Confirm) return;
+    void loadDeleteThreadDialog().then(() => setConfirm(() => loadedDeleteThreadDialog()));
+  }, [Confirm, asking]);
+  return Confirm ? <Confirm flow={flow} /> : null;
 }

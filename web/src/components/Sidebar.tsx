@@ -356,7 +356,7 @@ function ThreadList({
           key={g.key}
           name={g.name}
           count={g.threads.length}
-          fresh={newCount(g.threads, activeId)}
+          newCount={newCount(g.threads, activeId)}
           folded={projectView.collapsed.has(g.key)}
           // The last thread in a group is taking the group with it. Without
           // this the row folds away and the header snaps out from under it a

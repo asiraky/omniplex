@@ -69,6 +69,13 @@ export function SortableRows({
     return () => stop.current?.();
   }, []);
 
+  // A drag holds the rows' indexes from when it began. A row arriving or
+  // leaving under it (a thread made on another device) would hand the pointer
+  // to a different row, so the drag is dropped instead. Statuses change all
+  // the time and move nothing, so only the order counts.
+  const order = rows.map((s) => s.id).join(" ");
+  useEffect(() => () => stop.current?.(), [order]);
+
   const move = (rowsAtStart: ThreadMeta[], id: string, to: number) => {
     const position = dropPosition(rowsAtStart, id, to);
     if (position !== null) onReorder(id, position);

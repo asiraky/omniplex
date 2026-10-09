@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 function loadKeys(key: string): Set<string> {
   try {
@@ -54,15 +54,22 @@ export function useStoredFlag(key: string, fallback: boolean) {
     }
   });
   const [flag, setFlag] = useState(loaded);
+  // Only a choice made here is written; what was read back needs no writing.
+  const chosen = useRef(false);
 
   useEffect(() => {
-    if (flag === loaded || flag === null) return;
+    if (!chosen.current || flag === null) return;
     try {
       localStorage.setItem(key, String(flag));
     } catch {
       // Blocked storage: the choice holds for this page.
     }
-  }, [key, flag, loaded]);
+  }, [key, flag]);
 
-  return [flag ?? fallback, setFlag as (on: boolean) => void] as const;
+  const choose = useCallback((on: boolean) => {
+    chosen.current = true;
+    setFlag(on);
+  }, []);
+
+  return [flag ?? fallback, choose] as const;
 }

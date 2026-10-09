@@ -3,7 +3,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { loadDeleteThreadDialog } from "./DeleteThreadDialog";
+import { loadDeleteThreadDialog } from "./loadDeleteThreadDialog";
 import { Sidebar } from "./Sidebar";
 import { render, viewport } from "~/test/harness";
 import type { Label, Project, ThreadMeta } from "~/protocol";

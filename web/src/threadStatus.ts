@@ -16,19 +16,8 @@ import type { ThreadMeta } from "~/protocol";
 
 export type RowStatus = "busy" | "new" | "failed" | "quiet";
 
-const BUSY_PHASES = ["turn", "provisioning", "creating", "cleaning"];
-const FAILED_PHASES = ["provision_failed", "cleanup_failed"];
-
-// The server derives attention from the live projection; phase alone does not
-// know about subagents. The phase sets remain only as a fallback for a server
-// that predates attention.
 function busy(s: ThreadMeta) {
-  if (!s.attention) return BUSY_PHASES.includes(s.phase);
   return s.attention === "working" || s.attention === "background";
-}
-
-function failed(s: ThreadMeta) {
-  return s.attention ? s.attention === "failed" : FAILED_PHASES.includes(s.phase);
 }
 
 /**
@@ -41,7 +30,7 @@ export function unread(s: ThreadMeta) {
 }
 
 export function rowStatus(s: ThreadMeta): RowStatus {
-  if (failed(s)) return "failed";
+  if (s.attention === "failed") return "failed";
   // A running thread's log moves with every token, so it is always unread;
   // announcing that would light every busy row. It says `new` once it stops.
   if (busy(s)) return "busy";
