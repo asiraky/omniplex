@@ -41,6 +41,15 @@ type extras struct {
 	plugins   []string
 }
 
+// options fills in everything a session gets from omniplex rather than from
+// the thread's own settings, so every path that starts a harness hands over
+// the same set.
+func (x extras) options(o adapter.CreateOptions) adapter.CreateOptions {
+	o.MCPServers, o.ExtraDirs, o.SkillDirs, o.Plugins = x.mcp, x.extraDirs, x.skillDirs, x.plugins
+	o.Instructions = omniplexInstructions
+	return o
+}
+
 // harnessExtras is what every harness gets beside its working directory: the
 // tool servers, then the user's MCP servers the adapter takes, and the
 // folders it may write in outside it. That is the thread's home folder when

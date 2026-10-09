@@ -458,3 +458,65 @@ func TestSkillDirsReachCodexBeforeTheThread(t *testing.T) {
 		})
 	}
 }
+
+// Omniplex's instructions reach codex as developer instructions on the call
+// that opens the thread, whether it starts or resumes, so codex keeps its own
+// base prompt; a session with none sends no field at all.
+func TestInstructionsReachCodexAsDeveloperInstructions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stand-in codex is a shell script")
+	}
+	for _, tc := range []struct {
+		name   string
+		o      adapter.CreateOptions
+		thread string
+	}{
+		{"start", adapter.CreateOptions{Instructions: "be brief"}, "thread/start"},
+		{"resume", adapter.CreateOptions{Instructions: "be brief", Resume: true, HarnessSessionID: "th-old"}, "thread/resume"},
+		{"none", adapter.CreateOptions{}, "thread/start"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.o.Cwd = dir
+			s, err := New(fakeAppServer(t, dir)).CreateSession(context.Background(), &elicitHost{}, tc.o)
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			_ = s.Close()
+
+			raw, err := os.ReadFile(filepath.Join(dir, "lines"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var params map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				var m struct {
+					Method string         `json:"method"`
+					Params map[string]any `json:"params"`
+				}
+				if err := json.Unmarshal([]byte(line), &m); err != nil {
+					t.Fatalf("line %q: %v", line, err)
+				}
+				if m.Method == tc.thread {
+					params = m.Params
+				}
+			}
+			if params == nil {
+				t.Fatalf("no %s sent", tc.thread)
+			}
+			if _, replaced := params["baseInstructions"]; replaced {
+				t.Fatalf("%s replaced codex's base prompt: %v", tc.thread, params)
+			}
+			got, sent := params["developerInstructions"]
+			if tc.o.Instructions == "" {
+				if sent {
+					t.Fatalf("developerInstructions sent with none given: %v", got)
+				}
+				return
+			}
+			if got != tc.o.Instructions {
+				t.Fatalf("developerInstructions = %v, want %q", got, tc.o.Instructions)
+			}
+		})
+	}
+}
