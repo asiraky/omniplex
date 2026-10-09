@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { DeleteThreadDialog, useDeleteThread } from "./DeleteThreadDialog";
+import { DeleteThreadDialog, loadDeleteThreadDialog, useDeleteThread } from "./DeleteThreadDialog";
 import { render, wrap } from "~/test/harness";
 import type { ThreadMeta } from "~/protocol";
+
+// The dialog loads after the first paint in the app; here it is on hand from
+// the first render, so a test can open it and look straight away.
+beforeAll(() => loadDeleteThreadDialog());
 
 const thread = (id: string, extra: Partial<ThreadMeta> = {}): ThreadMeta => ({
   id,
@@ -15,6 +19,7 @@ const thread = (id: string, extra: Partial<ThreadMeta> = {}): ThreadMeta => ({
   updatedAt: 1,
   headSeq: 1,
   phase: "idle",
+  position: 0,
   projectId: "p1",
   ...extra,
 });
