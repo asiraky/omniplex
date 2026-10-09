@@ -28,10 +28,12 @@ const (
 	// AttentionNeedsAnswer: the harness asked a question (elicitation) and is
 	// blocked on the reply. The user's turn.
 	AttentionNeedsAnswer = "needs_answer"
-	// AttentionBackground: no turn is open, but jobs are still live — a
-	// subagent finishing up, a shell the harness has not reaped yet. Not the
-	// user's turn: the composer is sendable, but "waiting for you" would be
-	// a lie while work is running.
+	// AttentionBackground: no turn is open, but work the agent will come
+	// back with is still live — a subagent finishing up, a monitor waiting on
+	// its condition. Not the user's turn: the composer is sendable, but
+	// "waiting for you" would be a lie while that work is running. A live
+	// shell alone does not count: a dev server or a tail runs beside the
+	// thread for as long as it likes, and nobody is waiting on it.
 	AttentionBackground = "background"
 	// AttentionNeedsPrompt: idle — the conversation is with the user.
 	AttentionNeedsPrompt = "needs_prompt"
@@ -57,7 +59,7 @@ func (s *State) Attention() string {
 		return AttentionNeedsAnswer
 	case s.Phase == "turn" || s.Phase == "provisioning" || s.Phase == "cleaning":
 		return AttentionWorking
-	case s.LiveJobs().Any():
+	case s.LiveJobs().Working():
 		return AttentionBackground
 	default:
 		return AttentionNeedsPrompt
@@ -72,6 +74,11 @@ type JobCounts struct {
 }
 
 func (c JobCounts) Any() bool { return c.Agents+c.Shells+c.Monitors > 0 }
+
+// Working: some live job will hand the agent something to come back with — a
+// subagent's result, a monitor's event. Shells are left out: a dev server is
+// still running, but no one is waiting on it to finish.
+func (c JobCounts) Working() bool { return c.Agents+c.Monitors > 0 }
 
 // LiveJobs counts the jobs that are still running, by kind. Inert jobs are
 // never live: they are the harness's own housekeeping, not work anyone is

@@ -628,7 +628,8 @@ export interface ThreadMeta {
    * projection: working | needs_permission | needs_answer | needs_prompt |
    * failed | background | closed. This — not phase — is what the sidebar
    * indicators and anything routing on thread state should read.
-   * `background`: no turn open, but jobs (agents, shells, monitors) still run.
+   * `background`: no turn open, but a subagent or monitor still runs. A live
+   * shell alone does not count.
    */
   attention?:
     | "working"

@@ -1,4 +1,4 @@
-import { CircleAlertIcon, FolderIcon, GitBranchIcon, PencilIcon, XIcon } from "lucide-react";
+import { FolderIcon, GitBranchIcon, PencilIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
@@ -15,39 +15,7 @@ import { DropdownMenu, DropdownMenuTrigger } from "~/components/ui/dropdown-menu
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import type { Label, ThreadMeta } from "~/protocol";
-
-const BUSY_PHASES = ["turn", "provisioning", "creating", "cleaning"];
-const FAILED_PHASES = ["provision_failed", "cleanup_failed"];
-
-// The server derives attention from the live projection, which knows about
-// pending permissions and questions; phase alone does not. The phase sets
-// above remain only as a fallback for a server that predates attention.
-function working(s: ThreadMeta) {
-  return s.attention ? s.attention === "working" : BUSY_PHASES.includes(s.phase);
-}
-function needsInput(s: ThreadMeta) {
-  return s.attention === "needs_permission" || s.attention === "needs_answer";
-}
-// Nothing is waiting on the reader, but jobs are still running beside the
-// conversation. Steady, not pulsing: nothing to look at yet.
-function background(s: ThreadMeta) {
-  return s.attention === "background";
-}
-function failed(s: ThreadMeta) {
-  return s.attention ? s.attention === "failed" : FAILED_PHASES.includes(s.phase);
-}
-// The log has moved past what anyone has read, on any paired device: "the
-// agent finished while I was away", which nothing else in the row can say.
-// lastViewedSeq is absent on a server that predates it; treating that as
-// seq 0 would light every row, so an absent cursor reads as all-read.
-function unread(s: ThreadMeta) {
-  return s.lastViewedSeq !== undefined && s.headSeq > s.lastViewedSeq;
-}
-// The row is asking for someone's attention right now, one way or another.
-// Quiet rows — read, idle, nobody waiting — visually recede below these.
-function loud(s: ThreadMeta) {
-  return working(s) || needsInput(s) || failed(s) || background(s);
-}
+import { rowStatus, unread, type RowStatus } from "~/threadStatus";
 
 function ago(ms: number) {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -62,12 +30,13 @@ function TitleLine({
   s,
   label,
   labels,
-  showUnread,
+  fresh,
 }: {
   s: ThreadMeta;
   label: Label | undefined;
   labels: Label[];
-  showUnread: boolean;
+  /** Unread and stopped: the title steps up alongside the badge. */
+  fresh: boolean;
 }) {
   return (
     <span
@@ -108,7 +77,9 @@ function TitleLine({
             : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
       )}
     >
-      <span className="min-w-0 truncate text-[13px]">{s.title || "Untitled"}</span>
+      <span className={cn("min-w-0 truncate text-[13px]", fresh && "font-semibold")}>
+        {s.title || "Untitled"}
+      </span>
       {!!s.scheduledCount && (
         <span
           className="shrink-0 text-xs text-muted-foreground"
@@ -118,43 +89,6 @@ function TitleLine({
           ◷ {s.scheduledCount}
         </span>
       )}
-      {working(s) && (
-        <span
-          role="status"
-          aria-label="Working"
-          className="bg-primary size-1.5 shrink-0 animate-pulse rounded-full motion-reduce:animate-none"
-        />
-      )}
-      {background(s) && !failed(s) && (
-        <span
-          role="status"
-          aria-label="Jobs running"
-          className="bg-primary/60 size-1.5 shrink-0 rounded-full"
-        />
-      )}
-      {needsInput(s) && (
-        <span
-          role="status"
-          aria-label="Waiting for your input"
-          className="bg-attention size-1.5 shrink-0 animate-pulse rounded-full motion-reduce:animate-none"
-        />
-      )}
-      {failed(s) && (
-        <CircleAlertIcon
-          aria-label="Needs attention"
-          className="text-destructive size-3 shrink-0"
-        />
-      )}
-      {/* Completed-and-unseen, in its own colour: not "in motion"
-         (primary), not "act now" (attention) — done, waiting to
-         be read. Steady on purpose; nothing is happening. */}
-      {showUnread && (
-        <span
-          role="status"
-          aria-label="Finished since you last looked"
-          className="bg-success size-1.5 shrink-0 rounded-full"
-        />
-      )}
       <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
         {ago(s.updatedAt)}
       </span>
@@ -162,14 +96,37 @@ function TitleLine({
   );
 }
 
+type Badge = "new" | "failed";
+
+/** The one loud thing a row can carry. Lowercase on purpose: it is a tag, not
+    a heading. */
+function StatusBadge({ badge }: { badge: Badge }) {
+  return (
+    <span
+      role="status"
+      aria-label={badge === "new" ? "New since you last looked" : "Workspace failed"}
+      className={cn(
+        "rounded-full px-1.5 font-sans text-[10px] leading-[15px] font-semibold",
+        badge === "new" ? "bg-primary text-primary-foreground" : "bg-destructive text-white",
+      )}
+    >
+      {badge}
+    </span>
+  );
+}
+
 /** The line under the title: where the thread works, and on what. */
 function DetailLine({
   s,
+  status,
+  badge,
   showProject,
   projectName,
   accentOf,
 }: {
   s: ThreadMeta;
+  status: RowStatus;
+  badge: Badge | null;
   showProject: boolean;
   projectName: (id?: string) => string | undefined;
   accentOf: (harness: string) => string | undefined;
@@ -213,8 +170,24 @@ function DetailLine({
           <span className="min-w-0 flex-1 truncate">{s.cwd.split("/").slice(-2).join("/")}</span>
         </>
       )}
-      <span className="ml-auto flex shrink-0 items-center pl-1.5">
-        <HarnessBadge harness={s.harness} accent={accentOf(s.harness)} className="size-3.5" />
+      {/* The row's status column: always the right edge of this line, so
+         it lines up down the list, and well clear of the label dot on the
+         line above. */}
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-1.5">
+        {badge && <StatusBadge badge={badge} />}
+        <span className="relative flex">
+          <HarnessBadge harness={s.harness} accent={accentOf(s.harness)} className="size-3.5" />
+          {/* Busy is something you can find if you look for it, and
+             nothing more: a thin ring turning round the harness's own
+             mark, no colour of its own to compete with the badge. */}
+          {status === "busy" && (
+            <span
+              role="status"
+              aria-label="Working"
+              className="border-muted-foreground/25 border-t-muted-foreground pointer-events-none absolute -inset-[3px] animate-spin rounded-full border-[1.5px] [animation-duration:1.6s] motion-reduce:animate-none"
+            />
+          )}
+        </span>
       </span>
     </span>
   );
@@ -401,14 +374,13 @@ export function ThreadRow({
   // focus back to wherever it came from, which would blur the field it just
   // opened. This says the close is ours, so the menu leaves focus alone.
   const renameChosen = useRef(false);
-  // The unread dot yields to every live indicator — a row that is working,
-  // waiting or failed already says something stronger — and to the active
-  // row, which is by definition being looked at.
-  const showUnread = unread(s) && !active && !loud(s);
-  // A row that is read, idle and not selected is waiting on nobody: it
-  // recedes, so the rows that need eyes stand out by contrast instead of
-  // by yet more chrome.
-  const recede = !active && !loud(s) && !unread(s);
+  const status = rowStatus(s);
+  // The active row is being read, so it has nothing new to announce.
+  const badge: Badge | null =
+    status === "failed" ? "failed" : status === "new" && !active ? "new" : null;
+  // Only a badged row is loud. Everything else — read, idle, or busy with
+  // work nobody has to watch — recedes, so the badges stand out by contrast.
+  const recede = !active && badge === null;
   // Undefined for unlabelled, and for a label another device has just
   // deleted — the assignment broadcast can land after the deletion one.
   const label = labels.find((l) => l.id === s.labelId);
@@ -455,7 +427,7 @@ export function ThreadRow({
               // of use.
               recede && "opacity-60 hover:opacity-100 focus-within:opacity-100",
               // Already on its way out: it shows what it is doing (the busy
-              // dot below) but no longer takes clicks.
+              // ring below) but no longer takes clicks.
               going && "pointer-events-none opacity-60",
             )}
           >
@@ -476,6 +448,8 @@ export function ThreadRow({
                 </span>
                 <DetailLine
                   s={s}
+                  status={status}
+                  badge={badge}
                   showProject={showProject}
                   projectName={projectName}
                   accentOf={accentOf}
@@ -491,9 +465,11 @@ export function ThreadRow({
                 >
                   {/* Two matched lines: text on the left, a small mark on the
                       right — timestamp above, provider logo below. */}
-                  <TitleLine s={s} label={label} labels={labels} showUnread={showUnread} />
+                  <TitleLine s={s} label={label} labels={labels} fresh={badge === "new"} />
                   <DetailLine
                     s={s}
+                    status={status}
+                    badge={badge}
                     showProject={showProject}
                     projectName={projectName}
                     accentOf={accentOf}
