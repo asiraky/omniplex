@@ -17,6 +17,7 @@ import { useScreens } from "./app/useScreens";
 import { useThreadCommands } from "./app/useThreadCommands";
 import { useThreadDeletion } from "./app/useThreadDeletion";
 import { useThreadHarness } from "./app/useThreadHarness";
+import { useThreadOrder } from "./app/useThreadOrder";
 import { useThreadSelection } from "./app/useThreadSelection";
 import { useThreadTitle } from "./app/useThreadTitle";
 import { useTranscriptCopy } from "./app/useTranscriptCopy";
@@ -39,9 +40,10 @@ export function App() {
   const isDesktop = useIsDesktop();
   const wire = useWire();
   const { clientRef, state, projects, harnesses, labels } = wire;
-  // The list as the user should see it: with their renames, before the
-  // server has confirmed them.
-  const { threads, rename: renameThread } = useRenameThread(wire);
+  // The list as the user should see it: with their renames and moves, before
+  // the server has confirmed them, in their order.
+  const { threads: renamed, rename: renameThread } = useRenameThread(wire);
+  const { threads, move: moveThread } = useThreadOrder(wire, renamed);
   const screens = useScreens();
   const panel = usePanel(wire.stateRef);
   const scroll = useScrollMemory(wire.resume);
@@ -163,6 +165,7 @@ export function App() {
         onNewProject={() => screens.setNewProject(true)}
         onSetUnread={setThreadUnread}
         onRename={renameThread}
+        onReorder={moveThread}
       />
 
       <DeleteThreadDialog flow={deletion.deleteFlow} />

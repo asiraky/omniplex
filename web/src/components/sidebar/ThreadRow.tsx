@@ -1,4 +1,4 @@
-import { FolderIcon, GitBranchIcon, PencilIcon, XIcon } from "lucide-react";
+import { FolderIcon, GitBranchIcon, GripVerticalIcon, PencilIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
@@ -17,6 +17,8 @@ import { cn } from "~/lib/utils";
 import type { Label, ThreadMeta } from "~/protocol";
 import { rowStatus, unread, type RowStatus } from "~/threadStatus";
 
+import type { RowDrag } from "./SortableRows";
+
 function ago(ms: number) {
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (s < 60) return "now";
@@ -31,12 +33,16 @@ function TitleLine({
   label,
   labels,
   fresh,
+  reordering,
 }: {
   s: ThreadMeta;
   label: Label | undefined;
   labels: Label[];
   /** Unread and stopped: the title steps up alongside the badge. */
   fresh: boolean;
+  /** The row's controls are put away for the handle, which the row's own
+      padding already clears. */
+  reordering: boolean;
 }) {
   return (
     <span
@@ -70,11 +76,13 @@ function TitleLine({
         // control-width further left, so the hovered line yields
         // to the pencil's glyph instead: pr-18 with the label dot
         // beside it, pr-10 when the pencil sits next to the X.
-        label
-          ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
-          : labels.length > 0
-            ? "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18 md:group-has-[[aria-expanded=true]]:pr-12"
-            : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
+        reordering
+          ? null
+          : label
+            ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
+            : labels.length > 0
+              ? "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18 md:group-has-[[aria-expanded=true]]:pr-12"
+              : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
       )}
     >
       <span className={cn("min-w-0 truncate text-[13px]", fresh && "font-semibold")}>
@@ -304,6 +312,27 @@ function RenameControl({
   );
 }
 
+/**
+ * The grip a reorder starts from. It takes the whole right edge of the row,
+ * full height and 44px wide, so a thumb finds it without aiming; the row's
+ * other controls are put away while it is up, so there is nothing beside it
+ * to hit by mistake. touch-none hands the gesture to the drag instead of the
+ * scroller from the first pixel.
+ */
+function ReorderHandle({ s, drag }: { s: ThreadMeta; drag: RowDrag | undefined }) {
+  return (
+    <button
+      type="button"
+      aria-label={`Move thread ${s.title || "Untitled"}`}
+      disabled={!drag}
+      {...drag?.handle}
+      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring absolute inset-y-0 right-0 flex w-11 cursor-grab touch-none items-center justify-center rounded-lg outline-none focus-visible:ring-2 active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
+    >
+      <GripVerticalIcon aria-hidden className="size-4" />
+    </button>
+  );
+}
+
 function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMeta) => void }) {
   return (
     <Tooltip>
@@ -342,6 +371,8 @@ export function ThreadRow({
   active,
   leaving,
   going,
+  reordering,
+  drag,
   labels,
   accentOf,
   projectName,
@@ -359,6 +390,11 @@ export function ThreadRow({
   leaving: boolean;
   /** Being deleted, and still in the list. */
   going: boolean;
+  /** The list is in reorder mode: a handle instead of the controls, and a tap
+      that selects nothing — the row is something to move, not to open. */
+  reordering: boolean;
+  /** How the row is dragged; absent while the list is held still. */
+  drag: RowDrag | undefined;
   labels: Label[];
   accentOf: (harness: string) => string | undefined;
   projectName: (id?: string) => string | undefined;
@@ -409,7 +445,9 @@ export function ThreadRow({
       <ContextMenu modal={false}>
         {/* While renaming, a right-click in the field is the browser's
            own menu: cut, copy, paste. */}
-        <ContextMenuTrigger asChild disabled={renaming}>
+        {/* In reorder mode the long-press belongs to nobody: the handle is
+           the gesture, and a menu rising mid-drag would steal it. */}
+        <ContextMenuTrigger asChild disabled={renaming || reordering}>
           <div
             className={cn(
               // min-w-0: a grid item's automatic minimum size is its
@@ -459,13 +497,25 @@ export function ThreadRow({
               <>
                 <button
                   type="button"
-                  onClick={() => onSelect(s.id)}
+                  onClick={reordering ? undefined : () => onSelect(s.id)}
+                  // A mouse or pen drags the row itself; a finger only ever
+                  // drags by the handle, so a scroll is never a drag.
+                  onPointerDown={drag?.onRowPointerDown}
                   aria-current={active ? "true" : undefined}
-                  className="focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2"
+                  className={cn(
+                    "focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2",
+                    reordering && "cursor-default pr-12",
+                  )}
                 >
                   {/* Two matched lines: text on the left, a small mark on the
                       right — timestamp above, provider logo below. */}
-                  <TitleLine s={s} label={label} labels={labels} fresh={badge === "new"} />
+                  <TitleLine
+                    s={s}
+                    label={label}
+                    labels={labels}
+                    fresh={badge === "new"}
+                    reordering={reordering}
+                  />
                   <DetailLine
                     s={s}
                     status={status}
@@ -476,23 +526,29 @@ export function ThreadRow({
                   />
                 </button>
 
-                <RenameControl
-                  s={s}
-                  besideLabel={labels.length > 0}
-                  onRename={() => setRenaming(true)}
-                />
+                {reordering ? (
+                  <ReorderHandle s={s} drag={drag} />
+                ) : (
+                  <>
+                    <RenameControl
+                      s={s}
+                      besideLabel={labels.length > 0}
+                      onRename={() => setRenaming(true)}
+                    />
 
-                {labels.length > 0 && (
-                  <LabelControl
-                    s={s}
-                    label={label}
-                    labels={labels}
-                    onSetLabel={onSetLabel}
-                    onManageLabels={onManageLabels}
-                  />
+                    {labels.length > 0 && (
+                      <LabelControl
+                        s={s}
+                        label={label}
+                        labels={labels}
+                        onSetLabel={onSetLabel}
+                        onManageLabels={onManageLabels}
+                      />
+                    )}
+
+                    <DeleteControl s={s} onDelete={onDelete} />
+                  </>
                 )}
-
-                <DeleteControl s={s} onDelete={onDelete} />
               </>
             )}
           </div>

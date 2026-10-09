@@ -35,12 +35,30 @@ describe("visibleByProject", () => {
 });
 
 describe("groupThreads", () => {
-  it("groups by project, most recently used project first", () => {
-    // The list arrives most-recently-updated first, so "worksauce" leads on
-    // the strength of thread "a" alone.
+  it("orders groups by the project registry, not by which thread is on top", () => {
+    // "worksauce" holds the top thread, but moving a thread to the top of the
+    // list must not carry its whole project up past the others.
     expect(shape([thread("a", "p2"), thread("b", "p1"), thread("c", "p2")])).toEqual([
-      ["worksauce", ["a", "c"]],
       ["omniplex", ["b"]],
+      ["worksauce", ["a", "c"]],
+    ]);
+  });
+
+  it("follows the registry when the registry reorders", () => {
+    const threads = [thread("a", "p1"), thread("b", "p2")];
+    expect(shape(threads, [projects[1], projects[0]])).toEqual([
+      ["worksauce", ["b"]],
+      ["omniplex", ["a"]],
+    ]);
+  });
+
+  it("puts threads with no resolvable project after every real project", () => {
+    expect(
+      shape([thread("a", undefined, "/x/loose"), thread("b", "p2"), thread("c", "gone", "/y/other")]),
+    ).toEqual([
+      ["worksauce", ["b"]],
+      ["x/loose", ["a"]],
+      ["y/other", ["c"]],
     ]);
   });
 

@@ -645,6 +645,13 @@ export interface ThreadMeta {
    * the sidebar's unread signal. Absent (or 0) means never viewed.
    */
   lastViewedSeq?: number;
+  /**
+   * The user's own sidebar order, smallest first, synced across paired
+   * devices. New threads land on top; after that only the user moves one —
+   * activity never does. Fractional: a move takes the midpoint of its new
+   * neighbours, so it rewrites one thread and nothing else.
+   */
+  position: number;
   projectId?: string;
   /** The folder the thread is scoped to; absent means the whole project. */
   folderId?: string;

@@ -38,3 +38,31 @@ export function withKey(keys: Set<string>, id: string, present: boolean): Set<st
   else next.delete(id);
   return next;
 }
+
+/**
+ * One on/off choice kept in this device's storage under `key`, `fallback`
+ * until the user has made it. Only an explicit choice is ever written, so
+ * changing the default later moves everyone who never touched it.
+ */
+export function useStoredFlag(key: string, fallback: boolean) {
+  const [loaded] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === "true" ? true : raw === "false" ? false : null;
+    } catch {
+      return null;
+    }
+  });
+  const [flag, setFlag] = useState(loaded);
+
+  useEffect(() => {
+    if (flag === loaded || flag === null) return;
+    try {
+      localStorage.setItem(key, String(flag));
+    } catch {
+      // Blocked storage: the choice holds for this page.
+    }
+  }, [key, flag, loaded]);
+
+  return [flag ?? fallback, setFlag as (on: boolean) => void] as const;
+}
