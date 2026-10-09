@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ThreadMeta } from "~/protocol";
+import { busy as isBusy } from "~/threadStatus";
 
 import { loadDeleteThreadDialog, loadedDeleteThreadDialog } from "./loadDeleteThreadDialog";
 
@@ -83,8 +84,7 @@ export function useDeleteThread({
   // A turn open, or a subagent or monitor running beside one that is over:
   // the delete cuts them off, which is worth a line before the button. A
   // live shell alone does not count; the server leaves it out of attention.
-  const running =
-    confirming?.attention === "working" || confirming?.attention === "background";
+  const running = !!confirming && isBusy(confirming);
 
   // The dialog is only "busy" for the thread it is currently asking about: it
   // can be dismissed once the wait has gone long and reopened on another row,

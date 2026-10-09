@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/proto"
@@ -21,18 +22,6 @@ func listIDs(t *testing.T, s *Store) []string {
 		ids[i] = m.ID
 	}
 	return ids
-}
-
-func sameIDs(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // A database from before the user could order threads opens with the order
@@ -63,7 +52,7 @@ func TestOpenBackfillsPositionInTheOldOrder(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	want := []string{"newest", "tie-b", "tie-a", "oldest"}
-	if got := listIDs(t, s); !sameIDs(got, want) {
+	if got := listIDs(t, s); !slices.Equal(got, want) {
 		t.Fatalf("order after backfill = %v, want %v", got, want)
 	}
 	list, _ := s.ListThreads(context.Background())
@@ -98,7 +87,7 @@ func TestNewThreadsLandOnTop(t *testing.T) {
 	for _, id := range []string{"a", "b", "c"} {
 		mustCreateThread(t, s, id)
 	}
-	if got, want := listIDs(t, s), []string{"c", "b", "a"}; !sameIDs(got, want) {
+	if got, want := listIDs(t, s), []string{"c", "b", "a"}; !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 }
@@ -122,7 +111,7 @@ func TestSetThreadPositionMovesOneThread(t *testing.T) {
 	if err := s.SetThreadPosition(ctx, "a", mid); err != nil {
 		t.Fatalf("set position: %v", err)
 	}
-	if got, want := listIDs(t, s), []string{"c", "a", "b"}; !sameIDs(got, want) {
+	if got, want := listIDs(t, s), []string{"c", "a", "b"}; !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 	for _, id := range []string{"b", "c"} {
@@ -138,7 +127,7 @@ func TestSetThreadPositionMovesOneThread(t *testing.T) {
 	if _, err := s.Append(ctx, "b", proto.Emit("message.chunk", map[string]any{"delta": "hi"})); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := listIDs(t, s), []string{"c", "a", "b"}; !sameIDs(got, want) {
+	if got, want := listIDs(t, s), []string{"c", "a", "b"}; !slices.Equal(got, want) {
 		t.Fatalf("activity reordered the list: %v", got)
 	}
 

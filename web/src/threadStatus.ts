@@ -16,7 +16,8 @@ import type { ThreadMeta } from "~/protocol";
 
 export type RowStatus = "busy" | "new" | "failed" | "quiet";
 
-function busy(s: ThreadMeta) {
+/** A turn, the workspace lifecycle, or a subagent or monitor still out. */
+export function busy(s: ThreadMeta) {
   return s.attention === "working" || s.attention === "background";
 }
 

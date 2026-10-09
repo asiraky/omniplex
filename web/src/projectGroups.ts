@@ -12,12 +12,13 @@
  *   on another device arrives visible rather than pre-hidden.
  * - Rows inside a group keep the list's order, which is the user's own
  *   (`threadOrder`): a drag inside a group is the only thing that moves one.
- * - Groups follow the project registry, in the server's order — not the order
- *   their threads happen to appear in. The user drags threads, not groups, and
- *   moving a thread to the top of its project must not drag the whole project
- *   up past the others. A thread whose project cannot be resolved comes after
- *   every real project, in first-appearance order: there is no registry entry
- *   to place it by.
+ * - Groups go newest project first, by when the project was made — not by the
+ *   order their threads happen to appear in, and not by the registry's own
+ *   order, which follows the last edit. The user drags threads, not groups:
+ *   moving a thread to the top of its project, or saving a project's
+ *   settings, must not carry the whole project up past the others. A thread
+ *   whose project cannot be resolved comes after every real project, in
+ *   first-appearance order: there is no project to place it by.
  * - A group with no threads does not exist. Nothing else has to remember to
  *   suppress its header, because there is no group to have one.
  * - One group is not a grouping. Whether that is because one project was
@@ -64,8 +65,8 @@ export function visibleByProject(
 }
 
 /**
- * The threads, carved by project: groups in registry order, rows in the
- * list's own order.
+ * The threads, carved by project: newest project first, rows in the list's
+ * own order.
  *
  * Returns one group per project that actually has threads here. A caller with
  * a single group in hand has nothing to group and should render the threads
@@ -86,10 +87,13 @@ export function groupThreads(threads: ThreadMeta[], projects: Project[]): Projec
     else groups.set(key, { key, name: project ? project.name : cwdName(s), threads: [s] });
   }
 
-  // The registry decides the order of everything it knows; a Map keeps
+  // Creation time decides the order of every real project; a Map keeps
   // insertion order, so what is left over keeps the order it first appeared.
+  const byAge = [...projects].sort(
+    (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
   const ordered: ProjectGroup[] = [];
-  for (const p of projects) {
+  for (const p of byAge) {
     const g = groups.get(p.id);
     if (!g) continue;
     ordered.push(g);
