@@ -3,7 +3,11 @@ package thread
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -278,37 +282,50 @@ func TestQuotaSubscribeNotifiesOnChange(t *testing.T) {
 	}
 }
 
-func TestUsageReportFromDurableLog(t *testing.T) {
-	mgr, _, st := quotaTestManager(t)
-	meta := store.ThreadMeta{ID: "s1", Cwd: t.TempDir(), Harness: "claude", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "idle"}
-	if err := st.CreateThread(context.Background(), meta); err != nil {
+func writeTranscript(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Append(context.Background(), "s1", proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: "claude", Model: "claude-opus-5"})); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A claude turn: the accounting result, then the occupancy re-emission.
-	if _, err := st.Append(context.Background(), "s1", proto.Emit(proto.UsageUpdated, proto.UsageUpdatedPayload{Input: 1_000_000, Output: 1_000_000, Accounting: true})); err != nil {
-		t.Fatal(err)
+}
+
+func TestUsageReportReadsEveryAccountsTranscripts(t *testing.T) {
+	mgr, _, _ := quotaTestManager(t)
+	dir := t.TempDir()
+	work, personal, codex := filepath.Join(dir, "work"), filepath.Join(dir, "personal"), filepath.Join(dir, "codex")
+	mgr.applyInstances([]provider.Instance{
+		{ID: "work", Driver: "claude", Enabled: true, Env: []provider.EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: work}}},
+		{ID: "personal", Driver: "claude", Enabled: true, Env: []provider.EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: personal}}},
+		{ID: "oai", Driver: "codex", Enabled: true, Env: []provider.EnvVar{{Name: "CODEX_HOME", Value: codex}}},
+	})
+
+	ts := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	claude := func(id string, in, out int) string {
+		return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":"r-%s","message":{"id":%q,"model":"claude-opus-5","usage":{"input_tokens":%d,"output_tokens":%d}}}`, ts, id, id, in, out)
 	}
-	if _, err := st.Append(context.Background(), "s1", proto.Emit(proto.UsageUpdated, proto.UsageUpdatedPayload{Input: 1_000_000, Output: 1_000_000})); err != nil {
-		t.Fatal(err)
-	}
+	writeTranscript(t, filepath.Join(work, "projects", "p", "s.jsonl"), claude("a", 1_000_000, 0))
+	writeTranscript(t, filepath.Join(work, "projects", "p", "s", "subagents", "agent-1.jsonl"), claude("b", 0, 1_000_000))
+	writeTranscript(t, filepath.Join(personal, "projects", "q", "s.jsonl"), claude("c", 1_000_000, 0))
+	writeTranscript(t, filepath.Join(codex, "archived_sessions", "rollout.jsonl"),
+		fmt.Sprintf(`{"timestamp":%q,"type":"turn_context","payload":{"model":"gpt-5.4"}}`, ts),
+		fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000},"last_token_usage":{"input_tokens":1000000}}}}`, ts))
 
 	rep, err := mgr.UsageReport(context.Background(), "24h")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Totals.Input != 1_000_000 {
-		t.Fatalf("input = %v, want the turn counted once", rep.Totals.Input)
+	if rep.Totals.Input != 3_000_000 || rep.Totals.Output != 1_000_000 {
+		t.Fatalf("totals = %+v, want both Claude accounts, the subagent and archived Codex", rep.Totals)
 	}
-	if rep.Totals.Cost != 30 { // 1M in + 1M out at $5/$25 per million
-		t.Fatalf("cost = %v, want 30", rep.Totals.Cost)
-	}
-	if len(rep.Rows) != 1 || rep.Rows[0].Model != "claude-opus-5" {
-		t.Fatalf("rows = %+v", rep.Rows)
+	// 2M Opus input at $5, 1M Opus output at $25, 1M GPT-5.4 input at $2.50.
+	if math.Abs(rep.Totals.Cost-37.5) > 1e-9 {
+		t.Fatalf("cost = %v, want 37.5", rep.Totals.Cost)
 	}
 }
+
 func TestQuotaPublishedSnapshotIsImmutable(t *testing.T) {
 	mgr, _, _ := quotaTestManager(t)
 	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{CheckedAt: 1, Windows: []adapter.QuotaWindow{{ID: "w", UsedPercent: pct(1)}, {ID: "other", UsedPercent: pct(2)}}}, true)

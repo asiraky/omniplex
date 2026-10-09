@@ -1,10 +1,8 @@
 package usage
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -17,11 +15,14 @@ type RangeSpec struct {
 	Bucket time.Duration
 }
 
+// MaxWindow is the widest range's reach: no report reads further back.
+const MaxWindow = 90 * 24 * time.Hour
+
 var ranges = []RangeSpec{
 	{ID: "24h", Window: 24 * time.Hour, Bucket: time.Hour},
 	{ID: "7d", Window: 7 * 24 * time.Hour, Bucket: 24 * time.Hour},
 	{ID: "30d", Window: 30 * 24 * time.Hour, Bucket: 24 * time.Hour},
-	{ID: "90d", Window: 90 * 24 * time.Hour, Bucket: 24 * time.Hour},
+	{ID: "90d", Window: MaxWindow, Bucket: 24 * time.Hour},
 }
 
 // RangeSpec resolves a range id. Unknown ids are refused rather than
@@ -89,38 +90,31 @@ type Report struct {
 	Totals       Totals `json:"totals"`
 }
 
-// EventRow is one durable event the aggregation walks, as the store hands it
-// over: the three event types that can say anything about usage accounting —
-// thread.created and thread.config_changed carry the model attribution,
-// usage.updated carries the token counts.
-type EventRow struct {
-	ThreadID  string
-	Harness   string
-	Type      string
+// Record is one billed model response, as a harness wrote it to its own
+// transcript.
+type Record struct {
 	Timestamp int64 // epoch ms
-	Pricing   *RecordedPricing
-	Payload   json.RawMessage
+	Provider  string
+	Model     string
+	Counts    Counts
+	// Cost is the harness's own figure for this response, used in place of
+	// the catalogue when HasCost is set.
+	Cost    float64
+	HasCost bool
+	// Key identifies the response across lines and files. Claude writes one
+	// line per content block, each repeating the response's usage, and copies
+	// lines forward on resume and fork; records sharing a key are one
+	// response. Empty means the record is unique by construction.
+	Key string
 }
 
-// Aggregate folds the event rows of every thread that used tokens in the
-// window into one report.
+// Build folds transcript records into one report for the window ending now.
 //
-// The semantics are per harness and this is where they matter:
-//
-//   - Claude's result message reports the turn's accounting total, and the
-//     adapter re-emits the same numbers a moment later in its occupancy
-//     report. Counting both would double every turn, so consecutive usage
-//     events with identical token categories collapse into one.
-//   - Codex's token totals are cumulative within a thread: each event says
-//     "this much so far", so only the positive delta since the previous
-//     event is usage. A reset (totals going backwards) means the thread
-//     started counting again, and the new baseline is charged as-is.
-//
-// Events older than the window are still walked: a codex thread whose last
-// pre-window event was days ago still needs that baseline to delta against,
-// and a model switch before the window still tells the walk which model an
-// in-window event ran on.
-func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
+// Records sharing a key merge by taking each category's largest reading:
+// the lines Claude writes while a response is still streaming carry a
+// partial output count, so the first line seen is not the response's usage
+// — the largest is.
+func Build(records []Record, spec RangeSpec, now time.Time) Report {
 	rep := Report{
 		Range:        spec.ID,
 		From:         now.Add(-spec.Window).UnixMilli(),
@@ -130,95 +124,59 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 		Rows:         []Row{},
 	}
 
+	merged := make([]Record, 0, len(records))
+	byKey := map[string]int{}
+	for _, r := range records {
+		if r.Timestamp < rep.From || r.Timestamp > rep.To {
+			continue
+		}
+		if r.Key == "" {
+			merged = append(merged, r)
+			continue
+		}
+		i, ok := byKey[r.Key]
+		if !ok {
+			byKey[r.Key] = len(merged)
+			merged = append(merged, r)
+			continue
+		}
+		m := &merged[i]
+		m.Timestamp = min(m.Timestamp, r.Timestamp)
+		m.Counts = Counts{
+			Input:        max(m.Counts.Input, r.Counts.Input),
+			Output:       max(m.Counts.Output, r.Counts.Output),
+			CacheRead:    max(m.Counts.CacheRead, r.Counts.CacheRead),
+			CacheWrite:   max(m.Counts.CacheWrite, r.Counts.CacheWrite),
+			CacheWrite1h: max(m.Counts.CacheWrite1h, r.Counts.CacheWrite1h),
+		}
+		if r.HasCost {
+			m.Cost, m.HasCost = max(m.Cost, r.Cost), true
+		}
+	}
+
 	type cellKey struct {
 		start    int64
 		provider string
 		model    string
 	}
 	cells := map[cellKey]*Row{}
-
-	// Per-thread walk state.
-	var thread string
-	var model string
-	var harness string
-	// lastUsage is the previous usage.updated payload of the thread being
-	// walked, whatever it counted: the claude de-duplication and the codex
-	// delta both need it.
-	var lastUsage Counts
-	haveLastUsage := false
-
-	versions := map[string]bool{}
-	record := func(ts int64, c Counts, pricing *RecordedPricing) {
-		if ts < rep.From {
-			return
+	for _, r := range merged {
+		var priced Priced
+		if r.HasCost {
+			priced = Priced{CostUSD: r.Cost}
+		} else {
+			priced = Price(r.Model, r.Counts)
 		}
-		priced := Price(model, c)
-		version := PriceVersion
-		if pricing != nil {
-			priced = PriceRates(pricing.Rates, c)
-			version = pricing.Version
-		}
-		versions[version] = true
-		key := cellKey{start: bucketStart(ts, rep.BucketMs), provider: harness, model: model}
+		key := cellKey{start: bucketStart(r.Timestamp, rep.BucketMs), provider: r.Provider, model: r.Model}
 		cell, ok := cells[key]
 		if !ok {
 			cell = &Row{Start: key.start, Provider: key.provider, Model: key.model}
 			cells[key] = cell
 		}
-		cell.Totals.addTokens(c)
+		cell.Totals.addTokens(r.Counts)
 		cell.Totals.addPriced(priced)
-		rep.Totals.addTokens(c)
+		rep.Totals.addTokens(r.Counts)
 		rep.Totals.addPriced(priced)
-	}
-
-	for _, r := range rows {
-		if r.ThreadID != thread {
-			thread = r.ThreadID
-			harness = r.Harness
-			model = ""
-			lastUsage, haveLastUsage = Counts{}, false
-		}
-		switch r.Type {
-		case "thread.created":
-			var p struct {
-				Model string `json:"model"`
-			}
-			_ = json.Unmarshal(r.Payload, &p)
-			if p.Model != "" {
-				model = p.Model
-			}
-		case "thread.config_changed":
-			var p struct {
-				Model string `json:"model"`
-			}
-			_ = json.Unmarshal(r.Payload, &p)
-			if p.Model != "" {
-				model = p.Model
-			}
-		case "usage.updated":
-			var p struct {
-				Input      int64 `json:"input"`
-				Output     int64 `json:"output"`
-				CacheRead  int64 `json:"cacheRead"`
-				CacheWrite int64 `json:"cacheWrite"`
-				Accounting bool  `json:"accounting"`
-			}
-			if err := json.Unmarshal(r.Payload, &p); err != nil {
-				continue
-			}
-			cur := Counts{Input: p.Input, Output: p.Output, CacheRead: p.CacheRead, CacheWrite: p.CacheWrite}
-			counts := accountingDelta(harness, cur, lastUsage, haveLastUsage, p.Accounting)
-			lastUsage, haveLastUsage = cur, true
-			// Codex input includes cached tokens. Keep that inclusive baseline
-			// for deltas, then split categories before counting and pricing.
-			if harness == "codex" {
-				counts.Input = max(0, counts.Input-counts.CacheRead-counts.CacheWrite)
-			}
-			if counts == (Counts{}) {
-				continue
-			}
-			record(r.Timestamp, counts, r.Pricing)
-		}
 	}
 
 	keys := make([]cellKey, 0, len(cells))
@@ -238,52 +196,7 @@ func Aggregate(rows []EventRow, spec RangeSpec, now time.Time) Report {
 	for _, k := range keys {
 		rep.Rows = append(rep.Rows, *cells[k])
 	}
-	if len(versions) > 0 {
-		names := make([]string, 0, len(versions))
-		for v := range versions {
-			names = append(names, v)
-		}
-		sort.Strings(names)
-		rep.PriceVersion = strings.Join(names, ", ")
-	}
 	return rep
-}
-
-// accountingDelta turns one usage.updated payload into the usage it
-// represents, applying the harness's own semantics.
-func accountingDelta(harness string, cur, prev Counts, havePrev bool, accounting bool) Counts {
-	if harness == "codex" {
-		if !havePrev {
-			return cur
-		}
-		// Cumulative totals: only the growth since the previous reading is
-		// new usage. A reading below the previous one means the thread reset
-		// its counter — the current total is fresh usage, not a negative.
-		if cur.Input >= prev.Input && cur.Output >= prev.Output && cur.CacheRead >= prev.CacheRead && cur.CacheWrite >= prev.CacheWrite {
-			return Counts{
-				Input:      cur.Input - prev.Input,
-				Output:     cur.Output - prev.Output,
-				CacheRead:  cur.CacheRead - prev.CacheRead,
-				CacheWrite: cur.CacheWrite - prev.CacheWrite,
-			}
-		}
-		return cur
-	}
-	// The accounting flag is the source's own word for "this is fresh
-	// accounting, count it" — and, absent, for "this restates the previous
-	// reading, skip it".
-	if accounting {
-		return cur
-	}
-	if !havePrev {
-		return cur
-	}
-	// Events recorded before the flag existed: consecutive identical counts
-	// are the occupancy report restating the turn result, not a second turn.
-	if cur == prev {
-		return Counts{}
-	}
-	return cur
 }
 
 // bucketStart floors a timestamp to its bucket boundary. Epoch arithmetic, so

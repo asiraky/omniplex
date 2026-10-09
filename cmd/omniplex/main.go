@@ -195,6 +195,9 @@ func main() {
 	watchCtx, stopWatching := context.WithCancel(context.Background())
 	defer stopWatching()
 	go claudeBundled.Watch(watchCtx, time.Hour, logf)
+	// The Usage page reads gigabytes of harness transcripts; parse them now
+	// so the first report is served from a warm cache.
+	go mgr.WarmUsage(watchCtx)
 
 	webFS, hasUI := embeddedUI()
 
