@@ -1,4 +1,4 @@
-import { ListFilterIcon, SettingsIcon } from "lucide-react";
+import { ArrowUpDownIcon, ListFilterIcon, SettingsIcon } from "lucide-react";
 
 import { LabelDot } from "~/components/LabelMenu";
 import { Button } from "~/components/ui/button";
@@ -46,6 +46,7 @@ export function ThreadFilter({
   onToggleLabel,
   onShowAllLabels,
   onManageLabels,
+  onReorder,
 }: {
   /** The list is carved into project groups; off, it is one flat list. */
   grouped: boolean;
@@ -62,6 +63,8 @@ export function ThreadFilter({
   onToggleLabel: (key: string, show: boolean) => void;
   onShowAllLabels: () => void;
   onManageLabels: () => void;
+  /** Puts the list into reorder mode. */
+  onReorder: () => void;
 }) {
   // Only what is both hidden and still real counts: an id left behind by a
   // deleted project or label hides nothing, so it must not light the trigger.
@@ -102,6 +105,13 @@ export function ThreadFilter({
       </Tooltip>
 
       <DropdownMenuContent align="end" className="min-w-52">
+        {/* Not a filter, but this is the list's one menu, and reordering is
+            rare enough not to earn an icon of its own in the header. */}
+        <DropdownMenuItem onSelect={onReorder} className="text-[13px]">
+          <ArrowUpDownIcon className="text-muted-foreground" />
+          Reorder threads
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         {choosing && (
           <>
             <DropdownMenuCheckboxItem

@@ -230,6 +230,7 @@ function ThreadList({
   onSetUnread,
   onRename,
   onReorder,
+  reordering,
   hidden,
   onShowAll,
 }: Pick<
@@ -247,6 +248,8 @@ function ThreadList({
   | "onReorder"
 > & {
   flow: DeleteFlow;
+  /** Reorder mode: rows show a grip and open nothing when tapped. */
+  reordering: boolean;
   /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
   hidden: Set<string>;
   projectView: ProjectView;
@@ -318,6 +321,7 @@ function ThreadList({
       active={s.id === activeId}
       leaving={exiting?.id === s.id}
       going={deleting?.id === s.id}
+      reordering={reordering}
       drag={drag}
       labels={labels}
       accentOf={accentOf}
@@ -382,6 +386,9 @@ function SidebarPanel({
   onToggleLabel: (key: string, show: boolean) => void;
   onShowAll: () => void;
 }) {
+  // Reorder mode is this panel's alone: closing the sheet ends it, so the
+  // next time the list opens its rows are for opening threads again.
+  const [reordering, setReordering] = useState(false);
   // Both filters, because the footer's job is to admit that threads are
   // missing and it cannot know which control removed them.
   const shownCount = visibleByProject(
@@ -413,34 +420,56 @@ function SidebarPanel({
           )}
         </div>
         <div className="flex items-center justify-end gap-1">
-          <IconButton
-            label="New thread"
-            onClick={props.onNew}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <SquarePenIcon />
-          </IconButton>
-          <IconButton
-            label="New project"
-            onClick={props.onNewProject}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <FolderPlusIcon />
-          </IconButton>
-          <ThreadFilter
-            grouped={projectView.grouped}
-            onToggleGrouped={projectView.onToggleGrouped}
-            projects={props.projects}
-            hiddenProjects={projectView.hidden}
-            onToggleProject={projectView.onToggle}
-            onShowAllProjects={projectView.onShowAll}
-            onHideAllProjects={projectView.onHideAll}
-            labels={props.labels}
-            hiddenLabels={hidden}
-            onToggleLabel={onToggleLabel}
-            onShowAllLabels={onShowAll}
-            onManageLabels={props.onManageLabels}
-          />
+          {/* While reordering it is the only thing in this row — a phone-width
+              sheet has no room for a hint, a Done and three icons — and the
+              way out is a word, not an icon, so it cannot be missed. */}
+          {reordering ? (
+            <>
+              <span className="text-muted-foreground mr-auto px-1.5 text-[12px]">
+                Drag the grips to reorder
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setReordering(false)}
+                className="h-11 px-4 md:h-8"
+              >
+                Done
+              </Button>
+            </>
+          ) : (
+            <>
+              <IconButton
+                label="New thread"
+                onClick={props.onNew}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <SquarePenIcon />
+              </IconButton>
+              <IconButton
+                label="New project"
+                onClick={props.onNewProject}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <FolderPlusIcon />
+              </IconButton>
+              <ThreadFilter
+                grouped={projectView.grouped}
+                onToggleGrouped={projectView.onToggleGrouped}
+                projects={props.projects}
+                hiddenProjects={projectView.hidden}
+                onToggleProject={projectView.onToggle}
+                onShowAllProjects={projectView.onShowAll}
+                onHideAllProjects={projectView.onHideAll}
+                labels={props.labels}
+                hiddenLabels={hidden}
+                onToggleLabel={onToggleLabel}
+                onShowAllLabels={onShowAll}
+                onManageLabels={props.onManageLabels}
+                onReorder={() => setReordering(true)}
+              />
+            </>
+          )}
         </div>
       </div>
 
@@ -464,6 +493,7 @@ function SidebarPanel({
           onSetUnread={props.onSetUnread}
           onRename={props.onRename}
           onReorder={props.onReorder}
+          reordering={reordering}
           hidden={hidden}
           onShowAll={onShowAll}
         />
