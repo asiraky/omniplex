@@ -130,8 +130,8 @@ writeFileSync(
 
 This is a worktree of \`${projectRoot}\`, on branch \`${branch}\`.
 
-Run the app with \`npm run dev\` as usual. It picks up \`.omniplex/worktree.env\` and
-starts on **http://127.0.0.1:${serverPort}** with its own database at
+Use the \`dev\` skill to run the app. It picks up \`.omniplex/worktree.env\`, so the
+server gets its own port and its own database at
 \`.omniplex/dev.db\` — so it will not collide with the checkout this came from, and
 nothing you do here touches its threads. That database is seeded with the
 projects and labels of the one it came from; threads are not copied.
