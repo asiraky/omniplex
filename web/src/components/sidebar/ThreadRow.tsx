@@ -33,16 +33,12 @@ function TitleLine({
   label,
   labels,
   isNew,
-  reordering,
 }: {
   s: ThreadMeta;
   label: Label | undefined;
   labels: Label[];
   /** Unread and stopped: the title steps up alongside the badge. */
   isNew: boolean;
-  /** The row's controls are put away for the handle, which the row's own
-      padding already clears. */
-  reordering: boolean;
 }) {
   return (
     <span
@@ -76,13 +72,11 @@ function TitleLine({
         // control-width further left, so the hovered line yields
         // to the pencil's glyph instead: pr-18 with the label dot
         // beside it, pr-10 when the pencil sits next to the X.
-        reordering
-          ? null
-          : label
-            ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
-            : labels.length > 0
-              ? "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18 md:group-has-[[aria-expanded=true]]:pr-12"
-              : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
+        label
+          ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
+          : labels.length > 0
+            ? "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18 md:group-has-[[aria-expanded=true]]:pr-12"
+            : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
       )}
     >
       <span className={cn("min-w-0 truncate text-[13px]", isNew && "font-semibold")}>
@@ -316,22 +310,29 @@ function RenameControl({
 }
 
 /**
- * The grip a reorder starts from. It takes the whole right edge of the row,
- * full height and 44px wide, so a thumb finds it without aiming; the row's
- * other controls are put away while it is up, so there is nothing beside it
- * to hit by mistake. touch-none hands the gesture to the drag instead of the
- * scroller from the first pixel.
+ * The grip a row is dragged by, down its left edge.
+ *
+ * On desktop it shows on hover, in the gutter the list and the row's padding
+ * already leave, so it costs the title nothing; a mouse can drag the whole
+ * row too, and the grip is what says so. Touch has no hover, so it is always
+ * there, faint, in a column the row's padding widens to a thumb's width — and
+ * it is the only way a finger drags, because a finger anywhere else on the
+ * row is a scroll or a long-press.
+ *
+ * touch-none gives the gesture to the drag instead of the scroller from the
+ * first pixel, and the drag's own pointerdown takes it from the row's
+ * long-press menu.
  */
-function ReorderHandle({ s, drag }: { s: ThreadMeta; drag: RowDrag | undefined }) {
+function DragHandle({ s, drag }: { s: ThreadMeta; drag: RowDrag | undefined }) {
   return (
     <button
       type="button"
       aria-label={`Move thread ${s.title || "Untitled"}`}
       disabled={!drag}
       {...drag?.handle}
-      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring absolute inset-y-0 right-0 flex w-11 cursor-grab touch-none items-center justify-center rounded-lg outline-none focus-visible:ring-2 active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
+      className="text-muted-foreground/50 md:text-muted-foreground hover:text-foreground focus-visible:ring-ring absolute inset-y-0 left-0 flex w-7 cursor-grab touch-none items-center justify-center rounded-lg outline-none select-none [-webkit-touch-callout:none] focus-visible:ring-2 active:cursor-grabbing disabled:hidden md:-left-2 md:w-[18px] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
     >
-      <GripVerticalIcon aria-hidden className="size-4" />
+      <GripVerticalIcon aria-hidden className="size-3.5" />
     </button>
   );
 }
@@ -374,7 +375,6 @@ export function ThreadRow({
   active,
   leaving,
   going,
-  reordering,
   drag,
   labels,
   accentOf,
@@ -393,9 +393,6 @@ export function ThreadRow({
   leaving: boolean;
   /** Being deleted, and still in the list. */
   going: boolean;
-  /** The list is in reorder mode: a handle instead of the controls, and a tap
-      that selects nothing — the row is something to move, not to open. */
-  reordering: boolean;
   /** How the row is dragged; absent while the list is held still. */
   drag: RowDrag | undefined;
   labels: Label[];
@@ -448,9 +445,7 @@ export function ThreadRow({
       <ContextMenu modal={false}>
         {/* While renaming, a right-click in the field is the browser's
            own menu: cut, copy, paste. */}
-        {/* In reorder mode the long-press belongs to nobody: the handle is
-           the gesture, and a menu rising mid-drag would steal it. */}
-        <ContextMenuTrigger asChild disabled={renaming || reordering}>
+        <ContextMenuTrigger asChild disabled={renaming}>
           <div
             className={cn(
               // min-w-0: a grid item's automatic minimum size is its
@@ -477,7 +472,7 @@ export function ThreadRow({
               // shape: the title line becomes the field, the detail line
               // stays put. The row's controls step aside while it is open
               // and the field takes the full width.
-              <div className="min-w-0 px-2.5 py-2">
+              <div className="min-w-0 py-2 pr-2.5 pl-7 md:pl-2.5">
                 <span className="flex">
                   <TitleEditor
                     title={s.title}
@@ -500,25 +495,17 @@ export function ThreadRow({
               <>
                 <button
                   type="button"
-                  onClick={reordering ? undefined : () => onSelect(s.id)}
+                  onClick={() => onSelect(s.id)}
                   // A mouse or pen drags the row itself; a finger only ever
                   // drags by the handle, so a scroll is never a drag.
                   onPointerDown={drag?.onRowPointerDown}
                   aria-current={active ? "true" : undefined}
-                  className={cn(
-                    "focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2",
-                    reordering && "cursor-default pr-12",
-                  )}
+                  // The left padding on touch is the grip's column.
+                  className="focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg py-2 pr-2.5 pl-7 text-left outline-none focus-visible:ring-2 md:pl-2.5"
                 >
                   {/* Two matched lines: text on the left, a small mark on the
                       right — timestamp above, provider logo below. */}
-                  <TitleLine
-                    s={s}
-                    label={label}
-                    labels={labels}
-                    isNew={badge === "new"}
-                    reordering={reordering}
-                  />
+                  <TitleLine s={s} label={label} labels={labels} isNew={badge === "new"} />
                   <DetailLine
                     s={s}
                     status={status}
@@ -529,29 +516,25 @@ export function ThreadRow({
                   />
                 </button>
 
-                {reordering ? (
-                  <ReorderHandle s={s} drag={drag} />
-                ) : (
-                  <>
-                    <RenameControl
-                      s={s}
-                      besideLabel={labels.length > 0}
-                      onRename={() => setRenaming(true)}
-                    />
+                <DragHandle s={s} drag={drag} />
 
-                    {labels.length > 0 && (
-                      <LabelControl
-                        s={s}
-                        label={label}
-                        labels={labels}
-                        onSetLabel={onSetLabel}
-                        onManageLabels={onManageLabels}
-                      />
-                    )}
+                <RenameControl
+                  s={s}
+                  besideLabel={labels.length > 0}
+                  onRename={() => setRenaming(true)}
+                />
 
-                    <DeleteControl s={s} onDelete={onDelete} />
-                  </>
+                {labels.length > 0 && (
+                  <LabelControl
+                    s={s}
+                    label={label}
+                    labels={labels}
+                    onSetLabel={onSetLabel}
+                    onManageLabels={onManageLabels}
+                  />
                 )}
+
+                <DeleteControl s={s} onDelete={onDelete} />
               </>
             )}
           </div>

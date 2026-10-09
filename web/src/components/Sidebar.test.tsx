@@ -182,33 +182,15 @@ describe("Sidebar", () => {
     expect(props.onSelect).not.toHaveBeenCalled();
   });
 
-  describe("reorder mode", () => {
+  describe("reordering", () => {
     const ordered = [
       thread("a", { position: 0 }),
       thread("b", { position: 1 }),
       thread("c", { position: 2 }),
     ];
 
-    it("swaps the row's controls for a handle, and a tap opens nothing", () => {
-      viewport("phone");
-      const props = renderSidebar({ threads: ordered });
-      fireEvent.click(screen.getByRole("button", { name: "Reorder threads" }));
-
-      expect(screen.queryByRole("button", { name: /^Delete thread/ })).toBeNull();
-      expect(screen.queryByRole("button", { name: /^Rename thread/ })).toBeNull();
-      expect(screen.getAllByRole("button", { name: /^Move thread/ })).toHaveLength(3);
-      fireEvent.click(screen.getByText("Thread a"));
-      expect(props.onSelect).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole("button", { name: "Done" }));
-      expect(screen.queryByRole("button", { name: /^Move thread/ })).toBeNull();
-      fireEvent.click(screen.getByText("Thread a"));
-      expect(props.onSelect).toHaveBeenCalledWith("a");
-    });
-
     it("steps a row with the arrow keys on its handle, writing only that row", () => {
       const props = renderSidebar({ threads: ordered });
-      fireEvent.click(screen.getByRole("button", { name: "Reorder threads" }));
 
       fireEvent.keyDown(screen.getByRole("button", { name: "Move thread Thread a" }), {
         key: "ArrowDown",
