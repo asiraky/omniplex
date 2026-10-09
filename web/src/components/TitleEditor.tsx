@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { titleToSave } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 
-/** The server caps a typed title at this many characters. */
+/** The server caps a title at this many characters: maxTitleRunes in internal/thread. */
 const MAX_TITLE = 200;
 
 /**

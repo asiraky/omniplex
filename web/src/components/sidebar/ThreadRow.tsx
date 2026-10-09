@@ -295,8 +295,8 @@ function LabelControl({
 /**
  * The pencil that turns the title into a field. Desktop only, on hover like
  * the X: a third always-visible control on a phone row would cost the title
- * too much room, so touch reaches rename through the long-press menu (and
- * the thread header's menu) instead.
+ * too much room, so touch reaches rename through the long-press menu, or the
+ * pencil in the thread header.
  */
 function RenameControl({
   s,

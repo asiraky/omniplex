@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
+import { toast } from "~/lib/toast";
 import type { ThreadMeta } from "~/protocol";
 
 import { useRenameThread } from "./useRenameThread";
@@ -13,7 +14,7 @@ vi.mock("~/lib/toast", () => ({ toast: { error: vi.fn() } }));
 const thread = (id: string, title: string) => ({ id, title }) as ThreadMeta;
 
 /** A server that answers each command only when the test says so. */
-function setup() {
+function setup(connected: null | "connected" = "connected") {
   const calls: { title: string; resolve: () => void; reject: (e: Error) => void }[] = [];
   const client = {
     command: vi.fn(
@@ -23,7 +24,7 @@ function setup() {
   };
   const hook = renderHook(() => {
     const [threads, setThreads] = useState([thread("a", "Old"), thread("b", "Other")]);
-    const wire = { clientRef: { current: client }, threads } as unknown as Wire;
+    const wire = { clientRef: { current: connected && client }, threads } as unknown as Wire;
     return { ...useRenameThread(wire), setThreads };
   });
   /** The server's threads broadcast, carrying `a` under this name. */
@@ -52,10 +53,21 @@ describe("useRenameThread", () => {
     expect(titleOfA()).toBe("Old");
   });
 
+  it("says so when there is no connection to send it on", async () => {
+    const { hook, titleOfA } = setup(null);
+    act(() => hook.result.current.rename("a", "New"));
+    await waitFor(() => expect(titleOfA()).toBe("Old"));
+    expect(toast.error).toHaveBeenCalled();
+  });
+
   it("lets the server's list speak again once it has answered", async () => {
     const { hook, calls, broadcast, titleOfA } = setup();
     act(() => hook.result.current.rename("a", "New"));
     await act(async () => calls[0].resolve());
+    // The answer can beat the list that carries the new name.
+    expect(titleOfA()).toBe("New");
+    broadcast("New");
+    expect(titleOfA()).toBe("New");
     // Another device renames it afterwards.
     broadcast("Elsewhere");
     expect(titleOfA()).toBe("Elsewhere");

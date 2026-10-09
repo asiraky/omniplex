@@ -1,9 +1,16 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { toast } from "~/lib/toast";
 import type { ThreadMeta } from "~/protocol";
 
 import type { Wire } from "./useWire";
+
+/**
+ * A name shown ahead of the server. Once the server confirms it, it stays only
+ * until the next threads broadcast: the confirmation can arrive before the
+ * list that carries the new name, and after that list the server's word goes.
+ */
+type Pending = { title: string; confirmedOn?: ThreadMeta[] };
 
 /**
  * Renaming a thread, and the thread list as the user should see it meanwhile.
@@ -24,42 +31,69 @@ export function useRenameThread(wire: Wire) {
   // The latest name asked for, per thread, until the server has answered it.
   const wanted = useRef(new Map<string, string>());
   const inFlight = useRef(new Set<string>());
-  const [pending, setPending] = useState<ReadonlyMap<string, string>>(new Map());
+  const [pending, setPending] = useState<ReadonlyMap<string, Pending>>(new Map());
+  // The list on screen, for marking which one a confirmation arrived over.
+  const listRef = useRef(threads);
+  useEffect(() => {
+    listRef.current = threads;
+  }, [threads]);
+
+  const put = useCallback((threadId: string, entry: Pending | null) => {
+    setPending((prev) => {
+      const next = new Map(prev);
+      if (entry) next.set(threadId, entry);
+      else next.delete(threadId);
+      return next;
+    });
+  }, []);
 
   const send = useCallback(
     function send(threadId: string) {
       const title = wanted.current.get(threadId);
       if (title === undefined) return;
       inFlight.current.add(threadId);
-      Promise.resolve(clientRef.current?.command("rename_thread", { threadId, title }))
-        .catch((e: Error) => toast.error("Could not rename that thread", { description: e.message }))
-        .finally(() => {
+      const client = clientRef.current;
+      const sent = client
+        ? client.command("rename_thread", { threadId, title })
+        : Promise.reject(new Error("Not connected"));
+      sent
+        .then(
+          () => true,
+          (e: Error) => {
+            toast.error("Could not rename that thread", { description: e.message });
+            return false;
+          },
+        )
+        .then((saved) => {
           inFlight.current.delete(threadId);
           if (wanted.current.get(threadId) !== title) return send(threadId);
           wanted.current.delete(threadId);
-          setPending(new Map(wanted.current));
+          put(threadId, saved ? { title, confirmedOn: listRef.current } : null);
         });
     },
-    [clientRef],
+    [clientRef, put],
   );
 
   const rename = useCallback(
     (threadId: string, title: string) => {
       wanted.current.set(threadId, title);
-      setPending(new Map(wanted.current));
+      put(threadId, { title });
       if (!inFlight.current.has(threadId)) send(threadId);
     },
-    [send],
+    [send, put],
   );
 
   const shown = useMemo(
-    () => (pending.size === 0 ? threads : threads.map((t) => withPending(t, pending))),
+    () =>
+      pending.size === 0
+        ? threads
+        : threads.map((t) => withPending(t, pending.get(t.id), threads)),
     [threads, pending],
   );
   return { threads: shown, rename };
 }
 
-function withPending(thread: ThreadMeta, pending: ReadonlyMap<string, string>) {
-  const title = pending.get(thread.id);
-  return title === undefined ? thread : { ...thread, title };
+function withPending(thread: ThreadMeta, entry: Pending | undefined, list: ThreadMeta[]) {
+  if (!entry || (entry.confirmedOn && entry.confirmedOn !== list)) return thread;
+  return { ...thread, title: entry.title };
 }
