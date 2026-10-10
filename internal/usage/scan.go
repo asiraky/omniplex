@@ -83,10 +83,11 @@ func (s *Scanner) Records(ctx context.Context, sources []Source, from time.Time)
 		}
 		// Resolved, so two accounts reaching one directory by different
 		// paths read it once.
-		if seen[Source{src.Provider, root}] {
+		key := Source{src.Provider, root}
+		if seen[key] {
 			continue
 		}
-		seen[Source{src.Provider, root}] = true
+		seen[key] = true
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				// An unreadable subtree is skipped, not fatal: one bad
@@ -437,9 +438,9 @@ func (p *codexParser) parse(line []byte) (Record, bool) {
 
 // ---- Pi: <agent>/sessions/**/*.jsonl ----
 
-// piParser reads Pi session entries. Pi bills model calls in three places:
-// assistant messages, and the summaries it writes when compacting a session
-// or leaving a branch. Pi prices each call itself, per provider, so its own
+// piParser reads Pi session entries. Pi records billed usage on assistant
+// messages, on tool results whose tool called a model, and on the summaries
+// it writes when compacting a session or leaving a branch. Pi prices each call itself, per provider, so its own
 // cost is used rather than the catalogue whenever it has one.
 type piParser struct {
 	// model is the session's current model. Summary entries do not name the
@@ -482,6 +483,14 @@ func (p *piParser) parse(line []byte) (Record, bool) {
 	if json.Unmarshal(line, &l) != nil {
 		return Record{}, false
 	}
+	// A forked Pi session copies its parent's entries into a new file, ids
+	// and timestamps intact. The response id is the strongest key; not every
+	// provider sets one, and the entry id alone is too short to be unique
+	// across every session on the machine.
+	var key string
+	if l.ID != "" {
+		key = "pi:" + l.ID + ":" + l.Timestamp
+	}
 	var u *piUsageFields
 	switch l.Type {
 	case "model_change":
@@ -490,11 +499,17 @@ func (p *piParser) parse(line []byte) (Record, bool) {
 		}
 		return Record{}, false
 	case "message":
-		if l.Message.Role != "assistant" {
+		switch l.Message.Role {
+		case "assistant":
+			if l.Message.Model != "" {
+				p.model = l.Message.Model
+			}
+			if l.Message.ResponseID != "" {
+				key = "pi:" + l.Message.ResponseID
+			}
+		case "toolResult":
+		default:
 			return Record{}, false
-		}
-		if l.Message.Model != "" {
-			p.model = l.Message.Model
 		}
 		u = l.Message.Usage
 	case "compaction", "branch_summary":
@@ -516,16 +531,7 @@ func (p *piParser) parse(line []byte) (Record, bool) {
 		// not the call being free: the catalogue gets a turn.
 		Cost:    u.Cost.Total,
 		HasCost: u.Cost.Total > 0,
-	}
-	// A forked Pi session copies its parent's entries into a new file, ids
-	// and timestamps intact. The response id is the strongest key; not every
-	// provider sets one, and the entry id alone is too short to be unique
-	// across every session on the machine.
-	switch {
-	case l.Type == "message" && l.Message.ResponseID != "":
-		rec.Key = "pi:" + l.Message.ResponseID
-	case l.ID != "":
-		rec.Key = "pi:" + l.ID + ":" + l.Timestamp
+		Key:     key,
 	}
 	return rec, rec.Counts != (Counts{})
 }

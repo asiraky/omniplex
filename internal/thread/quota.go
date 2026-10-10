@@ -335,8 +335,9 @@ func (m *Manager) usageSources() []usage.Source {
 				}
 			}
 		}
+		// The adapters' rule for an account's home: any non-blank HOME.
 		home := serverHome
-		if h := strings.TrimSpace(env["HOME"]); filepath.IsAbs(h) {
+		if h := env["HOME"]; strings.TrimSpace(h) != "" {
 			home = h
 		}
 		roots := skills.DefaultRoots(home, env, "")

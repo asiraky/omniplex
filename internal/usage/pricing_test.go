@@ -44,7 +44,6 @@ func TestLookupNormalisation(t *testing.T) {
 		{"CLAUDE-OPUS-5", true},
 		{"anthropic/claude-opus-5", true},
 		{"gpt-5.2-codex-2025-12-11", true},
-		{"claude-haiku-4-5-20251001", true},
 		{"gpt-5.1-codex-max", true},
 		{"", false},
 		{"default", false},
@@ -56,6 +55,17 @@ func TestLookupNormalisation(t *testing.T) {
 	for _, c := range cases {
 		if _, ok := LookupRates(c.model); ok != c.want {
 			t.Errorf("LookupRates(%q) found = %v, want %v", c.model, ok, c.want)
+		}
+	}
+}
+
+func TestDatedReleasePricesAsItsUndatedModel(t *testing.T) {
+	c := Counts{Input: 1_000_000, Output: 1_000_000}
+	for _, model := range []string{"claude-haiku-4-5", "gpt-5.2-codex"} {
+		for _, dated := range []string{model + "-20251001", model + "-2025-10-01"} {
+			if got, want := Price(dated, c), Price(model, c); got != want {
+				t.Errorf("Price(%q) = %+v, want %+v as %q", dated, got, want, model)
+			}
 		}
 	}
 }
