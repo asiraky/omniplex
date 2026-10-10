@@ -44,6 +44,7 @@ func TestLookupNormalisation(t *testing.T) {
 		{"CLAUDE-OPUS-5", true},
 		{"anthropic/claude-opus-5", true},
 		{"gpt-5.2-codex-2025-12-11", true},
+		{"claude-haiku-4-5-20251001", true},
 		{"gpt-5.1-codex-max", true},
 		{"", false},
 		{"default", false},

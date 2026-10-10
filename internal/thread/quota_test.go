@@ -15,6 +15,7 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/usage"
 )
 
 // quotaAdapter is a fakeAdapter whose threads answer quota reads and whose
@@ -295,11 +296,14 @@ func writeTranscript(t *testing.T, path string, lines ...string) {
 func TestUsageReportReadsEveryAccountsTranscripts(t *testing.T) {
 	mgr, _, _ := quotaTestManager(t)
 	dir := t.TempDir()
-	work, personal, codex := filepath.Join(dir, "work"), filepath.Join(dir, "personal"), filepath.Join(dir, "codex")
+	work, personal, codex, piHome := filepath.Join(dir, "work"), filepath.Join(dir, "personal"), filepath.Join(dir, "codex"), filepath.Join(dir, "pi")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
 	mgr.applyInstances([]provider.Instance{
 		{ID: "work", Driver: "claude", Enabled: true, Env: []provider.EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: work}}},
 		{ID: "personal", Driver: "claude", Enabled: true, Env: []provider.EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: personal}}},
 		{ID: "oai", Driver: "codex", Enabled: true, Env: []provider.EnvVar{{Name: "CODEX_HOME", Value: codex}}},
+		// An account given its own home writes under it, not the server's.
+		{ID: "pi", Driver: "pi", Enabled: true, Env: []provider.EnvVar{{Name: "HOME", Value: piHome}}},
 	})
 
 	ts := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
@@ -313,16 +317,20 @@ func TestUsageReportReadsEveryAccountsTranscripts(t *testing.T) {
 		fmt.Sprintf(`{"timestamp":%q,"type":"turn_context","payload":{"model":"gpt-5.4"}}`, ts),
 		fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000},"last_token_usage":{"input_tokens":1000000}}}}`, ts))
 
+	writeTranscript(t, filepath.Join(piHome, ".pi", "agent", "sessions", "--p--", "s.jsonl"),
+		fmt.Sprintf(`{"type":"message","id":"e1","timestamp":%q,"message":{"role":"assistant","model":"m","responseId":"x","usage":{"input":7,"cost":{"total":0.5}}}}`, ts))
+
 	rep, err := mgr.UsageReport(context.Background(), "24h")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Totals.Input != 3_000_000 || rep.Totals.Output != 1_000_000 {
-		t.Fatalf("totals = %+v, want both Claude accounts, the subagent and archived Codex", rep.Totals)
+	if rep.Totals.Input != 3_000_007 || rep.Totals.Output != 1_000_000 {
+		t.Fatalf("totals = %+v, want both Claude accounts, the subagent, archived Codex and Pi", rep.Totals)
 	}
-	// 2M Opus input at $5, 1M Opus output at $25, 1M GPT-5.4 input at $2.50.
-	if math.Abs(rep.Totals.Cost-37.5) > 1e-9 {
-		t.Fatalf("cost = %v, want 37.5", rep.Totals.Cost)
+	want := usage.Price("claude-opus-5", usage.Counts{Input: 2_000_000, Output: 1_000_000}).CostUSD +
+		usage.Price("gpt-5.4", usage.Counts{Input: 1_000_000}).CostUSD + 0.5
+	if math.Abs(rep.Totals.Cost-want) > 1e-9 {
+		t.Fatalf("cost = %v, want %v", rep.Totals.Cost, want)
 	}
 }
 

@@ -55,7 +55,7 @@ func appendTo(t *testing.T, path, body string) {
 	}
 }
 
-func claudeLine(ago time.Duration, msgID, reqID, model string, in, out, read, write, hour int64) map[string]any {
+func claudeLine(ago time.Duration, msgID, reqID, model string, in, out, read, created, hour int64) map[string]any {
 	return map[string]any{
 		"type":      "assistant",
 		"timestamp": stamp(ago),
@@ -67,7 +67,7 @@ func claudeLine(ago time.Duration, msgID, reqID, model string, in, out, read, wr
 				"input_tokens":                in,
 				"output_tokens":               out,
 				"cache_read_input_tokens":     read,
-				"cache_creation_input_tokens": write,
+				"cache_creation_input_tokens": created,
 				"cache_creation":              map[string]any{"ephemeral_1h_input_tokens": hour},
 			},
 		},
@@ -220,6 +220,47 @@ func TestPiUsesItsOwnCostAndFallsBackWhenItHasNone(t *testing.T) {
 	want := 0.25 + Price("claude-opus-5", Counts{Input: 1_000_000}).CostUSD
 	if !near(rep.Totals.Cost, want) {
 		t.Fatalf("cost = %v, want %v", rep.Totals.Cost, want)
+	}
+}
+
+func TestPiCountsSummariesAndForkCopiesOnce(t *testing.T) {
+	root := t.TempDir()
+	noResponseID := piLine(time.Hour, "", 300, 0, 0)
+	noResponseID["id"] = "e1"
+	compaction := map[string]any{
+		"type": "compaction", "id": "e2", "timestamp": stamp(50 * time.Minute),
+		"usage": map[string]any{"input": 1000, "output": 50},
+	}
+	parent := jsonl(t,
+		map[string]any{"type": "model_change", "id": "e0", "timestamp": stamp(2 * time.Hour), "modelId": "claude-opus-5"},
+		noResponseID,
+		compaction,
+	)
+	write(t, filepath.Join(root, "--proj--", "parent.jsonl"), parent)
+	// A fork starts as a verbatim copy of the parent's entries.
+	write(t, filepath.Join(root, "--proj--", "fork.jsonl"), parent)
+
+	rep := report(t, NewScanner(), []Source{{Provider: "pi", Root: root}}, "24h")
+	if rep.Totals.Input != 1300 || rep.Totals.Output != 50 {
+		t.Fatalf("totals = %+v, want the response and the compaction once each", rep.Totals)
+	}
+	want := Price("claude-opus-5", Counts{Input: 1300, Output: 50}).CostUSD
+	if !near(rep.Totals.Cost, want) {
+		t.Fatalf("cost = %v, want the compaction priced as the session's model (%v)", rep.Totals.Cost, want)
+	}
+}
+
+func TestScannerFollowsASymlinkedRoot(t *testing.T) {
+	target := t.TempDir()
+	write(t, filepath.Join(target, "p", "s.jsonl"), jsonl(t, claudeLine(time.Hour, "m", "r", "claude-opus-5", 9, 0, 0, 0, 0)))
+	link := filepath.Join(t.TempDir(), "projects")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// Reached both through the link and directly, it is still one directory.
+	rep := report(t, NewScanner(), []Source{{Provider: "claude", Root: link}, {Provider: "claude", Root: target}}, "24h")
+	if rep.Totals.Input != 9 {
+		t.Fatalf("input = %d, want 9", rep.Totals.Input)
 	}
 }
 

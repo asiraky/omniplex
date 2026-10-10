@@ -1561,10 +1561,9 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	remarshal(msg, &r)
 
 	// The result's usage is the main conversation's spend this turn, summed
-	// over its requests. It leaves out subagents and the CLI's side calls, so
-	// it is not the account's spend — the Usage page reads that from the
-	// transcripts. It is also wrong for
-	// occupancy — summing prompts that each already contain the whole
+	// over its requests. It leaves out subagents, so it is not the account's
+	// spend — the Usage page reads that from the transcripts. It is also
+	// wrong for occupancy — summing prompts that each already contain the whole
 	// conversation overcounts by roughly O(N²) in tool calls. Occupancy comes
 	// from the harness's context_usage report (handleContextUsage); until that
 	// arrives — or on a CLI too old to send it — we fall back to the size of

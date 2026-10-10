@@ -70,17 +70,24 @@ func (s *Scanner) Records(ctx context.Context, sources []Source, from time.Time)
 	}
 	var jobs []job
 	present := map[string]bool{}
-	seenRoot := map[string]bool{}
+	seen := map[Source]bool{}
 	for _, src := range sources {
 		if newParser(src.Provider) == nil {
 			continue
 		}
-		root := filepath.Clean(src.Root)
-		if seenRoot[src.Provider+"\x00"+root] {
+		// A transcript directory moved to another disk and symlinked back
+		// is still the harness's directory; WalkDir would not enter it.
+		root, err := filepath.EvalSymlinks(src.Root)
+		if err != nil {
+			continue // not created yet: this account has no transcripts
+		}
+		// Resolved, so two accounts reaching one directory by different
+		// paths read it once.
+		if seen[Source{src.Provider, root}] {
 			continue
 		}
-		seenRoot[src.Provider+"\x00"+root] = true
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		seen[Source{src.Provider, root}] = true
+		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				// An unreadable subtree is skipped, not fatal: one bad
 				// directory must not blank the whole page.
@@ -430,55 +437,95 @@ func (p *codexParser) parse(line []byte) (Record, bool) {
 
 // ---- Pi: <agent>/sessions/**/*.jsonl ----
 
-// piParser reads Pi session entries. Pi prices each response itself, per
-// provider, so its own cost is used rather than the catalogue.
-type piParser struct{}
+// piParser reads Pi session entries. Pi bills model calls in three places:
+// assistant messages, and the summaries it writes when compacting a session
+// or leaving a branch. Pi prices each call itself, per provider, so its own
+// cost is used rather than the catalogue whenever it has one.
+type piParser struct {
+	// model is the session's current model. Summary entries do not name the
+	// model that wrote them; it is the one the session was running.
+	model string
+}
 
-var piUsage = []byte(`"usage"`)
+var (
+	piUsage       = []byte(`"usage"`)
+	piModelChange = []byte(`"model_change"`)
+)
 
-func (*piParser) parse(line []byte) (Record, bool) {
-	if !bytes.Contains(line, piUsage) {
+type piUsageFields struct {
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	CacheRead  int64 `json:"cacheRead"`
+	CacheWrite int64 `json:"cacheWrite"`
+	Cost       struct {
+		Total float64 `json:"total"`
+	} `json:"cost"`
+}
+
+func (p *piParser) parse(line []byte) (Record, bool) {
+	if !bytes.Contains(line, piUsage) && !bytes.Contains(line, piModelChange) {
 		return Record{}, false
 	}
 	var l struct {
-		Type      string `json:"type"`
-		Timestamp string `json:"timestamp"`
+		Type      string         `json:"type"`
+		ID        string         `json:"id"`
+		Timestamp string         `json:"timestamp"`
+		ModelID   string         `json:"modelId"`
+		Usage     *piUsageFields `json:"usage"`
 		Message   struct {
-			Role       string `json:"role"`
-			Model      string `json:"model"`
-			ResponseID string `json:"responseId"`
-			Usage      *struct {
-				Input      int64 `json:"input"`
-				Output     int64 `json:"output"`
-				CacheRead  int64 `json:"cacheRead"`
-				CacheWrite int64 `json:"cacheWrite"`
-				Cost       struct {
-					Total float64 `json:"total"`
-				} `json:"cost"`
-			} `json:"usage"`
+			Role       string         `json:"role"`
+			Model      string         `json:"model"`
+			ResponseID string         `json:"responseId"`
+			Usage      *piUsageFields `json:"usage"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(line, &l) != nil || l.Type != "message" || l.Message.Role != "assistant" || l.Message.Usage == nil {
+	if json.Unmarshal(line, &l) != nil {
+		return Record{}, false
+	}
+	var u *piUsageFields
+	switch l.Type {
+	case "model_change":
+		if l.ModelID != "" {
+			p.model = l.ModelID
+		}
+		return Record{}, false
+	case "message":
+		if l.Message.Role != "assistant" {
+			return Record{}, false
+		}
+		if l.Message.Model != "" {
+			p.model = l.Message.Model
+		}
+		u = l.Message.Usage
+	case "compaction", "branch_summary":
+		u = l.Usage
+	}
+	if u == nil {
 		return Record{}, false
 	}
 	ts, ok := parseTime(l.Timestamp)
 	if !ok {
 		return Record{}, false
 	}
-	u := l.Message.Usage
 	rec := Record{
 		Timestamp: ts,
 		Provider:  "pi",
-		Model:     l.Message.Model,
+		Model:     p.model,
 		Counts:    Counts{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite},
-		// A zero cost on a response that used tokens is Pi not knowing the
-		// price, not the response being free: the catalogue gets a turn.
+		// A zero cost on a call that used tokens is Pi not knowing the price,
+		// not the call being free: the catalogue gets a turn.
 		Cost:    u.Cost.Total,
 		HasCost: u.Cost.Total > 0,
 	}
-	// A forked Pi session copies its parent's entries into a new file.
-	if l.Message.ResponseID != "" {
+	// A forked Pi session copies its parent's entries into a new file, ids
+	// and timestamps intact. The response id is the strongest key; not every
+	// provider sets one, and the entry id alone is too short to be unique
+	// across every session on the machine.
+	switch {
+	case l.Type == "message" && l.Message.ResponseID != "":
 		rec.Key = "pi:" + l.Message.ResponseID
+	case l.ID != "":
+		rec.Key = "pi:" + l.ID + ":" + l.Timestamp
 	}
 	return rec, rec.Counts != (Counts{})
 }

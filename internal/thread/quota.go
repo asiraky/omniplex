@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -318,16 +319,25 @@ func (m *Manager) WarmUsage(ctx context.Context) {
 // usageSources lists each configured account's transcript directories. Two
 // instances sharing a config home share a source; the scanner reads it once.
 func (m *Manager) usageSources() []usage.Source {
-	home, _ := os.UserHomeDir()
+	serverHome, _ := os.UserHomeDir()
 	var out []usage.Source
 	for _, reg := range m.orderedInstances() {
-		// Only plain values can move a config home; secrets never do, and a
-		// missing one must not hide the account's usage.
-		env := map[string]string{}
-		for _, v := range reg.inst.Env {
-			if v.Name != "" && !v.Sensitive {
-				env[v.Name] = v.Value
+		// The same overlay the harness is spawned with, so its directories
+		// resolve where the harness writes. Only directory paths are read
+		// from it. A secret that cannot be read must not hide the account's
+		// usage: the plain values still place its directories.
+		env, err := m.envFor(reg.inst)
+		if err != nil {
+			env = map[string]string{}
+			for _, v := range reg.inst.Env {
+				if v.Name != "" && !v.Sensitive {
+					env[v.Name] = v.Value
+				}
 			}
+		}
+		home := serverHome
+		if h := strings.TrimSpace(env["HOME"]); filepath.IsAbs(h) {
+			home = h
 		}
 		roots := skills.DefaultRoots(home, env, "")
 		switch reg.inst.Driver {
