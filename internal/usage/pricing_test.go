@@ -59,6 +59,17 @@ func TestLookupNormalisation(t *testing.T) {
 	}
 }
 
+func TestDatedReleasePricesAsItsUndatedModel(t *testing.T) {
+	c := Counts{Input: 1_000_000, Output: 1_000_000}
+	for _, model := range []string{"claude-haiku-4-5", "gpt-5.2-codex"} {
+		for _, dated := range []string{model + "-20251001", model + "-2025-10-01"} {
+			if got, want := Price(dated, c), Price(model, c); got != want {
+				t.Errorf("Price(%q) = %+v, want %+v as %q", dated, got, want, model)
+			}
+		}
+	}
+}
+
 func TestPriceUnknownModelAllUnpriced(t *testing.T) {
 	p := Price("claude-opus-9", Counts{Input: 100, Output: 200, CacheRead: 300, CacheWrite: 400})
 	if p.CostUSD != 0 {

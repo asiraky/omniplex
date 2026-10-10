@@ -1560,9 +1560,10 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	}
 	remarshal(msg, &r)
 
-	// The result's usage is a cost-accounting total summed over every request
-	// in the turn, so it is right for cost and token accounting but wrong for
-	// occupancy — summing prompts that each already contain the whole
+	// The result's usage is the main conversation's spend this turn, summed
+	// over its requests. It leaves out subagents, so it is not the account's
+	// spend — the Usage page reads that from the transcripts. It is also
+	// wrong for occupancy — summing prompts that each already contain the whole
 	// conversation overcounts by roughly O(N²) in tool calls. Occupancy comes
 	// from the harness's context_usage report (handleContextUsage); until that
 	// arrives — or on a CLI too old to send it — we fall back to the size of
@@ -1592,7 +1593,6 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		s.usage.ContextPct = 0
 	}
 	out := s.usage
-	out.Accounting = true
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.UsageUpdated, out))

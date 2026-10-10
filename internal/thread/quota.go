@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/usage"
 )
 
@@ -283,21 +287,72 @@ func (m *Manager) readQuotaFromLive(ctx context.Context, reg registered) (adapte
 	return adapter.QuotaSnapshot{}, ErrNoLiveQuota
 }
 
-// UsageReport aggregates the durable event log into an account-level usage
-// report for one range. All of the work — the query, the per-harness
-// accounting semantics, the pricing — happens server-side; what travels is
-// the bucketed result.
+// UsageReport builds the account-level usage report from the transcripts
+// every configured account's harness writes. Like T3 Code, it reads those
+// rather than omniplex's own event log: a turn's result reports only the
+// main conversation, so the log never saw subagent spend, and deleting a
+// thread deleted its history with it.
 func (m *Manager) UsageReport(ctx context.Context, rng string) (usage.Report, error) {
 	spec, err := usage.RangeFor(rng)
 	if err != nil {
 		return usage.Report{}, err
 	}
 	now := time.Now()
-	rows, err := m.store.UsageEvents(ctx, now.Add(-spec.Window).UnixMilli())
+	records, err := m.usageScan.Records(ctx, m.usageSources(), now.Add(-spec.Window))
 	if err != nil {
 		return usage.Report{}, err
 	}
-	return usage.Aggregate(rows, spec, now), nil
+	return usage.Build(records, spec, now), nil
+}
+
+// WarmUsage parses every transcript the widest range can reach, so the first
+// Usage page a phone opens reads a warm cache rather than gigabytes of JSONL.
+func (m *Manager) WarmUsage(ctx context.Context) {
+	start := time.Now()
+	if _, err := m.usageScan.Records(ctx, m.usageSources(), start.Add(-usage.MaxWindow)); err != nil {
+		m.logf("usage: warm transcript cache: %v", err)
+		return
+	}
+	m.logf("usage: transcript cache warm in %s", time.Since(start).Round(time.Millisecond))
+}
+
+// usageSources lists each configured account's transcript directories. Two
+// instances sharing a config home share a source; the scanner reads it once.
+func (m *Manager) usageSources() []usage.Source {
+	serverHome, _ := os.UserHomeDir()
+	var out []usage.Source
+	for _, reg := range m.orderedInstances() {
+		// The same overlay the harness is spawned with, so its directories
+		// resolve where the harness writes. Only directory paths are read
+		// from it. A secret that cannot be read must not hide the account's
+		// usage: the plain values still place its directories.
+		env, err := m.envFor(reg.inst)
+		if err != nil {
+			env = map[string]string{}
+			for _, v := range reg.inst.Env {
+				if v.Name != "" && !v.Sensitive {
+					env[v.Name] = v.Value
+				}
+			}
+		}
+		// The adapters' rule for an account's home: any non-blank HOME.
+		home := serverHome
+		if h := env["HOME"]; strings.TrimSpace(h) != "" {
+			home = h
+		}
+		roots := skills.DefaultRoots(home, env, "")
+		switch reg.inst.Driver {
+		case "claude":
+			out = append(out, usage.Source{Provider: "claude", Root: filepath.Join(roots.ClaudeConfigDir, "projects")})
+		case "codex":
+			out = append(out,
+				usage.Source{Provider: "codex", Root: filepath.Join(roots.CodexHome, "sessions")},
+				usage.Source{Provider: "codex", Root: filepath.Join(roots.CodexHome, "archived_sessions")})
+		case "pi":
+			out = append(out, usage.Source{Provider: "pi", Root: filepath.Join(roots.PiAgentDir, "sessions")})
+		}
+	}
+	return out
 }
 
 // ---- quota change notifications ----

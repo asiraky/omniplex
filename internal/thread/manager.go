@@ -20,6 +20,7 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/usage"
 )
 
 // registered pairs a provider instance with the adapter that serves its
@@ -127,6 +128,10 @@ type Manager struct {
 	quotaMu         sync.Mutex
 	quotas          map[string]*QuotaStatus
 	quotaSub        map[string]chan struct{}
+
+	// usageScan reads the account-level Usage page out of the harnesses'
+	// transcripts, keeping what it parsed between reports.
+	usageScan *usage.Scanner
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -172,6 +177,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		quotaGeneration: map[string]uint64{},
 		quotaSub:        map[string]chan struct{}{},
 		authFlows:       map[string]*authFlow{},
+		usageScan:       usage.NewScanner(),
 	}
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad

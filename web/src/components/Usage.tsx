@@ -219,6 +219,10 @@ function HistoryView({ report, metric }: { report: UsageReport; metric: "cost" |
             are not charged this amount.
           </p>
         )}
+        <p className="text-muted-foreground/80 mt-0.5 text-[11px] leading-relaxed">
+          Read from every account's Claude, Codex and Pi transcripts on this machine, subagents and
+          sessions run outside Omniplex included.
+        </p>
         {unpriced && (
           <p className="mt-2 flex items-start gap-1.5 rounded-md border border-attention/40 bg-attention-surface/60 px-2 py-1.5 text-[11px] leading-relaxed text-attention-foreground">
             <InfoIcon aria-hidden className="mt-0.5 size-3 shrink-0" />

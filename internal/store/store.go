@@ -16,7 +16,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/asiraky/omniplex/internal/proto"
-	"github.com/asiraky/omniplex/internal/usage"
 )
 
 const schema = `
@@ -43,13 +42,6 @@ CREATE TABLE IF NOT EXISTS events (
   payload       BLOB NOT NULL,
   created_at    INTEGER NOT NULL,
   PRIMARY KEY (thread_id, seq)
-);
-
-CREATE TABLE IF NOT EXISTS usage_pricing (
- thread_id TEXT NOT NULL,
- seq INTEGER NOT NULL,
- pricing BLOB NOT NULL,
- PRIMARY KEY(thread_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -228,13 +220,15 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("move projects to folders: %w", err)
 	}
+	// Usage is read from the harnesses' own transcripts now; the prices the
+	// event-log aggregation froze per event have no reader.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS usage_pricing`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 	s := &Store{db: db}
 	if err := s.initAuth(); err != nil {
 		return nil, fmt.Errorf("apply auth schema: %w", err)
-	}
-	if err := s.backfillUsagePricing(); err != nil {
-		db.Close()
-		return nil, err
 	}
 	return s, nil
 }
@@ -289,7 +283,6 @@ func renameSessionsToThreads(db *sql.DB, path string) error {
 	for _, stmt := range []string{
 		`ALTER TABLE sessions RENAME TO threads`,
 		`ALTER TABLE events RENAME COLUMN session_id TO thread_id`,
-		`ALTER TABLE usage_pricing RENAME COLUMN session_id TO thread_id`,
 		`ALTER TABLE snapshots RENAME COLUMN session_id TO thread_id`,
 		`ALTER TABLE commands RENAME COLUMN session_id TO thread_id`,
 		`ALTER TABLE scheduled_prompts RENAME COLUMN session_id TO thread_id`,
@@ -377,11 +370,6 @@ func (s *Store) Append(ctx context.Context, threadID string, em proto.Emission) 
 		`UPDATE threads SET head_seq = ?, updated_at = ? WHERE id = ?`, seq, ts, threadID); err != nil {
 		return proto.Event{}, err
 	}
-	if em.Type == proto.UsageUpdated {
-		if err := recordUsagePricing(ctx, tx, threadID, seq); err != nil {
-			return proto.Event{}, err
-		}
-	}
 	if err := updateScheduleIndex(ctx, tx, threadID, em, payload); err != nil {
 		return proto.Event{}, err
 	}
@@ -461,47 +449,6 @@ func (s *Store) ReadEvents(ctx context.Context, threadID string, afterSeq int64,
 	return out, rows.Err()
 }
 
-// UsageEvents feeds the account-level usage aggregation: every
-// usage.updated, thread.created, and thread.config_changed event of each
-// thread that used tokens in the window, ordered for a per-thread walk.
-// Only the latest pre-window usage and model events travel alongside the
-// selected window: enough to establish cumulative baselines and attribution
-// without loading the full lifetime history of a long-running thread.
-func (s *Store) UsageEvents(ctx context.Context, from int64) ([]usage.EventRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT e.thread_id, s.harness, e.type, e.payload, e.created_at, p.pricing
-		 FROM events e JOIN threads s ON s.id = e.thread_id
- LEFT JOIN usage_pricing p ON p.thread_id=e.thread_id AND p.seq=e.seq
-		 WHERE e.thread_id IN (SELECT DISTINCT thread_id FROM events WHERE type = 'usage.updated' AND created_at >= ?)
-		   AND e.type IN ('usage.updated', 'thread.created', 'thread.config_changed')
- AND (e.created_at >= ? OR e.seq = (
- SELECT MAX(b.seq) FROM events b WHERE b.thread_id=e.thread_id AND b.type=e.type AND b.created_at < ?
- AND (b.type='usage.updated' OR COALESCE(json_extract(b.payload, '$.model'), '') <> '')
- ))
- ORDER BY e.thread_id, e.seq`, from, from, from)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []usage.EventRow{}
-	for rows.Next() {
-		var r usage.EventRow
-		var payload, pricing []byte
-		if err := rows.Scan(&r.ThreadID, &r.Harness, &r.Type, &payload, &r.Timestamp, &pricing); err != nil {
-			return nil, err
-		}
-		r.Payload = json.RawMessage(payload)
-		if len(pricing) > 0 {
-			if err := json.Unmarshal(pricing, &r.Pricing); err != nil {
-				return nil, err
-			}
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	var m ThreadMeta
 	var provisionResult []byte
@@ -560,7 +507,6 @@ func (s *Store) DeleteThread(ctx context.Context, id string) error {
 	for _, q := range []string{
 		`DELETE FROM scheduled_prompts WHERE thread_id = ?`,
 		`DELETE FROM events WHERE thread_id = ?`,
-		`DELETE FROM usage_pricing WHERE thread_id = ?`,
 		`DELETE FROM snapshots WHERE thread_id = ?`,
 		`DELETE FROM commands WHERE thread_id = ?`,
 		`DELETE FROM threads WHERE id = ?`,

@@ -1,12 +1,12 @@
 ---
 name: dev
-description: Starts this worktree's Omniplex dev server and hands the user a link that opens on their phone. Use when asked to run the app, share a link, pair a device, or check a change in a real browser.
+description: Use when the user asks to start, restart or stop the dev server, or for a link to the app, or when you need a dev server running for end-to-end testing.
 ---
 
 # Dev server
 
-The user is usually on their phone, somewhere else on the tailnet. The job is
-done when they have a link that opens there with one tap.
+The user is on another device on the tailnet, a desktop or a phone, never this
+machine. The job is done when they have a link they can click to open the app.
 
 ## 1. Start it
 
@@ -32,7 +32,7 @@ A URL inside a code fence, backticks or `[label](url)` reaches the user as dead
 text. Hand over the tailnet address the script prints: `127.0.0.1` is not
 their machine, and `10.x`/`172.x` is unencrypted.
 
-- **pair** carries the code in the URL fragment, so one tap pairs the device.
+- **pair** carries the code in the URL fragment, so one click pairs the device.
   Pairing is per origin, port included: a device paired with production or
   another worktree still pairs here, once. The token survives restarts in
   `.omniplex/dev.db`.
