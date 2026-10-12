@@ -11,11 +11,12 @@ import {
   bucketStarts,
   formatAge,
   formatCountdown,
+  describePace,
   formatCost,
-  formatPace,
   formatTokens,
   hasUnpriced,
   providerColor,
+  isQuotaStale,
   QUOTA_STALE_MS,
   quotaPace,
   RANGES,
@@ -527,7 +528,7 @@ function ProviderLimits({
   // date. With nothing observed yet the empty state below carries the
   // failure instead — and lastError is absent (not "") when the server has
   // nothing to report, so a truthiness check, not a comparison.
-  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= QUOTA_STALE_MS || snap.windows?.some((w) => (w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS) || (!!w.resetsAt && w.resetsAt <= now)));
+  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= QUOTA_STALE_MS || snap.windows?.some((w) => isQuotaStale(w, now)));
 
   return (
     <section aria-label={`${status.displayName} usage limits`} className="rounded-xl border p-3">
@@ -612,19 +613,20 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
     );
   }
 
-  const stale = (w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS) || (w.resetsAt && w.resetsAt <= now);
-  const hasReading = w.usedPercent !== undefined;
-  const pct = clampPercent(w.usedPercent);
+  const stale = isQuotaStale(w, now);
+  // The text says what the provider reported, past 100 included; only the
+  // bar is clamped.
+  const used = w.usedPercent;
 
   return (
     <li>
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-[12px] font-medium">{w.label}</p>
         <p className="text-[12px] tabular-nums">
-          {hasReading ? (
+          {used !== undefined ? (
             <>
-              <span className="font-medium">{pct.toFixed(0)}% used</span>
-              <span className="text-muted-foreground"> · {(100 - pct).toFixed(0)}% left</span>
+              <span className="font-medium">{used.toFixed(0)}% used</span>
+              <span className="text-muted-foreground"> · {Math.max(0, 100 - used).toFixed(0)}% left</span>
             </>
           ) : (
             <span className="text-muted-foreground">No reading yet</span>
@@ -642,20 +644,6 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
     </li>
   );
 }
-function clampPercent(used: number | undefined): number {
-  return Math.max(0, Math.min(100, used ?? 0));
-}
-
-/** "3:40 pm" today, "Thu 3:40 pm" on another day — when a weekly limit runs
- *  out, the day matters as much as the hour. */
-function formatClock(at: number, now: number): string {
-  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
-  return new Date(at).toLocaleString([], {
-    weekday: sameDay ? undefined : "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
 /**
  * A window's usage bar, with a marker at how much of the window has passed:
@@ -665,7 +653,7 @@ function formatClock(at: number, now: number): string {
 function QuotaBar({ window: w, now }: { window: QuotaWindow; now: number }) {
   const { open, setOpen, trigger, content } = useHoverPopover();
   const hasReading = w.usedPercent !== undefined;
-  const pct = clampPercent(w.usedPercent);
+  const pct = Math.max(0, Math.min(100, w.usedPercent ?? 0));
   const pace = quotaPace(w, now);
 
   const bar = (
@@ -682,22 +670,7 @@ function QuotaBar({ window: w, now }: { window: QuotaWindow; now: number }) {
   );
   if (!pace) return <div className="mt-1.5">{bar}</div>;
 
-  const p = pace.projection;
-  const summary = pace.stale
-    ? "Stale reading — refresh to see pace"
-    : pace.ahead === undefined
-      ? "No reading to compare yet"
-      : formatPace(pace.ahead);
-  const detail =
-    p?.kind === "reached"
-      ? "The limit is reached until it resets."
-      : p?.kind === "hits"
-        ? `At this rate you'll hit the limit at ${formatClock(p.at, now)} (${formatCountdown(w.resetsAt!, p.at)} before reset).`
-        : p?.kind === "finishes"
-          ? `On track to finish at ~${Math.round(p.percent)}%.`
-          : pace.ahead !== undefined
-            ? "Too early in the window to project."
-            : undefined;
+  const { summary, detail } = describePace(pace, now);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

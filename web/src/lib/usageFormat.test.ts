@@ -4,10 +4,11 @@ import {
   bucketStarts,
   formatAge,
   formatCountdown,
-  formatPace,
+  describePace,
   formatCost,
   formatTokens,
   providerColor,
+  isQuotaStale,
   quotaPace,
 } from "./usageFormat";
 import type { QuotaWindow } from "~/protocol";
@@ -117,7 +118,7 @@ describe("quotaPace", () => {
     const pace = quotaPace(session(150, 60), now)!;
     expect(pace.elapsed).toBeCloseTo(0.5);
     expect(pace.ahead).toBeCloseTo(10);
-    expect(pace.projection).toEqual({ kind: "hits", at: now + 100 * MIN });
+    expect(pace.projection).toEqual({ kind: "hits", at: now + 100 * MIN, resetsAt: now + 150 * MIN });
   });
 
   it("is under pace with headroom, and projects where usage finishes", () => {
@@ -164,10 +165,47 @@ describe("quotaPace", () => {
   });
 });
 
-describe("formatPace", () => {
+describe("describePace", () => {
+  const now = 1_000_000_000_000;
+  const MIN = 60_000;
+
   it("says which side of pace, rounded to whole points", () => {
-    expect(formatPace(15.2)).toBe("Tracking 15% ahead of pace");
-    expect(formatPace(-12)).toBe("12% under pace");
-    expect(formatPace(0.3)).toBe("On pace");
+    expect(describePace({ elapsed: 0.5, stale: false, ahead: 15.2 }, now).summary).toBe("Tracking 15% ahead of pace");
+    expect(describePace({ elapsed: 0.5, stale: false, ahead: -12 }, now).summary).toBe("12% under pace");
+    expect(describePace({ elapsed: 0.5, stale: false, ahead: 0.3 }, now).summary).toBe("On pace");
+  });
+
+  it("gives the time the limit hits and how long before the reset", () => {
+    const { detail } = describePace(
+      { elapsed: 0.5, stale: false, ahead: 10, projection: { kind: "hits", at: now + 100 * MIN, resetsAt: now + 180 * MIN } },
+      now,
+    );
+    expect(detail).toMatch(/^At this rate you'll hit the limit at .+ \(1h 20m before reset\)\.$/);
+  });
+
+  it("gives where usage finishes when it does not reach the limit", () => {
+    const { detail } = describePace({ elapsed: 0.5, stale: false, ahead: -15, projection: { kind: "finishes", percent: 69.6 } }, now);
+    expect(detail).toBe("On track to finish at ~70%.");
+  });
+
+  it("holds back the projection early in the window", () => {
+    expect(describePace({ elapsed: 0.02, stale: false, ahead: 18 }, now).detail).toBe("Too early in the window to project.");
+  });
+
+  it("neither compares nor projects without a fresh reading", () => {
+    expect(describePace({ elapsed: 0.5, stale: true }, now)).toEqual({ summary: "Stale reading — refresh to see pace" });
+    expect(describePace({ elapsed: 0.5, stale: false }, now)).toEqual({ summary: "No reading to compare yet" });
+  });
+});
+
+describe("isQuotaStale", () => {
+  const now = 1_000_000_000_000;
+  const MIN = 60_000;
+  const w = (over: Partial<QuotaWindow>): QuotaWindow => ({ id: "w", kind: "weekly", label: "Weekly", ...over });
+
+  it("is stale when read long ago or reset since", () => {
+    expect(isQuotaStale(w({ checkedAt: now - MIN, resetsAt: now + MIN }), now)).toBe(false);
+    expect(isQuotaStale(w({ checkedAt: now - 20 * MIN, resetsAt: now + MIN }), now)).toBe(true);
+    expect(isQuotaStale(w({ checkedAt: now - MIN, resetsAt: now - MIN }), now)).toBe(true);
   });
 });

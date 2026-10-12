@@ -77,6 +77,17 @@ export function formatCountdown(ms: number, now: number): string {
 /** A quota reading older than this is stale: flagged, and never projected from. */
 export const QUOTA_STALE_MS = 15 * 60_000;
 
+/** Whether a window's reading is too old to trust: observed long ago. */
+function isReadingOld(w: QuotaWindow, now: number): boolean {
+  return !!w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS;
+}
+
+/** Whether a window's figures may be out of date: an old reading, or a
+ *  window that has reset since it was read. */
+export function isQuotaStale(w: QuotaWindow, now: number): boolean {
+  return isReadingOld(w, now) || (!!w.resetsAt && w.resetsAt <= now);
+}
+
 /** Below this fraction of a window elapsed, a burn-rate projection is noise. */
 const EARLY_ELAPSED = 0.05;
 
@@ -84,8 +95,8 @@ const EARLY_ELAPSED = 0.05;
 export type QuotaProjection =
   /** The limit is already reached. */
   | { kind: "reached" }
-  /** The limit is hit before the reset, at epoch ms `at`. */
-  | { kind: "hits"; at: number }
+  /** The limit is hit at epoch ms `at`, before the reset at `resetsAt`. */
+  | { kind: "hits"; at: number; resetsAt: number }
   /** The window resets first, with about `percent` used. */
   | { kind: "finishes"; percent: number };
 
@@ -111,7 +122,7 @@ export function quotaPace(w: QuotaWindow, now: number): QuotaPace | undefined {
   if (w.kind === "credits" || !w.resetsAt || !w.windowDurationMins || w.resetsAt <= now) return undefined;
   const durationMs = w.windowDurationMins * 60_000;
   const elapsed = Math.max(0, Math.min(1, 1 - (w.resetsAt - now) / durationMs));
-  const stale = !!w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS;
+  const stale = isReadingOld(w, now);
   const used = w.usedPercent;
   if (stale || used === undefined) return { elapsed, stale };
 
@@ -122,7 +133,7 @@ export function quotaPace(w: QuotaWindow, now: number): QuotaPace | undefined {
     const finish = used / elapsed;
     if (finish > 100) {
       const elapsedMs = elapsed * durationMs;
-      pace.projection = { kind: "hits", at: now + ((100 - used) / used) * elapsedMs };
+      pace.projection = { kind: "hits", at: now + ((100 - used) / used) * elapsedMs, resetsAt: w.resetsAt };
     } else {
       pace.projection = { kind: "finishes", percent: finish };
     }
@@ -131,10 +142,42 @@ export function quotaPace(w: QuotaWindow, now: number): QuotaPace | undefined {
 }
 
 /** "Tracking 15% ahead of pace", "12% under pace", "On pace". */
-export function formatPace(ahead: number): string {
+function formatPace(ahead: number): string {
   const points = Math.round(Math.abs(ahead));
   if (points === 0) return "On pace";
   return ahead > 0 ? `Tracking ${points}% ahead of pace` : `${points}% under pace`;
+}
+
+/** "3:40 pm" today, "Thu 3:40 pm" on another day — when a weekly limit runs
+ *  out, the day matters as much as the hour. */
+export function formatClock(at: number, now: number): string {
+  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
+  return new Date(at).toLocaleString([], {
+    weekday: sameDay ? undefined : "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** The pace popover's two lines: which side of pace, and where it leads. */
+export function describePace(pace: QuotaPace, now: number): { summary: string; detail?: string } {
+  if (pace.stale) return { summary: "Stale reading — refresh to see pace" };
+  if (pace.ahead === undefined) return { summary: "No reading to compare yet" };
+  const summary = formatPace(pace.ahead);
+  const projection = pace.projection;
+  switch (projection?.kind) {
+    case "reached":
+      return { summary, detail: "The limit is reached until it resets." };
+    case "hits":
+      return {
+        summary,
+        detail: `At this rate you'll hit the limit at ${formatClock(projection.at, now)} (${formatCountdown(projection.resetsAt, projection.at)} before reset).`,
+      };
+    case "finishes":
+      return { summary, detail: `On track to finish at ~${Math.round(projection.percent)}%.` };
+    default:
+      return { summary, detail: "Too early in the window to project." };
+  }
 }
 
 /** "5m ago", "2h ago" — how long since a quota was observed. */

@@ -46,7 +46,7 @@ describe("useHoverPopover", () => {
     expect(screen.getByText("detail")).toBeTruthy();
   });
 
-  it("toggles from the keyboard", () => {
+  it("toggles on a click no hover opened first, as Enter or Space sends", () => {
     render(<Hint />);
     fireEvent.click(button());
     expect(screen.getByText("detail")).toBeTruthy();

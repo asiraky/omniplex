@@ -152,6 +152,21 @@ describe("UsagePage limits view", () => {
     expect(screen.getByText(/hit the limit at .* \(50m before reset\)/)).toBeTruthy();
   });
 
+  it("reports a reading past the limit as it is, not clamped to 100", async () => {
+    renderPage({
+      quotas: [
+        quotaStatus({
+          snapshot: { checkedAt: Date.now(), windows: [{ id: "w", kind: "weekly", label: "Weekly", usedPercent: 120 }] },
+        }),
+      ],
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Limits" }));
+
+    expect(await screen.findByText("120% used")).toBeTruthy();
+    expect(screen.getByText(/0% left/)).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("100");
+  });
+
   it("renders no stale banner for a provider that was never observed", async () => {
     // The server omits lastError when there is nothing to report; an absent
     // error must not read as a failure, and epoch-zero must never render as
