@@ -1,6 +1,6 @@
 import type { Element, Text } from "hast";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { memo, type ReactNode } from "react";
+import { lazy, memo, Suspense, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -10,7 +10,7 @@ import { fileIconFor } from "~/lib/fileIcons";
 import { useOpenPath } from "~/lib/openPath";
 import { detectPath } from "~/lib/paths";
 import { cn } from "~/lib/utils";
-import { MermaidDiagram } from "./MermaidDiagram";
+const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
 
 // Text arrives a character at a time, so at any moment the parser is being
 // handed a document that is very likely mid-sentence. Most half-written
@@ -74,11 +74,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
-  if (lang.toLowerCase() === "mermaid") {
-    return <MermaidDiagram code={code} copyButton={<CopyButton text={code} />} />;
-  }
-
-  return (
+  const source = (
     <div className="bg-muted/60 my-2 overflow-hidden rounded-lg border">
       <div className="text-muted-foreground flex items-center gap-2 border-b px-2.5 py-1">
         <span className="min-w-0 flex-1 truncate font-mono text-[10px]">{lang || "text"}</span>
@@ -89,6 +85,11 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
       </pre>
     </div>
   );
+  return lang.toLowerCase() === "mermaid" ? (
+    <Suspense fallback={source}>
+      <MermaidDiagram code={code} copyButton={<CopyButton text={code} />} />
+    </Suspense>
+  ) : source;
 }
 
 /**
