@@ -1,5 +1,12 @@
 import { MaximizeIcon } from "lucide-react";
-import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { ThemeContext } from "~/lib/theme";
 import { MermaidViewer } from "./MermaidViewer";
@@ -14,47 +21,56 @@ export function MermaidDiagram({
   const theme = useContext(ThemeContext)?.resolved ?? "light";
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const expandButton = useRef<HTMLButtonElement>(null);
-  const active = useRef(false);
-  const native = useRef(false);
-  const entered = useRef(false);
+  const viewerOpen = useRef(false);
+  const ownsFullscreen = useRef(false);
+  const enteredFullscreen = useRef(false);
+  const requestGeneration = useRef(0);
+  const pendingExit = useRef<Promise<void> | null>(null);
+
+  const leaveFullscreen = useCallback(() => {
+    if (!ownsFullscreen.current) return;
+    ownsFullscreen.current = false;
+    if (
+      pendingExit.current ||
+      document.fullscreenElement !== document.documentElement
+    )
+      return;
+    const exit = document.exitFullscreen().catch(() => {});
+    pendingExit.current = exit;
+    void exit.then(() => {
+      if (pendingExit.current === exit) pendingExit.current = null;
+    });
+  }, []);
 
   function close() {
-    active.current = false;
+    requestGeneration.current++;
+    viewerOpen.current = false;
     setExpandedImage(null);
-    if (
-      native.current &&
-      document.fullscreenElement === document.documentElement
-    ) {
-      void document.exitFullscreen().catch(() => {});
-    }
-    native.current = false;
-    entered.current = false;
+    leaveFullscreen();
+    enteredFullscreen.current = false;
   }
 
   useEffect(() => {
     const changed = () => {
-      if (!native.current) return;
+      if (!ownsFullscreen.current) return;
       if (document.fullscreenElement === document.documentElement)
-        entered.current = true;
-      else if (entered.current) {
-        active.current = false;
-        native.current = false;
-        entered.current = false;
+        enteredFullscreen.current = true;
+      else if (enteredFullscreen.current) {
+        requestGeneration.current++;
+        viewerOpen.current = false;
+        ownsFullscreen.current = false;
+        enteredFullscreen.current = false;
         setExpandedImage(null);
       }
     };
     document.addEventListener("fullscreenchange", changed);
     return () => {
       document.removeEventListener("fullscreenchange", changed);
-      active.current = false;
-      if (
-        native.current &&
-        document.fullscreenElement === document.documentElement
-      ) {
-        void document.exitFullscreen().catch(() => {});
-      }
+      requestGeneration.current++;
+      viewerOpen.current = false;
+      leaveFullscreen();
     };
-  }, []);
+  }, [leaveFullscreen]);
   const [result, setResult] = useState<{
     code: string;
     theme: string;
@@ -107,27 +123,42 @@ export function MermaidDiagram({
             title="Full screen"
             className="hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring flex size-11 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 md:size-6"
             onClick={() => {
-              active.current = true;
-              entered.current = false;
+              const generation = ++requestGeneration.current;
+              viewerOpen.current = true;
+              enteredFullscreen.current = false;
               setExpandedImage(current.image);
               const root = document.documentElement;
-              if (!document.fullscreenElement && root.requestFullscreen) {
-                native.current = true;
+              const request = () => {
+                if (
+                  generation !== requestGeneration.current ||
+                  !viewerOpen.current
+                )
+                  return;
+                if (document.fullscreenElement || !root.requestFullscreen)
+                  return;
+                ownsFullscreen.current = true;
                 // Request inside the click, while browser user activation is live.
                 void root
                   .requestFullscreen()
                   .then(() => {
-                    if (
-                      !active.current &&
-                      document.fullscreenElement === root
-                    ) {
-                      void document.exitFullscreen().catch(() => {});
+                    if (document.fullscreenElement === root) {
+                      ownsFullscreen.current = true;
+                      enteredFullscreen.current = true;
+                      if (!viewerOpen.current) leaveFullscreen();
                     }
                   })
                   .catch(() => {
-                    native.current = false;
+                    if (
+                      generation === requestGeneration.current &&
+                      document.fullscreenElement !== root
+                    ) {
+                      ownsFullscreen.current = false;
+                    }
                   });
-              }
+              };
+              // A rapid reopen must wait for our previous exit to complete.
+              if (pendingExit.current) void pendingExit.current.then(request);
+              else request();
             }}
           >
             <MaximizeIcon className="size-3" />

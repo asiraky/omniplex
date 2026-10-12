@@ -98,6 +98,103 @@ it("keeps the viewer usable when the browser rejects fullscreen", async () => {
   expect(screen.getByLabelText("Diagram zoom").textContent).toBe("125%");
 });
 
+it("ignores a stale fullscreen rejection after reopening and exits the newer fullscreen", async () => {
+  let rejectFirst!: (reason: Error) => void;
+  const root = document.documentElement;
+  Object.defineProperty(document, "fullscreenElement", {
+    value: null,
+    writable: true,
+    configurable: true,
+  });
+  root.requestFullscreen = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectFirst = reject;
+        }),
+    )
+    .mockImplementationOnce(async () => {
+      Object.defineProperty(document, "fullscreenElement", {
+        value: root,
+        writable: true,
+        configurable: true,
+      });
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+  const exit = vi.fn(async () => {
+    Object.defineProperty(document, "fullscreenElement", {
+      value: null,
+      writable: true,
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("fullscreenchange"));
+  });
+  document.exitFullscreen = exit;
+  render(<Markdown text={diagram("flowchart LR\nA --> B")} />);
+  await settle();
+  fireEvent.click(screen.getByLabelText("Expand diagram to full screen"));
+  fireEvent.click(screen.getByLabelText("Close full screen"));
+  await settle();
+  fireEvent.click(screen.getByLabelText("Expand diagram to full screen"));
+  await act(async () => {
+    rejectFirst(new Error("old request rejected"));
+  });
+  fireEvent.click(screen.getByLabelText("Close full screen"));
+  expect(exit).toHaveBeenCalledTimes(1);
+  expect(document.fullscreenElement).toBeNull();
+});
+
+it("waits for an in-flight fullscreen exit before reopening", async () => {
+  const root = document.documentElement;
+  Object.defineProperty(document, "fullscreenElement", {
+    value: null,
+    writable: true,
+    configurable: true,
+  });
+  const request = vi.fn(async () => {
+    Object.defineProperty(document, "fullscreenElement", {
+      value: root,
+      writable: true,
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("fullscreenchange"));
+  });
+  root.requestFullscreen = request;
+  let finishExit!: () => void;
+  document.exitFullscreen = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finishExit = () => {
+          Object.defineProperty(document, "fullscreenElement", {
+            value: null,
+            writable: true,
+            configurable: true,
+          });
+          document.dispatchEvent(new Event("fullscreenchange"));
+          resolve();
+        };
+      }),
+  );
+  const view = render(<Markdown text={diagram("flowchart LR\nA --> B")} />);
+  await settle();
+  fireEvent.click(screen.getByLabelText("Expand diagram to full screen"));
+  await settle();
+  fireEvent.click(screen.getByLabelText("Close full screen"));
+  await settle();
+  fireEvent.click(screen.getByLabelText("Expand diagram to full screen"));
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    finishExit();
+  });
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  view.unmount();
+  await act(async () => {
+    finishExit();
+  });
+});
+
 it("fits the image after the dialog portal mounts and scales the fitted size", async () => {
   let measure!: () => void;
   vi.stubGlobal(
