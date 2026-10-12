@@ -10,6 +10,7 @@ import { fileIconFor } from "~/lib/fileIcons";
 import { useOpenPath } from "~/lib/openPath";
 import { detectPath } from "~/lib/paths";
 import { cn } from "~/lib/utils";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 // Text arrives a character at a time, so at any moment the parser is being
 // handed a document that is very likely mid-sentence. Most half-written
@@ -73,6 +74,10 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
+  if (lang.toLowerCase() === "mermaid") {
+    return <MermaidDiagram code={code} copyButton={<CopyButton text={code} />} />;
+  }
+
   return (
     <div className="bg-muted/60 my-2 overflow-hidden rounded-lg border">
       <div className="text-muted-foreground flex items-center gap-2 border-b px-2.5 py-1">

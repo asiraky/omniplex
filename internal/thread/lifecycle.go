@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -185,26 +186,44 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMet
 	}
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), "OMNIPLEX_LIFECYCLE_VERSION=2", "OMNIPLEX_HOOK="+kind, "OMNIPLEX_THREAD_ID="+meta.ID, "OMNIPLEX_PROJECT_ROOT="+cwd, "OMNIPLEX_CONTEXT_FILE="+contextPath, "OMNIPLEX_RESULT_FILE="+resultPath, "OMNIPLEX_STATE_DIR="+stateDir, "OMNIPLEX_BASE_REF="+baseRef)
-	stdout, err := cmd.StdoutPipe()
+	// Own the pipes so Wait cannot close them before their buffered output is read.
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return err
 	}
-	stderr, err := cmd.StderrPipe()
+	defer stdout.Close()
+	defer stdoutWriter.Close()
+	cmd.Stdout = stdoutWriter
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
 		return err
 	}
+	defer stderr.Close()
+	defer stderrWriter.Close()
+	cmd.Stderr = stderrWriter
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// Only the hook and its children should keep the write ends open.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	var exited atomic.Bool
 	total := 0
 	truncated := false
-	stream := func(name string, scanner *bufio.Scanner) {
+	stream := func(name string, pipe *os.File) {
 		defer wg.Done()
+		scanner := bufio.NewScanner(pipe)
 		buf := make([]byte, 64*1024)
 		scanner.Buffer(buf, 256*1024)
-		for scanner.Scan() {
+		for {
+			if exited.Load() {
+				_ = pipe.SetReadDeadline(time.Now().Add(time.Second))
+			}
+			if !scanner.Scan() {
+				break
+			}
 			chunk := redactHookOutput(scanner.Text()) + "\n"
 			mu.Lock()
 			allowed := maxHookOutput - total
@@ -218,14 +237,29 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMet
 				total += allowed
 				_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{RunID: runID, Hook: kind, Stream: name, Chunk: chunk[:allowed]}))
 			}
+			done := exited.Load() && total >= maxHookOutput
 			mu.Unlock()
+			if done {
+				break
+			}
 		}
 	}
 	wg.Add(2)
-	go stream("stdout", bufio.NewScanner(stdout))
-	go stream("stderr", bufio.NewScanner(stderr))
+	go stream("stdout", stdout)
+	go stream("stderr", stderr)
 	err = cmd.Wait()
+	executionErr := ctx.Err()
+	exited.Store(true)
+	// Background children can inherit the pipes after the hook itself exits.
+	// Bound idle reads, while allowing slow persistence to drain buffered output.
+	_ = stdout.SetReadDeadline(time.Now().Add(time.Second))
+	_ = stderr.SetReadDeadline(time.Now().Add(time.Second))
+	stopDrain := context.AfterFunc(ctx, func() {
+		_ = stdout.Close()
+		_ = stderr.Close()
+	})
 	wg.Wait()
+	stopDrain()
 	if truncated {
 		_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{RunID: runID, Hook: kind, Stream: "stdout", Chunk: "\n[output truncated by omniplex]\n"}))
 	}
@@ -238,8 +272,8 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMet
 		}
 	}
 	_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookFinished, proto.WorkspaceHookFinishedPayload{RunID: runID, Hook: kind, ExitCode: exit, DurationMs: time.Since(started).Milliseconds()}))
-	if ctx.Err() != nil {
-		return fmt.Errorf("%s hook timed out: %w", kind, ctx.Err())
+	if executionErr != nil {
+		return fmt.Errorf("%s hook timed out: %w", kind, executionErr)
 	}
 	if err != nil {
 		return fmt.Errorf("%s hook exited %d", kind, exit)
