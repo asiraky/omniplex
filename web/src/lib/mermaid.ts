@@ -3,6 +3,44 @@ import type { ResolvedTheme } from "./theme";
 let nextId = 0;
 let queue: Promise<unknown> = Promise.resolve();
 
+// Inspect parsed attributes, not prose: labels can legitimately mention url()
+// or img:. Mermaid measures image nodes and actor icons before returning SVG.
+function checkResources(
+  value: unknown,
+  key = "",
+  style = false,
+  seen = new WeakSet<object>(),
+) {
+  if (typeof value === "string") {
+    if (!style) return;
+    const css = value.replace(
+      /\\([\da-f]{1,6})\s?|\\([^\n])/gi,
+      (_, hex: string, char: string) =>
+        char ?? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)),
+    );
+    if (/(?:url\s*\(|@import)/i.test(css))
+      throw new Error("External diagram styles are disabled");
+    return;
+  }
+  if (!value || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (value instanceof Map || value instanceof Set || Array.isArray(value)) {
+    for (const child of value.values()) checkResources(child, key, style, seen);
+    return;
+  }
+  for (const [name, child] of Object.entries(value)) {
+    if (
+      child &&
+      (name === "img" ||
+        name === "image" ||
+        (key === "properties" && name === "icon"))
+    ) {
+      throw new Error("External diagram images are disabled");
+    }
+    checkResources(child, name, style || /style|css/i.test(name), seen);
+  }
+}
+
 /** Mermaid has global configuration. Keep initialization and rendering together. */
 export function renderMermaid(
   code: string,
@@ -11,23 +49,7 @@ export function renderMermaid(
 ) {
   const job = queue.then(async () => {
     if (cancelled()) return null;
-    // Image nodes and CSS resources would fetch while Mermaid measures its
-    // temporary DOM, before the result is isolated in an <img>.
-    // Decode CSS/YAML escapes for the resource check as well as quoted keys.
-    const unescaped = code.replace(
-      /\\(?:u([\da-f]{4})|x([\da-f]{2})|([\da-f]{1,6})\s?|([^\n]))/gi,
-      (_, unicode: string, hex: string, css: string, char: string) =>
-        char ??
-        String.fromCodePoint(
-          Math.min(parseInt(unicode ?? hex ?? css, 16), 0x10ffff),
-        ),
-    );
-    if (
-      code.length > 50_000 ||
-      /(?:\bimg["']?\s*:|url\s*\(|@import)/i.test(unescaped)
-    ) {
-      throw new Error("Diagram contains external resources or is too large");
-    }
+    if (code.length > 50_000) throw new Error("Diagram is too large");
     const { default: mermaid } = await import("mermaid");
     if (cancelled()) return null;
     mermaid.initialize({
@@ -42,6 +64,19 @@ export function renderMermaid(
       // including themeCSS, fonts or diagram-specific resource options.
       secure: Object.keys(mermaid.mermaidAPI.getConfig()),
     });
+    const diagram = await mermaid.mermaidAPI.getDiagramFromText(code);
+    checkResources(diagram.db);
+    // Diagram types expose their parsed nodes through different getters.
+    for (const getter of [
+      "getData",
+      "getVertices",
+      "getActors",
+      "getClasses",
+    ]) {
+      const read: unknown = Reflect.get(diagram.db, getter);
+      if (typeof read === "function") checkResources(read.call(diagram.db));
+    }
+    if (cancelled()) return null;
     const container = document.createElement("div");
     container.style.cssText =
       "position:absolute;left:-100000px;visibility:hidden";

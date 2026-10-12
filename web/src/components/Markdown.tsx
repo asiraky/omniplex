@@ -58,7 +58,7 @@ function codeLang(node: Element | undefined): string {
   return list.find((c) => c.startsWith("language-"))?.slice("language-".length) ?? "";
 }
 
-export function CopyButton({ text }: { text: string }) {
+function CopyButton({ text }: { text: string }) {
   const { copied, copy } = useCopy();
 
   return (

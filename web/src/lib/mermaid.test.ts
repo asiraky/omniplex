@@ -2,11 +2,14 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { renderMermaid } from "./mermaid";
 
-const { render } = vi.hoisted(() => ({ render: vi.fn() }));
+const { render, parse } = vi.hoisted(() => ({
+  render: vi.fn(),
+  parse: vi.fn(),
+}));
 vi.mock("mermaid", () => ({
   default: {
     initialize: vi.fn(),
-    mermaidAPI: { getConfig: () => ({}) },
+    mermaidAPI: { getConfig: () => ({}), getDiagramFromText: parse },
     render,
   },
 }));
@@ -14,6 +17,7 @@ const svg =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200"></svg>';
 beforeEach(() => {
   render.mockReset().mockResolvedValue({ svg });
+  parse.mockReset().mockResolvedValue({ db: {} });
 });
 afterEach(() => {
   document.body.replaceChildren();
@@ -60,18 +64,48 @@ it("skips obsolete jobs waiting in the queue", async () => {
 });
 
 it.each([
-  'flowchart LR\nA@{ img: "https://example.com/tracker.png" }',
-  'flowchart LR\nA@{ "img": "https://example.com/tracker.png" }',
-  'flowchart LR\nA@{ "\\u0069mg": "https://example.com/tracker.png" }',
-  "flowchart LR\nA --> B\nstyle A fill:u\\72l(https://example.com/tracker.svg)",
-  "flowchart LR\nA --> B\nstyle A fill:url(https://example.com/tracker.svg)",
-  '%%{init: {"themeCSS":"@import https://example.com/tracker.css"}}%%\nflowchart LR\nA --> B',
-  "a".repeat(50_001),
-])(
-  "rejects resource-loading or oversized input before rendering",
-  async (code) => {
-    await expect(renderMermaid(code, "light", () => false)).rejects.toThrow();
-    expect(render).not.toHaveBeenCalled();
-    expect(document.body.childElementCount).toBe(0);
+  { nodes: new Map([["a", { img: "https://example.com/tracker.png" }]]) },
+  { getData: () => ({ nodes: [{ img: "https://example.com/tracker.png" }] }) },
+  {
+    getActors: () =>
+      new Map([
+        ["a", { properties: { icon: "https://example.com/tracker.png" } }],
+      ]),
   },
-);
+  {
+    getClasses: () => ({
+      red: { styles: ["fill:u\\72l(https://example.com/tracker.svg)"] },
+    }),
+  },
+  { nodes: [{ styles: ["fill:url(https://example.com/tracker.svg)"] }] },
+  { themeCSS: "@import https://example.com/tracker.css" },
+])("rejects parsed resource attributes before rendering", async (db) => {
+  parse.mockResolvedValue({ db });
+  await expect(
+    renderMermaid("diagram", "light", () => false),
+  ).rejects.toThrow();
+  expect(render).not.toHaveBeenCalled();
+  expect(document.body.childElementCount).toBe(0);
+});
+
+it("allows labels and messages that describe image fields and URL calls", async () => {
+  parse.mockResolvedValue({
+    db: { nodes: [{ label: "Call url()", text: "img: upload" }] },
+  });
+  expect(
+    await renderMermaid(
+      'flowchart LR\nA["Call url()"] --> B["img: upload"]',
+      "light",
+      () => false,
+    ),
+  ).toBeTruthy();
+  expect(render).toHaveBeenCalledTimes(1);
+});
+
+it("rejects oversized input before parsing or rendering", async () => {
+  await expect(
+    renderMermaid("a".repeat(50_001), "light", () => false),
+  ).rejects.toThrow();
+  expect(parse).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+});

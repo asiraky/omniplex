@@ -1,6 +1,5 @@
 import { useContext, useEffect, useState, type ReactNode } from "react";
 
-import { renderMermaid } from "~/lib/mermaid";
 import { ThemeContext } from "~/lib/theme";
 
 export function MermaidDiagram({
@@ -21,14 +20,18 @@ export function MermaidDiagram({
     let cancelled = false;
     // Streaming updates should not enqueue a render for every character.
     const timer = setTimeout(() => {
-      void renderMermaid(code, theme, () => cancelled).then(
-        (image) => {
-          if (!cancelled) setResult({ code, theme, image });
-        },
-        () => {
-          if (!cancelled) setResult({ code, theme, image: null });
-        },
-      );
+      void import("~/lib/mermaid")
+        .then(({ renderMermaid }) =>
+          renderMermaid(code, theme, () => cancelled),
+        )
+        .then(
+          (image) => {
+            if (!cancelled) setResult({ code, theme, image });
+          },
+          () => {
+            if (!cancelled) setResult({ code, theme, image: null });
+          },
+        );
     }, 200);
     return () => {
       cancelled = true;
