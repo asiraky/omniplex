@@ -150,7 +150,7 @@ function formatPace(ahead: number): string {
 
 /** "3:40 pm" today, "Thu 3:40 pm" on another day — when a weekly limit runs
  *  out, the day matters as much as the hour. */
-export function formatClock(at: number, now: number): string {
+function formatClock(at: number, now: number): string {
   const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
   return new Date(at).toLocaleString([], {
     weekday: sameDay ? undefined : "short",
