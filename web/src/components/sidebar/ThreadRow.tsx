@@ -301,7 +301,7 @@ function RenameControl({
           aria-label={`Rename thread ${s.title || "Untitled"}`}
           onClick={onRename}
           className={cn(
-            "text-muted-foreground/70 hover:text-foreground absolute top-0.5 hidden size-8 shrink-0 hover:bg-transparent md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent",
+            "text-muted-foreground/70 hover:text-foreground absolute top-0.5 hidden size-8 shrink-0 hover:bg-transparent md:size-8 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent",
             besideLabel ? "right-16" : "right-8",
           )}
         >
