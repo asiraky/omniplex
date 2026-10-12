@@ -469,7 +469,7 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cleanupHook, []byte("#!/bin/sh\ntest \"$OMNIPLEX_LIFECYCLE_VERSION\" = 2\ntest -f \"$OMNIPLEX_CONTEXT_FILE\"\necho cleanup-test-workspace\n"), 0o755); err != nil {
+	if err := os.WriteFile(cleanupHook, []byte("#!/bin/sh\ntest \"$OMNIPLEX_LIFECYCLE_VERSION\" = 2\ntest -f \"$OMNIPLEX_CONTEXT_FILE\"\necho cleanup-test-workspace\necho cleanup-test-workspace-stderr >&2\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -531,8 +531,10 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(state.Workspace.Output, "cleanup-test-workspace") {
-		t.Fatalf("cleanup output was not durable: %q", state.Workspace.Output)
+	for _, output := range []string{"cleanup-test-workspace\n", "cleanup-test-workspace-stderr\n"} {
+		if !strings.Contains(state.Workspace.Output, output) {
+			t.Fatalf("cleanup output %q was not durable: %q", output, state.Workspace.Output)
+		}
 	}
 }
 

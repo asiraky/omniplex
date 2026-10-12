@@ -224,8 +224,9 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMet
 	wg.Add(2)
 	go stream("stdout", bufio.NewScanner(stdout))
 	go stream("stderr", bufio.NewScanner(stderr))
-	err = cmd.Wait()
+	// Wait closes StdoutPipe/StderrPipe, so drain both readers first.
 	wg.Wait()
+	err = cmd.Wait()
 	if truncated {
 		_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{RunID: runID, Hook: kind, Stream: "stdout", Chunk: "\n[output truncated by omniplex]\n"}))
 	}
