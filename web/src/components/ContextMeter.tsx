@@ -1,9 +1,8 @@
-import { type PointerEvent as ReactPointerEvent, useRef, useState } from "react";
-
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { fmtPct, fmtTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import type { Usage } from "~/protocol";
+import { useHoverPopover } from "~/useHoverPopover";
 
 // The one threshold, shared by the ring and the bar: below it the meter is
 // quiet, at or above it the meter turns to the destructive colour because the
@@ -33,26 +32,7 @@ const SEGMENT = [
  * that let a summed-per-turn total read as a full window in the first place).
  */
 export function ContextMeter({ usage, model }: { usage: Usage; model?: string }) {
-  const [open, setOpen] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const openSoon = () => {
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setOpen(true), 150);
-  };
-  // A grace period, not an immediate close: the pointer has to cross the gap
-  // between the ring and the popover, and moving onto the popover cancels it.
-  const closeSoon = () => {
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setOpen(false), 120);
-  };
-  const cancelClose = () => clearTimeout(timer.current);
-  // Touch has no hover: after a tap the pointer immediately leaves, and a
-  // finger cannot move onto the portalled popover to cancel a scheduled close.
-  // So hover-open/close is mouse-only; touch falls through to the trigger's
-  // click, which Radix toggles, and an outside tap closes it.
-  const hoverOnly = (fn: () => void) => (e: ReactPointerEvent) => {
-    if (e.pointerType !== "touch") fn();
-  };
+  const { open, setOpen, trigger, content } = useHoverPopover();
 
   const used = usage.contextUsed ?? 0;
   const win = usage.contextWindow ?? 0;
@@ -96,10 +76,7 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        onPointerEnter={hoverOnly(openSoon)}
-        onPointerLeave={hoverOnly(closeSoon)}
-        onFocus={() => setOpen(true)}
-        onBlur={closeSoon}
+        {...trigger}
         aria-label={hasPct ? `Context ${fmtPct(pct)} used` : "Context usage unavailable"}
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -127,9 +104,7 @@ export function ContextMeter({ usage, model }: { usage: Usage; model?: string })
         align="end"
         sideOffset={8}
         className="w-64 p-3"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        onPointerEnter={hoverOnly(cancelClose)}
-        onPointerLeave={hoverOnly(closeSoon)}
+        {...content}
       >
         <div className="flex items-baseline justify-between gap-2">
           <span className={cn("text-sm font-medium tabular-nums", near && "text-destructive")}>

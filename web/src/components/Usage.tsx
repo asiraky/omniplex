@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIcon, CircleAlertIcon, ClockIcon, InfoIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import {
@@ -11,9 +12,12 @@ import {
   formatAge,
   formatCountdown,
   formatCost,
+  formatPace,
   formatTokens,
   hasUnpriced,
   providerColor,
+  QUOTA_STALE_MS,
+  quotaPace,
   RANGES,
   rowsByTime,
   totalTokens,
@@ -21,6 +25,7 @@ import {
 } from "~/lib/usageFormat";
 import { cn } from "~/lib/utils";
 import type { QuotaStatus, QuotaWindow, UsageReport } from "~/protocol";
+import { useHoverPopover } from "~/useHoverPopover";
 
 type View = "cost" | "tokens" | "limits";
 
@@ -522,7 +527,7 @@ function ProviderLimits({
   // date. With nothing observed yet the empty state below carries the
   // failure instead — and lastError is absent (not "") when the server has
   // nothing to report, so a truthiness check, not a comparison.
-  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= 15 * 60_000 || snap.windows?.some((w) => (w.checkedAt && now - w.checkedAt >= 15 * 60_000) || (!!w.resetsAt && w.resetsAt <= now)));
+  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= QUOTA_STALE_MS || snap.windows?.some((w) => (w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS) || (!!w.resetsAt && w.resetsAt <= now)));
 
   return (
     <section aria-label={`${status.displayName} usage limits`} className="rounded-xl border p-3">
@@ -607,10 +612,9 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
     );
   }
 
-  const stale = (w.checkedAt && now - w.checkedAt >= 15 * 60_000) || (w.resetsAt && w.resetsAt <= now);
-  const used = w.usedPercent;
-  const hasReading = used !== undefined;
-  const pct = Math.max(0, Math.min(100, used ?? 0));
+  const stale = (w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS) || (w.resetsAt && w.resetsAt <= now);
+  const hasReading = w.usedPercent !== undefined;
+  const pct = clampPercent(w.usedPercent);
 
   return (
     <li>
@@ -628,16 +632,7 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
         </p>
       </div>
       {w.checkedAt && <p className="text-muted-foreground text-[11px]">{stale ? "Stale · " : ""}observed {formatAge(w.checkedAt, now)}</p>}
-      <div
-        role="progressbar"
-        aria-label={w.label}
-        aria-valuenow={hasReading ? Math.round(pct) : undefined}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        className="bg-secondary mt-1.5 h-2 w-full overflow-hidden rounded-full"
-      >
-        <div className={cn("h-full rounded-full transition-[width]", hasReading && barClass(pct))} style={{ width: `${hasReading ? pct : 0}%` }} />
-      </div>
+      <QuotaBar window={w} now={now} />
       <p className="text-muted-foreground mt-1 flex items-center gap-1 text-[11px]">
         <ClockIcon aria-hidden className="size-3 shrink-0" />
         {w.resetsAt
@@ -645,5 +640,87 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
           : "no reset time reported"}
       </p>
     </li>
+  );
+}
+function clampPercent(used: number | undefined): number {
+  return Math.max(0, Math.min(100, used ?? 0));
+}
+
+/** "3:40 pm" today, "Thu 3:40 pm" on another day — when a weekly limit runs
+ *  out, the day matters as much as the hour. */
+function formatClock(at: number, now: number): string {
+  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
+  return new Date(at).toLocaleString([], {
+    weekday: sameDay ? undefined : "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * A window's usage bar, with a marker at how much of the window has passed:
+ * fill past the marker is burning faster than the window allows, fill short
+ * of it is headroom. Hover, focus or tap opens the numbers behind it.
+ */
+function QuotaBar({ window: w, now }: { window: QuotaWindow; now: number }) {
+  const { open, setOpen, trigger, content } = useHoverPopover();
+  const hasReading = w.usedPercent !== undefined;
+  const pct = clampPercent(w.usedPercent);
+  const pace = quotaPace(w, now);
+
+  const bar = (
+    <div
+      role="progressbar"
+      aria-label={w.label}
+      aria-valuenow={hasReading ? Math.round(pct) : undefined}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      className="bg-secondary h-2 w-full overflow-hidden rounded-full"
+    >
+      <div className={cn("h-full rounded-full transition-[width]", hasReading && barClass(pct))} style={{ width: `${hasReading ? pct : 0}%` }} />
+    </div>
+  );
+  if (!pace) return <div className="mt-1.5">{bar}</div>;
+
+  const p = pace.projection;
+  const summary = pace.stale
+    ? "Stale reading — refresh to see pace"
+    : pace.ahead === undefined
+      ? "No reading to compare yet"
+      : formatPace(pace.ahead);
+  const detail =
+    p?.kind === "reached"
+      ? "The limit is reached until it resets."
+      : p?.kind === "hits"
+        ? `At this rate you'll hit the limit at ${formatClock(p.at, now)} (${formatCountdown(w.resetsAt!, p.at)} before reset).`
+        : p?.kind === "finishes"
+          ? `On track to finish at ~${Math.round(p.percent)}%.`
+          : pace.ahead !== undefined
+            ? "Too early in the window to project."
+            : undefined;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <div className="relative mt-1.5">
+        {bar}
+        <div
+          aria-hidden
+          className="bg-foreground ring-background pointer-events-none absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 rounded-full ring-1 transition-[left]"
+          style={{ left: `${pace.elapsed * 100}%` }}
+        />
+        {/* Over the bar, not around it: a button's children lose their roles,
+            and the bar has to stay a progressbar. Taller than the bar so a
+            finger can find it. */}
+        <PopoverTrigger
+          {...trigger}
+          aria-label={`${w.label} pace: ${summary}`}
+          className="focus-visible:ring-ring absolute inset-x-0 -inset-y-2 rounded-md outline-none focus-visible:ring-2"
+        />
+      </div>
+      <PopoverContent side="top" sideOffset={10} className="w-64 p-3 text-[12px] leading-relaxed" {...content}>
+        <p className="font-medium">{summary}</p>
+        {detail && <p className="text-muted-foreground mt-0.5">{detail}</p>}
+      </PopoverContent>
+    </Popover>
   );
 }

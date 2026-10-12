@@ -1,7 +1,7 @@
 // Formatting and chart-data helpers for the Usage page. Pure, so the
 // bucketing, dedup and label rules are testable without a socket.
 
-import type { UsageReport, UsageRow, UsageTotals } from "~/protocol";
+import type { QuotaWindow, UsageReport, UsageRow, UsageTotals } from "~/protocol";
 
 /** Every bucket start in [from, to), including the ones with no usage: gaps
  *  render as zero rather than compressing time. */
@@ -72,6 +72,69 @@ function formatDuration(ms: number): string {
 /** "3d 5h", "3h 20m", "12m", "now" — the wait until a limit resets. */
 export function formatCountdown(ms: number, now: number): string {
   return ms <= now ? "now" : formatDuration(ms - now);
+}
+
+/** A quota reading older than this is stale: flagged, and never projected from. */
+export const QUOTA_STALE_MS = 15 * 60_000;
+
+/** Below this fraction of a window elapsed, a burn-rate projection is noise. */
+const EARLY_ELAPSED = 0.05;
+
+/** Where a window's linear burn rate leads by the time it resets. */
+export type QuotaProjection =
+  /** The limit is already reached. */
+  | { kind: "reached" }
+  /** The limit is hit before the reset, at epoch ms `at`. */
+  | { kind: "hits"; at: number }
+  /** The window resets first, with about `percent` used. */
+  | { kind: "finishes"; percent: number };
+
+export interface QuotaPace {
+  /** Fraction of the window that has passed, 0–1: where the marker sits. */
+  elapsed: number;
+  /** Percentage points used beyond what the elapsed time allows; negative is
+   *  headroom. Absent with no fresh reading to compare. */
+  ahead?: number;
+  /** Absent with no fresh reading, or too early in the window to mean anything. */
+  projection?: QuotaProjection;
+  /** The reading is too old to compare against the clock. */
+  stale: boolean;
+}
+
+/**
+ * Whether a window's usage is on pace with the time that has passed, and
+ * where a linear burn rate puts it at reset. Undefined when there is no
+ * timed window to measure against: a credits window, a missing reset time or
+ * duration, or a window that has already reset.
+ */
+export function quotaPace(w: QuotaWindow, now: number): QuotaPace | undefined {
+  if (w.kind === "credits" || !w.resetsAt || !w.windowDurationMins || w.resetsAt <= now) return undefined;
+  const durationMs = w.windowDurationMins * 60_000;
+  const elapsed = Math.max(0, Math.min(1, 1 - (w.resetsAt - now) / durationMs));
+  const stale = !!w.checkedAt && now - w.checkedAt >= QUOTA_STALE_MS;
+  const used = w.usedPercent;
+  if (stale || used === undefined) return { elapsed, stale };
+
+  const pace: QuotaPace = { elapsed, stale, ahead: used - elapsed * 100 };
+  if (used >= 100) pace.projection = { kind: "reached" };
+  else if (elapsed >= EARLY_ELAPSED) {
+    // Linear: the rate so far, carried on to the reset.
+    const finish = used / elapsed;
+    if (finish > 100) {
+      const elapsedMs = elapsed * durationMs;
+      pace.projection = { kind: "hits", at: now + ((100 - used) / used) * elapsedMs };
+    } else {
+      pace.projection = { kind: "finishes", percent: finish };
+    }
+  }
+  return pace;
+}
+
+/** "Tracking 15% ahead of pace", "12% under pace", "On pace". */
+export function formatPace(ahead: number): string {
+  const points = Math.round(Math.abs(ahead));
+  if (points === 0) return "On pace";
+  return ahead > 0 ? `Tracking ${points}% ahead of pace` : `${points}% under pace`;
 }
 
 /** "5m ago", "2h ago" — how long since a quota was observed. */

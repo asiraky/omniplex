@@ -128,6 +128,30 @@ describe("UsagePage limits view", () => {
     expect(screen.getAllByRole("progressbar").length).toBe(2);
   });
 
+  it("opens a window's pace on tap, and offers none where there is no timed window", async () => {
+    renderPage({
+      quotas: [
+        quotaStatus({
+          snapshot: {
+            checkedAt: Date.now() - 60_000,
+            windows: [
+              // Halfway through a 5-hour window with 60% used: ahead of pace.
+              { id: "five_hour", kind: "thread", label: "Session", usedPercent: 60, windowDurationMins: 300, resetsAt: Date.now() + 150 * 60_000 },
+              { id: "seven_day", kind: "weekly", label: "Weekly", usedPercent: 20, resetsAt: Date.now() + 3 * 24 * HOUR },
+            ],
+          },
+        }),
+      ],
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Limits" }));
+
+    const trigger = await screen.findByRole("button", { name: /Session pace/ });
+    expect(screen.queryByRole("button", { name: /Weekly pace/ })).toBeNull();
+    fireEvent.click(trigger);
+    expect(await screen.findByText("Tracking 10% ahead of pace")).toBeTruthy();
+    expect(screen.getByText(/hit the limit at .* \(50m before reset\)/)).toBeTruthy();
+  });
+
   it("renders no stale banner for a provider that was never observed", async () => {
     // The server omits lastError when there is nothing to report; an absent
     // error must not read as a failure, and epoch-zero must never render as
