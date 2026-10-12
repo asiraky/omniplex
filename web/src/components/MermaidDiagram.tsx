@@ -157,7 +157,8 @@ export function MermaidDiagram({
                   });
               };
               // A rapid reopen must wait for our previous exit to complete.
-              if (pendingExit.current) void pendingExit.current.then(request);
+              if (pendingExit.current)
+                void pendingExit.current.then(request).catch(() => {});
               else request();
             }}
           >
