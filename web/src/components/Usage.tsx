@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIcon, CircleAlertIcon, ClockIcon, InfoIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import {
@@ -703,11 +703,6 @@ function QuotaBar({ window: w, now }: { window: QuotaWindow; now: number }) {
     <Popover open={open} onOpenChange={setOpen}>
       <div className="relative mt-1.5">
         {bar}
-        <div
-          aria-hidden
-          className="bg-foreground ring-background pointer-events-none absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 rounded-full ring-1 transition-[left]"
-          style={{ left: `${pace.elapsed * 100}%` }}
-        />
         {/* Over the bar, not around it: a button's children lose their roles,
             and the bar has to stay a progressbar. Taller than the bar so a
             finger can find it. */}
@@ -716,8 +711,18 @@ function QuotaBar({ window: w, now }: { window: QuotaWindow; now: number }) {
           aria-label={`${w.label} pace: ${summary}`}
           className="focus-visible:ring-ring absolute inset-x-0 -inset-y-2 rounded-md outline-none focus-visible:ring-2"
         />
+        {/* The popover points at the marker: it explains where the marker sits.
+            After the trigger, not before: the trigger claims the anchor on its
+            first render too, and Radix keeps whichever ref attached last. */}
+        <PopoverAnchor asChild>
+          <div
+            aria-hidden
+            className="bg-foreground ring-background pointer-events-none absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 rounded-full ring-1 transition-[left]"
+            style={{ left: `${pace.elapsed * 100}%` }}
+          />
+        </PopoverAnchor>
       </div>
-      <PopoverContent side="top" sideOffset={10} className="w-64 p-3 text-[12px] leading-relaxed" {...content}>
+      <PopoverContent side="top" sideOffset={10} collisionPadding={12} className="w-64 p-3 text-[12px] leading-relaxed" {...content}>
         <p className="font-medium">{summary}</p>
         {detail && <p className="text-muted-foreground mt-0.5">{detail}</p>}
       </PopoverContent>

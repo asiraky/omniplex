@@ -21,7 +21,7 @@ describe("ContextMeter", () => {
       />,
     );
 
-    fireEvent.focus(screen.getByRole("button", { name: "Context usage unavailable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Context usage unavailable" }));
 
     expect(screen.getByText("53k")).toBeTruthy();
     expect(screen.getByText("—")).toBeTruthy();

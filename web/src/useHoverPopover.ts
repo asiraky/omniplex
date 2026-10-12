@@ -1,4 +1,11 @@
-import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import {
+  type FocusEvent as ReactFocusEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 /**
  * Open state for a popover that opens on hover or focus with a mouse, and on
@@ -8,6 +15,8 @@ import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } f
 export function useHoverPopover() {
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Whether the press that is about to click came from a pointer that hovers.
+  const hoverPress = useRef(false);
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const openSoon = () => {
@@ -35,7 +44,21 @@ export function useHoverPopover() {
     trigger: {
       onPointerEnter: hoverOnly(openSoon),
       onPointerLeave: hoverOnly(closeSoon),
-      onFocus: () => setOpen(true),
+      onPointerDown: (e: ReactPointerEvent) => {
+        hoverPress.current = e.pointerType !== "touch";
+      },
+      // Radix toggles on click. A mouse has usually opened it by hovering
+      // first, so a click would shut what the user is reaching for: swallow it.
+      // A tap toggles as normal, and so does Enter or Space from the keyboard.
+      onClick: (e: ReactMouseEvent) => {
+        if (open && hoverPress.current) e.preventDefault();
+        hoverPress.current = false;
+      },
+      // Keyboard focus only. A tap focuses the button just before its click,
+      // and opening here would have that click close it again.
+      onFocus: (e: ReactFocusEvent<HTMLElement>) => {
+        if (e.currentTarget.matches(":focus-visible")) setOpen(true);
+      },
       onBlur: closeSoon,
     },
     content: {
