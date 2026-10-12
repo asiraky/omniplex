@@ -12,10 +12,21 @@ import (
 )
 
 func TestHookDrainsOutputWithoutWaitingForBackgroundChildren(t *testing.T) {
+	for _, seconds := range []int{3, 1} {
+		t.Run(strconv.Itoa(seconds), func(t *testing.T) {
+			testHookWithBackgroundChild(t, seconds)
+		})
+	}
+}
+
+func testHookWithBackgroundChild(t *testing.T, seconds int) {
+	t.Helper()
 	a, _, _ := newTestActor(t)
 	root := t.TempDir()
 	hook := filepath.Join(root, "hook.sh")
-	script := "#!/bin/sh\nsleep 30 &\necho $! > \"$OMNIPLEX_PROJECT_ROOT/child.pid\"\necho final-stdout\necho final-stderr >&2\n"
+	// With a one-second execution budget, the output drain crosses that
+	// deadline even though the hook itself exits successfully after 0.1s.
+	script := "#!/bin/sh\nsleep 30 &\necho $! > \"$OMNIPLEX_PROJECT_ROOT/child.pid\"\nsleep 0.1\necho final-stdout\necho final-stderr >&2\n"
 	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +42,7 @@ func TestHookDrainsOutputWithoutWaitingForBackgroundChildren(t *testing.T) {
 	})
 	ctx := context.Background()
 	meta := store.ThreadMeta{ID: a.ID}
-	if err := (&Manager{}).runHook(ctx, a, meta, root, hook, nil, "", "deprovision", "", "", root, 3); err != nil {
+	if err := (&Manager{}).runHook(ctx, a, meta, root, hook, nil, "", "deprovision", "", "", root, seconds); err != nil {
 		t.Fatalf("successful hook waited for its background child: %v", err)
 	}
 	state, err := a.State(ctx)

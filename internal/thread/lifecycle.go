@@ -248,6 +248,7 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMet
 	go stream("stdout", stdout)
 	go stream("stderr", stderr)
 	err = cmd.Wait()
+	executionErr := ctx.Err()
 	exited.Store(true)
 	// Background children can inherit the pipes after the hook itself exits.
 	// Bound idle reads, while allowing slow persistence to drain buffered output.
@@ -271,8 +272,8 @@ func (m *Manager) runHook(parent context.Context, a *Actor, meta store.ThreadMet
 		}
 	}
 	_ = a.Emit(parent, proto.Emit(proto.WorkspaceHookFinished, proto.WorkspaceHookFinishedPayload{RunID: runID, Hook: kind, ExitCode: exit, DurationMs: time.Since(started).Milliseconds()}))
-	if ctx.Err() != nil {
-		return fmt.Errorf("%s hook timed out: %w", kind, ctx.Err())
+	if executionErr != nil {
+		return fmt.Errorf("%s hook timed out: %w", kind, executionErr)
 	}
 	if err != nil {
 		return fmt.Errorf("%s hook exited %d", kind, exit)
