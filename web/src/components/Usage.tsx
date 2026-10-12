@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIcon, CircleAlertIcon, ClockIcon, InfoIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import {
@@ -10,10 +11,14 @@ import {
   bucketStarts,
   formatAge,
   formatCountdown,
+  describePace,
   formatCost,
   formatTokens,
   hasUnpriced,
   providerColor,
+  isQuotaStale,
+  QUOTA_STALE_MS,
+  quotaPace,
   RANGES,
   rowsByTime,
   totalTokens,
@@ -21,6 +26,7 @@ import {
 } from "~/lib/usageFormat";
 import { cn } from "~/lib/utils";
 import type { QuotaStatus, QuotaWindow, UsageReport } from "~/protocol";
+import { useHoverPopover } from "~/useHoverPopover";
 
 type View = "cost" | "tokens" | "limits";
 
@@ -522,7 +528,7 @@ function ProviderLimits({
   // date. With nothing observed yet the empty state below carries the
   // failure instead — and lastError is absent (not "") when the server has
   // nothing to report, so a truthiness check, not a comparison.
-  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= 15 * 60_000 || snap.windows?.some((w) => (w.checkedAt && now - w.checkedAt >= 15 * 60_000) || (!!w.resetsAt && w.resetsAt <= now)));
+  const stale = hasWindows && observed > 0 && (!!status.lastError || now - observed >= QUOTA_STALE_MS || snap.windows?.some((w) => isQuotaStale(w, now)));
 
   return (
     <section aria-label={`${status.displayName} usage limits`} className="rounded-xl border p-3">
@@ -607,20 +613,20 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
     );
   }
 
-  const stale = (w.checkedAt && now - w.checkedAt >= 15 * 60_000) || (w.resetsAt && w.resetsAt <= now);
+  const stale = isQuotaStale(w, now);
+  // The text says what the provider reported, past 100 included; only the
+  // bar is clamped.
   const used = w.usedPercent;
-  const hasReading = used !== undefined;
-  const pct = Math.max(0, Math.min(100, used ?? 0));
 
   return (
     <li>
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-[12px] font-medium">{w.label}</p>
         <p className="text-[12px] tabular-nums">
-          {hasReading ? (
+          {used !== undefined ? (
             <>
-              <span className="font-medium">{pct.toFixed(0)}% used</span>
-              <span className="text-muted-foreground"> · {(100 - pct).toFixed(0)}% left</span>
+              <span className="font-medium">{used.toFixed(0)}% used</span>
+              <span className="text-muted-foreground"> · {Math.max(0, 100 - used).toFixed(0)}% left</span>
             </>
           ) : (
             <span className="text-muted-foreground">No reading yet</span>
@@ -628,16 +634,7 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
         </p>
       </div>
       {w.checkedAt && <p className="text-muted-foreground text-[11px]">{stale ? "Stale · " : ""}observed {formatAge(w.checkedAt, now)}</p>}
-      <div
-        role="progressbar"
-        aria-label={w.label}
-        aria-valuenow={hasReading ? Math.round(pct) : undefined}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        className="bg-secondary mt-1.5 h-2 w-full overflow-hidden rounded-full"
-      >
-        <div className={cn("h-full rounded-full transition-[width]", hasReading && barClass(pct))} style={{ width: `${hasReading ? pct : 0}%` }} />
-      </div>
+      <QuotaBar window={w} now={now} />
       <p className="text-muted-foreground mt-1 flex items-center gap-1 text-[11px]">
         <ClockIcon aria-hidden className="size-3 shrink-0" />
         {w.resetsAt
@@ -645,5 +642,63 @@ function QuotaRow({ window: w, now }: { window: QuotaWindow; now: number }) {
           : "no reset time reported"}
       </p>
     </li>
+  );
+}
+
+/**
+ * A window's usage bar, with a marker at how much of the window has passed:
+ * fill past the marker is burning faster than the window allows, fill short
+ * of it is headroom. Hover, focus or tap opens the numbers behind it.
+ */
+function QuotaBar({ window: w, now }: { window: QuotaWindow; now: number }) {
+  const { open, setOpen, trigger, content } = useHoverPopover();
+  const hasReading = w.usedPercent !== undefined;
+  const pct = Math.max(0, Math.min(100, w.usedPercent ?? 0));
+  const pace = quotaPace(w, now);
+
+  const bar = (
+    <div
+      role="progressbar"
+      aria-label={w.label}
+      aria-valuenow={hasReading ? Math.round(pct) : undefined}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      className="bg-secondary h-2 w-full overflow-hidden rounded-full"
+    >
+      <div className={cn("h-full rounded-full transition-[width]", hasReading && barClass(pct))} style={{ width: `${hasReading ? pct : 0}%` }} />
+    </div>
+  );
+  if (!pace) return <div className="mt-1.5">{bar}</div>;
+
+  const { summary, detail } = describePace(pace, now);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <div className="relative mt-1.5">
+        {bar}
+        {/* Over the bar, not around it: a button's children lose their roles,
+            and the bar has to stay a progressbar. Taller than the bar so a
+            finger can find it. */}
+        <PopoverTrigger
+          {...trigger}
+          aria-label={`${w.label} pace: ${summary}`}
+          className="focus-visible:ring-ring absolute inset-x-0 -inset-y-2 rounded-md outline-none focus-visible:ring-2"
+        />
+        {/* The popover points at the marker: it explains where the marker sits.
+            After the trigger, not before: the trigger claims the anchor on its
+            first render too, and Radix keeps whichever ref attached last. */}
+        <PopoverAnchor asChild>
+          <div
+            aria-hidden
+            className="bg-foreground ring-background pointer-events-none absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 rounded-full ring-1 transition-[left]"
+            style={{ left: `${pace.elapsed * 100}%` }}
+          />
+        </PopoverAnchor>
+      </div>
+      <PopoverContent side="top" sideOffset={10} collisionPadding={12} className="w-64 p-3 text-[12px] leading-relaxed" {...content}>
+        <p className="font-medium">{summary}</p>
+        {detail && <p className="text-muted-foreground mt-0.5">{detail}</p>}
+      </PopoverContent>
+    </Popover>
   );
 }
