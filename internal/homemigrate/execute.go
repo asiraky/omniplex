@@ -195,7 +195,7 @@ func Execute(ctx context.Context, p *Plan) (*Report, error) {
 			if why != "" {
 				// The account ends as it started: what this run moved goes
 				// back, so nothing of it is half in the new home.
-				back, stuck := rollBack(convsOf[a], m)
+				back, stuck, saveErr := rollBack(convsOf[a], m)
 				r.Moved -= back
 				r.Unrestored = stuck
 				switch {
@@ -203,6 +203,9 @@ func Execute(ctx context.Context, p *Plan) (*Report, error) {
 					why += fmt.Sprintf("; %d conversations it moved could NOT be put back (something is at their old path) and are in %s: %s", len(stuck), a.Target, strings.Join(stuck, ", "))
 				case back > 0:
 					why += fmt.Sprintf("; the %d conversations it had moved are back in %s", back, a.Ambient)
+				}
+				if saveErr != nil {
+					why += fmt.Sprintf("; the manifest %s could not be updated to say so (%v), so trust the disk over it", m.path, saveErr)
 				}
 				stop(why)
 				keepAmbient(a, &r)
@@ -372,8 +375,9 @@ func (p *Plan) moveAll(a *AccountPlan, convs []*ManifestConversation, m *Manifes
 // the manifest saying where each one is. A conversation copied across
 // filesystems goes back from its aside, the untouched original, and its copy
 // is renamed aside in the new home (nothing is deleted). It returns how many
-// went back and the ones that could not, which stay whole in the new home.
-func rollBack(convs []*ManifestConversation, m *Manifest) (back int, stuck []string) {
+// went back, the ones that could not (which stay whole in the new home), and
+// the last failure to record that in the manifest, if any.
+func rollBack(convs []*ManifestConversation, m *Manifest) (back int, stuck []string, saveErr error) {
 	for i := len(convs) - 1; i >= 0; i-- {
 		mc := convs[i]
 		if mc.Status != StatusMoved {
@@ -386,9 +390,11 @@ func rollBack(convs []*ManifestConversation, m *Manifest) (back int, stuck []str
 			mc.Status, mc.Note = StatusRolledBack, "put back when the run stopped"
 			back++
 		}
-		_ = m.save()
+		if err := m.save(); err != nil {
+			saveErr = err
+		}
 	}
-	return back, stuck
+	return back, stuck, saveErr
 }
 
 // putBack returns one moved conversation to its source, all units or none.

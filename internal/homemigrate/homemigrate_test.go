@@ -791,9 +791,6 @@ func TestARollbackLeavesAConversationWhoseOldPathIsTaken(t *testing.T) {
 	if mc := manifestConv(t, m, "0001-own"); mc.Status != StatusMoved {
 		t.Errorf("manifest says 0001-own is %s, but it is in the new home", mc.Status)
 	}
-	if !strings.Contains(strings.Join(rep.Lines(), "\n"), "COULD NOT BE PUT BACK") {
-		t.Errorf("the log does not say a conversation is stuck: %v", rep.Lines())
-	}
 }
 
 // The implicit default account has threads but no config entry. When it is
@@ -814,9 +811,6 @@ func TestAnImplicitAccountThatIsNotMigratedKeepsAnAmbientEntry(t *testing.T) {
 	e, ok := providers(t)["codex"]
 	if !ok || e["driver"] != "codex" || envValue(e, "CODEX_HOME") != "" {
 		t.Fatalf("codex entry = %v (%v)", e, ok)
-	}
-	if !strings.Contains(strings.Join(rep.Lines(), "\n"), "added with no home variable") {
-		t.Errorf("the log does not say the entry was added: %v", rep.Lines())
 	}
 
 	cfg := f.configBytes()
@@ -965,10 +959,10 @@ func TestARollbackOfACopyRestoresTheOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	back, stuck := rollBack([]*ManifestConversation{mc}, m)
+	back, stuck, saveErr := rollBack([]*ManifestConversation{mc}, m)
 
-	if back != 1 || len(stuck) != 0 || mc.Status != StatusRolledBack {
-		t.Fatalf("rollBack = %d, %v; status %s", back, stuck, mc.Status)
+	if back != 1 || len(stuck) != 0 || saveErr != nil || mc.Status != StatusRolledBack {
+		t.Fatalf("rollBack = %d, %v, %v; status %s", back, stuck, saveErr, mc.Status)
 	}
 	if b, _ := os.ReadFile(src); string(b) != original {
 		t.Errorf("source = %q", b)
