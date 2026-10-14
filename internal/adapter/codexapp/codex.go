@@ -42,13 +42,14 @@ func (a *Adapter) ID() string { return "codex" }
 
 // ConfigFields declares how an instance of Codex is configured. CODEX_HOME is
 // the whole mechanism: it holds the login, so pointing a second instance at
-// its own directory is what makes it a second account.
+// its own directory is what makes it a second account. The user's
+// configuration in it is shared from ~/.codex (see SharedEntries).
 func (a *Adapter) ConfigFields() []adapter.ConfigField {
 	return []adapter.ConfigField{
 		{
 			Env:         "CODEX_HOME",
 			Label:       "Codex home",
-			Description: "Directory holding this account's Codex login and settings. Leave empty on the default instance to use the machine's own login.",
+			Description: "Directory holding this account's Codex login and conversations. config.toml, AGENTS.md, skills, agents, rules and plugins are shared from ~/.codex. Leave empty on the default instance to use the machine's own login.",
 			Placeholder: "~/.codex",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,

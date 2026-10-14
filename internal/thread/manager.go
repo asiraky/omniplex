@@ -55,6 +55,9 @@ type Manager struct {
 	instanceOrder []string
 	secrets       *provider.SecretStore
 	logf          func(string, ...any)
+	// homeWarned holds the shareHome problems already logged, so a home
+	// that needs a hand is reported once rather than on every probe.
+	homeWarned sync.Map
 
 	// authFlows are running structured sign-in flows, keyed by flow id.
 	// Ephemeral on purpose: see authflow.go.
@@ -280,9 +283,15 @@ func (m *Manager) configureLocked(instances []provider.Instance) {
 // envFor materialises an instance's credential overlay: plain values from the
 // config, sensitive values from the secret store, at spawn (or probe) time.
 // A missing secret is an error, never a silent fall-through to the ambient
-// account.
+// account. Every use of an account goes through here, so it is also where
+// the account's home is made to share the user's configuration (shareHome).
 func (m *Manager) envFor(inst provider.Instance) (map[string]string, error) {
-	return inst.EnvOverlay(m.secretStore())
+	env, err := inst.EnvOverlay(m.secretStore())
+	if err != nil {
+		return nil, err
+	}
+	m.shareHome(inst, env)
+	return env, nil
 }
 
 // instanceFor resolves the instance a thread runs under. A thread created

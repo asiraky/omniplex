@@ -2,9 +2,11 @@ package thread
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/asiraky/omniplex/internal/accounthome"
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
@@ -202,5 +204,49 @@ func TestSensitiveEnforcedFromConfigFields(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// homeAdapter is a cfgAdapter whose isolating home shares a skills folder
+// and a settings file, like Claude's does.
+type homeAdapter struct{ cfgAdapter }
+
+func (h *homeAdapter) DefaultHome(userHome string) string { return filepath.Join(userHome, ".fake") }
+
+func (h *homeAdapter) SharedEntries() []accounthome.Entry {
+	return []accounthome.Entry{{Name: "settings.json"}, {Name: "skills", Dir: true}}
+}
+
+func TestEveryAddedAccountSharesTheMachinesConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FAKE_HOME", "")
+	shared := filepath.Join(home, ".fake")
+	if err := os.MkdirAll(filepath.Join(shared, "skills", "infra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := adminTestManagerWith(t, &homeAdapter{})
+	ids := []string{"fake-work", "fake-personal", "fake-client"}
+	for _, id := range ids {
+		if err := mgr.AddProviderInstance(provider.Spec{ID: id, Driver: "fake", DisplayName: id, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range ids {
+		account := filepath.Join(home, ".omniplex", "instances", id)
+		if _, err := os.Stat(filepath.Join(account, "skills", "infra")); err != nil {
+			t.Fatalf("%s does not see the shared skill: %v", id, err)
+		}
+		if _, err := os.Stat(filepath.Join(account, "settings.json")); err != nil {
+			t.Fatalf("%s does not see the shared settings: %v", id, err)
+		}
+	}
+	// The machine's own home is the shared one, not a linked copy of it.
+	if info, err := os.Lstat(filepath.Join(shared, "skills")); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("shared skills: %v %v", info, err)
 	}
 }

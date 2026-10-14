@@ -1,6 +1,10 @@
 package adapter
 
-import "context"
+import (
+	"context"
+
+	"github.com/asiraky/omniplex/internal/accounthome"
+)
 
 // This file is the structured-authentication capability. The original
 // abstraction — Authenticator, an argv that a terminal runs — assumed every
@@ -178,6 +182,21 @@ const (
 	FieldPath   = "path"
 	FieldSecret = "secret"
 )
+
+// SharedHome is implemented by adapters whose Isolates field points at a
+// config home that holds the user's configuration beside one account's
+// login. Every account's home is given links to these entries of the
+// machine's own home, so a second account is the same user signed in as
+// someone else, not a blank install. See package accounthome.
+type SharedHome interface {
+	// DefaultHome is the config home the harness uses when the isolating
+	// variable is unset.
+	DefaultHome(userHome string) string
+	// SharedEntries are the top-level entries of a home that are the user's
+	// configuration. Anything not listed (the login, identity, transcripts,
+	// caches) stays the account's own.
+	SharedEntries() []accounthome.Entry
+}
 
 // Configurer is implemented by adapters whose instances have driver-specific
 // settings. Optional; an adapter without it offers only a display name and

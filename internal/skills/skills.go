@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/asiraky/omniplex/internal/accounthome"
 )
 
 type Harness string
@@ -94,20 +96,10 @@ func DefaultRoots(home string, env map[string]string, projectRoot string) Roots 
 		if !ok {
 			v = os.Getenv(key)
 		}
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return filepath.Join(append([]string{home}, fallback...)...)
+		if p := accounthome.Resolve(home, v); p != "" {
+			return p
 		}
-		if v == "~" {
-			return home
-		}
-		if strings.HasPrefix(v, "~/") {
-			return filepath.Join(home, v[2:])
-		}
-		if !filepath.IsAbs(v) {
-			return filepath.Join(home, v)
-		}
-		return filepath.Clean(v)
+		return filepath.Join(append([]string{home}, fallback...)...)
 	}
 	r := Roots{
 		Home:            home,

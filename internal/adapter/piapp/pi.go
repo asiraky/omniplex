@@ -60,13 +60,14 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 
 // ConfigFields declares how an instance of Pi is configured. PI_CODING_AGENT_DIR
 // is the whole mechanism: it holds auth.json and settings, so pointing a second
-// instance at its own directory is what makes it a second account.
+// instance at its own directory is what makes it a second account. The user's
+// configuration in it is shared from ~/.pi/agent (see SharedEntries).
 func (a *Adapter) ConfigFields() []adapter.ConfigField {
 	return []adapter.ConfigField{
 		{
 			Env:         "PI_CODING_AGENT_DIR",
 			Label:       "Pi agent directory",
-			Description: "Directory holding this account's Pi credentials and settings. Leave empty on the default instance to use the machine's own login.",
+			Description: "Directory holding this account's Pi credentials and conversations. Settings, models, AGENTS.md, skills, prompts and extensions are shared from ~/.pi/agent. Leave empty on the default instance to use the machine's own login.",
 			Placeholder: "~/.pi/agent",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
