@@ -198,7 +198,7 @@ function AccountWarnings({
           <p>
             Still on this machine's own {harness.name} home, whose login is
             whatever a terminal signed in as last. Run{" "}
-            <code className="font-mono">omniplex migrate-homes</code> on the
+            <code className="font-mono whitespace-nowrap">omniplex migrate-homes</code> on the
             server to move it onto its own.
           </p>
         </Warning>
