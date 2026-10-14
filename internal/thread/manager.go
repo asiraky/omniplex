@@ -517,7 +517,7 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 // instancesOf lists every instance of one driver, in registration order, with
 // independent availability and models.
 func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta {
-	var out []InstanceMeta
+	out := []InstanceMeta{}
 	for _, reg := range m.orderedInstances() {
 		if reg.inst.Driver != driver {
 			continue
