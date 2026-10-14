@@ -1,11 +1,8 @@
 package homemigrate
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"os"
-	"strings"
 )
 
 const logPrefix = "homes migration: "
@@ -36,6 +33,9 @@ func (p *Plan) Print(w io.Writer) {
 		pf("%s: %s", title, a.Why)
 		if a.Abort != "" {
 			pf("  NOT MIGRATED: %s", a.Abort)
+			if a.Entry == nil {
+				pf("  config: adds provider %s (%s) with no %s, so its threads keep running on %s", a.Instance, a.DisplayName, a.HomeEnv, a.Ambient)
+			}
 		}
 		if !a.Leftover {
 			pf("  home: %s -> %s", a.Ambient, a.Target)
@@ -112,11 +112,23 @@ func (r *Report) Lines() []string {
 	var out []string
 	for _, a := range r.Accounts {
 		who := fmt.Sprintf("%s account %s (%s)", a.Driver, a.Instance, a.DisplayName)
+		config := "config unchanged"
+		switch {
+		case a.KeptAmbient:
+			config = "it had no config entry, so one was added with no home variable to keep its threads on it"
+		case a.KeepAmbientErr != "":
+			config = "it has no config entry and adding one failed (" + a.KeepAmbientErr + "), so its threads have no account until one with id " + a.Instance + " is added"
+		}
 		switch {
 		case a.Aborted != "":
-			out = append(out, fmt.Sprintf("%sNOT migrating %s: %s; it stays on %s, config unchanged", logPrefix, who, a.Aborted, a.Ambient))
+			out = append(out, fmt.Sprintf("%sNOT migrating %s: %s; it stays on %s; %s", logPrefix, who, a.Aborted, a.Ambient, config))
 		case a.Stopped != "":
-			out = append(out, fmt.Sprintf("%sSTOPPED on %s: %s; it stays on %s, config unchanged; manifest %s", logPrefix, who, a.Stopped, a.Ambient, r.Manifest))
+			line := fmt.Sprintf("%sSTOPPED on %s: %s; it stays on %s; %s; manifest %s", logPrefix, who, a.Stopped, a.Ambient, config, r.Manifest)
+			if len(a.Unrestored) > 0 {
+				line = fmt.Sprintf("%sSTOPPED on %s AND %d CONVERSATIONS COULD NOT BE PUT BACK: %s; they are whole in %s, the account stays on %s; %s; manifest %s",
+					logPrefix, who, len(a.Unrestored), a.Stopped, a.Target, a.Ambient, config, r.Manifest)
+			}
+			out = append(out, line)
 		case a.Leftover && a.Moved == 0:
 			out = append(out, fmt.Sprintf("%s%s: %d conversations still in use, left in %s for a later run", logPrefix, who, a.Recent, a.Ambient))
 		case a.Leftover:
@@ -157,35 +169,4 @@ func (r *ReverseReport) Print(w io.Writer) {
 		}
 	}
 	fmt.Fprintln(w, "The server will not migrate again until you run omniplex migrate-homes.")
-}
-
-// Startup runs the migration as the server starts, before any thread or
-// harness: conversations its threads resume are not in use yet, so they move
-// even if recently modified. It only logs; whatever happens, the server
-// starts.
-func Startup(ctx context.Context, opts Options, logf func(format string, args ...any)) {
-	defer func() {
-		if r := recover(); r != nil {
-			logf("%spanicked: %v; the server starts anyway, see the newest manifest in ~/.omniplex/migrations", logPrefix, r)
-		}
-	}()
-	opts.ExemptReferenced = true
-	opts.Retry = false
-	if opts.ServerEnv == nil {
-		opts.ServerEnv = os.Getenv
-	}
-	p, err := NewPlan(ctx, opts)
-	if err != nil {
-		logf("%scould not plan: %v; nothing moved", logPrefix, err)
-		return
-	}
-	rep, err := Execute(ctx, p)
-	if rep != nil {
-		for _, line := range rep.Lines() {
-			logf("%s", line)
-		}
-	}
-	if err != nil {
-		logf("%s%v", logPrefix, strings.TrimSpace(err.Error()))
-	}
 }

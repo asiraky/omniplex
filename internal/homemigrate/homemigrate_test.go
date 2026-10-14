@@ -571,11 +571,14 @@ func TestReverseRestoresTheTreeAndTheConfig(t *testing.T) {
 	sameTree(t, "~/.claude after reverse", claudeBefore, tree(t, f.claude))
 	sameTree(t, "~/.codex after reverse", codexBefore, tree(t, f.codex))
 	after := providers(t)
-	if len(after) != len(providersBefore) {
-		t.Errorf("providers after reverse = %v, before %v", after, providersBefore)
-	}
 	if b, _ := json.Marshal(after["claude"]); string(b) != mustJSON(t, providersBefore["claude"]) {
 		t.Errorf("claude entry after reverse = %s", b)
+	}
+	// Codex was the implicit default, with threads and no entry: the entry
+	// the run added stays, on the machine's home, so its threads keep an
+	// account.
+	if x, ok := after["codex"]; !ok || x["driver"] != "codex" || x["env"] != nil || len(after) != len(providersBefore)+1 {
+		t.Errorf("providers after reverse = %v, before %v", after, providersBefore)
 	}
 
 	// On hold: the server does not migrate again, and the pending leftover
@@ -676,5 +679,304 @@ func TestOpenThreadsReadsTheLogWithoutWritingIt(t *testing.T) {
 	}
 	if exists(filepath.Join(f.home, "none.db")) {
 		t.Errorf("opening a missing database created it")
+	}
+}
+
+func (f *fixture) plan(o Options) *Plan {
+	f.t.Helper()
+	p, err := NewPlan(context.Background(), o)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return p
+}
+
+func (f *fixture) execute(p *Plan) *Report {
+	f.t.Helper()
+	rep, err := Execute(context.Background(), p)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return rep
+}
+
+func manifestConv(t *testing.T, m *Manifest, id string) *ManifestConversation {
+	t.Helper()
+	for _, mc := range m.Conversations {
+		if mc.ID == id {
+			return mc
+		}
+	}
+	t.Fatalf("%s not in the manifest", id)
+	return nil
+}
+
+// An account whose run stops after some of its conversations moved ends as
+// it started: they go back, the manifest says so, the config is untouched.
+func TestAStoppedAccountPutsBackWhatItMoved(t *testing.T) {
+	for _, stopAt := range []string{"a later conversation", "the config", "verify"} {
+		t.Run(stopAt, func(t *testing.T) {
+			f := newFixture(t)
+			claudeBefore := tree(t, f.claude)
+			p := f.plan(f.opts())
+			switch stopAt {
+			case "a later conversation":
+				// The thread's conversation, which moves second, cannot.
+				f.write(f.target("claude"), claudeThread, "someone else's")
+			case "the config":
+				f.config(`{"id":"claude","driver":"claude","displayName":"Aaron","enabled":true,"model":"sonnet"}`)
+			case "verify":
+				// An Omniplex conversation the plan never saw.
+				f.write(f.claude, "projects/-work-app/0006-new.jsonl", claudeLine("sdk-ts", "0006-new"))
+				claudeBefore = tree(t, f.claude)
+			}
+			cfgBefore := providers(t)["claude"]
+
+			rep := f.execute(p)
+
+			c := account(t, rep, "claude")
+			if c.Stopped == "" || c.Migrated || c.Moved != 0 || len(c.Unrestored) != 0 {
+				t.Fatalf("claude result = %+v", c)
+			}
+			sameTree(t, "~/.claude after a stopped run", claudeBefore, tree(t, f.claude))
+			if exists(filepath.Join(f.target("claude"), claudeOwn)) {
+				t.Errorf("a conversation is still in the new home")
+			}
+			if got := providers(t)["claude"]; mustJSON(t, got) != mustJSON(t, cfgBefore) {
+				t.Errorf("claude entry = %v, want %v", got, cfgBefore)
+			}
+			m, err := ReadManifest(rep.Manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mc := manifestConv(t, m, "0001-own"); mc.Status != StatusRolledBack {
+				t.Errorf("manifest says 0001-own is %s", mc.Status)
+			}
+			if x := account(t, rep, "codex"); !x.Migrated {
+				t.Errorf("another account's stop affected codex: %+v", x)
+			}
+		})
+	}
+}
+
+// A rollback never overwrites: a conversation whose old path is taken
+// stays whole in the new home, and the run says so.
+func TestARollbackLeavesAConversationWhoseOldPathIsTaken(t *testing.T) {
+	f := newFixture(t)
+	p := f.plan(f.opts())
+	f.config(`{"id":"claude","driver":"claude","displayName":"Aaron","enabled":true,"model":"sonnet"}`)
+	// Something takes the old path of 0001-own once it has moved.
+	afterMove = func(mc *ManifestConversation) {
+		if mc.ID == "0001-own" {
+			f.write(f.claude, claudeOwn, "the terminal's")
+		}
+	}
+	t.Cleanup(func() { afterMove = nil })
+	rep := f.execute(p)
+
+	c := account(t, rep, "claude")
+	if c.Stopped == "" || len(c.Unrestored) != 1 || c.Unrestored[0] != "0001-own" {
+		t.Fatalf("claude result = %+v", c)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.claude, claudeOwn)); string(b) != "the terminal's" {
+		t.Errorf("the file at the old path was replaced: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.target("claude"), claudeOwn)); string(b) != claudeLine("sdk-ts", "0001-own") {
+		t.Errorf("the conversation is not whole in the new home: %q", b)
+	}
+	m, err := ReadManifest(rep.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mc := manifestConv(t, m, "0001-own"); mc.Status != StatusMoved {
+		t.Errorf("manifest says 0001-own is %s, but it is in the new home", mc.Status)
+	}
+	if !strings.Contains(strings.Join(rep.Lines(), "\n"), "COULD NOT BE PUT BACK") {
+		t.Errorf("the log does not say a conversation is stuck: %v", rep.Lines())
+	}
+}
+
+// The implicit default account has threads but no config entry. When it is
+// not migrated it gets an entry with no home variable, so its threads keep
+// an account; a second run changes nothing.
+func TestAnImplicitAccountThatIsNotMigratedKeepsAnAmbientEntry(t *testing.T) {
+	f := newFixture(t)
+	f.thread("t-exec", "codex", "", "c-exec", false) // not Omniplex's: blocks codex
+	codexBefore := tree(t, f.codex)
+
+	_, rep := f.run(f.opts())
+
+	x := account(t, rep, "codex")
+	if x.Aborted == "" || !x.KeptAmbient {
+		t.Fatalf("codex result = %+v", x)
+	}
+	sameTree(t, "~/.codex", codexBefore, tree(t, f.codex))
+	e, ok := providers(t)["codex"]
+	if !ok || e["driver"] != "codex" || envValue(e, "CODEX_HOME") != "" {
+		t.Fatalf("codex entry = %v (%v)", e, ok)
+	}
+	if !strings.Contains(strings.Join(rep.Lines(), "\n"), "added with no home variable") {
+		t.Errorf("the log does not say the entry was added: %v", rep.Lines())
+	}
+
+	cfg := f.configBytes()
+	_, rep = f.run(f.opts())
+	if x := account(t, rep, "codex"); x.Aborted == "" || x.KeptAmbient {
+		t.Errorf("second run codex result = %+v", x)
+	}
+	if string(f.configBytes()) != string(cfg) {
+		t.Errorf("a second run changed the config")
+	}
+}
+
+// A copy across filesystems cut short leaves the whole original aside and
+// a partial destination. Reverse restores the original and keeps the
+// partial copy, renamed aside.
+func TestReverseRestoresTheOriginalOfACopyCutShort(t *testing.T) {
+	f := newFixture(t)
+	original, err := os.ReadFile(filepath.Join(f.codex, codexOwn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rep := f.run(f.opts())
+	m, err := ReadManifest(rep.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := manifestConv(t, m, "c-own")
+	src, dst := mc.Units[0].Src, mc.Units[0].Dst
+	// As the crash left it: the original aside, half a copy, the manifest
+	// not yet updated.
+	if err := os.Rename(dst, filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(filepath.Dir(dst), filepath.Base(dst), string(original[:len(original)/2]))
+	mc.Status, mc.Copied = StatusPending, true
+	if err := m.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	rr, err := Reverse(context.Background(), rep.Manifest, f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(src); string(b) != string(original) {
+		t.Fatalf("restored %q, want the original", b)
+	}
+	partial := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".partial")
+	if b, _ := os.ReadFile(partial); string(b) != string(original[:len(original)/2]) {
+		t.Errorf("the partial copy was not kept aside: %q", b)
+	}
+	if exists(dst) || exists(filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")) {
+		t.Errorf("left the partial copy under its name, or the original aside")
+	}
+	if len(rr.Conflicts) != 0 || rr.Restored != 4 {
+		t.Errorf("reverse = %+v", rr)
+	}
+}
+
+// A destination that does not match the manifest, with no original aside,
+// is not put back as if it were the conversation.
+func TestReverseNeverRestoresBytesThatDoNotMatch(t *testing.T) {
+	f := newFixture(t)
+	_, rep := f.run(f.opts())
+	m, err := ReadManifest(rep.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := manifestConv(t, m, "c-own")
+	f.write(filepath.Dir(mc.Units[0].Dst), filepath.Base(mc.Units[0].Dst), "truncated")
+
+	rr, err := Reverse(context.Background(), rep.Manifest, f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(mc.Units[0].Src) {
+		t.Errorf("the mismatched copy was put back")
+	}
+	if len(rr.Conflicts) != 1 || !strings.Contains(rr.Conflicts[0], "c-own") {
+		t.Errorf("conflicts = %v", rr.Conflicts)
+	}
+	m, _ = ReadManifest(rep.Manifest)
+	if mc := manifestConv(t, m, "c-own"); mc.Status == StatusReversed {
+		t.Errorf("marked reversed")
+	}
+}
+
+// An account with a conversation that cannot go back keeps its new home:
+// restoring the config would leave that conversation behind. A rerun once
+// the way is clear finishes it.
+func TestReverseKeepsTheConfigOfAnAccountItCouldNotFinish(t *testing.T) {
+	f := newFixture(t)
+	_, rep := f.run(f.opts())
+	blocker := filepath.Join(f.claude, claudeThread)
+	f.write(f.claude, claudeThread, "the terminal's")
+
+	rr, err := Reverse(context.Background(), rep.Manifest, f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rr.Conflicts) != 1 {
+		t.Fatalf("conflicts = %v", rr.Conflicts)
+	}
+	if got := envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR"); got != f.target("claude") {
+		t.Errorf("claude's config was restored with a conversation still in its new home: %q", got)
+	}
+	if got := envValue(providers(t)["codex"], "CODEX_HOME"); got != "" {
+		t.Errorf("codex, which went back whole, still names %q", got)
+	}
+	if !exists(filepath.Join(f.claude, claudeOwn)) {
+		t.Errorf("claude's other conversation did not go back")
+	}
+
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	rr, err = Reverse(context.Background(), rep.Manifest, f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rr.Conflicts) != 0 || rr.Restored != 1 {
+		t.Errorf("rerun = %+v", rr)
+	}
+	if got := envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR"); got != "" {
+		t.Errorf("the rerun did not restore claude's config: %q", got)
+	}
+	if m, _ := ReadManifest(rep.Manifest); m.Reversed == nil {
+		t.Errorf("the manifest is not marked reversed after the rerun")
+	}
+}
+
+// A conversation copied across filesystems goes back from its aside, the
+// untouched original, and its copy in the new home is set aside, not
+// deleted, so a later run can move it again.
+func TestARollbackOfACopyRestoresTheOriginal(t *testing.T) {
+	f := newFixture(t)
+	src := filepath.Join(f.codex, codexOwn)
+	dst := filepath.Join(f.target("codex"), codexOwn)
+	original := codexLine("c-own", "omniplex")
+	if err := os.Rename(src, filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(filepath.Dir(dst), filepath.Base(dst), original)
+	mc := &ManifestConversation{ID: "c-own", Status: StatusMoved, Copied: true, Units: []ManifestUnit{{Src: src, Dst: dst}}}
+	m := &Manifest{Version: 1}
+	if err := m.create(f.home, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	back, stuck := rollBack([]*ManifestConversation{mc}, m)
+
+	if back != 1 || len(stuck) != 0 || mc.Status != StatusRolledBack {
+		t.Fatalf("rollBack = %d, %v; status %s", back, stuck, mc.Status)
+	}
+	if b, _ := os.ReadFile(src); string(b) != original {
+		t.Errorf("source = %q", b)
+	}
+	if exists(dst) || !exists(filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".moving")) {
+		t.Errorf("the copy was not set aside in the new home")
+	}
+	if exists(filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")) {
+		t.Errorf("the original is still aside")
 	}
 }

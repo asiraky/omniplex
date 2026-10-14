@@ -374,6 +374,15 @@ func (p *Plan) planDriver(d *driver, entries []configEntry, threads []thread) er
 	if p.opts.ServerEnv != nil {
 		if v := strings.TrimSpace(p.opts.ServerEnv(d.homeEnv)); v != "" {
 			p.Notes = append(p.Notes, fmt.Sprintf("%s: the server's environment sets %s=%s, so its accounts without one use that rather than %s; not migrating them", d.id, d.homeEnv, v, d.ambient))
+			// The implicit default still needs an entry, or its threads
+			// have no account at all.
+			for _, a := range accounts {
+				if a.Entry == nil {
+					a.HomeEnv, a.Ambient, a.Target = d.homeEnv, v, p.target(a.Instance)
+					a.Abort = fmt.Sprintf("the server's environment sets %s", d.homeEnv)
+					p.Accounts = append(p.Accounts, a)
+				}
+			}
 			return nil
 		}
 	}
@@ -444,7 +453,6 @@ func (p *Plan) planDriver(d *driver, entries []configEntry, threads []thread) er
 		}
 	}
 
-	recentCut := p.Created.Add(-p.opts.recent())
 	assigned := map[*Conversation]*AccountPlan{}
 	for _, c := range ambient {
 		if !c.Owned {
@@ -468,19 +476,7 @@ func (p *Plan) planDriver(d *driver, entries []configEntry, threads []thread) er
 			continue
 		}
 		assigned[c] = owner
-		switch {
-		case present(owner.Target, c):
-			c.Reason = "already exists in " + owner.Target
-			owner.Conflicts = append(owner.Conflicts, c)
-		case holdsCredentials(d.ambient, c):
-			c.Reason = "holds a file named like a login; credentials are never moved"
-			owner.Conflicts = append(owner.Conflicts, c)
-		case c.Modified.After(recentCut) && !(p.opts.ExemptReferenced && len(c.Threads) > 0):
-			c.Reason = "modified " + c.Modified.Format(time.RFC3339) + ", inside the last " + p.opts.recent().String()
-			owner.Recent = append(owner.Recent, c)
-		default:
-			owner.Moves = append(owner.Moves, c)
-		}
+		p.place(owner, d.ambient, c)
 	}
 
 	for _, a := range accounts {
@@ -614,7 +610,6 @@ func (p *Plan) planLeftovers(entries []configEntry) {
 		byID[e.ID] = e
 	}
 	accounts := map[string]*AccountPlan{}
-	recentCut := p.Created.Add(-p.opts.recent())
 	for _, lp := range p.state.Pending {
 		d, ok := byDriver[lp.Driver]
 		if !ok {
@@ -655,20 +650,31 @@ func (p *Plan) planLeftovers(entries []configEntry) {
 				c.Threads = append(c.Threads, t.ID)
 			}
 		}
-		switch {
-		case present(lp.Target, c):
-			c.Reason = "already exists in " + lp.Target
-			a.Conflicts = append(a.Conflicts, c)
+		if p.place(a, lp.Ambient, c) {
 			p.dropped = append(p.dropped, lp)
-		case holdsCredentials(lp.Ambient, c):
-			c.Reason = "holds a file named like a login; credentials are never moved"
-			a.Conflicts = append(a.Conflicts, c)
-			p.dropped = append(p.dropped, lp)
-		case c.Modified.After(recentCut) && !(p.opts.ExemptReferenced && len(c.Threads) > 0):
-			c.Reason = "modified " + c.Modified.Format(time.RFC3339) + ", inside the last " + p.opts.recent().String()
-			a.Recent = append(a.Recent, c)
-		default:
-			a.Moves = append(a.Moves, c)
 		}
 	}
+}
+
+// place files an Omniplex conversation in ambient under what the account
+// does with it: a conflict when something is at the destination already or
+// it holds a login file, recent when it may still be in use, otherwise a
+// move. It reports a conflict.
+func (p *Plan) place(a *AccountPlan, ambient string, c *Conversation) (conflict bool) {
+	switch {
+	case present(a.Target, c):
+		c.Reason = "already exists in " + a.Target
+		a.Conflicts = append(a.Conflicts, c)
+		return true
+	case holdsCredentials(ambient, c):
+		c.Reason = "holds a file named like a login; credentials are never moved"
+		a.Conflicts = append(a.Conflicts, c)
+		return true
+	case c.Modified.After(p.Created.Add(-p.opts.recent())) && !(p.opts.ExemptReferenced && len(c.Threads) > 0):
+		c.Reason = "modified " + c.Modified.Format(time.RFC3339) + ", inside the last " + p.opts.recent().String()
+		a.Recent = append(a.Recent, c)
+	default:
+		a.Moves = append(a.Moves, c)
+	}
+	return false
 }

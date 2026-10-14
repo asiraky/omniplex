@@ -50,7 +50,7 @@ func (a *Adapter) ConfigFields() []adapter.ConfigField {
 			Env:         "CODEX_HOME",
 			Label:       "Codex home",
 			Description: "Directory holding this account's Codex login and conversations. config.toml, AGENTS.md, skills, agents, rules and plugins are shared from ~/.codex. Left empty, it is ~/.omniplex/instances/<id>.",
-			Placeholder: "~/.codex",
+			Placeholder: "~/.omniplex/instances/<id>",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
 		},

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/asiraky/omniplex/internal/adapter/codexapp"
 )
 
 // Conversation is one harness conversation in a config home: the transcript
@@ -115,46 +117,33 @@ func claudeEntrypoint(path string) string {
 	}
 }
 
-// codexRoots hold Codex's rollouts: live ones under sessions/YYYY/MM/DD/ and
-// archived ones.
-var codexRoots = []string{"sessions", "archived_sessions"}
-
 // scanCodex lists every rollout. A conversation is Omniplex's when its
 // session_meta line (always the first) has originator "omniplex", the client
 // name Omniplex gives the app server; codex exec, the TUI and probes are not.
 func scanCodex(home string) ([]*Conversation, error) {
 	var out []*Conversation
-	for _, root := range codexRoots {
-		err := filepath.WalkDir(filepath.Join(home, root), func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					return fs.SkipDir
-				}
-				return err
-			}
-			name := d.Name()
-			if d.IsDir() && strings.HasPrefix(name, ".") && path != filepath.Join(home, root) {
-				return fs.SkipDir // an aside left by a move, or anything hidden
-			}
-			if !d.Type().IsRegular() || !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
-				return nil
-			}
-			rel, err := filepath.Rel(home, path)
-			if err != nil {
-				return err
-			}
-			c := &Conversation{Units: []Unit{{Rel: rel}}}
-			if err := measure(home, c); err != nil {
-				return err
-			}
-			c.ID, c.Origin = codexMeta(path)
-			c.Owned = c.ID != "" && c.Origin == "omniplex"
-			out = append(out, c)
-			return nil
-		})
+	var failed error
+	err := codexapp.WalkRollouts(home, func(path string) bool {
+		rel, err := filepath.Rel(home, path)
 		if err != nil {
-			return nil, err
+			failed = err
+			return false
 		}
+		c := &Conversation{Units: []Unit{{Rel: rel}}}
+		if err := measure(home, c); err != nil {
+			failed = err
+			return false
+		}
+		c.ID, c.Origin = codexMeta(path)
+		c.Owned = c.ID != "" && c.Origin == "omniplex"
+		out = append(out, c)
+		return true
+	})
+	if err == nil {
+		err = failed
+	}
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

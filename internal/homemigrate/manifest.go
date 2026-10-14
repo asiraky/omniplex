@@ -58,7 +58,8 @@ type ManifestConversation struct {
 	ID       string         `json:"id"`
 	Units    []ManifestUnit `json:"units"`
 	Files    []ManifestFile `json:"files,omitempty"`
-	// Status is pending | moved | skipped | conflict | failed | reversed.
+	// Status is pending | moved | skipped | conflict | failed | rolled-back |
+	// reversed.
 	Status string `json:"status"`
 	// Copied: the move crossed filesystems; each source is left renamed
 	// aside (convmove.Aside) and was not deleted.
@@ -91,8 +92,10 @@ const (
 	StatusConflict = "conflict"
 	StatusFailed   = "failed"
 	StatusReversed = "reversed"
-	StatusMigrated = "migrated"
-	StatusStopped  = "stopped"
+	// StatusRolledBack: moved, then put back when its account's run stopped.
+	StatusRolledBack = "rolled-back"
+	StatusMigrated   = "migrated"
+	StatusStopped    = "stopped"
 )
 
 func migrationsDir(userHome string) string {

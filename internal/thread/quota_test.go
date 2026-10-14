@@ -283,6 +283,21 @@ func TestQuotaSubscribeNotifiesOnChange(t *testing.T) {
 	}
 }
 
+// An account that changes who it is signed in as moves its Limits row (the
+// email, the same-login warning) even when it had no limits cached, so the
+// clients holding that row hear of it.
+func TestAnAccountSwitchNotifiesWithNothingCached(t *testing.T) {
+	mgr, _, _ := quotaTestManager(t)
+	id, ch := mgr.SubscribeQuota()
+	defer mgr.UnsubscribeQuota(id)
+	mgr.forgetQuota("fake")
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("no quota notification arrived")
+	}
+}
+
 func writeTranscript(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

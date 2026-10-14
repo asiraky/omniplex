@@ -74,7 +74,7 @@ func (a *Adapter) ConfigFields() []adapter.ConfigField {
 			Env:         "CLAUDE_CONFIG_DIR",
 			Label:       "Config directory",
 			Description: "Directory holding this account's Claude Code login and conversations. Settings, CLAUDE.md, skills, agents, commands and plugins are shared from ~/.claude. Left empty, it is ~/.omniplex/instances/<id>.",
-			Placeholder: "~/.claude",
+			Placeholder: "~/.omniplex/instances/<id>",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
 		},

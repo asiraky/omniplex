@@ -68,7 +68,7 @@ func (a *Adapter) ConfigFields() []adapter.ConfigField {
 			Env:         "PI_CODING_AGENT_DIR",
 			Label:       "Pi agent directory",
 			Description: "Directory holding this account's Pi credentials and conversations. Settings, models, AGENTS.md, skills, prompts and extensions are shared from ~/.pi/agent. Left empty, it is ~/.omniplex/instances/<id>.",
-			Placeholder: "~/.pi/agent",
+			Placeholder: "~/.omniplex/instances/<id>",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
 		},

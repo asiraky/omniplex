@@ -103,7 +103,7 @@ func migrateHomesAtStartup(ctx context.Context, threads homemigrate.ThreadSource
 		logf("homes migration: skipped: %v", err)
 		return
 	}
-	if filepath.Clean(dbPath) != filepath.Join(home, ".omniplex", "omniplex.db") || filepath.Clean(cfgPath) != filepath.Join(home, ".omniplex", "config.json") {
+	if filepath.Clean(dbPath) != filepath.Clean(defaultDB()) || filepath.Clean(cfgPath) != filepath.Join(home, ".omniplex", "config.json") {
 		logf("homes migration: skipped: this server is not on the machine's own data (db %s, config %s); run omniplex migrate-homes against that", dbPath, cfgPath)
 		return
 	}

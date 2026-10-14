@@ -268,7 +268,7 @@ func (m *Manager) ConfigureInstances(instances []provider.Instance, secrets *pro
 func (m *Manager) checkHomes() {
 	for _, reg := range m.orderedInstances() {
 		if reg.ad != nil {
-			_, _ = m.envFor(reg.inst)
+			m.linkHome(reg.inst)
 		}
 	}
 }
@@ -306,6 +306,16 @@ func (m *Manager) envFor(inst provider.Instance) (map[string]string, error) {
 	}
 	m.shareHome(inst, env)
 	return env, nil
+}
+
+// linkHome shares the user's configuration into an instance's home and
+// records its conflicts, as every use of the account does (envFor), without
+// needing the environment. An instance whose secrets cannot be read is left
+// for its next use to report.
+func (m *Manager) linkHome(inst provider.Instance) {
+	if env, err := inst.EnvOverlay(m.secretStore()); err == nil {
+		m.shareHome(inst, env)
+	}
 }
 
 // instanceFor resolves the instance a thread runs under. A thread created

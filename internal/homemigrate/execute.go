@@ -40,15 +40,25 @@ type AccountResult struct {
 	Conflicts int  `json:"conflicts"`
 	// Aborted is why the account was not attempted; Stopped is why an
 	// attempt stopped part way. Either way its config is unchanged.
-	Aborted string        `json:"aborted,omitempty"`
-	Stopped string        `json:"stopped,omitempty"`
-	Missing []ThreadCheck `json:"missing,omitempty"`
-	Sharing string        `json:"sharing,omitempty"`
+	Aborted string `json:"aborted,omitempty"`
+	Stopped string `json:"stopped,omitempty"`
+	// KeptAmbient: the account was the implicit default, which has no
+	// config entry, and was not migrated; the run added an entry for it with
+	// no home variable, so its threads still have their account, on the
+	// machine's home. KeepAmbientErr is why that failed.
+	KeptAmbient    bool   `json:"keptAmbient,omitempty"`
+	KeepAmbientErr string `json:"keepAmbientError,omitempty"`
+	// Unrestored are conversations a stopped run moved and could not put
+	// back; they are in Target.
+	Unrestored []string      `json:"unrestored,omitempty"`
+	Missing    []ThreadCheck `json:"missing,omitempty"`
+	Sharing    string        `json:"sharing,omitempty"`
 }
 
 // Execute carries out a plan made by NewPlan, account by account. Nothing an
 // account does is visible in its config until every conversation it moved is
-// verified, so an account that stops keeps running on the machine's home.
+// verified, and an account that stops puts back what it moved (rollBack), so
+// it keeps running on the machine's home with its conversations there.
 func Execute(ctx context.Context, p *Plan) (*Report, error) {
 	rep := &Report{Notes: append([]string(nil), p.Notes...)}
 	if p.held {
@@ -64,7 +74,10 @@ func Execute(ctx context.Context, p *Plan) (*Report, error) {
 	for _, a := range p.Accounts {
 		switch {
 		case a.Abort != "":
-			rep.Accounts = append(rep.Accounts, result(a, func(r *AccountResult) { r.Aborted = a.Abort }))
+			rep.Accounts = append(rep.Accounts, result(a, func(r *AccountResult) {
+				r.Aborted = a.Abort
+				keepAmbient(a, r)
+			}))
 		case a.Leftover && len(a.Moves) == 0:
 			if len(a.Recent) > 0 {
 				rep.Accounts = append(rep.Accounts, result(a, nil))
@@ -154,14 +167,16 @@ func Execute(ctx context.Context, p *Plan) (*Report, error) {
 		} else {
 			delete(st.Stopped, a.Instance)
 			r.Moved, r.Conflicts = 0, len(a.Conflicts)
-			if why := p.moveAll(a, convsOf[a], m, &r); why != "" {
-				stop(why)
-			} else if why := p.verify(byDriver[a.Driver], a, convsOf[a]); why != "" {
-				stop("verify: " + why)
-			} else if !a.Leftover {
+			why := p.moveAll(a, convsOf[a], m, &r)
+			if why == "" {
+				if v := p.verify(byDriver[a.Driver], a, convsOf[a]); v != "" {
+					why = "verify: " + v
+				}
+			}
+			if why == "" && !a.Leftover {
 				after, err := writeConfig(a)
 				if err != nil {
-					stop("write the config: " + err.Error())
+					why = "write the config: " + err.Error()
 				} else {
 					ma.ConfigAfter = after
 					ma.Status = StatusMigrated
@@ -173,9 +188,24 @@ func Execute(ctx context.Context, p *Plan) (*Report, error) {
 						r.Sharing = err.Error()
 					}
 				}
-			} else {
+			} else if why == "" {
 				ma.Status = StatusMigrated
 				r.Migrated = true
+			}
+			if why != "" {
+				// The account ends as it started: what this run moved goes
+				// back, so nothing of it is half in the new home.
+				back, stuck := rollBack(convsOf[a], m)
+				r.Moved -= back
+				r.Unrestored = stuck
+				switch {
+				case len(stuck) > 0:
+					why += fmt.Sprintf("; %d conversations it moved could NOT be put back (something is at their old path) and are in %s: %s", len(stuck), a.Target, strings.Join(stuck, ", "))
+				case back > 0:
+					why += fmt.Sprintf("; the %d conversations it had moved are back in %s", back, a.Ambient)
+				}
+				stop(why)
+				keepAmbient(a, &r)
 			}
 		}
 		if r.Stopped != "" {
@@ -269,6 +299,9 @@ func manifestConversation(a *AccountPlan, c *Conversation, status string) *Manif
 	return mc
 }
 
+// afterMove is a test seam: it runs after each conversation moves.
+var afterMove func(*ManifestConversation)
+
 // moveAll moves an account's conversations one at a time, recording each in
 // the manifest as it completes. It returns why it stopped, or "".
 func (p *Plan) moveAll(a *AccountPlan, convs []*ManifestConversation, m *Manifest, r *AccountResult) string {
@@ -324,11 +357,105 @@ func (p *Plan) moveAll(a *AccountPlan, convs []*ManifestConversation, m *Manifes
 		}
 		mc.Status = StatusMoved
 		r.Moved++
+		if afterMove != nil {
+			afterMove(mc)
+		}
 		if err := m.save(); err != nil {
 			return "update the manifest: " + err.Error()
 		}
 	}
 	return ""
+}
+
+// rollBack puts every conversation of an account this run moved back where
+// it came from, newest first, under the same never-overwrite rule, and keeps
+// the manifest saying where each one is. A conversation copied across
+// filesystems goes back from its aside, the untouched original, and its copy
+// is renamed aside in the new home (nothing is deleted). It returns how many
+// went back and the ones that could not, which stay whole in the new home.
+func rollBack(convs []*ManifestConversation, m *Manifest) (back int, stuck []string) {
+	for i := len(convs) - 1; i >= 0; i-- {
+		mc := convs[i]
+		if mc.Status != StatusMoved {
+			continue
+		}
+		if err := putBack(mc); err != nil {
+			mc.Note = "the run stopped and could not put this back: " + err.Error()
+			stuck = append(stuck, mc.ID)
+		} else {
+			mc.Status, mc.Note = StatusRolledBack, "put back when the run stopped"
+			back++
+		}
+		_ = m.save()
+	}
+	return back, stuck
+}
+
+// putBack returns one moved conversation to its source, all units or none.
+func putBack(mc *ManifestConversation) error {
+	type step struct{ from, to string }
+	var done []step
+	undo := func(err error) error {
+		for i := len(done) - 1; i >= 0; i-- {
+			if back := convmove.RenameNoReplace(done[i].to, done[i].from); back != nil {
+				err = fmt.Errorf("%w (and returning %s to %s failed: %v)", err, done[i].to, done[i].from, back)
+			}
+		}
+		return err
+	}
+	for j := len(mc.Units) - 1; j >= 0; j-- {
+		u := mc.Units[j]
+		aside := convmove.Aside(u.Src)
+		if _, err := os.Lstat(aside); mc.Copied && err == nil {
+			if err := convmove.RenameNoReplace(aside, u.Src); err != nil {
+				return undo(err)
+			}
+			done = append(done, step{aside, u.Src})
+			if err := convmove.RenameNoReplace(u.Dst, convmove.Aside(u.Dst)); err != nil {
+				return undo(fmt.Errorf("set the copy %s aside: %w", u.Dst, err))
+			}
+			done = append(done, step{u.Dst, convmove.Aside(u.Dst)})
+			continue
+		}
+		if _, err := convmove.Move(u.Dst, u.Src, true); err != nil {
+			return undo(err)
+		}
+		done = append(done, step{u.Dst, u.Src})
+	}
+	return nil
+}
+
+// keepAmbient gives the implicit default account (threads run on it, but it
+// has no config entry) an entry of its own when the run does not migrate
+// it: same id and driver, no home variable, so it keeps running on the
+// machine's home rather than vanishing from under its threads.
+func keepAmbient(a *AccountPlan, r *AccountResult) {
+	if a.Entry != nil || a.Leftover {
+		return
+	}
+	errThere := errors.New("already there")
+	_, err := userconfig.Update(func(cfg *userconfig.Config) error {
+		for _, raw := range cfg.Providers {
+			var e struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(raw, &e) == nil && e.ID == a.Instance {
+				return errThere
+			}
+		}
+		raw, err := json.Marshal(map[string]any{"id": a.Instance, "driver": a.Driver, "displayName": a.DisplayName, "enabled": true})
+		if err != nil {
+			return err
+		}
+		cfg.Providers = append(cfg.Providers, raw)
+		return nil
+	})
+	switch {
+	case err == nil:
+		r.KeptAmbient = true
+	case !errors.Is(err, errThere):
+		r.KeepAmbientErr = err.Error()
+	}
 }
 
 // verify re-hashes every file the account moved against the manifest and
@@ -396,6 +523,23 @@ func (p *Plan) verify(d *driver, a *AccountPlan, convs []*ManifestConversation) 
 					skipped[rel] = true
 				}
 			}
+			// What the plan leaves in the machine's home on purpose, this
+			// account's and every other account's on it.
+			planned := map[string]bool{}
+			for _, other := range p.Accounts {
+				if other.Driver != a.Driver || other.Ambient != a.Ambient {
+					continue
+				}
+				lists := [][]*Conversation{other.Recent, other.Conflicts, other.Left}
+				if other != a {
+					lists = append(lists, other.Moves)
+				}
+				for _, list := range lists {
+					for _, c := range list {
+						planned[c.Units[0].Rel] = true
+					}
+				}
+			}
 			remaining := 0
 			for _, c := range left {
 				rel := c.Units[0].Rel
@@ -404,6 +548,11 @@ func (p *Plan) verify(d *driver, a *AccountPlan, convs []*ManifestConversation) 
 				}
 				if c.Owned && skipped[rel] {
 					remaining++
+				}
+				// An account that leaves the machine's home must not leave a
+				// conversation of Omniplex's behind that the plan never saw.
+				if c.Owned && !a.Leftover && !movedRel[rel] && !skipped[rel] && !planned[rel] {
+					problems = append(problems, rel+" is Omniplex's and still in "+a.Ambient+", but the plan neither moves nor leaves it")
 				}
 			}
 			if want := len(a.Recent) + len(a.Conflicts) + conflicts; remaining != want {

@@ -235,16 +235,15 @@ func (m *Manager) reportQuotaAt(driver, instance string, snap adapter.QuotaSnaps
 
 // forgetQuota drops one instance's cached quota. Called when a probe shows
 // the instance answering as a different account: the old account's allowance
-// must never be presented under the new one's name.
+// must never be presented under the new one's name. Clients hear of it even
+// when nothing was cached, because the Limits rows also name who each account
+// is signed in as and which others share its login, and both just moved.
 func (m *Manager) forgetQuota(instanceID string) {
 	m.quotaMu.Lock()
-	_, had := m.quotas[instanceID]
 	delete(m.quotas, instanceID)
 	m.quotaGeneration[instanceID]++
 	m.quotaMu.Unlock()
-	if had {
-		m.notifyQuota()
-	}
+	m.notifyQuota()
 }
 
 // RefreshQuota re-reads one instance's usage limits: from a live thread of

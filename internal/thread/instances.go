@@ -80,6 +80,9 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 	if err := notMachineHome(spec, ad); err != nil {
 		return err
 	}
+	if err := m.homeNotTaken(spec, ad); err != nil {
+		return err
+	}
 	instances, err := provider.AddInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
 		return err
@@ -90,13 +93,23 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 }
 
 // SaveProviderInstance updates a configured instance in place; the entry
-// must exist. A home field left blank is filled in as Add fills it.
+// must exist. A home field left blank is filled in as Add fills it, except
+// on an account that has no home of its own yet (one a migration left on
+// the machine's home): repointing it would strand its conversations there,
+// so it stays as it is until it is given a home explicitly.
 func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 	if ad, ok := m.drivers[spec.Driver]; ok {
-		spec = defaultIsolation(spec, ad)
+		if m.staysAmbient(spec, ad) {
+			spec = withoutBlankHome(spec, ad)
+		} else {
+			spec = defaultIsolation(spec, ad)
+		}
 		spec = enforceSensitive(spec, ad)
 		spec = absolutePaths(spec, ad)
 		if err := notMachineHome(spec, ad); err != nil {
+			return err
+		}
+		if err := m.homeNotTaken(spec, ad); err != nil {
 			return err
 		}
 	}
@@ -115,7 +128,7 @@ func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 // started next must find the shared settings, not make the account its own.
 func (m *Manager) prepareHome(id string) {
 	if reg, ok := m.lookup(id); ok {
-		_, _ = m.envFor(reg.inst)
+		m.linkHome(reg.inst)
 	}
 }
 
@@ -181,6 +194,85 @@ func notMachineHome(spec provider.Spec, ad adapter.Adapter) error {
 		}
 		if p := accounthome.Resolve(home, v.Value); p != "" && (p == machine || samePath(p, machine)) {
 			return fmt.Errorf("%s is this machine's own %s home, which a terminal sign-in changes; give the account a folder of its own", machine, ad.Meta().Name)
+		}
+	}
+	return nil
+}
+
+// homeValue is spec's plain value for the home variable, trimmed, and
+// whether it is a secret (whose value Omniplex does not read here).
+func homeValue(env []provider.EnvVar, homeEnv string) (value string, sensitive bool) {
+	for _, v := range env {
+		if v.Name == homeEnv {
+			return strings.TrimSpace(v.Value), v.Sensitive
+		}
+	}
+	return "", false
+}
+
+// staysAmbient reports a save that leaves the home blank on an instance
+// whose stored entry has none.
+func (m *Manager) staysAmbient(spec provider.Spec, ad adapter.Adapter) bool {
+	homeEnv := isolatingEnv(ad)
+	if homeEnv == "" {
+		return false
+	}
+	reg, ok := m.lookup(spec.ID)
+	if !ok {
+		return false
+	}
+	if stored, sensitive := homeValue(reg.inst.Env, homeEnv); stored != "" || sensitive {
+		return false
+	}
+	incoming, sensitive := homeValue(spec.Env, homeEnv)
+	return incoming == "" && !sensitive
+}
+
+// withoutBlankHome drops a blank home variable, so the entry stays as it was
+// stored: without one.
+func withoutBlankHome(spec provider.Spec, ad adapter.Adapter) provider.Spec {
+	homeEnv := isolatingEnv(ad)
+	env := make([]provider.EnvVar, 0, len(spec.Env))
+	for _, v := range spec.Env {
+		if v.Name == homeEnv && strings.TrimSpace(v.Value) == "" && !v.Sensitive {
+			continue
+		}
+		env = append(env, v)
+	}
+	spec.Env = env
+	return spec
+}
+
+// homeNotTaken refuses a config home another instance already uses: two
+// accounts on one home share one login, whatever their names say.
+func (m *Manager) homeNotTaken(spec provider.Spec, ad adapter.Adapter) error {
+	homeEnv := isolatingEnv(ad)
+	if homeEnv == "" {
+		return nil
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	value, sensitive := homeValue(spec.Env, homeEnv)
+	if value == "" || sensitive {
+		return nil
+	}
+	mine := accounthome.Resolve(userHome, value)
+	for _, reg := range m.orderedInstances() {
+		if reg.inst.ID == spec.ID || reg.ad == nil {
+			continue
+		}
+		otherEnv := isolatingEnv(reg.ad)
+		if otherEnv == "" {
+			continue
+		}
+		other, sensitive := homeValue(reg.inst.Env, otherEnv)
+		if other == "" || sensitive {
+			continue
+		}
+		if theirs := accounthome.Resolve(userHome, other); theirs == mine || samePath(theirs, mine) {
+			return fmt.Errorf("%s is already the config home of %s (%s); two accounts on one home share one login, so give this one a folder of its own", mine, reg.inst.DisplayName, reg.inst.ID)
 		}
 	}
 	return nil

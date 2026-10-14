@@ -383,3 +383,67 @@ func read(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// An account a migration left on the machine's home keeps it through a save
+// that leaves the home blank: filling the default in would point it at an
+// empty home and strand its conversations. An explicit home still wins.
+func TestSavingAnAccountWithoutAHomeKeepsItWhereItIs(t *testing.T) {
+	mgr, _, home := accountsManager(t)
+	instances, err := provider.AddInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Aaron", Enabled: true}, mgr.secretStore(), mgr.logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.applyInstances(instances)
+
+	for _, env := range [][]provider.EnvVar{nil, {{Name: "FAKE_HOME", Value: "  "}}} {
+		if err := mgr.SaveProviderInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Aaron v2", Enabled: true, Env: env}); err != nil {
+			t.Fatal(err)
+		}
+		reg, _ := mgr.lookup("fake")
+		if reg.inst.DisplayName != "Aaron v2" {
+			t.Fatalf("save not applied: %+v", reg.inst)
+		}
+		if v, _ := homeValue(reg.inst.Env, "FAKE_HOME"); v != "" {
+			t.Fatalf("env %v: the account was repointed at %q", env, v)
+		}
+	}
+
+	explicit := filepath.Join(home, "elsewhere")
+	if err := mgr.SaveProviderInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Aaron", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: explicit}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := accountHomeOf(t, mgr, "fake"); got != explicit {
+		t.Fatalf("explicit home = %q, want %q", got, explicit)
+	}
+}
+
+func TestTwoAccountsCannotShareAConfigHome(t *testing.T) {
+	mgr, _, _ := accountsManager(t)
+	taken := addAccount(t, mgr, "work")
+	for _, value := range []string{taken, taken + "/", "~/.omniplex/instances/work"} {
+		err := mgr.AddProviderInstance(provider.Spec{ID: "zero8", Driver: "fake", DisplayName: "zero8", Enabled: true,
+			Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: value}}})
+		if err == nil {
+			t.Fatalf("Add accepted the home of another account (%q)", value)
+		}
+	}
+	if _, ok := mgr.lookup("zero8"); ok {
+		t.Fatal("a refused add was installed")
+	}
+
+	own := addAccount(t, mgr, "zero8")
+	err := mgr.SaveProviderInstance(provider.Spec{ID: "zero8", Driver: "fake", DisplayName: "zero8", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: taken}}})
+	if err == nil {
+		t.Fatal("Save accepted the home of another account")
+	}
+	if got := accountHomeOf(t, mgr, "zero8"); got != own {
+		t.Fatalf("a refused save changed the home to %q", got)
+	}
+	// Saving an account with its own home is not a clash with itself.
+	if err := mgr.SaveProviderInstance(provider.Spec{ID: "work", Driver: "fake", DisplayName: "Work", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: taken}}}); err != nil {
+		t.Fatal(err)
+	}
+}
