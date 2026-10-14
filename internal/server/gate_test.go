@@ -17,7 +17,6 @@ import (
 
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // testServer builds a server whose guard treats requests as remote, so the
@@ -41,7 +40,7 @@ func testServerWithStore(t *testing.T) (http.Handler, *auth.Guard, *store.Store)
 	t.Cleanup(func() { st.Close() })
 
 	guard := auth.New(st, true, auth.DefaultPort)
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := testManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
 	srv := New(Options{Manager: mgr, Store: st, Guard: guard})
@@ -311,7 +310,7 @@ func TestHealthWithholdsCommitFromUnpairedDevices(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	guard := auth.New(st, true, auth.DefaultPort)
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := testManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
 	handler := New(Options{
@@ -362,7 +361,7 @@ func TestHealthGivesCommitToTheBoxEvenBehindAProxy(t *testing.T) {
 	guard := auth.New(st, true, auth.DefaultPort)
 	// What `tailscale serve --https=443` does to a running server.
 	guard.SetProxied(true)
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := testManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
 	handler := New(Options{

@@ -85,7 +85,7 @@ func TestCardResolvesOnViewedThreadAfterHarnessExit(t *testing.T) {
 	}
 	defer st.Close()
 	fa := &fakeAdapter{}
-	m := NewManager(st, t.Logf, fa)
+	m := testManager(st, t.Logf, fa)
 	defer m.Shutdown()
 	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
@@ -161,7 +161,7 @@ func TestResumeKeepsHeldCardsAndCancelsLostOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	m := NewManager(st, t.Logf, &fakeAdapter{})
+	m := testManager(st, t.Logf, &fakeAdapter{})
 	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestResumeKeepsHeldCardsAndCancelsLostOnes(t *testing.T) {
 	id := a.ID
 	m.Shutdown()
 
-	m = NewManager(st, t.Logf, &fakeAdapter{})
+	m = testManager(st, t.Logf, &fakeAdapter{})
 	defer m.Shutdown()
 	m.SetCardLive(func(requestID string) bool { return requestID == "held" })
 	a, err = m.View(ctx, id)

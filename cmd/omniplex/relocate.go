@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/relocate"
@@ -33,7 +34,7 @@ func runRelocateCommand(ctx context.Context, args []string, out io.Writer) error
 	report, err := relocate.Run(ctx, flags.Arg(0), flags.Arg(1), relocate.Options{
 		DBPath:           *dbPath,
 		HomeDir:          home,
-		ClaudeConfigDir:  os.Getenv("CLAUDE_CONFIG_DIR"),
+		ClaudeConfigDir:  filepath.Join(home, ".claude"),
 		ClaudeConfigDirs: configDirs,
 	})
 	if err != nil {

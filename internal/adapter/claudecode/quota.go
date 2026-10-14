@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -101,6 +102,26 @@ func scopedSlug(name string) string {
 		}
 		return '_'
 	}, lower)
+}
+
+// claudeAccountID is the Anthropic account a config home is signed in as:
+// oauthAccount.accountUuid in its .claude.json. Limits are kept per account,
+// so this is what tells two Omniplex accounts on one login apart. "" when
+// the file is missing or holds no OAuth login (an API key, signed out).
+func claudeAccountID(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		OAuthAccount struct {
+			AccountUUID string `json:"accountUuid"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return ""
+	}
+	return doc.OAuthAccount.AccountUUID
 }
 
 // parseClaudeUsage normalises a get_usage response. A response whose
@@ -226,6 +247,7 @@ func (s *session) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
 	if err != nil {
 		return snap, err
 	}
+	snap.AccountID = s.accountID
 	s.mu.Lock()
 	s.scopedLimit = scopedLimitName(raw)
 	s.mu.Unlock()
@@ -291,7 +313,11 @@ func (a *Adapter) ReadQuota(ctx context.Context, env map[string]string) (adapter
 	}
 	switch {
 	case usage != nil:
-		return parseClaudeUsage(usage)
+		snap, err := parseClaudeUsage(usage)
+		if err == nil {
+			snap.AccountID = claudeAccountID(claudeJSON(env))
+		}
+		return snap, err
 	case fatal != "":
 		return adapter.QuotaSnapshot{}, fmt.Errorf("claude usage read failed: %s", firstLine(strings.TrimSpace(fatal)))
 	case ctx.Err() != nil:

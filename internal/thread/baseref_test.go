@@ -190,7 +190,7 @@ func TestManagedWorktreeBranchesFromARemoteOnlyBaseBranch(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	_, want := remoteOnlyBase(t, root)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -222,7 +222,7 @@ func TestManagedWorktreeWhoseBranchIsItsRemoteOnlyBase(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	_, want := remoteOnlyBase(t, root)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -260,7 +260,7 @@ func TestCompatibilityHookGetsOneArgAndTheBaseInTheEnvironment(t *testing.T) {
 	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
 	if err != nil {

@@ -170,9 +170,8 @@ type ConfigField struct {
 	Kind string `json:"kind"`
 	// Isolates marks the field that gives an instance its own credential/
 	// config home (CODEX_HOME, CLAUDE_CONFIG_DIR, PI_CODING_AGENT_DIR). The
-	// server defaults it for new explicit instances so two accounts never
-	// share state, and leaves it empty on the default instance so ambient
-	// behaviour is untouched.
+	// server fills it in for every instance left without one, so no account
+	// is the machine's own and two accounts never share state.
 	Isolates bool `json:"isolates,omitempty"`
 }
 

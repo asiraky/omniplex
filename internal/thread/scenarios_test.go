@@ -45,7 +45,7 @@ func ready(t *testing.T, st *store.Store, id string) store.ThreadMeta {
 func TestManagedWorktreeBranchesFromTheThreadsOwnBase(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	// A second commit that only "stacked" carries, so branching from it is
@@ -80,7 +80,7 @@ func TestManagedWorktreeBranchesFromTheThreadsOwnBase(t *testing.T) {
 func TestUnknownBaseRefFallsBackToTheDefaultBranch(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 	wantMain := git(t, root, "rev-parse", "main")
 
@@ -108,7 +108,7 @@ func TestUnknownBaseRefFallsBackToTheDefaultBranch(t *testing.T) {
 func TestDeleteLeavesTheWorktreeUnlessAsked(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -137,7 +137,7 @@ func TestDeleteLeavesTheWorktreeUnlessAsked(t *testing.T) {
 func TestDeleteRemovesTheWorktreeWhenAsked(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -166,7 +166,7 @@ func TestDeleteRemovesTheWorktreeWhenAsked(t *testing.T) {
 func TestDeleteRefusesToRemoveASharedWorktree(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	first, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
@@ -197,7 +197,7 @@ func TestDeleteRefusesToRemoveASharedWorktree(t *testing.T) {
 func TestDeleteNeverRemovesTheMainCheckout(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
@@ -219,7 +219,7 @@ func TestDeleteNeverRemovesTheMainCheckout(t *testing.T) {
 func TestDeletingAClosedThreadStillHonoursTheCheckbox(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -251,7 +251,7 @@ func TestDeletingAClosedThreadStillHonoursTheCheckbox(t *testing.T) {
 func TestAClosedSiblingStillProtectsTheWorktree(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	first, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
@@ -285,7 +285,7 @@ func TestAClosedSiblingStillProtectsTheWorktree(t *testing.T) {
 func TestAttachingToACheckoutBeingCleanedUpIsRefused(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
@@ -309,7 +309,7 @@ func TestAMessageSentWhileTheWorkspaceIsPreparedRunsWhenTheAgentStarts(t *testin
 	st, p := testProject(t, root)
 	gate := make(chan struct{})
 	fa := &fakeAdapter{createGate: gate}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})

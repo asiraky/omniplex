@@ -74,7 +74,7 @@ func resolve(path string) string {
 func TestListWorkspacesReportsRootAndWorktrees(t *testing.T) {
 	root, worktree, branch := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
@@ -97,7 +97,7 @@ func TestListWorkspacesReportsRootAndWorktrees(t *testing.T) {
 func TestListWorkspacesMarksCheckoutsHeldByLiveThreads(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	now := proto.NowMillis()
@@ -124,7 +124,7 @@ func TestListWorkspacesMarksCheckoutsHeldByLiveThreads(t *testing.T) {
 func TestResolveWorkspaceRejectsDirectoriesOutsideTheProject(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	if _, err := mgr.ResolveWorkspace(context.Background(), p.ID, "", t.TempDir()); err == nil {
@@ -139,7 +139,7 @@ func TestCreateProjectAttachesToExistingWorktreeWithoutProvisioning(t *testing.T
 	root, worktree, branch := gitRepo(t)
 	st, p := testProject(t, root)
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, WorkspacePath: worktree})
@@ -202,7 +202,7 @@ func TestTypedBranchCreatesWorktreeEvenWhenProjectDefaultIsLocal(t *testing.T) {
 		t.Fatalf("precondition: default workspace is %q", p.Defaults.Workspace)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -242,7 +242,7 @@ func TestSuggestedRootMayLiveOutsideTheProject(t *testing.T) {
 	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -288,7 +288,7 @@ func TestLocalThreadRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
@@ -350,7 +350,7 @@ func TestLocalThreadRunsInTheProjectRootAndSkipsHooks(t *testing.T) {
 func TestSecondLocalThreadIsAllowedWhileTheFirstIsLive(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	first, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
@@ -391,7 +391,7 @@ func TestSecondLocalThreadIsAllowedWhileTheFirstIsLive(t *testing.T) {
 func TestForceDeleteOfALocalThreadRemovesNothing(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "local"})
@@ -426,7 +426,7 @@ func TestCleanupIgnoresADeprovisionScriptLeftOnALocalThread(t *testing.T) {
 	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	// The row an older build would have written: local, but carrying a
@@ -459,7 +459,7 @@ func TestCleanupIgnoresADeprovisionScriptLeftOnALocalThread(t *testing.T) {
 func TestUnknownWorkspaceModeIsRefused(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	for _, mode := range []string{"borrowed", "local ", "garbage"} {
@@ -475,7 +475,7 @@ func TestUnknownWorkspaceModeIsRefused(t *testing.T) {
 func TestAFailedManagedThreadStillHoldsTheWorktreeItCreated(t *testing.T) {
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	now := proto.NowMillis()
@@ -520,7 +520,7 @@ func TestProjectRootInsideARepositoryIsStillAttachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, p := testProject(t, sub)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	spaces, err := mgr.ListWorkspaces(context.Background(), p.ID, "")
@@ -550,7 +550,7 @@ func TestProjectRootInsideARepositoryIsStillAttachable(t *testing.T) {
 func TestConcurrentLocalThreadsAllShareTheRoot(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	const racers = 8

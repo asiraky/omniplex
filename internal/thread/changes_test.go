@@ -56,7 +56,7 @@ func changesFixture(t *testing.T) (*Manager, string) {
 	write(t, worktree, "untracked.txt", "a\nb\n")
 
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
 	meta := store.ThreadMeta{ID: "s1", Cwd: worktree, Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle", ProjectID: p.ID, Branch: branch, WorkspaceMode: "borrowed"}
@@ -233,7 +233,7 @@ func TestThreadChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	now := proto.NowMillis()
 	if err := st.CreateThread(context.Background(), store.ThreadMeta{ID: "s2", Cwd: t.TempDir(), Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {

@@ -42,7 +42,7 @@ func TestProjectHarnessDefaultsDoNotCrossToAnotherHarness(t *testing.T) {
 	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {},
+	mgr := testManager(st, func(string, ...any) {},
 		&harnessNamedAdapter{id: "claude"},
 		&harnessNamedAdapter{id: "codex"},
 	)
@@ -77,7 +77,7 @@ func TestExplicitHarnessDefaultsAreNotReplacedByProjectProfile(t *testing.T) {
 	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &harnessNamedAdapter{id: "codex"})
+	mgr := testManager(st, func(string, ...any) {}, &harnessNamedAdapter{id: "codex"})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
@@ -101,7 +101,7 @@ func TestExplicitHarnessDefaultsAreNotReplacedByProjectProfile(t *testing.T) {
 func TestDeleteProjectRemovesItFromTheRegistry(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
@@ -124,7 +124,7 @@ func TestDeleteProjectRemovesItFromTheRegistry(t *testing.T) {
 func TestDeleteProjectLeavesTheCheckoutAlone(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
@@ -141,7 +141,7 @@ func TestDeleteProjectLeavesTheCheckoutAlone(t *testing.T) {
 func TestDeleteProjectRefusesWhileThreadsRemain(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	meta := store.ThreadMeta{ID: "s1", Cwd: root, Harness: "fake", ProjectID: p.ID, Phase: "idle", CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
@@ -175,7 +175,7 @@ func TestDeleteProjectRefusesWhileThreadsRemain(t *testing.T) {
 func TestDeleteProjectReportsAnUnknownID(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, _ := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	if err := mgr.DeleteProject(context.Background(), "nope"); !errors.Is(err, store.ErrNotFound) {
@@ -226,7 +226,7 @@ func TestCreateThreadStillAllowsNoProject(t *testing.T) {
 func TestSaveProjectCannotResurrectADeletedOne(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	if err := mgr.DeleteProject(context.Background(), p.ID); err != nil {
@@ -249,7 +249,7 @@ func TestSaveProjectCannotResurrectADeletedOne(t *testing.T) {
 func TestProjectChangesReachEveryConnection(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	id, ch := mgr.SubscribeProjects()
@@ -274,7 +274,7 @@ func TestAPlainFolderThreadWorksInTheFolder(t *testing.T) {
 	if err := putProject(context.Background(), st, p); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
@@ -304,7 +304,7 @@ func TestAThreadAcrossTheProjectStartsInTheHomeFolder(t *testing.T) {
 	if err := st.AddFolder(context.Background(), p.ID, project.NewFolder("f2", t.TempDir())); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	if _, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Workspace: "managed"}); err == nil {

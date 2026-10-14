@@ -58,6 +58,11 @@ type Manager struct {
 	// homeWarned holds the shareHome problems already logged, so a home
 	// that needs a hand is reported once rather than on every probe.
 	homeWarned sync.Map
+	// homeConflicts is each instance's own copies of shared entries, from
+	// the last time its home was checked, so the Providers page can show
+	// them and offer to use the shared one instead. Guarded by homeMu.
+	homeMu        sync.Mutex
+	homeConflicts map[string][]HomeConflict
 
 	// authFlows are running structured sign-in flows, keyed by flow id.
 	// Ephemeral on purpose: see authflow.go.
@@ -180,14 +185,15 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		quotaGeneration: map[string]uint64{},
 		quotaSub:        map[string]chan struct{}{},
 		authFlows:       map[string]*authFlow{},
+		homeConflicts:   map[string][]HomeConflict{},
 		usageScan:       usage.NewScanner(),
 	}
+	// Drivers only. There is no implicit account per driver: every account
+	// is configured, with a home of its own, so none of them is the
+	// machine's own login that a terminal sign-in would change under it.
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
 		m.driverOrder = append(m.driverOrder, ad.ID())
-		// The default instance: same id as the driver, ambient environment.
-		// This is why one account per harness looks exactly like today.
-		m.register(registered{inst: provider.Default(ad.ID(), ad.Meta().Name), ad: ad})
 	}
 	return m
 }
@@ -236,9 +242,8 @@ func (m *Manager) purgeAttachments(id string) {
 	}
 }
 
-// register adds or replaces one instance, preserving order on replacement so a
-// configured entry that overrides a default keeps the default's position.
-// Callers hold instMu (or are still single-threaded in NewManager).
+// register adds or replaces one instance, preserving order on replacement.
+// Callers hold instMu.
 func (m *Manager) register(reg registered) {
 	if _, exists := m.instances[reg.inst.ID]; !exists {
 		m.instanceOrder = append(m.instanceOrder, reg.inst.ID)
@@ -246,15 +251,26 @@ func (m *Manager) register(reg registered) {
 	m.instances[reg.inst.ID] = reg
 }
 
-// ConfigureInstances installs the operator's configured provider instances,
-// on top of the defaults synthesised per adapter. An instance naming a driver
-// this build does not have is registered anyway and presents as unavailable —
-// a config written on another branch must never brick startup.
+// ConfigureInstances installs the operator's configured provider instances.
+// An instance naming a driver this build does not have is registered anyway
+// and presents as unavailable — a config written on another branch must never
+// brick startup. Every account's home is checked here, at startup, as well as
+// on each use, so a conflict shows before anything runs on the account.
 func (m *Manager) ConfigureInstances(instances []provider.Instance, secrets *provider.SecretStore) {
 	m.instMu.Lock()
-	defer m.instMu.Unlock()
 	m.secrets = secrets
 	m.configureLocked(instances)
+	m.instMu.Unlock()
+	m.checkHomes()
+}
+
+// checkHomes prepares every registered instance's home.
+func (m *Manager) checkHomes() {
+	for _, reg := range m.orderedInstances() {
+		if reg.ad != nil {
+			_, _ = m.envFor(reg.inst)
+		}
+	}
 }
 
 // configureLocked layers configured instances over whatever is already
@@ -262,11 +278,9 @@ func (m *Manager) ConfigureInstances(instances []provider.Instance, secrets *pro
 func (m *Manager) configureLocked(instances []provider.Instance) {
 	seen := map[string]bool{}
 	for _, inst := range instances {
-		// A configured entry may override the same driver's default instance,
-		// but never an instance of a *different* driver: {"id":"codex",
-		// "driver":"claude"} would silently delete the Codex default and break
-		// every thread on it. Duplicate ids within the config are a mistake
-		// too; the first entry wins.
+		// An id is one account: {"id":"codex","driver":"claude"} beside a
+		// Codex account "codex" would rebind every thread on it. Duplicate ids
+		// within the config are a mistake; the first entry wins.
 		if existing, ok := m.instances[inst.ID]; ok && (existing.inst.Driver != inst.Driver || seen[inst.ID]) {
 			m.logf("provider instance %q collides with an existing %q instance; entry skipped", inst.ID, existing.inst.Driver)
 			continue
@@ -295,8 +309,10 @@ func (m *Manager) envFor(inst provider.Instance) (map[string]string, error) {
 }
 
 // instanceFor resolves the instance a thread runs under. A thread created
-// before instances existed has no ProviderInstance and resolves to the default
-// instance for its harness — that is the whole migration. A thread whose
+// before instances existed has no ProviderInstance and resolves to the
+// instance whose id is its harness id (the account the startup migration
+// keeps under that id); if there is none it is refused, never handed to
+// another account of the harness. A thread whose
 // instance has since vanished, or whose instance now names a different driver,
 // is refused legibly: resuming a work-account thread against a personal
 // account would silently produce a different agent identity.
@@ -333,15 +349,19 @@ func (m *Manager) cleanupAdapter(meta store.ThreadMeta) (adapter.Adapter, map[st
 }
 
 // resolveInstance turns a create request into an instance. The instance id
-// wins when given; otherwise the harness id names its default instance.
+// wins when given; otherwise the harness's first enabled account runs it.
 func (m *Manager) resolveInstance(instanceID, harness string) (registered, error) {
 	id := instanceID
 	if id == "" {
-		id = harness
+		reg, err := m.firstInstance(harness)
+		if err != nil {
+			return registered{}, err
+		}
+		id = reg.inst.ID
 	}
 	reg, ok := m.lookup(id)
 	if !ok {
-		return registered{}, fmt.Errorf("unknown harness %q", id)
+		return registered{}, fmt.Errorf("unknown provider instance %q", id)
 	}
 	if harness != "" && reg.inst.Driver != harness {
 		return registered{}, fmt.Errorf("provider instance %q runs driver %q, not %q", id, reg.inst.Driver, harness)
@@ -353,6 +373,32 @@ func (m *Manager) resolveInstance(instanceID, harness string) (registered, error
 		return registered{}, fmt.Errorf("%s is not available: no %q driver in this build", reg.inst.DisplayName, reg.inst.Driver)
 	}
 	return reg, nil
+}
+
+// firstInstance is a driver's first enabled account, in listing order.
+func (m *Manager) firstInstance(driver string) (registered, error) {
+	if driver == "" {
+		return registered{}, errors.New("no harness or account given")
+	}
+	for _, reg := range m.orderedInstances() {
+		if reg.inst.Driver == driver && reg.inst.Enabled {
+			return reg, nil
+		}
+	}
+	return registered{}, errors.New(noAccount(m.driverName(driver)))
+}
+
+// driverName is a driver's display name, or its id when this build lacks it.
+func (m *Manager) driverName(driver string) string {
+	if ad, ok := m.drivers[driver]; ok {
+		return ad.Meta().Name
+	}
+	return driver
+}
+
+// noAccount is what a driver with no usable account says.
+func noAccount(name string) string {
+	return "No " + name + " account. Add one in Settings → Providers."
 }
 
 // InstanceMeta is one provider instance as presented to a UI: the routing key,
@@ -372,10 +418,13 @@ type InstanceMeta struct {
 	// CLI in a terminal, "" when it has none. The methods themselves are
 	// fetched on demand — answering may spawn the harness.
 	Auth string `json:"auth,omitempty"`
-	// Configured marks an instance that exists in the user config, as
-	// opposed to a driver's synthesised ambient default. Only configured
-	// instances can be edited or removed.
-	Configured bool `json:"configured,omitempty"`
+	// HomeConflicts are the shared entries this account holds a copy of its
+	// own instead of linking, from the last check of its home. Each can be
+	// resolved with use_shared_home_entry.
+	HomeConflicts []HomeConflict `json:"homeConflicts,omitempty"`
+	// SameLoginAs names the other accounts of this driver signed in to the
+	// same login, which would make them share one set of limits.
+	SameLoginAs []string `json:"sameLoginAs,omitempty"`
 	// Env is the instance's configured environment with every sensitive
 	// value redacted to its name. Saving replaces env wholesale, so an edit
 	// form needs the current values to prefill — without this, a blank field
@@ -391,8 +440,8 @@ const (
 
 // Harness is one registered harness plus its current readiness, as presented
 // to a UI. Everything here comes from the adapter; the core adds nothing and
-// interprets nothing. The driver-level fields mirror the default instance so
-// existing clients keep working; Instances carries every account.
+// interprets nothing. The driver-level fields mirror the first enabled
+// account; Instances carries every account.
 type Harness struct {
 	adapter.HarnessMeta
 	Models          []adapter.ModelMeta          `json:"models"`
@@ -431,16 +480,18 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 			schema := ms.ModelSettingsSchema()
 			h.ModelSettings = &schema
 		}
-		// The driver-level availability and models mirror the default
-		// instance, which is what today's UI renders; one instance being
-		// unhealthy (or offering different models) must not speak for the
-		// others, so each instance also reports its own.
+		// The driver-level availability and models mirror the first enabled
+		// account; one instance being unhealthy (or offering different
+		// models) must not speak for the others, so each instance also
+		// reports its own. A driver with no account cannot start anything.
+		h.Availability = adapter.Unavailable(noAccount(h.Name))
 		for _, inst := range h.Instances {
-			if inst.ID == id {
+			if inst.Enabled {
 				h.Availability = inst.Availability
 				if len(inst.Models) > 0 {
 					h.Models = inst.Models
 				}
+				break
 			}
 		}
 		out = append(out, h)
@@ -478,12 +529,19 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 			Enabled:      reg.inst.Enabled,
 			CanLogin:     supportsLogin(reg.ad),
 			Auth:         authSurface(reg.ad),
-			Configured:   reg.inst.Raw != nil,
 			Env:          redactedEnv(reg.inst.Env),
 			Availability: m.availability(ctx, reg),
 		}
+		im.HomeConflicts = m.homeConflictsOf(reg.inst.ID)
 		im.Models = m.modelsFor(reg, im.Availability)
 		out = append(out, im)
+	}
+	logins := make([]login, len(out))
+	for i, im := range out {
+		logins[i] = login{instance: im.ID, account: im.Availability.Facts["account"], accountID: m.quotaAccountID(im.ID)}
+	}
+	for i := range out {
+		out[i].SameLoginAs = sameLoginAs(logins, i)
 	}
 	return out
 }
@@ -739,7 +797,7 @@ func sameModels(a, b []adapter.ModelMeta) bool {
 }
 
 // Create starts a new thread on the named harness, under the named provider
-// instance (empty means the harness's default instance).
+// instance (empty means the harness's first enabled account).
 func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mode string) (*Actor, error) {
 	reg, err := m.resolveInstance(instance, harness)
 	if err != nil {
@@ -1273,8 +1331,9 @@ func (m *Manager) adopt(a *Actor) {
 
 // bindQuota points a thread's usage-limit pushes at the account it runs
 // under, captured here so an adapter's push can never be filed against the
-// wrong account. A thread created before instances existed resolves to its
-// harness's default. Rebound when the thread switches account.
+// wrong account. A thread created before instances existed resolves to the
+// account with its harness's id, as instanceFor does. Rebound when the thread
+// switches account.
 func (m *Manager) bindQuota(a *Actor) {
 	if meta, err := m.store.Thread(context.Background(), a.ID); err == nil {
 		instance := meta.ProviderInstance

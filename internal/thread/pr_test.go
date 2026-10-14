@@ -54,7 +54,7 @@ func prThread(t *testing.T, mode, branch string) (*Manager, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	return mgr, worktree
 }

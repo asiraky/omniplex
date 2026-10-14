@@ -30,6 +30,56 @@ type QuotaStatus struct {
 	LastError string `json:"lastError,omitempty"`
 	// LastAttempt is when the quota was last observed, successful or not.
 	LastAttempt int64 `json:"lastAttempt,omitempty"`
+	// Account is who the instance is signed in as: the email its latest
+	// probe reported, else the provider's account id from the snapshot.
+	Account string `json:"account,omitempty"`
+	// SameLoginAs names the other accounts of this driver signed in to the
+	// same login. Limits are kept per login, so their rows read the same.
+	SameLoginAs []string `json:"sameLoginAs,omitempty"`
+}
+
+// login is who one instance is signed in as, as far as the manager knows.
+type login struct {
+	instance  string
+	account   string // email or login, from the probe
+	accountID string // the provider's account id, from a quota snapshot
+}
+
+// sameLoginAs lists the instances of logins, other than logins[i], that are
+// the same login: the same email (any case) or the same account id. The
+// caller passes one driver's instances.
+func sameLoginAs(logins []login, i int) []string {
+	me := logins[i]
+	var out []string
+	for j, other := range logins {
+		if j == i {
+			continue
+		}
+		sameEmail := me.account != "" && strings.EqualFold(strings.TrimSpace(me.account), strings.TrimSpace(other.account))
+		sameID := me.accountID != "" && me.accountID == other.accountID
+		if sameEmail || sameID {
+			out = append(out, other.instance)
+		}
+	}
+	return out
+}
+
+// probedAccount is the signed-in account an instance's latest probe
+// reported, cached or not.
+func (m *Manager) probedAccount(instanceID string) string {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	return m.probes[instanceID].result.Facts["account"]
+}
+
+// quotaAccountID is the provider account id on an instance's cached quota.
+func (m *Manager) quotaAccountID(instanceID string) string {
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+	if q, ok := m.quotas[instanceID]; ok {
+		return q.Snapshot.AccountID
+	}
+	return ""
 }
 
 // quotaTimeout bounds one quota read. The adapters apply their own deadlines;
@@ -64,7 +114,26 @@ func (m *Manager) Quotas() []QuotaStatus {
 			status = QuotaStatus{Provider: reg.inst.Driver, Instance: reg.inst.ID, DisplayName: reg.inst.DisplayName}
 		}
 		m.quotaMu.Unlock()
+		status.SameLoginAs = nil
+		status.Account = m.probedAccount(reg.inst.ID)
+		if status.Account == "" {
+			status.Account = status.Snapshot.AccountID
+		}
 		out = append(out, status)
+	}
+	// Duplicate logins are only meaningful within one driver.
+	byDriver := map[string][]int{}
+	for i, reg := range instances {
+		byDriver[reg.inst.Driver] = append(byDriver[reg.inst.Driver], i)
+	}
+	for _, idx := range byDriver {
+		logins := make([]login, len(idx))
+		for k, i := range idx {
+			logins[k] = login{instance: out[i].Instance, account: m.probedAccount(out[i].Instance), accountID: out[i].Snapshot.AccountID}
+		}
+		for k, i := range idx {
+			out[i].SameLoginAs = sameLoginAs(logins, k)
+		}
 	}
 	return out
 }
@@ -219,6 +288,12 @@ func (m *Manager) RefreshQuota(ctx context.Context, instanceID string) (QuotaSta
 	out := *status
 	m.quotaMu.Unlock()
 	m.notifyQuota()
+	// The listing's row, with who is signed in and any duplicate login.
+	for _, q := range m.Quotas() {
+		if q.Instance == instanceID {
+			return q, err
+		}
+	}
 	return out, err
 }
 

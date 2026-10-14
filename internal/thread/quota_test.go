@@ -71,7 +71,7 @@ func quotaTestManager(t *testing.T) (*Manager, *quotaAdapter, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &quotaAdapter{}
-	return NewManager(st, func(string, ...any) {}, fa), fa, st
+	return testManager(st, func(string, ...any) {}, fa), fa, st
 }
 
 func TestQuotaSparseMergeKeepsUnmentionedWindows(t *testing.T) {

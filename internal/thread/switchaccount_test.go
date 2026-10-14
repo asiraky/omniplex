@@ -50,7 +50,7 @@ func switchTestManager(t *testing.T) (*Manager, *moverAdapter, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &moverAdapter{instAdapter: &instAdapter{}}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	mgr.ConfigureInstances([]provider.Instance{workInstance()}, nil)
 	return mgr, fa, st
 }

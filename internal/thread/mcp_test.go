@@ -114,7 +114,7 @@ func newMCPManager(t *testing.T, ad adapter.Adapter) *Manager {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := NewManager(st, t.Logf, ad)
+	mgr := testManager(st, t.Logf, ad)
 	t.Cleanup(mgr.Shutdown)
 	return mgr
 }
@@ -242,7 +242,7 @@ func TestAThreadAsksForItsProjectsServers(t *testing.T) {
 	ctx := context.Background()
 	st, p := testProject(t, t.TempDir())
 	host := &mcpAdapter{fakeAdapter: &fakeAdapter{}, transports: []string{"http"}, control: true}
-	mgr := NewManager(st, t.Logf, host)
+	mgr := testManager(st, t.Logf, host)
 	t.Cleanup(mgr.Shutdown)
 
 	inProject, err := mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: p.ID})

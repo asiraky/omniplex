@@ -27,7 +27,7 @@ func projectsIn(t *testing.T) (*Manager, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	return mgr, dir
 }
