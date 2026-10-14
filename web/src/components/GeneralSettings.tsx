@@ -1,3 +1,4 @@
+import { PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { ModelPicker } from "~/components/ModelPicker";
@@ -88,11 +89,14 @@ export function GeneralSettings({
   harnesses,
   onSave,
   onBack,
+  onAddAccount,
 }: {
   userConfig: UserConfig;
   harnesses: HarnessMeta[];
   onSave: (cfg: UserConfig) => Promise<void>;
   onBack?: () => void;
+  /** Open Providers on its add wizard; offered when there is no account to pick. */
+  onAddAccount?: () => void;
 }) {
   const [cfg, setCfg] = useState<UserConfig>(userConfig);
   const [busy, setBusy] = useState(false);
@@ -104,7 +108,8 @@ export function GeneralSettings({
   };
 
   const branch = useMemo(() => branchPreview(cfg.branchFormat ?? ""), [cfg.branchFormat]);
-  const defaultInstance = pickerInstances(harnesses).find((i) => i.id === cfg.defaultInstance);
+  const instances = pickerInstances(harnesses);
+  const defaultInstance = instances.find((i) => i.id === cfg.defaultInstance);
 
   const save = async () => {
     setBusy(true);
@@ -172,11 +177,25 @@ export function GeneralSettings({
             </Button>
           )}
         </div>
-        <p className="text-muted-foreground text-[11px]">
-          {cfg.defaultInstance
-            ? "What a project's first thread starts on."
-            : "Not set. A project's first thread starts on the first account that is signed in."}
-        </p>
+        {instances.length === 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-muted-foreground min-w-0 flex-1 text-[11px]">
+              No accounts yet, so there is no model to pick.
+            </p>
+            {onAddAccount && (
+              <Button variant="outline" size="sm" className="max-md:h-9" onClick={onAddAccount}>
+                <PlusIcon />
+                Add account
+              </Button>
+            )}
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-[11px]">
+            {cfg.defaultInstance
+              ? "What a project's first thread starts on."
+              : "Not set. A project's first thread starts on the first account that is signed in."}
+          </p>
+        )}
       </div>
 
       <div className="space-y-1.5">

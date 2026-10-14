@@ -128,19 +128,27 @@ export function ThemePreviewScreen() {
 export function SetupScreen({
   harnesses,
   auth,
+  onAddAccount,
   onContinue,
 }: {
   harnesses: HarnessMeta[];
   auth: ProviderAuth;
+  /** Opens Settings → Providers on the add wizard for one harness. */
+  onAddAccount: (harnessId: string) => void;
   onContinue: () => void;
 }) {
   const { openInstanceAuth, recheck } = auth;
-  // A check names a harness; sign-in goes to that harness's default account,
-  // which is its first instance.
+  // A check names a harness; sign-in goes to that harness's first account.
   const onLogin = useCallback(
-    (check: SetupCheck) =>
-      openInstanceAuth(harnesses.find((h) => h.id === check.id)?.instances[0]?.id ?? check.id),
+    (check: SetupCheck) => {
+      const first = harnesses.find((h) => h.id === check.id)?.instances[0];
+      if (first) openInstanceAuth(first.id);
+    },
     [harnesses, openInstanceAuth],
+  );
+  const accountless = useMemo(
+    () => new Set(harnesses.filter((h) => h.instances.length === 0).map((h) => h.id)),
+    [harnesses],
   );
   // Reload the report when the server's view of the harnesses changes (a
   // recheck after sign-in lands here) and when a sign-in dialog opens or
@@ -153,6 +161,8 @@ export function SetupScreen({
         load={fetchSetup}
         onRecheck={recheck}
         onLogin={onLogin}
+        accountless={accountless}
+        onAddAccount={(check) => onAddAccount(check.id)}
         onContinue={onContinue}
         refreshKey={refreshKey}
       />

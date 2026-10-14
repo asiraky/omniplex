@@ -15,7 +15,6 @@ import (
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 )
 
 type artefactRig struct {
@@ -36,7 +35,7 @@ func newArtefactRig(t *testing.T) *artefactRig {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &scheduleBrowserAdapter{}
-	mgr := thread.NewManager(st, t.Logf, fa)
+	mgr := testManager(st, t.Logf, fa)
 	t.Cleanup(mgr.Shutdown)
 	arts := artefact.New(filepath.Join(dir, "artefacts"))
 	mgr.SetArtefacts(arts)

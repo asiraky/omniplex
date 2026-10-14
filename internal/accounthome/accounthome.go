@@ -10,9 +10,11 @@
 // empty is a second, different user.
 //
 // The machine's own home (where the harness looks with no variable set) is
-// the one copy of that configuration. Every other account's home holds its own
-// login and conversation state as real files, and a link to the shared copy
-// for each entry the harness declares as configuration. One account or three,
+// the one copy of that configuration, and no Omniplex account uses it as its
+// home: its login is whatever a terminal last signed in as. Every account's
+// home holds its own login and conversation state as real files, and a link
+// to the shared copy (literally <shared>/<entry>) for each entry the harness
+// declares as configuration. One account or three,
 // each sees the same skills, settings and instructions; the only thing that
 // differs is who is signed in.
 package accounthome
@@ -63,6 +65,7 @@ func Resolve(home, value string) string {
 // shared home also has. Nothing is merged or removed: the account keeps its
 // copy until someone moves it aside.
 type ConflictError struct {
+	Entry  string // the entry's name, as SharedEntries lists it
 	Path   string // the account's own entry
 	Shared string // what it would link to
 }
@@ -79,7 +82,10 @@ func (e *ConflictError) Error() string {
 //     shared (the first account to create a shared file makes it shared);
 //   - shared missing otherwise: a folder is made in shared, a file is skipped;
 //   - account missing: linked to shared;
-//   - account a link anywhere else, or dangling: re-pointed at shared;
+//   - account a link whose literal target is anything but the shared path,
+//     or dangling: re-pointed at shared. A link that reaches the same file by
+//     another route (straight at the dotfiles the shared entry links to) is
+//     re-pointed too, so every account's home has the same shape;
 //   - account a real entry while shared has one too: a *ConflictError, left
 //     as it is.
 //
@@ -96,20 +102,96 @@ func Link(shared, account string, entries []Entry) error {
 	}
 	var errs []error
 	for _, e := range entries {
-		if err := link(filepath.Join(shared, e.Name), filepath.Join(account, e.Name), e.Dir); err != nil {
+		if err := link(filepath.Join(shared, e.Name), filepath.Join(account, e.Name), e); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func link(src, dst string, dir bool) error {
+// UseShared gives up an account's own copy of one entry in favour of the
+// shared one: the copy is moved aside to <entry>.account-backup (or
+// .account-backup-2, -3, ... when that is taken), never overwritten and never
+// deleted, and the entry is then linked. When there is no shared entry at
+// that moment the account's copy becomes the shared one instead, as Link
+// would make it, and nothing needs backing up.
+func UseShared(shared, account string, entry Entry) error {
+	if shared == "" || account == "" || samePath(shared, account) {
+		return fmt.Errorf("%s is the shared home; there is nothing to share into it", account)
+	}
+	linking.Lock()
+	defer linking.Unlock()
+	src, dst := filepath.Join(shared, entry.Name), filepath.Join(account, entry.Name)
+	if _, err := os.Stat(src); err == nil {
+		info, err := os.Lstat(dst)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return err
+		case info.Mode()&os.ModeSymlink == 0:
+			if err := moveAside(dst, info.IsDir()); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return link(src, dst, entry)
+}
+
+// moveAside renames path to the first free <path>.account-backup[-n]. Like
+// adopt, it never replaces anything already there.
+func moveAside(path string, dir bool) error {
+	for n := 1; ; n++ {
+		backup := path + ".account-backup"
+		if n > 1 {
+			backup = fmt.Sprintf("%s-%d", backup, n)
+		}
+		if _, err := os.Lstat(backup); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		err := adopt(path, backup, dir)
+		if err == nil {
+			return nil
+		}
+		// Something took the name between the check and the move.
+		if _, statErr := os.Lstat(backup); statErr == nil {
+			continue
+		}
+		return fmt.Errorf("move %s aside: %w", path, err)
+	}
+}
+
+// Conflicts lists every *ConflictError in an error Link returned.
+func Conflicts(err error) []*ConflictError {
+	if err == nil {
+		return nil
+	}
+	if c, ok := err.(*ConflictError); ok {
+		return []*ConflictError{c}
+	}
+	var out []*ConflictError
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			out = append(out, Conflicts(e)...)
+		}
+	case interface{ Unwrap() error }:
+		out = Conflicts(u.Unwrap())
+	}
+	return out
+}
+
+func link(src, dst string, e Entry) error {
+	dir := e.Dir
 	if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
 		if info, err := os.Lstat(dst); err == nil && info.Mode()&os.ModeSymlink == 0 && info.IsDir() == dir {
 			if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
 				return err
 			}
-			if err := os.Rename(dst, src); err != nil {
+			if err := adopt(dst, src, dir); err != nil {
 				return fmt.Errorf("share %s: %w", dst, err)
 			}
 		} else if dir {
@@ -129,8 +211,8 @@ func link(src, dst string, dir bool) error {
 	case err != nil:
 		return err
 	case info.Mode()&os.ModeSymlink == 0:
-		return &ConflictError{Path: dst, Shared: src}
-	case samePath(dst, src):
+		return &ConflictError{Entry: e.Name, Path: dst, Shared: src}
+	case linksTo(dst, src):
 		return nil
 	default:
 		if err := os.Remove(dst); err != nil {
@@ -139,7 +221,7 @@ func link(src, dst string, dir bool) error {
 	}
 	if err := os.Symlink(src, dst); err != nil {
 		// Another session preparing the same account got there first.
-		if errors.Is(err, os.ErrExist) && samePath(dst, src) {
+		if errors.Is(err, os.ErrExist) && linksTo(dst, src) {
 			return nil
 		}
 		return err
@@ -160,6 +242,14 @@ func adopt(dst, src string, dir bool) error {
 		return err
 	}
 	return os.Remove(dst)
+}
+
+// linksTo reports whether dst is a link whose literal target is src. Where
+// it leads in the end does not count: the shape of every account's home is
+// the same, a link to the shared entry.
+func linksTo(dst, src string) bool {
+	target, err := os.Readlink(dst)
+	return err == nil && target == src
 }
 
 // samePath reports whether a and b resolve, through any links, to the same

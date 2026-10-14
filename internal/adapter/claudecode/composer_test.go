@@ -160,11 +160,12 @@ func TestDraftComposerItemsAddsWhatALiveSessionReported(t *testing.T) {
 	}
 }
 
-func TestClaudeConfigDirUsesTheProcessEnvironment(t *testing.T) {
-	ambient := filepath.Join(t.TempDir(), "ambient-claude")
-	t.Setenv("CLAUDE_CONFIG_DIR", ambient)
-	if got := claudeConfigDir(t.TempDir(), nil); got != ambient {
-		t.Fatalf("config dir = %q, want inherited %q", got, ambient)
+func TestClaudeConfigDirIgnoresTheProcessEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "ambient-claude"))
+	if got, want := claudeConfigDir(t.TempDir(), nil), filepath.Join(home, ".claude"); got != want {
+		t.Fatalf("config dir = %q, want the machine's %q", got, want)
 	}
 
 	override := filepath.Join(t.TempDir(), "instance-claude")

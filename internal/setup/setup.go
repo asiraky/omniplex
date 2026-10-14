@@ -40,11 +40,12 @@ type Report struct {
 type Harness struct {
 	ID   string
 	Name string
-	// Availability is the default instance's, which is what the screen shows.
+	// Availability is the harness's first account's, which is what the
+	// screen shows.
 	Availability adapter.Availability
-	// OtherInstanceOK says a non-default instance (a second account) works.
-	// That is enough to run a thread, so the machine is ready even when the
-	// default instance is signed out.
+	// OtherInstanceOK says some account of the harness works. That is enough
+	// to run a thread, so the machine is ready even when the first account is
+	// signed out.
 	OtherInstanceOK bool
 }
 

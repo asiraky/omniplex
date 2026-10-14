@@ -46,7 +46,7 @@ func connServerWithStore(t *testing.T, client *http.Client) (http.Handler, *mcp.
 		return nil, err
 	}
 	conns := mcp.NewConnections(mst, client, auth.DefaultPort, nil, folders, t.Logf)
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := testManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), Connections: conns})
 	return srv.Handler(), conns, st

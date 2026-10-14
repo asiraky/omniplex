@@ -2,9 +2,32 @@ package claudecode
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestClaudeAccountIDNamesTheLoginOfEachHome(t *testing.T) {
+	dir := t.TempDir()
+	signedIn := filepath.Join(dir, "signed-in.json")
+	if err := os.WriteFile(signedIn, []byte(`{"oauthAccount":{"accountUuid":"d6711b45","emailAddress":"a@x"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	apiKey := filepath.Join(dir, "api-key.json")
+	if err := os.WriteFile(apiKey, []byte(`{"primaryApiKey":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(dir, "broken.json")
+	if err := os.WriteFile(broken, []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{signedIn: "d6711b45", apiKey: "", broken: "", filepath.Join(dir, "missing.json"): ""} {
+		if got := claudeAccountID(path); got != want {
+			t.Errorf("%s: account = %q, want %q", filepath.Base(path), got, want)
+		}
+	}
+}
 
 func TestParseClaudeUsageFullResponse(t *testing.T) {
 	raw := json.RawMessage(`{

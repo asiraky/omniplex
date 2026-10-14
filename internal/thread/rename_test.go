@@ -39,7 +39,7 @@ func TestRenameThreadBroadcastsAndRefusesBlank(t *testing.T) {
 	if err := st.CreateThread(ctx, store.ThreadMeta{ID: "t1", Cwd: "/tmp", Harness: "h", Phase: "idle", Title: "old"}); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 	sub, ch := mgr.SubscribeList()
 	defer mgr.UnsubscribeList(sub)

@@ -236,7 +236,7 @@ func (s *Server) Handler() http.Handler {
 		for _, h := range s.mgr.Harnesses(r.Context()) {
 			sh := setup.Harness{ID: h.ID, Name: h.Name, Availability: h.Availability}
 			for _, inst := range h.Instances {
-				if inst.ID != h.ID && inst.Enabled && inst.Availability.OK() {
+				if inst.Enabled && inst.Availability.OK() {
 					sh.OtherInstanceOK = true
 				}
 			}

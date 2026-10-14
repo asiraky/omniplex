@@ -41,7 +41,7 @@ func TestSchedulesBrowser(t *testing.T) {
 	images := attachment.New(filepath.Join(dir, "images"))
 	var mgr *thread.Manager
 	start := func() http.Handler {
-		mgr = thread.NewManager(st, t.Logf, fa)
+		mgr = testManager(st, t.Logf, fa)
 		mgr.SetAttachments(images)
 		mgr.StartScheduler()
 		return New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), WebFS: os.DirFS(filepath.Join(root, "cmd/omniplex/webdist")), Attachments: images}).Handler()

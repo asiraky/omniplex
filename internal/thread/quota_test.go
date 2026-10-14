@@ -71,7 +71,7 @@ func quotaTestManager(t *testing.T) (*Manager, *quotaAdapter, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &quotaAdapter{}
-	return NewManager(st, func(string, ...any) {}, fa), fa, st
+	return testManager(st, func(string, ...any) {}, fa), fa, st
 }
 
 func TestQuotaSparseMergeKeepsUnmentionedWindows(t *testing.T) {
@@ -276,6 +276,21 @@ func TestQuotaSubscribeNotifiesOnChange(t *testing.T) {
 	id, ch := mgr.SubscribeQuota()
 	defer mgr.UnsubscribeQuota(id)
 	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{CheckedAt: 1}, true)
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("no quota notification arrived")
+	}
+}
+
+// An account that changes who it is signed in as moves its Limits row (the
+// email, the same-login warning) even when it had no limits cached, so the
+// clients holding that row hear of it.
+func TestAnAccountSwitchNotifiesWithNothingCached(t *testing.T) {
+	mgr, _, _ := quotaTestManager(t)
+	id, ch := mgr.SubscribeQuota()
+	defer mgr.UnsubscribeQuota(id)
+	mgr.forgetQuota("fake")
 	select {
 	case <-ch:
 	case <-time.After(time.Second):

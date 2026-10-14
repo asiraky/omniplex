@@ -3,12 +3,12 @@ package claudecode
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"syscall"
+
+	"github.com/asiraky/omniplex/internal/convmove"
 )
 
 // MoveConversation hands a conversation from one Claude account to another.
@@ -96,68 +96,9 @@ func findConversation(configDir, cwd, id string) (string, error) {
 // nonAlphanumeric is how Claude Code turns a cwd into its project key.
 var nonAlphanumeric = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
-// move renames, falling back to a copy when the two accounts' config
-// directories sit on different filesystems. The source is first renamed aside
-// (same filesystem, so atomic): a failed copy puts it straight back, and once
-// the copy is whole the conversation has moved — the leftover is under a name
-// Claude never reads, so failing to delete it cannot split the history.
+// move is convmove.Move for an account switch: across filesystems the
+// leftover aside is removed once the copy is whole.
 func move(src, dst string) error {
-	err := os.Rename(src, dst)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, syscall.EXDEV) {
-		return err
-	}
-	aside := filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")
-	_ = os.RemoveAll(aside) // a leftover from an earlier move
-	if err := os.Rename(src, aside); err != nil {
-		return err
-	}
-	if err := copyTree(aside, dst); err != nil {
-		_ = os.RemoveAll(dst)
-		if back := os.Rename(aside, src); back != nil {
-			return fmt.Errorf("%w (and restoring %s failed: %v)", err, src, back)
-		}
-		return err
-	}
-	_ = os.RemoveAll(aside)
-	return nil
-}
-
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(out, in); err != nil {
-			out.Close()
-			return err
-		}
-		return out.Close()
-	})
+	_, err := convmove.Move(src, dst, false)
+	return err
 }

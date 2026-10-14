@@ -7,6 +7,7 @@ import {
   ExternalLinkIcon,
   KeyRoundIcon,
   LogInIcon,
+  PlusIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -34,6 +35,13 @@ export interface SetupPageProps {
   onRecheck?: () => Promise<unknown> | void;
   /** Opens the app's sign-in flow for a check whose remedy is "login". */
   onLogin?: (check: SetupCheck) => void;
+  /**
+   * Harness checks whose driver has no account yet. Nothing can be signed in
+   * to until one exists, so these offer adding one instead.
+   */
+  accountless?: ReadonlySet<string>;
+  /** Opens Settings → Providers on the add wizard for a harness. */
+  onAddAccount?: (check: SetupCheck) => void;
   onContinue: () => void;
   /** Changing this reloads the report, e.g. once a sign-in dialog closes. */
   refreshKey?: unknown;
@@ -45,7 +53,15 @@ export interface SetupPageProps {
  * opened a terminal, so it says what is missing in plain words and puts the
  * fix one click away where it can.
  */
-export function SetupPage({ load, onRecheck, onLogin, onContinue, refreshKey }: SetupPageProps) {
+export function SetupPage({
+  load,
+  onRecheck,
+  onLogin,
+  accountless,
+  onAddAccount,
+  onContinue,
+  refreshKey,
+}: SetupPageProps) {
   const [report, setReport] = useState<SetupReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
@@ -102,7 +118,12 @@ export function SetupPage({ load, onRecheck, onLogin, onContinue, refreshKey }: 
           </header>
 
           {report ? (
-            <SetupBody report={report} onLogin={onLogin} />
+            <SetupBody
+              report={report}
+              onLogin={onLogin}
+              accountless={accountless}
+              onAddAccount={onAddAccount}
+            />
           ) : error ? null : (
             <div className="flex justify-center py-10">
               <Spinner className="text-muted-foreground size-5" />
@@ -161,9 +182,13 @@ export function SetupPage({ load, onRecheck, onLogin, onContinue, refreshKey }: 
 function SetupBody({
   report,
   onLogin,
+  accountless,
+  onAddAccount,
 }: {
   report: SetupReport;
   onLogin?: (check: SetupCheck) => void;
+  accountless?: ReadonlySet<string>;
+  onAddAccount?: (check: SetupCheck) => void;
 }) {
   const gaps = setupGaps(report);
   const tools = report.checks.filter((c) => c.kind === "tool");
@@ -233,6 +258,9 @@ function SetupBody({
                 gaps.readyHarness && gaps.readyHarness !== c ? gaps.readyHarness.name : undefined
               }
               onLogin={onLogin}
+              onAddAccount={
+                onAddAccount && accountless?.has(c.id) ? () => onAddAccount(c) : undefined
+              }
             />
           ))}
         </section>
@@ -252,15 +280,23 @@ function platformHint(check: SetupCheck, platform: SetupReport["platform"]): str
   return undefined;
 }
 
-const STATUS_LABEL: Record<CheckStatus, string> = {
+/** A check's standing on the page: a harness with no account is its own case. */
+type CardStatus = CheckStatus | "no-account";
+
+const STATUS_LABEL: Record<CardStatus, string> = {
   ready: "Ready",
   "sign-in": "Needs sign-in",
+  "no-account": "No account",
   missing: "Not installed",
 };
 
-function StatusBadge({ status, muted }: { status: CheckStatus; muted?: boolean }) {
+function StatusBadge({ status, muted }: { status: CardStatus; muted?: boolean }) {
   const Icon =
-    status === "ready" ? CircleCheckIcon : status === "sign-in" ? KeyRoundIcon : CircleAlertIcon;
+    status === "ready"
+      ? CircleCheckIcon
+      : status === "sign-in" || status === "no-account"
+        ? KeyRoundIcon
+        : CircleAlertIcon;
   return (
     <span
       data-status={status}
@@ -270,7 +306,7 @@ function StatusBadge({ status, muted }: { status: CheckStatus; muted?: boolean }
           ? "text-muted-foreground border-border"
           : status === "ready"
             ? "border-success/40 text-success"
-            : status === "sign-in"
+            : status === "sign-in" || status === "no-account"
               ? "border-attention/40 text-attention-foreground bg-attention-surface/60"
               : "border-destructive/40 text-destructive",
       )}
@@ -286,14 +322,17 @@ function CheckCard({
   platformHint,
   optionalBecause,
   onLogin,
+  onAddAccount,
 }: {
   check: SetupCheck;
   platformHint?: string;
   /** Another assistant is ready, so this one is not needed. */
   optionalBecause?: string;
   onLogin?: (check: SetupCheck) => void;
+  /** Present when the harness has no account: adding one is the next step. */
+  onAddAccount?: () => void;
 }) {
-  const status = checkStatus(check);
+  const status: CardStatus = onAddAccount ? "no-account" : checkStatus(check);
   const { reason, remedy } = check.availability;
   return (
     <article
@@ -317,6 +356,12 @@ function CheckCard({
           {reason && <p className="leading-relaxed">{reason}</p>}
           {platformHint && (
             <p className="text-muted-foreground text-[13px] leading-relaxed">{platformHint}</p>
+          )}
+          {onAddAccount && (
+            <Button className="self-start" onClick={onAddAccount}>
+              <PlusIcon />
+              Add {check.name} account
+            </Button>
           )}
           {remedy && remedy.length > 0 && (
             <ul className="flex flex-col gap-2">
