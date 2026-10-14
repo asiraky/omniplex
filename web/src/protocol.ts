@@ -792,13 +792,29 @@ export interface ProviderInstanceMeta {
    * CLI in an embedded terminal, absent when it has none.
    */
   auth?: "flows" | "terminal";
-  /** Exists in the user config, so it can be edited or removed. */
-  configured?: boolean;
+  /**
+   * Shared entries (skills, CLAUDE.md…) this account's home holds its own copy
+   * of instead of linking to the shared config. Each is settled with
+   * use_shared_home_entry, which moves the copy aside and links.
+   */
+  homeConflicts?: HomeConflict[];
+  /** Other accounts of this driver signed in to the same login, by instance id. */
+  sameLoginAs?: string[];
   /**
    * The instance's configured environment, sensitive values redacted to bare
    * names. Prefill edit forms from this — save replaces env wholesale.
    */
   env?: ProviderEnvVar[];
+}
+
+/** A shared entry an account's home holds a real copy of, not a link. */
+export interface HomeConflict {
+  /** The entry's name, e.g. "skills" or "CLAUDE.md". */
+  entry: string;
+  /** The account's own copy. */
+  path: string;
+  /** The shared entry it would link to instead. */
+  shared: string;
 }
 
 /**
@@ -1026,9 +1042,8 @@ export interface HarnessMeta {
   permissionModes: PermissionModeMeta[];
   availability: Availability;
   /**
-   * Every account configured for this harness, default first. With a single
-   * instance this is one entry whose id equals the harness id, which is why
-   * the one-account case renders exactly as before.
+   * Every account configured for this harness, in config order. Empty when
+   * the driver has no account yet: nothing can run on it until one is added.
    */
   instances: ProviderInstanceMeta[];
   /** The driver's instance-configuration schema; absent means no settings. */
@@ -1179,6 +1194,10 @@ export interface QuotaStatus {
   provider: string;
   instance: string;
   displayName: string;
+  /** Who the account is signed in as: its email, else the provider's account id. */
+  account?: string;
+  /** Other accounts of this driver signed in to the same login, by instance id. */
+  sameLoginAs?: string[];
   snapshot: QuotaSnapshot;
   lastError?: string;
   lastAttempt?: number;

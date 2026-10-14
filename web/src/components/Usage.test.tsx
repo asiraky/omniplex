@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { render } from "~/test/harness";
@@ -117,6 +117,24 @@ describe("UsagePage cost view", () => {
 });
 
 describe("UsagePage limits view", () => {
+  it("names who each account is signed in as, and warns when two are the same login", async () => {
+    renderPage({
+      quotas: [
+        quotaStatus({ instance: "claude", displayName: "Aaron", account: "aaron@zero8.ai", sameLoginAs: ["zero8"] }),
+        quotaStatus({ instance: "zero8", displayName: "zero8", account: "aaron@zero8.ai", sameLoginAs: ["claude"] }),
+        quotaStatus({ instance: "aaron", displayName: "Worksauce", account: "tech@worksauce.com.au" }),
+      ],
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Limits" }));
+
+    const row = async (name: string) => within(await screen.findByRole("region", { name: `${name} usage limits` }));
+    expect((await row("Worksauce")).getByText("tech@worksauce.com.au")).toBeTruthy();
+    expect((await row("Worksauce")).queryByRole("alert")).toBeNull();
+    // Each duplicate names the other account by its display name, not its id.
+    expect((await row("Aaron")).getByRole("alert").textContent).toMatch(/same login as zero8/);
+    expect((await row("zero8")).getByRole("alert").textContent).toMatch(/same login as Aaron/);
+  });
+
   it("shows used and remaining percentages with a reset countdown, without hovering", async () => {
     renderPage({ quotas: [quotaStatus()] });
     fireEvent.click(screen.getByRole("tab", { name: "Limits" }));

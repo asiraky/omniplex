@@ -61,12 +61,8 @@ describe("pickerInstances", () => {
     expect(got.map((i) => i.driver)).toEqual(["codex", "codex"]);
   });
 
-  it("still yields an entry for a harness that reports no instances", () => {
-    const got = pickerInstances([harness({ instances: undefined }) as HarnessMeta]);
-
-    expect(got).toHaveLength(1);
-    expect(got[0]).toMatchObject({ id: "codex", driver: "codex", name: "Codex" });
-    expect(got[0].models.map((m) => m.id)).toEqual(["gpt-5.6-sol"]);
+  it("offers nothing for a driver with no account", () => {
+    expect(pickerInstances([harness({ instances: [] }), harness({ id: "pi", instances: undefined } as Partial<HarnessMeta>)])).toEqual([]);
   });
 
   it("falls back to the harness catalogue for an instance that has none yet", () => {
@@ -96,7 +92,7 @@ describe("resolveModel", () => {
         { id: "default", label: "Default (recommended)", resolves: "claude-opus-5[1m]", default: true },
         { id: "sonnet", label: "Sonnet" },
       ],
-      instances: undefined,
+      instances: [{ id: "claude", driver: "claude", displayName: "Claude", enabled: true, availability: ready }],
     } as Partial<HarnessMeta>),
   ])[0];
 

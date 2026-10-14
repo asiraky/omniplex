@@ -24,6 +24,27 @@ const harness = {
 
 type Props = React.ComponentProps<typeof ThreadDraft>;
 
+// Most fixtures here are about something other than accounts, so a harness
+// written without any gets the one account a single-account install has.
+const withAccounts = (list: HarnessMeta[]) =>
+  list.map((h) =>
+    h.instances
+      ? h
+      : {
+          ...h,
+          instances: [
+            {
+              id: h.id,
+              driver: h.id,
+              displayName: h.name,
+              enabled: true,
+              availability: h.availability,
+              models: h.models,
+            },
+          ],
+        },
+  );
+
 // The draft text lives with the caller, as it does in the app. It starts with
 // a message typed so Send is live as soon as nothing else holds it back.
 function Draft(props: Omit<Props, "draft" | "onDraftChange">) {
@@ -36,7 +57,6 @@ function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
   // Made once, so a re-render hands the draft the same callbacks the app would.
   const base: Omit<Props, "draft" | "onDraftChange"> = {
     projects: [project],
-    harnesses: [harness],
     userConfig: null,
     status: "online",
     onStart: onCreate ?? vi.fn(async () => {}),
@@ -47,10 +67,20 @@ function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
     onSettings: vi.fn(),
     onRecheck: vi.fn(),
     ...rest,
+    harnesses: withAccounts(rest.harnesses ?? [harness]),
   };
   const view = render(<Draft {...base} />);
   return {
-    rerender: (next: Partial<Props>) => view.rerender(wrap(<Draft {...base} {...next} />)),
+    rerender: (next: Partial<Props>) =>
+      view.rerender(
+        wrap(
+          <Draft
+            {...base}
+            {...next}
+            harnesses={next.harnesses ? withAccounts(next.harnesses) : base.harnesses}
+          />,
+        ),
+      ),
   };
 }
 
@@ -740,6 +770,14 @@ describe("a signed-out harness", () => {
     expect(screen.getByText("Claude is not signed in.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     expect(onLogin).toHaveBeenCalledWith("claude");
+  });
+
+  it("points to adding an account when there is none", async () => {
+    const onAddAccount = vi.fn();
+    open({ harnesses: [{ ...harness, instances: [] }], onAddAccount });
+    fireEvent.click(screen.getByRole("button", { name: /add account/i }));
+    expect(onAddAccount).toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("does not offer a sign-in the server cannot run", () => {

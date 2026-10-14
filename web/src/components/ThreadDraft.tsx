@@ -55,6 +55,7 @@ export interface NewThreadInput {
 function blockerFor({
   status,
   project,
+  noAccount,
   ready,
   missingWorktree,
   loadingSpaces,
@@ -62,6 +63,7 @@ function blockerFor({
 }: {
   status: ConnectionStatus;
   project: Project | undefined;
+  noAccount: boolean;
   ready: boolean;
   missingWorktree: boolean;
   loadingSpaces: boolean;
@@ -69,6 +71,7 @@ function blockerFor({
 }) {
   if (status !== "online") return "Reconnecting…";
   if (!project) return "Add a project first";
+  if (noAccount) return "Add an account to start";
   if (!ready) return "Sign in to a model to start";
   if (missingWorktree) return "Pick a worktree to continue on";
   // The busy warning is made of this list, so wait for it.
@@ -104,6 +107,7 @@ export function ThreadDraft({
   onRecheck,
   onLogin,
   onManageProviders,
+  onAddAccount,
 }: {
   projects: Project[];
   activeProjectId?: string;
@@ -143,6 +147,8 @@ export function ThreadDraft({
   onLogin?: (instanceId: string) => void;
   /** Open the providers screen, for when signing in is not the fix. */
   onManageProviders?: () => void;
+  /** Open the providers screen on its add wizard, for when there is no account. */
+  onAddAccount?: () => void;
 }) {
   const remembered = useRememberedChoices();
   const where = useDraftScope(
@@ -195,6 +201,7 @@ export function ThreadDraft({
   const blocker = blockerFor({
     status,
     project,
+    noAccount: agent.instances.length === 0,
     ready: agent.instance?.availability?.state === "ready",
     missingWorktree: git.kind === "attach" && !git.choice.attachPath,
     loadingSpaces: git.loadingSpaces,
@@ -269,6 +276,7 @@ export function ThreadDraft({
           onLogin={onLogin}
           onRecheck={onRecheck}
           onManageProviders={onManageProviders}
+          onAddAccount={onAddAccount}
         />
 
         {error && (
