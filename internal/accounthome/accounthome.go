@@ -23,7 +23,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+// linking serialises Link within the process: every use of an account
+// prepares its home, and two sessions starting on one account at once must
+// not both adopt the same file.
+var linking sync.Mutex
 
 // Entry is one top-level name in a config home that is the user's
 // configuration rather than one account's state.
@@ -83,6 +89,8 @@ func Link(shared, account string, entries []Entry) error {
 	if shared == "" || account == "" || samePath(shared, account) {
 		return nil
 	}
+	linking.Lock()
+	defer linking.Unlock()
 	if err := os.MkdirAll(account, 0o700); err != nil {
 		return err
 	}
@@ -137,6 +145,21 @@ func link(src, dst string, dir bool) error {
 		return err
 	}
 	return nil
+}
+
+// adopt moves an account's own entry to the shared path without ever
+// replacing something that appeared there meanwhile (another process
+// adopting its own copy, or this account's link already in place). A file is
+// hard-linked, which fails if src exists, and then unlinked from the account.
+// A folder is renamed, which fails onto anything but an empty folder.
+func adopt(dst, src string, dir bool) error {
+	if dir {
+		return os.Rename(dst, src)
+	}
+	if err := os.Link(dst, src); err != nil {
+		return err
+	}
+	return os.Remove(dst)
 }
 
 // samePath reports whether a and b resolve, through any links, to the same

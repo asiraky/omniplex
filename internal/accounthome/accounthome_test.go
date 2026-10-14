@@ -124,6 +124,22 @@ func TestAnAccountsOwnFileBecomesSharedWhenThereIsNoSharedOne(t *testing.T) {
 	}
 }
 
+func TestAdoptingNeverReplacesASharedEntryThatAppearedMeanwhile(t *testing.T) {
+	shared, account := t.TempDir(), t.TempDir()
+	// Another account adopted its own copy between this one's check and move.
+	write(t, filepath.Join(shared, "CLAUDE.md"), "theirs")
+	write(t, filepath.Join(account, "CLAUDE.md"), "mine")
+	if err := adopt(filepath.Join(account, "CLAUDE.md"), filepath.Join(shared, "CLAUDE.md"), false); err == nil {
+		t.Fatal("adopt replaced the shared file")
+	}
+	if got := read(t, filepath.Join(shared, "CLAUDE.md")); got != "theirs" {
+		t.Fatalf("shared = %q", got)
+	}
+	if got := read(t, filepath.Join(account, "CLAUDE.md")); got != "mine" {
+		t.Fatalf("account = %q", got)
+	}
+}
+
 func TestAnAccountsOwnCopyBesideASharedOneIsAConflictNotOverwritten(t *testing.T) {
 	shared, account := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(shared, "skills", "infra", "SKILL.md"), "infra")

@@ -250,3 +250,47 @@ func TestEveryAddedAccountSharesTheMachinesConfiguration(t *testing.T) {
 		t.Fatalf("shared skills: %v %v", info, err)
 	}
 }
+
+func TestARelativeAccountHomeIsSavedAsTheFolderItIsSharedInto(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FAKE_HOME", "")
+	if err := os.MkdirAll(filepath.Join(home, ".fake", "skills", "infra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mgr := adminTestManagerWith(t, &homeAdapter{})
+	for id, value := range map[string]string{"fake-rel": "accounts/rel", "fake-tilde": "~/accounts/tilde"} {
+		spec := provider.Spec{ID: id, Driver: "fake", DisplayName: id, Enabled: true,
+			Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: value}}}
+		if err := mgr.AddProviderInstance(spec); err != nil {
+			t.Fatal(err)
+		}
+		reg, _ := mgr.lookup(id)
+		want := filepath.Join(home, "accounts", id[len("fake-"):])
+		if got := reg.inst.Env[0].Value; got != want {
+			t.Fatalf("%s saved FAKE_HOME=%q, want %q", id, got, want)
+		}
+		if _, err := os.Stat(filepath.Join(want, "skills", "infra")); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+}
+
+func TestAnAccountInheritingTheServersHomeIsTheSharedOne(t *testing.T) {
+	home, ambient := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FAKE_HOME", ambient)
+	if err := os.WriteFile(filepath.Join(home, "settings.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := adminTestManagerWith(t, &homeAdapter{})
+	// No override: the harness runs in the server's FAKE_HOME, which is the
+	// shared home, so ~/.fake is not the account's and stays untouched.
+	mgr.shareHome(provider.Instance{ID: "fake", Driver: "fake"}, nil)
+	if _, err := os.Lstat(filepath.Join(home, ".fake")); !os.IsNotExist(err) {
+		t.Fatalf("~/.fake was prepared: %v", err)
+	}
+	if des, _ := os.ReadDir(ambient); len(des) != 0 {
+		t.Fatalf("server's home changed: %v", des)
+	}
+}

@@ -73,6 +73,7 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 	}
 	spec = defaultIsolation(spec, ad)
 	spec = enforceSensitive(spec, ad)
+	spec = absolutePaths(spec, ad)
 	instances, err := provider.AddInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
 		return err
@@ -88,6 +89,7 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 	if ad, ok := m.drivers[spec.Driver]; ok {
 		spec = enforceSensitive(spec, ad)
+		spec = absolutePaths(spec, ad)
 	}
 	instances, err := provider.SaveInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
@@ -200,16 +202,60 @@ func (m *Manager) shareHome(inst provider.Instance, env map[string]string) {
 	if h := strings.TrimSpace(env["HOME"]); h != "" {
 		userHome = h
 	}
-	account := accounthome.Resolve(userHome, env[homeEnv])
-	if account == "" {
-		account = sh.DefaultHome(userHome)
+	// No override means the harness inherits the server's own value.
+	raw, set := env[homeEnv]
+	if !set {
+		raw = os.Getenv(homeEnv)
+	}
+	account := sh.DefaultHome(userHome)
+	if raw = strings.TrimSpace(raw); raw != "" {
+		// A relative value is resolved by the harness against the session's
+		// working directory, so there is no one home to prepare. Saved
+		// instances are made absolute (absolutePaths); this is a hand edit.
+		if !filepath.IsAbs(raw) {
+			m.warnHome(inst.ID, fmt.Errorf("%s=%q is not an absolute path; not sharing configuration into it", homeEnv, raw))
+			return
+		}
+		account = filepath.Clean(raw)
 	}
 	if err := accounthome.Link(shared, account, sh.SharedEntries()); err != nil {
-		key := inst.ID + "\x00" + err.Error()
-		if _, seen := m.homeWarned.LoadOrStore(key, true); !seen {
-			m.logf("provider instance %s: sharing %s into %s: %v", inst.ID, shared, account, err)
+		m.warnHome(inst.ID, fmt.Errorf("sharing %s into %s: %w", shared, account, err))
+	}
+}
+
+// warnHome logs a problem preparing an instance's home once, not on every
+// session start.
+func (m *Manager) warnHome(id string, err error) {
+	if _, seen := m.homeWarned.LoadOrStore(id+"\x00"+err.Error(), true); !seen {
+		m.logf("provider instance %s: %v", id, err)
+	}
+}
+
+// absolutePaths makes every path field of spec absolute, "~" and relative
+// values against the home folder, so the harness and Omniplex agree on which
+// folder it is: a harness resolves a relative path against each session's
+// working directory.
+func absolutePaths(spec provider.Spec, ad adapter.Adapter) provider.Spec {
+	cfg, ok := ad.(adapter.Configurer)
+	if !ok {
+		return spec
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return spec
+	}
+	path := map[string]bool{}
+	for _, field := range cfg.ConfigFields() {
+		if field.Kind == adapter.FieldPath {
+			path[field.Env] = true
 		}
 	}
+	for i, v := range spec.Env {
+		if path[v.Name] && !v.Sensitive {
+			spec.Env[i].Value = accounthome.Resolve(home, v.Value)
+		}
+	}
+	return spec
 }
 
 // isolatingEnv is the variable that gives an instance of ad its own config
