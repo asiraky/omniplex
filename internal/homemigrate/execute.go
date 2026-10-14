@@ -305,6 +305,10 @@ func manifestConversation(a *AccountPlan, c *Conversation, status string) *Manif
 // afterMove is a test seam: it runs after each conversation moves.
 var afterMove func(*ManifestConversation)
 
+// moveUnit moves one unit of a conversation; tests swap it to force the
+// cross-filesystem copy path.
+var moveUnit = convmove.Move
+
 // moveAll moves an account's conversations one at a time, recording each in
 // the manifest as it completes. It returns why it stopped, or "".
 func (p *Plan) moveAll(a *AccountPlan, convs []*ManifestConversation, m *Manifest, r *AccountResult) string {
@@ -338,25 +342,25 @@ func (p *Plan) moveAll(a *AccountPlan, convs []*ManifestConversation, m *Manifes
 			}
 			continue
 		}
-		var done []ManifestUnit
+		var done []movedUnit
 		for _, u := range mc.Units {
-			copied, err := convmove.Move(u.Src, u.Dst, true)
+			copied, err := moveUnit(u.Src, u.Dst, true)
 			if copied {
 				mc.Copied = true
 			}
 			if err != nil {
 				// The conversation stays whole in one place: what moved goes
-				// back, under the same never-overwrite rule.
-				for i := len(done) - 1; i >= 0; i-- {
-					if _, back := convmove.Move(done[i].Dst, done[i].Src, true); back != nil {
-						err = fmt.Errorf("%w (and putting %s back failed: %v)", err, done[i].Src, back)
-					}
+				// back the way a stopped run puts it back, under the same
+				// never-overwrite rule. (Move itself left the failed unit at
+				// its source.)
+				if back := putBackUnits(done); back != nil {
+					err = fmt.Errorf("%w (and putting back what had moved failed: %v)", err, back)
 				}
 				mc.Status, mc.Note = StatusFailed, err.Error()
 				_ = m.save()
 				return fmt.Sprintf("move %s: %v", mc.ID, err)
 			}
-			done = append(done, u)
+			done = append(done, movedUnit{u, copied})
 		}
 		mc.Status = StatusMoved
 		r.Moved++
@@ -398,7 +402,28 @@ func rollBack(convs []*ManifestConversation, m *Manifest) (back int, stuck []str
 }
 
 // putBack returns one moved conversation to its source, all units or none.
+// A unit of a conversation copied across filesystems whose original is
+// still aside is taken as copied.
 func putBack(mc *ManifestConversation) error {
+	units := make([]movedUnit, len(mc.Units))
+	for j, u := range mc.Units {
+		units[j] = movedUnit{u, mc.Copied && there(convmove.Aside(u.Src))}
+	}
+	return putBackUnits(units)
+}
+
+// movedUnit is a unit that moved, and whether the move was a copy (the
+// original then waits aside at convmove.Aside(Src)).
+type movedUnit struct {
+	ManifestUnit
+	copied bool
+}
+
+// putBackUnits returns moved units to their sources, newest first, all or
+// none. A copied unit goes back from its aside, the untouched original, and
+// the copy is renamed aside in the new home (nothing is deleted); a renamed
+// one is renamed back.
+func putBackUnits(units []movedUnit) error {
 	type step struct{ from, to string }
 	var done []step
 	undo := func(err error) error {
@@ -409,10 +434,10 @@ func putBack(mc *ManifestConversation) error {
 		}
 		return err
 	}
-	for j := len(mc.Units) - 1; j >= 0; j-- {
-		u := mc.Units[j]
-		aside := convmove.Aside(u.Src)
-		if _, err := os.Lstat(aside); mc.Copied && err == nil {
+	for j := len(units) - 1; j >= 0; j-- {
+		u := units[j]
+		if u.copied {
+			aside := convmove.Aside(u.Src)
 			if err := convmove.RenameNoReplace(aside, u.Src); err != nil {
 				return undo(err)
 			}

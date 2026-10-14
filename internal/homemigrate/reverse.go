@@ -71,12 +71,15 @@ func Reverse(ctx context.Context, manifestPath string, opts Options) (*ReverseRe
 		default:
 			continue
 		}
-		restored, problem := restoreConversation(mc, rep)
-		if problem != "" {
+		restored, err := restoreConversation(mc, rep)
+		switch {
+		case errors.Is(err, errInNeitherPlace):
+			// Listed as missing. There is nothing to move back, so it does
+			// not keep its account on the new home.
+			continue
+		case err != nil:
 			failed[mc.Instance]++
-			if problem != inNeitherPlace { // already listed as missing
-				rep.Conflicts = append(rep.Conflicts, mc.ID+": "+problem)
-			}
+			rep.Conflicts = append(rep.Conflicts, mc.ID+": "+err.Error())
 			_ = m.save()
 			continue
 		}
@@ -279,7 +282,9 @@ func laterRuns(m *Manifest, accounts map[string]bool) []string {
 	return out
 }
 
-const inNeitherPlace = "in neither place"
+// errInNeitherPlace is a moved conversation found at neither its source nor
+// its destination: there is nothing to move back.
+var errInNeitherPlace = errors.New("in neither place")
 
 // restoreConversation puts one conversation of a run back at its source. Each
 // unit comes back from whichever copy matches the manifest: the destination
@@ -287,8 +292,9 @@ const inNeitherPlace = "in neither place"
 // starts with the bytes the manifest hashed), or else the original a
 // cross-filesystem copy left aside, when that copy was cut short. A partial
 // destination is renamed aside, never deleted. restored is false when
-// nothing of it had moved; problem is why it was left as it is.
-func restoreConversation(mc *ManifestConversation, rep *ReverseReport) (restored bool, problem string) {
+// nothing of it had moved; err is why it was left as it is
+// (errInNeitherPlace when it is nowhere).
+func restoreConversation(mc *ManifestConversation, rep *ReverseReport) (restored bool, err error) {
 	type action struct {
 		u         ManifestUnit
 		fromAside bool
@@ -300,7 +306,7 @@ func restoreConversation(mc *ManifestConversation, rep *ReverseReport) (restored
 		files := unitFiles(mc, u)
 		switch {
 		case src && dst:
-			return false, fmt.Sprintf("both %s and %s exist; left as they are", u.Src, u.Dst)
+			return false, fmt.Errorf("both %s and %s exist; left as they are", u.Src, u.Dst)
 		case src:
 			// Never moved, or already back.
 		case dst && matches(u.Dst, u, files) == nil:
@@ -309,29 +315,29 @@ func restoreConversation(mc *ManifestConversation, rep *ReverseReport) (restored
 			todo = append(todo, action{u: u, fromAside: true})
 		case dst:
 			why := matches(u.Dst, u, files)
-			return false, fmt.Sprintf("%s does not match the manifest (%v) and no intact original is left aside; left as it is", u.Dst, why)
+			return false, fmt.Errorf("%s does not match the manifest (%v) and no intact original is left aside; left as it is", u.Dst, why)
 		case aside:
-			return false, fmt.Sprintf("%s is gone and the original left aside at %s does not match the manifest (%v); left as it is", u.Dst, convmove.Aside(u.Src), matches(convmove.Aside(u.Src), u, files))
+			return false, fmt.Errorf("%s is gone and the original left aside at %s does not match the manifest (%v); left as it is", u.Dst, convmove.Aside(u.Src), matches(convmove.Aside(u.Src), u, files))
 		default:
 			missing++
 		}
 	}
 	if missing == len(mc.Units) && mc.Status == StatusMoved {
 		rep.Missing = append(rep.Missing, fmt.Sprintf("%s: in neither %s nor %s", mc.ID, mc.Units[0].Src, mc.Units[0].Dst))
-		return false, inNeitherPlace
+		return false, errInNeitherPlace
 	}
 	if len(todo) == 0 {
-		return false, ""
+		return false, nil
 	}
 
 	var undo []func() error
-	rollback := func(err error) string {
+	rollback := func(err error) error {
 		for i := len(undo) - 1; i >= 0; i-- {
 			if back := undo[i](); back != nil {
 				err = fmt.Errorf("%w (and undoing failed: %v)", err, back)
 			}
 		}
-		return err.Error()
+		return err
 	}
 	var partials []string
 	for i := len(todo) - 1; i >= 0; i-- {
@@ -365,7 +371,7 @@ func restoreConversation(mc *ManifestConversation, rep *ReverseReport) (restored
 	for _, a := range todo {
 		files := unitFiles(mc, a.u)
 		if err := matches(a.u.Src, a.u, files); err != nil {
-			return false, fmt.Sprintf("put back at %s but it does not match the manifest (%v); left there", a.u.Src, err)
+			return false, fmt.Errorf("put back at %s but it does not match the manifest (%v); left there", a.u.Src, err)
 		}
 		if !exact(a.u.Src, a.u, files) {
 			changed = true
@@ -382,7 +388,7 @@ func restoreConversation(mc *ManifestConversation, rep *ReverseReport) (restored
 			rep.Asides = append(rep.Asides, aside)
 		}
 	}
-	return true, ""
+	return true, nil
 }
 
 func there(path string) bool {

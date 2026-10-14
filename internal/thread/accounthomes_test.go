@@ -447,3 +447,30 @@ func TestTwoAccountsCannotShareAConfigHome(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAnAccountOnTheMachinesHomeIsFlagged(t *testing.T) {
+	_, _, home := accountsManager(t)
+	mgr := adminTestManagerWith(t, &accountsAdapter{})
+	own := filepath.Join(home, ".omniplex", "instances", "work")
+	mgr.ConfigureInstances([]provider.Instance{
+		{ID: "ambient", Driver: "fake", DisplayName: "Ambient", Enabled: true},
+		{ID: "named", Driver: "fake", DisplayName: "Named", Enabled: true, Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: "~/.fake"}}},
+		{ID: "work", Driver: "fake", DisplayName: "Work", Enabled: true, Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: own}}},
+		{ID: "secret", Driver: "fake", DisplayName: "Secret", Enabled: true, Env: []provider.EnvVar{{Name: "FAKE_HOME", Sensitive: true}}},
+	}, mgr.secretStore())
+
+	for id, want := range map[string]bool{"ambient": true, "named": true, "work": false, "secret": false} {
+		if got := instanceMeta(t, mgr, id).MachineHome; got != want {
+			t.Errorf("%s machineHome = %v, want %v", id, got, want)
+		}
+	}
+}
+
+func TestADriverThatSharesOneHomeNeverFlagsTheMachinesHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mgr := adminTestManagerWith(t, &fakeAdapter{})
+	mgr.ConfigureInstances([]provider.Instance{{ID: "plain", Driver: "fake", DisplayName: "Plain", Enabled: true}}, mgr.secretStore())
+	if instanceMeta(t, mgr, "plain").MachineHome {
+		t.Error("an instance of a driver without its own homes is flagged")
+	}
+}

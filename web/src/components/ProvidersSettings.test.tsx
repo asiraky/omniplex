@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuthWires } from "~/components/AuthFlowDialog";
@@ -9,7 +15,9 @@ import ProvidersSettings from "./ProvidersSettings";
 
 const ready = { state: "ready" as const };
 
-function account(over: Partial<ProviderInstanceMeta> & { id: string }): ProviderInstanceMeta {
+function account(
+  over: Partial<ProviderInstanceMeta> & { id: string },
+): ProviderInstanceMeta {
   return {
     driver: "claude",
     displayName: over.id,
@@ -19,7 +27,9 @@ function account(over: Partial<ProviderInstanceMeta> & { id: string }): Provider
   };
 }
 
-function harness(over: Partial<HarnessMeta> & { id: string; name: string }): HarnessMeta {
+function harness(
+  over: Partial<HarnessMeta> & { id: string; name: string },
+): HarnessMeta {
   return {
     accent: "",
     models: [],
@@ -30,7 +40,10 @@ function harness(over: Partial<HarnessMeta> & { id: string; name: string }): Har
   };
 }
 
-function open(harnesses: HarnessMeta[], command: AuthWires["command"] = vi.fn(async () => ({}))) {
+function open(
+  harnesses: HarnessMeta[],
+  command: AuthWires["command"] = vi.fn(async () => ({})),
+) {
   const wires: AuthWires = { command, subscribe: () => () => {} };
   render(
     <ProvidersSettings
@@ -51,8 +64,16 @@ const conflicted = harness({
       id: "zero8",
       displayName: "zero8",
       homeConflicts: [
-        { entry: "skills", path: "/h/.omniplex/instances/zero8/skills", shared: "/h/.claude/skills" },
-        { entry: "CLAUDE.md", path: "/h/.omniplex/instances/zero8/CLAUDE.md", shared: "/h/.claude/CLAUDE.md" },
+        {
+          entry: "skills",
+          path: "/h/.omniplex/instances/zero8/skills",
+          shared: "/h/.claude/skills",
+        },
+        {
+          entry: "CLAUDE.md",
+          path: "/h/.omniplex/instances/zero8/CLAUDE.md",
+          shared: "/h/.claude/CLAUDE.md",
+        },
       ],
     }),
   ],
@@ -65,7 +86,9 @@ describe("an account's own copy of shared config", () => {
     expect(warning.textContent).toMatch(/skills and CLAUDE\.md/);
 
     await act(async () => {
-      fireEvent.click(within(warning).getByRole("button", { name: "Use shared CLAUDE.md" }));
+      fireEvent.click(
+        within(warning).getByRole("button", { name: "Use shared CLAUDE.md" }),
+      );
     });
 
     expect(command).toHaveBeenCalledWith("use_shared_home_entry", {
@@ -76,11 +99,16 @@ describe("an account's own copy of shared config", () => {
 
   it("holds every entry's button while one is being settled", async () => {
     let finish: (v: unknown) => void = () => {};
-    open([conflicted], vi.fn(() => new Promise((r) => (finish = r))));
+    open(
+      [conflicted],
+      vi.fn(() => new Promise((r) => (finish = r))),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Use shared skills" }));
 
-    const other = screen.getByRole("button", { name: "Use shared CLAUDE.md" }) as HTMLButtonElement;
+    const other = screen.getByRole("button", {
+      name: "Use shared CLAUDE.md",
+    }) as HTMLButtonElement;
     expect(other.disabled).toBe(true);
     await act(async () => finish({ status: "shared" }));
     expect(other.disabled).toBe(false);
@@ -94,7 +122,9 @@ describe("an account's own copy of shared config", () => {
       }),
     );
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Use shared skills" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Use shared skills" }),
+      );
     });
     await waitFor(() => expect(screen.getByText("backup exists")).toBeTruthy());
   });
@@ -104,7 +134,9 @@ describe("an account's own copy of shared config", () => {
     fireEvent.click(screen.getByRole("button", { name: /^zero8/ }));
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Use shared skills" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Use shared skills" }),
+      );
     });
     expect(command).toHaveBeenCalledWith("use_shared_home_entry", {
       instanceId: "zero8",
@@ -144,9 +176,12 @@ describe("who each account is signed in as", () => {
 
   it("shows the email, or that the account is signed out", () => {
     open([twins]);
-    expect(screen.getByRole("button", { name: /^Aaron/ }).textContent).toMatch(/aaron@zero8\.ai/);
+    expect(screen.getByRole("button", { name: /^Aaron/ }).textContent).toMatch(
+      /aaron@zero8\.ai/,
+    );
     // Said once: the harness's own words, not a second line repeating them.
-    const out = screen.getByRole("button", { name: /^Worksauce/ }).textContent ?? "";
+    const out =
+      screen.getByRole("button", { name: /^Worksauce/ }).textContent ?? "";
     expect(out.match(/not signed in/gi)).toHaveLength(1);
   });
 
@@ -161,15 +196,48 @@ describe("who each account is signed in as", () => {
   it("warns on the account's own screen too", () => {
     open([twins]);
     fireEvent.click(screen.getByRole("button", { name: /^zero8/ }));
-    expect(screen.getByRole("alert").textContent).toMatch(/same login as Aaron/);
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /same login as Aaron/,
+    );
     expect(screen.getByText("aaron@zero8.ai")).toBeTruthy();
+  });
+});
+
+describe("an account still on the machine's own home", () => {
+  const ambient = harness({
+    id: "claude",
+    name: "Claude Code",
+    instances: [
+      account({ id: "claude", displayName: "Aaron", machineHome: true }),
+      account({ id: "zero8" }),
+    ],
+  });
+
+  it("is warned about in the list, and only that account", () => {
+    open([ambient]);
+    const warnings = screen.getAllByRole("alert");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].textContent).toMatch(/migrate-homes/);
+    expect(warnings[0].parentElement?.parentElement?.textContent).toMatch(
+      /Aaron/,
+    );
+  });
+
+  it("is warned about on the account's own screen", () => {
+    open([ambient]);
+    fireEvent.click(screen.getByRole("button", { name: /^Aaron/ }));
+    expect(screen.getByRole("alert").textContent).toMatch(/migrate-homes/);
   });
 });
 
 describe("a driver with no account", () => {
   it("adds one from its own group, straight into that driver's form", () => {
     open([
-      harness({ id: "claude", name: "Claude Code", instances: [account({ id: "claude" })] }),
+      harness({
+        id: "claude",
+        name: "Claude Code",
+        instances: [account({ id: "claude" })],
+      }),
       harness({ id: "codex", name: "Codex" }),
     ]);
     fireEvent.click(screen.getByRole("button", { name: "Add Codex account" }));
@@ -180,24 +248,37 @@ describe("a driver with no account", () => {
 describe("saving and removing", () => {
   it("saves an existing account rather than adding it", async () => {
     const { command } = open([
-      harness({ id: "claude", name: "Claude Code", instances: [account({ id: "claude" })] }),
+      harness({
+        id: "claude",
+        name: "Claude Code",
+        instances: [account({ id: "claude" })],
+      }),
     ]);
     fireEvent.click(screen.getByRole("button", { name: /^claude/ }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
     });
-    expect(command).toHaveBeenCalledWith("save_provider_instance", expect.anything());
+    expect(command).toHaveBeenCalledWith(
+      "save_provider_instance",
+      expect.anything(),
+    );
   });
 
   it("removes an account whose id is its driver's", async () => {
     const { command } = open([
-      harness({ id: "claude", name: "Claude Code", instances: [account({ id: "claude" })] }),
+      harness({
+        id: "claude",
+        name: "Claude Code",
+        instances: [account({ id: "claude" })],
+      }),
     ]);
     fireEvent.click(screen.getByRole("button", { name: /^claude/ }));
     fireEvent.click(screen.getByRole("button", { name: "Remove account" }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     });
-    expect(command).toHaveBeenCalledWith("delete_provider_instance", { instanceId: "claude" });
+    expect(command).toHaveBeenCalledWith("delete_provider_instance", {
+      instanceId: "claude",
+    });
   });
 });

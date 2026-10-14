@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/adapter/codexapp"
 	"github.com/asiraky/omniplex/internal/adapter/piapp"
+	"github.com/asiraky/omniplex/internal/convmove"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
@@ -972,5 +974,177 @@ func TestARollbackOfACopyRestoresTheOriginal(t *testing.T) {
 	}
 	if exists(filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")) {
 		t.Errorf("the original is still aside")
+	}
+}
+
+// A conversation whose transcript was copied across filesystems and whose
+// sidecar then could not move goes back the way a rollback puts it back: the
+// untouched original from its aside, the copy set aside in the new home. No
+// aside is left at the old path, so a later run can move it.
+func TestAConversationCutShortAcrossFilesystemsGoesBackFromItsAside(t *testing.T) {
+	f := newFixture(t)
+	claudeBefore := tree(t, f.claude)
+	cfgBefore := providers(t)["claude"]
+	moveUnit = func(src, dst string, keepAside bool) (bool, error) {
+		switch src {
+		case filepath.Join(f.claude, claudeOwn):
+			// As convmove does across filesystems: the source aside, a copy.
+			b, err := os.ReadFile(src)
+			if err != nil {
+				return false, err
+			}
+			if err := os.Rename(src, filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")); err != nil {
+				return false, err
+			}
+			f.write(filepath.Dir(dst), filepath.Base(dst), string(b))
+			return true, nil
+		case filepath.Join(f.claude, claudeOwnDir):
+			return false, errors.New("no space left on device")
+		}
+		return convmove.Move(src, dst, keepAside)
+	}
+	t.Cleanup(func() { moveUnit = convmove.Move })
+
+	rep := f.execute(f.plan(f.opts()))
+
+	if c := account(t, rep, "claude"); c.Stopped == "" || c.Migrated || c.Moved != 0 {
+		t.Fatalf("claude result = %+v", c)
+	}
+	sameTree(t, "~/.claude after the failed move", claudeBefore, tree(t, f.claude))
+	dst := filepath.Join(f.target("claude"), claudeOwn)
+	if exists(dst) {
+		t.Errorf("the copy is still under the conversation's name in the new home")
+	}
+	if b, _ := os.ReadFile(filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".moving")); string(b) != claudeLine("sdk-ts", "0001-own") {
+		t.Errorf("the copy was not kept aside in the new home: %q", b)
+	}
+	if got := providers(t)["claude"]; mustJSON(t, got) != mustJSON(t, cfgBefore) {
+		t.Errorf("claude entry = %v, want %v", got, cfgBefore)
+	}
+
+	// Nothing of the failed move stands in the way of the next run.
+	moveUnit = convmove.Move
+	_, rep = f.run(f.opts(func(o *Options) { o.Retry = true }))
+	if c := account(t, rep, "claude"); !c.Migrated || c.Moved != 2 {
+		t.Fatalf("retry result = %+v", c)
+	}
+	for _, rel := range []string{claudeOwn, claudeOwnDir} {
+		if exists(filepath.Join(f.claude, rel)) || !exists(filepath.Join(f.target("claude"), rel)) {
+			t.Errorf("%s did not move on the retry", rel)
+		}
+	}
+}
+
+// A moved conversation that is in neither place is reported, but there is
+// nothing to move back, so its account's config is still restored.
+func TestReverseRestoresTheConfigOfAnAccountWithAConversationGoneFromBothPlaces(t *testing.T) {
+	f := newFixture(t)
+	_, rep := f.run(f.opts())
+	for _, rel := range []string{claudeOwn, claudeOwnDir} {
+		if err := os.RemoveAll(filepath.Join(f.target("claude"), rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rr, err := Reverse(context.Background(), rep.Manifest, f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rr.Missing) != 1 || !strings.Contains(rr.Missing[0], "0001-own") || len(rr.Conflicts) != 0 {
+		t.Fatalf("reverse = %+v", rr)
+	}
+	if got := envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR"); got != "" {
+		t.Errorf("claude's config was not restored: %q", got)
+	}
+	if !exists(filepath.Join(f.claude, claudeThread)) {
+		t.Errorf("claude's other conversation did not go back")
+	}
+	if m, _ := ReadManifest(rep.Manifest); m.Reversed == nil {
+		t.Errorf("the manifest is not marked reversed")
+	}
+}
+
+// An account whose new home another account already names is not migrated:
+// two accounts on one home share one login. An implicit default kept that
+// way keeps its threads on an ambient entry.
+func TestAnAccountWhoseNewHomeIsTakenIsNotMigrated(t *testing.T) {
+	f := newFixture(t)
+	f.config(
+		`{"id":"claude","driver":"claude","displayName":"Aaron","enabled":true}`,
+		`{"id":"work","driver":"claude","displayName":"Work","enabled":true,"env":[{"name":"CLAUDE_CONFIG_DIR","value":"~/.omniplex/instances/claude"}]}`,
+		`{"id":"other","driver":"codex","displayName":"Other","enabled":true,"env":[{"name":"CODEX_HOME","value":"`+f.target("codex")+`"}]}`,
+	)
+	claudeBefore, codexBefore := tree(t, f.claude), tree(t, f.codex)
+	before := providers(t)
+
+	p := f.plan(f.opts())
+	for _, a := range p.Accounts {
+		if a.Abort == "" {
+			t.Errorf("the plan migrates %s onto a home another account uses", a.Instance)
+		}
+	}
+	rep := f.execute(p)
+
+	for _, id := range []string{"claude", "codex"} {
+		if r := account(t, rep, id); r.Aborted == "" || r.Migrated || r.Moved != 0 {
+			t.Errorf("%s result = %+v", id, r)
+		}
+	}
+	if !account(t, rep, "codex").KeptAmbient {
+		t.Errorf("the implicit codex account did not keep an ambient entry")
+	}
+	sameTree(t, "~/.claude", claudeBefore, tree(t, f.claude))
+	sameTree(t, "~/.codex", codexBefore, tree(t, f.codex))
+	after := providers(t)
+	for id, e := range before {
+		if mustJSON(t, after[id]) != mustJSON(t, e) {
+			t.Errorf("%s entry = %v, want %v", id, after[id], e)
+		}
+	}
+	if x := after["codex"]; x == nil || envValue(x, "CODEX_HOME") != "" {
+		t.Errorf("codex entry = %v", x)
+	}
+}
+
+// An Omniplex conversation that appears in the machine's home after the plan,
+// which no plan moves or leaves, fails verify: the account rolls back.
+func TestVerifyFailsOnAnOmniplexConversationThePlanNeverSaw(t *testing.T) {
+	f := newFixture(t)
+	p := f.plan(f.opts())
+	stray := filepath.Join(f.claude, "projects/-work-app/0006-new.jsonl")
+	afterMove = func(mc *ManifestConversation) {
+		if mc.ID == "0001-own" {
+			f.write(f.claude, "projects/-work-app/0006-new.jsonl", claudeLine("sdk-ts", "0006-new"))
+			f.age(stray, time.Hour)
+		}
+	}
+	t.Cleanup(func() { afterMove = nil })
+	cfgBefore := providers(t)["claude"]
+
+	rep := f.execute(p)
+
+	c := account(t, rep, "claude")
+	if c.Stopped == "" || c.Migrated || c.Moved != 0 || len(c.Unrestored) != 0 {
+		t.Fatalf("claude result = %+v", c)
+	}
+	for _, rel := range []string{claudeOwn, claudeOwnDir, claudeThread} {
+		if !exists(filepath.Join(f.claude, rel)) || exists(filepath.Join(f.target("claude"), rel)) {
+			t.Errorf("%s was not put back", rel)
+		}
+	}
+	if !exists(stray) {
+		t.Errorf("the conversation the plan never saw was touched")
+	}
+	if got := providers(t)["claude"]; mustJSON(t, got) != mustJSON(t, cfgBefore) {
+		t.Errorf("claude entry = %v, want %v", got, cfgBefore)
+	}
+	m, err := ReadManifest(rep.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"0001-own", "0002-thread"} {
+		if mc := manifestConv(t, m, id); mc.Status != StatusRolledBack {
+			t.Errorf("manifest says %s is %s", id, mc.Status)
+		}
 	}
 }

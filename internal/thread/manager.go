@@ -435,6 +435,11 @@ type InstanceMeta struct {
 	// SameLoginAs names the other accounts of this driver signed in to the
 	// same login, which would make them share one set of limits.
 	SameLoginAs []string `json:"sameLoginAs,omitempty"`
+	// MachineHome: the driver gives each account a home of its own, but this
+	// one has none set (or names the machine's own), so it runs on the
+	// machine's harness home, whose login is whatever a terminal last signed
+	// in as. It is what a migration that did not move the account leaves.
+	MachineHome bool `json:"machineHome,omitempty"`
 	// Env is the instance's configured environment with every sensitive
 	// value redacted to its name. Saving replaces env wholesale, so an edit
 	// form needs the current values to prefill — without this, a blank field
@@ -543,6 +548,7 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 			Availability: m.availability(ctx, reg),
 		}
 		im.HomeConflicts = m.homeConflictsOf(reg.inst.ID)
+		im.MachineHome = onMachineHome(reg.inst, reg.ad)
 		im.Models = m.modelsFor(reg, im.Availability)
 		out = append(out, im)
 	}

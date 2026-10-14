@@ -199,6 +199,37 @@ func notMachineHome(spec provider.Spec, ad adapter.Adapter) error {
 	return nil
 }
 
+// onMachineHome reports an instance of a driver that isolates its home
+// running on the machine's own one anyway: no home variable, or one naming
+// the machine's home. A secret value is not read, so it is not reported.
+func onMachineHome(inst provider.Instance, ad adapter.Adapter) bool {
+	if ad == nil {
+		return false
+	}
+	homeEnv := isolatingEnv(ad)
+	if homeEnv == "" {
+		return false
+	}
+	value, sensitive := homeValue(inst.Env, homeEnv)
+	switch {
+	case sensitive:
+		return false
+	case value == "":
+		return true
+	}
+	sh, ok := ad.(adapter.SharedHome)
+	if !ok {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	machine := sh.DefaultHome(home)
+	p := accounthome.Resolve(home, value)
+	return p == machine || samePath(p, machine)
+}
+
 // homeValue is spec's plain value for the home variable, trimmed, and
 // whether it is a secret (whose value Omniplex does not read here).
 func homeValue(env []provider.EnvVar, homeEnv string) (value string, sensitive bool) {

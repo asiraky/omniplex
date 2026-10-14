@@ -333,6 +333,31 @@ func sameFile(a, b string) bool {
 
 func (p *Plan) target(id string) string { return filepath.Join(p.Instances, id) }
 
+// homeTaken says why the account's new home cannot be its own: another
+// configured account already names that folder as its home, and two
+// accounts on one home share one login. It returns "" when the home is free.
+func (p *Plan) homeTaken(a *AccountPlan, entries []configEntry) string {
+	homeEnvs := map[string]bool{}
+	for _, d := range p.drivers {
+		homeEnvs[d.homeEnv] = true
+	}
+	for _, e := range entries {
+		if e.ID == a.Instance {
+			continue
+		}
+		for _, v := range e.Env {
+			value := strings.TrimSpace(v.Value)
+			if !homeEnvs[v.Name] || v.Sensitive || value == "" {
+				continue
+			}
+			if home := accounthome.Resolve(p.UserHome, value); home == a.Target || sameFile(home, a.Target) {
+				return fmt.Sprintf("its new home %s is already the home of account %s (%s=%s), and two accounts on one home share one login; give %s another home, then run omniplex migrate-homes", a.Target, e.ID, v.Name, value, e.ID)
+			}
+		}
+	}
+	return ""
+}
+
 func (p *Plan) planDriver(d *driver, entries []configEntry, threads []thread) error {
 	var accounts []*AccountPlan
 	byID := map[string]configEntry{}
@@ -390,6 +415,8 @@ func (p *Plan) planDriver(d *driver, entries []configEntry, threads []thread) er
 		a.HomeEnv, a.Ambient, a.Target = d.homeEnv, d.ambient, p.target(a.Instance)
 		if m, stopped := p.state.Stopped[a.Instance]; stopped && !p.opts.Retry {
 			a.Abort = fmt.Sprintf("an earlier run stopped on this account (manifest %s); check it, then run omniplex migrate-homes, or reverse it with omniplex migrate-homes --reverse %s", m, m)
+		} else if why := p.homeTaken(a, entries); why != "" {
+			a.Abort = why
 		}
 	}
 	p.Accounts = append(p.Accounts, accounts...)

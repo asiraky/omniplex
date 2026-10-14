@@ -1,4 +1,10 @@
-import { ChevronRightIcon, CircleAlertIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  CircleAlertIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
 import { AuthMethods } from "~/components/AuthFlowDialog";
@@ -15,16 +21,34 @@ import { Separator } from "~/components/ui/separator";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import { joinAnd } from "~/lib/format";
-import { buildInstanceSpec, deriveInstanceId, hasStoredSecret, initialFieldValues } from "~/lib/providerSpec";
+import {
+  buildInstanceSpec,
+  deriveInstanceId,
+  hasStoredSecret,
+  initialFieldValues,
+} from "~/lib/providerSpec";
 import { cn } from "~/lib/utils";
-import type { HarnessMeta, ProviderConfigField, ProviderEnvVar, ProviderInstanceMeta } from "~/protocol";
+import type {
+  HarnessMeta,
+  ProviderConfigField,
+  ProviderEnvVar,
+  ProviderInstanceMeta,
+} from "~/protocol";
 
 /** A section heading, matching the weight the other settings screens use. */
-function SectionHeading({ children, note }: { children: React.ReactNode; note?: string }) {
+function SectionHeading({
+  children,
+  note,
+}: {
+  children: React.ReactNode;
+  note?: string;
+}) {
   return (
     <h3 className="text-[12px] font-medium">
       {children}
-      {note && <span className="text-muted-foreground font-normal"> · {note}</span>}
+      {note && (
+        <span className="text-muted-foreground font-normal"> · {note}</span>
+      )}
     </h3>
   );
 }
@@ -49,7 +73,10 @@ function ReadyBadge({ instance }: { instance: ProviderInstanceMeta }) {
   }
   if (instance.availability.state === "ready") {
     return (
-      <Badge variant="outline" className="text-[10px] text-green-600 dark:text-green-500">
+      <Badge
+        variant="outline"
+        className="text-[10px] text-green-600 dark:text-green-500"
+      >
         ready
       </Badge>
     );
@@ -67,7 +94,9 @@ function ReadyBadge({ instance }: { instance: ProviderInstanceMeta }) {
  * unless the harness already said so in its own words, which the badge shows.
  * Anything else (an API key, a harness that does not say) has nothing to name.
  */
-function signedIn(instance: ProviderInstanceMeta): { label: string; out: boolean } | null {
+function signedIn(
+  instance: ProviderInstanceMeta,
+): { label: string; out: boolean } | null {
   const account = instance.availability.facts?.account;
   if (account) return { label: account, out: false };
   if (
@@ -84,7 +113,12 @@ function SignedInLine({ instance }: { instance: ProviderInstanceMeta }) {
   const who = signedIn(instance);
   if (!who) return null;
   return (
-    <p className={cn("text-[12px] break-all", who.out && "text-attention-foreground")}>
+    <p
+      className={cn(
+        "text-[12px] break-all",
+        who.out && "text-attention-foreground",
+      )}
+    >
       {who.out ? (
         who.label
       ) : (
@@ -111,9 +145,10 @@ function Warning({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * What is wrong with an account's wiring: another account signed in to the
- * same login (so the two share one set of limits), and shared config the
- * account has its own copy of. Each copy can be swapped for the shared entry
+ * What is wrong with an account's wiring: it still runs on the machine's own
+ * harness home (a migration did not move it), another account signed in to
+ * the same login (so the two share one set of limits), and shared config the
+ * account has its own copy of. Renders nothing when all is well. Each copy can be swapped for the shared entry
  * here; the server moves the copy aside rather than deleting it, then pushes
  * a fresh harnesses frame without the conflict.
  */
@@ -122,26 +157,33 @@ function AccountWarnings({
   harness,
   wires,
   onError,
+  className,
 }: {
   instance: ProviderInstanceMeta;
   harness: HarnessMeta;
   wires: AuthWires;
   onError: (message: string | null) => void;
+  className?: string;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const same = instance.sameLoginAs ?? [];
   const conflicts = instance.homeConflicts ?? [];
-  if (same.length === 0 && conflicts.length === 0) return null;
+  const machineHome = !!instance.machineHome;
+  if (!machineHome && same.length === 0 && conflicts.length === 0) return null;
 
   const names = same.map(
-    (id) => (harness.instances ?? []).find((i) => i.id === id)?.displayName || id,
+    (id) =>
+      (harness.instances ?? []).find((i) => i.id === id)?.displayName || id,
   );
 
   const share = async (entry: string) => {
     setBusy(entry);
     onError(null);
     try {
-      await wires.command("use_shared_home_entry", { instanceId: instance.id, entry });
+      await wires.command("use_shared_home_entry", {
+        instanceId: instance.id,
+        entry,
+      });
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -150,25 +192,37 @@ function AccountWarnings({
   };
 
   return (
-    <div className="space-y-1.5">
+    <div className={cn("space-y-1.5", className)}>
+      {machineHome && (
+        <Warning>
+          <p>
+            Still on this machine's own {harness.name} home, whose login is
+            whatever a terminal signed in as last. Run{" "}
+            <code className="font-mono">omniplex migrate-homes</code> on the
+            server to move it onto its own.
+          </p>
+        </Warning>
+      )}
       {same.length > 0 && (
         <Warning>
           <p>
-            Signed in to the same login as {joinAnd(names)}, so they share one set of limits.
-            Sign one of them in to a different login.
+            Signed in to the same login as {joinAnd(names)}, so they share one
+            set of limits. Sign one of them in to a different login.
           </p>
         </Warning>
       )}
       {conflicts.length > 0 && (
         <Warning>
           <p>
-            Has its own copy of {joinAnd(conflicts.map((c) => c.entry))} instead of the shared
-            config, so changes to the shared one do not reach it.
+            Has its own copy of {joinAnd(conflicts.map((c) => c.entry))} instead
+            of the shared config, so changes to the shared one do not reach it.
           </p>
           <ul className="space-y-1">
             {conflicts.map((c) => (
               <li key={c.entry} className="flex flex-wrap items-center gap-2">
-                <span className="text-foreground min-w-0 flex-1 font-mono break-all">{c.entry}</span>
+                <span className="text-foreground min-w-0 flex-1 font-mono break-all">
+                  {c.entry}
+                </span>
                 <Button
                   variant="outline"
                   size="sm"
@@ -177,15 +231,17 @@ function AccountWarnings({
                   disabled={busy !== null}
                   onClick={() => void share(c.entry)}
                 >
-                  {busy === c.entry && <Spinner aria-hidden className="size-3.5" />}
+                  {busy === c.entry && (
+                    <Spinner aria-hidden className="size-3.5" />
+                  )}
                   Use shared
                 </Button>
               </li>
             ))}
           </ul>
           <p className="text-muted-foreground">
-            Use shared keeps the account's copy beside it as a .account-backup and links the
-            shared one in its place.
+            Use shared keeps the account's copy beside it as a .account-backup
+            and links the shared one in its place.
           </p>
         </Warning>
       )}
@@ -226,11 +282,19 @@ function ConfigFields({
             value={values[f.env] ?? ""}
             onChange={(e) => onChange(f.env, e.target.value)}
             placeholder={
-              f.kind === "secret" && hasStoredSecret(stored, f.env) ? "(unchanged)" : f.placeholder
+              f.kind === "secret" && hasStoredSecret(stored, f.env)
+                ? "(unchanged)"
+                : f.placeholder
             }
-            className={f.kind === "secret" ? "md:text-[12px]" : "font-mono md:text-[12px]"}
+            className={
+              f.kind === "secret"
+                ? "md:text-[12px]"
+                : "font-mono md:text-[12px]"
+            }
           />
-          {f.description && <p className="text-muted-foreground text-[11px]">{f.description}</p>}
+          {f.description && (
+            <p className="text-muted-foreground text-[11px]">{f.description}</p>
+          )}
         </div>
       ))}
     </>
@@ -296,13 +360,18 @@ function InstanceList({
                           .join(" · ") || inst.id}
                       </span>
                     </span>
-                    <ChevronRightIcon aria-hidden className="text-muted-foreground size-4 shrink-0" />
+                    <ChevronRightIcon
+                      aria-hidden
+                      className="text-muted-foreground size-4 shrink-0"
+                    />
                   </button>
-                  {!!(inst.sameLoginAs?.length || inst.homeConflicts?.length) && (
-                    <div className="px-3 pb-2.5">
-                      <AccountWarnings instance={inst} harness={h} wires={wires} onError={onError} />
-                    </div>
-                  )}
+                  <AccountWarnings
+                    instance={inst}
+                    harness={h}
+                    wires={wires}
+                    onError={onError}
+                    className="px-3 pb-2.5"
+                  />
                 </div>
               );
             })}
@@ -354,7 +423,10 @@ function AddInstance({
 
   const harness = harnesses.find((h) => h.id === view.harnessId) ?? null;
   const id = useMemo(
-    () => (harness ? deriveInstanceId(name || harness.name, takenIds(harnesses)) : ""),
+    () =>
+      harness
+        ? deriveInstanceId(name || harness.name, takenIds(harnesses))
+        : "",
     [name, harness, harnesses],
   );
 
@@ -373,9 +445,16 @@ function AddInstance({
                 (i > 0 ? " border-t" : "")
               }
             >
-              <HarnessBadge harness={h.id} accent={h.accent} className="size-4" />
+              <HarnessBadge
+                harness={h.id}
+                accent={h.accent}
+                className="size-4"
+              />
               <span className="flex-1 text-[12px] font-medium">{h.name}</span>
-              <ChevronRightIcon aria-hidden className="text-muted-foreground size-4" />
+              <ChevronRightIcon
+                aria-hidden
+                className="text-muted-foreground size-4"
+              />
             </button>
           ))}
         </div>
@@ -398,7 +477,11 @@ function AddInstance({
       await wires.command("add_provider_instance", { spec });
       // Land on the new account — its auth section, when "and connect" —
       // rather than dumping back at the list.
-      setView(connect ? { kind: "instance", harnessId: harness.id, instanceId: id } : { kind: "list" });
+      setView(
+        connect
+          ? { kind: "instance", harnessId: harness.id, instanceId: id }
+          : { kind: "list" },
+      );
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -409,7 +492,11 @@ function AddInstance({
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2">
-        <HarnessBadge harness={harness.id} accent={harness.accent} className="size-4" />
+        <HarnessBadge
+          harness={harness.id}
+          accent={harness.accent}
+          className="size-4"
+        />
         <SectionHeading>New {harness.name} account</SectionHeading>
       </div>
       <div className="space-y-1.5">
@@ -431,10 +518,18 @@ function AddInstance({
         onChange={(env, v) => setValues((s) => ({ ...s, [env]: v }))}
       />
       <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="ghost" onClick={() => setView({ kind: "list" })} disabled={busy}>
+        <Button
+          variant="ghost"
+          onClick={() => setView({ kind: "list" })}
+          disabled={busy}
+        >
           Cancel
         </Button>
-        <Button variant="outline" onClick={() => void add(false)} disabled={busy}>
+        <Button
+          variant="outline"
+          onClick={() => void add(false)}
+          disabled={busy}
+        >
           Add
         </Button>
         <Button onClick={() => void add(true)} disabled={busy}>
@@ -477,8 +572,14 @@ function InstanceView({
     // took it out of the list this screen returns to.
     return (
       <div className="space-y-3">
-        <p className="text-muted-foreground text-[12px]">This account no longer exists.</p>
-        <Button variant="outline" size="sm" onClick={() => setView({ kind: "list" })}>
+        <p className="text-muted-foreground text-[12px]">
+          This account no longer exists.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setView({ kind: "list" })}
+        >
           Back to list
         </Button>
       </div>
@@ -515,7 +616,9 @@ function InstanceView({
     setBusy(true);
     onError(null);
     try {
-      await wires.command("delete_provider_instance", { instanceId: instance.id });
+      await wires.command("delete_provider_instance", {
+        instanceId: instance.id,
+      });
       setView({ kind: "list" });
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
@@ -530,28 +633,43 @@ function InstanceView({
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
-        <HarnessBadge harness={instance.driver} accent={harness.accent} className="size-4" />
+        <HarnessBadge
+          harness={instance.driver}
+          accent={harness.accent}
+          className="size-4"
+        />
         <SectionHeading>{instance.displayName || instance.id}</SectionHeading>
         <ReadyBadge instance={instance} />
-        <span className="text-muted-foreground ml-auto font-mono text-[10px]">{instance.id}</span>
+        <span className="text-muted-foreground ml-auto font-mono text-[10px]">
+          {instance.id}
+        </span>
       </div>
 
       <SignedInLine instance={instance} />
 
-      <AccountWarnings instance={instance} harness={harness} wires={wires} onError={onError} />
+      <AccountWarnings
+        instance={instance}
+        harness={harness}
+        wires={wires}
+        onError={onError}
+      />
 
       {!knownDriver && (
         <Alert>
           <AlertDescription className="text-[12px]">
-            This server has no driver called “{instance.driver}”, so the account cannot run. It is
-            kept here so it can be removed or carried to a build that has one.
+            This server has no driver called “{instance.driver}”, so the account
+            cannot run. It is kept here so it can be removed or carried to a
+            build that has one.
           </AlertDescription>
         </Alert>
       )}
 
-      {instance.availability.state === "unavailable" && instance.availability.reason && (
-        <p className="text-attention-foreground text-[12px]">{instance.availability.reason}</p>
-      )}
+      {instance.availability.state === "unavailable" &&
+        instance.availability.reason && (
+          <p className="text-attention-foreground text-[12px]">
+            {instance.availability.reason}
+          </p>
+        )}
 
       <div className="flex items-center justify-between gap-2">
         <div>
@@ -574,7 +692,11 @@ function InstanceView({
         <SectionHeading>Settings</SectionHeading>
         <div className="space-y-1.5">
           <Label htmlFor="instance-name">Display name</Label>
-          <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input
+            id="instance-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
         </div>
         <ConfigFields
           fields={fields}
@@ -582,13 +704,20 @@ function InstanceView({
           onChange={(env, v) => setValues((s) => ({ ...s, [env]: v }))}
           stored={instance.env}
         />
-        {fields.some((f) => f.kind === "secret" && hasStoredSecret(instance.env, f.env)) && (
+        {fields.some(
+          (f) => f.kind === "secret" && hasStoredSecret(instance.env, f.env),
+        ) && (
           <p className="text-muted-foreground text-[11px]">
-            Stored secrets are never shown. Leave one blank to keep it; type to replace it.
+            Stored secrets are never shown. Leave one blank to keep it; type to
+            replace it.
           </p>
         )}
         <div className="flex justify-end">
-          <Button size="sm" disabled={busy} onClick={() => void save(instance.enabled !== false)}>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => void save(instance.enabled !== false)}
+          >
             {busy ? "Saving…" : "Save"}
           </Button>
         </div>
@@ -627,16 +756,29 @@ function InstanceView({
       <div className="space-y-2">
         <SectionHeading note="cannot be undone">Remove account</SectionHeading>
         <p className="text-muted-foreground text-[11px]">
-          Takes the account out of the config. Threads that used it keep their transcripts.
+          Takes the account out of the config. Threads that used it keep their
+          transcripts.
         </p>
         {confirming ? (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px]">Remove “{instance.displayName || instance.id}”?</span>
+            <span className="text-[12px]">
+              Remove “{instance.displayName || instance.id}”?
+            </span>
             <div className="ml-auto flex gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={busy}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirming(false)}
+                disabled={busy}
+              >
                 Cancel
               </Button>
-              <Button variant="destructive" size="sm" onClick={() => void remove()} disabled={busy}>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => void remove()}
+                disabled={busy}
+              >
                 {busy ? (
                   <>
                     <Spinner aria-hidden className="size-4" />
@@ -689,7 +831,9 @@ export default function ProvidersSettings({
   startAdding?: { harnessId: string | null };
 }) {
   const [view, setView] = useState<View>(() =>
-    startAdding ? { kind: "add", harnessId: startAdding.harnessId } : { kind: "list" },
+    startAdding
+      ? { kind: "add", harnessId: startAdding.harnessId }
+      : { kind: "list" },
   );
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -721,18 +865,32 @@ export default function ProvidersSettings({
         <>
           <InstanceList
             harnesses={harnesses}
-            onOpen={(harnessId, instanceId) => go({ kind: "instance", harnessId, instanceId })}
+            onOpen={(harnessId, instanceId) =>
+              go({ kind: "instance", harnessId, instanceId })
+            }
             onAdd={(harnessId) => go({ kind: "add", harnessId })}
             wires={wires}
             onError={setError}
           />
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => go({ kind: "add", harnessId: null })}>
+            <Button
+              size="sm"
+              onClick={() => go({ kind: "add", harnessId: null })}
+            >
               <PlusIcon />
               Add account
             </Button>
-            <Button variant="outline" size="sm" disabled={checking} onClick={() => void recheck()}>
-              {checking ? <Spinner aria-hidden className="size-3.5" /> : <RefreshCwIcon />}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={checking}
+              onClick={() => void recheck()}
+            >
+              {checking ? (
+                <Spinner aria-hidden className="size-3.5" />
+              ) : (
+                <RefreshCwIcon />
+              )}
               Check again
             </Button>
           </div>
