@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/asiraky/omniplex/internal/accounthome"
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/provider"
 )
@@ -71,11 +73,13 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 	}
 	spec = defaultIsolation(spec, ad)
 	spec = enforceSensitive(spec, ad)
+	spec = absolutePaths(spec, ad)
 	instances, err := provider.AddInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
 		return err
 	}
 	m.applyInstances(instances)
+	m.prepareHome(spec.ID)
 	return nil
 }
 
@@ -85,6 +89,7 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 	if ad, ok := m.drivers[spec.Driver]; ok {
 		spec = enforceSensitive(spec, ad)
+		spec = absolutePaths(spec, ad)
 	}
 	instances, err := provider.SaveInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
@@ -92,7 +97,17 @@ func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 	}
 	m.applyInstances(instances)
 	m.forgetInstance(spec.ID)
+	m.prepareHome(spec.ID)
 	return nil
+}
+
+// prepareHome shares the configuration into an instance's home as soon as
+// it is added or repointed, before the harness first runs there: a sign-in
+// started next must find the shared settings, not make the account its own.
+func (m *Manager) prepareHome(id string) {
+	if reg, ok := m.lookup(id); ok {
+		_, _ = m.envFor(reg.inst)
+	}
 }
 
 // DeleteProviderInstance removes a configured instance and its secrets.
@@ -111,32 +126,27 @@ func (m *Manager) DeleteProviderInstance(id string) error {
 // defaultIsolation fills the adapter's isolating config field for a new
 // explicit instance that did not set it: each account gets its own directory
 // under ~/.omniplex/instances, so two Pi (or Codex, or Claude) accounts never
-// overwrite each other's credentials. The default instance never passes
+// overwrite each other's credentials. The user's configuration in it is linked
+// from the machine's own home (shareHome). The default instance never passes
 // through here and keeps ambient behaviour.
 func defaultIsolation(spec provider.Spec, ad adapter.Adapter) provider.Spec {
-	cfg, ok := ad.(adapter.Configurer)
-	if !ok || spec.ID == ad.ID() {
+	homeEnv := isolatingEnv(ad)
+	if homeEnv == "" || spec.ID == ad.ID() {
 		return spec
 	}
-	for _, field := range cfg.ConfigFields() {
-		if !field.Isolates {
-			continue
+	for _, v := range spec.Env {
+		if v.Name == homeEnv {
+			return spec // explicitly set; respect it
 		}
-		for _, v := range spec.Env {
-			if v.Name == field.Env {
-				return spec // explicitly set; respect it
-			}
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return spec
-		}
-		spec.Env = append(spec.Env, provider.EnvVar{
-			Name:  field.Env,
-			Value: filepath.Join(home, ".omniplex", "instances", spec.ID),
-		})
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return spec
 	}
+	spec.Env = append(spec.Env, provider.EnvVar{
+		Name:  homeEnv,
+		Value: filepath.Join(home, ".omniplex", "instances", spec.ID),
+	})
 	return spec
 }
 
@@ -161,4 +171,104 @@ func enforceSensitive(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 		}
 	}
 	return spec
+}
+
+// shareHome links the user's configuration from the machine's own config
+// home into the instance's, when the instance has a home of its own. The
+// default instance, and any instance pointed at the machine's home, is the
+// shared home and has nothing to do. Problems are logged, once each, and never
+// stop the account from running: an account whose home could not be linked
+// still has its login.
+func (m *Manager) shareHome(inst provider.Instance, env map[string]string) {
+	ad := m.drivers[inst.Driver]
+	sh, ok := ad.(adapter.SharedHome)
+	if !ok {
+		return
+	}
+	homeEnv := isolatingEnv(ad)
+	if homeEnv == "" {
+		return
+	}
+	serverHome, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	shared := accounthome.Resolve(serverHome, os.Getenv(homeEnv))
+	if shared == "" {
+		shared = sh.DefaultHome(serverHome)
+	}
+	// The adapters' rule for an account's home folder: any non-blank HOME.
+	userHome := serverHome
+	if h := strings.TrimSpace(env["HOME"]); h != "" {
+		userHome = h
+	}
+	// No override means the harness inherits the server's own value.
+	raw, set := env[homeEnv]
+	if !set {
+		raw = os.Getenv(homeEnv)
+	}
+	account := sh.DefaultHome(userHome)
+	if raw = strings.TrimSpace(raw); raw != "" {
+		// A relative value is resolved by the harness against the session's
+		// working directory, so there is no one home to prepare. Saved
+		// instances are made absolute (absolutePaths); this is a hand edit.
+		if !filepath.IsAbs(raw) {
+			m.warnHome(inst.ID, fmt.Errorf("%s=%q is not an absolute path; not sharing configuration into it", homeEnv, raw))
+			return
+		}
+		account = filepath.Clean(raw)
+	}
+	if err := accounthome.Link(shared, account, sh.SharedEntries()); err != nil {
+		m.warnHome(inst.ID, fmt.Errorf("sharing %s into %s: %w", shared, account, err))
+	}
+}
+
+// warnHome logs a problem preparing an instance's home once, not on every
+// session start.
+func (m *Manager) warnHome(id string, err error) {
+	if _, seen := m.homeWarned.LoadOrStore(id+"\x00"+err.Error(), true); !seen {
+		m.logf("provider instance %s: %v", id, err)
+	}
+}
+
+// absolutePaths makes every path field of spec absolute, "~" and relative
+// values against the home folder, so the harness and Omniplex agree on which
+// folder it is: a harness resolves a relative path against each session's
+// working directory.
+func absolutePaths(spec provider.Spec, ad adapter.Adapter) provider.Spec {
+	cfg, ok := ad.(adapter.Configurer)
+	if !ok {
+		return spec
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return spec
+	}
+	path := map[string]bool{}
+	for _, field := range cfg.ConfigFields() {
+		if field.Kind == adapter.FieldPath {
+			path[field.Env] = true
+		}
+	}
+	for i, v := range spec.Env {
+		if path[v.Name] && !v.Sensitive {
+			spec.Env[i].Value = accounthome.Resolve(home, v.Value)
+		}
+	}
+	return spec
+}
+
+// isolatingEnv is the variable that gives an instance of ad its own config
+// home, or "" when the driver has none.
+func isolatingEnv(ad adapter.Adapter) string {
+	cfg, ok := ad.(adapter.Configurer)
+	if !ok {
+		return ""
+	}
+	for _, field := range cfg.ConfigFields() {
+		if field.Isolates {
+			return field.Env
+		}
+	}
+	return ""
 }

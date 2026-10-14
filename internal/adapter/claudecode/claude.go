@@ -64,14 +64,16 @@ func New(claudePath string) *Adapter {
 func (a *Adapter) ID() string { return "claude" }
 
 // ConfigFields declares how an instance of Claude Code is configured.
-// CLAUDE_CONFIG_DIR holds the login, so it is the isolating field; an API key
-// is the alternative credential for accounts without a subscription.
+// CLAUDE_CONFIG_DIR holds the login, so it is the isolating field; the
+// user's own configuration in it is shared from ~/.claude (SharedEntries).
+// An API key is the alternative credential for accounts without a
+// subscription.
 func (a *Adapter) ConfigFields() []adapter.ConfigField {
 	return []adapter.ConfigField{
 		{
 			Env:         "CLAUDE_CONFIG_DIR",
 			Label:       "Config directory",
-			Description: "Directory holding this account's Claude Code login and settings. Leave empty on the default instance to use the machine's own login.",
+			Description: "Directory holding this account's Claude Code login and conversations. Settings, CLAUDE.md, skills, agents, commands and plugins are shared from ~/.claude. Leave empty on the default instance to use the machine's own login.",
 			Placeholder: "~/.claude",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
