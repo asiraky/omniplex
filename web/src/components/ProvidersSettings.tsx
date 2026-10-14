@@ -63,16 +63,38 @@ function ReadyBadge({ instance }: { instance: ProviderInstanceMeta }) {
 
 /**
  * Who an account is signed in as. The probe reports the email where the
- * harness tells it; an account whose fix is signing in is plainly signed out.
+ * harness tells it; an account whose fix is signing in is plainly signed out,
+ * unless the harness already said so in its own words, which the badge shows.
  * Anything else (an API key, a harness that does not say) has nothing to name.
  */
 function signedIn(instance: ProviderInstanceMeta): { label: string; out: boolean } | null {
   const account = instance.availability.facts?.account;
   if (account) return { label: account, out: false };
-  if (instance.availability.remedy?.some((r) => r.action === "login")) {
+  if (
+    !instance.availability.reason &&
+    instance.availability.remedy?.some((r) => r.action === "login")
+  ) {
     return { label: "Not signed in", out: true };
   }
   return null;
+}
+
+/** The signed-in line of an account's own screen. */
+function SignedInLine({ instance }: { instance: ProviderInstanceMeta }) {
+  const who = signedIn(instance);
+  if (!who) return null;
+  return (
+    <p className={cn("text-[12px] break-all", who.out && "text-attention-foreground")}>
+      {who.out ? (
+        who.label
+      ) : (
+        <>
+          <span className="text-muted-foreground">Signed in as </span>
+          <span className="font-medium">{who.label}</span>
+        </>
+      )}
+    </p>
+  );
 }
 
 /** A compact warning line, the same shape the Usage page's stale note has. */
@@ -464,7 +486,6 @@ function InstanceView({
   }
 
   const fields = harness.configFields ?? [];
-  const who = signedIn(instance);
   const knownDriver = harnesses.some((h) => h.id === instance.driver);
 
   const save = async (enabled: boolean) => {
@@ -515,18 +536,7 @@ function InstanceView({
         <span className="text-muted-foreground ml-auto font-mono text-[10px]">{instance.id}</span>
       </div>
 
-      {who && !(who.out && instance.availability.reason) && (
-        <p className={cn("text-[12px] break-all", who.out && "text-attention-foreground")}>
-          {who.out ? (
-            who.label
-          ) : (
-            <>
-              <span className="text-muted-foreground">Signed in as </span>
-              <span className="font-medium">{who.label}</span>
-            </>
-          )}
-        </p>
-      )}
+      <SignedInLine instance={instance} />
 
       <AccountWarnings instance={instance} harness={harness} wires={wires} onError={onError} />
 

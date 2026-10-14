@@ -30,15 +30,6 @@ export interface ClientEvents {
 
 const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
 
-/**
- * The harness list as the app reads it: a driver with no account arrives with
- * a null instance list from the server, which here becomes an empty one so
- * nothing downstream has to guard it.
- */
-function harnessesOf(list: HarnessMeta[] | undefined): HarnessMeta[] {
-  return (list ?? []).map((h) => (h.instances ? h : { ...h, instances: [] }));
-}
-
 export class Client {
   private ws: WebSocket | null = null;
   private attempt = 0;
@@ -298,7 +289,7 @@ export class Client {
         // replaced, nothing else it reports is worth acting on.
         checkBuild(f.build);
         this.events.onThreads(f.threads ?? []);
-        this.events.onHarnesses(harnessesOf(f.harnesses));
+        this.events.onHarnesses(f.harnesses ?? []);
         this.events.onProjects(f.projects ?? []);
         this.events.onLabels(f.labels ?? []);
         this.events.onQuotas(f.quotas ?? []);
@@ -315,7 +306,7 @@ export class Client {
       // from the harness in the background and lands seconds later. Without
       // this the picker would show the fallback list until a reconnect.
       case "harnesses":
-        this.events.onHarnesses(harnessesOf(f.harnesses));
+        this.events.onHarnesses(f.harnesses ?? []);
         break;
 
       // The project registry changed somewhere — this device or a paired one.

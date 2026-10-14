@@ -145,7 +145,9 @@ describe("who each account is signed in as", () => {
   it("shows the email, or that the account is signed out", () => {
     open([twins]);
     expect(screen.getByRole("button", { name: /^Aaron/ }).textContent).toMatch(/aaron@zero8\.ai/);
-    expect(screen.getByRole("button", { name: /^Worksauce/ }).textContent).toMatch(/Not signed in/);
+    // Said once: the harness's own words, not a second line repeating them.
+    const out = screen.getByRole("button", { name: /^Worksauce/ }).textContent ?? "";
+    expect(out.match(/not signed in/gi)).toHaveLength(1);
   });
 
   it("warns that two accounts are the same login, naming the other", () => {

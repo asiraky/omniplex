@@ -28,8 +28,7 @@ export interface PickerInstance {
 export function pickerInstances(harnesses: HarnessMeta[]): PickerInstance[] {
   const out: PickerInstance[] = [];
   for (const h of harnesses) {
-    const instances = h.instances ?? [];
-    for (const inst of instances) {
+    for (const inst of h.instances) {
       out.push({
         id: inst.id,
         driver: inst.driver || h.id,

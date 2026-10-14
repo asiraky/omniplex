@@ -277,7 +277,7 @@ describe("Usage regression cases", () => {
   expect(screen.getByText(/1.05 API-equivalent cost/)).toBeTruthy();
  });
  it("marks an old successful snapshot stale and shows its account", async () => {
-  renderPage({quotas:[quotaStatus({snapshot:{checkedAt:Date.now()-24*HOUR,accountId:"account-a",windows:[{id:"w",kind:"weekly",label:"Weekly",usedPercent:10}]}})]});
+  renderPage({quotas:[quotaStatus({account:"account-a",snapshot:{checkedAt:Date.now()-24*HOUR,windows:[{id:"w",kind:"weekly",label:"Weekly",usedPercent:10}]}})]});
   fireEvent.click(screen.getByRole("tab",{name:"Limits"}));
   expect(screen.getByText(/Stale snapshot/)).toBeTruthy();
   expect(screen.getByText("account-a")).toBeTruthy();

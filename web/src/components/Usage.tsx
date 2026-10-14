@@ -535,7 +535,7 @@ function ProviderLimits({
   const snap = status.snapshot;
   // Who is signed in, so two rows showing the same figures can be told apart
   // (or caught being the same login).
-  const account = status.account || snap.accountId;
+  const account = status.account;
   const observed = snap.checkedAt || status.lastAttempt || 0;
   const hasWindows = !!snap.windows && snap.windows.length > 0;
   // The stale banner only makes sense above figures that could be out of

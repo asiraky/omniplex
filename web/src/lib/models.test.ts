@@ -62,7 +62,7 @@ describe("pickerInstances", () => {
   });
 
   it("offers nothing for a driver with no account", () => {
-    expect(pickerInstances([harness({ instances: [] }), harness({ id: "pi", instances: undefined } as Partial<HarnessMeta>)])).toEqual([]);
+    expect(pickerInstances([harness({ instances: [] })])).toEqual([]);
   });
 
   it("falls back to the harness catalogue for an instance that has none yet", () => {
