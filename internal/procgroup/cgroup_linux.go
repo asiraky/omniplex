@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -21,7 +24,28 @@ const (
 	// pid follows it: two servers sharing a cgroup (the tests, a dev server
 	// started beside another) must not sweep each other's live threads.
 	prefix = "omniplex-"
+	// leaf is where LimitMemory moves the server so its cgroup can hand the
+	// memory controller to the trees. No prefix, so Sweep leaves it alone.
+	leaf = "server"
 )
+
+var (
+	baseOnce sync.Once
+	baseDir  string
+	baseOK   bool
+
+	// memoryMax is the cap Attach gives each new tree, in bytes; 0 leaves
+	// trees uncapped.
+	memoryMax atomic.Int64
+)
+
+// baseCgroup is the cgroup the server started in. Trees go beneath it, not
+// beneath wherever the server is now: LimitMemory moves the server into a leaf
+// of its own, and a tree under that leaf would get no controllers.
+func baseCgroup() (string, bool) {
+	baseOnce.Do(func() { baseDir, baseOK = ownCgroup() })
+	return baseDir, baseOK
+}
 
 type cgroupGroup struct {
 	dir  string
@@ -52,7 +76,7 @@ func attachCgroup(cmd *exec.Cmd, name string) (Group, bool) {
 }
 
 func attachCgroupOwned(cmd *exec.Cmd, owner int, name string) (Group, bool) {
-	root, ok := ownCgroup()
+	root, ok := baseCgroup()
 	if !ok {
 		return nil, false
 	}
@@ -63,6 +87,16 @@ func attachCgroupOwned(cmd *exec.Cmd, owner int, name string) (Group, bool) {
 	dir := filepath.Join(root, prefix+strconv.Itoa(owner)+"-"+sanitize(name)+"-"+hex.EncodeToString(suffix[:]))
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return nil, false
+	}
+	if limit := memoryMax.Load(); limit > 0 {
+		// No swap: a tree over its cap is killed at once, rather than paging
+		// the whole machine into the ground on its way there. memory.oom.group
+		// stays 0, so the kernel kills only the tree's largest process, the
+		// runaway compiler or test runner, and the harness that started it
+		// lives to see the command fail. Best effort: a tree that cannot be
+		// capped still runs.
+		_ = os.WriteFile(filepath.Join(dir, "memory.swap.max"), []byte("0"), 0)
+		_ = os.WriteFile(filepath.Join(dir, "memory.max"), []byte(strconv.FormatInt(limit, 10)), 0)
 	}
 	fd, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY, 0)
 	if err != nil {
@@ -103,8 +137,62 @@ func killCgroup(dir string) {
 	}()
 }
 
+func limitMemory(percent int) (int64, error) {
+	var si syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&si); err != nil {
+		return 0, err
+	}
+	root, ok := baseCgroup()
+	if !ok {
+		return 0, errors.New("no cgroup v2 hierarchy")
+	}
+	if err := delegateMemory(root, os.Getpid()); err != nil {
+		return 0, err
+	}
+	limit := int64(si.Totalram) * int64(si.Unit) / 100 * int64(percent)
+	memoryMax.Store(limit)
+	return limit, nil
+}
+
+// delegateMemory turns on the memory controller for root's children, so each
+// tree can carry a memory.max of its own. The kernel allows that only while
+// no process sits in root itself, so the server, self, first moves into
+// root/server. It can only do that when it is root's sole process: a dev
+// server or a test run sharing a cgroup with the shell that started it is left
+// where it is, and its trees go uncapped.
+func delegateMemory(root string, self int) error {
+	ctl := filepath.Join(root, "cgroup.subtree_control")
+	on, err := os.ReadFile(ctl)
+	if err != nil {
+		return err
+	}
+	for _, c := range strings.Fields(string(on)) {
+		if c == "memory" {
+			return nil
+		}
+	}
+	procs, err := os.ReadFile(filepath.Join(root, "cgroup.procs"))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(procs)) != strconv.Itoa(self) {
+		return fmt.Errorf("%s holds processes besides this server", root)
+	}
+	dir := filepath.Join(root, leaf)
+	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(strconv.Itoa(self)), 0); err != nil {
+		return fmt.Errorf("move into %s: %w", dir, err)
+	}
+	if err := os.WriteFile(ctl, []byte("+memory"), 0); err != nil {
+		return fmt.Errorf("enable memory controller in %s: %w", root, err)
+	}
+	return nil
+}
+
 func sweepCgroups() {
-	root, ok := ownCgroup()
+	root, ok := baseCgroup()
 	if !ok {
 		return
 	}

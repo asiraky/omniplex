@@ -87,6 +87,7 @@ func main() {
 		piBin      = flag.String("pi", "pi", "path to the pi CLI")
 		dev        = flag.Bool("dev", false, "development mode: serve the UI from the Vite dev server instead of the embedded bundle")
 		vitePort   = flag.Int("vite-port", envInt("OMNIPLEX_VITE_PORT", 5199), "port the Vite dev server listens on (with -dev)")
+		threadMem  = flag.Int("thread-memory", envInt("OMNIPLEX_THREAD_MEMORY", 50), "percent of RAM each thread's process tree may use before the kernel kills its largest process; 0 for no cap")
 	)
 	flag.Parse()
 
@@ -136,6 +137,13 @@ func main() {
 	// Trees a previous server left behind (a crash, a SIGKILL) are killed
 	// before this one starts any of its own.
 	procgroup.Sweep()
+	if *threadMem > 0 {
+		if limit, err := procgroup.LimitMemory(*threadMem); err != nil {
+			log.Printf("thread memory cap off: %v", err)
+		} else {
+			log.Printf("thread memory cap: %.1f GiB per process tree", float64(limit)/(1<<30))
+		}
+	}
 
 	claude := claudecode.New(*claudePath)
 	mgr := thread.NewManager(st, logf,
