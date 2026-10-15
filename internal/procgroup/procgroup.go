@@ -11,7 +11,7 @@
 // into a cgroup of its own beneath the server's, and Kill writes cgroup.kill:
 // one syscall that ends every process in the tree no matter how it detached.
 // Memory stays charged to the server's cgroup, so the service's limits still
-// cover the whole tree. Elsewhere, or when the cgroup filesystem is not
+// cover the whole tree, and LimitMemory can cap each tree on top. Elsewhere, or when the cgroup filesystem is not
 // writable, the child gets a process group and Kill signals that instead;
 // that catches ordinary children but not anything that called setsid.
 package procgroup
@@ -42,4 +42,15 @@ func Attach(cmd *exec.Cmd, name string) Group {
 // starting any child.
 func Sweep() {
 	sweepCgroups()
+}
+
+// LimitMemory caps every tree Attach starts from now on at percent of the
+// machine's RAM, with no swap, and returns the cap in bytes. A tree that hits
+// it loses its largest process to the kernel's OOM killer, and nothing else:
+// one runaway type check or test run fails on its own instead of dragging the
+// machine into swap. Call it once at startup, after Sweep. It fails, leaving
+// trees uncapped, off Linux and wherever the server shares its cgroup with
+// other processes; under systemd the unit needs Delegate=yes.
+func LimitMemory(percent int) (int64, error) {
+	return limitMemory(percent)
 }

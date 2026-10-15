@@ -200,3 +200,51 @@ func TestPgidAttachStartsAThreadLeader(t *testing.T) {
 	_ = cmd.Wait()
 	waitGone(t, []int{cmd.Process.Pid})
 }
+
+// A plain go test run shares its cgroup with the shell that started it, so it
+// cannot delegate the memory controller and this test skips. To run it, give
+// the test binary a cgroup of its own:
+//
+//	go test -c -o /tmp/procgroup.test ./internal/procgroup
+//	systemd-run --user --scope -p Delegate=yes /tmp/procgroup.test -test.run MemoryCap -test.v
+func TestMemoryCapKillsOnlyTheLargestProcess(t *testing.T) {
+	root, ok := baseCgroup()
+	if !ok {
+		t.Skip("no cgroup v2")
+	}
+	if err := delegateMemory(root, os.Getpid()); err != nil {
+		t.Skipf("cannot delegate the memory controller here: %v", err)
+	}
+	memoryMax.Store(64 << 20)
+	t.Cleanup(func() { memoryMax.Store(0) })
+
+	// The sleep stands in for the harness. tail, buffering one endless line,
+	// is the runaway compiler.
+	cmd := exec.Command("sh", "-c", "sleep 300 & echo $!; head -c 1G /dev/zero | tail; echo $?; wait")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, ok := attachCgroup(cmd, "memcap")
+	if !ok {
+		t.Fatal("attach failed after delegation")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { g.Kill(); _ = cmd.Wait() })
+
+	r := bufio.NewReader(out)
+	line, _ := r.ReadString('\n')
+	sleeper, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatalf("no sleeper pid: %q", line)
+	}
+	status, _ := r.ReadString('\n')
+	if strings.TrimSpace(status) != "137" {
+		t.Fatalf("hog exited %q, want 137 (SIGKILL)", strings.TrimSpace(status))
+	}
+	if !alive(sleeper) || !alive(cmd.Process.Pid) {
+		t.Fatal("the OOM kill took more than the largest process")
+	}
+}

@@ -169,6 +169,7 @@ weakened.
 | `-codex` | `codex` | Codex CLI |
 | `-dev` | off | Serve the UI from the Vite dev server instead of the embedded bundle |
 | `-vite-port` | 5199 | Where the Vite dev server listens (with `-dev`) |
+| `-thread-memory` | `50` | Percent of RAM each thread's process tree may use, with no swap, before the kernel kills its largest process; `0` for no cap. Also `OMNIPLEX_THREAD_MEMORY` |
 
 ## Running it on a server over Tailscale
 
@@ -243,6 +244,8 @@ Restart=on-failure
 RestartSec=2
 StartLimitBurst=3
 StartLimitIntervalSec=60
+Delegate=yes
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target
@@ -253,13 +256,19 @@ sudo loginctl enable-linger $USER      # keeps the service alive with nobody log
 systemctl --user enable --now omniplex.service
 ```
 
-Two things bite people here.
+Three things bite people here.
 
 Set `PATH` explicitly. systemd inherits nothing from your shell, so the Go,
 Node and harness installs configured in `~/.bashrc` are invisible to it.
 Symlink `go`, `node`, `npm`, `claude` and `codex` into `/usr/local/bin` and name
 that directory in the unit. Skip this and the server starts fine and reports
 every harness unavailable.
+
+Keep `Delegate=yes` and `OOMPolicy=continue`. Omniplex caps each thread's
+processes at `-thread-memory` percent of RAM, so a runaway type check or test
+run is killed on its own instead of swapping the box into the ground. Without
+`Delegate=yes` the cap is off or gets undone when systemd reloads; without
+`OOMPolicy=continue` systemd answers that one kill by stopping the whole server.
 
 Anything calling `systemctl --user` from a non-login context, such as a CI
 runner or a cron job, must set `XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
