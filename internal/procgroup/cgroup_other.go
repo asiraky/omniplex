@@ -10,6 +10,6 @@ import (
 func attachCgroup(*exec.Cmd, string) (Group, bool) { return nil, false }
 func sweepCgroups()                                {}
 
-func limitMemory(int) (int64, error) {
-	return 0, errors.New("per-tree memory caps need Linux cgroup v2")
+func limitMemory(int, int) (Limits, error) {
+	return Limits{}, errors.New("memory caps need Linux cgroup v2")
 }

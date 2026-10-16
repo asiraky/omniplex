@@ -11,7 +11,8 @@
 // into a cgroup of its own beneath the server's, and Kill writes cgroup.kill:
 // one syscall that ends every process in the tree no matter how it detached.
 // Memory stays charged to the server's cgroup, so the service's limits still
-// cover the whole tree, and LimitMemory can cap each tree on top. Elsewhere, or when the cgroup filesystem is not
+// cover the whole tree, and LimitMemory can cap each tree and all of them
+// together on top. Elsewhere, or when the cgroup filesystem is not
 // writable, the child gets a process group and Kill signals that instead;
 // that catches ordinary children but not anything that called setsid.
 package procgroup
@@ -44,13 +45,24 @@ func Sweep() {
 	sweepCgroups()
 }
 
-// LimitMemory caps every tree Attach starts from now on at percent of the
-// machine's RAM, with no swap, and returns the cap in bytes. A tree that hits
-// it loses its largest process to the kernel's OOM killer, and nothing else:
-// one runaway type check or test run fails on its own instead of dragging the
-// machine into swap. Call it once at startup, after Sweep. It fails, leaving
-// trees uncapped, off Linux and wherever the server shares its cgroup with
-// other processes; under systemd the unit needs Delegate=yes.
-func LimitMemory(percent int) (int64, error) {
-	return limitMemory(percent)
+// Limits are the caps LimitMemory set, in bytes; 0 is no cap.
+type Limits struct {
+	// PerTree caps each tree on its own.
+	PerTree int64
+	// AllTrees caps every tree together. The server is outside it.
+	AllTrees int64
+}
+
+// LimitMemory caps every tree Attach starts from now on at perTree percent of
+// the machine's RAM, with no swap, and all of them together at allTrees
+// percent; 0 leaves that cap off. A tree over its cap, or any tree once all
+// of them are over theirs, loses the largest process to the kernel's OOM
+// killer, and nothing else: one runaway type check or test run fails on its
+// own instead of dragging the machine into swap. The server itself is outside
+// both caps and keeps a reserve the trees cannot reclaim, so it stays
+// responsive while they are killed. Call it once at startup, after Sweep. It
+// fails, leaving trees uncapped, off Linux and wherever the server shares its
+// cgroup with other processes; under systemd the unit needs Delegate=yes.
+func LimitMemory(perTree, allTrees int) (Limits, error) {
+	return limitMemory(perTree, allTrees)
 }

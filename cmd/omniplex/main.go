@@ -88,6 +88,7 @@ func main() {
 		dev        = flag.Bool("dev", false, "development mode: serve the UI from the Vite dev server instead of the embedded bundle")
 		vitePort   = flag.Int("vite-port", envInt("OMNIPLEX_VITE_PORT", 5199), "port the Vite dev server listens on (with -dev)")
 		threadMem  = flag.Int("thread-memory", envInt("OMNIPLEX_THREAD_MEMORY", 50), "percent of RAM each thread's process tree may use before the kernel kills its largest process; 0 for no cap")
+		threadsMem = flag.Int("threads-memory", envInt("OMNIPLEX_THREADS_MEMORY", 75), "percent of RAM all threads' process trees together may use before the kernel kills the largest process among them; 0 for no cap")
 	)
 	flag.Parse()
 
@@ -137,11 +138,12 @@ func main() {
 	// Trees a previous server left behind (a crash, a SIGKILL) are killed
 	// before this one starts any of its own.
 	procgroup.Sweep()
-	if *threadMem > 0 {
-		if limit, err := procgroup.LimitMemory(*threadMem); err != nil {
+	if *threadMem > 0 || *threadsMem > 0 {
+		if l, err := procgroup.LimitMemory(*threadMem, *threadsMem); err != nil {
 			log.Printf("thread memory cap off: %v", err)
 		} else {
-			log.Printf("thread memory cap: %.1f GiB per process tree", float64(limit)/(1<<30))
+			log.Printf("thread memory cap: %.1f GiB per process tree, %.1f GiB for all of them (0 is no cap)",
+				float64(l.PerTree)/(1<<30), float64(l.AllTrees)/(1<<30))
 		}
 	}
 

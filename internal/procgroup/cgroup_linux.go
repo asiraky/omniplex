@@ -27,6 +27,13 @@ const (
 	// leaf is where LimitMemory moves the server so its cgroup can hand the
 	// memory controller to the trees. No prefix, so Sweep leaves it alone.
 	leaf = "server"
+	// pool is the cgroup LimitMemory puts every tree in, beside leaf, so one
+	// memory.max covers all trees together and none of it covers the server.
+	pool = "threads"
+	// serverReserve is the memory.min LimitMemory gives leaf: when the whole
+	// service is over its limit, the kernel takes the trees' memory before
+	// the first serverReserve bytes of the server's.
+	serverReserve = 1 << 30
 )
 
 var (
@@ -37,6 +44,9 @@ var (
 	// memoryMax is the cap Attach gives each new tree, in bytes; 0 leaves
 	// trees uncapped.
 	memoryMax atomic.Int64
+	// treeParent is where Attach makes each tree's cgroup: the pool once
+	// LimitMemory has set it up, the server's starting cgroup until then.
+	treeParent atomic.Pointer[string]
 )
 
 // baseCgroup is the cgroup the server started in. Trees go beneath it, not
@@ -79,6 +89,9 @@ func attachCgroupOwned(cmd *exec.Cmd, owner int, name string) (Group, bool) {
 	root, ok := baseCgroup()
 	if !ok {
 		return nil, false
+	}
+	if p := treeParent.Load(); p != nil {
+		root = *p
 	}
 	// A suffix keeps a fresh thread from colliding with the cgroup of one
 	// with the same name that is still being torn down.
@@ -137,21 +150,61 @@ func killCgroup(dir string) {
 	}()
 }
 
-func limitMemory(percent int) (int64, error) {
+func limitMemory(perTree, allTrees int) (Limits, error) {
 	var si syscall.Sysinfo_t
 	if err := syscall.Sysinfo(&si); err != nil {
-		return 0, err
+		return Limits{}, err
 	}
 	root, ok := baseCgroup()
 	if !ok {
-		return 0, errors.New("no cgroup v2 hierarchy")
+		return Limits{}, errors.New("no cgroup v2 hierarchy")
 	}
 	if err := delegateMemory(root, os.Getpid()); err != nil {
-		return 0, err
+		return Limits{}, err
 	}
-	limit := int64(si.Totalram) * int64(si.Unit) / 100 * int64(percent)
-	memoryMax.Store(limit)
-	return limit, nil
+	ram := int64(si.Totalram) * int64(si.Unit)
+	l := Limits{PerTree: percentOf(ram, perTree), AllTrees: percentOf(ram, allTrees)}
+	dir, err := makePool(root, l.AllTrees)
+	if err != nil {
+		return Limits{}, err
+	}
+	// Best effort: without the reserve the server is merely unprotected when
+	// the service as a whole runs out, which is how it was before.
+	_ = os.WriteFile(filepath.Join(root, leaf, "memory.min"), []byte(strconv.Itoa(serverReserve)), 0)
+	treeParent.Store(&dir)
+	memoryMax.Store(l.PerTree)
+	return l, nil
+}
+
+func percentOf(n int64, percent int) int64 {
+	if percent <= 0 {
+		return 0
+	}
+	return n / 100 * int64(percent)
+}
+
+// makePool creates root/pool, caps it at limit bytes (0 for no cap) and turns
+// on the memory controller beneath it, so each tree inside can still carry a
+// cap of its own. When the trees together reach limit, the kernel kills the
+// largest process in any of them, the way a single tree's cap does: the per-
+// tree cap alone let two type checks, each under it, fill the whole service
+// between them and stall the server along with them.
+func makePool(root string, limit int64) (string, error) {
+	dir := filepath.Join(root, pool)
+	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	v := "max"
+	if limit > 0 {
+		v = strconv.FormatInt(limit, 10)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory.max"), []byte(v), 0); err != nil {
+		return "", fmt.Errorf("cap %s: %w", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.subtree_control"), []byte("+memory"), 0); err != nil {
+		return "", fmt.Errorf("enable memory controller in %s: %w", dir, err)
+	}
+	return dir, nil
 }
 
 // delegateMemory turns on the memory controller for root's children, so each
@@ -196,7 +249,14 @@ func sweepCgroups() {
 	if !ok {
 		return
 	}
-	entries, err := os.ReadDir(root)
+	// Trees sit in the pool, or directly in root when the server could not
+	// set one up; a previous server may have done either.
+	sweepDir(root)
+	sweepDir(filepath.Join(root, pool))
+}
+
+func sweepDir(dir string) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -209,7 +269,7 @@ func sweepCgroups() {
 		if pid, err := strconv.Atoi(owner); err == nil && processAlive(pid) {
 			continue
 		}
-		killCgroup(filepath.Join(root, e.Name()))
+		killCgroup(filepath.Join(dir, e.Name()))
 	}
 }
 
