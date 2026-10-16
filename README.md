@@ -170,6 +170,7 @@ weakened.
 | `-dev` | off | Serve the UI from the Vite dev server instead of the embedded bundle |
 | `-vite-port` | 5199 | Where the Vite dev server listens (with `-dev`) |
 | `-thread-memory` | `50` | Percent of RAM each thread's process tree may use, with no swap, before the kernel kills its largest process; `0` for no cap. Also `OMNIPLEX_THREAD_MEMORY` |
+| `-threads-memory` | `75` | Percent of RAM all threads' process trees together may use before the kernel kills the largest process among them; `0` for no cap. The server is outside this cap. Also `OMNIPLEX_THREADS_MEMORY` |
 
 ## Running it on a server over Tailscale
 
@@ -265,10 +266,17 @@ that directory in the unit. Skip this and the server starts fine and reports
 every harness unavailable.
 
 Keep `Delegate=yes` and `OOMPolicy=continue`. Omniplex caps each thread's
-processes at `-thread-memory` percent of RAM, so a runaway type check or test
-run is killed on its own instead of swapping the box into the ground. Without
-`Delegate=yes` the cap is off or gets undone when systemd reloads; without
-`OOMPolicy=continue` systemd answers that one kill by stopping the whole server.
+processes at `-thread-memory` percent of RAM, and all threads together at
+`-threads-memory`, so a runaway type check or test run is killed on its own
+instead of swapping the box into the ground. The server sits outside both caps
+and stays responsive while that happens. Without `Delegate=yes` the caps are
+off or get undone when systemd reloads; without `OOMPolicy=continue` systemd
+answers that one kill by stopping the whole server.
+
+Do not set `MemoryHigh=` on the unit. It slows every process in the service,
+the server included, and never kills anything: two type checks that together
+reach it stall the server for as long as they run. If you want a unit-level
+limit, use `MemoryMax=` above the `-threads-memory` cap.
 
 Anything calling `systemctl --user` from a non-login context, such as a CI
 runner or a cron job, must set `XDG_RUNTIME_DIR=/run/user/$(id -u)` first.

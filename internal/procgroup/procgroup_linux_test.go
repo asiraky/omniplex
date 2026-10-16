@@ -2,9 +2,11 @@ package procgroup
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -246,5 +248,123 @@ func TestMemoryCapKillsOnlyTheLargestProcess(t *testing.T) {
 	}
 	if !alive(sleeper) || !alive(cmd.Process.Pid) {
 		t.Fatal("the OOM kill took more than the largest process")
+	}
+}
+
+// TestHelperHog is not a test: TestPoolCap re-runs the test binary as this,
+// to get a process that holds a known amount of memory. It touches every page
+// of PROCGROUP_HOG_MB megabytes, says so, and waits to be killed.
+func TestHelperHog(t *testing.T) {
+	mb, err := strconv.Atoi(os.Getenv("PROCGROUP_HOG_MB"))
+	if err != nil {
+		t.Skip("helper process only")
+	}
+	buf := make([]byte, mb<<20)
+	for i := 0; i < len(buf); i += 4096 {
+		buf[i] = 1
+	}
+	os.Stdout.WriteString("ready\n")
+	time.Sleep(5 * time.Minute)
+	runtime.KeepAlive(buf)
+}
+
+// startHog starts a hog of mb megabytes in a tree of its own and waits until
+// it holds all of it. It returns the hog and its tree's cgroup.
+func startHog(t *testing.T, mb int) (*exec.Cmd, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHog$")
+	cmd.Env = append(os.Environ(), "PROCGROUP_HOG_MB="+strconv.Itoa(mb))
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, ok := attachCgroup(cmd, "hog")
+	if !ok {
+		t.Fatal("attach failed after delegation")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { g.Kill(); _ = cmd.Wait() })
+	if line, _ := bufio.NewReader(out).ReadString('\n'); strings.TrimSpace(line) != "ready" {
+		t.Fatalf("hog of %d MB did not get its memory: %q", mb, line)
+	}
+	return cmd, g.(*cgroupGroup).dir
+}
+
+// memoryEvent reads one counter from a cgroup's memory.events.local.
+func memoryEvent(t *testing.T, dir, key string) int {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "memory.events.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if k, v, ok := strings.Cut(line, " "); ok && k == key {
+			n, _ := strconv.Atoi(v)
+			return n
+		}
+	}
+	t.Fatalf("no %s in %s/memory.events.local", key, dir)
+	return 0
+}
+
+// Each tree's cap alone let two type checks, each under it, fill the service
+// between them. With the pool, two trees that only together go over its cap
+// must lose the largest process, killed by the pool's limit and not their own.
+//
+// Only the first kill is asserted. A multi-threaded victim (a Go tsc, or this
+// Go hog) leaves its cgroup a moment before its memory is uncharged, and an
+// allocation landing in that moment kills the next largest process in the
+// pool too. The server is outside the pool either way.
+//
+// Needs a cgroup of its own, like TestMemoryCapKillsOnlyTheLargestProcess:
+//
+//	go test -c -o /tmp/procgroup.test ./internal/procgroup
+//	systemd-run --user --scope -p Delegate=yes /tmp/procgroup.test -test.run PoolCap -test.v
+func TestPoolCapKillsTheLargestProcessAcrossTrees(t *testing.T) {
+	root, ok := baseCgroup()
+	if !ok {
+		t.Skip("no cgroup v2")
+	}
+	if err := delegateMemory(root, os.Getpid()); err != nil {
+		t.Skipf("cannot delegate the memory controller here: %v", err)
+	}
+	dir, err := makePool(root, 200<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeParent.Store(&dir)
+	memoryMax.Store(160 << 20)
+	t.Cleanup(func() { treeParent.Store(nil); memoryMax.Store(0) })
+
+	big, bigDir := startHog(t, 120)
+	done := make(chan error, 1)
+	go func() { done <- big.Wait() }()
+	// The second hog may itself be killed before it reports ready; only what
+	// happened to the first matters here.
+	go func() {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHog$")
+		cmd.Env = append(os.Environ(), "PROCGROUP_HOG_MB=90")
+		g, _ := attachCgroup(cmd, "hog")
+		if cmd.Start() == nil {
+			t.Cleanup(func() { g.Kill(); _ = cmd.Wait() })
+		}
+	}()
+
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+			t.Fatalf("larger tree's hog ended with %v, want SIGKILL", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("trees over the pool cap together, and nothing was killed")
+	}
+	if n := memoryEvent(t, bigDir, "oom"); n != 0 {
+		t.Fatalf("larger tree hit its own cap %d times; the test needs it under", n)
+	}
+	if n := memoryEvent(t, bigDir, "oom_kill"); n != 1 {
+		t.Fatalf("larger tree lost %d processes to the OOM killer, want 1", n)
 	}
 }
