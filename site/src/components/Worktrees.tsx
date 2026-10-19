@@ -50,7 +50,7 @@ export default function Worktrees() {
         <p className="state" aria-live="polite">
           {note}
         </p>
-        <p className="small">A project can span several repos or folders. Threads are grouped by project and carry labels.</p>
+        <p className="small">A project can span several repos or folders. Threads are grouped by project, and you can pin the ones you care about to the top.</p>
       </section>
     </MotionConfig>
   );

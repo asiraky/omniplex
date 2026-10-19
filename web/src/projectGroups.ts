@@ -2,10 +2,10 @@
  * Narrowing the sidebar to a set of projects, and carving what is left into
  * groups when grouping is on and there is more than one project to see.
  *
- * Pure: the sidebar hands in whatever list it is currently
- * rendering, including the delete flow's frozen ordering and its departing
- * row, and gets a shorter list or a set of groups back. Grouping never
- * reorders within a group, so a row still folds away exactly where it stood.
+ * Pure: the sidebar hands in whatever list it is currently rendering,
+ * including the delete flow's frozen ordering and its departing row, and gets
+ * a shorter list or a set of groups back. Grouping never reorders within a
+ * group, so a row still folds away exactly where it stood.
  *
  * The rules:
  * - The filter names what is *hidden*, not what is shown, so a project added

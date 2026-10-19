@@ -43,8 +43,8 @@ export function App() {
   // The list as the user should see it: with their renames, pins and moves,
   // before the server has confirmed them, in their order.
   const { threads: renamed, rename: renameThread } = useRenameThread(wire);
-  const { threads: flagged, setPinned } = usePinThread(wire, renamed);
-  const { threads, move: moveThread } = useThreadOrder(wire, flagged);
+  const { threads: withPins, setPinned } = usePinThread(wire, renamed);
+  const { threads, move: moveThread } = useThreadOrder(wire, withPins);
   const screens = useScreens();
   const panel = usePanel(wire.stateRef);
   const scroll = useScrollMemory(wire.resume);

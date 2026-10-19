@@ -321,8 +321,9 @@ function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMet
 
 // The row carries its actions as overlaid buttons rather than click handlers
 // on the container — a button cannot legally nest inside another button. The
-// delete X and the pin beside it overlay the timestamp's corner instead of owning a column of its own, so an un-hovered
-// row has no phantom right margin; on hover (desktop) the timestamp yields.
+// delete X and the pin beside it overlay the timestamp's corner instead of
+// owning a column of their own, so an un-hovered row has no phantom right
+// margin; on hover (desktop) the timestamp yields.
 export function ThreadRow({
   s,
   showProject,
@@ -504,6 +505,9 @@ export function ThreadRow({
             }}
           >
             Rename
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onSetPinned(s.id, !s.pinned)}>
+            {s.pinned ? "Unpin" : "Pin"}
           </ContextMenuItem>
           {unread(s) ? (
             <ContextMenuItem onSelect={() => onSetUnread(s.id, false)}>Mark read</ContextMenuItem>
