@@ -55,23 +55,14 @@ func TestAddProviderInstanceLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	hs := mgr.Harnesses(context.Background())
-	if len(hs[0].Instances) != 2 {
+	if len(hs[0].Instances) != 1 {
 		t.Fatalf("instances = %+v", hs[0].Instances)
 	}
-	var work *InstanceMeta
-	for i := range hs[0].Instances {
-		if hs[0].Instances[i].ID == "fake-work" {
-			work = &hs[0].Instances[i]
-		}
-	}
-	if work == nil || !work.Configured || work.DisplayName != "Work" {
+	if work := hs[0].Instances[0]; work.ID != "fake-work" || work.DisplayName != "Work" {
 		t.Fatalf("added instance = %+v", work)
 	}
-	// The default stays unconfigured — it has no config entry to edit.
-	for _, i := range hs[0].Instances {
-		if i.ID == "fake" && i.Configured {
-			t.Error("synthesised default must not present as configured")
-		}
+	if !hs[0].Availability.OK() {
+		t.Errorf("the driver is usable once it has an account: %+v", hs[0].Availability)
 	}
 }
 
@@ -174,9 +165,9 @@ func TestSaveAndDeleteProviderInstanceLive(t *testing.T) {
 	if _, ok := mgr.lookup("fake-work"); ok {
 		t.Fatal("deleted instance still registered")
 	}
-	// The synthesised default survives every rebuild.
-	if _, ok := mgr.lookup("fake"); !ok {
-		t.Fatal("default instance vanished after delete")
+	// Nothing stands in for the deleted account.
+	if insts := mgr.Harnesses(context.Background())[0].Instances; len(insts) != 0 {
+		t.Fatalf("instances after delete = %+v", insts)
 	}
 }
 
@@ -276,7 +267,7 @@ func TestARelativeAccountHomeIsSavedAsTheFolderItIsSharedInto(t *testing.T) {
 	}
 }
 
-func TestAnAccountInheritingTheServersHomeIsTheSharedOne(t *testing.T) {
+func TestAnAccountWithNoHomeOfItsOwnIsNotLinked(t *testing.T) {
 	home, ambient := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("FAKE_HOME", ambient)
@@ -284,8 +275,8 @@ func TestAnAccountInheritingTheServersHomeIsTheSharedOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr := adminTestManagerWith(t, &homeAdapter{})
-	// No override: the harness runs in the server's FAKE_HOME, which is the
-	// shared home, so ~/.fake is not the account's and stays untouched.
+	// No home variable: the harness runs ambient. Nothing is linked, and the
+	// server's own FAKE_HOME is not taken for the account's.
 	mgr.shareHome(provider.Instance{ID: "fake", Driver: "fake"}, nil)
 	if _, err := os.Lstat(filepath.Join(home, ".fake")); !os.IsNotExist(err) {
 		t.Fatalf("~/.fake was prepared: %v", err)

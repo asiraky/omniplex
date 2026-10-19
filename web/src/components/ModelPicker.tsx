@@ -191,7 +191,11 @@ export function ModelPicker({
           />
         )}
         <CommandList className="max-h-[min(60dvh,22rem)] flex-1">
-          <CommandEmpty>No model matches that.</CommandEmpty>
+          <CommandEmpty>
+            {instances.length === 0
+              ? "No accounts yet. Add one in Settings → Providers."
+              : "No model matches that."}
+          </CommandEmpty>
           {searching ? (
             <CommandGroup>
               {matches.map((row) => (
@@ -314,7 +318,7 @@ export function ModelPicker({
 }
 
 /**
- * The rail of accounts. Instances, not products: a built-in Codex and a second
+ * The rail of accounts. Instances, not products: one Codex account and a second
  * Codex account are two entries routing to their own model lists, and an
  * unavailable one still shows — dimmed, with the harness's own reason — since
  * a silently missing account reads as a bug.

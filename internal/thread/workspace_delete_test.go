@@ -53,7 +53,7 @@ func forgetWorktree(t *testing.T, root, worktree string) {
 func deleteFixture(t *testing.T, root, worktree string) (*Manager, store.ThreadMeta, project.Project) {
 	t.Helper()
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	return mgr, store.ThreadMeta{ID: "s1", Cwd: worktree, WorkspaceMode: "managed", ProjectID: p.ID}, p
 }

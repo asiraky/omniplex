@@ -73,8 +73,8 @@ func (a *Adapter) ConfigFields() []adapter.ConfigField {
 		{
 			Env:         "CLAUDE_CONFIG_DIR",
 			Label:       "Config directory",
-			Description: "Directory holding this account's Claude Code login and conversations. Settings, CLAUDE.md, skills, agents, commands and plugins are shared from ~/.claude. Leave empty on the default instance to use the machine's own login.",
-			Placeholder: "~/.claude",
+			Description: "Directory holding this account's Claude Code login and conversations. Settings, CLAUDE.md, skills, agents, commands and plugins are shared from ~/.claude. Left empty, it is ~/.omniplex/instances/<id>.",
+			Placeholder: "~/.omniplex/instances/<id>",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
 		},
@@ -402,6 +402,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		stdin:            stdin,
 		cwd:              o.Cwd,
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		accountID:        claudeAccountID(claudeJSON(o.Env)),
 		commands:         &a.commands,
 		harnessSessionID: sessionID,
 		model:            o.Model,
@@ -456,6 +457,10 @@ type session struct {
 	// received, so origin enrichment cannot accidentally inspect another
 	// Claude account's skills.
 	configDir string
+	// accountID is the Anthropic account the process was started signed in
+	// as, stamped on the usage it reports so the host can tell two logins
+	// apart.
+	accountID string
 	// commands is the adapter's, shared by every session.
 	commands *commandCache
 
@@ -1030,6 +1035,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		if err != nil {
 			return
 		}
+		snap.AccountID = s.accountID
 		s.mu.Lock()
 		s.scopedLimit = scopedLimitName(p.Usage)
 		s.mu.Unlock()

@@ -191,11 +191,11 @@ func (a *Adapter) ProjectMCPServers(ctx context.Context, env map[string]string, 
 	return out, nil
 }
 
-// claudeJSON is the user's .claude.json: in the config dir when
-// CLAUDE_CONFIG_DIR moves it, and in the home dir otherwise.
+// claudeJSON is the user's .claude.json: in the config dir when the
+// instance's CLAUDE_CONFIG_DIR moves it, and in the home dir otherwise.
 func claudeJSON(env map[string]string) string {
 	home := envHome(env)
-	if v, ok := lookupEnv(env, "CLAUDE_CONFIG_DIR"); ok && strings.TrimSpace(v) != "" {
+	if strings.TrimSpace(env["CLAUDE_CONFIG_DIR"]) != "" {
 		return filepath.Join(skills.DefaultRoots(home, env, "").ClaudeConfigDir, ".claude.json")
 	}
 	return filepath.Join(home, ".claude.json")

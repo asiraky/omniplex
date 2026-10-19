@@ -44,8 +44,19 @@ func settingsManager(t *testing.T) (*Manager, *settingsAdapter) {
 	return adminTestManagerWith(t, ad), ad
 }
 
+// withAccount gives the manager its one account, under the driver's id.
+func withAccount(t *testing.T, mgr *Manager) *Manager {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	if err := mgr.AddProviderInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Fake", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	return mgr
+}
+
 func TestModelSettingsRoundTrip(t *testing.T) {
 	mgr, ad := settingsManager(t)
+	withAccount(t, mgr)
 	if err := mgr.SetModelSetting("fake", "openrouter/x/y", `{"only":["a"]}`); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +104,7 @@ func TestModelSettingsUnknownInstance(t *testing.T) {
 // A driver without the capability is not a bug in the caller: the read answers
 // empty, and only the write refuses.
 func TestModelSettingsAbsentCapability(t *testing.T) {
-	mgr := adminTestManager(t)
+	mgr := withAccount(t, adminTestManager(t))
 	values, err := mgr.ModelSettings("fake")
 	if err != nil || len(values) != 0 {
 		t.Fatalf("values = %v, err = %v", values, err)

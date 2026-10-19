@@ -25,7 +25,10 @@ import type {
 } from "~/protocol";
 
 export type SettingsSection =
-  { kind: "general" } | { kind: "providers" } | { kind: "project"; id: string };
+  | { kind: "general" }
+  /** add opens the providers pane on its add wizard, for one driver or the picker. */
+  | { kind: "providers"; add?: { harnessId: string | null } }
+  | { kind: "project"; id: string };
 
 const GENERAL: SettingsSection = { kind: "general" };
 
@@ -93,6 +96,7 @@ export function SettingsScreen({
         harnesses={harnesses}
         onSave={onSaveUserConfig}
         onBack={back}
+        onAddAccount={() => setPicked({ kind: "providers", add: { harnessId: null } })}
       />
     ) : (
       <SettingsPane title="General" onBack={back}>
@@ -100,7 +104,14 @@ export function SettingsScreen({
       </SettingsPane>
     );
   } else if (section?.kind === "providers") {
-    pane = <ProvidersSettings harnesses={harnesses} {...providers} onBack={back} />;
+    pane = (
+      <ProvidersSettings
+        harnesses={harnesses}
+        {...providers}
+        startAdding={section.add}
+        onBack={back}
+      />
+    );
   } else if (section?.kind === "project") {
     const project = projects.find((p) => p.id === section.id)!;
     pane = (

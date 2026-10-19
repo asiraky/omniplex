@@ -1065,6 +1065,16 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"status": "deleted"}, nil
 
+	case "use_shared_home_entry":
+		var a useSharedHomeEntryArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.mgr.UseSharedHomeEntry(a.InstanceID, a.Entry); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "shared"}, nil
+
 	case "provider_model_settings":
 		var a instanceArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

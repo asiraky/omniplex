@@ -9,7 +9,6 @@ import (
 
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // commandConn is a connection that can execute commands against a server
@@ -30,7 +29,7 @@ func commandConn(t *testing.T) (*conn, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := testManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 	return &conn{srv: New(Options{Manager: mgr, Store: st})}, home
 }

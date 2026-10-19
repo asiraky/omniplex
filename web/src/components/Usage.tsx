@@ -5,6 +5,7 @@ import { Button } from "~/components/ui/button";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
+import { joinAnd } from "~/lib/format";
 import {
   bucketFullLabel,
   bucketLabel,
@@ -504,7 +505,14 @@ function LimitsView({ quotas, onRefresh }: { quotas: QuotaStatus[]; onRefresh: (
   return (
     <div className="mt-2 flex flex-col gap-3">
       {quotas.map((q) => (
-        <ProviderLimits key={q.instance} status={q} now={now} refreshing={refreshing.has(q.instance)} onRefresh={() => refresh(q.instance)} />
+        <ProviderLimits
+          key={q.instance}
+          status={q}
+          sameLoginAs={(q.sameLoginAs ?? []).map((id) => quotas.find((o) => o.instance === id)?.displayName || id)}
+          now={now}
+          refreshing={refreshing.has(q.instance)}
+          onRefresh={() => refresh(q.instance)}
+        />
       ))}
     </div>
   );
@@ -512,16 +520,22 @@ function LimitsView({ quotas, onRefresh }: { quotas: QuotaStatus[]; onRefresh: (
 
 function ProviderLimits({
   status,
+  sameLoginAs,
   now,
   refreshing,
   onRefresh,
 }: {
   status: QuotaStatus;
+  /** Display names of the other accounts signed in to this one's login. */
+  sameLoginAs: string[];
   now: number;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
   const snap = status.snapshot;
+  // Who is signed in, so two rows showing the same figures can be told apart
+  // (or caught being the same login).
+  const account = status.account;
   const observed = snap.checkedAt || status.lastAttempt || 0;
   const hasWindows = !!snap.windows && snap.windows.length > 0;
   // The stale banner only makes sense above figures that could be out of
@@ -536,9 +550,9 @@ function ProviderLimits({
         <ActivityIcon aria-hidden className="text-muted-foreground size-4 shrink-0" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-semibold">{status.displayName}</p>
+          {account && <p className="text-[12px] break-all">{account}</p>}
           <p className="text-muted-foreground text-[11px]">
             {snap.plan ? `${snap.plan} plan` : "plan unknown"}
-            {snap.accountId && <span className="block break-all">{snap.accountId}</span>}
             {observed > 0 && ` · observed ${formatAge(observed, now)}`}
           </p>
         </div>
@@ -547,6 +561,19 @@ function ProviderLimits({
           Refresh
         </Button>
       </div>
+
+      {sameLoginAs.length > 0 && (
+        <p
+          role="alert"
+          className="text-attention-foreground mt-2 flex items-start gap-1.5 rounded-md bg-attention-surface/70 px-2 py-1.5 text-[11px] leading-relaxed"
+        >
+          <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+          <span>
+            Signed in to the same login as {joinAnd(sameLoginAs)}, so these limits are shared. Sign one of
+            them in to a different login in Settings → Providers.
+          </span>
+        </p>
+      )}
 
       {stale && (
         <p className="text-attention-foreground mt-2 flex items-start gap-1.5 rounded-md bg-attention-surface/70 px-2 py-1.5 text-[11px] leading-relaxed">

@@ -89,7 +89,7 @@ type serverFrame struct {
 type createArgs struct {
 	Harness string `json:"harness"`
 	// Instance names the provider instance to run under; empty means the
-	// harness's default instance, which is today's behaviour.
+	// harness's first enabled account.
 	Instance  string `json:"instance"`
 	ProjectID string `json:"projectId"`
 	Branch    string `json:"branch"`
@@ -363,6 +363,13 @@ type saveProviderInstanceArgs struct {
 
 type instanceArgs struct {
 	InstanceID string `json:"instanceId"`
+}
+
+// useSharedHomeEntryArgs names one of an account's home conflicts to settle
+// in favour of the shared entry: its own copy is moved aside, not deleted.
+type useSharedHomeEntryArgs struct {
+	InstanceID string `json:"instanceId"`
+	Entry      string `json:"entry"`
 }
 
 // authBeginArgs starts one of three kinds of sign-in: a provider instance's

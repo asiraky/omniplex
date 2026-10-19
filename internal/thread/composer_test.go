@@ -27,7 +27,7 @@ func TestDraftComposerItemsAsksAboutWhereTheThreadWouldStart(t *testing.T) {
 	first, second, home := t.TempDir(), t.TempDir(), t.TempDir()
 	st, p := testProject(t, first)
 	ad := &draftAdapter{items: []adapter.ComposerItem{{ID: "skill:ship", Name: "ship"}}}
-	mgr := NewManager(st, func(string, ...any) {}, ad)
+	mgr := testManager(st, func(string, ...any) {}, ad)
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
@@ -75,7 +75,7 @@ func TestDraftComposerItemsAsksAboutTheCopyTheThreadWouldAttachTo(t *testing.T) 
 	root, worktree, _ := gitRepo(t)
 	st, p := testProject(t, root)
 	ad := &draftAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, ad)
+	mgr := testManager(st, func(string, ...any) {}, ad)
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
@@ -99,7 +99,7 @@ func TestDraftComposerItemsAsksAboutTheCopyTheThreadWouldAttachTo(t *testing.T) 
 // empty menu, not an error the composer has to explain.
 func TestDraftComposerItemsIsEmptyForAnAdapterThatCannotSay(t *testing.T) {
 	st, p := testProject(t, filepath.Join(t.TempDir()))
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := testManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	items, err := mgr.DraftComposerItems(context.Background(), "fake", "", p.ID, "", "")

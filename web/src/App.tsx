@@ -94,7 +94,14 @@ export function App() {
   if (screens.setup) {
     return (
       <>
-        <SetupScreen harnesses={harnesses} auth={auth} onContinue={screens.leaveSetup} />
+        <SetupScreen
+          harnesses={harnesses}
+          auth={auth}
+          onAddAccount={(harnessId) =>
+            screens.setSettings({ at: { kind: "providers", add: { harnessId } } })
+          }
+          onContinue={screens.leaveSetup}
+        />
         <AppDialogs
           wire={wire}
           screens={screens}
@@ -239,6 +246,9 @@ export function App() {
             onRecheck={auth.recheck}
             onLogin={auth.openInstanceAuth}
             onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
+            onAddAccount={() =>
+              screens.setSettings({ at: { kind: "providers", add: { harnessId: null } } })
+            }
           />
         ) : (
           <EmptyState

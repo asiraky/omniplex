@@ -1,8 +1,8 @@
 // Package provider models one configured account for one adapter. An adapter
 // is a singleton in code; a provider instance pairs it with credentials, so
-// the same harness can run under several accounts. The default instance for an
-// adapter uses the ambient environment, which is the single-account case and
-// needs no configuration.
+// the same harness can run under several accounts. There is no implicit
+// account: a driver with no configured instance has none, and every account
+// is added the same way, with a config home of its own.
 //
 // Instances are declared in the user config file (~/.omniplex/config.json) under
 // "providers". Each entry is held raw and written back verbatim, so a config
@@ -43,13 +43,6 @@ type Instance struct {
 	// driver-specific settings this build does not understand. It is what gets
 	// written back, so rolling between branches never destroys configuration.
 	Raw json.RawMessage
-}
-
-// Default synthesises the implicit instance for a registered adapter: same id
-// as the driver, ambient environment, enabled. This is why today's behaviour
-// is a special case of instances rather than a separate mode.
-func Default(driver, displayName string) Instance {
-	return Instance{ID: driver, Driver: driver, DisplayName: displayName, Enabled: true}
 }
 
 // validID keeps instance ids usable as secret-store directory names and wire

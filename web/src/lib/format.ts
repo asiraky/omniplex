@@ -21,3 +21,9 @@ export function fmtPct(p: number): string {
   const v = Math.max(0, p);
   return v < 10 ? `${Math.round(v * 10) / 10}%` : `${Math.round(v)}%`;
 }
+
+/** Names as a sentence lists them: "A", "A and B", "A, B and C". */
+export function joinAnd(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}

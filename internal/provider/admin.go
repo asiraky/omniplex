@@ -105,8 +105,7 @@ func indexOf(entries []json.RawMessage, id string) int {
 }
 
 // AddInstance appends a new instance to the config. The id must not already
-// be configured; overriding a driver's implicit default instance is done by
-// adding an entry whose id equals the driver id.
+// be configured.
 func AddInstance(spec Spec, secrets *SecretStore, logf func(string, ...any)) ([]Instance, error) {
 	if err := spec.validate(); err != nil {
 		return nil, err
@@ -173,9 +172,8 @@ func SaveInstance(spec Spec, secrets *SecretStore, logf func(string, ...any)) ([
 	return instances, nil
 }
 
-// DeleteInstance removes an instance and purges its secrets. Deleting the
-// entry that overrides a driver's default instance reverts that driver to
-// ambient credentials; it does not remove the driver.
+// DeleteInstance removes an instance and purges its secrets. The driver stays;
+// with no instance left it simply has no account.
 func DeleteInstance(id string, secrets *SecretStore, logf func(string, ...any)) ([]Instance, error) {
 	if !validID.MatchString(id) {
 		return nil, fmt.Errorf("instance id %q is not a slug", id)

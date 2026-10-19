@@ -19,7 +19,7 @@ func modelsTestManager(t *testing.T, fa *fakeAdapter) *Manager {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewManager(st, func(string, ...any) {}, fa)
+	return testManager(st, func(string, ...any) {}, fa)
 }
 
 // Listing harnesses runs on every connection. Asking a harness for its

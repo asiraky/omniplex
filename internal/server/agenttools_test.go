@@ -141,7 +141,7 @@ func newToolRig(t *testing.T) *toolRig {
 	}
 	ctl := &mcpTestAdapter{id: "mcp-live", control: true}
 	plain := &mcpTestAdapter{id: "mcp-plain"}
-	mgr := thread.NewManager(st, t.Logf, ctl, plain)
+	mgr := testManager(st, t.Logf, ctl, plain)
 	t.Cleanup(mgr.Shutdown)
 	hosts := func() []mcp.Host {
 		var out []mcp.Host

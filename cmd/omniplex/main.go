@@ -69,6 +69,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "migrate-homes" {
+		if err := runMigrateHomesCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("migrate homes: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "relocate" {
 		if err := runRelocateCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("relocate project: %v", err)
@@ -148,10 +154,14 @@ func main() {
 	}
 
 	claude := claudecode.New(*claudePath)
+	codex, pi := codexapp.New(*codexBin), piapp.New(*piBin)
+	// Accounts still on the machine's harness homes get their own, before any
+	// thread resumes a conversation from them (issue #234).
+	migrateHomesAtStartup(context.Background(), st, *dbPath, logf, claude, codex, pi)
 	mgr := thread.NewManager(st, logf,
 		claude,
-		codexapp.New(*codexBin),
-		piapp.New(*piBin),
+		codex,
+		pi,
 	)
 
 	// Images attached to prompts live beside the event log, not inside it, and

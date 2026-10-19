@@ -67,8 +67,8 @@ func (a *Adapter) ConfigFields() []adapter.ConfigField {
 		{
 			Env:         "PI_CODING_AGENT_DIR",
 			Label:       "Pi agent directory",
-			Description: "Directory holding this account's Pi credentials and conversations. Settings, models, AGENTS.md, skills, prompts and extensions are shared from ~/.pi/agent. Leave empty on the default instance to use the machine's own login.",
-			Placeholder: "~/.pi/agent",
+			Description: "Directory holding this account's Pi credentials and conversations. Settings, models, AGENTS.md, skills, prompts and extensions are shared from ~/.pi/agent. Left empty, it is ~/.omniplex/instances/<id>.",
+			Placeholder: "~/.omniplex/instances/<id>",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
 		},
@@ -148,13 +148,11 @@ func authSummary(env map[string]string) string {
 	return strings.Join(parts, ", ")
 }
 
-// agentDir resolves the Pi agent directory the way Pi itself does: the
-// instance overlay wins, then the ambient environment, then ~/.pi/agent.
+// agentDir resolves the Pi agent directory: the instance's own value, else
+// ~/.pi/agent. The server process's environment never stands in for an
+// instance's.
 func agentDir(env map[string]string) string {
 	if dir := env["PI_CODING_AGENT_DIR"]; dir != "" {
-		return dir
-	}
-	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
 		return dir
 	}
 	home, err := os.UserHomeDir()

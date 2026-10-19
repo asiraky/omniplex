@@ -100,6 +100,27 @@ describe("SetupPage", () => {
     expect(onLogin).toHaveBeenCalledWith(claude);
   });
 
+  it("offers adding an account for an assistant that has none", async () => {
+    const claude: SetupCheck = {
+      id: "claude",
+      name: "Claude Code",
+      kind: "harness",
+      availability: { state: "unavailable", reason: "No Claude Code account." },
+    };
+    const onAddAccount = vi.fn();
+    renderPage(async () => report([git(true), claude, readyHarness("codex", "Codex")]), {
+      accountless: new Set(["claude"]),
+      onAddAccount,
+    });
+
+    const button = await waitFor(() =>
+      within(card("Claude Code")).getByRole("button", { name: /add .* account/i }),
+    );
+    expect(card("Claude Code").dataset.status).toBe("no-account");
+    fireEvent.click(button);
+    expect(onAddAccount).toHaveBeenCalledWith(claude);
+  });
+
   it("offers the command itself when there is no sign-in flow to open", async () => {
     render(
       <SetupPage

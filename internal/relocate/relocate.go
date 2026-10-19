@@ -27,8 +27,9 @@ type Options struct {
 	// ClaudeConfigDirs holds CLAUDE_CONFIG_DIR values by provider instance.
 	// Values may be absolute or relative to each thread's working directory.
 	ClaudeConfigDirs map[string]string
-	// ClaudeConfigDir is the ambient CLAUDE_CONFIG_DIR used when an instance
-	// does not override it.
+	// ClaudeConfigDir is the config dir of an instance that sets no
+	// CLAUDE_CONFIG_DIR: the machine's ~/.claude, never the value the
+	// command happened to inherit.
 	ClaudeConfigDir string
 	GitBin          string
 }

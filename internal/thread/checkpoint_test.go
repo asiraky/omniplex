@@ -259,7 +259,7 @@ func TestTurnDiffLandsOnTheTurnItMeasured(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(mgr.Shutdown)
 	actor, err := mgr.Create(ctx, "fake", "", worktree, "", "")
 	if err != nil {
@@ -346,7 +346,7 @@ func TestTurnDiffIgnoresChangesMadeBetweenTurns(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := testManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(mgr.Shutdown)
 	actor, err := mgr.Create(ctx, "fake", "", worktree, "", "")
 	if err != nil {
