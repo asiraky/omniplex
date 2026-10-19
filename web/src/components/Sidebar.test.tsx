@@ -519,6 +519,16 @@ describe("Sidebar", () => {
       expect(props.onSelect).not.toHaveBeenCalled();
     });
 
+    it("pins and unpins from the row's context menu", async () => {
+      const props = renderSidebar({ threads: mixed, projects });
+      fireEvent.contextMenu(screen.getByRole("button", { name: /^Thread a/ }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Pin" }));
+      expect(props.onSetPinned).toHaveBeenLastCalledWith("a", true);
+      fireEvent.contextMenu(screen.getByRole("button", { name: /^Thread b/ }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Unpin" }));
+      expect(props.onSetPinned).toHaveBeenLastCalledWith("b", false);
+    });
+
     it("reorders inside Pinned against the pinned neighbours only", async () => {
       const props = renderSidebar({ threads: mixed, projects });
       fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
