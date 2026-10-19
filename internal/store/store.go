@@ -68,14 +68,6 @@ CREATE TABLE IF NOT EXISTS scheduled_prompts (
 CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
 
 CREATE INDEX IF NOT EXISTS events_type_time ON events(type, created_at);
-
-CREATE TABLE IF NOT EXISTS labels (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  color         TEXT NOT NULL DEFAULT '',
-  position      INTEGER NOT NULL DEFAULT 0,
-  created_at    INTEGER NOT NULL
-);
 `
 
 // ThreadMeta is the row-level view of a thread, enough for a thread list.
@@ -113,10 +105,10 @@ type ThreadMeta struct {
 	// thread. Empty falls back to the project's default base branch, which is
 	// what every thread created before this field existed did.
 	BaseRef string `json:"baseRef,omitempty"`
-	// LabelID is the user-defined label this thread sits under, or "" for
-	// unlabelled. It is the user's own workflow marker, not lifecycle: nothing
-	// in the server reads it, and the sidebar groups by it.
-	LabelID string `json:"labelId,omitempty"`
+	// Pinned keeps the thread at the top of the sidebar. It is the user's own
+	// marker, not lifecycle: nothing in the server reads it, it only syncs
+	// across devices.
+	Pinned bool `json:"pinned,omitempty"`
 	// LastViewedSeq is the head the user had seen when they last looked at the
 	// thread, on any paired device. HeadSeq beyond it means something happened
 	// that nobody has read — the sidebar's unread signal. Stored, unlike
@@ -169,9 +161,9 @@ func Open(path string) (*Store, error) {
 		`ALTER TABLE threads ADD COLUMN provision_result BLOB`,
 		`ALTER TABLE threads ADD COLUMN provider_instance TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE threads ADD COLUMN label_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN home TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE threads ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate schema: %w", err)
@@ -223,6 +215,18 @@ func Open(path string) (*Store, error) {
 	// Usage is read from the harnesses' own transcripts now; the prices the
 	// event-log aggregation froze per event have no reader.
 	if _, err := db.Exec(`DROP TABLE IF EXISTS usage_pricing`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	// Labels gave way to pinning. Nothing carries over: a label was a group,
+	// a pin is not, so there is no faithful conversion. A database that never
+	// had labels has no label_id column, and that error is the "already done"
+	// signal.
+	if _, err := db.Exec(`ALTER TABLE threads DROP COLUMN label_id`); err != nil && !strings.Contains(err.Error(), "no such column") {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS labels`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
@@ -407,7 +411,7 @@ func (s *Store) SetTitle(ctx context.Context, threadID, title string) error {
 
 // RenameThread replaces a thread's title with one the user chose. Unlike
 // SetTitle it overwrites: the user is the last word on what a thread is
-// called. updated_at is left alone for the same reason as labels — naming a
+// called. updated_at is left alone for the same reason as pinning — naming a
 // thread is not activity.
 func (s *Store) RenameThread(ctx context.Context, threadID, title string) error {
 	s.mu.Lock()
@@ -453,8 +457,8 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
-		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, pinned, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
+		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
@@ -471,7 +475,7 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 // keeps two threads created in the same millisecond in one stable order.
 func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, label_id, last_viewed_seq, position
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, pinned, last_viewed_seq, position
 		 FROM threads ORDER BY position ASC, created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
@@ -481,7 +485,7 @@ func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	out := []ThreadMeta{}
 	for rows.Next() {
 		var m ThreadMeta
-		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.LabelID, &m.LastViewedSeq, &m.Position); err != nil {
+		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -518,117 +522,13 @@ func (s *Store) DeleteThread(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-// ---- Labels (user-defined thread groupings) ----
-
-// Label is one user-defined grouping. Labels are user-level, not per-project:
-// definitions live here so ordering and assignment survive restarts and fan
-// out to paired devices, which the userconfig file cannot do.
-type Label struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Color string `json:"color"`
-	// Position is the user's chosen sidebar order, smallest first.
-	Position  int   `json:"position"`
-	CreatedAt int64 `json:"createdAt"`
-}
-
-func (s *Store) ListLabels(ctx context.Context) ([]Label, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, color, position, created_at FROM labels ORDER BY position ASC, created_at ASC, id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []Label{}
-	for rows.Next() {
-		var l Label
-		if err := rows.Scan(&l.ID, &l.Name, &l.Color, &l.Position, &l.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, l)
-	}
-	return out, rows.Err()
-}
-
-// CreateLabel inserts a new definition at the end of the order. The position
-// is claimed inside the INSERT itself — not read beforehand by the caller —
-// so two devices creating at once cannot land on the same slot. The returned
-// label carries the position the row actually got.
-func (s *Store) CreateLabel(ctx context.Context, l Label) (Label, error) {
+// SetThreadPinned pins a thread to the top of the sidebar, or unpins it. It
+// leaves updated_at alone on purpose: pinning is not activity, and bumping the
+// stamp would reshuffle anything sorted by it.
+func (s *Store) SetThreadPinned(ctx context.Context, threadID string, pinned bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO labels (id, name, color, position, created_at)
-		 VALUES (?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM labels),?)`,
-		l.ID, l.Name, l.Color, l.CreatedAt)
-	if err != nil {
-		return Label{}, err
-	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT position FROM labels WHERE id=?`, l.ID).Scan(&l.Position); err != nil {
-		return Label{}, err
-	}
-	return l, nil
-}
-
-// SaveLabel rewrites an existing definition — rename, recolour, reorder.
-// Unknown ids are refused rather than upserted, so a stale client cannot
-// resurrect a label another device just deleted.
-func (s *Store) SaveLabel(ctx context.Context, l Label) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE labels SET name=?, color=?, position=? WHERE id=?`,
-		l.Name, l.Color, l.Position, l.ID)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// DeleteLabel removes a definition and unlabels every thread carrying it, in
-// one transaction. It never deletes a thread.
-func (s *Store) DeleteLabel(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE threads SET label_id='' WHERE label_id=?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM labels WHERE id=?`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// SetThreadLabel points a thread at a label, or "" to clear it. It leaves
-// updated_at alone on purpose: filing a thread is not activity, and bumping
-// the stamp would shuffle a most-recent-first list the user was just reading.
-func (s *Store) SetThreadLabel(ctx context.Context, threadID, labelID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if labelID != "" {
-		var n int
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM labels WHERE id=?`, labelID).Scan(&n); err != nil {
-			return err
-		}
-		if n == 0 {
-			return ErrNotFound
-		}
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE threads SET label_id=? WHERE id=?`, labelID, threadID)
+	res, err := s.db.ExecContext(ctx, `UPDATE threads SET pinned=? WHERE id=?`, pinned, threadID)
 	if err != nil {
 		return err
 	}

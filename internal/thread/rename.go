@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-// Renaming is metadata, like labels and read state: a store write and the
+// Renaming is metadata, like pins and read state: a store write and the
 // list broadcast, with no actor involved, so a thread with no live harness
 // can be renamed and every paired device sees the new name.
 

@@ -2,7 +2,7 @@ package thread
 
 import "context"
 
-// Viewed state is pure metadata over threads, exactly like labels: no actor,
+// Viewed state is pure metadata over threads, exactly like pinning: no actor,
 // no harness, works on a thread with no live process, and reaches every
 // paired device through the thread-list broadcast the sidebar already
 // consumes. That broadcast is the point — "I read this on the phone" is what
