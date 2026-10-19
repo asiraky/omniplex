@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, AuthFlowEvent, HarnessMeta, Item, Label, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
+import type { Access, AuthFlowEvent, HarnessMeta, Item, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -22,7 +22,6 @@ export interface ClientEvents {
   onHarnesses(harnesses: HarnessMeta[]): void;
   onComposerItemsChanged(threadId: string): void;
   onProjects(projects: Project[]): void;
-  onLabels(labels: Label[]): void;
   onQuotas(quotas: QuotaStatus[]): void;
   onState(threadId: string, state: ThreadState): void;
   onAccess(access: Access): void;
@@ -291,7 +290,6 @@ export class Client {
         this.events.onThreads(f.threads ?? []);
         this.events.onHarnesses(f.harnesses ?? []);
         this.events.onProjects(f.projects ?? []);
-        this.events.onLabels(f.labels ?? []);
         this.events.onQuotas(f.quotas ?? []);
         if (f.access) {
           this.events.onAccess(f.access);
@@ -314,12 +312,6 @@ export class Client {
       // a project deleted on the phone leaves the laptop's picker too.
       case "projects":
         this.events.onProjects(f.projects ?? []);
-        break;
-
-      // Label definitions changed somewhere — this device or a paired one.
-      // The list travels whole; absent means the last label was deleted.
-      case "labels":
-        this.events.onLabels(f.labels ?? []);
         break;
 
       // Usage limits changed somewhere: a live rate-limit push from a

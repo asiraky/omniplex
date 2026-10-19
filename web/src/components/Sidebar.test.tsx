@@ -6,7 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadDeleteThreadDialog } from "./loadDeleteThreadDialog";
 import { Sidebar } from "./Sidebar";
 import { render, viewport } from "~/test/harness";
-import type { Label, Project, ThreadMeta } from "~/protocol";
+import type { Project, ThreadMeta } from "~/protocol";
 
 // The dialog loads after the first paint in the app; here it is on hand from
 // the first render, so a test can open it and look straight away.
@@ -47,9 +47,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     projects: [] as Project[],
     projectName: () => "repo",
     projectFolders: () => ["/tmp/repo"],
-    labels: [],
-    onSetLabel: vi.fn(),
-    onManageLabels: vi.fn(),
+    onSetPinned: vi.fn(),
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
@@ -83,9 +81,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     projects: [] as Project[],
     projectName: () => "repo",
     projectFolders: () => ["/tmp/repo"],
-    labels: [],
-    onSetLabel: vi.fn(),
-    onManageLabels: vi.fn(),
+    onSetPinned: vi.fn(),
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
@@ -462,89 +458,109 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("button", { name: /Deleting/ })).toBeNull();
   });
 
-  describe("labels", () => {
-    const labels: Label[] = [
-      { id: "l1", name: "Parked", color: "#8d8d8d", position: 0, createdAt: 1 },
-      { id: "l2", name: "In progress", color: "#0091ff", position: 1, createdAt: 2 },
+  describe("pinned", () => {
+    const projects = [
+      { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+      { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+    ] as Project[];
+    const header = (name: string, count: number) =>
+      screen.queryByRole("button", { name: `${name}, ${count} thread${count === 1 ? "" : "s"}` });
+    // In the user's order, the way the server sends them.
+    const mixed = [
+      thread("a", { projectId: "p1", position: 0 }),
+      thread("b", { projectId: "p2", position: 1, pinned: true }),
+      thread("c", { projectId: "p1", position: 2 }),
+      thread("d", { projectId: "p1", position: 3, pinned: true }),
     ];
-    const filed = [thread("a", { labelId: "l1" }), thread("b", { labelId: "l2" }), thread("c")];
 
     afterEach(() => localStorage.clear());
 
-    it("names the label on its dot, and offers filing on an unlabelled row", () => {
-      // The name is not in the row any more — it is the accessible name of the
-      // dot, which is also what the tooltip says on hover.
-      renderSidebar({ threads: filed, labels });
-      expect(screen.getByRole("button", { name: "Labelled Parked — change label" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Label thread Thread c" })).toBeTruthy();
+    it("lifts pinned threads out of their groups into a section on top, in the user's order", () => {
+      renderSidebar({ threads: mixed, projects });
+
+      expect(header("Pinned", 2)).toBeTruthy();
+      // "worksauce" has nothing left once its only thread is pinned.
+      expect(header("worksauce", 1)).toBeNull();
+      expect(header("omniplex", 2)).toBeNull();
+      expect(rowOrder()).toEqual(["Thread b", "Thread d", "Thread a", "Thread c"]);
     });
 
-    it("filters labels and projects from one menu, and clears both at once", async () => {
-      const projects = [
-        { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
-        { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
-      ] as Project[];
-      const threads = [
-        thread("a", { labelId: "l1", projectId: "p1" }),
-        thread("b", { labelId: "l2", projectId: "p2" }),
-        thread("c", { projectId: "p1" }),
-      ];
-      renderSidebar({ threads, labels, projects });
-      const open = () =>
-        fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
-          button: 0,
-          ctrlKey: false,
-        });
-
-      open();
-      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "worksauce" }));
-      fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Parked" }));
-      // The menu stays open between toggles.
-      expect(screen.getByRole("menuitemcheckbox", { name: "No label" })).toBeTruthy();
-      expect(rowOrder()).toEqual(["Thread c"]);
-      // The open menu hides the rest of the page from role queries.
-      expect(screen.getByRole("button", { name: "Filter threads, 2 hidden", hidden: true })).toBeTruthy();
-
-      fireEvent.click(screen.getByRole("menuitem", { name: "Show all" }));
-      expect(rowOrder()).toHaveLength(3);
-      expect(screen.getByRole("button", { name: "Filter threads" })).toBeTruthy();
+    it("gives the flat list under Pinned a header of its own", () => {
+      renderSidebar({ threads: mixed, projects: [projects[0]] });
+      expect(header("Pinned", 2)).toBeTruthy();
+      expect(header("Threads", 2)).toBeTruthy();
+      expect(rowOrder()).toEqual(["Thread b", "Thread d", "Thread a", "Thread c"]);
     });
 
-    it("hides the threads under a switched-off label, and says so in the footer", () => {
-      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1"]));
-      renderSidebar({ threads: filed, labels });
-
-      expect(rowOrder()).toEqual(["Thread b", "Thread c"]);
-      expect(screen.getByText("2 of 3 threads")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Filter threads, 1 hidden" })).toBeTruthy();
+    it("has no Pinned section when nothing on screen is pinned", () => {
+      localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
+      renderSidebar({
+        threads: [mixed[0], mixed[1], mixed[2]],
+        projects,
+      });
+      expect(header("Pinned", 1)).toBeNull();
+      expect(header("Threads", 2)).toBeNull();
+      expect(rowOrder()).toEqual(["Thread a", "Thread c"]);
     });
 
-    it("switches unlabelled threads off on their own", () => {
-      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["none"]));
-      renderSidebar({ threads: filed, labels });
-      expect(rowOrder()).toEqual(["Thread a", "Thread b"]);
+    it("keeps a hidden project's pinned threads hidden", () => {
+      localStorage.setItem("omniplex.projectFilter", JSON.stringify(["p2"]));
+      renderSidebar({ threads: mixed, projects });
+      expect(header("Pinned", 1)).toBeTruthy();
+      expect(rowOrder()).toEqual(["Thread d", "Thread a", "Thread c"]);
     });
 
-    it("offers the way back when the filter has hidden everything", () => {
-      // Filtered to nothing is not "no threads yet": the threads are there,
-      // and with no groups left on screen the message is the only thing that
-      // can say so.
-      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l1", "l2", "none"]));
-      renderSidebar({ threads: filed, labels });
-      expect(screen.getByText("3 threads hidden by the filters.")).toBeTruthy();
-
-      fireEvent.click(screen.getByRole("button", { name: "Show all" }));
-      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
-      expect(localStorage.getItem("omniplex.labelFilter")).toBe("[]");
+    it("pins and unpins from the row without opening the thread", () => {
+      const props = renderSidebar({ threads: mixed, projects });
+      fireEvent.click(screen.getByRole("button", { name: "Pin thread Thread a" }));
+      expect(props.onSetPinned).toHaveBeenLastCalledWith("a", true);
+      fireEvent.click(screen.getByRole("button", { name: "Unpin thread Thread b" }));
+      expect(props.onSetPinned).toHaveBeenLastCalledWith("b", false);
+      expect(props.onSelect).not.toHaveBeenCalled();
     });
 
-    it("ignores a stored id whose label has since been deleted", () => {
-      localStorage.setItem("omniplex.labelFilter", JSON.stringify(["l2"]));
-      renderSidebar({ threads: filed, labels: [labels[0]] });
-      // "b" was filed under the deleted label, so it is unlabelled now — and
-      // unlabelled is showing.
-      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
-      expect(screen.getByRole("button", { name: "Filter threads" })).toBeTruthy();
+    it("reorders inside Pinned against the pinned neighbours only", async () => {
+      const props = renderSidebar({ threads: mixed, projects });
+      fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
+
+      // "c" sits between them in the whole list; it is not in this run.
+      fireEvent.keyDown(screen.getByRole("button", { name: "Move thread Thread b" }), {
+        key: "ArrowDown",
+      });
+      expect(props.onReorder).toHaveBeenLastCalledWith("b", 4);
+      fireEvent.keyDown(screen.getByRole("button", { name: "Move thread Thread d" }), {
+        key: "ArrowUp",
+      });
+      expect(props.onReorder).toHaveBeenLastCalledWith("d", 0);
+    });
+
+    it("folds a departing pinned row away inside Pinned, taking the section with it", () => {
+      vi.useFakeTimers();
+      try {
+        const { serverSays } = renderLive([
+          thread("a", { pinned: true }),
+          thread("b"),
+          thread("c"),
+        ]);
+
+        confirmDelete("a");
+        fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+        serverSays([thread("b"), thread("c")]);
+
+        expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
+        const section = header("Pinned", 1)!.closest(".grid")!;
+        expect(section.className).toContain("grid-rows-[0fr]");
+
+        act(() => vi.advanceTimersByTime(500));
+        expect(rowOrder()).toEqual(["Thread b", "Thread c"]);
+        expect(header("Pinned", 1)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
   describe("projects", () => {

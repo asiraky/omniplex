@@ -1,8 +1,15 @@
-import { FolderIcon, GitBranchIcon, GripVerticalIcon, PencilIcon, XIcon } from "lucide-react";
+import {
+  FolderIcon,
+  GitBranchIcon,
+  GripVerticalIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
+  XIcon,
+} from "lucide-react";
 import { useRef, useState } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
-import { LabelDot, LabelMenu } from "~/components/LabelMenu";
 import { TitleEditor } from "~/components/TitleEditor";
 import { Button } from "~/components/ui/button";
 import {
@@ -11,10 +18,9 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "~/components/ui/context-menu";
-import { DropdownMenu, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
-import type { Label, ThreadMeta } from "~/protocol";
+import type { ThreadMeta } from "~/protocol";
 import { rowStatus, unread, type RowStatus } from "~/threadStatus";
 
 import type { RowDrag } from "./SortableRows";
@@ -30,14 +36,10 @@ function ago(ms: number) {
 /** The title line: the title, whatever the thread is doing, and when. */
 function TitleLine({
   s,
-  label,
-  labels,
   isNew,
   reordering,
 }: {
   s: ThreadMeta;
-  label: Label | undefined;
-  labels: Label[];
   /** Unread and stopped: the title steps up alongside the badge. */
   isNew: boolean;
   /** The row's controls are put away in reorder mode, so the line keeps its
@@ -48,41 +50,27 @@ function TitleLine({
     <span
       className={cn(
         "flex items-center gap-1.5",
-        // Room for the always-visible touch controls: the X, and
-        // the label tag beside it once labels exist. On desktop the
-        // controls only exist on hover, so the line runs full width
-        // until then — but it has to yield when they arrive. The
-        // fading timestamp alone covers one control; a second one
-        // would sit on top of the title, so with labels in play the
-        // hovered line yields as well — but only as far as the
-        // label dot's left edge (pr-12), not the pair's full 64px
-        // box. The buttons are mostly hit area: reserving all of it
-        // leaves a canyon between the truncated title and the X.
+        // Room for the always-visible touch controls: the X and the pin
+        // beside it. On desktop an unpinned row's controls only exist on
+        // hover, so the line runs full width until then — but it has to
+        // yield when they arrive. The fading timestamp alone covers one
+        // control; the pin would sit on top of the title, so the hovered
+        // line yields as well. Hover also brings the rename pencil, one
+        // control-width further left, so the hovered line yields to the
+        // pencil's glyph (pr-18) rather than the trio's full 96px box: the
+        // buttons are mostly hit area, and reserving all of it leaves a
+        // canyon between the truncated title and the X. Deliberately not
+        // transitioned: an animated padding hands the pin ~150ms sitting on
+        // the title. The line yields first, then the controls fade in.
         //
-        // The open label menu is the third case: Radix moves focus
-        // into a portal, so once the pointer leaves the row neither
-        // hover nor focus-within holds, yet the trigger stays lit.
-        // `has` reads it off the trigger's own aria-expanded, which
-        // — unlike data-state — no tooltip on the same element can
-        // claim. Deliberately not transitioned: an animated padding
-        // hands the tag ~150ms sitting on the title, which is the
-        // bug in miniature. The line yields first, then it fades in.
-        // A filed thread shows its dot at all times, so on
-        // desktop the line has to yield at all times too —
-        // hover-only reservation would leave the title running
-        // under a dot that is already there.
-        //
-        // Hover on desktop also brings the rename pencil, one
-        // control-width further left, so the hovered line yields
-        // to the pencil's glyph instead: pr-18 with the label dot
-        // beside it, pr-10 when the pencil sits next to the X.
+        // A pinned thread shows its pin at all times, so on desktop the
+        // line has to yield at all times too — but only as far as the pin
+        // glyph's left edge (pr-12), with the timestamp still showing.
         reordering
           ? null
-          : label
+          : s.pinned
             ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
-            : labels.length > 0
-              ? "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18 md:group-has-[[aria-expanded=true]]:pr-12"
-              : "pr-8 md:pr-0 md:group-hover:pr-10 md:group-focus-within:pr-10",
+            : "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18",
       )}
     >
       <span className={cn("min-w-0 truncate text-[13px]", isNew && "font-semibold")}>
@@ -182,8 +170,8 @@ function DetailLine({
         </>
       )}
       {/* The row's status column: always the right edge of this line, so
-         it lines up down the list, and well clear of the label dot on the
-         line above. */}
+         it lines up down the list, and well clear of the pin on the line
+         above. */}
       <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-1.5">
         {badge && <StatusBadge badge={badge} />}
         <span className="relative flex">
@@ -204,75 +192,53 @@ function DetailLine({
   );
 }
 
-/** The row's label dot, and the menu that files the thread under one. */
-function LabelControl({
+/**
+ * The pin toggle, one control-width left of the X. A pinned thread keeps it on
+ * screen at all times, since it is the row's only sign of being pinned beyond
+ * the section it sits in. An unpinned one reveals it on hover like the X, so
+ * an untouched list stays quiet on desktop; a phone has no hover, so there it
+ * is always showing.
+ */
+function PinControl({
   s,
-  label,
-  labels,
-  onSetLabel,
-  onManageLabels,
+  onSetPinned,
 }: {
   s: ThreadMeta;
-  label: Label | undefined;
-  labels: Label[];
-  onSetLabel: (threadId: string, labelId: string) => void;
-  onManageLabels: () => void;
+  onSetPinned: (threadId: string, pinned: boolean) => void;
 }) {
+  const pinned = !!s.pinned;
   return (
-    <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={
-                label
-                  ? `Labelled ${label.name} — change label`
-                  : `Label thread ${s.title || "Untitled"}`
-              }
-              // Sits one control-width left of the X and reveals
-              // the same way, so the pair reads as one action rail.
-              // It also stays up while its menu is: keyed off
-              // aria-expanded, because the tooltip wrapped around
-              // this same element wins the data-state attribute and
-              // reports "closed" with the menu plainly open.
-              //
-              // A filed thread keeps its dot on screen at all
-              // times — the dot *is* the label now, and it is the
-              // only place the filing shows. An unfiled one keeps
-              // the old hover-in behaviour, so an untouched list
-              // stays as quiet as it was.
-              className={cn(
-                "absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:after:hidden md:aria-expanded:opacity-100",
-                !label && "md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
-              )}
-            >
-              {label ? (
-                <LabelDot color={label.color} className="size-2.5 shrink-0 rounded-full" />
-              ) : (
-                // Unfiled reads as an empty socket rather than a
-                // grey label: a ring, not a filled dot.
-                <span
-                  aria-hidden
-                  className="border-muted-foreground/60 size-2.5 shrink-0 rounded-full border"
-                />
-              )}
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        {/* The name lives here and nowhere else, which is the
-           trade the dot makes: no truncated text in the row, one
-           hover (or one tap, on the menu) to find out. */}
-        <TooltipContent>{label ? label.name : "Label thread"}</TooltipContent>
-      </Tooltip>
-      <LabelMenu
-        labels={labels}
-        current={s.labelId}
-        onSelect={(labelId) => onSetLabel(s.id, labelId)}
-        onManage={onManageLabels}
-      />
-    </DropdownMenu>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`${pinned ? "Unpin" : "Pin"} thread ${s.title || "Untitled"}`}
+          onClick={() => onSetPinned(s.id, !pinned)}
+          // The same 32px square as the X, grown to 44px on touch the same
+          // way, so the pair reads as one action rail.
+          className={cn(
+            "group/pin absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:after:hidden",
+            pinned
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+          )}
+        >
+          {/* 14px, a step under the X: on desktop a pinned row's title
+              stops just short of it. Pointed at, a pin turns into what the
+              click will do. */}
+          {pinned ? (
+            <>
+              <PinIcon className="size-3.5 fill-current group-hover/pin:hidden" />
+              <PinOffIcon className="hidden size-3.5 group-hover/pin:block" />
+            </>
+          ) : (
+            <PinIcon className="size-3.5" />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{pinned ? "Unpin" : "Pin"}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -282,16 +248,7 @@ function LabelControl({
  * too much room, so touch reaches rename through the long-press menu, or the
  * pencil in the thread header.
  */
-function RenameControl({
-  s,
-  besideLabel,
-  onRename,
-}: {
-  s: ThreadMeta;
-  /** The label control is showing, so the pencil sits left of it. */
-  besideLabel: boolean;
-  onRename: () => void;
-}) {
+function RenameControl({ s, onRename }: { s: ThreadMeta; onRename: () => void }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -300,10 +257,8 @@ function RenameControl({
           size="icon"
           aria-label={`Rename thread ${s.title || "Untitled"}`}
           onClick={onRename}
-          className={cn(
-            "text-muted-foreground/70 hover:text-foreground absolute top-0.5 hidden size-8 shrink-0 hover:bg-transparent md:size-8 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent",
-            besideLabel ? "right-16" : "right-8",
-          )}
+          // Left of the pin, which is always in the rail.
+          className="text-muted-foreground/70 hover:text-foreground absolute top-0.5 right-16 hidden size-8 shrink-0 hover:bg-transparent md:size-8 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent"
         >
           {/* Smaller and fainter than the X beside it: renaming is the
               quieter of the two, and the title it edits is 13px. */}
@@ -366,8 +321,7 @@ function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMet
 
 // The row carries its actions as overlaid buttons rather than click handlers
 // on the container — a button cannot legally nest inside another button. The
-// delete X (and, with labels defined, the label tag beside it) overlays the
-// timestamp's corner instead of owning a column of its own, so an un-hovered
+// delete X and the pin beside it overlay the timestamp's corner instead of owning a column of its own, so an un-hovered
 // row has no phantom right margin; on hover (desktop) the timestamp yields.
 export function ThreadRow({
   s,
@@ -377,12 +331,10 @@ export function ThreadRow({
   going,
   reordering,
   drag,
-  labels,
   accentOf,
   projectName,
   onSelect,
-  onSetLabel,
-  onManageLabels,
+  onSetPinned,
   onSetUnread,
   onRename,
   onDelete,
@@ -399,12 +351,10 @@ export function ThreadRow({
   reordering: boolean;
   /** How the row is dragged; absent while the list is held still. */
   drag: RowDrag | undefined;
-  labels: Label[];
   accentOf: (harness: string) => string | undefined;
   projectName: (id?: string) => string | undefined;
   onSelect: (id: string) => void;
-  onSetLabel: (threadId: string, labelId: string) => void;
-  onManageLabels: () => void;
+  onSetPinned: (threadId: string, pinned: boolean) => void;
   onSetUnread: (threadId: string, unread: boolean) => void;
   onRename: (threadId: string, title: string) => void;
   onDelete: (s: ThreadMeta) => void;
@@ -421,9 +371,6 @@ export function ThreadRow({
   // Only a badged row is loud. Everything else — read, idle, or busy with
   // work nobody has to watch — recedes, so the badges stand out by contrast.
   const recede = !active && badge === null;
-  // Undefined for unlabelled, and for a label another device has just
-  // deleted — the assignment broadcast can land after the deletion one.
-  const label = labels.find((l) => l.id === s.labelId);
   return (
     // The row leaves from wherever it stands: it fades and slides out
     // while its own height folds shut under it, so the rows below close
@@ -516,8 +463,6 @@ export function ThreadRow({
                       right — timestamp above, provider logo below. */}
                   <TitleLine
                     s={s}
-                    label={label}
-                    labels={labels}
                     isNew={badge === "new"}
                     reordering={reordering}
                   />
@@ -535,21 +480,8 @@ export function ThreadRow({
                   <DragHandle s={s} drag={drag} />
                 ) : (
                   <>
-                    <RenameControl
-                      s={s}
-                      besideLabel={labels.length > 0}
-                      onRename={() => setRenaming(true)}
-                    />
-
-                    {labels.length > 0 && (
-                      <LabelControl
-                        s={s}
-                        label={label}
-                        labels={labels}
-                        onSetLabel={onSetLabel}
-                        onManageLabels={onManageLabels}
-                      />
-                    )}
+                    <RenameControl s={s} onRename={() => setRenaming(true)} />
+                    <PinControl s={s} onSetPinned={onSetPinned} />
 
                     <DeleteControl s={s} onDelete={onDelete} />
                   </>

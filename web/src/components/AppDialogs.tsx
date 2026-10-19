@@ -1,14 +1,10 @@
 import { lazy, Suspense } from "react";
 
-import type { LabelActions } from "~/app/useLabelActions";
 import type { ProjectActions } from "~/app/useProjectActions";
 import type { ProviderAuth } from "~/app/useProviderAuth";
 import type { Screens } from "~/app/useScreens";
 import type { Wire } from "~/app/useWire";
 
-const LabelManager = lazy(() =>
-  import("./LabelManager").then((m) => ({ default: m.LabelManager })),
-);
 const AccessPanel = lazy(() => import("./Access").then((m) => ({ default: m.AccessPanel })));
 const NewProject = lazy(() => import("./NewProject").then((m) => ({ default: m.NewProject })));
 const SettingsScreen = lazy(() =>
@@ -22,13 +18,11 @@ const InstanceAuthDialog = lazy(() => import("./AuthFlowDialog"));
 export function AppDialogs({
   wire,
   screens,
-  labels,
   auth,
   projects,
 }: {
   wire: Wire;
   screens: Screens;
-  labels: LabelActions;
   auth: ProviderAuth;
   projects: ProjectActions;
 }) {
@@ -37,18 +31,6 @@ export function AppDialogs({
   const { authInstance, setAuthInstance, loginInstance, setLoginInstance, recheck } = auth;
   return (
     <>
-      {screens.manageLabels && (
-        <Suspense fallback={null}>
-          <LabelManager
-            labels={wire.labels}
-            onCreate={labels.createLabel}
-            onSave={labels.saveLabel}
-            onDelete={labels.deleteLabel}
-            onClose={() => screens.setManageLabels(false)}
-          />
-        </Suspense>
-      )}
-
       {screens.showAccess && access && (
         <Suspense fallback={null}>
           <AccessPanel

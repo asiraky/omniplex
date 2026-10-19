@@ -3,9 +3,9 @@ import { useCallback, useMemo } from "react";
 import { NEW_THREAD } from "./app/threadKeys";
 import { useActivePR } from "./app/useActivePR";
 import { useComposerDrafts } from "./app/useComposerDrafts";
-import { useLabelActions } from "./app/useLabelActions";
 import { useNewThread } from "./app/useNewThread";
 import { usePanel } from "./app/usePanel";
+import { usePinThread } from "./app/usePinThread";
 import { useProjectActions } from "./app/useProjectActions";
 import { useProviderAuth } from "./app/useProviderAuth";
 import { useReadState } from "./app/useReadState";
@@ -39,11 +39,12 @@ import { useIsDesktop } from "./useMediaQuery";
 export function App() {
   const isDesktop = useIsDesktop();
   const wire = useWire();
-  const { clientRef, state, projects, harnesses, labels } = wire;
-  // The list as the user should see it: with their renames and moves, before
-  // the server has confirmed them, in their order.
+  const { clientRef, state, projects, harnesses } = wire;
+  // The list as the user should see it: with their renames, pins and moves,
+  // before the server has confirmed them, in their order.
   const { threads: renamed, rename: renameThread } = useRenameThread(wire);
-  const { threads, move: moveThread } = useThreadOrder(wire, renamed);
+  const { threads: flagged, setPinned } = usePinThread(wire, renamed);
+  const { threads, move: moveThread } = useThreadOrder(wire, flagged);
   const screens = useScreens();
   const panel = usePanel(wire.stateRef);
   const scroll = useScrollMemory(wire.resume);
@@ -60,7 +61,6 @@ export function App() {
   const create = useNewThread({ wire, store, select, openSchedule: schedule.openNew });
   const commands = useThreadCommands({ wire, activeId, store, openDiff: panel.openDiff });
   const setThreadUnread = useReadState(wire, activeId);
-  const labelActions = useLabelActions(wire);
   const projectActions = useProjectActions(wire);
   const auth = useProviderAuth(wire);
   const copy = useTranscriptCopy(wire);
@@ -98,7 +98,6 @@ export function App() {
         <AppDialogs
           wire={wire}
           screens={screens}
-          labels={labelActions}
           auth={auth}
           projects={projectActions}
         />
@@ -159,9 +158,7 @@ export function App() {
         projects={projects}
         projectName={(id) => projects.find((p) => p.id === id)?.name}
         projectFolders={projectFolders}
-        labels={labels}
-        onSetLabel={labelActions.setThreadLabel}
-        onManageLabels={() => screens.setManageLabels(true)}
+        onSetPinned={setPinned}
         onNewProject={() => screens.setNewProject(true)}
         onSetUnread={setThreadUnread}
         onRename={renameThread}
@@ -187,11 +184,7 @@ export function App() {
           onRename={renameThread}
           creating={!!nav.creating}
           isDesktop={isDesktop}
-          labels={{
-            labels,
-            onSetLabel: labelActions.setThreadLabel,
-            onManage: () => screens.setManageLabels(true),
-          }}
+          onSetPinned={setPinned}
           harness={harness}
           copy={copy}
           panel={panel}
@@ -263,7 +256,6 @@ export function App() {
       <AppDialogs
         wire={wire}
         screens={screens}
-        labels={labelActions}
         auth={auth}
         projects={projectActions}
       />

@@ -5,8 +5,9 @@ import {
   PanelLeftIcon,
   PanelRightIcon,
   PencilIcon,
+  PinIcon,
+  PinOffIcon,
   PlugIcon,
-  TagIcon,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -16,10 +17,9 @@ import type { TranscriptCopy } from "~/app/useTranscriptCopy";
 import { liveJobCount } from "~/lib/jobs";
 import { threadTitle } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
-import type { Label, ThreadMeta, ThreadState } from "~/protocol";
+import type { ThreadMeta, ThreadState } from "~/protocol";
 
 import { IconButton } from "./IconButton";
-import { LabelDot, LabelMenu, LabelMenuItems } from "./LabelMenu";
 import { TitleEditor } from "./TitleEditor";
 import { Button } from "./ui/button";
 import {
@@ -27,9 +27,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -39,19 +36,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 // reverse than deleting it. Flip this to bring it back.
 const SHOW_MODE_SWITCHER = false;
 
-/** Filing the open thread, from the header on either layout. */
-export type HeaderLabels = {
-  labels: Label[];
-  onSetLabel: (threadId: string, labelId: string) => void;
-  onManage: () => void;
-};
-
 /** What the header's actions work on, on either layout. */
 type Actions = {
   state: ThreadState;
   activeId: string | null;
   meta: ThreadMeta | undefined;
-  labels: HeaderLabels;
+  onSetPinned: (threadId: string, pinned: boolean) => void;
   copy: TranscriptCopy;
   panel: PanelControls;
   /** The Skills page on its MCP tab, which asks this thread's session. */
@@ -68,7 +58,7 @@ export function ThreadHeader({
   onRename,
   creating,
   isDesktop,
-  labels,
+  onSetPinned,
   harness,
   copy,
   panel,
@@ -82,7 +72,7 @@ export function ThreadHeader({
   onRename: (threadId: string, title: string) => void;
   creating: boolean;
   isDesktop: boolean;
-  labels: HeaderLabels;
+  onSetPinned: (threadId: string, pinned: boolean) => void;
   harness: ThreadHarness;
   copy: TranscriptCopy;
   panel: PanelControls;
@@ -91,7 +81,7 @@ export function ThreadHeader({
   // The thread the title field is open on: switching threads closes it rather
   // than opening the next thread's name for editing.
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const actions = state && { state, activeId, meta, labels, copy, panel, onShowMcp };
+  const actions = state && { state, activeId, meta, onSetPinned, copy, panel, onShowMcp };
   return (
     <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       {/* The open sidebar carries its own collapse button, so this one
@@ -211,48 +201,27 @@ function ModeSwitcher({ harness }: { harness: ThreadHarness }) {
   );
 }
 
-// The label the open thread is filed under, and whether it can be filed at
-// all: the menu is invisible until the user has defined a label.
-function useThreadLabel({ activeId, meta, labels }: Actions) {
-  const current = labels.labels.find((l) => l.id === meta?.labelId);
-  const available = labels.labels.length > 0 && !!activeId;
-  const select = (labelId: string) => activeId && labels.onSetLabel(activeId, labelId);
-  return { current, available, select };
+// Whether the open thread is pinned, and the toggle: the same one the sidebar
+// row carries, so a thread can be pinned from either place.
+function threadPin({ activeId, meta, onSetPinned }: Actions) {
+  const pinned = !!meta?.pinned;
+  const toggle = activeId ? () => onSetPinned(activeId, !pinned) : null;
+  return { pinned, toggle };
 }
 
 function DesktopActions({ actions }: { actions: Actions }) {
-  const { state, meta, labels, copy, panel } = actions;
-  const label = useThreadLabel(actions);
+  const { state, copy, panel } = actions;
+  const pin = threadPin(actions);
   return (
     <>
-      {/* Filing the open thread: the same menu the sidebar row
-          carries, so a thread can be labelled from either place. */}
-      {label.available && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            {label.current ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label={`Labelled ${label.current.name} — change label`}
-                className="text-muted-foreground h-8 max-w-32 gap-1.5 px-2 text-[11px]"
-              >
-                <LabelDot color={label.current.color} />
-                <span className="truncate">{label.current.name}</span>
-              </Button>
-            ) : (
-              <Button variant="ghost" size="icon" aria-label="Label this thread" className="size-8">
-                <TagIcon />
-              </Button>
-            )}
-          </DropdownMenuTrigger>
-          <LabelMenu
-            labels={labels.labels}
-            current={meta?.labelId}
-            onSelect={label.select}
-            onManage={labels.onManage}
-          />
-        </DropdownMenu>
+      {pin.toggle && (
+        <IconButton
+          label={pin.pinned ? "Unpin thread" : "Pin thread"}
+          onClick={pin.toggle}
+          className={pin.pinned ? "text-foreground" : "text-muted-foreground hover:text-foreground"}
+        >
+          <PinIcon className={cn(pin.pinned && "fill-current")} />
+        </IconButton>
       )}
 
       <IconButton
@@ -278,8 +247,8 @@ function DesktopActions({ actions }: { actions: Actions }) {
 // A phone has no room for a row of buttons, so the same actions sit in one
 // overflow menu.
 function PhoneActions({ actions }: { actions: Actions }) {
-  const { state, meta, labels, copy, panel, onShowMcp } = actions;
-  const label = useThreadLabel(actions);
+  const { state, copy, panel, onShowMcp } = actions;
+  const pin = threadPin(actions);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -305,31 +274,13 @@ function PhoneActions({ actions }: { actions: Actions }) {
           {copy.copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
           {copy.copied ? "Transcript copied" : "Copy transcript"}
         </DropdownMenuItem>
-        {label.available && (
+        {pin.toggle && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                {label.current ? (
-                  <>
-                    <LabelDot color={label.current.color} />
-                    <span className="truncate">{label.current.name}</span>
-                  </>
-                ) : (
-                  <>
-                    <TagIcon /> Label thread
-                  </>
-                )}
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="min-w-40">
-                <LabelMenuItems
-                  labels={labels.labels}
-                  current={meta?.labelId}
-                  onSelect={label.select}
-                  onManage={labels.onManage}
-                />
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+            <DropdownMenuItem onSelect={pin.toggle}>
+              {pin.pinned ? <PinOffIcon /> : <PinIcon />}
+              {pin.pinned ? "Unpin thread" : "Pin thread"}
+            </DropdownMenuItem>
           </>
         )}
       </DropdownMenuContent>

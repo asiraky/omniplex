@@ -4,7 +4,6 @@ import { Client, wsURL, type ConnectionStatus } from "~/client";
 import type {
   Access,
   HarnessMeta,
-  Label,
   Project,
   QuotaStatus,
   ThreadMeta,
@@ -52,9 +51,6 @@ export function useWire() {
   const [threadsLoaded, setThreadsLoaded] = useState(false);
   const [harnesses, setHarnesses] = useState<HarnessMeta[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  // The user's label definitions, server-owned: every mutation round-trips
-  // and comes back as a broadcast, so paired devices all render the same set.
-  const [labels, setLabels] = useState<Label[]>([]);
   // Every provider instance's cached usage limits, pushed by the server on
   // welcome and whenever a live push or refresh changes one.
   const [quotas, setQuotas] = useState<QuotaStatus[]>([]);
@@ -84,7 +80,6 @@ export function useWire() {
         if (id === activeRef.current) setComposerRevision((revision) => revision + 1);
       },
       onProjects: setProjects,
-      onLabels: setLabels,
       onQuotas: setQuotas,
       // State only lands for the thread currently attached; the client
       // discards anything else.
@@ -137,8 +132,6 @@ export function useWire() {
     setHarnesses,
     projects,
     setProjects,
-    labels,
-    setLabels,
     quotas,
     access,
     setAccess,

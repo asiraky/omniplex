@@ -660,25 +660,10 @@ export interface ThreadMeta {
   mode?: string;
   workspaceMode?: string;
   /**
-   * The user-defined label this thread is filed under, or absent for
-   * unlabelled. One label per thread — a status, not a tag set.
+   * Pinned to the top of the sidebar, synced across paired devices. Absent
+   * means not pinned.
    */
-  labelId?: string;
-}
-
-/**
- * One user-defined label. User-level, not per-project: the same set applies
- * everywhere, and the server re-broadcasts the whole list on any change so
- * every paired device stays current. A label means only what the user decides
- * it means — nothing in the system reads it back.
- */
-export interface Label {
-  id: string;
-  name: string;
-  color: string;
-  /** The user's chosen sidebar order, smallest first. */
-  position: number;
-  createdAt: number;
+  pinned?: boolean;
 }
 
 /**
@@ -1098,7 +1083,6 @@ export interface ServerFrame {
     | "welcome"
     | "threads"
     | "harnesses"
-    | "labels"
     | "projects"
     | "quotas"
     | "composer_items_changed"
@@ -1116,8 +1100,6 @@ export interface ServerFrame {
   threads?: ThreadMeta[];
   harnesses?: HarnessMeta[];
   projects?: Project[];
-  /** Absent means none defined: an empty list is omitted from the frame. */
-  labels?: Label[];
   /** Every provider instance's cached usage limits; the whole list, always. */
   quotas?: QuotaStatus[];
   cwd?: string;

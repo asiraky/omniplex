@@ -167,6 +167,50 @@ describe("copying a transcript", () => {
   });
 });
 
+describe("pinning", () => {
+  const rows = () =>
+    Array.from(document.querySelectorAll('[aria-label^="Delete thread"]')).map((el) =>
+      el.getAttribute("aria-label")!.replace("Delete thread ", ""),
+    );
+  const load = async () => {
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([
+        { ...thread("a"), position: 0 },
+        { ...thread("b"), position: 1 },
+        { ...thread("c"), position: 2 },
+      ]);
+    });
+  };
+
+  it("moves a pinned row to the top at once, and tells the server", async () => {
+    await load();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Pin thread Thread c" }));
+    });
+
+    expect(command).toHaveBeenCalledWith("set_thread_pinned", { threadId: "c", pinned: true });
+    expect(screen.getByRole("button", { name: "Pinned, 1 thread" })).toBeTruthy();
+    expect(rows()).toEqual(["Thread c", "Thread a", "Thread b"]);
+  });
+
+  it("puts the row back, and says so, when the pin fails", async () => {
+    await load();
+    command.mockImplementationOnce(async () => {
+      throw new Error("offline");
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Pin thread Thread c" }));
+    });
+
+    expect(toast.error).toHaveBeenCalledWith("Could not pin that thread", expect.anything());
+    expect(screen.queryByRole("button", { name: "Pinned, 1 thread" })).toBeNull();
+    expect(rows()).toEqual(["Thread a", "Thread b", "Thread c"]);
+  });
+});
+
 describe("thread actions on a phone", () => {
   const openThread = async () => {
     viewport("phone");
@@ -184,14 +228,9 @@ describe("thread actions on a phone", () => {
 
   it("puts the header actions in one overflow menu", async () => {
     await openThread();
-    await act(async () =>
-      events.onLabels([
-        { id: "label-1", name: "Parked", color: "#f59e0b", position: 0, createdAt: 1 },
-      ]),
-    );
 
     expect(screen.queryByRole("button", { name: "Copy transcript" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Label this thread" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pin thread" })).toBeNull();
     fireEvent.pointerDown(screen.getByRole("button", { name: "More thread actions" }), {
       button: 0,
       ctrlKey: false,
@@ -199,8 +238,10 @@ describe("thread actions on a phone", () => {
 
     expect(screen.getByRole("menuitem", { name: "Open panel" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy transcript" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Label thread" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: /diff/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin thread" }));
+    expect(command).toHaveBeenCalledWith("set_thread_pinned", { threadId: "a", pinned: true });
   });
 
   it("opens the whole panel directly, with terminal available from its surface menu", async () => {
