@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-// The sidebar order is metadata, like labels, read state and titles: a store
+// The sidebar order is metadata, like pins, read state and titles: a store
 // write and the list broadcast, with no actor involved, so a thread with no
 // live harness can be moved and every paired device shows the same order.
 

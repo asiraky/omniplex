@@ -114,9 +114,6 @@ type Manager struct {
 	// welcome frame — so a picker opened later shows the live catalogue
 	// without the user reconnecting.
 	harnessSub map[string]chan struct{}
-	// Broadcast of label-definition changes, so every paired device sees a
-	// created, renamed, reordered, or deleted label without reconnecting.
-	labelSub map[string]chan struct{}
 	// Broadcast of project-registry changes. Projects rode on notifyList
 	// before, which only ever sends a thread frame — so a project added,
 	// edited or removed on the phone stayed on the laptop's screen until it
@@ -174,7 +171,6 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		refreshing:      map[string]bool{},
 		listSub:         map[string]chan struct{}{},
 		harnessSub:      map[string]chan struct{}{},
-		labelSub:        map[string]chan struct{}{},
 		projectSub:      map[string]chan struct{}{},
 		quotas:          map[string]*QuotaStatus{},
 		quotaGeneration: map[string]uint64{},
@@ -1593,34 +1589,6 @@ func (m *Manager) notifyHarnesses() {
 	m.listMu.Lock()
 	defer m.listMu.Unlock()
 	for _, ch := range m.harnessSub {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// SubscribeLabels registers for label-definition changes: create, save,
-// delete. Assignments travel on the thread list instead.
-func (m *Manager) SubscribeLabels() (string, chan struct{}) {
-	id := uuid.NewString()
-	ch := make(chan struct{}, 1)
-	m.listMu.Lock()
-	m.labelSub[id] = ch
-	m.listMu.Unlock()
-	return id, ch
-}
-
-func (m *Manager) UnsubscribeLabels(id string) {
-	m.listMu.Lock()
-	delete(m.labelSub, id)
-	m.listMu.Unlock()
-}
-
-func (m *Manager) notifyLabels() {
-	m.listMu.Lock()
-	defer m.listMu.Unlock()
-	for _, ch := range m.labelSub {
 		select {
 		case ch <- struct{}{}:
 		default:

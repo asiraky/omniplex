@@ -134,7 +134,7 @@ Use the \`dev\` skill to run the app. It picks up \`.omniplex/worktree.env\`, so
 server gets its own port and its own database at
 \`.omniplex/dev.db\` — so it will not collide with the checkout this came from, and
 nothing you do here touches its threads. That database is seeded with the
-projects and labels of the one it came from; threads are not copied.
+projects of the one it came from; threads are not copied.
 
 Both files are generated and ignored by Git. Delete the worktree with the
 thread; do not \`git worktree remove\` it by hand while a thread holds it.
@@ -144,12 +144,11 @@ thread; do not \`git worktree remove\` it by hand while a thread holds it.
 // ---- 4. reference data ----
 
 /**
- * Copies the projects and labels of the database this server runs on into the
- * worktree's own, so the app there opens on something usable instead of an
- * empty sidebar — the projects you can start a thread in, and the labels the
- * list is organised by.
+ * Copies the projects of the database this server runs on into the worktree's
+ * own, so the app there opens on something usable instead of an empty sidebar:
+ * the projects, and their folders, you can start a thread in.
  *
- * Only those two tables. Threads, events and snapshots are deliberately left
+ * Only those tables. Threads, events and snapshots are deliberately left
  * behind: a copied thread is a live thread whose harness process belongs to
  * the other server, and resuming it from here would put two harnesses on one
  * transcript. Devices are left behind too — a pairing token belongs to the
@@ -173,7 +172,7 @@ const seedReferenceData = (source, target) => {
     dst.exec(`ATTACH DATABASE '${source.replaceAll("'", "''")}' AS src`);
     const tables = dst
       .prepare(
-        "SELECT name, sql FROM src.sqlite_master WHERE type = 'table' AND name IN ('projects', 'folders', 'labels')",
+        "SELECT name, sql FROM src.sqlite_master WHERE type = 'table' AND name IN ('projects', 'folders')",
       )
       .all();
     for (const { name, sql } of tables) {

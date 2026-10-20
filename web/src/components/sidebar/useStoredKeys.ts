@@ -10,8 +10,8 @@ function loadKeys(key: string): Set<string> {
 }
 
 /**
- * A set of ids kept in this device's storage under `key`: which labels or
- * projects are hidden, which groups are folded.
+ * A set of ids kept in this device's storage under `key`: which projects are
+ * hidden, which groups are folded.
  */
 export function useStoredKeys(key: string) {
   const [loaded] = useState(() => loadKeys(key));

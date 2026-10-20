@@ -51,10 +51,10 @@ Check UI changes at mobile width, and say which widths you checked.
 ## The database
 
 `.omniplex/dev.db` belongs to this worktree, seeded at provision time with the
-provisioning server's projects and labels: enough to start a thread and work
-on the list UI. Threads are not copied, because a copied thread's harness
-belongs to the other server and resuming it here would put two harnesses on
-one transcript. The thread list starts empty.
+provisioning server's projects: enough to start a thread and work on the list
+UI. Threads are not copied, because a copied thread's harness belongs to the
+other server and resuming it here would put two harnesses on one transcript.
+The thread list starts empty.
 
 ## Stopping
 

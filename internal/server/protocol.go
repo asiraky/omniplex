@@ -58,10 +58,6 @@ type serverFrame struct {
 	Threads   []store.ThreadMeta `json:"threads,omitempty"`
 	Harnesses []thread.Harness   `json:"harnesses,omitempty"`
 	Projects  []project.Project  `json:"projects,omitempty"`
-	// Labels is the user's label definitions, sent on welcome and re-sent
-	// whole on every change; a client treats an absent field on a labels
-	// frame as "none defined".
-	Labels []store.Label `json:"labels,omitempty"`
 	// Quotas is every provider instance's cached usage limits, sent on
 	// welcome and re-sent whole whenever a live push or a refresh changes one
 	// — the whole list, because one provider moving must never blank another.
@@ -271,30 +267,10 @@ type setEffortArgs struct {
 	Effort   string `json:"effort"`
 }
 
-type createLabelArgs struct {
-	Name  string `json:"name"`
-	Color string `json:"color"`
-}
-
-// saveLabelArgs is the whole definition, restated: rename, recolour and
-// reorder all travel through the one shape.
-type saveLabelArgs struct {
-	LabelID  string `json:"labelId"`
-	Name     string `json:"name"`
-	Color    string `json:"color"`
-	Position int    `json:"position"`
-}
-
-type deleteLabelArgs struct {
-	LabelID string `json:"labelId"`
-}
-
-// setThreadLabelArgs files a thread under a label; an empty labelId clears
-// it. One label per thread — a status, not a tag set — so this is the whole
-// assignment surface.
-type setThreadLabelArgs struct {
+// setThreadPinnedArgs pins a thread to the top of the sidebar, or unpins it.
+type setThreadPinnedArgs struct {
 	ThreadID string `json:"threadId"`
-	LabelID  string `json:"labelId"`
+	Pinned   bool   `json:"pinned"`
 }
 
 // renameThreadArgs names a thread. The server normalises the title to one

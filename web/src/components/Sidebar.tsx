@@ -28,12 +28,12 @@ import { Button } from "~/components/ui/button";
 import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
-import { visibleThreads } from "~/labelFilter";
 import { isTitleEditor } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
+import { splitPinned } from "~/pinned";
 import { groupThreads, visibleByProject } from "~/projectGroups";
 import { newCount } from "~/threadStatus";
-import type { Label, Project, ThreadMeta } from "~/protocol";
+import type { Project, ThreadMeta } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 import { Wordmark } from "./Logo";
 import { ProjectGroup } from "./sidebar/ProjectGroup";
@@ -46,16 +46,17 @@ import { useStoredFlag, useStoredKeys, withKey } from "./sidebar/useStoredKeys";
 const EXIT_MS = 260;
 
 const WIDTH_KEY = "omniplex.sidebarWidth";
-// Which labels this device is currently hiding. Device-local like the width:
-// the phone is usually filtered down to one thing and the desktop is not, and
-// making that travel would mean one of them is always wrong.
-const FILTER_KEY = "omniplex.labelFilter";
 // Which projects this device is hiding, and which of the groups it is showing
-// are folded shut. Device-local for the same reason as the label filter and
-// the width: the phone is usually narrowed to the one thing being worked on
-// and the desktop is not.
+// are folded shut. Device-local like the width: the phone is usually narrowed
+// to the one thing being worked on and the desktop is not, and making that
+// travel would mean one of them is always wrong.
 const PROJECT_FILTER_KEY = "omniplex.projectFilter";
 const COLLAPSED_KEY = "omniplex.projectCollapsed";
+// The collapse keys of the two sections that are not projects: Pinned, and
+// the rest of the list under it when that is flat. Project keys are uuids or
+// `cwd:` paths, so neither can collide with one.
+const PINNED_KEY = "pinned";
+const UNPINNED_KEY = "unpinned";
 // Whether this device carves the list into project groups at all. Device-local
 // for the same reason again: a phone narrowed to one project has nothing to
 // group, and a desktop showing five may want the headers or may not.
@@ -116,14 +117,10 @@ interface SidebarProps {
   /** The project's own checkout, which is never a worktree omniplex may remove. */
   projectFolders: (id?: string) => string[];
   /**
-   * The user's label definitions, in their chosen order. Empty means the
-   * feature is un-opted-into and the list renders exactly as it always has.
+   * Pins a thread to the top of the list, or unpins it. `threads` must show
+   * the change at once, the way it does a reorder.
    */
-  labels: Label[];
-  /** Files a thread under a label; "" clears it. */
-  onSetLabel: (threadId: string, labelId: string) => void;
-  /** Opens the label manager, which App owns — the header can open it too. */
-  onManageLabels: () => void;
+  onSetPinned: (threadId: string, pinned: boolean) => void;
   /** Opens the new project dialog, which App owns. */
   onNewProject: () => void;
   /** Flips the unread flag by hand — the row's "come back to this" action. */
@@ -224,15 +221,11 @@ function ThreadList({
   projects,
   projectName,
   projectView,
-  labels,
-  onSetLabel,
-  onManageLabels,
+  onSetPinned,
   onSetUnread,
   onRename,
   onReorder,
   reordering,
-  hidden,
-  onShowAll,
 }: Pick<
   SidebarProps,
   | "activeId"
@@ -240,9 +233,7 @@ function ThreadList({
   | "accentOf"
   | "projects"
   | "projectName"
-  | "labels"
-  | "onSetLabel"
-  | "onManageLabels"
+  | "onSetPinned"
   | "onSetUnread"
   | "onRename"
   | "onReorder"
@@ -250,31 +241,25 @@ function ThreadList({
   flow: DeleteFlow;
   /** Reorder mode: rows show a grip and open nothing when tapped. */
   reordering: boolean;
-  /** Filter keys switched off in the header menu: label ids, and `UNLABELLED`. */
-  hidden: Set<string>;
   projectView: ProjectView;
-  onShowAll: () => void;
 }) {
   const { rows, ask, deleting, exiting } = flow;
 
-  // Both filters run over the delete flow's rows — frozen order, exiting row
+  // The filter runs over the delete flow's rows — frozen order, exiting row
   // and all — so a departing thread folds away in place instead of vanishing
-  // the instant a filter is recomputed. Grouping runs over the result for the
-  // same reason: it preserves order within a group, so the row still leaves
-  // from exactly where it stood.
-  const shown = visibleByProject(
-    visibleThreads(rows, labels, hidden),
-    projects,
-    projectView.hidden,
-  );
-  const groups = projectView.grouped ? groupThreads(shown, projects) : [];
+  // the instant the filter is recomputed. The pinned split and grouping run
+  // over the result for the same reason: neither reorders, so the row still
+  // leaves from exactly where it stood.
+  const shown = visibleByProject(rows, projects, projectView.hidden);
+  const { pinned, rest } = splitPinned(shown);
+  const groups = projectView.grouped ? groupThreads(rest, projects) : [];
   // One group is not a grouping, however it came to be the only one.
   const grouped = groups.length > 1;
   // A delete holds the list still for its exit animation, frozen order and
   // all; a drop computed against that order would land somewhere else.
   const sortable = !deleting && !exiting;
 
-  // No threads is no threads: labels are a way to narrow a list, not a
+  // No threads is no threads: the filter is a way to narrow a list, not a
   // thing to show in place of one.
   if (rows.length === 0) {
     return (
@@ -293,18 +278,12 @@ function ThreadList({
     return (
       <div className="px-3 py-10 text-center">
         <p className="text-muted-foreground text-[13px]">
-          {rows.length} thread{rows.length === 1 ? "" : "s"} hidden by the filters.
+          {rows.length} thread{rows.length === 1 ? "" : "s"} hidden by the filter.
         </p>
-        {/* Both, because the message cannot know which one emptied the list
-            and hunting through two menus to find out is the thing this button
-            exists to save. */}
         <Button
           variant="outline"
           size="sm"
-          onClick={() => {
-            onShowAll();
-            projectView.onShowAll();
-          }}
+          onClick={projectView.onShowAll}
           className="mt-3 h-8"
         >
           Show all
@@ -323,12 +302,10 @@ function ThreadList({
       going={deleting?.id === s.id}
       reordering={reordering}
       drag={drag}
-      labels={labels}
       accentOf={accentOf}
       projectName={projectName}
       onSelect={onSelect}
-      onSetLabel={onSetLabel}
-      onManageLabels={onManageLabels}
+      onSetPinned={onSetPinned}
       onSetUnread={onSetUnread}
       onRename={onRename}
       onDelete={ask}
@@ -336,36 +313,56 @@ function ThreadList({
   );
 
   // A drag reorders among the rows it can see, so each run of rows is its own
-  // sortable list: the whole list when flat, one group's rows when grouped.
+  // sortable list: Pinned, then the rest whole when flat, or one group's rows
+  // when grouped. Each run is a subsequence of the user's order, so a midpoint
+  // of two neighbours in it lands between them in the whole list too.
   const run = (threads: ThreadMeta[], showProject: boolean) => (
     <SortableRows rows={threads} enabled={sortable} onReorder={onReorder}>
       {(s, drag) => row(s, showProject, drag)}
     </SortableRows>
   );
 
+  // A section folds like a project group and leaves with its last thread.
+  const section = (key: string, name: string, threads: ThreadMeta[], showProject: boolean) => (
+    <ProjectGroup
+      key={key}
+      name={name}
+      count={threads.length}
+      newCount={newCount(threads, activeId)}
+      folded={projectView.collapsed.has(key)}
+      // The last thread in a group is taking the group with it. Without
+      // this the row folds away and the header snaps out from under it a
+      // frame later; with it they leave together.
+      leaving={threads.length === 1 && threads[0].id === exiting?.id}
+      onToggle={() => projectView.onToggleCollapse(key)}
+    >
+      {run(threads, showProject)}
+    </ProjectGroup>
+  );
+
+  // Pinned threads come from every project, so their rows name theirs, the
+  // way a flat list's do. Nothing pinned on screen is no section at all.
+  const top = pinned.length > 0 && section(PINNED_KEY, "Pinned", pinned, true);
+
   // One project on screen has nothing to group: the header would name the
   // only thing there is, on every row, forever. Grouping switched off is the
-  // same flat list, and there the row naming its project is the point.
-  if (!grouped) return run(shown, true);
+  // same flat list, and there the row naming its project is the point. Under
+  // Pinned the flat rest still needs a header of its own, or it would read
+  // as more of the pinned rows.
+  if (!grouped) {
+    if (!top) return run(rest, true);
+    return (
+      <>
+        {top}
+        {rest.length > 0 && section(UNPINNED_KEY, "Threads", rest, true)}
+      </>
+    );
+  }
 
   return (
     <>
-      {groups.map((g) => (
-        <ProjectGroup
-          key={g.key}
-          name={g.name}
-          count={g.threads.length}
-          newCount={newCount(g.threads, activeId)}
-          folded={projectView.collapsed.has(g.key)}
-          // The last thread in a group is taking the group with it. Without
-          // this the row folds away and the header snaps out from under it a
-          // frame later; with it they leave together.
-          leaving={g.threads.length === 1 && g.threads[0].id === exiting?.id}
-          onToggle={() => projectView.onToggleCollapse(g.key)}
-        >
-          {run(g.threads, false)}
-        </ProjectGroup>
-      ))}
+      {top}
+      {groups.map((g) => section(g.key, g.name, g.threads, false))}
     </>
   );
 }
@@ -373,29 +370,18 @@ function ThreadList({
 function SidebarPanel({
   showCollapse,
   flow,
-  hidden,
   projectView,
-  onToggleLabel,
-  onShowAll,
   ...props
 }: SidebarProps & {
   showCollapse: boolean;
   flow: DeleteFlow;
-  hidden: Set<string>;
   projectView: ProjectView;
-  onToggleLabel: (key: string, show: boolean) => void;
-  onShowAll: () => void;
 }) {
   // Reorder mode is this panel's alone: closing the sheet ends it, so the
   // next time the list opens its rows are for opening threads again.
   const [reordering, setReordering] = useState(false);
-  // Both filters, because the footer's job is to admit that threads are
-  // missing and it cannot know which control removed them.
-  const shownCount = visibleByProject(
-    visibleThreads(props.threads, props.labels, hidden),
-    props.projects,
-    projectView.hidden,
-  ).length;
+  // The footer's job is to admit that threads are missing.
+  const shownCount = visibleByProject(props.threads, props.projects, projectView.hidden).length;
   return (
     <div className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 flex-col">
       {/* Two rows. The top is the wordmark and the way to put it away,
@@ -461,11 +447,6 @@ function SidebarPanel({
                 onToggleProject={projectView.onToggle}
                 onShowAllProjects={projectView.onShowAll}
                 onHideAllProjects={projectView.onHideAll}
-                labels={props.labels}
-                hiddenLabels={hidden}
-                onToggleLabel={onToggleLabel}
-                onShowAllLabels={onShowAll}
-                onManageLabels={props.onManageLabels}
                 onReorder={() => setReordering(true)}
               />
             </>
@@ -487,15 +468,11 @@ function SidebarPanel({
           projects={props.projects}
           projectName={props.projectName}
           projectView={projectView}
-          labels={props.labels}
-          onSetLabel={props.onSetLabel}
-          onManageLabels={props.onManageLabels}
+          onSetPinned={props.onSetPinned}
           onSetUnread={props.onSetUnread}
           onRename={props.onRename}
           onReorder={props.onReorder}
           reordering={reordering}
-          hidden={hidden}
-          onShowAll={onShowAll}
         />
       </nav>
 
@@ -565,20 +542,10 @@ export function Sidebar(props: SidebarProps) {
   // selects it.
   const flow = useDeleteFlow(props);
 
-  // Which labels this device is hiding, above both shapes for the same reason
-  // as the delete flow. Only what the user switched off is stored, so a label
-  // created later — here or on a paired device — arrives showing.
-  const [hidden, setHidden] = useStoredKeys(FILTER_KEY);
-  const onToggleLabel = useCallback(
-    (key: string, show: boolean) => setHidden((current) => withKey(current, key, !show)),
-    [setHidden],
-  );
-  const onShowAll = useCallback(() => setHidden(new Set()), [setHidden]);
-
-  // The project filter and the fold state of the groups it produces. Same
-  // reasoning as the label filter above: held over both shapes, and only the
-  // user's own choices are stored, so a project added on a paired device
-  // arrives showing rather than pre-hidden.
+  // The project filter and the fold state of the groups it produces, above
+  // both shapes for the same reason as the delete flow. Only the user's own
+  // choices are stored, so a project added on a paired device arrives showing
+  // rather than pre-hidden.
   const [hiddenProjects, setHiddenProjects] = useStoredKeys(PROJECT_FILTER_KEY);
   const [collapsed, setCollapsed] = useStoredKeys(COLLAPSED_KEY);
   const [grouped, setGrouped] = useStoredFlag(GROUPED_KEY, true);
@@ -647,10 +614,7 @@ export function Sidebar(props: SidebarProps) {
             <SidebarPanel
               {...props}
               flow={flow}
-              hidden={hidden}
               projectView={projectView}
-              onToggleLabel={onToggleLabel}
-              onShowAll={onShowAll}
               showCollapse={props.activeId !== null}
             />
           </SheetContent>
@@ -665,10 +629,7 @@ export function Sidebar(props: SidebarProps) {
       <DockedSidebar
         {...props}
         flow={flow}
-        hidden={hidden}
         projectView={projectView}
-        onToggleLabel={onToggleLabel}
-        onShowAll={onShowAll}
       />
       <DeleteThreadDialog flow={flow.thread} />
     </>
@@ -677,17 +638,11 @@ export function Sidebar(props: SidebarProps) {
 
 function DockedSidebar({
   flow,
-  hidden,
   projectView,
-  onToggleLabel,
-  onShowAll,
   ...props
 }: SidebarProps & {
   flow: DeleteFlow;
-  hidden: Set<string>;
   projectView: ProjectView;
-  onToggleLabel: (key: string, show: boolean) => void;
-  onShowAll: () => void;
 }) {
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_KEY));
@@ -743,10 +698,7 @@ function DockedSidebar({
       <SidebarPanel
         {...props}
         flow={flow}
-        hidden={hidden}
         projectView={projectView}
-        onToggleLabel={onToggleLabel}
-        onShowAll={onShowAll}
         showCollapse
       />
       <div

@@ -74,11 +74,6 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 	harnessID, harnessCh := s.mgr.SubscribeHarnesses()
 	defer s.mgr.UnsubscribeHarnesses(harnessID)
 
-	// Label definitions are user-level and shared across paired devices, so a
-	// change on one device pushes the whole list to every connection.
-	labelsID, labelsCh := s.mgr.SubscribeLabels()
-	defer s.mgr.UnsubscribeLabels(labelsID)
-
 	// The project registry is machine-level and shared across paired devices,
 	// so adding, editing or removing one pushes the whole list to every
 	// connection rather than waiting for each to reconnect.
@@ -100,8 +95,6 @@ func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID stri
 				c.sendThreads()
 			case <-harnessCh:
 				c.send(serverFrame{Type: "harnesses", Harnesses: s.mgr.Harnesses(ctx)})
-			case <-labelsCh:
-				c.sendLabels()
 			case <-projectsCh:
 				c.sendProjects()
 			case <-quotaCh:
@@ -132,7 +125,6 @@ func (c *conn) dispatch(f clientFrame) {
 	case "hello":
 		threads, _ := c.srv.mgr.List(c.ctx)
 		projects, _ := c.srv.mgr.Projects(c.ctx)
-		labels, _ := c.srv.mgr.Labels(c.ctx)
 		c.send(serverFrame{
 			Type:      "welcome",
 			ServerID:  c.srv.id,
@@ -140,7 +132,6 @@ func (c *conn) dispatch(f clientFrame) {
 			Threads:   threads,
 			Harnesses: c.srv.mgr.Harnesses(c.ctx),
 			Projects:  projects,
-			Labels:    labels,
 			Quotas:    c.srv.mgr.Quotas(),
 			Access:    c.srv.access(c.ctx),
 		})
@@ -177,14 +168,6 @@ func (c *conn) sendProjects() {
 		return
 	}
 	c.send(serverFrame{Type: "projects", Projects: projects})
-}
-
-func (c *conn) sendLabels() {
-	labels, err := c.srv.mgr.Labels(c.ctx)
-	if err != nil {
-		return
-	}
-	c.send(serverFrame{Type: "labels", Labels: labels})
 }
 
 // attach implements the ordering the spec calls load-bearing: subscribe first,
@@ -701,49 +684,15 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"effort": a.Effort}, nil
 
-	case "create_label":
-		var a createLabelArgs
+	case "set_thread_pinned":
+		var a setThreadPinnedArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		label, err := c.srv.mgr.CreateLabel(ctx, a.Name, a.Color)
-		if err != nil {
+		if err := c.srv.mgr.SetThreadPinned(ctx, a.ThreadID, a.Pinned); err != nil {
 			return nil, err
 		}
-		return map[string]any{"label": label}, nil
-
-	case "save_label":
-		var a saveLabelArgs
-		if err := json.Unmarshal(f.Args, &a); err != nil {
-			return nil, err
-		}
-		label, err := c.srv.mgr.SaveLabel(ctx, store.Label{
-			ID: a.LabelID, Name: a.Name, Color: a.Color, Position: a.Position,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"label": label}, nil
-
-	case "delete_label":
-		var a deleteLabelArgs
-		if err := json.Unmarshal(f.Args, &a); err != nil {
-			return nil, err
-		}
-		if err := c.srv.mgr.DeleteLabel(ctx, a.LabelID); err != nil {
-			return nil, err
-		}
-		return map[string]any{"status": "deleted"}, nil
-
-	case "set_thread_label":
-		var a setThreadLabelArgs
-		if err := json.Unmarshal(f.Args, &a); err != nil {
-			return nil, err
-		}
-		if err := c.srv.mgr.SetThreadLabel(ctx, a.ThreadID, a.LabelID); err != nil {
-			return nil, err
-		}
-		return map[string]any{"labelId": a.LabelID}, nil
+		return map[string]any{"pinned": a.Pinned}, nil
 
 	case "rename_thread":
 		var a renameThreadArgs

@@ -12,7 +12,6 @@ export function useScreens() {
   // Open, and at which section; the sidebar gear opens it at the top.
   const [settings, setSettings] = useState<{ at?: SettingsSection } | null>(null);
   const [newProject, setNewProject] = useState(false);
-  const [manageLabels, setManageLabels] = useState(false);
   const [showAccess, setShowAccess] = useState(false);
   // The account-level Usage page: cost history, token history, and the
   // providers' remaining allowance. A full-page destination, not a thread
@@ -52,8 +51,6 @@ export function useScreens() {
     setSettings,
     newProject,
     setNewProject,
-    manageLabels,
-    setManageLabels,
     showAccess,
     setShowAccess,
     showUsage,

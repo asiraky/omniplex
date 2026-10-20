@@ -2,10 +2,10 @@
  * Narrowing the sidebar to a set of projects, and carving what is left into
  * groups when grouping is on and there is more than one project to see.
  *
- * Pure, like `labelFilter`: the sidebar hands in whatever list it is currently
- * rendering, including the delete flow's frozen ordering and its departing
- * row, and gets a shorter list or a set of groups back. Grouping never
- * reorders within a group, so a row still folds away exactly where it stood.
+ * Pure: the sidebar hands in whatever list it is currently rendering,
+ * including the delete flow's frozen ordering and its departing row, and gets
+ * a shorter list or a set of groups back. Grouping never reorders within a
+ * group, so a row still folds away exactly where it stood.
  *
  * The rules:
  * - The filter names what is *hidden*, not what is shown, so a project added
@@ -55,9 +55,9 @@ export function visibleByProject(
   hidden: Set<string>,
 ): ThreadMeta[] {
   if (hidden.size === 0 || projects.length === 0) return threads;
-  // A hidden id for a project that no longer exists hides nothing, the way a
-  // deleted label's does: otherwise deleting a hidden project would strand
-  // threads behind a checkbox that is no longer in the menu.
+  // A hidden id for a project that no longer exists hides nothing: otherwise
+  // deleting a hidden project would strand threads behind a checkbox that is
+  // no longer in the menu.
   const live = new Set(projects.map((p) => p.id));
   const off = new Set([...hidden].filter((id) => live.has(id)));
   if (off.size === 0) return threads;
