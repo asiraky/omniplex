@@ -50,27 +50,19 @@ function TitleLine({
     <span
       className={cn(
         "flex items-center gap-1.5",
-        // Room for the always-visible touch controls: the X and the pin
-        // beside it. On desktop an unpinned row's controls only exist on
-        // hover, so the line runs full width until then — but it has to
-        // yield when they arrive. The fading timestamp alone covers one
-        // control; the pin would sit on top of the title, so the hovered
-        // line yields as well. Hover also brings the rename pencil, one
-        // control-width further left, so the hovered line yields to the
-        // pencil's glyph (pr-18) rather than the trio's full 96px box: the
-        // buttons are mostly hit area, and reserving all of it leaves a
-        // canyon between the truncated title and the X. Deliberately not
-        // transitioned: an animated padding hands the pin ~150ms sitting on
-        // the title. The line yields first, then the controls fade in.
-        //
-        // A pinned thread shows its pin at all times, so on desktop the
-        // line has to yield at all times too — but only as far as the pin
-        // glyph's left edge (pr-12), with the timestamp still showing.
-        reordering
-          ? null
-          : s.pinned
-            ? "pr-16 md:pr-12 md:group-hover:pr-18 md:group-focus-within:pr-18"
-            : "pr-16 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18",
+        // Room for the X, the one control a phone always shows. On desktop
+        // the row's controls only exist on hover, so the line runs full width
+        // until then — but it has to yield when they arrive. The fading
+        // timestamp alone covers one control; the pin would sit on top of
+        // the title, so the hovered line yields as well. Hover also brings
+        // the rename pencil, one control-width further left, so the hovered
+        // line yields to the pencil's glyph (pr-18) rather than the trio's
+        // full 96px box: the buttons are mostly hit area, and reserving all
+        // of it leaves a canyon between the truncated title and the X.
+        // Deliberately not transitioned: an animated padding hands the pin
+        // ~150ms sitting on the title. The line yields first, then the
+        // controls fade in.
+        reordering ? null : "pr-8 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18",
       )}
     >
       <span className={cn("min-w-0 truncate text-[13px]", isNew && "font-semibold")}>
@@ -193,11 +185,10 @@ function DetailLine({
 }
 
 /**
- * The pin toggle, one control-width left of the X. A pinned thread keeps it on
- * screen at all times, since it is the row's only sign of being pinned beyond
- * the section it sits in. An unpinned one reveals it on hover like the X, so
- * an untouched list stays quiet on desktop; a phone has no hover, so there it
- * is always showing.
+ * The pin toggle, one control-width left of the X. Desktop only, on hover
+ * like the X and the pencil, pinned or not: the Pinned section already says
+ * which threads are pinned, so the row needs no mark of its own. Touch pins
+ * through the long-press menu or the thread header, for the pencil's reason.
  */
 function PinControl({
   s,
@@ -215,18 +206,11 @@ function PinControl({
           size="icon"
           aria-label={`${pinned ? "Unpin" : "Pin"} thread ${s.title || "Untitled"}`}
           onClick={() => onSetPinned(s.id, !pinned)}
-          // The same 32px square as the X, grown to 44px on touch the same
-          // way, so the pair reads as one action rail.
-          className={cn(
-            "group/pin absolute top-0.5 right-8 size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:after:hidden",
-            pinned
-              ? "text-foreground"
-              : "text-muted-foreground hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
-          )}
+          // The same 32px square as the X, so the pair reads as one rail.
+          className="group/pin text-muted-foreground hover:text-foreground absolute top-0.5 right-8 hidden size-8 shrink-0 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
         >
-          {/* 14px, a step under the X: on desktop a pinned row's title
-              stops just short of it. Pointed at, a pin turns into what the
-              click will do. */}
+          {/* 14px, a step under the X. Filled when pinned; pointed at, a
+              pin turns into what the click will do. */}
           {pinned ? (
             <>
               <PinIcon className="size-3.5 fill-current group-hover/pin:hidden" />
@@ -257,7 +241,7 @@ function RenameControl({ s, onRename }: { s: ThreadMeta; onRename: () => void })
           size="icon"
           aria-label={`Rename thread ${s.title || "Untitled"}`}
           onClick={onRename}
-          // Left of the pin, which is always in the rail.
+          // Left of the pin.
           className="text-muted-foreground/70 hover:text-foreground absolute top-0.5 right-16 hidden size-8 shrink-0 hover:bg-transparent md:size-8 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent"
         >
           {/* Smaller and fainter than the X beside it: renaming is the
