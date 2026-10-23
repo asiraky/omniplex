@@ -128,6 +128,8 @@ func (s *SecretStore) Purge(instanceID string) error {
 // clearing the Sensitive flag is how a secret is deleted. Secrets belonging to
 // instance ids not in the list are left alone: they may belong to a config
 // another branch wrote, and destroying them would violate the round-trip rule.
+// That is also what keeps the text-to-speech key safe: no instance can be
+// named ElevenLabsSecretID, so its directory is never in the list.
 func (s *SecretStore) Sync(instances []Instance) error {
 	for _, inst := range instances {
 		dir := filepath.Join(s.root, inst.ID)

@@ -73,9 +73,12 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// `data-speak-as` tells `~/lib/speech` what a block is when read aloud: the
+// rendered DOM alone no longer says it is code, or that it is a diagram.
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
+  const mermaid = lang.toLowerCase() === "mermaid";
   const source = (
-    <div className="bg-muted/60 my-2 overflow-hidden rounded-lg border">
+    <div data-speak-as={mermaid ? "diagram" : "code-block"} className="bg-muted/60 my-2 overflow-hidden rounded-lg border">
       <div className="text-muted-foreground flex items-center gap-2 border-b px-2.5 py-1">
         <span className="min-w-0 flex-1 truncate font-mono text-[10px]">{lang || "text"}</span>
         <CopyButton text={code} />
@@ -85,10 +88,12 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
       </pre>
     </div>
   );
-  return lang.toLowerCase() === "mermaid" ? (
-    <Suspense fallback={source}>
-      <MermaidDiagram code={code} copyButton={<CopyButton text={code} />} />
-    </Suspense>
+  return mermaid ? (
+    <div data-speak-as="diagram" className="contents">
+      <Suspense fallback={source}>
+        <MermaidDiagram code={code} copyButton={<CopyButton text={code} />} />
+      </Suspense>
+    </div>
   ) : source;
 }
 
@@ -119,6 +124,7 @@ function InlineCode({ children }: { children?: ReactNode }) {
   return (
     <button
       type="button"
+      data-speak-as="code"
       onClick={() => open!(detected.path, detected.line)}
       title={`Open ${detected.path}`}
       className="bg-muted hover:bg-accent focus-visible:ring-ring -my-0.5 inline-flex max-w-full cursor-pointer items-baseline gap-1 rounded px-1 py-0.5 align-baseline font-mono text-[0.9em] leading-[normal] shadow-[inset_0_0_0_1px_var(--color-border)] transition-colors outline-none focus-visible:ring-2"
@@ -143,8 +149,8 @@ const COMPONENTS: Components = {
     <h6 className="text-muted-foreground mt-3 mb-1.5 font-semibold first:mt-0">{children}</h6>
   ),
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ul>,
-  ol: ({ children }) => (
-    <ol className="my-2 list-decimal space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ol>
+  ol: ({ children, start }) => (
+    <ol start={start} className="my-2 list-decimal space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ol>
   ),
   li: ({ children }) => <li className="[&>ul]:my-1 [&>ol]:my-1">{children}</li>,
   blockquote: ({ children }) => (

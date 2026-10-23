@@ -27,6 +27,9 @@ type Defaults struct {
 	Harness   string                     `json:"harness,omitempty"`
 	Harnesses map[string]HarnessDefaults `json:"harnesses,omitempty"`
 	Workspace string                     `json:"workspace,omitempty"`
+	// Voice is the ElevenLabs voice id this project's messages are read
+	// aloud in, over the user's default. Empty defers to that default.
+	Voice string `json:"voice,omitempty"`
 }
 
 type HarnessDefaults struct {
@@ -103,6 +106,7 @@ func NormalizeDefaults(d Defaults) Defaults {
 	if d.Harnesses == nil {
 		d.Harnesses = map[string]HarnessDefaults{}
 	}
+	d.Voice = strings.TrimSpace(d.Voice)
 	return d
 }
 

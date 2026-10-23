@@ -56,6 +56,23 @@ func Default(driver, displayName string) Instance {
 // keys. It deliberately matches the shape of adapter ids.
 var validID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
+// ElevenLabsSecretID is the secret-store directory that holds the
+// text-to-speech API key. It shares the store with provider instances, and
+// Sync and Purge treat an instance's directory as wholly its own, so an
+// instance taking this id would delete the key on its next save or on
+// deletion. No instance may have it.
+const ElevenLabsSecretID = "elevenlabs"
+
+func checkID(id string) error {
+	if !validID.MatchString(id) {
+		return fmt.Errorf("provider instance id %q is missing or not a slug", id)
+	}
+	if id == ElevenLabsSecretID {
+		return fmt.Errorf("provider instance id %q is reserved", id)
+	}
+	return nil
+}
+
 // Parse reads one raw config entry. An unknown driver is not an error — the
 // caller cannot know which drivers a build has — but a missing or unusable id
 // is, because nothing could ever route to the instance.
@@ -70,8 +87,8 @@ func Parse(raw json.RawMessage) (Instance, error) {
 	if err := json.Unmarshal(raw, &aux); err != nil {
 		return Instance{}, fmt.Errorf("parse provider instance: %w", err)
 	}
-	if !validID.MatchString(aux.ID) {
-		return Instance{}, fmt.Errorf("provider instance id %q is missing or not a slug", aux.ID)
+	if err := checkID(aux.ID); err != nil {
+		return Instance{}, err
 	}
 	if strings.TrimSpace(aux.Driver) == "" {
 		return Instance{}, fmt.Errorf("provider instance %q has no driver", aux.ID)

@@ -139,6 +139,12 @@ type saveUserConfigArgs struct {
 	Config userconfig.Config `json:"config"`
 }
 
+// setElevenLabsKeyArgs carries the key in; it never comes back out. Empty
+// deletes the stored key.
+type setElevenLabsKeyArgs struct {
+	Key string `json:"key"`
+}
+
 type addFolderArgs struct {
 	ProjectID string `json:"projectId"`
 	thread.AddFolderOptions

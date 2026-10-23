@@ -30,8 +30,8 @@ type Spec struct {
 }
 
 func (s Spec) validate() error {
-	if !validID.MatchString(s.ID) {
-		return fmt.Errorf("instance id %q is not a slug", s.ID)
+	if err := checkID(s.ID); err != nil {
+		return err
 	}
 	if strings.TrimSpace(s.Driver) == "" {
 		return fmt.Errorf("instance %q has no driver", s.ID)
@@ -177,8 +177,8 @@ func SaveInstance(spec Spec, secrets *SecretStore, logf func(string, ...any)) ([
 // entry that overrides a driver's default instance reverts that driver to
 // ambient credentials; it does not remove the driver.
 func DeleteInstance(id string, secrets *SecretStore, logf func(string, ...any)) ([]Instance, error) {
-	if !validID.MatchString(id) {
-		return nil, fmt.Errorf("instance id %q is not a slug", id)
+	if err := checkID(id); err != nil {
+		return nil, err
 	}
 	var instances []Instance
 	_, err := userconfig.Update(func(cfg *userconfig.Config) error {

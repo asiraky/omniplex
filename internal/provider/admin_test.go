@@ -203,3 +203,37 @@ func TestInvalidSpecRejected(t *testing.T) {
 		t.Error("path-shaped id must be rejected")
 	}
 }
+
+// The text-to-speech key shares the secret store, so no instance may take its
+// directory: saving or deleting one would sweep the key away with it.
+func TestNoInstanceCanClaimTheSpeechKey(t *testing.T) {
+	secrets := adminEnv(t)
+	if err := secrets.Put(ElevenLabsSecretID, "api-key", "xi"); err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{ID: ElevenLabsSecretID, Driver: "claude", Enabled: true}
+	if _, err := AddInstance(spec, secrets, discard); err == nil {
+		t.Fatal("an instance took the speech key's id")
+	}
+	// Written by hand, the entry is kept but never becomes an instance.
+	raw := json.RawMessage(`{"id":"` + ElevenLabsSecretID + `","driver":"claude"}`)
+	if _, err := userconfig.Update(func(c *userconfig.Config) error {
+		c.Providers = append(c.Providers, raw)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instances, _, _, err := LoadInstances([]json.RawMessage{raw}, secrets, discard)
+	if err != nil || len(instances) != 0 {
+		t.Fatalf("instances = %+v, %v", instances, err)
+	}
+	if err := secrets.Sync(instances); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DeleteInstance(ElevenLabsSecretID, secrets, discard); err == nil {
+		t.Fatal("deleting by the speech key's id was allowed")
+	}
+	if v, ok := secrets.Get(ElevenLabsSecretID, "api-key"); !ok || v != "xi" {
+		t.Fatal("the speech key was lost")
+	}
+}

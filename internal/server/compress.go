@@ -61,6 +61,25 @@ type compressionWriter struct {
 // full-duplex support on the real server writer.
 func (w *compressionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// FlushError lets a streaming handler push each chunk out as it is written.
+// Without it ResponseController would reach past this writer to the server's
+// own: that skips whatever gzip is still holding, and before the first write
+// it commits headers this writer has not chosen yet.
+func (w *compressionWriter) FlushError() error {
+	if !w.wroteHeader {
+		w.start(nil)
+	}
+	if w.gzip != nil {
+		if err := w.gzip.Flush(); err != nil {
+			return err
+		}
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+// Flush is FlushError for callers that type-assert http.Flusher.
+func (w *compressionWriter) Flush() { _ = w.FlushError() }
+
 func (w *compressionWriter) WriteHeader(status int) {
 	if w.wroteHeader {
 		return
