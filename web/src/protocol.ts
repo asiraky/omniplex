@@ -511,6 +511,8 @@ export interface ProjectDefaults {
   harness?: string;
   harnesses?: Record<string, { model?: string; effort?: string; mode?: string }>;
   workspace?: string;
+  /** The ElevenLabs voice this project's messages are read in. Empty defers to the user's. */
+  voice?: string;
 }
 
 /** One directory a project points at. `git` is worked out by the server, by looking. */
@@ -597,6 +599,29 @@ export interface UserConfig {
   defaultModel?: string;
   /** The permission level a project's first thread starts on. */
   defaultLevel?: PermissionLevel | "";
+  /** The ElevenLabs voice id messages are read aloud in, unless a project picks its own. */
+  voice?: string;
+}
+
+/**
+ * What `get_user_config` and `save_user_config` answer with. Whether an
+ * ElevenLabs key is stored rides along; the key itself never leaves the server.
+ */
+export interface UserConfigReply {
+  userConfig: UserConfig;
+  hasElevenLabsKey: boolean;
+}
+
+/** One ElevenLabs voice, as `/api/tts/voices` lists it. */
+export interface Voice {
+  id: string;
+  name: string;
+  /** ElevenLabs' own kind: "premade", "cloned", "generated", "professional". */
+  category: string;
+  description?: string;
+  /** Free-form tags such as accent, gender, age. */
+  labels?: Record<string, string>;
+  previewUrl?: string;
 }
 
 /** A GitHub repository the signed-in user owns, collaborates on, or sees through an organisation. */

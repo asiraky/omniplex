@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { forgetVoices } from "~/lib/voices";
 import { render } from "~/test/harness";
 import { ProjectSettings } from "./ProjectSettings";
-import type { Project } from "~/protocol";
+import type { Project, Voice } from "~/protocol";
 
 const project = {
   id: "p1",
@@ -161,5 +162,77 @@ describe("folders", () => {
 
     await waitFor(() => expect(screen.getByText(/a git folder of this project/)).toBeTruthy());
     expect(props.onDeleted).not.toHaveBeenCalled();
+  });
+});
+
+describe("voice", () => {
+  const voices: Voice[] = [
+    { id: "v1", name: "Alice", category: "premade" },
+    { id: "v2", name: "Bryn", category: "premade", previewUrl: "https://cdn.example/bryn.mp3" },
+  ];
+
+  function withVoices() {
+    forgetVoices();
+    Element.prototype.scrollIntoView = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ voices }), { status: 200 })),
+    );
+  }
+
+  async function openPicker() {
+    const picker = await screen.findByRole("combobox", { name: "Voice" });
+    await waitFor(() => expect((picker as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(picker);
+  }
+
+  it("is not offered without an ElevenLabs key", () => {
+    withVoices();
+    open({ hasElevenLabsKey: false });
+    expect(screen.queryByRole("combobox", { name: "Voice" })).toBeNull();
+  });
+
+  it("overrides the user's voice for this project", async () => {
+    withVoices();
+    const props = open({ hasElevenLabsKey: true, defaultVoice: "v1" });
+    await openPicker();
+    fireEvent.click(await screen.findByRole("option", { name: /Bryn/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(props.onSave).toHaveBeenCalled());
+    expect(vi.mocked(props.onSave).mock.calls[0][2]).toMatchObject({ voice: "v2" });
+  });
+
+  it("goes back to the user's voice with Use default", async () => {
+    withVoices();
+    const props = open({
+      project: { ...project, defaults: { ...project.defaults, voice: "v2" } },
+      hasElevenLabsKey: true,
+      defaultVoice: "v1",
+    });
+    await openPicker();
+    // The default is named, so the choice says what it falls back to.
+    fireEvent.click(await screen.findByRole("option", { name: /Use default \(Alice\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(props.onSave).toHaveBeenCalled());
+    expect(vi.mocked(props.onSave).mock.calls[0][2].voice).toBe("");
+  });
+
+  it("previews a voice without choosing it", async () => {
+    withVoices();
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    // jsdom plays nothing; closing the picker stops the preview through these.
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const load = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const props = open({ hasElevenLabsKey: true, defaultVoice: "v1" });
+    await openPicker();
+    fireEvent.click(await screen.findByRole("button", { name: "Preview Bryn" }));
+    expect(play).toHaveBeenCalled();
+    // Still open, and nothing chosen.
+    expect(screen.getByRole("option", { name: /Bryn/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(props.onSave).toHaveBeenCalled());
+    expect(vi.mocked(props.onSave).mock.calls[0][2].voice).toBeUndefined();
+    cleanup();
+    for (const spy of [play, pause, load]) spy.mockRestore();
   });
 });

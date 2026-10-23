@@ -41,6 +41,7 @@ import (
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
+	"github.com/asiraky/omniplex/internal/tts"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
@@ -180,10 +181,17 @@ func main() {
 	}
 	defer mgr.Shutdown()
 
+	// One store for provider credentials and the text-to-speech key.
+	secrets, err := provider.OpenSecretStore()
+	if err != nil {
+		logf("open secret store: %v (provider instances and read-aloud off)", err)
+	}
+
 	// Provider instances: configured accounts layered over the default
 	// (ambient-credential) instance each adapter already has. A broken or
 	// unknowable config degrades to defaults; it never stops the server.
-	configureProviders(mgr, logf)
+	configureProviders(mgr, secrets, logf)
+	speech := openSpeech(secrets, logf)
 
 	// The user's own MCP servers and sign-ins. Set before any thread resumes,
 	// so every session starts with them; a store that will not open leaves
@@ -244,6 +252,7 @@ func main() {
 		Version:        version,
 		Connections:    conns,
 		ClaudeBundled:  claudeBundled,
+		Speech:         speech,
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
@@ -352,15 +361,13 @@ func main() {
 // configureProviders loads provider instances from the user config, sweeping
 // any literal sensitive values into the secret store (and rewriting the config
 // so no secret stays on disk in it), then installs them on the manager.
-func configureProviders(mgr *thread.Manager, logf func(string, ...any)) {
+func configureProviders(mgr *thread.Manager, secrets *provider.SecretStore, logf func(string, ...any)) {
+	if secrets == nil {
+		return
+	}
 	cfg, err := userconfig.Load()
 	if err != nil {
 		logf("load user config: %v (provider instances skipped)", err)
-		return
-	}
-	secrets, err := provider.OpenSecretStore()
-	if err != nil {
-		logf("open secret store: %v (provider instances skipped)", err)
 		return
 	}
 	instances, rewritten, changed, err := provider.LoadInstances(cfg.Providers, secrets, logf)
@@ -379,6 +386,20 @@ func configureProviders(mgr *thread.Manager, logf func(string, ...any)) {
 		logf("sync secret store: %v", err)
 	}
 	mgr.ConfigureInstances(instances, secrets)
+}
+
+// openSpeech sets up read-aloud. Without a secret store there is nowhere to
+// keep the key, so the feature is off rather than half on.
+func openSpeech(secrets *provider.SecretStore, logf func(string, ...any)) *tts.Service {
+	if secrets == nil {
+		return nil
+	}
+	speech, err := tts.New(secrets)
+	if err != nil {
+		logf("read-aloud: %v (feature off)", err)
+		return nil
+	}
+	return speech
 }
 
 // openConnections opens connections.json and its secret store beside the

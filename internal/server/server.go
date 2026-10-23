@@ -31,6 +31,7 @@ import (
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
+	"github.com/asiraky/omniplex/internal/tts"
 )
 
 // Server exposes the sync protocol over WebSocket and a small HTTP API, and
@@ -66,7 +67,12 @@ type Server struct {
 	// conns is the user's MCP servers and sign-ins. Nil turns those
 	// commands and the OAuth callback off.
 	conns *mcp.Connections
-	logf  func(string, ...any)
+	// speech reads messages aloud. Nil turns read-aloud off.
+	speech *tts.Service
+	// speechFailures remembers what ElevenLabs last refused, so asking again
+	// for the message does not pay for the same failure twice.
+	speechFailures speechFailures
+	logf           func(string, ...any)
 	// skillFetch runs npx and git for a skills install. The zero value is the
 	// real thing; a test puts a fake runner in.
 	skillFetch skills.Fetcher
@@ -120,6 +126,8 @@ type Options struct {
 	Connections *mcp.Connections
 	// ClaudeBundled is the cached list of the skills Claude Code ships with.
 	ClaudeBundled *skills.BundledProbe
+	// Speech is text-to-speech; nil turns read-aloud off.
+	Speech *tts.Service
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
@@ -141,6 +149,7 @@ func New(o Options) *Server {
 		commit:        o.Commit,
 		version:       o.Version,
 		conns:         o.Connections,
+		speech:        o.Speech,
 		claudeBundled: o.ClaudeBundled,
 		logf:          o.Logf,
 		cards:         newCardBook(),
@@ -366,6 +375,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/threads/{id}/attachments/{attachmentId}", s.handleGetAttachment)
 
 	s.routeArtefacts(mux)
+	s.routeTTS(mux)
 
 	mux.HandleFunc("/ws", s.serveWS)
 

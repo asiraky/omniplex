@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { HarnessMeta, UserConfig } from "~/protocol";
+import { forgetVoices } from "~/lib/voices";
+import type { HarnessMeta, UserConfig, Voice } from "~/protocol";
 import { render } from "~/test/harness";
 import { GeneralSettings } from "./GeneralSettings";
 
@@ -22,6 +23,20 @@ beforeAll(() => {
 });
 
 afterEach(cleanup);
+
+const voices: Voice[] = [
+  { id: "v1", name: "Alice", category: "premade", labels: { accent: "british" } },
+  { id: "v2", name: "Bryn", category: "cloned" },
+];
+
+beforeEach(() => {
+  forgetVoices();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify({ voices }), { status: 200 })),
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
 
 const ready = { state: "ready" } as const;
 const harnesses = ["claude", "codex"].map((id) => ({
@@ -44,9 +59,21 @@ const harnesses = ["claude", "codex"].map((id) => ({
   ],
 })) as unknown as HarnessMeta[];
 
-function open(userConfig: UserConfig, onSave = vi.fn(async (_cfg: UserConfig) => {})) {
-  render(<GeneralSettings userConfig={userConfig} harnesses={harnesses} onSave={onSave} />);
-  return { onSave };
+function open(
+  userConfig: UserConfig,
+  onSave = vi.fn(async (_cfg: UserConfig) => {}),
+  { hasElevenLabsKey = false, onSetElevenLabsKey = vi.fn(async (_key: string) => {}) } = {},
+) {
+  const view = render(
+    <GeneralSettings
+      userConfig={userConfig}
+      harnesses={harnesses}
+      onSave={onSave}
+      hasElevenLabsKey={hasElevenLabsKey}
+      onSetElevenLabsKey={onSetElevenLabsKey}
+    />,
+  );
+  return { onSave, onSetElevenLabsKey, view };
 }
 
 async function pickLevel(name: string | RegExp) {
@@ -144,5 +171,66 @@ describe("GeneralSettings", () => {
       target: { value: "fix/{nmber}" },
     });
     expect(screen.getByText(/#482 → unknown placeholder \{nmber\}/)).toBeTruthy();
+  });
+});
+
+describe("read aloud", () => {
+  it("stores a key, then offers to remove it rather than showing it", async () => {
+    const onSetElevenLabsKey = vi.fn(async (_key: string) => {});
+    const { view } = open({ version: 1 }, undefined, { onSetElevenLabsKey });
+    fireEvent.change(screen.getByLabelText("ElevenLabs API key"), {
+      target: { value: "  sk_secret  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+    await waitFor(() => expect(onSetElevenLabsKey).toHaveBeenCalledWith("sk_secret"));
+
+    view.rerender(
+      <GeneralSettings
+        userConfig={{ version: 1 }}
+        harnesses={harnesses}
+        onSave={vi.fn()}
+        hasElevenLabsKey
+        onSetElevenLabsKey={onSetElevenLabsKey}
+      />,
+    );
+    expect(screen.queryByDisplayValue(/sk_secret/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(onSetElevenLabsKey).toHaveBeenLastCalledWith(""));
+  });
+
+  it("shows why a key was refused and keeps it to fix", async () => {
+    const onSetElevenLabsKey = vi.fn(async () => {
+      throw new Error("ElevenLabs rejected that key: Invalid API key");
+    });
+    open({ version: 1 }, undefined, { onSetElevenLabsKey });
+    fireEvent.change(screen.getByLabelText("ElevenLabs API key"), { target: { value: "sk_bad" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+    expect(await screen.findByText(/Invalid API key/)).toBeTruthy();
+    expect(screen.getByDisplayValue("sk_bad")).toBeTruthy();
+  });
+
+  it("has no voice to pick, and fetches none, without a key", () => {
+    open({ version: 1, voice: "v1" });
+    expect(screen.queryByRole("combobox", { name: "Default voice" })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("sends the voice back with every save, so saving something else keeps it", async () => {
+    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { hasElevenLabsKey: true });
+    fireEvent.change(screen.getByLabelText("Projects folder"), { target: { value: "~/work" } });
+    save();
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0]).toMatchObject({ voice: "v1", projectsDir: "~/work" });
+  });
+
+  it("saves the voice picked", async () => {
+    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { hasElevenLabsKey: true });
+    const picker = await screen.findByRole("combobox", { name: "Default voice" });
+    await waitFor(() => expect((picker as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("option", { name: /Bryn/ }));
+    save();
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].voice).toBe("v2");
   });
 });

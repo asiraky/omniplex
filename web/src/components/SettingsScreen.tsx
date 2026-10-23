@@ -44,6 +44,8 @@ export function SettingsScreen({
   userConfig,
   threadCounts,
   onSaveUserConfig,
+  hasElevenLabsKey,
+  onSetElevenLabsKey,
   providers,
   project: projectActions,
   onAddProject,
@@ -57,6 +59,8 @@ export function SettingsScreen({
   userConfig: UserConfig | null;
   threadCounts: Record<string, number>;
   onSaveUserConfig: (cfg: UserConfig) => Promise<void>;
+  hasElevenLabsKey: boolean;
+  onSetElevenLabsKey: (key: string) => Promise<void>;
   providers: {
     wires: AuthWires;
     onOpenTerminal: (instanceId: string) => void;
@@ -92,6 +96,8 @@ export function SettingsScreen({
         userConfig={userConfig}
         harnesses={harnesses}
         onSave={onSaveUserConfig}
+        hasElevenLabsKey={hasElevenLabsKey}
+        onSetElevenLabsKey={onSetElevenLabsKey}
         onBack={back}
       />
     ) : (
@@ -111,6 +117,8 @@ export function SettingsScreen({
         harnesses={harnesses}
         {...projectActions}
         threadCount={threadCounts[project.id] ?? 0}
+        hasElevenLabsKey={hasElevenLabsKey}
+        defaultVoice={userConfig?.voice ?? ""}
         onDeleted={() => setPicked(null)}
         onBack={back}
       />

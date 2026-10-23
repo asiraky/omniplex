@@ -445,6 +445,9 @@ func ephemeralCommand(name string) bool {
 	// repeated answer gets the stored outcome from the card book instead.
 	case "resolve_card":
 		return true
+	// It carries the ElevenLabs key, and setting it twice is setting it once.
+	case "set_elevenlabs_key":
+		return true
 	}
 	// Connections: reads of live state (a stored answer would be stale),
 	// saves that carry credentials (which must not sit in a claimed row), and
@@ -959,7 +962,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		// travel to a client, so no env value — secret or not — can leak
 		// through the settings surface.
 		cfg.Providers = nil
-		return map[string]any{"userConfig": cfg}, nil
+		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
 
 	case "save_user_config":
 		var a saveUserConfigArgs
@@ -982,7 +985,18 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		cfg.Providers = nil
-		return map[string]any{"userConfig": cfg}, nil
+		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
+
+	case "set_elevenlabs_key":
+		var a setElevenLabsKeyArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		if err := c.srv.speech.SetKey(ctx, a.Key); err != nil {
+			return nil, err
+		}
+		c.srv.speechFailures.forget()
+		return map[string]any{"hasElevenLabsKey": c.srv.speech.HasKey()}, nil
 
 	case "add_provider_instance":
 		var a saveProviderInstanceArgs

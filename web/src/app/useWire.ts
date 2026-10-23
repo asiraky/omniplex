@@ -9,6 +9,7 @@ import type {
   ThreadMeta,
   ThreadState,
   UserConfig,
+  UserConfigReply,
 } from "~/protocol";
 import { loadResume } from "~/resume";
 
@@ -56,6 +57,9 @@ export function useWire() {
   const [quotas, setQuotas] = useState<QuotaStatus[]>([]);
   const [access, setAccess] = useState<Access | null>(null);
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
+  // Whether the server holds an ElevenLabs key, which is what turns read-aloud
+  // on. Known only once the user config has arrived; off until then.
+  const [hasElevenLabsKey, setHasElevenLabsKey] = useState(false);
   const [state, setState] = useState<ThreadState | null>(resume?.state ?? null);
   // Read by long-lived callbacks (openPath) that must see the current state
   // without re-creating themselves on every event.
@@ -103,12 +107,27 @@ export function useWire() {
     if (status !== "online" || userConfig) return;
     clientRef.current
       ?.command("get_user_config", {})
-      .then((res) => setUserConfig(res.userConfig))
+      .then((res: UserConfigReply) => {
+        setUserConfig(res.userConfig);
+        setHasElevenLabsKey(res.hasElevenLabsKey);
+      })
       .catch(() => {});
   }, [status, userConfig]);
   const saveUserConfig = useCallback(async (cfg: UserConfig) => {
-    const res = await clientRef.current!.command("save_user_config", { config: cfg });
+    const res: UserConfigReply = await clientRef.current!.command("save_user_config", {
+      config: cfg,
+    });
     setUserConfig(res.userConfig);
+    setHasElevenLabsKey(res.hasElevenLabsKey);
+  }, []);
+  // Empty removes the stored key. A key ElevenLabs refuses rejects with its
+  // reason, and the stored one (if any) stays.
+  const setElevenLabsKey = useCallback(async (key: string) => {
+    const res: { hasElevenLabsKey: boolean } = await clientRef.current!.command(
+      "set_elevenlabs_key",
+      { key },
+    );
+    setHasElevenLabsKey(res.hasElevenLabsKey);
   }, []);
 
   // The resume cache is one boot's worth of help. Its scroll position moved
@@ -137,6 +156,8 @@ export function useWire() {
     setAccess,
     userConfig,
     saveUserConfig,
+    hasElevenLabsKey,
+    setElevenLabsKey,
     state,
     setState,
     stateRef,

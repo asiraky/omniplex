@@ -1,7 +1,9 @@
+import { CheckIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { ModelPicker } from "~/components/ModelPicker";
 import { SettingsPane } from "~/components/SettingsPane";
+import { VoicePicker } from "~/components/VoicePicker";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
@@ -16,6 +18,7 @@ import { Separator } from "~/components/ui/separator";
 import { branchTemplate, DEFAULT_BRANCH_TEMPLATE } from "~/lib/branchTemplate";
 import { pickerInstances } from "~/lib/models";
 import { LEVELS } from "~/lib/permissions";
+import { forgetVoices } from "~/lib/voices";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Issue, PermissionLevel, UserConfig } from "~/protocol";
 
@@ -79,6 +82,119 @@ function BranchFormatField({
 }
 
 /**
+ * The ElevenLabs key. It saves on its own, straight away, because the server
+ * checks it with ElevenLabs as it stores it, and it never comes back: once set
+ * this says so and offers to remove it, nothing more.
+ */
+function ElevenLabsKeyField({
+  hasKey,
+  onSet,
+}: {
+  hasKey: boolean;
+  onSet: (key: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (key: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSet(key);
+      // Another key is another account, with its own voices.
+      forgetVoices();
+      setDraft("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={hasKey ? undefined : "settings-elevenlabs-key"}>ElevenLabs API key</Label>
+      {hasKey ? (
+        <div className="flex items-center gap-2">
+          <p className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 text-[13px] md:min-h-9">
+            <CheckIcon className="text-success size-4 shrink-0" />
+            Key saved
+          </p>
+          <Button variant="outline" disabled={busy} onClick={() => void run("")}>
+            {busy ? "Removing…" : "Remove"}
+          </Button>
+        </div>
+      ) : (
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (draft.trim()) void run(draft.trim());
+          }}
+        >
+          <Input
+            id="settings-elevenlabs-key"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="sk_…"
+            className="min-w-0 flex-1 font-mono md:text-[12px]"
+          />
+          <Button type="submit" variant="outline" disabled={busy || !draft.trim()}>
+            {busy ? "Checking…" : "Save key"}
+          </Button>
+        </form>
+      )}
+      {error ? (
+        <p role="alert" className="text-attention-foreground text-[11px] break-words">
+          {error}
+        </p>
+      ) : (
+        <p className="text-muted-foreground text-[11px]">
+          {hasKey
+            ? "Messages get a play button. Stored on this machine and never shown again."
+            : "Turns on reading messages aloud. Saved as soon as ElevenLabs accepts it."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The ElevenLabs key, and once there is one, the voice messages are read in. */
+function ReadAloudSettings({
+  hasKey,
+  onSetKey,
+  voice,
+  onVoice,
+}: {
+  hasKey: boolean;
+  onSetKey: (key: string) => Promise<void>;
+  voice: string;
+  onVoice: (voice: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <h3 className="text-[12px] font-medium">Read aloud</h3>
+      <ElevenLabsKeyField hasKey={hasKey} onSet={onSetKey} />
+      {hasKey && (
+        <div className="space-y-1.5">
+          <Label htmlFor="settings-voice">Default voice</Label>
+          <VoicePicker id="settings-voice" value={voice} onChange={onVoice} />
+          <p className="text-muted-foreground text-[11px]">
+            {voice
+              ? "What messages are read in, unless a project picks its own."
+              : "Pick one to read messages aloud."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * The operator's own settings, kept in ~/.omniplex/config.json on the machine
  * running Omniplex. A project's own choices win over the defaults here; these
  * only decide what a project's first thread starts on.
@@ -87,11 +203,17 @@ export function GeneralSettings({
   userConfig,
   harnesses,
   onSave,
+  hasElevenLabsKey,
+  onSetElevenLabsKey,
   onBack,
 }: {
   userConfig: UserConfig;
   harnesses: HarnessMeta[];
   onSave: (cfg: UserConfig) => Promise<void>;
+  /** Whether the server holds an ElevenLabs key. */
+  hasElevenLabsKey: boolean;
+  /** Stores a key, or removes the stored one when given "". */
+  onSetElevenLabsKey: (key: string) => Promise<void>;
   onBack?: () => void;
 }) {
   const [cfg, setCfg] = useState<UserConfig>(userConfig);
@@ -205,6 +327,15 @@ export function GeneralSettings({
         value={cfg.branchFormat ?? ""}
         preview={branch}
         onChange={(v) => patch({ branchFormat: v })}
+      />
+
+      <Separator />
+
+      <ReadAloudSettings
+        hasKey={hasElevenLabsKey}
+        onSetKey={onSetElevenLabsKey}
+        voice={cfg.voice ?? ""}
+        onVoice={(voice) => patch({ voice })}
       />
     </SettingsPane>
   );

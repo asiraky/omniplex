@@ -1,5 +1,8 @@
+import { useRef } from "react";
+
 import { Markdown } from "~/components/Markdown";
 import type { Artefact } from "~/lib/artefacts";
+import { SPEAK_ROOT_ATTR } from "~/lib/speechAttrs";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 import { useSmoothText } from "~/useSmoothText";
@@ -26,6 +29,9 @@ export function Message({
   // Paced reveal, so a harness that delivers a line at a time still reads as
   // continuous output. Inactive messages render whole.
   const text = useSmoothText(item.text ?? "", streaming);
+  // What the play button reads, and what a selection has to reach into to
+  // become "play selection".
+  const speakRef = useRef<HTMLDivElement>(null);
 
   // The prompt that picks interrupted work back up was written by the server,
   // not by the person reading this. Showing it as their own message would be a
@@ -65,18 +71,20 @@ export function Message({
 
   return (
     <div className="group flex flex-col gap-2">
-      <Markdown
-        text={text}
-        className={cn(
-          "fade-in text-[14px] leading-relaxed break-words",
-          // The caret belongs at the end of the prose, not below it, so it
-          // hangs off the last block rather than the message container.
-          streaming && "caret-block",
-        )}
-      />
+      <div ref={speakRef} {...{ [SPEAK_ROOT_ATTR]: "" }} className="min-w-0">
+        <Markdown
+          text={text}
+          className={cn(
+            "fade-in text-[14px] leading-relaxed break-words",
+            // The caret belongs at the end of the prose, not below it, so it
+            // hangs off the last block rather than the message container.
+            streaming && "caret-block",
+          )}
+        />
+      </div>
       {/* The footer arrives with the message's end: while streaming, the time
           would claim an arrival that has not happened yet. */}
-      {!streaming && <MessageMeta item={item} />}
+      {!streaming && <MessageMeta item={item} speakRef={speakRef} />}
     </div>
   );
 }
