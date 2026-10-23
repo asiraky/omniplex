@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -44,7 +43,8 @@ func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
 	}
 	voices, err := s.speech.Voices(r.Context())
 	if err != nil {
-		writeSpeechError(w, err)
+		status, msg := speechErrorReply(err)
+		writeError(w, status, msg)
 		return
 	}
 	sorted := append([]tts.Voice(nil), voices...)
@@ -77,7 +77,7 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, noSpeechKey)
 		return
 	}
-	voice, err := s.speechVoice(r.Context(), q)
+	voice, err := s.speechVoice(r.Context(), q.Get("thread"))
 	switch {
 	case errors.Is(err, errNoVoice):
 		writeError(w, http.StatusConflict, noSpeechVoice)
@@ -172,8 +172,13 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 		if readErr != nil {
 			// The client went away, or ElevenLabs did. Either way the clip
-			// is incomplete and must not be kept.
-			return
+			// is incomplete and must not be kept. Ending the body cleanly
+			// would pass the truncated clip off as the whole message, so the
+			// connection is cut and the player sees an error instead.
+			if r.Context().Err() == nil {
+				s.logf("tts stream: %v", readErr)
+			}
+			panic(http.ErrAbortHandler)
 		}
 	}
 	if pending != nil {
@@ -188,10 +193,10 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 // speechVoice picks the voice: the thread's project's own, else the user's
 // default. A project that has since been deleted defers to the default
 // rather than refusing to read its old threads.
-func (s *Server) speechVoice(ctx context.Context, q url.Values) (string, error) {
-	projectID := q.Get("project")
-	if id := q.Get("thread"); id != "" {
-		meta, err := s.store.Thread(ctx, id)
+func (s *Server) speechVoice(ctx context.Context, threadID string) (string, error) {
+	projectID := ""
+	if threadID != "" {
+		meta, err := s.store.Thread(ctx, threadID)
 		if err != nil {
 			return "", err
 		}
@@ -216,15 +221,10 @@ func (s *Server) speechVoice(ctx context.Context, q url.Values) (string, error) 
 	return cfg.Voice, nil
 }
 
-// writeSpeechError reports a failure before any audio went out. The client
-// cannot read an <audio> element's error body, so it asks the same URL again
-// (HEAD, then GET only if that fails) to show the message; it has to be one a
-// person can act on.
-func writeSpeechError(w http.ResponseWriter, err error) {
-	status, msg := speechErrorReply(err)
-	writeError(w, status, msg)
-}
-
+// speechErrorReply is the status and message for a failure before any audio
+// went out. The client cannot read an <audio> element's error body, so it
+// asks the same URL again (HEAD, then GET only if that fails) to show the
+// message; it has to be one a person can act on.
 func speechErrorReply(err error) (int, string) {
 	var up *tts.UpstreamError
 	switch {

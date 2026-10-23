@@ -962,7 +962,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		// travel to a client, so no env value — secret or not — can leak
 		// through the settings surface.
 		cfg.Providers = nil
-		return map[string]any{"userConfig": cfg, "elevenLabsKey": c.srv.speech.HasKey()}, nil
+		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
 
 	case "save_user_config":
 		var a saveUserConfigArgs
@@ -985,7 +985,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		cfg.Providers = nil
-		return map[string]any{"userConfig": cfg, "elevenLabsKey": c.srv.speech.HasKey()}, nil
+		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
 
 	case "set_elevenlabs_key":
 		var a setElevenLabsKeyArgs
@@ -996,7 +996,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		c.srv.speechFailures.forget()
-		return map[string]any{"elevenLabsKey": c.srv.speech.HasKey()}, nil
+		return map[string]any{"hasElevenLabsKey": c.srv.speech.HasKey()}, nil
 
 	case "add_provider_instance":
 		var a saveProviderInstanceArgs

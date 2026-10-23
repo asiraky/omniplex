@@ -188,13 +188,13 @@ describe("voice", () => {
 
   it("is not offered without an ElevenLabs key", () => {
     withVoices();
-    open({ elevenLabsKey: false });
+    open({ hasElevenLabsKey: false });
     expect(screen.queryByRole("combobox", { name: "Voice" })).toBeNull();
   });
 
   it("overrides the user's voice for this project", async () => {
     withVoices();
-    const props = open({ elevenLabsKey: true, defaultVoice: "v1" });
+    const props = open({ hasElevenLabsKey: true, defaultVoice: "v1" });
     await openPicker();
     fireEvent.click(await screen.findByRole("option", { name: /Bryn/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -206,7 +206,7 @@ describe("voice", () => {
     withVoices();
     const props = open({
       project: { ...project, defaults: { ...project.defaults, voice: "v2" } },
-      elevenLabsKey: true,
+      hasElevenLabsKey: true,
       defaultVoice: "v1",
     });
     await openPicker();
@@ -223,7 +223,7 @@ describe("voice", () => {
     // jsdom plays nothing; closing the picker stops the preview through these.
     const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
     const load = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
-    const props = open({ elevenLabsKey: true, defaultVoice: "v1" });
+    const props = open({ hasElevenLabsKey: true, defaultVoice: "v1" });
     await openPicker();
     fireEvent.click(await screen.findByRole("button", { name: "Preview Bryn" }));
     expect(play).toHaveBeenCalled();

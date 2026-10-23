@@ -10,6 +10,7 @@ import type { Item } from "~/protocol";
 import { render } from "~/test/harness";
 
 import { MessageMeta } from "./MessageMeta";
+import { UserMessage } from "./UserMessage";
 
 function Msg({ item }: { item: Item }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -67,6 +68,28 @@ describe("the play button", () => {
     transcript();
     fireEvent.click(screen.getAllByRole("button", { name: "Read aloud" })[1]);
     expect(play).toHaveBeenCalledWith("m2", "Second answer here.", "t1", "A thread");
+  });
+
+  it("reads a prompt's markdown the way a reply's is read, though it is shown raw", () => {
+    const play = vi.spyOn(player, "play").mockImplementation(() => {});
+    const item: Item = {
+      id: "u1",
+      kind: "message",
+      role: "user",
+      text: "Why does **this** fail?\n\n```go\npanic(err)\n```\n\n- `internal/tts/cache.go`",
+    };
+    render(
+      <ReadAloudContext.Provider value={{ threadId: "t1", title: "A thread" }}>
+        <UserMessage item={item} threadId="t1" artefacts={[]} />
+      </ReadAloudContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Read aloud" }));
+    expect(play).toHaveBeenCalledWith(
+      "u1",
+      "Why does this fail?\nCode snippet.\ncache.go.",
+      "t1",
+      "A thread",
+    );
   });
 
   it("reads a selection that spans messages from either message's button", () => {

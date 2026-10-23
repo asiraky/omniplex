@@ -160,6 +160,37 @@ function ElevenLabsKeyField({
   );
 }
 
+/** The ElevenLabs key, and once there is one, the voice messages are read in. */
+function ReadAloudSettings({
+  hasKey,
+  onSetKey,
+  voice,
+  onVoice,
+}: {
+  hasKey: boolean;
+  onSetKey: (key: string) => Promise<void>;
+  voice: string;
+  onVoice: (voice: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <h3 className="text-[12px] font-medium">Read aloud</h3>
+      <ElevenLabsKeyField hasKey={hasKey} onSet={onSetKey} />
+      {hasKey && (
+        <div className="space-y-1.5">
+          <Label htmlFor="settings-voice">Default voice</Label>
+          <VoicePicker id="settings-voice" value={voice} onChange={onVoice} />
+          <p className="text-muted-foreground text-[11px]">
+            {voice
+              ? "What messages are read in, unless a project picks its own."
+              : "Pick one to read messages aloud."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * The operator's own settings, kept in ~/.omniplex/config.json on the machine
  * running Omniplex. A project's own choices win over the defaults here; these
@@ -169,7 +200,7 @@ export function GeneralSettings({
   userConfig,
   harnesses,
   onSave,
-  elevenLabsKey,
+  hasElevenLabsKey,
   onSetElevenLabsKey,
   onBack,
 }: {
@@ -177,7 +208,7 @@ export function GeneralSettings({
   harnesses: HarnessMeta[];
   onSave: (cfg: UserConfig) => Promise<void>;
   /** Whether the server holds an ElevenLabs key. */
-  elevenLabsKey: boolean;
+  hasElevenLabsKey: boolean;
   /** Stores a key, or removes the stored one when given "". */
   onSetElevenLabsKey: (key: string) => Promise<void>;
   onBack?: () => void;
@@ -297,25 +328,12 @@ export function GeneralSettings({
 
       <Separator />
 
-      <div className="space-y-3">
-        <h3 className="text-[12px] font-medium">Read aloud</h3>
-        <ElevenLabsKeyField hasKey={elevenLabsKey} onSet={onSetElevenLabsKey} />
-        {elevenLabsKey && (
-          <div className="space-y-1.5">
-            <Label htmlFor="settings-voice">Default voice</Label>
-            <VoicePicker
-              id="settings-voice"
-              value={cfg.voice ?? ""}
-              onChange={(voice) => patch({ voice })}
-            />
-            <p className="text-muted-foreground text-[11px]">
-              {cfg.voice
-                ? "What messages are read in, unless a project picks its own."
-                : "Pick one to read messages aloud."}
-            </p>
-          </div>
-        )}
-      </div>
+      <ReadAloudSettings
+        hasKey={hasElevenLabsKey}
+        onSetKey={onSetElevenLabsKey}
+        voice={cfg.voice ?? ""}
+        onVoice={(voice) => patch({ voice })}
+      />
     </SettingsPane>
   );
 }

@@ -53,7 +53,9 @@ const BLOCKS = new Set([
   "OL",
 ]);
 
-const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+const URL_START = String.raw`(?:https?:\/\/|www\.)`;
+const URL_RE = new RegExp(String.raw`\b${URL_START}[^\s<>"'\`]+`, "gi");
+const IS_URL = new RegExp(`^${URL_START}`, "i");
 
 function host(url: string): string {
   const trail = /[.,;:!?)\]]+$/.exec(url)?.[0] ?? "";
@@ -87,12 +89,28 @@ function punctuate(text: string): string {
   return /[.!?:;…]["'”’)\]]*$/.test(text) ? text : `${text}.`;
 }
 
+/**
+ * Whether inline code is a file path: it has to look like one, rooted or with
+ * a trailing slash or a file extension, so that `origin/main` and `and/or`
+ * are read as written.
+ */
+function isPath(text: string): boolean {
+  if (!text.includes("/") || /\s/.test(text) || IS_URL.test(text)) return false;
+  return /^(?:~|\.{1,2})?\//.test(text) || text.endsWith("/") || /\.[a-z0-9]{1,8}$/i.test(text);
+}
+
 /** Inline code, with a path read as just its file name. */
 function inlineCode(raw: string): string {
   const text = raw.trim();
-  if (!text.includes("/") || /\s/.test(text) || /^(?:https?:\/\/|www\.)/i.test(text)) return raw;
+  if (!isPath(text)) return raw;
   const base = text.replace(/\/+$/, "").split("/").pop();
   return base || text;
+}
+
+/** The number an ordered list's first item has. */
+function listStart(list: Element): number {
+  const start = Number.parseInt(list.getAttribute("start") ?? "", 10);
+  return Number.isNaN(start) ? 1 : start;
 }
 
 function isChrome(el: Element): boolean {
@@ -106,8 +124,7 @@ function isChrome(el: Element): boolean {
 function listNumber(li: Element): number | null {
   const list = li.parentElement;
   if (list?.tagName !== "OL") return null;
-  const start = Number.parseInt(list.getAttribute("start") ?? "", 10);
-  let n = Number.isNaN(start) ? 1 : start;
+  let n = listStart(list);
   for (let sib = li.previousElementSibling; sib; sib = sib.previousElementSibling)
     if (sib.tagName === "LI") n++;
   return n;
@@ -285,16 +302,18 @@ export function speakableText(root: Node): string {
 }
 
 const TABLE_PARTS = new Set(["TR", "TBODY", "THEAD", "TFOOT", "TABLE"]);
+const ITEMS = new Set(["LI"]);
+const CELLS = new Set(["TD", "TH"]);
 
 function asElement(node: Node): Element | null {
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
 }
 
 /** How many of `parent`'s children named `tag` come before the selection. */
-function skipped(range: Range, parent: Element, tags: string[]): number {
+function skipped(range: Range, parent: Element, tags: ReadonlySet<string>): number {
   let n = 0;
   for (const c of Array.from(parent.children)) {
-    if (!tags.includes(c.tagName)) continue;
+    if (!tags.has(c.tagName)) continue;
     if (range.intersectsNode(c)) break;
     n++;
   }
@@ -310,13 +329,11 @@ function skipped(range: Range, parent: Element, tags: string[]): number {
 function restore(range: Range, live: Element, clone: Element) {
   const doc = clone.ownerDocument;
   switch (live.tagName) {
-    case "OL": {
-      const start = Number.parseInt(live.getAttribute("start") ?? "", 10);
-      clone.setAttribute("start", String((Number.isNaN(start) ? 1 : start) + skipped(range, live, ["LI"])));
+    case "OL":
+      clone.setAttribute("start", String(listStart(live) + skipped(range, live, ITEMS)));
       return;
-    }
     case "TR": {
-      const pad = skipped(range, live, ["TD", "TH"]);
+      const pad = skipped(range, live, CELLS);
       for (let i = 0; i < pad; i++) clone.insertBefore(doc.createElement("td"), clone.firstChild);
       return;
     }

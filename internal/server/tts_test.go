@@ -212,14 +212,14 @@ func TestSpeechWithoutKeyAsksForOne(t *testing.T) {
 func TestElevenLabsKeyIsSetClearedAndRejected(t *testing.T) {
 	r := newSpeechRig(t, &fakeEleven{})
 	type keyed struct {
-		ElevenLabsKey bool `json:"elevenLabsKey"`
+		HasElevenLabsKey bool `json:"hasElevenLabsKey"`
 	}
-	has := func() bool { return call[keyed](t, r.c, "get_user_config", map[string]any{}).ElevenLabsKey }
+	has := func() bool { return call[keyed](t, r.c, "get_user_config", map[string]any{}).HasElevenLabsKey }
 
 	if has() {
 		t.Fatal("a fresh server reports a key")
 	}
-	if got := call[keyed](t, r.c, "set_elevenlabs_key", map[string]any{"key": " good "}); !got.ElevenLabsKey {
+	if got := call[keyed](t, r.c, "set_elevenlabs_key", map[string]any{"key": " good "}); !got.HasElevenLabsKey {
 		t.Fatal("an accepted key was not reported stored")
 	}
 	if !has() {
@@ -234,7 +234,7 @@ func TestElevenLabsKeyIsSetClearedAndRejected(t *testing.T) {
 		t.Fatal("a refused key replaced the good one")
 	}
 
-	if got := call[keyed](t, r.c, "set_elevenlabs_key", map[string]any{"key": ""}); got.ElevenLabsKey {
+	if got := call[keyed](t, r.c, "set_elevenlabs_key", map[string]any{"key": ""}); got.HasElevenLabsKey {
 		t.Fatal("clearing the key still reports one")
 	}
 	if has() {
@@ -399,7 +399,9 @@ func TestBrokenStreamLeavesNoCacheEntry(t *testing.T) {
 	r.setVoice("v1")
 
 	res := r.get(speakPath("hello", ""), nil)
-	_, _ = io.ReadAll(res.Body)
+	if _, err := io.ReadAll(res.Body); err == nil {
+		t.Fatal("a stream that broke ended cleanly; the player would take half a clip for the whole")
+	}
 	if names := r.cacheFiles(); len(names) != 0 {
 		t.Fatalf("a stream that broke left %v in the cache", names)
 	}

@@ -404,7 +404,7 @@ export function ProjectSettings({
   onDelete,
   threadCount,
   onDeleted,
-  elevenLabsKey = false,
+  hasElevenLabsKey = false,
   defaultVoice = "",
   onBack,
 }: {
@@ -421,7 +421,7 @@ export function ProjectSettings({
   /** After the project is gone; this screen has nothing left to show. */
   onDeleted: () => void;
   /** Whether an ElevenLabs key is stored; without one there is no voice to pick. */
-  elevenLabsKey?: boolean;
+  hasElevenLabsKey?: boolean;
   /** The user's own voice, which this project reads in unless it picks another. */
   defaultVoice?: string;
   onBack?: () => void;
@@ -645,7 +645,7 @@ export function ProjectSettings({
                 </p>
               </div>
 
-              {elevenLabsKey && (
+              {hasElevenLabsKey && (
                 <>
                   <Separator />
                   <div className="space-y-1.5">

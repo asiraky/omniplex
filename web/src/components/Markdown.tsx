@@ -78,7 +78,7 @@ function CopyButton({ text }: { text: string }) {
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
   const mermaid = lang.toLowerCase() === "mermaid";
   const source = (
-    <div data-speak-as={mermaid ? "diagram" : "code-block"} className="bg-muted/60 my-2 overflow-hidden rounded-lg border">
+    <div data-speak-as="code-block" className="bg-muted/60 my-2 overflow-hidden rounded-lg border">
       <div className="text-muted-foreground flex items-center gap-2 border-b px-2.5 py-1">
         <span className="min-w-0 flex-1 truncate font-mono text-[10px]">{lang || "text"}</span>
         <CopyButton text={code} />

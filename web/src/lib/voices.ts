@@ -27,9 +27,12 @@ function set(next: VoiceList) {
 
 async function fetchVoices(): Promise<Voice[]> {
   const res = await fetch("/api/tts/voices", { credentials: "same-origin" });
-  const body = (await res.json().catch(() => null)) as { voices?: Voice[]; error?: string } | null;
-  if (!res.ok) throw new Error(body?.error || `Couldn't load voices (${res.status})`);
-  return body?.voices ?? [];
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error || `Couldn't load voices (${res.status})`);
+  }
+  const body = (await res.json()) as { voices?: Voice[] };
+  return body.voices ?? [];
 }
 
 function start() {

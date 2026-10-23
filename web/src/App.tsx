@@ -209,7 +209,7 @@ export function App() {
             onLogin={auth.openInstanceAuth}
             onForceDelete={deletion.forceDelete}
             onFinish={deletion.deleteFlow.ask}
-            readAloud={wire.elevenLabsKey}
+            readAloud={wire.hasElevenLabsKey}
           />
         ) : nav.creating ? (
           <ThreadDraft

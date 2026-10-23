@@ -83,6 +83,15 @@ describe("speakableText", () => {
     expect(speak("Run `npm test` in `internal/server/server.go` or `web/src/`")).toBe(
       "Run npm test in server.go or src.",
     );
+    expect(speak("See `~/.omniplex/config.json` and `./scripts/dev-link`")).toBe(
+      "See config.json and dev-link.",
+    );
+  });
+
+  it("reads slashed code that is not a path as written", () => {
+    expect(speak("Rebase on `origin/main`, `and/or` open `https://x.io/a.md`")).toBe(
+      "Rebase on origin/main, and/or open x.io.",
+    );
   });
 
   it("reads a clickable path chip as its file name", () => {

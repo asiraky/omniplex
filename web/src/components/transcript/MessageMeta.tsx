@@ -27,13 +27,17 @@ const footerButton =
  * With read-aloud on it also plays the message, or the reader's selection when
  * that reaches into this message. `speakRef` is the message's rendered content
  * (its `data-speak-root`); without one there is nothing to read and no button.
+ * `speakAll` is what the whole message reads as, when that is not what is
+ * rendered.
  */
 export function MessageMeta({
   item,
   speakRef,
+  speakAll,
 }: {
   item: Item;
   speakRef?: RefObject<HTMLElement | null>;
+  speakAll?: () => string;
 }) {
   const { copied, copy } = useCopy();
   const readAloud = useReadAloud();
@@ -70,6 +74,7 @@ export function MessageMeta({
         <PlayButton
           id={item.id}
           speakRef={speakRef}
+          speakAll={speakAll}
           readAloud={readAloud}
           playback={playback}
           selected={selected}
@@ -79,15 +84,36 @@ export function MessageMeta({
   );
 }
 
+const LOOKS = {
+  loading: {
+    icon: <Spinner className="size-3.5" aria-hidden role={undefined} />,
+    label: "stop",
+    aria: "Stop reading aloud",
+  },
+  playing: {
+    icon: <SquareIcon className="size-3 fill-current" />,
+    label: "stop",
+    aria: "Stop reading aloud",
+  },
+  selection: {
+    icon: <TextSelectIcon className="size-3.5" />,
+    label: "play selection",
+    aria: "Read the selection aloud",
+  },
+  idle: { icon: <Volume2Icon className="size-3.5" />, label: "play", aria: "Read aloud" },
+};
+
 function PlayButton({
   id,
   speakRef,
+  speakAll,
   readAloud,
   playback,
   selected,
 }: {
   id: string;
   speakRef: RefObject<HTMLElement | null>;
+  speakAll?: () => string;
   readAloud: ReadAloud;
   playback: PlaybackStatus;
   selected: boolean;
@@ -103,7 +129,9 @@ function PlayButton({
     if (!root) return;
     // The whole selection, even where it runs on into other messages: this
     // message's button is just where the reader reached for it.
-    const text = selects(range, root) ? speakableSelection(range!) : speakableText(root);
+    const text = selects(range, root)
+      ? speakableSelection(range!)
+      : (speakAll?.() ?? speakableText(root));
     if (!text.trim()) {
       toast.info("There is nothing here to read aloud.");
       return;
@@ -111,7 +139,7 @@ function PlayButton({
     player.play(id, text, readAloud.threadId, readAloud.title);
   };
 
-  const label = playback ? "stop" : selected ? "play selection" : "play";
+  const look = LOOKS[playback || (selected ? "selection" : "idle")];
 
   return (
     <button
@@ -122,9 +150,7 @@ function PlayButton({
       // Focusing the button would clear a desktop selection before the click.
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => (playback ? player.stop() : start())}
-      aria-label={
-        playback ? "Stop reading aloud" : selected ? "Read the selection aloud" : "Read aloud"
-      }
+      aria-label={look.aria}
       className={cn(
         footerButton,
         // A wider hit area for a thumb, without moving the footer's layout.
@@ -132,16 +158,8 @@ function PlayButton({
         selected && !playback && "text-primary hover:text-primary",
       )}
     >
-      {playback === "loading" ? (
-        <Spinner className="size-3.5" aria-hidden role={undefined} />
-      ) : playback === "playing" ? (
-        <SquareIcon className="size-3 fill-current" />
-      ) : selected ? (
-        <TextSelectIcon className="size-3.5" />
-      ) : (
-        <Volume2Icon className="size-3.5" />
-      )}
-      {label}
+      {look.icon}
+      {look.label}
     </button>
   );
 }

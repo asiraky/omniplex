@@ -60,7 +60,7 @@ export function useWire() {
   const [userConfig, setUserConfig] = useState<UserConfig | null>(null);
   // Whether the server holds an ElevenLabs key, which is what turns read-aloud
   // on. Known only once the user config has arrived; off until then.
-  const [elevenLabsKey, setHasElevenLabsKey] = useState(false);
+  const [hasElevenLabsKey, setHasElevenLabsKey] = useState(false);
   const [state, setState] = useState<ThreadState | null>(resume?.state ?? null);
   // Read by long-lived callbacks (openPath) that must see the current state
   // without re-creating themselves on every event.
@@ -110,7 +110,7 @@ export function useWire() {
       ?.command("get_user_config", {})
       .then((res: UserConfigReply) => {
         setUserConfig(res.userConfig);
-        setHasElevenLabsKey(res.elevenLabsKey);
+        setHasElevenLabsKey(res.hasElevenLabsKey);
       })
       .catch(() => {});
   }, [status, userConfig]);
@@ -119,16 +119,16 @@ export function useWire() {
       config: cfg,
     });
     setUserConfig(res.userConfig);
-    setHasElevenLabsKey(res.elevenLabsKey);
+    setHasElevenLabsKey(res.hasElevenLabsKey);
   }, []);
   // Empty removes the stored key. A key ElevenLabs refuses rejects with its
   // reason, and the stored one (if any) stays.
   const setElevenLabsKey = useCallback(async (key: string) => {
-    const res: { elevenLabsKey: boolean } = await clientRef.current!.command(
+    const res: { hasElevenLabsKey: boolean } = await clientRef.current!.command(
       "set_elevenlabs_key",
       { key },
     );
-    setHasElevenLabsKey(res.elevenLabsKey);
+    setHasElevenLabsKey(res.hasElevenLabsKey);
     // Another key is another account, with its own voices.
     forgetVoices();
   }, []);
@@ -159,7 +159,7 @@ export function useWire() {
     setAccess,
     userConfig,
     saveUserConfig,
-    elevenLabsKey,
+    hasElevenLabsKey,
     setElevenLabsKey,
     state,
     setState,

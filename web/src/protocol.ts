@@ -609,7 +609,7 @@ export interface UserConfig {
  */
 export interface UserConfigReply {
   userConfig: UserConfig;
-  elevenLabsKey: boolean;
+  hasElevenLabsKey: boolean;
 }
 
 /** One ElevenLabs voice, as `/api/tts/voices` lists it. */

@@ -62,14 +62,14 @@ const harnesses = ["claude", "codex"].map((id) => ({
 function open(
   userConfig: UserConfig,
   onSave = vi.fn(async (_cfg: UserConfig) => {}),
-  { elevenLabsKey = false, onSetElevenLabsKey = vi.fn(async (_key: string) => {}) } = {},
+  { hasElevenLabsKey = false, onSetElevenLabsKey = vi.fn(async (_key: string) => {}) } = {},
 ) {
   const view = render(
     <GeneralSettings
       userConfig={userConfig}
       harnesses={harnesses}
       onSave={onSave}
-      elevenLabsKey={elevenLabsKey}
+      hasElevenLabsKey={hasElevenLabsKey}
       onSetElevenLabsKey={onSetElevenLabsKey}
     />,
   );
@@ -189,7 +189,7 @@ describe("read aloud", () => {
         userConfig={{ version: 1 }}
         harnesses={harnesses}
         onSave={vi.fn()}
-        elevenLabsKey
+        hasElevenLabsKey
         onSetElevenLabsKey={onSetElevenLabsKey}
       />,
     );
@@ -216,7 +216,7 @@ describe("read aloud", () => {
   });
 
   it("sends the voice back with every save, so saving something else keeps it", async () => {
-    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { elevenLabsKey: true });
+    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { hasElevenLabsKey: true });
     fireEvent.change(screen.getByLabelText("Projects folder"), { target: { value: "~/work" } });
     save();
     await waitFor(() => expect(onSave).toHaveBeenCalled());
@@ -224,7 +224,7 @@ describe("read aloud", () => {
   });
 
   it("saves the voice picked", async () => {
-    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { elevenLabsKey: true });
+    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { hasElevenLabsKey: true });
     const picker = await screen.findByRole("combobox", { name: "Default voice" });
     await waitFor(() => expect((picker as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(picker);
