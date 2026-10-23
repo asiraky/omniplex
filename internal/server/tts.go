@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/asiraky/omniplex/internal/store"
@@ -106,6 +107,10 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		s.logf("tts cache=hit text_bytes=%d duration_ms=%d", len(text), time.Since(started).Milliseconds())
 		return
 	}
+	if status, msg, ok := s.speechFailures.recall(key); ok {
+		writeError(w, status, msg)
+		return
+	}
 	if r.Method == http.MethodHead {
 		// Synthesis is billed; a HEAD is not worth paying for.
 		audioHeaders()
@@ -117,7 +122,12 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	// in until it exists, and a media element takes a 200 for a range request.
 	body, err := s.speech.Stream(r.Context(), voice, text)
 	if err != nil {
-		writeSpeechError(w, err)
+		status, msg := speechErrorReply(err)
+		var refused *tts.UpstreamError
+		if errors.As(err, &refused) {
+			s.speechFailures.remember(key, status, msg)
+		}
+		writeError(w, status, msg)
 		return
 	}
 	defer body.Close()
@@ -207,20 +217,91 @@ func (s *Server) speechVoice(ctx context.Context, q url.Values) (string, error) 
 }
 
 // writeSpeechError reports a failure before any audio went out. The client
-// cannot read an <audio> element's error body, so it fetches the same URL to
-// show the message; it has to be one a person can act on.
+// cannot read an <audio> element's error body, so it asks the same URL again
+// (HEAD, then GET only if that fails) to show the message; it has to be one a
+// person can act on.
 func writeSpeechError(w http.ResponseWriter, err error) {
+	status, msg := speechErrorReply(err)
+	writeError(w, status, msg)
+}
+
+func speechErrorReply(err error) (int, string) {
 	var up *tts.UpstreamError
 	switch {
 	case errors.Is(err, tts.ErrNoKey):
-		writeError(w, http.StatusConflict, noSpeechKey)
+		return http.StatusConflict, noSpeechKey
 	case errors.As(err, &up) && up.Rejected():
-		writeError(w, http.StatusBadGateway, "ElevenLabs rejected the API key: "+up.Message)
+		return http.StatusBadGateway, "ElevenLabs rejected the API key: " + up.Message
 	case errors.As(err, &up) && up.Status == http.StatusTooManyRequests:
-		writeError(w, http.StatusTooManyRequests, up.Message)
+		return http.StatusTooManyRequests, up.Message
 	case errors.As(err, &up):
-		writeError(w, http.StatusBadGateway, up.Message)
+		return http.StatusBadGateway, up.Message
 	default:
-		writeError(w, http.StatusBadGateway, err.Error())
+		return http.StatusBadGateway, err.Error()
 	}
+}
+
+// speechFailureTTL is how long a refusal is answered from memory. The client
+// asks again within a second of the <audio> element failing, to read the
+// message; a person pressing play again a minute later gets a fresh try.
+const speechFailureTTL = time.Minute
+
+// speechFailures is ElevenLabs' last refusal per cache key. The <audio>
+// element cannot read an error body, so the client asks for a failed clip a
+// second time to get the message. Without this that request goes upstream
+// again, and if ElevenLabs has recovered in between it synthesises, and bills,
+// audio nobody will play. Only refusals are kept: a client hanging up or the
+// network dropping says nothing about the next try.
+type speechFailures struct {
+	mu    sync.Mutex
+	byKey map[string]speechFailure
+	// now is the clock; nil is the real one.
+	now func() time.Time
+}
+
+type speechFailure struct {
+	status int
+	msg    string
+	at     time.Time
+}
+
+func (f *speechFailures) clock() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
+}
+
+func (f *speechFailures) remember(key string, status int, msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := f.clock()
+	if f.byKey == nil {
+		f.byKey = map[string]speechFailure{}
+	}
+	// Pruned on the way in, so the map only ever holds the last minute's.
+	for k, v := range f.byKey {
+		if now.Sub(v.at) >= speechFailureTTL {
+			delete(f.byKey, k)
+		}
+	}
+	f.byKey[key] = speechFailure{status: status, msg: msg, at: now}
+}
+
+func (f *speechFailures) recall(key string) (int, string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.byKey[key]
+	if !ok || f.clock().Sub(v.at) >= speechFailureTTL {
+		return 0, "", false
+	}
+	return v.status, v.msg, true
+}
+
+// forget drops every remembered refusal: a new key can succeed where the old
+// one was refused or out of credit.
+func (f *speechFailures) forget() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byKey = nil
 }

@@ -69,7 +69,10 @@ type Server struct {
 	conns *mcp.Connections
 	// speech reads messages aloud. Nil turns read-aloud off.
 	speech *tts.Service
-	logf   func(string, ...any)
+	// speechFailures remembers what ElevenLabs last refused, so asking again
+	// for the message does not pay for the same failure twice.
+	speechFailures speechFailures
+	logf           func(string, ...any)
 	// skillFetch runs npx and git for a skills install. The zero value is the
 	// real thing; a test puts a fake runner in.
 	skillFetch skills.Fetcher

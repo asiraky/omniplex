@@ -34,6 +34,8 @@ function open(
     userConfig: { version: 1 },
     threadCounts: {},
     onSaveUserConfig: vi.fn(async () => {}),
+    elevenLabsKey: false,
+    onSetElevenLabsKey: vi.fn(async () => {}),
     providers: { wires: {} as never, onOpenTerminal: vi.fn(), onRecheck: vi.fn() },
     project: {
       onSave: vi.fn(async () => {}),

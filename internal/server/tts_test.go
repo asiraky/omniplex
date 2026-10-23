@@ -503,3 +503,93 @@ func TestSpeechRefusesTextOutOfBounds(t *testing.T) {
 		t.Fatalf("the longest message returned %d", res.StatusCode)
 	}
 }
+
+// The client re-asks for a failed clip to read why; that must not go to
+// ElevenLabs a second time.
+func TestSpeechRefusalIsAnsweredFromMemory(t *testing.T) {
+	var calls atomic.Int32
+	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = io.WriteString(w, `{"detail":"quota exceeded"}`)
+	}}
+	r := newSpeechRig(t, up)
+	r.setKey("good")
+	r.setVoice("v1")
+
+	first := r.get(speakPath("hello", ""), nil)
+	if first.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", first.StatusCode)
+	}
+	head, err := http.Head(r.ts.URL + speakPath("hello", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head.Body.Close()
+	if head.StatusCode != http.StatusBadGateway {
+		t.Fatalf("HEAD after a refusal returned %d, want 502", head.StatusCode)
+	}
+	again := r.get(speakPath("hello", ""), nil)
+	if again.StatusCode != http.StatusBadGateway || !strings.Contains(errorMessage(t, again), "quota exceeded") {
+		t.Fatalf("the repeat did not carry the refusal: %d", again.StatusCode)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("ElevenLabs was asked %d times, want 1", n)
+	}
+
+	// Other text is a different clip and gets its own try.
+	r.get(speakPath("goodbye", ""), nil)
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("ElevenLabs was asked %d times after new text, want 2", n)
+	}
+
+	// A new key might have the credit the old one lacked.
+	r.setKey("other")
+	r.get(speakPath("hello", ""), nil)
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("ElevenLabs was asked %d times after a new key, want 3", n)
+	}
+}
+
+func TestSpeechRefusalIsForgottenAfterAMinute(t *testing.T) {
+	now := time.Unix(1000, 0)
+	f := speechFailures{now: func() time.Time { return now }}
+	f.remember("a", http.StatusTooManyRequests, "slow down")
+	if status, msg, ok := f.recall("a"); !ok || status != http.StatusTooManyRequests || msg != "slow down" {
+		t.Fatalf("recall = %d %q %v", status, msg, ok)
+	}
+	now = now.Add(speechFailureTTL - time.Second)
+	if _, _, ok := f.recall("a"); !ok {
+		t.Fatal("forgotten before the minute was up")
+	}
+	now = now.Add(time.Second)
+	if _, _, ok := f.recall("a"); ok {
+		t.Fatal("still remembered after a minute")
+	}
+	// An expired entry is dropped when the next one goes in.
+	f.remember("b", http.StatusBadGateway, "x")
+	if _, kept := f.byKey["a"]; kept {
+		t.Fatal("an expired refusal stayed in the map")
+	}
+}
+
+// A dropped connection is not a refusal: the next request has to try again.
+func TestDroppedSpeechIsNotRemembered(t *testing.T) {
+	var calls atomic.Int32
+	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			// Dropping the connection without an answer, as an outage would.
+			panic(http.ErrAbortHandler)
+		}
+		_, _ = io.WriteString(w, "mp3")
+	}}
+	r := newSpeechRig(t, up)
+	r.setKey("good")
+	r.setVoice("v1")
+	if res := r.get(speakPath("hello", ""), nil); res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", res.StatusCode)
+	}
+	if res := r.get(speakPath("hello", ""), nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("the retry returned %d, want 200", res.StatusCode)
+	}
+}

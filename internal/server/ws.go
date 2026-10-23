@@ -995,6 +995,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := c.srv.speech.SetKey(ctx, a.Key); err != nil {
 			return nil, err
 		}
+		c.srv.speechFailures.forget()
 		return map[string]any{"elevenLabsKey": c.srv.speech.HasKey()}, nil
 
 	case "add_provider_instance":

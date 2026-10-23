@@ -93,6 +93,8 @@ export function AppDialogs({
             userConfig={wire.userConfig}
             threadCounts={projects.threadCounts}
             onSaveUserConfig={wire.saveUserConfig}
+            elevenLabsKey={wire.elevenLabsKey}
+            onSetElevenLabsKey={wire.setElevenLabsKey}
             providers={{
               wires: auth.authWires,
               onOpenTerminal: setLoginInstance,

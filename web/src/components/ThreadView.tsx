@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
@@ -11,6 +11,8 @@ import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { CardSignIn } from "~/lib/cards";
 import { liveJobCount } from "~/lib/jobs";
 import { OpenPathContext } from "~/lib/openPath";
+import { ReadAloudContext } from "~/lib/readAloud";
+import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
 import type { HarnessMeta, PendingElicitation, PullRequest, ThreadMeta, ThreadState } from "~/protocol";
 
@@ -58,6 +60,7 @@ export function ThreadView({
   onLogin,
   onForceDelete,
   onFinish,
+  readAloud,
 }: {
   state: ThreadState;
   activeId: string | null;
@@ -78,8 +81,15 @@ export function ThreadView({
   onLogin: (instanceId: string) => void;
   onForceDelete: (id: string) => void;
   onFinish: (meta: ThreadMeta) => void;
+  /** An ElevenLabs key is stored, so messages get a play button. */
+  readAloud: boolean;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
+  const title = threadTitle(meta, state);
+  const speech = useMemo(
+    () => (readAloud && activeId ? { threadId: activeId, title } : null),
+    [readAloud, activeId, title],
+  );
   const provider = harness.activeProviderInstance;
   // A sign-in a saved card offers from its row in the transcript.
   const [signIn, setSignIn] = useState<CardSignIn | null>(null);
@@ -91,35 +101,37 @@ export function ThreadView({
       <div className="from-background to-background/0 pointer-events-none absolute top-0 right-(--scrollbar-w,0px) left-0 z-10 h-8 bg-gradient-to-b" />
 
       <OpenPathContext.Provider value={panel.openPath}>
-        <Transcript
-          key={activeId}
-          state={state}
-          hasOlder={(state.itemsBefore ?? 0) > 0}
-          onLoadOlder={commands.loadOlderItems}
-          initialScroll={activeId ? scroll.positionOf(activeId) : undefined}
-          onScrollChange={scroll.record}
-          onContinue={() => commands.threadCommand("continue_thread")}
-          onLogin={provider?.canLogin ? () => onLogin(provider.id) : undefined}
-          providerName={provider?.displayName}
-          providerReady={provider?.availability.state === "ready"}
-          onRetryTurn={harness.retryTurn}
-          switchTargets={harness.switchTargets}
-          onSwitchAccount={(instance, retry) => harness.switchAccount(instance, { retry })}
-          onRetryProvision={() => commands.threadCommand("retry_provision")}
-          onCleanup={() => commands.threadCommand("cleanup_thread")}
-          onForceDelete={() => activeId && onForceDelete(activeId)}
-          onOpenDiff={panel.openDiff}
-          jobs={state.jobs}
-          onOpenJobs={panel.openJobs}
-          onOpenArtefact={panel.openArtefact}
-          pr={pr}
-          onFinish={() => meta && onFinish(meta)}
-          recents={recents.items}
-          recentsSeeded={recents.seeded}
-          onPickRecent={recents.pick}
-          onDequeue={commands.dequeue}
-          onCardSignIn={setSignIn}
-        />
+        <ReadAloudContext.Provider value={speech}>
+          <Transcript
+            key={activeId}
+            state={state}
+            hasOlder={(state.itemsBefore ?? 0) > 0}
+            onLoadOlder={commands.loadOlderItems}
+            initialScroll={activeId ? scroll.positionOf(activeId) : undefined}
+            onScrollChange={scroll.record}
+            onContinue={() => commands.threadCommand("continue_thread")}
+            onLogin={provider?.canLogin ? () => onLogin(provider.id) : undefined}
+            providerName={provider?.displayName}
+            providerReady={provider?.availability.state === "ready"}
+            onRetryTurn={harness.retryTurn}
+            switchTargets={harness.switchTargets}
+            onSwitchAccount={(instance, retry) => harness.switchAccount(instance, { retry })}
+            onRetryProvision={() => commands.threadCommand("retry_provision")}
+            onCleanup={() => commands.threadCommand("cleanup_thread")}
+            onForceDelete={() => activeId && onForceDelete(activeId)}
+            onOpenDiff={panel.openDiff}
+            jobs={state.jobs}
+            onOpenJobs={panel.openJobs}
+            onOpenArtefact={panel.openArtefact}
+            pr={pr}
+            onFinish={() => meta && onFinish(meta)}
+            recents={recents.items}
+            recentsSeeded={recents.seeded}
+            onPickRecent={recents.pick}
+            onDequeue={commands.dequeue}
+            onCardSignIn={setSignIn}
+          />
+        </ReadAloudContext.Provider>
       </OpenPathContext.Provider>
 
       {signIn && (

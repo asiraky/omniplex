@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { parseAttachedFiles, type Artefact } from "~/lib/artefacts";
+import { SPEAK_ROOT_ATTR } from "~/lib/speech";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
@@ -89,6 +90,7 @@ export function UserMessage({
       {(text || (!item.images?.length && files.length === 0)) && (
         <div
           ref={bodyRef}
+          {...{ [SPEAK_ROOT_ATTR]: "" }}
           style={
             clamped
               ? {
@@ -118,7 +120,8 @@ export function UserMessage({
           {expanded ? "Show less" : "Show more"}
         </button>
       )}
-      <MessageMeta item={item} />
+      {/* Read-aloud reads the bubble; an attachment-only message has none. */}
+      <MessageMeta item={item} speakRef={text ? bodyRef : undefined} />
     </div>
   );
 }

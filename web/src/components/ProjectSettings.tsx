@@ -12,6 +12,7 @@ import { useEffect, useId, useState } from "react";
 import { FolderBrowser, GitHubPicker } from "~/components/FolderSources";
 import { Badge } from "~/components/ui/badge";
 import { SettingsPane } from "~/components/SettingsPane";
+import { VoicePicker } from "~/components/VoicePicker";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
@@ -403,6 +404,8 @@ export function ProjectSettings({
   onDelete,
   threadCount,
   onDeleted,
+  elevenLabsKey = false,
+  defaultVoice = "",
   onBack,
 }: {
   project: Project;
@@ -417,6 +420,10 @@ export function ProjectSettings({
   threadCount: number;
   /** After the project is gone; this screen has nothing left to show. */
   onDeleted: () => void;
+  /** Whether an ElevenLabs key is stored; without one there is no voice to pick. */
+  elevenLabsKey?: boolean;
+  /** The user's own voice, which this project reads in unless it picks another. */
+  defaultVoice?: string;
   onBack?: () => void;
 }) {
   const [name, setName] = useState(project.name);
@@ -637,6 +644,24 @@ export function ProjectSettings({
                   effort and permissions for that harness.
                 </p>
               </div>
+
+              {elevenLabsKey && (
+                <>
+                  <Separator />
+                  <div className="space-y-1.5">
+                    <Label htmlFor="project-voice">Voice</Label>
+                    <VoicePicker
+                      id="project-voice"
+                      value={defs.voice ?? ""}
+                      defaultVoice={defaultVoice}
+                      onChange={(voice) => defaults({ voice })}
+                    />
+                    <p className="text-muted-foreground text-[11px]">
+                      What this project's messages are read aloud in.
+                    </p>
+                  </div>
+                </>
+              )}
 
               <Separator />
 
