@@ -7,7 +7,8 @@ import { renderMermaid } from "~/lib/mermaid";
 import { OpenPathContext } from "~/lib/openPath";
 import { render } from "~/test/harness";
 
-import { SPEAK_ROOT_ATTR, speakableSelection, speakableText } from "./speech";
+import { speakableSelection, speakableText } from "./speech";
+import { SPEAK_ROOT_ATTR } from "./speechAttrs";
 
 vi.mock("~/lib/mermaid", () => ({ renderMermaid: vi.fn() }));
 const renderer = vi.mocked(renderMermaid);

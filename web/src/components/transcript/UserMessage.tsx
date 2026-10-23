@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { parseAttachedFiles, type Artefact } from "~/lib/artefacts";
-import { SPEAK_ROOT_ATTR } from "~/lib/speech";
+import { SPEAK_ROOT_ATTR } from "~/lib/speechAttrs";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 

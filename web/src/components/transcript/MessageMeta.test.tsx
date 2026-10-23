@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReadAloudContext } from "~/lib/readAloud";
-import { SPEAK_ROOT_ATTR } from "~/lib/speech";
+import { SPEAK_ROOT_ATTR } from "~/lib/speechAttrs";
 import { player } from "~/lib/ttsPlayer";
 import type { Item } from "~/protocol";
 import { render } from "~/test/harness";
@@ -29,7 +29,12 @@ const items: Item[] = [
   { id: "m2", kind: "message", role: "agent", text: "Second answer here." },
 ];
 
-function transcript(on = true) {
+/** The play buttons load in their own chunk. */
+async function playButtonsLoaded() {
+  await screen.findAllByRole("button", { name: /aloud/ });
+}
+
+async function transcript(on = true) {
   render(
     <ReadAloudContext.Provider value={on ? { threadId: "t1", title: "A thread" } : null}>
       {items.map((item) => (
@@ -37,6 +42,7 @@ function transcript(on = true) {
       ))}
     </ReadAloudContext.Provider>,
   );
+  if (on) await playButtonsLoaded();
 }
 
 function select(from: string, fromOffset: number, to: string, toOffset: number) {
@@ -58,19 +64,19 @@ afterEach(() => {
 });
 
 describe("the play button", () => {
-  it("is not there without read-aloud", () => {
-    transcript(false);
+  it("is not there without read-aloud", async () => {
+    await transcript(false);
     expect(screen.queryByRole("button", { name: "Read aloud" })).toBeNull();
   });
 
-  it("reads the whole message", () => {
+  it("reads the whole message", async () => {
     const play = vi.spyOn(player, "play").mockImplementation(() => {});
-    transcript();
+    await transcript();
     fireEvent.click(screen.getAllByRole("button", { name: "Read aloud" })[1]);
     expect(play).toHaveBeenCalledWith("m2", "Second answer here.", "t1", "A thread");
   });
 
-  it("reads a prompt's markdown the way a reply's is read, though it is shown raw", () => {
+  it("reads a prompt's markdown the way a reply's is read, though it is shown raw", async () => {
     const play = vi.spyOn(player, "play").mockImplementation(() => {});
     const item: Item = {
       id: "u1",
@@ -83,6 +89,7 @@ describe("the play button", () => {
         <UserMessage item={item} threadId="t1" artefacts={[]} />
       </ReadAloudContext.Provider>,
     );
+    await playButtonsLoaded();
     fireEvent.click(screen.getByRole("button", { name: "Read aloud" }));
     expect(play).toHaveBeenCalledWith(
       "u1",
@@ -103,9 +110,9 @@ describe("the play button", () => {
     expect(play).toHaveBeenLastCalledWith("u1", "Why does this fail?\nCode snippet.", "t1", "A thread");
   });
 
-  it("reads a selection that spans messages from either message's button", () => {
+  it("reads a selection that spans messages from either message's button", async () => {
     const play = vi.spyOn(player, "play").mockImplementation(() => {});
-    transcript();
+    await transcript();
     select("First answer here.", 6, "Second answer here.", 6);
     const buttons = screen.getAllByRole("button", { name: "Read the selection aloud" });
     expect(buttons).toHaveLength(2);
@@ -113,16 +120,16 @@ describe("the play button", () => {
     expect(play.mock.calls[0][1]).toMatch(/^answer here\.\s+Second\.?$/);
   });
 
-  it("only offers the selection to the messages it reaches", () => {
-    transcript();
+  it("only offers the selection to the messages it reaches", async () => {
+    await transcript();
     select("Second answer here.", 0, "Second answer here.", 6);
     expect(screen.getAllByRole("button", { name: "Read aloud" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Read the selection aloud" })).toHaveLength(1);
   });
 
-  it("reads what was selected when the tap began, though the tap cleared it", () => {
+  it("reads what was selected when the tap began, though the tap cleared it", async () => {
     const play = vi.spyOn(player, "play").mockImplementation(() => {});
-    transcript();
+    await transcript();
     select("First answer here.", 0, "First answer here.", 5);
     const button = screen.getByRole("button", { name: "Read the selection aloud" });
     fireEvent.pointerDown(button);
@@ -132,10 +139,10 @@ describe("the play button", () => {
     expect(play.mock.calls[0][1]).toMatch(/^First\.?$/);
   });
 
-  it("stops what is playing", () => {
+  it("stops what is playing", async () => {
     const stop = vi.spyOn(player, "stop").mockImplementation(() => {});
     vi.spyOn(player, "getState").mockReturnValue({ playingKey: "m1", status: "playing" });
-    transcript();
+    await transcript();
     fireEvent.click(screen.getByRole("button", { name: "Stop reading aloud" }));
     expect(stop).toHaveBeenCalled();
   });

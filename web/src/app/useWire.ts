@@ -11,7 +11,6 @@ import type {
   UserConfig,
   UserConfigReply,
 } from "~/protocol";
-import { forgetVoices } from "~/lib/voices";
 import { loadResume } from "~/resume";
 
 import { LAST_THREAD } from "./threadKeys";
@@ -129,8 +128,6 @@ export function useWire() {
       { key },
     );
     setHasElevenLabsKey(res.hasElevenLabsKey);
-    // Another key is another account, with its own voices.
-    forgetVoices();
   }, []);
 
   // The resume cache is one boot's worth of help. Its scroll position moved

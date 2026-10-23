@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SPEAK_ROOT_ATTR } from "./speech";
+import { SPEAK_ROOT_ATTR } from "./speechAttrs";
 import { currentSelection, selects, useSelects } from "./speechSelection";
 
 function transcript(...texts: string[]) {

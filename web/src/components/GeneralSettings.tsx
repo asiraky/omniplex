@@ -18,6 +18,7 @@ import { Separator } from "~/components/ui/separator";
 import { branchTemplate, DEFAULT_BRANCH_TEMPLATE } from "~/lib/branchTemplate";
 import { pickerInstances } from "~/lib/models";
 import { LEVELS } from "~/lib/permissions";
+import { forgetVoices } from "~/lib/voices";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Issue, PermissionLevel, UserConfig } from "~/protocol";
 
@@ -101,6 +102,8 @@ function ElevenLabsKeyField({
     setError(null);
     try {
       await onSet(key);
+      // Another key is another account, with its own voices.
+      forgetVoices();
       setDraft("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
