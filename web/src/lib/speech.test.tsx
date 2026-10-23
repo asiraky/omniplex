@@ -86,6 +86,9 @@ describe("speakableText", () => {
     expect(speak("See `~/.omniplex/config.json` and `./scripts/dev-link`")).toBe(
       "See config.json and dev-link.",
     );
+    expect(speak("At `internal/server/tts.go:172` in `cmd/omniplex/Makefile`")).toBe(
+      "At tts.go:172 in Makefile.",
+    );
   });
 
   it("reads slashed code that is not a path as written", () => {

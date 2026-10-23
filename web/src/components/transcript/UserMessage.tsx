@@ -2,7 +2,6 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { parseAttachedFiles, type Artefact } from "~/lib/artefacts";
 import { SPEAK_ROOT_ATTR } from "~/lib/speech";
-import { speakableMarkdown } from "~/lib/speakMarkdown";
 import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
@@ -122,11 +121,7 @@ export function UserMessage({
         </button>
       )}
       {/* Read-aloud reads the bubble; an attachment-only message has none. */}
-      <MessageMeta
-        item={item}
-        speakRef={text ? bodyRef : undefined}
-        speakAll={() => speakableMarkdown(text)}
-      />
+      <MessageMeta item={item} speakRef={text ? bodyRef : undefined} rawMarkdown />
     </div>
   );
 }

@@ -90,21 +90,30 @@ function punctuate(text: string): string {
 }
 
 /**
- * Whether inline code is a file path: it has to look like one, rooted or with
- * a trailing slash or a file extension, so that `origin/main` and `and/or`
- * are read as written.
+ * Whether inline code is a file path: it has to look like one — rooted, two
+ * or more levels deep, or with a trailing slash or a file extension — so that
+ * `origin/main` and `and/or` are read as written. A `:line` suffix is ignored.
  */
 function isPath(text: string): boolean {
   if (!text.includes("/") || /\s/.test(text) || IS_URL.test(text)) return false;
-  return /^(?:~|\.{1,2})?\//.test(text) || text.endsWith("/") || /\.[a-z0-9]{1,8}$/i.test(text);
+  const path = text.replace(/:\d+(?::\d+)?$/, "");
+  return (
+    /^(?:~|\.{1,2})?\//.test(path) ||
+    path.endsWith("/") ||
+    path.split("/").length > 2 ||
+    /\.[a-z0-9]{1,8}$/i.test(path)
+  );
+}
+
+/** A path's last part: the file, or the folder it ends in. */
+function fileName(path: string): string {
+  return path.replace(/\/+$/, "").split("/").pop() || path;
 }
 
 /** Inline code, with a path read as just its file name. */
 function inlineCode(raw: string): string {
   const text = raw.trim();
-  if (!isPath(text)) return raw;
-  const base = text.replace(/\/+$/, "").split("/").pop();
-  return base || text;
+  return isPath(text) ? fileName(text) : raw;
 }
 
 /** The number an ordered list's first item has. */
@@ -181,7 +190,8 @@ class Reader {
     if (as === "code-block") return this.block("Code snippet");
     if (as === "diagram") return this.block("Diagram");
     if (as === "code") {
-      this.buf += inlineCode(el.textContent ?? "");
+      // A chip is a path the page already recognised.
+      this.buf += fileName((el.textContent ?? "").trim());
       return;
     }
     if (isChrome(el)) return;

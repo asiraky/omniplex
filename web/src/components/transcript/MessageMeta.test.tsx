@@ -90,6 +90,17 @@ describe("the play button", () => {
       "t1",
       "A thread",
     );
+
+    const bubble = screen.getByText(/Why does/).firstChild!;
+    const r = document.createRange();
+    r.setStart(bubble, 0);
+    r.setEnd(bubble, item.text!.indexOf("panic"));
+    act(() => {
+      document.getSelection()!.addRange(r);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Read the selection aloud" }));
+    expect(play).toHaveBeenLastCalledWith("u1", "Why does this fail?\nCode snippet.", "t1", "A thread");
   });
 
   it("reads a selection that spans messages from either message's button", () => {

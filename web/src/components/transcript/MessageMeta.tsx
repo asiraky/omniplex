@@ -4,6 +4,7 @@ import { useRef, type RefObject } from "react";
 import { Spinner } from "~/components/ui/spinner";
 import { useCopy } from "~/lib/clipboard";
 import { useReadAloud, type ReadAloud } from "~/lib/readAloud";
+import { speakableMarkdown } from "~/lib/speakMarkdown";
 import { speakableSelection, speakableText } from "~/lib/speech";
 import { currentSelection, selects, useSelects } from "~/lib/speechSelection";
 import { toast } from "~/lib/toast";
@@ -27,17 +28,17 @@ const footerButton =
  * With read-aloud on it also plays the message, or the reader's selection when
  * that reaches into this message. `speakRef` is the message's rendered content
  * (its `data-speak-root`); without one there is nothing to read and no button.
- * `speakAll` is what the whole message reads as, when that is not what is
- * rendered.
+ * `rawMarkdown` says the content shows markdown source, as a prompt does; it
+ * is read as if rendered, so a pasted fence or table reads as a reply's would.
  */
 export function MessageMeta({
   item,
   speakRef,
-  speakAll,
+  rawMarkdown = false,
 }: {
   item: Item;
   speakRef?: RefObject<HTMLElement | null>;
-  speakAll?: () => string;
+  rawMarkdown?: boolean;
 }) {
   const { copied, copy } = useCopy();
   const readAloud = useReadAloud();
@@ -74,7 +75,7 @@ export function MessageMeta({
         <PlayButton
           id={item.id}
           speakRef={speakRef}
-          speakAll={speakAll}
+          rawMarkdown={rawMarkdown}
           readAloud={readAloud}
           playback={playback}
           selected={selected}
@@ -84,7 +85,14 @@ export function MessageMeta({
   );
 }
 
-const LOOKS = {
+/** A selection inside markdown source is that source's slice, read as rendered. */
+function selectionText(range: Range, root: HTMLElement, rawMarkdown: boolean): string {
+  return rawMarkdown && root.contains(range.commonAncestorContainer)
+    ? speakableMarkdown(range.toString())
+    : speakableSelection(range);
+}
+
+const PLAY_STATES = {
   loading: {
     icon: <Spinner className="size-3.5" aria-hidden role={undefined} />,
     label: "stop",
@@ -106,14 +114,14 @@ const LOOKS = {
 function PlayButton({
   id,
   speakRef,
-  speakAll,
+  rawMarkdown,
   readAloud,
   playback,
   selected,
 }: {
   id: string;
   speakRef: RefObject<HTMLElement | null>;
-  speakAll?: () => string;
+  rawMarkdown: boolean;
   readAloud: ReadAloud;
   playback: PlaybackStatus;
   selected: boolean;
@@ -130,8 +138,10 @@ function PlayButton({
     // The whole selection, even where it runs on into other messages: this
     // message's button is just where the reader reached for it.
     const text = selects(range, root)
-      ? speakableSelection(range!)
-      : (speakAll?.() ?? speakableText(root));
+      ? selectionText(range!, root, rawMarkdown)
+      : rawMarkdown
+        ? speakableMarkdown(root.textContent ?? "")
+        : speakableText(root);
     if (!text.trim()) {
       toast.info("There is nothing here to read aloud.");
       return;
@@ -139,7 +149,7 @@ function PlayButton({
     player.play(id, text, readAloud.threadId, readAloud.title);
   };
 
-  const look = LOOKS[playback || (selected ? "selection" : "idle")];
+  const look = PLAY_STATES[playback || (selected ? "selection" : "idle")];
 
   return (
     <button
