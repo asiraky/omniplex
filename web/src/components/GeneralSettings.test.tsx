@@ -233,4 +233,49 @@ describe("read aloud", () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(onSave.mock.calls[0][0].voice).toBe("v2");
   });
+
+  async function searchVoices(text: string) {
+    const picker = await screen.findByRole("combobox", { name: "Default voice" });
+    await waitFor(() => expect((picker as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(picker);
+    const search = await screen.findByPlaceholderText(/Search voices/);
+    fireEvent.change(search, { target: { value: text } });
+  }
+
+  it("saves a pasted voice ID the list doesn't have", async () => {
+    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { hasElevenLabsKey: true });
+    await searchVoices("  pAsTeD123  ");
+    fireEvent.click(await screen.findByRole("option", { name: /Use voice ID pAsTeD123/ }));
+    // Not in the list, so it shows by ID.
+    const picker = screen.getByRole("combobox", { name: "Default voice" });
+    expect(picker.textContent).toContain("pAsTeD123");
+    save();
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].voice).toBe("pAsTeD123");
+  });
+
+  it("offers no pasted ID for a listed voice's ID, or for a search with spaces", async () => {
+    open({ version: 1 }, undefined, { hasElevenLabsKey: true });
+    await searchVoices("v2");
+    expect(await screen.findByRole("option", { name: /Bryn/ })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Use voice ID/ })).toBeNull();
+    const search = screen.getByPlaceholderText(/Search voices/);
+    fireEvent.change(search, { target: { value: "no such voice" } });
+    expect(await screen.findByText("No voice matches that.")).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Use voice ID/ })).toBeNull();
+  });
+
+  it("takes a typed voice ID when the list won't load", async () => {
+    const down = JSON.stringify({ error: "ElevenLabs is down" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(down, { status: 502 })));
+    const { onSave } = open({ version: 1, voice: "v1" }, undefined, { hasElevenLabsKey: true });
+    expect(await screen.findByText("ElevenLabs is down")).toBeTruthy();
+    const input = screen.getByLabelText("Default voice") as HTMLInputElement;
+    expect(input.value).toBe("v1");
+    fireEvent.change(input, { target: { value: " typed42 " } });
+    fireEvent.blur(input);
+    save();
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].voice).toBe("typed42");
+  });
 });

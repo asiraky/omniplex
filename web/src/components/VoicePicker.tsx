@@ -10,6 +10,7 @@ import {
   CommandItem,
   CommandList,
 } from "~/components/ui/command";
+import { Input } from "~/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Spinner } from "~/components/ui/spinner";
@@ -31,6 +32,10 @@ function stopPreview() {
  * Chooses an ElevenLabs voice: the account's voices, searchable, each with a
  * preview. `defaultVoice` set (even to "") adds a first row that clears the
  * choice back to it, for a project deferring to the user's own default.
+ *
+ * The list is only the account's own voices, so a voice ID can be pasted into
+ * the search instead: anything without spaces that isn't a listed ID can be
+ * used as one.
  */
 export function VoicePicker({
   id,
@@ -45,9 +50,13 @@ export function VoicePicker({
 }) {
   const { voices, error } = useVoices();
   const [open, setOpenState] = useState(false);
+  const [search, setSearch] = useState("");
   const isDesktop = useIsDesktop();
   const setOpen = (next: boolean) => {
-    if (!next) stopPreview();
+    if (!next) {
+      stopPreview();
+      setSearch("");
+    }
     setOpenState(next);
   };
   useEffect(() => stopPreview, []);
@@ -62,13 +71,22 @@ export function VoicePicker({
     onChange(voice);
   };
 
+  // Pasted IDs come with stray whitespace; one inside means it's a search.
+  const pasted = search.trim();
+  const pastable = pasted !== "" && !/\s/.test(pasted) && !voices?.some((v) => v.id === pasted);
+
   if (error) {
     return (
-      <div className="flex min-h-11 items-center gap-2 md:min-h-9">
-        <p className="text-attention-foreground min-w-0 flex-1 text-[12px] break-words">{error}</p>
-        <Button variant="outline" size="sm" onClick={retryVoices}>
-          Retry
-        </Button>
+      <div className="space-y-2">
+        <div className="flex min-h-11 items-center gap-2 md:min-h-9">
+          <p className="text-attention-foreground min-w-0 flex-1 text-[12px] break-words">
+            {error}
+          </p>
+          <Button variant="outline" size="sm" onClick={retryVoices}>
+            Retry
+          </Button>
+        </div>
+        <VoiceIdInput id={id} value={value} onChange={onChange} />
       </div>
     );
   }
@@ -98,9 +116,13 @@ export function VoicePicker({
 
   const body = voices && (
     <Command className="bg-transparent">
-      <CommandInput placeholder="Search voices…" />
+      <CommandInput
+        placeholder="Search voices or paste a voice ID…"
+        value={search}
+        onValueChange={setSearch}
+      />
       <CommandList className="max-h-[min(60dvh,22rem)] flex-1">
-        <CommandEmpty>No voice matches that.</CommandEmpty>
+        {!pastable && <CommandEmpty>No voice matches that.</CommandEmpty>}
         {inherits && (
           <CommandGroup>
             <CommandItem
@@ -119,6 +141,22 @@ export function VoicePicker({
             <VoiceRow key={v.id} voice={v} selected={v.id === value} onChoose={choose} />
           ))}
         </CommandGroup>
+        {pastable && (
+          // Forced, so the search filter can't hide it; cmdk puts it last.
+          <CommandGroup forceMount>
+            <CommandItem
+              forceMount
+              value={`__id__:${pasted}`}
+              onSelect={() => choose(pasted)}
+              className="min-h-11 gap-2 md:min-h-0"
+            >
+              <CheckIcon className={cn("size-4 shrink-0", pasted !== value && "opacity-0")} />
+              <span className="min-w-0 flex-1 truncate text-[13px]">
+                Use voice ID <span className="font-mono">{pasted}</span>
+              </span>
+            </CommandItem>
+          </CommandGroup>
+        )}
       </CommandList>
     </Command>
   );
@@ -147,6 +185,45 @@ export function VoicePicker({
         {body}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * With no list to pick from, a voice ID typed in. Saved on blur or Enter, and
+ * only if it changed; cleared, it goes back to unset (or the default).
+ */
+function VoiceIdInput({
+  id,
+  value,
+  onChange,
+}: {
+  id?: string;
+  value: string;
+  onChange: (voice: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next !== value) onChange(next);
+  };
+  return (
+    <Input
+      id={id}
+      placeholder="Or paste a voice ID"
+      autoComplete="off"
+      spellCheck={false}
+      className="font-mono"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      }}
+    />
   );
 }
 
