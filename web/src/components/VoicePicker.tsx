@@ -10,6 +10,7 @@ import {
   CommandItem,
   CommandList,
 } from "~/components/ui/command";
+import { Input } from "~/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Spinner } from "~/components/ui/spinner";
@@ -31,6 +32,10 @@ function stopPreview() {
  * Chooses an ElevenLabs voice: the account's voices, searchable, each with a
  * preview. `defaultVoice` set (even to "") adds a first row that clears the
  * choice back to it, for a project deferring to the user's own default.
+ *
+ * The list is only the account's own voices, so a voice ID can be pasted into
+ * the search instead: anything without spaces that isn't a listed ID can be
+ * used as one.
  */
 export function VoicePicker({
   id,
@@ -45,9 +50,13 @@ export function VoicePicker({
 }) {
   const { voices, error } = useVoices();
   const [open, setOpenState] = useState(false);
+  const [search, setSearch] = useState("");
   const isDesktop = useIsDesktop();
   const setOpen = (next: boolean) => {
-    if (!next) stopPreview();
+    if (!next) {
+      stopPreview();
+      setSearch("");
+    }
     setOpenState(next);
   };
   useEffect(() => stopPreview, []);
@@ -62,16 +71,17 @@ export function VoicePicker({
     onChange(voice);
   };
 
-  if (error) {
-    return (
-      <div className="flex min-h-11 items-center gap-2 md:min-h-9">
-        <p className="text-attention-foreground min-w-0 flex-1 text-[12px] break-words">{error}</p>
-        <Button variant="outline" size="sm" onClick={retryVoices}>
-          Retry
-        </Button>
-      </div>
-    );
-  }
+  const triggerLabel = () => {
+    if (!voices) return "Loading voices…";
+    if (value) return nameOf(value);
+    return inherits ? defaultLabel : "Choose a voice";
+  };
+
+  // Pasted IDs come with stray whitespace; one inside means it's a search.
+  const pasted = search.trim();
+  const pastable = pasted !== "" && !/\s/.test(pasted) && !voices?.some((v) => v.id === pasted);
+
+  if (error) return <VoiceListError id={id} error={error} value={value} onChange={onChange} />;
 
   const trigger = (
     <Button
@@ -83,24 +93,20 @@ export function VoicePicker({
       className="h-auto min-h-11 w-full justify-start gap-2 px-3 py-2 md:min-h-9"
     >
       {!voices && <Spinner className="size-4" aria-hidden role={undefined} />}
-      <span className="min-w-0 flex-1 truncate text-left text-[13px]">
-        {!voices
-          ? "Loading voices…"
-          : value
-            ? nameOf(value)
-            : inherits
-              ? defaultLabel
-              : "Choose a voice"}
-      </span>
+      <span className="min-w-0 flex-1 truncate text-left text-[13px]">{triggerLabel()}</span>
       <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
     </Button>
   );
 
   const body = voices && (
     <Command className="bg-transparent">
-      <CommandInput placeholder="Search voices…" />
+      <CommandInput
+        placeholder="Search voices or paste a voice ID…"
+        value={search}
+        onValueChange={setSearch}
+      />
       <CommandList className="max-h-[min(60dvh,22rem)] flex-1">
-        <CommandEmpty>No voice matches that.</CommandEmpty>
+        {!pastable && <CommandEmpty>No voice matches that.</CommandEmpty>}
         {inherits && (
           <CommandGroup>
             <CommandItem
@@ -119,6 +125,9 @@ export function VoicePicker({
             <VoiceRow key={v.id} voice={v} selected={v.id === value} onChoose={choose} />
           ))}
         </CommandGroup>
+        {pastable && (
+          <PastedVoiceRow voice={pasted} selected={pasted === value} onChoose={choose} />
+        )}
       </CommandList>
     </Command>
   );
@@ -147,6 +156,98 @@ export function VoicePicker({
         {body}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** A pasted voice ID offered as a choice. */
+function PastedVoiceRow({
+  voice,
+  selected,
+  onChoose,
+}: {
+  voice: string;
+  selected: boolean;
+  onChoose: (voice: string) => void;
+}) {
+  return (
+    // Forced, so the search filter can't hide it; cmdk puts it last.
+    <CommandGroup forceMount>
+      <CommandItem
+        forceMount
+        value={`__id__:${voice}`}
+        onSelect={() => onChoose(voice)}
+        className="min-h-11 gap-2 md:min-h-0"
+      >
+        <CheckIcon className={cn("size-4 shrink-0", !selected && "opacity-0")} />
+        <span className="min-w-0 flex-1 truncate text-[13px]">
+          Use voice ID <span className="font-mono">{voice}</span>
+        </span>
+      </CommandItem>
+    </CommandGroup>
+  );
+}
+
+/** The list failed: say why, offer a retry, and take a voice ID typed in. */
+function VoiceListError({
+  id,
+  error,
+  value,
+  onChange,
+}: {
+  id?: string;
+  error: string;
+  value: string;
+  onChange: (voice: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex min-h-11 items-center gap-2 md:min-h-9">
+        <p className="text-attention-foreground min-w-0 flex-1 text-[12px] break-words">{error}</p>
+        <Button variant="outline" size="sm" onClick={retryVoices}>
+          Retry
+        </Button>
+      </div>
+      {/* Keyed on the saved value, so a save from elsewhere replaces the draft. */}
+      <VoiceIdInput key={value} id={id} initialValue={value} onChange={onChange} />
+    </div>
+  );
+}
+
+/**
+ * With no list to pick from, a voice ID typed in. Saved on blur or Enter, and
+ * only if it changed; cleared, it goes back to unset (or the default).
+ */
+function VoiceIdInput({
+  id,
+  initialValue,
+  onChange,
+}: {
+  id?: string;
+  initialValue: string;
+  onChange: (voice: string) => void;
+}) {
+  const [draft, setDraft] = useState(initialValue);
+  const commit = () => {
+    const next = draft.trim();
+    if (next !== initialValue) onChange(next);
+  };
+  return (
+    <Input
+      id={id}
+      placeholder="Or paste a voice ID"
+      autoComplete="off"
+      spellCheck={false}
+      className="font-mono"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      }}
+    />
   );
 }
 

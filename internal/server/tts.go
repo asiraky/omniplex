@@ -5,12 +5,17 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/tts"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
@@ -90,7 +95,16 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The audio is keyed on the text as it came and who rewrites it, so a
+	// replay is a cache hit without waiting on the model again. A model that
+	// has just failed outright is skipped, so the audio made without it can
+	// be kept rather than paid for on every play.
+	editor, editing := s.editorFor(r.Context(), q.Get("thread"))
+	editing = editing && !s.rewriter.Down(editor.model)
 	key := tts.CacheKey(voice, text)
+	if editing {
+		key = tts.CacheKey(voice, tts.RewriteKey(editor.model, text))
+	}
 	audioHeaders := func() {
 		h := w.Header()
 		h.Set("Content-Type", "audio/mpeg")
@@ -118,9 +132,21 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	spoken, whole, rewrite := text, true, "off"
+	if editing {
+		spoken, whole = s.rewriter.Rewrite(r.Context(), editor.model, editor.prompt, text)
+		rewrite = "whole"
+		if !whole {
+			rewrite = "partial"
+		}
+	}
+	if r.Context().Err() != nil {
+		return
+	}
+
 	// A miss ignores Range and sends the whole clip: there is nothing to seek
 	// in until it exists, and a media element takes a 200 for a range request.
-	body, err := s.speech.Stream(r.Context(), voice, text)
+	body, err := s.speech.Stream(r.Context(), voice, spoken)
 	if err != nil {
 		status, msg := speechErrorReply(err)
 		var refused *tts.UpstreamError
@@ -132,10 +158,14 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	defer body.Close()
 
-	pending, err := s.speech.Cache().Create(key)
-	if err != nil {
-		// Playing uncached beats not playing.
-		s.logf("tts cache: %v", err)
+	// Audio from a text the model only partly rewrote is played but not
+	// kept, so the next play gets another try at the rewrite.
+	var pending *tts.Pending
+	if whole {
+		if pending, err = s.speech.Cache().Create(key); err != nil {
+			// Playing uncached beats not playing.
+			s.logf("tts cache: %v", err)
+		}
 	}
 	discard := func() {
 		if pending != nil {
@@ -187,7 +217,90 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 		pending = nil
 	}
-	s.logf("tts cache=miss text_bytes=%d audio_bytes=%d duration_ms=%d", len(text), sent, time.Since(started).Milliseconds())
+	s.logf("tts cache=miss rewrite=%s text_bytes=%d spoken_bytes=%d audio_bytes=%d duration_ms=%d", rewrite, len(text), len(spoken), sent, time.Since(started).Milliseconds())
+}
+
+// speechEditor is the model that rewrites a thread's messages for the voice,
+// and how to ask it.
+type speechEditor struct {
+	model  string
+	prompt tts.Prompt
+}
+
+// The models that rewrite for the voice are small and fast ones, because the
+// listener waits for them before the first word.
+const (
+	claudeEditor = "claude-haiku-5-5"
+	// codexEditorFallback is used when the catalogue names no Luna.
+	codexEditorFallback = "gpt-6-luna"
+	editorEffort        = "low"
+)
+
+// threadEditor rewrites with a model on the account the thread runs under.
+// A thread on a harness with no model for it, or none at all, is read as
+// it came.
+func (s *Server) threadEditor(ctx context.Context, threadID string) (speechEditor, bool) {
+	if threadID == "" || s.mgr == nil {
+		return speechEditor{}, false
+	}
+	p, err := s.mgr.PrompterFor(ctx, threadID)
+	if err != nil {
+		if !errors.Is(err, thread.ErrNoPrompter) {
+			s.logf("tts rewrite: %v", err)
+		}
+		return speechEditor{}, false
+	}
+	model, ok := editorModel(p.Driver, p.Models)
+	if !ok {
+		return speechEditor{}, false
+	}
+	return speechEditor{model: model, prompt: func(ctx context.Context, instructions, input string) (string, error) {
+		return p.Prompt(ctx, adapter.PromptRequest{Model: model, Effort: editorEffort, Instructions: instructions, Input: input})
+	}}, true
+}
+
+// editorModel is Haiku on Claude and the newest Luna on Codex.
+func editorModel(driver string, models []adapter.ModelMeta) (string, bool) {
+	switch driver {
+	case "claude":
+		return claudeEditor, true
+	case "codex":
+		return latestLuna(models), true
+	}
+	return "", false
+}
+
+var versionNumber = regexp.MustCompile(`\d+(?:\.\d+)*`)
+
+// latestLuna is the current Luna with the highest version in its id
+// (gpt-6-luna over gpt-5.6-luna), or the fallback when there is none.
+func latestLuna(models []adapter.ModelMeta) string {
+	best, bestVersion := "", []int(nil)
+	for _, m := range models {
+		if !strings.Contains(strings.ToLower(m.ID), "luna") || m.Group == adapter.GroupLegacy {
+			continue
+		}
+		v := idVersion(m.ID)
+		if best == "" || slices.Compare(v, bestVersion) > 0 {
+			best, bestVersion = m.ID, v
+		}
+	}
+	if best == "" {
+		return codexEditorFallback
+	}
+	return best
+}
+
+// idVersion reads the first dotted number in a model id: "gpt-5.6-luna" is
+// [5 6].
+func idVersion(id string) []int {
+	var v []int
+	for _, part := range strings.Split(versionNumber.FindString(id), ".") {
+		if n, err := strconv.Atoi(part); err == nil {
+			v = append(v, n)
+		}
+	}
+	return v
 }
 
 // speechVoice picks the voice: the thread's project's own, else the user's
