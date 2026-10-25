@@ -72,7 +72,11 @@ type Server struct {
 	// speechFailures remembers what ElevenLabs last refused, so asking again
 	// for the message does not pay for the same failure twice.
 	speechFailures speechFailures
-	logf           func(string, ...any)
+	// rewriter rewrites a message for the voice before it is read, with the
+	// model speechEditor picks for the thread. A test swaps speechEditor.
+	rewriter     *tts.Rewriter
+	speechEditor func(ctx context.Context, threadID string) (speechEditor, bool)
+	logf         func(string, ...any)
 	// skillFetch runs npx and git for a skills install. The zero value is the
 	// real thing; a test puts a fake runner in.
 	skillFetch skills.Fetcher
@@ -160,6 +164,8 @@ func New(o Options) *Server {
 	if s.logf == nil {
 		s.logf = func(string, ...any) {}
 	}
+	s.rewriter = tts.NewRewriter(s.logf)
+	s.speechEditor = s.threadEditor
 	if o.WebFS != nil {
 		// Prepared once: hashing the bundle per request would put a read of
 		// every file on the hot path for content that cannot change.

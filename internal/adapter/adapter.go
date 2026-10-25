@@ -571,6 +571,25 @@ type QuotaReader interface {
 	ReadQuota(ctx context.Context, env map[string]string) (QuotaSnapshot, error)
 }
 
+// Prompter is an optional adapter capability: one prompt answered once, with
+// no session, no tools and nothing kept. It runs under the provider
+// instance's environment overlay, so the answer comes from, and is billed to,
+// the account the overlay selects. It is for small jobs the host does around a
+// conversation, such as rewriting a message to be read aloud.
+type Prompter interface {
+	Prompt(ctx context.Context, env map[string]string, req PromptRequest) (string, error)
+}
+
+// PromptRequest is one Prompter call. Instructions is the system prompt where
+// the harness has one; Effort is a reasoning effort the harness understands,
+// or "" for its default.
+type PromptRequest struct {
+	Model        string
+	Effort       string
+	Instructions string
+	Input        string
+}
+
 // SessionQuota is the optional live-session counterpart: ask the running
 // harness process, which is cheaper than spawning one and always reads the
 // account the process is authenticated as.

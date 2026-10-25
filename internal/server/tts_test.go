@@ -33,7 +33,10 @@ type speechRig struct {
 	ts       *httptest.Server
 	c        *conn
 	st       *store.Store
+	srv      *Server
 	cacheDir string
+	// mu guards what a fake model counts.
+	mu sync.Mutex
 }
 
 func newSpeechRig(t *testing.T, upstream http.Handler) *speechRig {
@@ -63,7 +66,7 @@ func newSpeechRig(t *testing.T, upstream http.Handler) *speechRig {
 	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), Speech: speech})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &speechRig{t: t, ts: ts, c: &conn{srv: srv}, st: st, cacheDir: filepath.Join(cfgDir, "tts-cache")}
+	return &speechRig{t: t, ts: ts, c: &conn{srv: srv}, st: st, srv: srv, cacheDir: filepath.Join(cfgDir, "tts-cache")}
 }
 
 func (r *speechRig) setKey(key string) {
