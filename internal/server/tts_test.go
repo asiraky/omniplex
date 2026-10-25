@@ -35,8 +35,6 @@ type speechRig struct {
 	st       *store.Store
 	srv      *Server
 	cacheDir string
-	// mu guards what a fake model counts.
-	mu sync.Mutex
 }
 
 func newSpeechRig(t *testing.T, upstream http.Handler) *speechRig {

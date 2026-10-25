@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -24,8 +25,9 @@ var rewriteInstructions string
 
 const (
 	// partChars is where a part is cut once it is past it. Rewriting time
-	// grows with the length of the answer, so smaller parts start the audio
-	// sooner, at the cost of one CLI start each and less context per part.
+	// grows with the length of the answer and the audio waits for the
+	// slowest part, so smaller parts finish sooner, at the cost of one CLI
+	// start each and less context per part.
 	partChars = 2000
 	// partMaxChars cuts a part even in the middle of what looks like a
 	// table, so one huge table cannot make one slow part.
@@ -40,6 +42,10 @@ const (
 	// any of it exists: Safari probes with a range request, and a player
 	// that fails asks again for the reason.
 	recentRewrites = 32
+	// downFor is how long a model that failed every part is left alone. A
+	// model the account cannot use, or a harness signed out, fails the same
+	// way every time, and each try costs the listener its wait.
+	downFor = 10 * time.Minute
 )
 
 // Prompt asks a model one question: instructions and input, answer back.
@@ -56,6 +62,7 @@ type Rewriter struct {
 	recent   map[string]*list.Element // of rewritten
 	order    *list.List
 	inflight map[string]*rewriteCall
+	down     map[string]time.Time // model → when it last failed every part
 }
 
 type rewritten struct {
@@ -81,15 +88,26 @@ func NewRewriter(logf func(string, ...any)) *Rewriter {
 		recent:   map[string]*list.Element{},
 		order:    list.New(),
 		inflight: map[string]*rewriteCall{},
+		down:     map[string]time.Time{},
 	}
 }
 
-// RewriteTag names how text is rewritten by model: the model and the
-// instructions. Put in the audio's cache key, it means a change to either is
+// RewriteKey names text as model rewrites it with these instructions. Put in
+// place of the text in the audio's cache key, it means a change to either is
 // never answered with audio made the old way.
-func RewriteTag(model string) string {
+func RewriteKey(model, text string) string {
 	sum := sha256.Sum256([]byte(rewriteInstructions))
-	return "rewrite:" + model + ":" + hex.EncodeToString(sum[:6])
+	return "rewrite:" + model + ":" + hex.EncodeToString(sum[:6]) + "\n" + text
+}
+
+// Down reports whether model failed every part of a recent rewrite, in which
+// case a caller should read text as it came rather than wait for it to fail
+// again.
+func (r *Rewriter) Down(model string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, ok := r.down[model]
+	return ok && time.Since(at) < downFor
 }
 
 // Rewrite returns text rewritten for the voice by model through prompt, and
@@ -101,7 +119,7 @@ func RewriteTag(model string) string {
 // rewrite rather than starting another. The rewrite outlives a caller that
 // gives up, so the request after it finds the answer.
 func (r *Rewriter) Rewrite(ctx context.Context, model string, prompt Prompt, text string) (string, bool) {
-	key := RewriteTag(model) + "\n" + text
+	key := RewriteKey(model, text)
 	r.mu.Lock()
 	if el, ok := r.recent[key]; ok {
 		r.order.MoveToFront(el)
@@ -116,7 +134,7 @@ func (r *Rewriter) Rewrite(ctx context.Context, model string, prompt Prompt, tex
 	r.mu.Unlock()
 
 	if !running {
-		go r.run(context.WithoutCancel(ctx), key, call, prompt, text)
+		go r.run(context.WithoutCancel(ctx), model, key, call, prompt, text)
 	}
 	select {
 	case <-call.done:
@@ -126,26 +144,24 @@ func (r *Rewriter) Rewrite(ctx context.Context, model string, prompt Prompt, tex
 	}
 }
 
-func (r *Rewriter) run(ctx context.Context, key string, call *rewriteCall, prompt Prompt, text string) {
+func (r *Rewriter) run(ctx context.Context, model, key string, call *rewriteCall, prompt Prompt, text string) {
 	parts := splitParts(text)
 	out := make([]string, len(parts))
-	whole := true
+	var failed atomic.Int32
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 	for i, part := range parts {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got, ok := r.part(ctx, prompt, part)
+			got, ok := r.rewritePart(ctx, prompt, part)
 			out[i] = got
 			if !ok {
-				mu.Lock()
-				whole = false
-				mu.Unlock()
+				failed.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
+	whole := failed.Load() == 0
 	joined := strings.Join(out, "\n\n")
 	if whole && utf8.RuneCountInString(joined) > MaxChars {
 		r.logf("tts rewrite: %d characters is too long to read, reading the message as it came", utf8.RuneCountInString(joined))
@@ -154,6 +170,11 @@ func (r *Rewriter) run(ctx context.Context, key string, call *rewriteCall, promp
 
 	r.mu.Lock()
 	delete(r.inflight, key)
+	if int(failed.Load()) == len(parts) {
+		r.down[model] = time.Now()
+	} else {
+		delete(r.down, model)
+	}
 	if whole {
 		r.recent[key] = r.order.PushFront(rewritten{key: key, text: joined})
 		for r.order.Len() > recentRewrites {
@@ -167,8 +188,8 @@ func (r *Rewriter) run(ctx context.Context, key string, call *rewriteCall, promp
 	close(call.done)
 }
 
-// part rewrites one part, or returns it as it came.
-func (r *Rewriter) part(ctx context.Context, prompt Prompt, part string) (string, bool) {
+// rewritePart rewrites one part, or returns it as it came.
+func (r *Rewriter) rewritePart(ctx context.Context, prompt Prompt, part string) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 	select {

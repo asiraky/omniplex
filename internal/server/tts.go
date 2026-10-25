@@ -95,12 +95,15 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The audio is keyed on the text as it came, plus who rewrote it, so a
-	// replay is a cache hit without waiting on the model again.
-	editor, editing := s.speechEditor(r.Context(), q.Get("thread"))
+	// The audio is keyed on the text as it came and who rewrites it, so a
+	// replay is a cache hit without waiting on the model again. A model that
+	// has just failed outright is skipped, so the audio made without it can
+	// be kept rather than paid for on every play.
+	editor, editing := s.editorFor(r.Context(), q.Get("thread"))
+	editing = editing && !s.rewriter.Down(editor.model)
 	key := tts.CacheKey(voice, text)
 	if editing {
-		key = tts.CacheKey(voice, tts.RewriteTag(editor.model)+"\n"+text)
+		key = tts.CacheKey(voice, tts.RewriteKey(editor.model, text))
 	}
 	audioHeaders := func() {
 		h := w.Header()
@@ -132,7 +135,10 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	spoken, whole, rewrite := text, true, "off"
 	if editing {
 		spoken, whole = s.rewriter.Rewrite(r.Context(), editor.model, editor.prompt, text)
-		rewrite = map[bool]string{true: "whole", false: "partial"}[whole]
+		rewrite = "whole"
+		if !whole {
+			rewrite = "partial"
+		}
 	}
 	if r.Context().Err() != nil {
 		return

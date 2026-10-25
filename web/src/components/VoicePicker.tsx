@@ -71,25 +71,17 @@ export function VoicePicker({
     onChange(voice);
   };
 
+  const triggerLabel = () => {
+    if (!voices) return "Loading voices…";
+    if (value) return nameOf(value);
+    return inherits ? defaultLabel : "Choose a voice";
+  };
+
   // Pasted IDs come with stray whitespace; one inside means it's a search.
   const pasted = search.trim();
   const pastable = pasted !== "" && !/\s/.test(pasted) && !voices?.some((v) => v.id === pasted);
 
-  if (error) {
-    return (
-      <div className="space-y-2">
-        <div className="flex min-h-11 items-center gap-2 md:min-h-9">
-          <p className="text-attention-foreground min-w-0 flex-1 text-[12px] break-words">
-            {error}
-          </p>
-          <Button variant="outline" size="sm" onClick={retryVoices}>
-            Retry
-          </Button>
-        </div>
-        <VoiceIdInput id={id} value={value} onChange={onChange} />
-      </div>
-    );
-  }
+  if (error) return <VoiceListError id={id} error={error} value={value} onChange={onChange} />;
 
   const trigger = (
     <Button
@@ -101,15 +93,7 @@ export function VoicePicker({
       className="h-auto min-h-11 w-full justify-start gap-2 px-3 py-2 md:min-h-9"
     >
       {!voices && <Spinner className="size-4" aria-hidden role={undefined} />}
-      <span className="min-w-0 flex-1 truncate text-left text-[13px]">
-        {!voices
-          ? "Loading voices…"
-          : value
-            ? nameOf(value)
-            : inherits
-              ? defaultLabel
-              : "Choose a voice"}
-      </span>
+      <span className="min-w-0 flex-1 truncate text-left text-[13px]">{triggerLabel()}</span>
       <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
     </Button>
   );
@@ -142,20 +126,7 @@ export function VoicePicker({
           ))}
         </CommandGroup>
         {pastable && (
-          // Forced, so the search filter can't hide it; cmdk puts it last.
-          <CommandGroup forceMount>
-            <CommandItem
-              forceMount
-              value={`__id__:${pasted}`}
-              onSelect={() => choose(pasted)}
-              className="min-h-11 gap-2 md:min-h-0"
-            >
-              <CheckIcon className={cn("size-4 shrink-0", pasted !== value && "opacity-0")} />
-              <span className="min-w-0 flex-1 truncate text-[13px]">
-                Use voice ID <span className="font-mono">{pasted}</span>
-              </span>
-            </CommandItem>
-          </CommandGroup>
+          <PastedVoiceRow voice={pasted} selected={pasted === value} onChoose={choose} />
         )}
       </CommandList>
     </Command>
@@ -188,24 +159,77 @@ export function VoicePicker({
   );
 }
 
+/** A pasted voice ID offered as a choice. */
+function PastedVoiceRow({
+  voice,
+  selected,
+  onChoose,
+}: {
+  voice: string;
+  selected: boolean;
+  onChoose: (voice: string) => void;
+}) {
+  return (
+    // Forced, so the search filter can't hide it; cmdk puts it last.
+    <CommandGroup forceMount>
+      <CommandItem
+        forceMount
+        value={`__id__:${voice}`}
+        onSelect={() => onChoose(voice)}
+        className="min-h-11 gap-2 md:min-h-0"
+      >
+        <CheckIcon className={cn("size-4 shrink-0", !selected && "opacity-0")} />
+        <span className="min-w-0 flex-1 truncate text-[13px]">
+          Use voice ID <span className="font-mono">{voice}</span>
+        </span>
+      </CommandItem>
+    </CommandGroup>
+  );
+}
+
+/** The list failed: say why, offer a retry, and take a voice ID typed in. */
+function VoiceListError({
+  id,
+  error,
+  value,
+  onChange,
+}: {
+  id?: string;
+  error: string;
+  value: string;
+  onChange: (voice: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex min-h-11 items-center gap-2 md:min-h-9">
+        <p className="text-attention-foreground min-w-0 flex-1 text-[12px] break-words">{error}</p>
+        <Button variant="outline" size="sm" onClick={retryVoices}>
+          Retry
+        </Button>
+      </div>
+      {/* Keyed on the saved value, so a save from elsewhere replaces the draft. */}
+      <VoiceIdInput key={value} id={id} initialValue={value} onChange={onChange} />
+    </div>
+  );
+}
+
 /**
  * With no list to pick from, a voice ID typed in. Saved on blur or Enter, and
  * only if it changed; cleared, it goes back to unset (or the default).
  */
 function VoiceIdInput({
   id,
-  value,
+  initialValue,
   onChange,
 }: {
   id?: string;
-  value: string;
+  initialValue: string;
   onChange: (voice: string) => void;
 }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const [draft, setDraft] = useState(initialValue);
   const commit = () => {
     const next = draft.trim();
-    if (next !== value) onChange(next);
+    if (next !== initialValue) onChange(next);
   };
   return (
     <Input

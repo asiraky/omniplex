@@ -176,3 +176,20 @@ func TestRewriteGivesUpOnASlowPart(t *testing.T) {
 		t.Fatalf("got %q, %v; want the text as it came", got, whole)
 	}
 }
+
+func TestRewriteMarksAModelThatFailsEverythingDown(t *testing.T) {
+	r := NewRewriter(nil)
+	fail := func(context.Context, string, string) (string, error) { return "", errors.New("signed out") }
+	ok := func(context.Context, string, string) (string, error) { return "Said.", nil }
+	if r.Down("m") {
+		t.Fatal("down before it was asked")
+	}
+	r.Rewrite(context.Background(), "m", fail, "Say.")
+	if !r.Down("m") || r.Down("other") {
+		t.Fatal("a model that failed outright is not down, or another one is")
+	}
+	r.Rewrite(context.Background(), "m", ok, "Say again.")
+	if r.Down("m") {
+		t.Fatal("still down after it answered")
+	}
+}

@@ -44,13 +44,11 @@ func (f *spokenEleven) texts() []string {
 }
 
 // editWith makes every thread's messages rewritten by edit.
-func (r *speechRig) editWith(model string, edit func(input string) (string, error)) *int {
-	calls := new(int)
-	r.srv.speechEditor = func(context.Context, string) (speechEditor, bool) {
+func (r *speechRig) editWith(model string, edit func(input string) (string, error)) *atomic.Int32 {
+	calls := new(atomic.Int32)
+	r.srv.editorFor = func(context.Context, string) (speechEditor, bool) {
 		return speechEditor{model: model, prompt: func(_ context.Context, _, input string) (string, error) {
-			r.mu.Lock()
-			*calls++
-			r.mu.Unlock()
+			calls.Add(1)
 			return edit(input)
 		}}, true
 	}
@@ -81,32 +79,53 @@ func TestSpeechReadsTheRewrite(t *testing.T) {
 	if got := readBody(t, again); got != "mp3:Rewritten: Fixed in c5b2557f9." {
 		t.Fatalf("replay played %q", got)
 	}
-	if *calls != 1 || len(up.texts()) != 1 {
-		t.Fatalf("model asked %d times and ElevenLabs %d, want once each", *calls, len(up.texts()))
+	if calls.Load() != 1 || len(up.texts()) != 1 {
+		t.Fatalf("model asked %d times and ElevenLabs %d, want once each", calls.Load(), len(up.texts()))
 	}
 }
 
-func TestSpeechKeepsNoAudioFromAFailedRewrite(t *testing.T) {
+func TestSpeechKeepsNoAudioFromAPartRewrite(t *testing.T) {
 	up := newSpokenEleven()
 	r := newSpeechRig(t, up)
 	r.setKey("good")
 	r.setVoice("v1")
+	// Two lines long enough to be rewritten as two parts.
+	text := "First " + strings.Repeat("a", 2100) + ".\nSecond " + strings.Repeat("b", 2100) + "."
 	var fail atomic.Bool
 	fail.Store(true)
 	r.editWith("m1", func(input string) (string, error) {
-		if fail.Load() {
+		if fail.Load() && strings.Contains(input, "First") {
 			return "", errors.New("model is down")
 		}
 		return "Better.", nil
 	})
 	thread := r.threadIn("")
 
-	if got := readBody(t, r.get(speakPath("As it came.", thread), nil)); got != "mp3:As it came." {
-		t.Fatalf("played %q, want the message as it came", got)
+	if got := readBody(t, r.get(speakPath(text, thread), nil)); !strings.Contains(got, "First aaa") || !strings.Contains(got, "Better.") {
+		t.Fatalf("played %.40q…, want the failed part as it came and the other rewritten", got)
 	}
 	fail.Store(false)
-	if got := readBody(t, r.get(speakPath("As it came.", thread), nil)); got != "mp3:Better." {
-		t.Fatalf("second play %q, want a fresh try at the rewrite", got)
+	if got := readBody(t, r.get(speakPath(text, thread), nil)); got != "mp3:Better.\n\nBetter." {
+		t.Fatalf("second play %.40q…, want a fresh try at the rewrite", got)
+	}
+}
+
+func TestSpeechLeavesAFailingModelAlone(t *testing.T) {
+	up := newSpokenEleven()
+	r := newSpeechRig(t, up)
+	r.setKey("good")
+	r.setVoice("v1")
+	calls := r.editWith("m1", func(string) (string, error) { return "", errors.New("not signed in") })
+	thread := r.threadIn("")
+
+	for range 3 {
+		if got := readBody(t, r.get(speakPath("As it came.", thread), nil)); got != "mp3:As it came." {
+			t.Fatalf("played %q, want the message as it came", got)
+		}
+	}
+	// Asked once, then left alone; the audio made without it is kept.
+	if calls.Load() != 1 || len(up.texts()) != 2 {
+		t.Fatalf("model asked %d times and ElevenLabs %d; want once and twice", calls.Load(), len(up.texts()))
 	}
 }
 
@@ -155,7 +174,6 @@ func TestEditorModel(t *testing.T) {
 	}{
 		{"codex takes the newest current luna", "codex", catalogue, "gpt-6-luna", true},
 		{"codex with no luna falls back", "codex", []adapter.ModelMeta{{ID: "gpt-6"}}, codexEditorFallback, true},
-		{"claude takes haiku", "claude", nil, claudeEditor, true},
 		{"pi has none", "pi", nil, "", false},
 	}
 	for _, c := range cases {

@@ -50,9 +50,19 @@ func (m *Manager) PrompterFor(ctx context.Context, threadID string) (Prompter, e
 	}
 	return Prompter{
 		Driver: reg.inst.Driver,
-		Models: m.modelsFor(reg, m.availability(ctx, reg)),
+		// The last probe, not a fresh one: this is on the way to playing
+		// audio, and a probe is a process start.
+		Models: m.modelsFor(reg, m.lastAvailability(reg)),
 		run: func(ctx context.Context, req adapter.PromptRequest) (string, error) {
 			return p.Prompt(ctx, env, req)
 		},
 	}, nil
+}
+
+// lastAvailability is the instance's most recent probe, or not ready when it
+// has none, without probing.
+func (m *Manager) lastAvailability(reg registered) adapter.Availability {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	return m.probes[reg.inst.ID].result
 }
