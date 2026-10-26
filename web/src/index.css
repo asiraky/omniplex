@@ -274,6 +274,25 @@
     animation: fadeIn 0.18s ease-out;
   }
 
+  /* Spins a 24-unit icon (every Lucide icon) by rotating what is drawn
+     inside the <svg>, never the <svg> itself. Safari composites a rotating
+     box and snaps it to the pixel grid every frame, and wherever the box
+     sits at a fractional offset — most places, in a transcript of 22.75px
+     lines — the spinner shakes up and down at frame rate. Turning the
+     drawing instead keeps the box still, so there is nothing to snap.
+     12px is the viewBox centre: children have no CSS box, so their origin
+     is in viewBox units. */
+  .spin-icon > * {
+    transform-origin: 12px 12px;
+    animation: spinIcon 1s linear infinite;
+  }
+
+  @keyframes spinIcon {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   /* The permission card blocks the turn until answered, so it arrives with
      more presence than ordinary content. */
   .attention-in {
