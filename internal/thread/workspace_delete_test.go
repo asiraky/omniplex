@@ -2,6 +2,8 @@ package thread
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -225,5 +227,141 @@ func TestRemoveGitWorktreeRefusesTheProjectRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "README")); err != nil {
 		t.Errorf("project root files were removed: %v", err)
+	}
+}
+
+// deprovisionProject is a git project whose folder tears its threads down
+// with a hook that records each run in a log outside the repository, and exits
+// with the given status. It stands in for a hook that owns more than the
+// checkout — a database, a bucket, a port lease — so a run that never happens
+// is a leak.
+func deprovisionProject(t *testing.T, exit int) (root string, st *store.Store, p project.Project, runs string) {
+	t.Helper()
+	root, _, _ = gitRepo(t)
+	st, p = testProject(t, root)
+	runs = filepath.Join(t.TempDir(), "deprovision-runs")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$OMNIPLEX_THREAD_ID\" >> %q\nexit %d\n", runs, exit)
+	if err := os.WriteFile(filepath.Join(root, "deprovision"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p.Defaults.Workspace = "managed"
+	p.Folders[0].Deprovision = "deprovision"
+	if err := putProject(context.Background(), st, p); err != nil {
+		t.Fatal(err)
+	}
+	return root, st, p, runs
+}
+
+func deprovisionRuns(t *testing.T, runs string) []string {
+	t.Helper()
+	b, err := os.ReadFile(runs)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(b))
+}
+
+func waitGone(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		_, e := st.Thread(context.Background(), id)
+		return errors.Is(e, store.ErrNotFound)
+	})
+}
+
+// Closing stops the harness but keeps the checkout, so a closed thread's
+// resources are still out there. Deleting it with the box ticked used to remove
+// only the directory and leak everything else the hook would have released.
+func TestDeletingAClosedThreadRunsItsDeprovisionHook(t *testing.T) {
+	_, st, p, runs := deprovisionProject(t, 0)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Branch: "issue/5-closed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, st, a.ID)
+	if err := mgr.Close(context.Background(), a.ID, "done for now"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		m, e := st.Thread(context.Background(), a.ID)
+		return e == nil && m.Phase == "closed"
+	})
+
+	if err := mgr.Delete(context.Background(), a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, st, a.ID)
+	if got := deprovisionRuns(t, runs); len(got) != 1 || got[0] != a.ID {
+		t.Fatalf("deprovision runs = %v, want one for %s", got, a.ID)
+	}
+}
+
+// A closed thread's teardown can fail like any other, and has to leave the
+// thread behind to retry or force rather than vanish with its resources.
+func TestAFailedTeardownOfAClosedThreadKeepsIt(t *testing.T) {
+	_, st, p, runs := deprovisionProject(t, 1)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Branch: "issue/6-closed-fails"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if err := mgr.Close(context.Background(), a.ID, "done for now"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.Delete(context.Background(), a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		m, e := st.Thread(context.Background(), a.ID)
+		return e == nil && m.Phase == "cleanup_failed"
+	})
+	if got := deprovisionRuns(t, runs); len(got) != 1 {
+		t.Fatalf("deprovision runs = %v, want one", got)
+	}
+	if _, err := os.Stat(meta.Cwd); err != nil {
+		t.Fatalf("a failed teardown removed the worktree: %v", err)
+	}
+}
+
+// Force delete is offered because the hook failed, but skipping it outright
+// leaked everything it owns for good. It runs once more, and its failing again
+// does not stop the delete.
+func TestForceDeleteRunsTheDeprovisionHookAndDeletesWhenItFails(t *testing.T) {
+	_, st, p, runs := deprovisionProject(t, 1)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID, Branch: "issue/7-force"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if err := mgr.Delete(context.Background(), a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		m, e := st.Thread(context.Background(), a.ID)
+		return e == nil && m.Phase == "cleanup_failed"
+	})
+
+	if err := mgr.ForceDelete(context.Background(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, st, a.ID)
+	if got := deprovisionRuns(t, runs); len(got) != 2 {
+		t.Fatalf("deprovision runs = %v, want the delete's and the force delete's", got)
+	}
+	if _, err := os.Stat(meta.Cwd); !os.IsNotExist(err) {
+		t.Fatalf("force delete left the worktree at %s: %v", meta.Cwd, err)
 	}
 }
