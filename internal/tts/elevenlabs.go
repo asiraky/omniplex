@@ -17,14 +17,14 @@ import (
 )
 
 const (
-	// Model is ElevenLabs' low-latency model: speech starts in well under a
-	// second, which is what a play button needs.
-	Model = "eleven_flash_v2_5"
-	// Format is mono 64 kbps mp3, about 0.5 MB a minute. Speech gains nothing
-	// audible from more, and it all goes over 4G.
-	Format = "mp3_44100_64"
-	// MaxChars is what Flash v2.5 accepts in one request.
-	MaxChars = 40000
+	// Model is ElevenLabs' most natural model, the one the proply tutorials
+	// were narrated with. Flash started faster but sounded robotic.
+	Model = "eleven_v4"
+	// Format is mono 128 kbps mp3, about 1 MB a minute. At 64 kbps the
+	// encoder's artefacts sound like road noise behind the voice.
+	Format = "mp3_44100_128"
+	// MaxChars is what v4 accepts in one request.
+	MaxChars = 10000
 
 	defaultBaseURL = "https://api.elevenlabs.io"
 	// maxVoicePages bounds the voice list walk. At 100 a page that is far more
