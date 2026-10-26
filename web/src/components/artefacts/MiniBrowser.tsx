@@ -217,7 +217,7 @@ export function MiniBrowser({
           <ArrowRightIcon />
         </IconButton>
         <IconButton label="Reload" onClick={() => void reload()} className={chromeButton}>
-          <RotateCwIcon className={cn(loading && "animate-spin")} />
+          <RotateCwIcon className={cn(loading && "spin-icon")} />
         </IconButton>
         <span
           className="bg-muted text-muted-foreground mx-1 min-w-0 flex-1 truncate rounded-full px-3 py-1 font-mono text-[11px]"

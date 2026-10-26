@@ -96,6 +96,9 @@ interface ComposerProps {
 
 const NO_HARNESSES: HarnessMeta[] = [];
 const NO_ATTACHMENTS: Attachment[] = [];
+// The tallest the composer grows before it scrolls. Matches max-h-[200px] on
+// the textarea, which has to stay a literal for Tailwind to see it.
+const COMPOSER_MAX_PX = 200;
 
 function placeholderFor(blocked: boolean, disabledPlaceholder: string | undefined, isDesktop: boolean) {
   if (blocked) return disabledPlaceholder ?? "Thread closed";
@@ -191,11 +194,18 @@ export function Composer({
 
   // Grow with the content, up to a cap. Runs on mount too, so a restored draft
   // opens at the right height instead of a single collapsed row.
+  //
+  // Scrolling is switched on only once the content passes the cap. Below it
+  // the box already fits everything, but Safari still draws a scrollbar
+  // across an empty composer, so overflow stays hidden until there is
+  // something to scroll to.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    const full = el.scrollHeight;
+    el.style.height = `${Math.min(full, COMPOSER_MAX_PX)}px`;
+    el.style.overflowY = full > COMPOSER_MAX_PX ? "auto" : "hidden";
   }, [draft]);
 
   const { focusAt } = menu;
@@ -239,7 +249,7 @@ export function Composer({
       }}
       // 16px on a phone: anything smaller makes iOS zoom the viewport on
       // focus, which breaks the layout the dvh handling just fixed.
-      className="scroll-thin placeholder:text-muted-foreground max-h-[200px] min-h-16 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[16px] leading-relaxed focus:outline-none disabled:opacity-60 md:text-[14px]"
+      className="scroll-thin placeholder:text-muted-foreground max-h-[200px] min-h-16 w-full resize-none overflow-x-hidden bg-transparent px-4 pt-3.5 pb-1 text-[16px] leading-relaxed focus:outline-none disabled:opacity-60 md:text-[14px]"
     />
   );
 

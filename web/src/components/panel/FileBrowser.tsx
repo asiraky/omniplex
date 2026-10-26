@@ -345,7 +345,7 @@ export function FileBrowser({
           {includeIgnored ? <EyeIcon /> : <EyeOffIcon />}
         </IconButton>
         <IconButton label="Re-read the worktree" onClick={onRefresh}>
-          <RefreshCwIcon className={cn(loading && "animate-spin")} />
+          <RefreshCwIcon className={cn(loading && "spin-icon")} />
         </IconButton>
       </div>
 

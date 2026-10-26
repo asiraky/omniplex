@@ -489,7 +489,7 @@ function LiveSection({
       note={note}
       action={
         <IconButton label="Ask the agent again" onClick={live.refresh} disabled={live.loading}>
-          <RefreshCwIcon className={cn(live.loading && "animate-spin")} />
+          <RefreshCwIcon className={cn(live.loading && "spin-icon")} />
         </IconButton>
       }
     >
