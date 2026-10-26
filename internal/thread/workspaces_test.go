@@ -386,7 +386,7 @@ func TestSecondLocalThreadIsAllowedWhileTheFirstIsLive(t *testing.T) {
 	}
 }
 
-// Force delete is the one path that removes a worktree without a hook, and it
+// Force delete removes a worktree even when its hook has failed, and it
 // must still recognise a checkout that was never omniplex's to remove.
 func TestForceDeleteOfALocalThreadRemovesNothing(t *testing.T) {
 	root, _, _ := gitRepo(t)

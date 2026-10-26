@@ -1386,11 +1386,17 @@ func (m *Manager) Delete(ctx context.Context, id string, removeWorktree bool) er
 			return fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder)
 		}
 	}
-	if meta.Phase == "closed" {
+	// A deprovision hook owns more than the directory: databases, buckets,
+	// port leases. Removing only the checkout would leak the rest, so a
+	// thread that has one is torn down by the hook whatever its phase.
+	deprovision := removeWorktree && meta.WorkspaceMode != "local" && meta.DeprovisionScript != "" && meta.ProjectID != ""
+	if meta.Phase == "closed" && !deprovision {
 		// A closed thread has no harness and no actor to narrate teardown,
 		// but its checkout is still on disk and the user may still have asked
 		// for it to go. Removing it here rather than falling through keeps the
-		// checkbox meaning the same thing whatever phase the row is in.
+		// checkbox meaning the same thing whatever phase the row is in. With a
+		// hook it falls through instead, to the same narrated teardown as any
+		// other delete, so a failure leaves cleanup_failed to retry.
 		if removeWorktree && meta.WorkspaceMode != "local" {
 			f, folderErr := m.threadFolder(ctx, meta)
 			if folderErr != nil {
@@ -1494,9 +1500,11 @@ func (m *Manager) cleaningThreadIn(ctx context.Context, cwd string) (string, boo
 	return "", false
 }
 
-// ForceDelete skips the project deprovision hook after it has failed. It only
-// removes the exact recorded Git worktree, prunes Git metadata, then purges the
-// transcript. The project root is never removed.
+// ForceDelete is offered once teardown has failed. It never stops on the
+// deprovision hook: a managed thread that has one runs it once more, best
+// effort, so whatever it can still release is released, and then the exact
+// recorded Git worktree is removed, Git metadata pruned and the transcript
+// purged whatever the hook did. The project root is never removed.
 func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
@@ -1517,6 +1525,26 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 	if meta.WorkspaceMode == "managed" {
 		if holder, shared := m.otherThreadIn(ctx, id, meta.Cwd); shared {
 			return fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder)
+		}
+		if meta.DeprovisionScript != "" {
+			// The hook can run for minutes, far longer than a command may
+			// hold the lifecycle lock or the client may wait for an answer,
+			// so it runs in the background behind a fresh actor that
+			// narrates it, like any other teardown.
+			if live, ok := m.Peek(id); ok {
+				live.Dispose("force deleting")
+			}
+			if err := m.store.SetPhase(ctx, id, "cleaning"); err != nil {
+				return err
+			}
+			ad, env := m.cleanupAdapter(meta)
+			a, err := RestorePending(ctx, m.store, ad, meta, env, m.logf)
+			if err != nil {
+				return err
+			}
+			m.adopt(a)
+			go m.forceDelete(meta, f, a)
+			return nil
 		}
 		if err := m.removeGitWorktree(ctx, meta, f, nil, true); err != nil {
 			return err
