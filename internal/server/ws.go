@@ -468,7 +468,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if a.ProjectID == "" {
 			return nil, errors.New("a thread belongs to a project; choose one")
 		}
-		actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef})
+		actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef, Pinned: a.Pinned})
 		if err != nil {
 			return nil, err
 		}

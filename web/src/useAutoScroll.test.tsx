@@ -142,6 +142,27 @@ describe("useAutoScroll", () => {
     expect(scroller().scrollTop).toBe(CONTENT + 400 - VIEWPORT);
   });
 
+  // Safari's scrolling thread clamps to the true, fractional bottom, half a
+  // pixel short of the rounded one the page reports. Writing the rounded one
+  // again on every resize is what shook the transcript.
+  it("leaves a view that already rests at the bottom alone", () => {
+    const el = scroller();
+    const writes: number[] = [];
+    Object.defineProperty(el, "scrollTop", {
+      get: () => BOTTOM - 0.5,
+      set: (v: number) => writes.push(v),
+      configurable: true,
+    });
+    grew();
+    settle(stick);
+    expect(writes).toEqual([]);
+    expect(pinned()).toBe(true);
+
+    content += 100;
+    grew();
+    expect(writes).toEqual([BOTTOM + 100]);
+  });
+
   it("unpins on a wheel scroll upwards", () => {
     wheel(-40);
     expect(pinned()).toBe(false);
@@ -254,6 +275,20 @@ describe("useAutoScroll anchoring", () => {
     grew();
     expect(scroller().scrollTop).toBe(ANCHORED);
     expect(reserve()).toBe(VIEWPORT - (CONTENT + 100 - ANCHORED));
+  });
+
+  it("does not rewrite the anchored position on a resize that leaves it in place", () => {
+    anchorPrompt(PROMPT_AT);
+    const el = scroller();
+    const writes: number[] = [];
+    Object.defineProperty(el, "scrollTop", {
+      get: () => ANCHORED - 0.5,
+      set: (v: number) => writes.push(v),
+      configurable: true,
+    });
+    content += 100;
+    grew();
+    expect(writes).toEqual([]);
   });
 
   it("hands the view back to the pin once the answer fills it on its own", () => {

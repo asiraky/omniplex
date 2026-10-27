@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
+import { Switch } from "~/components/ui/switch";
 import { branchTemplate, DEFAULT_BRANCH_TEMPLATE } from "~/lib/branchTemplate";
 import { pickerInstances } from "~/lib/models";
 import { LEVELS } from "~/lib/permissions";
@@ -319,6 +320,21 @@ export function GeneralSettings({
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Label htmlFor="settings-pin-new-threads">Pin new threads</Label>
+          <p className="text-muted-foreground text-[11px]">
+            Whether the pin beside a new thread's composer starts on. You can still flip it before
+            sending.
+          </p>
+        </div>
+        <Switch
+          id="settings-pin-new-threads"
+          checked={cfg.pinNewThreads !== false}
+          onCheckedChange={(on) => patch({ pinNewThreads: on })}
+        />
       </div>
 
       <Separator />

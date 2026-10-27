@@ -88,6 +88,42 @@ describe("ThreadDraft", () => {
     expect(onCreate.mock.calls[0][0]).toMatchObject({ projectId: "p1", text: "hi" });
   });
 
+  it("starts the thread pinned by default", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onCreate, projects: [{ ...project, folders: [] } as unknown as Project] });
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0].pinned).toBe(true);
+  });
+
+  it("starts the thread unpinned when the pin is turned off before sending", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onCreate, projects: [{ ...project, folders: [] } as unknown as Project] });
+    fireEvent.click(screen.getByRole("button", { name: "Pin thread" }));
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0].pinned).toBe(false);
+  });
+
+  it("follows the setting for new threads, including one that lands after mount", async () => {
+    const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+    const projects = [{ ...project, folders: [] } as unknown as Project];
+    const { rerender } = open({ onCreate, projects });
+    rerender({ onStart: onCreate, projects, userConfig: { version: 1, pinNewThreads: false } });
+    const pin = screen.getByRole("button", { name: "Pin thread" });
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(pin);
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0].pinned).toBe(true);
+  });
+
   it("puts the message back when the thread could not be created", async () => {
     open({
       onCreate: vi.fn(async () => {

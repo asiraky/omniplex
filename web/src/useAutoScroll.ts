@@ -27,6 +27,17 @@ export const atBottom = (el: HTMLElement) =>
 // already showing everything there is.
 const canScroll = (el: HTMLElement) => el.scrollHeight - el.clientHeight > AT_BOTTOM_PX;
 
+// Writes a scroll position unless the view is already there, give or take a
+// pixel. Safari needs the slack. It rounds the bottom of a scroller to a whole
+// pixel while the scrolling thread clamps to the true, fractional bottom, so
+// when that bottom lands on a half pixel, writing it overshoots, the clamp
+// pulls the view back, and the next resize writes it again. The pin rewrites
+// on every resize and every event of a turn, so the transcript shook a device
+// pixel up and down at frame rate until the reader scrolled away and unpinned it.
+const moveTo = (el: HTMLElement, top: number) => {
+  if (Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+};
+
 // The strip of view left above a message the transcript was asked to anchor —
 // enough that it reads as "at the top" without sitting on the edge.
 const ANCHOR_GAP_PX = 16;
@@ -97,7 +108,7 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
   const jumpToBottom = useCallback(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    moveTo(el, el.scrollHeight - el.clientHeight);
     lastTop.current = el.scrollTop;
   }, []);
 
@@ -191,7 +202,7 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
     }
     fresh.current = false;
     if (!anchored.current) return;
-    el.scrollTop = desired;
+    moveTo(el, desired);
     lastTop.current = el.scrollTop;
   }, [clearAnchor, jumpToBottom, setPin, setReserve]);
 

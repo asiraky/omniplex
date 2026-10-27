@@ -601,6 +601,8 @@ export interface UserConfig {
   defaultLevel?: PermissionLevel | "";
   /** The ElevenLabs voice id messages are read aloud in, unless a project picks its own. */
   voice?: string;
+  /** Whether the new-thread composer starts with its pin on. Absent means on. */
+  pinNewThreads?: boolean;
 }
 
 /**

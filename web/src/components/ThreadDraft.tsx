@@ -19,6 +19,7 @@ import { AgentTools } from "./threadDraft/AgentTools";
 import { DraftHero } from "./threadDraft/DraftHero";
 import { GitChip } from "./threadDraft/GitChip";
 import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
+import { PinToggle } from "./threadDraft/PinToggle";
 import { FolderChip, ProjectChip } from "./threadDraft/ScopeChips";
 import { useAgentChoice } from "./threadDraft/useAgentChoice";
 import { useDraftScope } from "./threadDraft/useDraftScope";
@@ -49,6 +50,8 @@ export interface NewThreadInput {
   baseRef: string;
   /** The first message. The thread is created carrying it. */
   text: string;
+  /** Starts the thread in the sidebar's Pinned section. */
+  pinned: boolean;
 }
 
 /** Why sending is not possible yet, or "" when it is. */
@@ -164,6 +167,10 @@ export function ThreadDraft({
   });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The toggle beside the composer. Untouched, it follows the setting, which
+  // may arrive after the draft has mounted.
+  const [pinChoice, setPinChoice] = useState<boolean | null>(null);
+  const pinned = pinChoice ?? userConfig?.pinNewThreads !== false;
 
   const harnessId = agent.harnessId;
   const instanceId = agent.instance?.id ?? "";
@@ -218,6 +225,7 @@ export function ThreadDraft({
           agentSettingsExplicit: true,
           ...git.sent,
           text,
+          pinned,
         },
         schedule,
       );
@@ -286,15 +294,18 @@ export function ThreadDraft({
         <Composer
           key="new-thread"
           tools={
-            <AgentTools
-              harness={agent.selected}
-              modes={agent.modes}
-              modeId={agent.displayModeId}
-              supports1m={agent.supports1m}
-              want1m={agent.want1m}
-              onPickMode={(mode) => agent.remember({ mode })}
-              onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
-            />
+            <>
+              <AgentTools
+                harness={agent.selected}
+                modes={agent.modes}
+                modeId={agent.displayModeId}
+                supports1m={agent.supports1m}
+                want1m={agent.want1m}
+                onPickMode={(mode) => agent.remember({ mode })}
+                onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
+              />
+              <PinToggle pinned={pinned} onToggle={() => setPinChoice(!pinned)} />
+            </>
           }
           footer={
             // Where the thread runs, under the box: quiet, since it is
