@@ -109,6 +109,9 @@ type createArgs struct {
 	// Text is the first message. It waits in the new thread's queue while the
 	// workspace is prepared, so starting a thread is one round trip.
 	Text string `json:"text"`
+	// Pinned starts the thread in the sidebar's Pinned section. The draft
+	// decides, from the user's default and the toggle beside the composer.
+	Pinned bool `json:"pinned"`
 }
 
 // deleteThreadArgs carries the user's answer to the confirmation dialog's

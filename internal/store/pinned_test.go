@@ -67,6 +67,22 @@ func TestSetThreadPinned(t *testing.T) {
 	}
 }
 
+// A thread created pinned is stored pinned, with no second write.
+func TestCreateThreadPinned(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if err := s.CreateThread(ctx, ThreadMeta{ID: "p", Cwd: "/tmp", Harness: "h", Phase: "idle", Pinned: true}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	mustCreateThread(t, s, "u")
+	if got, _ := s.Thread(ctx, "p"); !got.Pinned {
+		t.Fatalf("created pinned, stored unpinned: %+v", got)
+	}
+	if got, _ := s.Thread(ctx, "u"); got.Pinned {
+		t.Fatalf("created unpinned, stored pinned: %+v", got)
+	}
+}
+
 // A database from the labels era opens with the label column and table gone
 // and every thread unpinned: labels do not turn into pins.
 func TestOpenDropsLabels(t *testing.T) {

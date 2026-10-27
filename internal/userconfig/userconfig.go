@@ -59,6 +59,9 @@ type Config struct {
 	// Voice is the ElevenLabs voice id messages are read aloud in, unless a
 	// project picks its own. Empty means none chosen yet.
 	Voice string `json:"voice,omitempty"`
+	// PinNewThreads is whether the new-thread composer starts with its pin
+	// on. Nil means on.
+	PinNewThreads *bool `json:"pinNewThreads,omitempty"`
 }
 
 // ProjectsDirOrDefault is the folder project home folders go in.

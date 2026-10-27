@@ -112,6 +112,16 @@ describe("GeneralSettings", () => {
     });
   });
 
+  it("reads an unset pin default as on, and saves turning it off", async () => {
+    const { onSave } = open({ version: 1 });
+    const pin = screen.getByRole("switch", { name: "Pin new threads" });
+    expect(pin.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(pin);
+    save();
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][0].pinNewThreads).toBe(false);
+  });
+
   it("goes back to the harness's own permissions", async () => {
     const { onSave } = open({ version: 1, defaultLevel: "edits" });
     await pickLevel(/own default/);
