@@ -14,6 +14,7 @@ const command = vi.fn(async (_name: string, _args: unknown) => ({}) as any);
 const attach = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
+const setPresence = vi.fn();
 const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn(), success: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast }));
@@ -38,6 +39,7 @@ vi.mock("./client", () => ({
     attach = attach;
     command = command;
     prime = prime;
+    setPresence = setPresence;
   },
 }));
 
@@ -92,6 +94,7 @@ beforeEach(() => {
   attach.mockClear();
   detach.mockClear();
   prime.mockClear();
+  setPresence.mockClear();
   toast.error.mockClear();
   toast.info.mockClear();
 });
@@ -348,6 +351,174 @@ describe("landing on a phone", () => {
     expect(screen.queryByText("All caught up")).toBeNull();
     expect(screen.queryByText("Nothing open")).toBeNull();
     expect(screen.getByText("Reopening your last thread…")).toBeTruthy();
+  });
+});
+
+describe("opening a thread from a notification", () => {
+  // The page's service worker container, standing in for the real one so a
+  // test can post the "open-thread" message the worker sends on a tap.
+  let sw: EventTarget;
+  beforeEach(() => {
+    sw = new EventTarget();
+    Object.defineProperty(navigator, "serviceWorker", { value: sw, configurable: true });
+  });
+  afterEach(() => {
+    delete (navigator as { serviceWorker?: unknown }).serviceWorker;
+    window.history.replaceState(null, "", "/");
+  });
+  const tap = (threadId: string) =>
+    act(() => {
+      sw.dispatchEvent(new MessageEvent("message", { data: { type: "open-thread", threadId } }));
+    });
+
+  it("opens /thread/<id> ahead of the last thread, then drops the path", async () => {
+    window.history.replaceState(null, "", "/thread/b");
+    localStorage.setItem("omniplex.lastThread", "a");
+    viewport("phone");
+    render(<App />);
+    // About to open a thread, so the phone's list must not flash open.
+    expect(sidebarShowing()).toBe(false);
+
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    expect(attach).toHaveBeenCalledWith("b");
+    expect(attach).not.toHaveBeenCalledWith("a");
+    expect(window.location.pathname).toBe("/");
+    expect(sidebarShowing()).toBe(false);
+  });
+
+  it("does not paint the cached last thread when the link names another", () => {
+    window.history.replaceState(null, "", "/thread/b");
+    localStorage.setItem("omniplex.lastThread", "a");
+    sessionStorage.setItem(
+      "omniplex.resume",
+      JSON.stringify({ build: "dev", state: state("a", "default"), scrollTop: 0, atBottom: true }),
+    );
+    render(<App />);
+    expect(prime).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the last thread when the linked one is gone", async () => {
+    window.history.replaceState(null, "", "/thread/gone");
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    expect(attach).toHaveBeenCalledWith("a");
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("switches thread when the worker names one in an open window", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    attach.mockClear();
+
+    tap("b");
+    expect(attach).toHaveBeenCalledWith("b");
+  });
+
+  it("holds a tapped thread the list does not have yet", async () => {
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    tap("gone");
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it("holds a tap on a thread made elsewhere until the refreshed list brings it", async () => {
+    // The phone slept on thread a; a thread was started from another device,
+    // and its notification's tap beats the list that carries it.
+    viewport("phone");
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    attach.mockClear();
+
+    tap("new");
+    expect(attach).not.toHaveBeenCalled();
+
+    await act(async () => events.onThreads([thread("a"), thread("new")]));
+    expect(attach).toHaveBeenCalledWith("new");
+    expect(sidebarShowing()).toBe(false);
+  });
+
+  it("drops a held tap once the user picks a thread themselves", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    tap("new");
+    fireEvent.click(screen.getByText("Thread b"));
+    attach.mockClear();
+
+    await act(async () => events.onThreads([thread("a"), thread("b"), thread("new")]));
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it("follows the newest tap when an older one is still held", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    tap("old");
+    tap("new");
+    attach.mockClear();
+
+    await act(async () => events.onThreads([thread("a"), thread("old"), thread("new")]));
+    expect(attach).toHaveBeenCalledWith("new");
+    expect(attach).not.toHaveBeenCalledWith("old");
+  });
+
+  it("holds a tap that lands before the list, and opens it once the list arrives", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    tap("b");
+    expect(attach).not.toHaveBeenCalled();
+
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    expect(attach).toHaveBeenCalledWith("b");
+    expect(attach).not.toHaveBeenCalledWith("a");
+  });
+});
+
+describe("presence", () => {
+  const last = () => setPresence.mock.calls.at(-1);
+  const setVisibility = (v: DocumentVisibilityState) => {
+    Object.defineProperty(document, "visibilityState", { value: v, configurable: true });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  };
+  afterEach(() => {
+    delete (document as { visibilityState?: unknown }).visibilityState;
+  });
+
+  it("reports the open thread, and again when the page is hidden and shown", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    expect(last()).toEqual([true, ""]);
+
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    expect(last()).toEqual([true, "a"]);
+
+    fireEvent.click(screen.getByText("Thread b"));
+    expect(last()).toEqual([true, "b"]);
+
+    setVisibility("hidden");
+    expect(last()).toEqual([false, "b"]);
+    setVisibility("visible");
+    expect(last()).toEqual([true, "b"]);
+  });
+
+  it("reports no thread while the phone's list covers it", async () => {
+    viewport("phone");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    // Nothing restored, so the phone lands on the list.
+    expect(sidebarShowing()).toBe(true);
+    fireEvent.click(screen.getByText("Thread a"));
+    expect(last()).toEqual([true, "a"]);
+
+    // Back to the list: the thread is still selected but no longer on screen.
+    fireEvent.click(screen.getByRole("button", { name: "Show threads" }));
+    expect(sidebarShowing()).toBe(true);
+    expect(last()).toEqual([true, ""]);
   });
 });
 

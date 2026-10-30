@@ -240,6 +240,34 @@ func TestMCPAgentToolForwardsToOmniplex(t *testing.T) {
 	c.close()
 }
 
+func TestMCPNotifyForwardsTitleBodyAndUrgencyToOmniplexAndRelaysItsReply(t *testing.T) {
+	type seen struct{ path, auth, body string }
+	got := make(chan seen, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got <- seen{r.URL.Path, r.Header.Get("Authorization"), string(body)}
+		json.NewEncoder(w).Encode(map[string]string{"text": "Sent to 2 devices."})
+	}))
+	defer srv.Close()
+	c := startMCP(t, srv.URL)
+
+	c.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"notify","arguments":{"title":"Approve the migration?","body":"It drops the old table.","urgency":"high"}}}`)
+	r := c.next()
+	if r.Error != nil || r.Result.IsError || r.text() != "Sent to 2 devices." {
+		t.Fatalf("reply %+v", r)
+	}
+	s := <-got
+	if s.path != "/api/agent/tools/notify" || s.auth != "Bearer tok" {
+		t.Fatalf("server saw %+v", s)
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(s.body), &args); err != nil ||
+		args["title"] != "Approve the migration?" || args["body"] != "It drops the old table." || args["urgency"] != "high" {
+		t.Fatalf("arguments reached omniplex as %q", s.body)
+	}
+	c.close()
+}
+
 // A write waits on a person. While it does, the harness's pings and other
 // calls are answered.
 func TestMCPSlowCallDoesNotBlockTheConnection(t *testing.T) {

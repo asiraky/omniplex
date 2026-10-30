@@ -1,4 +1,5 @@
 import {
+  BellIcon,
   ChevronRightIcon,
   FolderIcon,
   KeyRoundIcon,
@@ -9,6 +10,7 @@ import { useState, type ReactNode } from "react";
 
 import type { AuthWires } from "~/components/AuthFlowDialog";
 import { GeneralSettings } from "~/components/GeneralSettings";
+import { NotificationsSettings } from "~/components/NotificationsSettings";
 import { ProjectSettings, type AddFolderRequest } from "~/components/ProjectSettings";
 import ProvidersSettings from "~/components/ProvidersSettings";
 import { SettingsPane } from "~/components/SettingsPane";
@@ -25,7 +27,10 @@ import type {
 } from "~/protocol";
 
 export type SettingsSection =
-  { kind: "general" } | { kind: "providers" } | { kind: "project"; id: string };
+  | { kind: "general" }
+  | { kind: "providers" }
+  | { kind: "notifications" }
+  | { kind: "project"; id: string };
 
 const GENERAL: SettingsSection = { kind: "general" };
 
@@ -107,6 +112,8 @@ export function SettingsScreen({
     );
   } else if (section?.kind === "providers") {
     pane = <ProvidersSettings harnesses={harnesses} {...providers} onBack={back} />;
+  } else if (section?.kind === "notifications") {
+    pane = <NotificationsSettings onBack={back} />;
   } else if (section?.kind === "project") {
     const project = projects.find((p) => p.id === section.id)!;
     pane = (
@@ -143,7 +150,7 @@ export function SettingsScreen({
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
-          Your defaults, the accounts agents sign in with, and each project's settings.
+          Your defaults, the accounts agents sign in with, notifications, and each project's settings.
         </DialogDescription>
 
         {(isDesktop || !section) && (
@@ -165,6 +172,7 @@ export function SettingsScreen({
             <div className="flex flex-col gap-0.5">
               {item(GENERAL, <SlidersHorizontalIcon />, "General")}
               {item({ kind: "providers" }, <KeyRoundIcon />, "Providers")}
+              {item({ kind: "notifications" }, <BellIcon />, "Notifications")}
             </div>
             <p className="text-muted-foreground px-2.5 pt-4 pb-1 text-[11px] font-medium">
               Projects

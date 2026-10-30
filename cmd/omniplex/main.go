@@ -37,6 +37,7 @@ import (
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/provider"
+	"github.com/asiraky/omniplex/internal/push"
 	"github.com/asiraky/omniplex/internal/server"
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
@@ -192,6 +193,7 @@ func main() {
 	// unknowable config degrades to defaults; it never stops the server.
 	configureProviders(mgr, secrets, logf)
 	speech := openSpeech(secrets, logf)
+	pushSvc := openPush(filepath.Dir(*dbPath), st, logf)
 
 	// The user's own MCP servers and sign-ins. Set before any thread resumes,
 	// so every session starts with them; a store that will not open leaves
@@ -253,6 +255,7 @@ func main() {
 		Connections:    conns,
 		ClaudeBundled:  claudeBundled,
 		Speech:         speech,
+		Push:           pushSvc,
 		Logf:           logf,
 		// Nothing is cross-origin any more: the browser talks to this server
 		// and this server talks to Vite, so the upgrade check can stay on.
@@ -400,6 +403,17 @@ func openSpeech(secrets *provider.SecretStore, logf func(string, ...any)) *tts.S
 		return nil
 	}
 	return speech
+}
+
+// openPush sets up Web Push with the VAPID keys kept beside the data. Keys
+// that cannot be read or made leave push off rather than the server down.
+func openPush(dir string, st *store.Store, logf func(string, ...any)) *push.Service {
+	keys, err := push.LoadKeys(dir)
+	if err != nil {
+		logf("push keys: %v (push notifications off)", err)
+		return nil
+	}
+	return push.New(keys, st, nil)
 }
 
 // openConnections opens connections.json and its secret store beside the

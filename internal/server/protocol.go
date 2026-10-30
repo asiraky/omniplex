@@ -37,9 +37,13 @@ type clientFrame struct {
 	ProtocolVersion int    `json:"protocolVersion,omitempty"`
 	ClientID        string `json:"clientId,omitempty"`
 
-	// attach / detach
+	// attach / detach / presence
 	ThreadID string `json:"threadId,omitempty"`
 	AfterSeq *int64 `json:"afterSeq,omitempty"`
+
+	// presence: whether the page is visible. With ThreadID, the thread it
+	// shows ("" for none).
+	Visible bool `json:"visible,omitempty"`
 
 	// command
 	CommandID string          `json:"commandId,omitempty"`

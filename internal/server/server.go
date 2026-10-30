@@ -27,6 +27,7 @@ import (
 	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/overlay"
 	"github.com/asiraky/omniplex/internal/projection"
+	"github.com/asiraky/omniplex/internal/push"
 	"github.com/asiraky/omniplex/internal/setup"
 	"github.com/asiraky/omniplex/internal/skills"
 	"github.com/asiraky/omniplex/internal/store"
@@ -69,6 +70,8 @@ type Server struct {
 	conns *mcp.Connections
 	// speech reads messages aloud. Nil turns read-aloud off.
 	speech *tts.Service
+	// push sends Web Push notifications. Nil turns push off.
+	push *push.Service
 	// speechFailures remembers what ElevenLabs last refused, so asking again
 	// for the message does not pay for the same failure twice.
 	speechFailures speechFailures
@@ -90,7 +93,8 @@ type Server struct {
 	cards *cardBook
 
 	// live tracks open WebSockets so revoking a device can close the ones it
-	// already holds.
+	// already holds. liveMu also guards each conn's presence, so the set of
+	// watched threads is read in one pass under one lock.
 	liveMu sync.Mutex
 	live   map[*conn]struct{}
 
@@ -134,6 +138,8 @@ type Options struct {
 	ClaudeBundled *skills.BundledProbe
 	// Speech is text-to-speech; nil turns read-aloud off.
 	Speech *tts.Service
+	// Push sends Web Push notifications; nil turns them off.
+	Push *push.Service
 	// Logf receives compact performance diagnostics. Nil disables logging.
 	Logf func(string, ...any)
 }
@@ -156,6 +162,7 @@ func New(o Options) *Server {
 		version:       o.Version,
 		conns:         o.Connections,
 		speech:        o.Speech,
+		push:          o.Push,
 		claudeBundled: o.ClaudeBundled,
 		logf:          o.Logf,
 		cards:         newCardBook(),
@@ -384,6 +391,7 @@ func (s *Server) Handler() http.Handler {
 
 	s.routeArtefacts(mux)
 	s.routeTTS(mux)
+	s.routePush(mux)
 
 	mux.HandleFunc("/ws", s.serveWS)
 
@@ -415,7 +423,10 @@ func isScriptExtension(name string) bool {
 // app, the API, the WebSocket — requires one.
 func publicPaths(path string) bool {
 	switch path {
-	case "/pair", "/api/pair", "/api/health", mcp.CallbackPath:
+	// The service worker script. The browser fetches it to register and to
+	// check for updates, outside the page's own requests, so it must not
+	// depend on the device credential. It is static and holds nothing private.
+	case "/pair", "/api/pair", "/api/health", mcp.CallbackPath, "/sw.js":
 		return true
 	}
 	return strings.HasPrefix(path, mcp.ProxyPrefix) || artefactPublicPath(path)

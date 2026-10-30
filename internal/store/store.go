@@ -234,6 +234,9 @@ func Open(path string) (*Store, error) {
 	if err := s.initAuth(); err != nil {
 		return nil, fmt.Errorf("apply auth schema: %w", err)
 	}
+	if err := s.initPush(); err != nil {
+		return nil, fmt.Errorf("apply push schema: %w", err)
+	}
 	return s, nil
 }
 
@@ -784,11 +787,23 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	return out, rows.Err()
 }
 
+// RevokeDevice forgets a paired device along with its push subscriptions, so
+// a lost phone stops getting agent messages on its lock screen.
 func (s *Store) RevokeDevice(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE device_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreatePairing(ctx context.Context, codeHash []byte, expiresAt int64) error {

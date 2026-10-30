@@ -6,6 +6,7 @@ import { useComposerDrafts } from "./app/useComposerDrafts";
 import { useNewThread } from "./app/useNewThread";
 import { usePanel } from "./app/usePanel";
 import { usePinThread } from "./app/usePinThread";
+import { usePresence } from "./app/usePresence";
 import { useProjectActions } from "./app/useProjectActions";
 import { useProviderAuth } from "./app/useProviderAuth";
 import { useReadState } from "./app/useReadState";
@@ -53,8 +54,10 @@ export function App() {
     isDesktop,
     onLeave: panel.reset,
     onForget: scroll.forget,
+    onOpenLink: screens.uncover,
   });
   const { activeId, select } = nav;
+  usePresence(clientRef, activeId, screens.covering || nav.covering);
   usePruneScrollMemory(scroll, threads);
   const store = useComposerDrafts(threads, activeId);
   const schedule = useScheduleEditor(wire, store);

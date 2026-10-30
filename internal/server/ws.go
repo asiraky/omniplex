@@ -41,6 +41,11 @@ type conn struct {
 	// nobody else could ever answer their prompts.
 	flowMu sync.Mutex
 	flows  map[string]bool
+
+	// visible and viewing are the last presence the client reported: is its
+	// page on screen, and which thread it shows. Guarded by srv.liveMu.
+	visible bool
+	viewing string
 }
 
 func (s *Server) handleWS(ws *websocket.Conn, ctx context.Context, deviceID string) {
@@ -148,6 +153,9 @@ func (c *conn) dispatch(f clientFrame) {
 		// connection's other frames. Acks carry their commandId, so order
 		// does not matter.
 		go c.command(f)
+
+	case "presence":
+		c.srv.setPresence(c, f.Visible, f.ThreadID)
 
 	case "ping":
 		c.send(serverFrame{Type: "pong"})

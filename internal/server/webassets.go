@@ -122,8 +122,9 @@ func (w *webAssets) handler() http.Handler {
 			// document would answer a <script> request with HTML, which the
 			// browser reports as a syntax error — an obscure symptom for a
 			// plain missing file. Everything else is a client route and
-			// resolves to the document.
-			if strings.HasPrefix(p, "assets/") {
+			// resolves to the document. The service worker script is a
+			// public path, so the document must not be served from it either.
+			if strings.HasPrefix(p, "assets/") || p == "sw.js" {
 				http.NotFound(rw, r)
 				return
 			}

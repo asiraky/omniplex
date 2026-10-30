@@ -168,7 +168,7 @@ func newToolRig(t *testing.T) *toolRig {
 	t.Cleanup(func() { thread.UserMCP, thread.RedactToolInput = prevMCP, prevRedact })
 
 	signer := artefact.NewSigner([]byte("0123456789abcdef0123456789abcdef"))
-	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), ArtefactSigner: signer, Connections: conns})
+	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), ArtefactSigner: signer, Connections: conns, Push: newPushService(t, st)})
 	srv.skillFetch = fetch
 	h := srv.Handler()
 	// Agents call from wherever the harness runs: through the device gate,
