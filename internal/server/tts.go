@@ -80,8 +80,12 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		if rec != nil {
 			status = "cut"
 		}
+		sent := lw.sent
+		if r.Method == http.MethodHead {
+			sent = 0 // net/http drops a HEAD reply's body
+		}
 		s.logf("tts request clip=%s method=%s range=%q status=%s sent=%d source=%s ua=%s duration_ms=%d",
-			clip, r.Method, r.Header.Get("Range"), status, lw.sent, source,
+			clip, r.Method, r.Header.Get("Range"), status, sent, source,
 			userAgentSummary(r.UserAgent()), time.Since(started).Milliseconds())
 		if rec != nil {
 			panic(rec)
