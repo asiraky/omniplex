@@ -11,6 +11,7 @@ import type {
   UserConfig,
   UserConfigReply,
 } from "~/protocol";
+import { threadIdFromPath } from "~/lib/threadLinks";
 import { loadResume } from "~/resume";
 
 import { LAST_THREAD } from "./threadKeys";
@@ -29,9 +30,16 @@ export function useWire() {
   // right frame one, right scroll position, instead of "Attaching…", and the
   // socket then fetches only what the page missed. Cleared once consumed, and
   // if the thread turns out to be gone when the list arrives.
+  //
+  // Unless the page was opened at /thread/<id> (a tapped notification) for a
+  // different thread: painting the last one first would flash the wrong
+  // thread before the link took over.
+  const [link] = useState(() => threadIdFromPath(window.location.pathname));
   const [resume, setResume] = useState(() => {
     try {
-      return loadResume(localStorage.getItem(LAST_THREAD));
+      const last = localStorage.getItem(LAST_THREAD);
+      if (link && link !== last) return null;
+      return loadResume(last);
     } catch {
       return null;
     }
@@ -141,6 +149,8 @@ export function useWire() {
 
   return {
     clientRef,
+    /** The thread the page's /thread/<id> URL named at load, if any. */
+    link,
     resume,
     dropResume,
     activeRef,

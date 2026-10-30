@@ -53,6 +53,11 @@ export class Client {
   private state: ThreadState | null = null;
   private snapshotRequest: AbortController | null = null;
 
+  // What this page last said it is showing, for the server's "is anyone
+  // watching this thread" check that decides whether to push. Kept so every
+  // new connection can say it again: the server forgets it with the socket.
+  private presence: { visible: boolean; threadId: string } | null = null;
+
   constructor(private url: string, private events: ClientEvents) {}
 
   connect() {
@@ -77,6 +82,7 @@ export class Client {
         // Re-send in-flight commands with their original ids. The server
         // replays stored results rather than executing twice.
         for (const [, p] of this.pending) this.raw(p.frame);
+        if (this.presence) this.raw({ type: "presence", ...this.presence });
 
         // A connection that survives 30s resets the backoff ladder.
         this.stableTimer = window.setTimeout(() => (this.attempt = 0), 30_000);
@@ -232,6 +238,17 @@ export class Client {
     this.threadId = null;
     this.cursor = 0;
     this.state = null;
+  }
+
+  /**
+   * Tell the server whether this page is on screen and which thread it shows
+   * ("" for none). Sent now if the socket is up, and again on every reconnect.
+   */
+  setPresence(visible: boolean, threadId: string) {
+    const p = this.presence;
+    if (p && p.visible === visible && p.threadId === threadId) return;
+    this.presence = { visible, threadId };
+    this.raw({ type: "presence", visible, threadId });
   }
 
   /** Send a command, resolving with its ack result. Safe to retry. */

@@ -5,6 +5,7 @@ import "./index.css";
 import { App } from "./App";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { TooltipProvider } from "./components/ui/tooltip";
+import { registerServiceWorker } from "./lib/threadLinks";
 
 // Toasts only ever report something that happened after load, so the Toaster
 // arrives after first paint; see lib/toast.ts. With no error boundary above it,
@@ -16,6 +17,10 @@ const Toaster = lazy(() =>
     () => ({ default: NoToaster }),
   ),
 );
+
+// Push notifications need a worker registered before Settings can subscribe,
+// and a tapped notification is routed by it.
+registerServiceWorker();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -6,6 +6,7 @@ import { useComposerDrafts } from "./app/useComposerDrafts";
 import { useNewThread } from "./app/useNewThread";
 import { usePanel } from "./app/usePanel";
 import { usePinThread } from "./app/usePinThread";
+import { usePresence } from "./app/usePresence";
 import { useProjectActions } from "./app/useProjectActions";
 import { useProviderAuth } from "./app/useProviderAuth";
 import { useReadState } from "./app/useReadState";
@@ -53,8 +54,24 @@ export function App() {
     isDesktop,
     onLeave: panel.reset,
     onForget: scroll.forget,
+    onOpenLink: () => {
+      screens.setSettings(null);
+      screens.setShowUsage(false);
+      screens.setTools(null);
+    },
   });
   const { activeId, select } = nav;
+  // The thread actually on screen, for the server's "already watching" check
+  // that skips a push: none while a phone's sidebar or a full-page screen
+  // covers it.
+  const covered =
+    (!isDesktop && nav.sidebarOpen) ||
+    !!screens.settings ||
+    screens.showUsage ||
+    !!screens.tools ||
+    screens.setup ||
+    screens.themePreview;
+  usePresence(clientRef, covered ? null : activeId);
   usePruneScrollMemory(scroll, threads);
   const store = useComposerDrafts(threads, activeId);
   const schedule = useScheduleEditor(wire, store);
