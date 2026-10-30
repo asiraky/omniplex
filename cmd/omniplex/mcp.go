@@ -19,7 +19,8 @@ import (
 // The omniplex MCP server: `omniplex mcp`, run by a harness as a stdio MCP
 // server beside each thread. It gives the agent omniplex's own tools:
 // show_file, with the instructions for when to make an artefact, and the
-// tools that list and propose MCP servers, skills and sign-ins.
+// tools that list and propose MCP servers, skills and sign-ins, and notify,
+// which pushes a notification to the user's devices.
 //
 // It is configured entirely by environment, set by the server that started
 // the harness: where that server is, a token that lets this process act in
@@ -50,7 +51,9 @@ func serverInstructions(home string) string {
 
 Artefacts live in ` + where + `. Use markdown for documents, HTML for anything visual or interactive, CSV for tables, SVG for diagrams. An HTML artefact opens directly in a browser: one file with inline CSS and JS, or a folder with index.html when it needs images. Write it there, then present it with mcp__omniplex__` + mcpShowTool + `.
 
-MCP servers, skills and CLI sign-ins are Omniplex's to manage: when the user asks to add or remove one, use the omniplex tools for it (list_mcp_servers, add_mcp_server, install_skill, add_sign_in and the rest) rather than editing config or skills folders, and load the omniplex skill first.`
+MCP servers, skills and CLI sign-ins are Omniplex's to manage: when the user asks to add or remove one, use the omniplex tools for it (list_mcp_servers, add_mcp_server, install_skill, add_sign_in and the rest) rather than editing config or skills folders, and load the omniplex skill first.
+
+When you are blocked on the user (a decision, an approval, an answer only they can give) or have finished a long run they left unattended, call mcp__omniplex__notify to push a notification to their phone. Do not use it for routine progress or at the end of every turn. It is skipped automatically when they already have this thread open.`
 }
 
 // showDescription is how to present an artefact once the agent has chosen to
@@ -96,6 +99,16 @@ const (
 )
 
 var agentTools = []agentTool{
+	{
+		name:        "notify",
+		description: "Push a notification to the user's phone and other devices; tapping it opens this thread. Use it only when you need the user back: you are blocked on a decision, an approval or an answer only they can give, or you have finished a long run they left unattended. Not for routine progress, and not at the end of every turn. When the user already has this thread open on a device, nothing is sent, and the result says so.",
+		properties: map[string]any{
+			"title":   str("A few words on what you need or what finished, e.g. \"Approve the migration?\". Up to 100 characters."),
+			"body":    str("One or two sentences the user can act on from the lock screen. Up to 500 characters. The thread's title is added below it."),
+			"urgency": strEnum("high keeps the notification on screen until the user acts on it: use it when you are blocked. Defaults to normal.", "low", "normal", "high"),
+		},
+		required: []string{"title", "body"},
+	},
 	{
 		name:        "list_mcp_servers",
 		description: "List the MCP servers Omniplex gives this thread's sessions: name, scope (this project or everywhere), status, which harnesses get each, and whether it is off in this project. Never shows header or env values.",

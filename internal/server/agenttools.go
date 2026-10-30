@@ -54,7 +54,7 @@ func newID() string { return uuid.NewString() }
 
 // toolThread is the thread a token names, and its project.
 type toolThread struct {
-	id, harness            string
+	id, harness, title     string
 	projectID, projectName string
 }
 
@@ -87,7 +87,7 @@ func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such thread")
 		return
 	}
-	t := toolThread{id: meta.ID, harness: meta.Harness, projectID: meta.ProjectID}
+	t := toolThread{id: meta.ID, harness: meta.Harness, title: meta.Title, projectID: meta.ProjectID}
 	if t.projectID != "" {
 		if p, err := s.store.Project(ctx, t.projectID); err == nil {
 			t.projectName = p.Name
@@ -105,6 +105,8 @@ func (s *Server) handleAgentTool(w http.ResponseWriter, r *http.Request) {
 		text, err = s.listSkills(ctx, t)
 	case "list_sign_ins":
 		text, err = s.listSignIns(ctx)
+	case "notify":
+		text, err = s.notify(ctx, t, body)
 	case cardAddServer, cardRemoveServer, cardInstallSkill, cardCreateSkill, cardRemoveSkill, cardAddSignIn, cardAddAccount:
 		card, text, err = s.propose(ctx, t, name, body)
 	default:
