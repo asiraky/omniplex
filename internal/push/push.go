@@ -37,7 +37,9 @@ type Store interface {
 	DeletePushSubscription(ctx context.Context, id string) error
 }
 
-// Result counts what happened to each subscription in one Send.
+// Result counts what happened to each subscription in one Send: every
+// subscription lands in exactly one count, so a zero Result means there were
+// none.
 type Result struct{ Sent, Removed, Failed int }
 
 // Service sends pushes signed with the server's VAPID keys.

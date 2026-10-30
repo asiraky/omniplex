@@ -173,10 +173,13 @@ export function useThreadSelection({
   const openLink = useCallback(
     (id: string) => {
       onOpenLink();
-      if (id !== activeRef.current) select(id);
-      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a tapped notification shows its thread, which on a phone means putting the list away
-      else if (!isDesktop) setSidebarOpen(false);
+      if (id !== activeRef.current) {
+        select(id);
+        return;
+      }
       pendingLink.current = null;
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a tapped notification shows its thread, which on a phone means putting the list away
+      if (!isDesktop) setSidebarOpen(false);
     },
     [activeRef, isDesktop, onOpenLink, select],
   );

@@ -416,7 +416,7 @@ describe("opening a thread from a notification", () => {
     expect(attach).toHaveBeenCalledWith("b");
   });
 
-  it("does not open a thread the list does not have", async () => {
+  it("holds a tapped thread the list does not have yet", async () => {
     render(<App />);
     await act(async () => events.onThreads([thread("a")]));
     tap("gone");
