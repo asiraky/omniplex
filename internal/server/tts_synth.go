@@ -24,6 +24,9 @@ const (
 	// only partly rewrote it, stays readable for the player's later range
 	// requests. A play after that gets a fresh try at the rewrite.
 	uncachedTTL = 15 * time.Minute
+	// partwayMessage is what a player is told when a clip broke after it
+	// had started.
+	partwayMessage = "Reading stopped partway: the audio from ElevenLabs broke off. Try again."
 )
 
 // synthesis is one clip being made. Every request for its key while it runs
@@ -88,8 +91,8 @@ func (ss *syntheses) live(key string) *synthesis {
 	return sy
 }
 
-// expire keeps sy, finished but not cached, until uncachedTTL from now.
-func (ss *syntheses) expire(key string, sy *synthesis) {
+// keepUncached keeps sy, finished but not cached, for uncachedTTL.
+func (ss *syntheses) keepUncached(key string, sy *synthesis) {
 	ss.mu.Lock()
 	sy.expires = ss.clock().Add(uncachedTTL)
 	ss.mu.Unlock()
@@ -160,6 +163,13 @@ func (s *Server) synthesise(ctx context.Context, sy *synthesis, job speechJob) {
 			rewrite = "partial"
 		}
 	}
+	// Each failure forgets the synthesis before its readers hear of it, so a
+	// request after the failure is answered from speechFailures or tried
+	// afresh, never joined to the dead one.
+	refuse := func(status int, msg string) {
+		s.syntheses.drop(job.key, sy)
+		sy.refuse(status, msg)
+	}
 	body, err := s.speech.Stream(ctx, job.voice, spoken)
 	if err != nil {
 		status, msg := speechErrorReply(err)
@@ -167,24 +177,24 @@ func (s *Server) synthesise(ctx context.Context, sy *synthesis, job speechJob) {
 		if errors.As(err, &refused) {
 			s.speechFailures.remember(job.key, status, msg)
 		}
-		s.syntheses.drop(job.key, sy)
-		sy.refuse(status, msg)
+		refuse(status, msg)
 		return
 	}
 	defer body.Close()
 	pending, err := s.speech.Cache().Create(job.key)
 	if err != nil {
 		s.logf("tts cache: %v", err)
-		s.syntheses.drop(job.key, sy)
-		sy.refuse(http.StatusInternalServerError, "Couldn't store the audio: "+err.Error())
+		refuse(http.StatusInternalServerError, "Couldn't store the audio: "+err.Error())
 		return
 	}
 	sy.pending = pending
 	close(sy.ready)
 
-	// The synthesis is forgotten before its readers hear it failed, so a
-	// request made after the failure is a fresh try rather than a join.
+	// A media element that loses its stream asks again by itself, with a
+	// range from where it got to. Answering that with a new synthesis would
+	// bill the clip twice, so for a moment the failure is the answer.
 	fail := func(err error) {
+		s.speechFailures.rememberFor(job.key, http.StatusBadGateway, partwayMessage, partwayFailureTTL)
 		s.syntheses.drop(job.key, sy)
 		pending.Fail(err)
 	}
@@ -204,14 +214,14 @@ func (s *Server) synthesise(ctx context.Context, sy *synthesis, job speechJob) {
 			break
 		}
 		if readErr != nil {
-			s.logf("tts stream: %v", readErr)
+			s.logf("tts stream: clip=%s %v", clipID(job.key), readErr)
 			fail(readErr)
 			return
 		}
 	}
 	logMiss := func() {
-		s.logf("tts cache=miss rewrite=%s text_bytes=%d spoken_bytes=%d audio_bytes=%d duration_ms=%d",
-			rewrite, len(job.text), len(spoken), sent, time.Since(started).Milliseconds())
+		s.logf("tts cache=miss clip=%s rewrite=%s text_bytes=%d spoken_bytes=%d audio_bytes=%d duration_ms=%d",
+			clipID(job.key), rewrite, len(job.text), len(spoken), sent, time.Since(started).Milliseconds())
 	}
 	// Audio from a text the model only partly rewrote is played but not
 	// kept, so the next play gets another try at the rewrite.
@@ -229,7 +239,7 @@ func (s *Server) synthesise(ctx context.Context, sy *synthesis, job speechJob) {
 		pending.Finish()
 	}
 	logMiss()
-	s.syntheses.expire(job.key, sy)
+	s.syntheses.keepUncached(job.key, sy)
 }
 
 // serveSynthesis answers one request from sy's growing file. A request for
@@ -250,7 +260,7 @@ func (s *Server) serveSynthesis(w http.ResponseWriter, r *http.Request, sy *synt
 	p := sy.pending
 	f, err := p.Open()
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "The audio stopped partway: "+err.Error())
+		writeError(w, http.StatusBadGateway, partwayMessage)
 		return
 	}
 	defer f.Close()
@@ -278,7 +288,7 @@ func (s *Server) serveSynthesis(w http.ResponseWriter, r *http.Request, sy *synt
 	_, done, err := p.Wait(ctx, need)
 	if err != nil {
 		if ctx.Err() == nil {
-			writeError(w, http.StatusBadGateway, "The audio stopped partway: "+err.Error())
+			writeError(w, http.StatusBadGateway, partwayMessage)
 		}
 		return
 	}
@@ -374,21 +384,21 @@ func parseByteRange(h string) (first, last int64, kind rangeKind) {
 	return first, last, rangeClosed
 }
 
-// ttsLog records what one /api/tts request was answered with.
-type ttsLog struct {
+// ttsRecorder records what one /api/tts request was answered with.
+type ttsRecorder struct {
 	http.ResponseWriter
 	status int
 	sent   int64
 }
 
-func (l *ttsLog) WriteHeader(code int) {
+func (l *ttsRecorder) WriteHeader(code int) {
 	if l.status == 0 {
 		l.status = code
 	}
 	l.ResponseWriter.WriteHeader(code)
 }
 
-func (l *ttsLog) Write(b []byte) (int, error) {
+func (l *ttsRecorder) Write(b []byte) (int, error) {
 	if l.status == 0 {
 		l.status = http.StatusOK
 	}
@@ -398,7 +408,7 @@ func (l *ttsLog) Write(b []byte) (int, error) {
 }
 
 // Unwrap lets http.ResponseController reach the flusher underneath.
-func (l *ttsLog) Unwrap() http.ResponseWriter { return l.ResponseWriter }
+func (l *ttsRecorder) Unwrap() http.ResponseWriter { return l.ResponseWriter }
 
 // userAgentSummary names the client in a word or two: enough to tell the
 // phone's media loader from a desktop browser in the log.

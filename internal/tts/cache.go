@@ -148,8 +148,8 @@ func (p *Pending) Wait(ctx context.Context, n int64) (size int64, done bool, err
 	}
 }
 
-// finish marks the writing over: err nil for a whole clip.
-func (p *Pending) finish(err error) {
+// end marks the writing over: err nil for a whole clip.
+func (p *Pending) end(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.done {
@@ -164,7 +164,7 @@ func (p *Pending) finish(err error) {
 // Finish, and the caller discards it once it is no longer wanted.
 func (p *Pending) Commit() error {
 	if err := p.f.Close(); err != nil {
-		p.finish(nil)
+		p.end(nil)
 		return err
 	}
 	p.mu.Lock()
@@ -173,7 +173,7 @@ func (p *Pending) Commit() error {
 		p.path = p.cache.path(p.key)
 	}
 	p.mu.Unlock()
-	p.finish(nil)
+	p.end(nil)
 	if err != nil {
 		return err
 	}
@@ -184,19 +184,19 @@ func (p *Pending) Commit() error {
 // Discard.
 func (p *Pending) Finish() {
 	_ = p.f.Close()
-	p.finish(nil)
+	p.end(nil)
 }
 
 // Fail ends the entry with err, which every reader in Wait gets, and drops it.
 func (p *Pending) Fail(err error) {
-	p.finish(err)
+	p.end(err)
 	p.remove()
 }
 
 // Discard drops the entry. Readers still waiting on one that was not
 // finished get ErrDiscarded.
 func (p *Pending) Discard() {
-	p.finish(ErrDiscarded)
+	p.end(ErrDiscarded)
 	p.remove()
 }
 

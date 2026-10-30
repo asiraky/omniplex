@@ -70,26 +70,26 @@ func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
 // Every request is logged with its Range, the answer and the client, which
 // is how a media loader's range requests are told apart from taps on play.
 func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
-	if s.speechOff(w) {
-		return
-	}
 	started := time.Now()
-	lw := &ttsLog{ResponseWriter: w}
+	lw := &ttsRecorder{ResponseWriter: w}
 	w = lw
-	source := "-"
+	source, clip := "-", "-"
 	defer func() {
 		rec := recover()
 		status := strconv.Itoa(lw.status)
 		if rec != nil {
 			status = "cut"
 		}
-		s.logf("tts request method=%s range=%q status=%s sent=%d source=%s ua=%s duration_ms=%d",
-			r.Method, r.Header.Get("Range"), status, lw.sent, source,
+		s.logf("tts request clip=%s method=%s range=%q status=%s sent=%d source=%s ua=%s duration_ms=%d",
+			clip, r.Method, r.Header.Get("Range"), status, lw.sent, source,
 			userAgentSummary(r.UserAgent()), time.Since(started).Milliseconds())
 		if rec != nil {
 			panic(rec)
 		}
 	}()
+	if s.speechOff(w) {
+		return
+	}
 
 	q := r.URL.Query()
 	text, err := tts.PrepareText(q.Get("text"))
@@ -124,6 +124,7 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	if editing {
 		key = tts.CacheKey(voice, tts.RewriteKey(editor.model, text))
 	}
+	clip = clipID(key)
 	audioHeaders := func() {
 		h := w.Header()
 		h.Set("Content-Type", "audio/mpeg")
@@ -169,6 +170,11 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		source = "synthesised"
 	}
 	s.serveSynthesis(w, r, sy, audioHeaders)
+}
+
+// clipID is enough of a cache key to match a clip's lines in the log.
+func clipID(key string) string {
+	return key[:min(len(key), 12)]
 }
 
 // speechEditor is the model that rewrites a thread's messages for the voice,
@@ -312,12 +318,18 @@ func speechErrorReply(err error) (int, string) {
 // message; a person pressing play again a minute later gets a fresh try.
 const speechFailureTTL = time.Minute
 
+// partwayFailureTTL is how long a synthesis that broke partway is answered
+// from memory. It only has to outlast the media element's own retry and the
+// client asking why, so a tap on play straight after is a fresh try.
+const partwayFailureTTL = 10 * time.Second
+
 // speechFailures is ElevenLabs' last refusal per cache key. The <audio>
 // element cannot read an error body, so the client asks for a failed clip a
 // second time to get the message. Without this that request goes upstream
 // again, and if ElevenLabs has recovered in between it synthesises, and bills,
-// audio nobody will play. Only refusals are kept: a client hanging up or the
-// network dropping says nothing about the next try.
+// audio nobody will play. Refusals are kept, and briefly a synthesis that
+// broke partway, which a media element would otherwise ask for again and
+// pay for again. A client hanging up says nothing about the next try.
 type speechFailures struct {
 	mu    sync.Mutex
 	byKey map[string]speechFailure
@@ -328,7 +340,7 @@ type speechFailures struct {
 type speechFailure struct {
 	status int
 	msg    string
-	at     time.Time
+	until  time.Time
 }
 
 func (f *speechFailures) clock() time.Time {
@@ -339,26 +351,30 @@ func (f *speechFailures) clock() time.Time {
 }
 
 func (f *speechFailures) remember(key string, status int, msg string) {
+	f.rememberFor(key, status, msg, speechFailureTTL)
+}
+
+func (f *speechFailures) rememberFor(key string, status int, msg string, ttl time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := f.clock()
 	if f.byKey == nil {
 		f.byKey = map[string]speechFailure{}
 	}
-	// Pruned on the way in, so the map only ever holds the last minute's.
+	// Pruned on the way in, so the map only ever holds live ones.
 	for k, v := range f.byKey {
-		if now.Sub(v.at) >= speechFailureTTL {
+		if !now.Before(v.until) {
 			delete(f.byKey, k)
 		}
 	}
-	f.byKey[key] = speechFailure{status: status, msg: msg, at: now}
+	f.byKey[key] = speechFailure{status: status, msg: msg, until: now.Add(ttl)}
 }
 
 func (f *speechFailures) recall(key string) (int, string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v, ok := f.byKey[key]
-	if !ok || f.clock().Sub(v.at) >= speechFailureTTL {
+	if !ok || !f.clock().Before(v.until) {
 		return 0, "", false
 	}
 	return v.status, v.msg, true

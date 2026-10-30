@@ -330,7 +330,7 @@ func TestSpeechIsCachedAndRevalidated(t *testing.T) {
 // Playback has to start on the first chunk, through the compression layer,
 // rather than when ElevenLabs has finished the whole message.
 func TestSpeechStreamsBeforeUpstreamFinishes(t *testing.T) {
-	release := make(chan struct{})
+	release, finish := hold()
 	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "first")
 		w.(http.Flusher).Flush()
@@ -338,10 +338,6 @@ func TestSpeechStreamsBeforeUpstreamFinishes(t *testing.T) {
 		_, _ = io.WriteString(w, "-rest")
 	}}
 	r := newSpeechRig(t, up)
-	// Registered after the rig, so it runs first: a failing test must not
-	// leave the upstream handler blocking the fake server's Close.
-	var once sync.Once
-	finish := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(finish)
 	r.setKey("good")
 	r.setVoice("v1")
@@ -411,6 +407,20 @@ func TestBrokenStreamLeavesNoCacheEntry(t *testing.T) {
 	if names := r.cacheFiles(); len(names) != 0 {
 		t.Fatalf("a stream that broke left %v in the cache", names)
 	}
+	// The media element's own retry, straight after, is told it broke
+	// rather than paying for the clip again; a later play is a fresh try.
+	now := time.Now()
+	r.srv.speechFailures.mu.Lock()
+	r.srv.speechFailures.now = func() time.Time { return now }
+	r.srv.speechFailures.mu.Unlock()
+	retry := r.get(speakPath("hello", ""), map[string]string{"Range": "bytes=2-"})
+	if retry.StatusCode != http.StatusBadGateway || errorMessage(t, retry) != partwayMessage {
+		t.Fatalf("the retry got %d", retry.StatusCode)
+	}
+	if got := up.requested(); len(got) != 1 {
+		t.Fatalf("upstream asked %d times; the retry must not pay again", len(got))
+	}
+	now = now.Add(partwayFailureTTL)
 	_ = r.get(speakPath("hello", ""), nil)
 	if got := up.requested(); len(got) != 2 {
 		t.Fatalf("upstream asked %d times; a broken clip must not be replayed", len(got))
@@ -420,7 +430,7 @@ func TestBrokenStreamLeavesNoCacheEntry(t *testing.T) {
 // A player that hangs up and asks again finds the clip still being made or
 // already cached, rather than paying for it a second time.
 func TestHangingUpLeavesTheSynthesisRunning(t *testing.T) {
-	release := make(chan struct{})
+	release, finish := hold()
 	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "half")
 		w.(http.Flusher).Flush()
@@ -428,8 +438,6 @@ func TestHangingUpLeavesTheSynthesisRunning(t *testing.T) {
 		_, _ = io.WriteString(w, "-rest")
 	}}
 	r := newSpeechRig(t, up)
-	var once sync.Once
-	finish := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(finish)
 	r.setKey("good")
 	r.setVoice("v1")
@@ -461,6 +469,16 @@ func TestHangingUpLeavesTheSynthesisRunning(t *testing.T) {
 	if got := up.requested(); len(got) != 1 {
 		t.Fatalf("ElevenLabs was asked %d times, want 1", len(got))
 	}
+}
+
+// hold is a gate an upstream handler can wait on, and the func that opens
+// it, which is safe to call more than once. Register it as a cleanup after
+// the rig, so it runs first and a failing test never leaves the handler
+// blocking the fake server's Close.
+func hold() (<-chan struct{}, func()) {
+	release := make(chan struct{})
+	var once sync.Once
+	return release, func() { once.Do(func() { close(release) }) }
 }
 
 // inFlight starts a request aside and hands back its response once the
@@ -504,7 +522,7 @@ func await(t *testing.T, got <-chan *http.Response) *http.Response {
 // Every request for a clip still being made reads the one synthesis: the
 // first, a probe, and a resume past what has been written.
 func TestOneSynthesisServesEveryRequest(t *testing.T) {
-	release := make(chan struct{})
+	release, finish := hold()
 	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "aaaa")
 		w.(http.Flusher).Flush()
@@ -512,8 +530,6 @@ func TestOneSynthesisServesEveryRequest(t *testing.T) {
 		_, _ = io.WriteString(w, "bbbb")
 	}}
 	r := newSpeechRig(t, up)
-	var once sync.Once
-	finish := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(finish)
 	r.setKey("good")
 	r.setVoice("v1")
@@ -571,7 +587,7 @@ func TestOneSynthesisServesEveryRequest(t *testing.T) {
 // A synthesis that fails partway fails every request reading it, and none of
 // them starts it again.
 func TestSynthesisFailingPartwayFailsEveryReader(t *testing.T) {
-	release := make(chan struct{})
+	release, finish := hold()
 	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "half")
 		w.(http.Flusher).Flush()
@@ -579,8 +595,6 @@ func TestSynthesisFailingPartwayFailsEveryReader(t *testing.T) {
 		panic(http.ErrAbortHandler)
 	}}
 	r := newSpeechRig(t, up)
-	var once sync.Once
-	finish := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(finish)
 	r.setKey("good")
 	r.setVoice("v1")
