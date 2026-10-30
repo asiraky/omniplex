@@ -320,7 +320,7 @@ const speechFailureTTL = time.Minute
 
 // partwayFailureTTL is how long a synthesis that broke partway is answered
 // from memory. It only has to outlast the media element's own retry and the
-// client asking why, so a tap on play straight after is a fresh try.
+// client asking why; a play after that is a fresh try.
 const partwayFailureTTL = 10 * time.Second
 
 // speechFailures is ElevenLabs' last refusal per cache key. The <audio>

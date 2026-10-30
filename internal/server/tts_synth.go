@@ -25,8 +25,9 @@ const (
 	// requests. A play after that gets a fresh try at the rewrite.
 	uncachedTTL = 15 * time.Minute
 	// partwayMessage is what a player is told when a clip broke after it
-	// had started.
-	partwayMessage = "Reading stopped partway: the audio from ElevenLabs broke off. Try again."
+	// had started: ElevenLabs stopped sending, or the audio could not be
+	// stored to be served.
+	partwayMessage = "Reading stopped partway: the audio broke off. Try again."
 )
 
 // synthesis is one clip being made. Every request for its key while it runs
@@ -391,24 +392,24 @@ type ttsRecorder struct {
 	sent   int64
 }
 
-func (l *ttsRecorder) WriteHeader(code int) {
-	if l.status == 0 {
-		l.status = code
+func (rec *ttsRecorder) WriteHeader(code int) {
+	if rec.status == 0 {
+		rec.status = code
 	}
-	l.ResponseWriter.WriteHeader(code)
+	rec.ResponseWriter.WriteHeader(code)
 }
 
-func (l *ttsRecorder) Write(b []byte) (int, error) {
-	if l.status == 0 {
-		l.status = http.StatusOK
+func (rec *ttsRecorder) Write(b []byte) (int, error) {
+	if rec.status == 0 {
+		rec.status = http.StatusOK
 	}
-	n, err := l.ResponseWriter.Write(b)
-	l.sent += int64(n)
+	n, err := rec.ResponseWriter.Write(b)
+	rec.sent += int64(n)
 	return n, err
 }
 
 // Unwrap lets http.ResponseController reach the flusher underneath.
-func (l *ttsRecorder) Unwrap() http.ResponseWriter { return l.ResponseWriter }
+func (rec *ttsRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
 // userAgentSummary names the client in a word or two: enough to tell the
 // phone's media loader from a desktop browser in the log.
