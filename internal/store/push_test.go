@@ -75,3 +75,31 @@ func TestDeletingAPushSubscriptionRemovesItAndAnUnknownOneIsNotFound(t *testing.
 		t.Fatalf("deleting it twice: got %v, want ErrNotFound", err)
 	}
 }
+
+func TestRevokingADeviceDropsItsPushSubscriptionsAndKeepsOthers(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.SavePushSubscription(ctx, PushSubscription{Endpoint: "https://push.example/lost", P256dh: "k", Auth: "a", DeviceID: "lost"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	kept, err := s.SavePushSubscription(ctx, PushSubscription{Endpoint: "https://push.example/kept", P256dh: "k", Auth: "a", DeviceID: "kept"})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	local, err := s.SavePushSubscription(ctx, PushSubscription{Endpoint: "https://push.example/local", P256dh: "k", Auth: "a"})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if err := s.RevokeDevice(ctx, "lost"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	subs, err := s.ListPushSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(subs) != 2 || subs[0].ID != local || subs[1].ID != kept {
+		t.Fatalf("want only the other devices' subscriptions, got %+v", subs)
+	}
+}

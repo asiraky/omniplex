@@ -201,14 +201,6 @@ func (s *Server) notify(ctx context.Context, t toolThread, body []byte) (string,
 	if s.watched(t.id) {
 		return "Not sent: the user has this thread open on a device right now, so they will see your message here.", nil
 	}
-	subs, err := s.store.ListPushSubscriptions(ctx)
-	if err != nil {
-		return "", err
-	}
-	if len(subs) == 0 {
-		return "Not sent: no device has notifications turned on. The user can turn them on in Omniplex under Settings > Notifications.", nil
-	}
-
 	msg := in.Body
 	if t.title != "" {
 		msg += "\n" + clip(t.title, maxThreadTitle)
@@ -216,6 +208,9 @@ func (s *Server) notify(ctx context.Context, t toolThread, body []byte) (string,
 	res, err := s.push.Send(ctx, push.Message{Title: in.Title, Body: msg, ThreadID: t.id, Urgency: in.Urgency})
 	if err != nil {
 		return "", err
+	}
+	if res == (push.Result{}) {
+		return "Not sent: no device has notifications turned on. The user can turn them on in Omniplex under Settings > Notifications.", nil
 	}
 	return notifyReport(res)
 }
