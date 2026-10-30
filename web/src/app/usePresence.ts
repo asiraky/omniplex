@@ -5,11 +5,16 @@ import type { Client } from "~/client";
 /**
  * Tells the server whether this page is on screen and which thread it shows,
  * so an agent's notify is skipped while you are already looking at its
- * thread. `threadId` is null when no thread is in view, which is more than
- * "none selected": a phone's open sidebar or a full-page screen covers it.
- * The client repeats the latest report on every reconnect.
+ * thread. `covered` means the selected thread is not in view after all: a
+ * phone's open sidebar or a full-page screen is over it. The client repeats
+ * the latest report on every reconnect.
  */
-export function usePresence(clientRef: RefObject<Client | null>, threadId: string | null) {
+export function usePresence(
+  clientRef: RefObject<Client | null>,
+  activeId: string | null,
+  covered: boolean,
+) {
+  const threadId = covered ? "" : (activeId ?? "");
   const [visible, setVisible] = useState(() => document.visibilityState === "visible");
   useEffect(() => {
     const onChange = () => setVisible(document.visibilityState === "visible");
@@ -18,6 +23,6 @@ export function usePresence(clientRef: RefObject<Client | null>, threadId: strin
   }, []);
 
   useEffect(() => {
-    clientRef.current?.setPresence(visible, threadId ?? "");
+    clientRef.current?.setPresence(visible, threadId);
   }, [clientRef, visible, threadId]);
 }

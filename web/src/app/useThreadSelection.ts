@@ -29,7 +29,7 @@ export function useThreadSelection({
   /** A hydrated thread that turned out to be gone before any list had it. */
   onForget: (id: string) => void;
   /** A tapped notification is opening a thread: clear whatever covers the thread view. */
-  onOpenLink?: () => void;
+  onOpenLink: () => void;
 }) {
   const { clientRef, activeRef, threads, threadsLoaded, setState, dropResume } = wire;
   const [activeId, setActiveId] = useState<string | null>(wire.resume?.state.threadId ?? null);
@@ -53,10 +53,12 @@ export function useThreadSelection({
     }
   });
   const restoreAttempted = useRef(false);
-  // A thread a link asked for before the list arrived to say whether it
-  // exists: the page's /thread/<id> URL, or an "open-thread" message from the
-  // service worker landing early. The restore below takes it ahead of the
-  // last thread.
+  // A thread a link asked for that the list does not have yet. Before the
+  // first list: the page's /thread/<id> URL or an early "open-thread" message
+  // from the service worker, which the restore below takes ahead of the last
+  // thread. After it: a tap on a thread made elsewhere while this page slept,
+  // whose message beats the refreshed list carrying it. Held until the list
+  // has it, the user picks something themselves, or a newer link replaces it.
   const pendingLink = useRef<string | null>(wire.link);
   // Open is the desktop default. On a phone the sidebar *is* the landing
   // screen: with nothing selected there is nothing behind it to look at, so
@@ -72,6 +74,7 @@ export function useThreadSelection({
 
   const select = useCallback(
     (id: string) => {
+      pendingLink.current = null;
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: selecting attaches the socket and writes storage, and the restore effect is the one caller that reacts to the thread list
       setCreating(null);
       setActiveId(id);
@@ -89,6 +92,7 @@ export function useThreadSelection({
   // The draft takes the thread's place: nothing is attached while it is up,
   // and picking a thread from the list leaves it.
   const startNew = useCallback(() => {
+    pendingLink.current = null;
     const projectId = threads.find((t) => t.id === activeRef.current)?.projectId;
     setCreating({ projectId });
     if (activeRef.current) {
@@ -163,29 +167,43 @@ export function useThreadSelection({
   }, [threadsLoaded, threads]);
 
   // A tapped notification, with the app already open: the service worker
-  // focuses this window and names the thread. Before the list has arrived it
-  // waits for the restore above; after, it opens only a thread the list has,
-  // since attaching to one it lacks would hang on "Attaching…".
-  const latest = useLatest({ threads, threadsLoaded, select, isDesktop, onOpenLink });
+  // focuses this window and names the thread. It opens only once the list has
+  // it, since attaching to a thread the list lacks would hang on
+  // "Attaching…"; until then it waits in pendingLink.
+  const openLink = useCallback(
+    (id: string) => {
+      onOpenLink();
+      if (id !== activeRef.current) select(id);
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a tapped notification shows its thread, which on a phone means putting the list away
+      else if (!isDesktop) setSidebarOpen(false);
+      pendingLink.current = null;
+    },
+    [activeRef, isDesktop, onOpenLink, select],
+  );
+  const latest = useLatest({ threads, openLink });
   useEffect(() => {
     const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
     if (!sw) return;
     const onMessage = (e: MessageEvent) => {
       const id = openThreadMessage(e.data);
       if (!id) return;
-      const { threads, threadsLoaded, select, isDesktop, onOpenLink } = latest.current;
-      if (!threadsLoaded) {
-        pendingLink.current = id;
-        return;
-      }
-      if (!openable(threads, id)) return;
-      onOpenLink?.();
-      if (id !== activeRef.current) select(id);
-      else if (!isDesktop) setSidebarOpen(false);
+      const { threads, openLink } = latest.current;
+      // Before the first list too: the restore has not run, so nothing is
+      // openable yet and the restore picks it up.
+      if (restoreAttempted.current && openable(threads, id)) openLink(id);
+      else pendingLink.current = id;
     };
     sw.addEventListener("message", onMessage);
     return () => sw.removeEventListener("message", onMessage);
-  }, [activeRef, latest]);
+  }, [latest]);
+
+  // The list caught up with a held link. The restore effect above runs first
+  // and consumes a link the first list settles, so this only sees later ones.
+  useEffect(() => {
+    const id = pendingLink.current;
+    if (!restoreAttempted.current || !id || !openable(threads, id)) return;
+    latest.current.openLink(id);
+  }, [threads, latest]);
 
   // Until the first list lands we do not know whether there is anything to
   // show, so the content column holds the space rather than announcing "all
@@ -219,6 +237,8 @@ export function useThreadSelection({
     creating,
     restoring,
     sidebarOpen,
+    /** A phone's open list hides the thread behind it. */
+    covering: !isDesktop && sidebarOpen,
     setSidebarOpen,
     select,
     startNew,

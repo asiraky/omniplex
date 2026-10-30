@@ -54,24 +54,10 @@ export function App() {
     isDesktop,
     onLeave: panel.reset,
     onForget: scroll.forget,
-    onOpenLink: () => {
-      screens.setSettings(null);
-      screens.setShowUsage(false);
-      screens.setTools(null);
-    },
+    onOpenLink: screens.uncover,
   });
   const { activeId, select } = nav;
-  // The thread actually on screen, for the server's "already watching" check
-  // that skips a push: none while a phone's sidebar or a full-page screen
-  // covers it.
-  const covered =
-    (!isDesktop && nav.sidebarOpen) ||
-    !!screens.settings ||
-    screens.showUsage ||
-    !!screens.tools ||
-    screens.setup ||
-    screens.themePreview;
-  usePresence(clientRef, covered ? null : activeId);
+  usePresence(clientRef, activeId, screens.covering || nav.covering);
   usePruneScrollMemory(scroll, threads);
   const store = useComposerDrafts(threads, activeId);
   const schedule = useScheduleEditor(wire, store);

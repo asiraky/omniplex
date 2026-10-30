@@ -46,7 +46,20 @@ export function useScreens() {
     setSetup(false);
   }, []);
 
+  // Whether a full-page screen or Settings hides the thread view, so the
+  // server knows the open thread is not actually being watched.
+  const covering = !!settings || showUsage || !!tools || setup || themePreview;
+  // Clear the screens a tapped notification should not open behind. Setup and
+  // the theme sample are left alone: both are pages reached by URL.
+  const uncover = useCallback(() => {
+    setSettings(null);
+    setShowUsage(false);
+    setTools(null);
+  }, []);
+
   return {
+    covering,
+    uncover,
     settings,
     setSettings,
     newProject,

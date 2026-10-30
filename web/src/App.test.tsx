@@ -416,11 +416,53 @@ describe("opening a thread from a notification", () => {
     expect(attach).toHaveBeenCalledWith("b");
   });
 
-  it("ignores a thread the list does not have", async () => {
+  it("does not open a thread the list does not have", async () => {
     render(<App />);
     await act(async () => events.onThreads([thread("a")]));
     tap("gone");
     expect(attach).not.toHaveBeenCalled();
+  });
+
+  it("holds a tap on a thread made elsewhere until the refreshed list brings it", async () => {
+    // The phone slept on thread a; a thread was started from another device,
+    // and its notification's tap beats the list that carries it.
+    viewport("phone");
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    attach.mockClear();
+
+    tap("new");
+    expect(attach).not.toHaveBeenCalled();
+
+    await act(async () => events.onThreads([thread("a"), thread("new")]));
+    expect(attach).toHaveBeenCalledWith("new");
+    expect(sidebarShowing()).toBe(false);
+  });
+
+  it("drops a held tap once the user picks a thread themselves", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a"), thread("b")]));
+    tap("new");
+    fireEvent.click(screen.getByText("Thread b"));
+    attach.mockClear();
+
+    await act(async () => events.onThreads([thread("a"), thread("b"), thread("new")]));
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it("follows the newest tap when an older one is still held", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => events.onThreads([thread("a")]));
+    tap("old");
+    tap("new");
+    attach.mockClear();
+
+    await act(async () => events.onThreads([thread("a"), thread("old"), thread("new")]));
+    expect(attach).toHaveBeenCalledWith("new");
+    expect(attach).not.toHaveBeenCalledWith("old");
   });
 
   it("holds a tap that lands before the list, and opens it once the list arrives", async () => {

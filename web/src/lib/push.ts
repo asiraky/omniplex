@@ -1,8 +1,8 @@
 // Web push, from the settings side: whether this browser can take it, the
 // subscription it holds, and the server's list of devices. Imported only by
 // the Notifications settings pane, so none of it rides in the main bundle; the
-// boot-time half (registering /sw.js, following a tapped notification) lives
-// in app/useThreadLinks.ts.
+// boot-time half lives in lib/threadLinks.ts (registering /sw.js, reading a
+// tapped notification's link) and app/useThreadSelection.ts (opening it).
 
 /** A browser the server pushes to, as GET /api/push lists it. */
 export interface PushDevice {
@@ -76,7 +76,7 @@ export function isIOS(ua: string, maxTouchPoints: number): boolean {
 export function deviceLabel(ua: string, maxTouchPoints = 0): string {
   const os = /iPhone|iPod/.test(ua)
     ? "iPhone"
-    : /iPad/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1)
+    : isIOS(ua, maxTouchPoints)
       ? "iPad"
       : /Android/.test(ua)
         ? "Android"
@@ -135,9 +135,13 @@ export class PushHTTPError extends Error {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
-  const body = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
-  if (!res.ok) throw new PushHTTPError(body?.error || `Request failed (${res.status})`, res.status);
-  return body as T;
+  // A body that is not JSON (an empty 204, a proxy's HTML error page) reads
+  // as null rather than throwing.
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new PushHTTPError(err?.error || `Request failed (${res.status})`, res.status);
+  }
+  return (await res.json().catch(() => null)) as T;
 }
 
 export async function fetchPush(): Promise<PushState> {

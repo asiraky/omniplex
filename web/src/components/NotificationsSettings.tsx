@@ -19,6 +19,7 @@ import {
   sendTestPush,
   subscribePush,
   testSummary,
+  type PushDevice,
   type PushState,
   type PushSupport,
 } from "~/lib/push";
@@ -38,8 +39,9 @@ const added = (ms: number) =>
 
 /**
  * Web push: this device on or off, every device the server pushes to, and a
- * test. Agents send through the notify tool; the server skips a push while
- * any device has that thread on screen.
+ * test. Agents send through the notify MCP tool (Claude Code and Codex; Pi
+ * has no MCP); the server skips a push while any device has that thread on
+ * screen.
  */
 export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
   const [support] = useState(() => pushSupport(readPushEnv()));
@@ -122,8 +124,9 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
   return (
     <SettingsPane title="Notifications" onBack={onBack}>
       <p className="text-muted-foreground text-[13px]">
-        Agents can notify you when they need you, using the notify tool. Nothing is sent while you
-        have that thread open on screen.
+        Claude Code and Codex agents can notify you when they need you, using the notify tool. Pi
+        has no MCP support, so its agents can't. Nothing is sent while you have that thread open on
+        screen.
       </p>
 
       {support === "ok" ? (
@@ -173,44 +176,14 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
 
       <div className="space-y-2">
         <h3 className="text-[12px] font-medium">Devices</h3>
-        {loadError ? (
-          <div className="flex items-center gap-2">
-            <p role="alert" className="text-attention-foreground min-w-0 flex-1 text-[12px]">
-              {loadError}
-            </p>
-            <Button variant="outline" onClick={() => void load()}>
-              Retry
-            </Button>
-          </div>
-        ) : !push ? (
-          <p className="text-muted-foreground text-[12px]">Loading…</p>
-        ) : devices.length === 0 ? (
-          <p className="text-muted-foreground text-[12px]">
-            No devices yet. Turn notifications on from each phone or computer you want them on.
-          </p>
-        ) : (
-          <ul className="divide-y">
-            {devices.map((d) => (
-              <li key={d.id} className="flex items-center gap-3 py-2">
-                <div className="min-w-0 flex-1">
-                  <p className="flex min-w-0 items-center gap-2 text-[13px]">
-                    <span className="truncate">{d.label || "Unnamed device"}</span>
-                    {d.id === mine?.id && <Badge variant="secondary">This device</Badge>}
-                  </p>
-                  <p className="text-muted-foreground text-[11px]">Added {added(d.createdAt)}</p>
-                </div>
-                <Button
-                  variant="outline"
-                  disabled={busy !== null}
-                  onClick={() => void remove(d.id)}
-                  aria-label={`Remove ${d.label || "device"}`}
-                >
-                  {busy === d.id ? "Removing…" : "Remove"}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <DeviceList
+          push={push}
+          loadError={loadError}
+          onRetry={() => void load()}
+          mineId={mine?.id}
+          busy={busy}
+          onRemove={(id) => void remove(id)}
+        />
       </div>
 
       {devices.length > 0 && (
@@ -232,5 +205,90 @@ export function NotificationsSettings({ onBack }: { onBack?: () => void }) {
         </div>
       )}
     </SettingsPane>
+  );
+}
+
+/** The server's devices, or why they are not showing yet. */
+function DeviceList({
+  push,
+  loadError,
+  onRetry,
+  mineId,
+  busy,
+  onRemove,
+}: {
+  push: PushState | null;
+  loadError: string | null;
+  onRetry: () => void;
+  /** This browser's row, if it has one. */
+  mineId: string | undefined;
+  busy: string | null;
+  onRemove: (id: string) => void;
+}) {
+  if (loadError) {
+    return (
+      <div className="flex items-center gap-2">
+        <p role="alert" className="text-attention-foreground min-w-0 flex-1 text-[12px]">
+          {loadError}
+        </p>
+        <Button variant="outline" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+  if (!push) return <p className="text-muted-foreground text-[12px]">Loading…</p>;
+  if (push.subscriptions.length === 0) {
+    return (
+      <p className="text-muted-foreground text-[12px]">
+        No devices yet. Turn notifications on from each phone or computer you want them on.
+      </p>
+    );
+  }
+  return (
+    <ul className="divide-y">
+      {push.subscriptions.map((d) => (
+        <DeviceRow
+          key={d.id}
+          device={d}
+          mine={d.id === mineId}
+          busy={busy}
+          onRemove={() => onRemove(d.id)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function DeviceRow({
+  device: d,
+  mine,
+  busy,
+  onRemove,
+}: {
+  device: PushDevice;
+  mine: boolean;
+  busy: string | null;
+  onRemove: () => void;
+}) {
+  const name = d.label || "Unnamed device";
+  return (
+    <li className="flex items-center gap-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p className="flex min-w-0 items-center gap-2 text-[13px]">
+          <span className="truncate">{name}</span>
+          {mine && <Badge variant="secondary">This device</Badge>}
+        </p>
+        <p className="text-muted-foreground text-[11px]">Added {added(d.createdAt)}</p>
+      </div>
+      <Button
+        variant="outline"
+        disabled={busy !== null}
+        onClick={onRemove}
+        aria-label={`Remove ${d.label || "device"}`}
+      >
+        {busy === d.id ? "Removing…" : "Remove"}
+      </Button>
+    </li>
   );
 }

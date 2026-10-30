@@ -11,7 +11,9 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-// Payload: {title, body, threadId, urgency}. See .omniplex/push-contract.md.
+// Payload, all strings, built by Service.Send in internal/push/push.go:
+//   {title, body, threadId, urgency}
+// threadId is "" for a test push; urgency is "low", "normal" or "high".
 self.addEventListener("push", (event) => {
   let data = {};
   try {
