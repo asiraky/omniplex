@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"regexp"
 	"slices"
@@ -67,11 +66,31 @@ func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
 // and gets a 304, so audio crosses the network once per device. It is not
 // immutable because the same URL means a different voice after the setting
 // changes.
+//
+// Every request is logged with its Range, the answer and the client, which
+// is how a media loader's range requests are told apart from taps on play.
 func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	if s.speechOff(w) {
 		return
 	}
 	started := time.Now()
+	lw := &ttsLog{ResponseWriter: w}
+	w = lw
+	source := "-"
+	defer func() {
+		rec := recover()
+		status := strconv.Itoa(lw.status)
+		if rec != nil {
+			status = "cut"
+		}
+		s.logf("tts request method=%s range=%q status=%s sent=%d source=%s ua=%s duration_ms=%d",
+			r.Method, r.Header.Get("Range"), status, lw.sent, source,
+			userAgentSummary(r.UserAgent()), time.Since(started).Milliseconds())
+		if rec != nil {
+			panic(rec)
+		}
+	}()
+
 	q := r.URL.Query()
 	text, err := tts.PrepareText(q.Get("text"))
 	if err != nil {
@@ -112,112 +131,44 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		h.Set("Cache-Control", "private, no-cache")
 	}
 
+	// A clip still being made is looked for before the cache: a synthesis
+	// is committed to the cache before it is forgotten, so there is no gap.
+	if sy := s.syntheses.get(key); sy != nil {
+		source = "joined"
+		s.serveSynthesis(w, r, sy, audioHeaders)
+		return
+	}
 	if f, ok := s.speech.Cache().Open(key); ok {
 		defer f.Close()
+		source = "hit"
 		audioHeaders()
 		// No modtime: a hit touches it, so Last-Modified would change on
 		// every play and add nothing the ETag does not already say.
 		http.ServeContent(w, r, "", time.Time{}, f)
-		s.logf("tts cache=hit text_bytes=%d duration_ms=%d", len(text), time.Since(started).Milliseconds())
 		return
 	}
 	if status, msg, ok := s.speechFailures.recall(key); ok {
+		source = "refused"
 		writeError(w, status, msg)
 		return
 	}
 	if r.Method == http.MethodHead {
 		// Synthesis is billed; a HEAD is not worth paying for.
+		source = "probe"
 		audioHeaders()
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	spoken, whole, rewrite := text, true, "off"
-	if editing {
-		spoken, whole = s.rewriter.Rewrite(r.Context(), editor.model, editor.prompt, text)
-		rewrite = "whole"
-		if !whole {
-			rewrite = "partial"
-		}
+	job := speechJob{key: key, voice: voice, text: text, editing: editing, editor: editor}
+	sy, fresh := s.syntheses.start(key, func(ctx context.Context, sy *synthesis) {
+		s.synthesise(ctx, sy, job)
+	})
+	source = "joined"
+	if fresh {
+		source = "synthesised"
 	}
-	if r.Context().Err() != nil {
-		return
-	}
-
-	// A miss ignores Range and sends the whole clip: there is nothing to seek
-	// in until it exists, and a media element takes a 200 for a range request.
-	body, err := s.speech.Stream(r.Context(), voice, spoken)
-	if err != nil {
-		status, msg := speechErrorReply(err)
-		var refused *tts.UpstreamError
-		if errors.As(err, &refused) {
-			s.speechFailures.remember(key, status, msg)
-		}
-		writeError(w, status, msg)
-		return
-	}
-	defer body.Close()
-
-	// Audio from a text the model only partly rewrote is played but not
-	// kept, so the next play gets another try at the rewrite.
-	var pending *tts.Pending
-	if whole {
-		if pending, err = s.speech.Cache().Create(key); err != nil {
-			// Playing uncached beats not playing.
-			s.logf("tts cache: %v", err)
-		}
-	}
-	discard := func() {
-		if pending != nil {
-			pending.Discard()
-			pending = nil
-		}
-	}
-	defer discard()
-
-	audioHeaders()
-	w.WriteHeader(http.StatusOK)
-	// Flushed per chunk so playback starts with the first one rather than
-	// when the whole clip has been generated.
-	rc := http.NewResponseController(w)
-	sent := 0
-	buf := make([]byte, 32<<10)
-	for {
-		n, readErr := body.Read(buf)
-		if n > 0 {
-			if _, err := w.Write(buf[:n]); err != nil {
-				return
-			}
-			_ = rc.Flush()
-			sent += n
-			if pending != nil {
-				if _, err := pending.Write(buf[:n]); err != nil {
-					s.logf("tts cache: %v", err)
-					discard()
-				}
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			// The client went away, or ElevenLabs did. Either way the clip
-			// is incomplete and must not be kept. Ending the body cleanly
-			// would pass the truncated clip off as the whole message, so the
-			// connection is cut and the player sees an error instead.
-			if r.Context().Err() == nil {
-				s.logf("tts stream: %v", readErr)
-			}
-			panic(http.ErrAbortHandler)
-		}
-	}
-	if pending != nil {
-		if err := pending.Commit(); err != nil {
-			s.logf("tts cache: %v", err)
-		}
-		pending = nil
-	}
-	s.logf("tts cache=miss rewrite=%s text_bytes=%d spoken_bytes=%d audio_bytes=%d duration_ms=%d", rewrite, len(text), len(spoken), sent, time.Since(started).Milliseconds())
+	s.serveSynthesis(w, r, sy, audioHeaders)
 }
 
 // speechEditor is the model that rewrites a thread's messages for the voice,
@@ -343,6 +294,8 @@ func speechErrorReply(err error) (int, string) {
 	switch {
 	case errors.Is(err, tts.ErrNoKey):
 		return http.StatusConflict, noSpeechKey
+	case errors.As(err, &up) && up.Quota():
+		return http.StatusPaymentRequired, "ElevenLabs is out of credit: " + up.Message
 	case errors.As(err, &up) && up.Rejected():
 		return http.StatusBadGateway, "ElevenLabs rejected the API key: " + up.Message
 	case errors.As(err, &up) && up.Status == http.StatusTooManyRequests:

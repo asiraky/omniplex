@@ -48,6 +48,10 @@ type Voice struct {
 type UpstreamError struct {
 	Status  int
 	Message string
+	// Code is ElevenLabs' machine-readable reason (detail.status), such as
+	// "quota_exceeded", when the body carries one. The HTTP status alone
+	// cannot tell an empty account from a bad key: both come back as 401.
+	Code string
 }
 
 func (e *UpstreamError) Error() string {
@@ -55,9 +59,20 @@ func (e *UpstreamError) Error() string {
 }
 
 // Rejected reports whether ElevenLabs refused the key itself (or its
-// permissions), as opposed to the request.
+// permissions), as opposed to the request. An account out of credit also
+// answers 401, but the key is fine, so that is not a rejection.
 func (e *UpstreamError) Rejected() bool {
+	if e.Quota() {
+		return false
+	}
 	return e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden
+}
+
+// Quota reports whether the account has run out of credit, so the user is
+// told to top up rather than that the connection dropped or the key is bad.
+// ElevenLabs says so with a 401 carrying "quota_exceeded"; 402 means the same.
+func (e *UpstreamError) Quota() bool {
+	return e.Code == "quota_exceeded" || e.Status == http.StatusPaymentRequired
 }
 
 type client struct {
@@ -182,7 +197,21 @@ func upstreamError(res *http.Response) *UpstreamError {
 	if msg == "" {
 		msg = res.Status
 	}
-	return &UpstreamError{Status: res.StatusCode, Message: msg}
+	return &UpstreamError{Status: res.StatusCode, Message: msg, Code: detailStatus(b)}
+}
+
+// detailStatus is the status string of an object-shaped detail, empty for the
+// other shapes.
+func detailStatus(b []byte) string {
+	var env struct {
+		Detail struct {
+			Status string `json:"status"`
+		} `json:"detail"`
+	}
+	if json.Unmarshal(b, &env) != nil {
+		return ""
+	}
+	return env.Detail.Status
 }
 
 func detailMessage(b []byte) string {

@@ -43,12 +43,21 @@ export function speechURL(text: string, threadId: string): string {
  * say. HEAD first: on a miss it answers without synthesising, so a clip that
  * failed only on the way over is not paid for twice. Only a HEAD that fails
  * is followed by a GET for the message, and the server answers a refusal it
- * just had from memory rather than asking ElevenLabs again.
+ * just had from memory rather than asking ElevenLabs again. `partway` is a
+ * clip that had started playing, so a dropped connection is worded as such.
  */
-export async function explainFailure(url: string, fetcher: typeof fetch = fetch): Promise<string> {
+export async function explainFailure(
+  url: string,
+  fetcher: typeof fetch = fetch,
+  { partway = false }: { partway?: boolean } = {},
+): Promise<string> {
   try {
     const head = await fetcher(url, { method: "HEAD", credentials: "same-origin" });
-    if (head.ok) return "Couldn't play that: the connection dropped. Try again.";
+    if (head.ok) {
+      return partway
+        ? "Reading stopped partway: the connection dropped."
+        : "Couldn't play that: the connection dropped. Try again.";
+    }
     const res = await fetcher(url, { credentials: "same-origin" });
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     return body?.error || `Couldn't read that aloud (${res.status})`;
@@ -62,18 +71,18 @@ interface Current {
   url: string;
   /** Our own /api/tts can say why it failed; a voice preview's CDN cannot. */
   explainable: boolean;
-  /** Audio has played: a failure now is the stream breaking, not a refusal. */
+  /** Audio has played: a failure now is usually the stream breaking. */
   started: boolean;
   artist?: string;
 }
 
 export function createPlayer({
   makeAudio = () => new Audio(),
-  explain = explainFailure,
+  explain = (url, opts) => explainFailure(url, fetch, opts),
   notify = (message: string) => toast.error(message),
 }: {
   makeAudio?: () => AudioLike;
-  explain?: (url: string) => Promise<string>;
+  explain?: (url: string, opts: { partway: boolean }) => Promise<string>;
   notify?: (message: string) => void;
 } = {}) {
   let state = IDLE;
@@ -122,10 +131,10 @@ export function createPlayer({
       if (err.code === MEDIA_ERR_ABORTED) return;
       if (!failed.explainable) {
         notify("Couldn't play that preview.");
-      } else if (failed.started) {
-        notify("Reading stopped partway: the connection dropped.");
       } else {
-        void explain(failed.url).then(notify);
+        // Even after audio has played, the server may have refused the rest
+        // (out of credit, say), so it is asked either way.
+        void explain(failed.url, { partway: failed.started }).then(notify);
       }
     });
     audio = a;

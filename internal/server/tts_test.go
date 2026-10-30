@@ -64,6 +64,9 @@ func newSpeechRig(t *testing.T, upstream http.Handler) *speechRig {
 	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), Speech: speech})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	// Last registered, so it runs first: a synthesis outliving the test
+	// would write into directories already being removed.
+	t.Cleanup(srv.syntheses.close)
 	return &speechRig{t: t, ts: ts, c: &conn{srv: srv}, st: st, srv: srv, cacheDir: filepath.Join(cfgDir, "tts-cache")}
 }
 
@@ -399,8 +402,10 @@ func TestBrokenStreamLeavesNoCacheEntry(t *testing.T) {
 	r.setKey("good")
 	r.setVoice("v1")
 
+	// Depending on when it gets there, the request sees the failure as an
+	// error status or as a cut connection; either way, not as a whole clip.
 	res := r.get(speakPath("hello", ""), nil)
-	if _, err := io.ReadAll(res.Body); err == nil {
+	if _, err := io.ReadAll(res.Body); err == nil && res.StatusCode == http.StatusOK {
 		t.Fatal("a stream that broke ended cleanly; the player would take half a clip for the whole")
 	}
 	if names := r.cacheFiles(); len(names) != 0 {
@@ -412,20 +417,20 @@ func TestBrokenStreamLeavesNoCacheEntry(t *testing.T) {
 	}
 }
 
-func TestClientHangingUpCancelsUpstreamAndCachesNothing(t *testing.T) {
-	var cancelled atomic.Bool
-	upstreamDone := make(chan struct{})
+// A player that hangs up and asks again finds the clip still being made or
+// already cached, rather than paying for it a second time.
+func TestHangingUpLeavesTheSynthesisRunning(t *testing.T) {
+	release := make(chan struct{})
 	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
-		defer close(upstreamDone)
 		_, _ = io.WriteString(w, "half")
 		w.(http.Flusher).Flush()
-		select {
-		case <-r.Context().Done():
-			cancelled.Store(true)
-		case <-time.After(10 * time.Second):
-		}
+		<-release
+		_, _ = io.WriteString(w, "-rest")
 	}}
 	r := newSpeechRig(t, up)
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(finish)
 	r.setKey("good")
 	r.setVoice("v1")
 
@@ -441,17 +446,215 @@ func TestClientHangingUpCancelsUpstreamAndCachesNothing(t *testing.T) {
 	}
 	cancel()
 	res.Body.Close()
+	finish()
 
-	<-upstreamDone
-	if !cancelled.Load() {
-		t.Fatal("hanging up did not cancel the ElevenLabs request")
-	}
 	deadline := time.Now().Add(5 * time.Second)
-	for len(r.cacheFiles()) != 0 {
+	for names := r.cacheFiles(); len(names) != 1 || !strings.HasSuffix(names[0], ".mp3"); names = r.cacheFiles() {
 		if time.Now().After(deadline) {
-			t.Fatalf("a cancelled stream left %v in the cache", r.cacheFiles())
+			t.Fatalf("the synthesis was not finished and cached after the hang-up: %v", names)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if body := readBody(t, r.get(speakPath("hello", ""), nil)); body != "half-rest" {
+		t.Fatalf("replay %q", body)
+	}
+	if got := up.requested(); len(got) != 1 {
+		t.Fatalf("ElevenLabs was asked %d times, want 1", len(got))
+	}
+}
+
+// inFlight starts a request aside and hands back its response once the
+// headers are in, or its error.
+func (r *speechRig) inFlight(method, path string, header map[string]string) <-chan *http.Response {
+	r.t.Helper()
+	got := make(chan *http.Response, 1)
+	req, err := http.NewRequest(method, r.ts.URL+path, nil)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	go func() {
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			close(got)
+			return
+		}
+		got <- res
+	}()
+	return got
+}
+
+func await(t *testing.T, got <-chan *http.Response) *http.Response {
+	t.Helper()
+	select {
+	case res, ok := <-got:
+		if !ok {
+			t.Fatal("the request failed")
+		}
+		t.Cleanup(func() { res.Body.Close() })
+		return res
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer")
+	}
+	return nil
+}
+
+// Every request for a clip still being made reads the one synthesis: the
+// first, a probe, and a resume past what has been written.
+func TestOneSynthesisServesEveryRequest(t *testing.T) {
+	release := make(chan struct{})
+	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "aaaa")
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, "bbbb")
+	}}
+	r := newSpeechRig(t, up)
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(finish)
+	r.setKey("good")
+	r.setVoice("v1")
+	path := speakPath("hello", "")
+
+	first := await(t, r.inFlight(http.MethodGet, path, nil))
+	if first.StatusCode != http.StatusOK || first.Header.Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("first: %d, Accept-Ranges %q", first.StatusCode, first.Header.Get("Accept-Ranges"))
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(first.Body, buf); err != nil || string(buf) != "aaaa" {
+		t.Fatalf("first chunk %q, %v", buf, err)
+	}
+
+	probe := r.get(path, map[string]string{"Range": "bytes=0-1"})
+	if probe.StatusCode != http.StatusPartialContent || probe.Header.Get("Content-Range") != "bytes 0-1/*" {
+		t.Fatalf("probe: %d, Content-Range %q", probe.StatusCode, probe.Header.Get("Content-Range"))
+	}
+	if body := readBody(t, probe); body != "aa" {
+		t.Fatalf("probe body %q", body)
+	}
+
+	head, err := http.Head(r.ts.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head.Body.Close()
+	if head.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD: %d", head.StatusCode)
+	}
+
+	// Its end is not known until the clip is finished, so it waits.
+	resumed := r.inFlight(http.MethodGet, path, map[string]string{"Range": "bytes=2-"})
+	select {
+	case <-resumed:
+		t.Fatal("an open range was answered before the clip was finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	finish()
+	resume := await(t, resumed)
+	if resume.StatusCode != http.StatusPartialContent || resume.Header.Get("Content-Range") != "bytes 2-7/8" {
+		t.Fatalf("resume: %d, Content-Range %q", resume.StatusCode, resume.Header.Get("Content-Range"))
+	}
+	if body := readBody(t, resume); body != "aabbbb" {
+		t.Fatalf("resume body %q", body)
+	}
+	if rest := readBody(t, first); rest != "bbbb" {
+		t.Fatalf("first rest %q", rest)
+	}
+	if got := up.requested(); len(got) != 1 {
+		t.Fatalf("ElevenLabs was asked %d times, want 1", len(got))
+	}
+}
+
+// A synthesis that fails partway fails every request reading it, and none of
+// them starts it again.
+func TestSynthesisFailingPartwayFailsEveryReader(t *testing.T) {
+	release := make(chan struct{})
+	up := &fakeEleven{speak: func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "half")
+		w.(http.Flusher).Flush()
+		<-release
+		panic(http.ErrAbortHandler)
+	}}
+	r := newSpeechRig(t, up)
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(finish)
+	r.setKey("good")
+	r.setVoice("v1")
+	path := speakPath("hello", "")
+
+	first := await(t, r.inFlight(http.MethodGet, path, nil))
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(first.Body, buf); err != nil {
+		t.Fatal(err)
+	}
+	resumed := r.inFlight(http.MethodGet, path, map[string]string{"Range": "bytes=2-"})
+	select {
+	case <-resumed:
+		t.Fatal("an open range was answered before the clip was finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	finish()
+
+	if _, err := io.ReadAll(first.Body); err == nil {
+		t.Fatal("the first request ended cleanly; the player would take half a clip for the whole")
+	}
+	if resume := await(t, resumed); resume.StatusCode != http.StatusBadGateway {
+		t.Fatalf("the waiting resume got %d, want 502", resume.StatusCode)
+	}
+	if got := up.requested(); len(got) != 1 {
+		t.Fatalf("ElevenLabs was asked %d times, want 1", len(got))
+	}
+	if names := r.cacheFiles(); len(names) != 0 {
+		t.Fatalf("a failed synthesis left %v in the cache", names)
+	}
+}
+
+func TestParseByteRange(t *testing.T) {
+	cases := []struct {
+		header      string
+		first, last int64
+		kind        rangeKind
+	}{
+		{"", 0, 0, rangeNone},
+		{"bytes=0-", 0, 0, rangeFromStart},
+		{"bytes=0-1", 0, 1, rangeClosed},
+		{"bytes=100-199", 100, 199, rangeClosed},
+		{"bytes=819200-", 0, 0, rangeOther},
+		{"bytes=-500", 0, 0, rangeOther},
+		{"bytes=0-1,4-5", 0, 0, rangeOther},
+		{"bytes=5-4", 0, 0, rangeOther},
+		{"items=0-1", 0, 0, rangeOther},
+		{"bytes=x-1", 0, 0, rangeOther},
+	}
+	for _, c := range cases {
+		first, last, kind := parseByteRange(c.header)
+		if first != c.first || last != c.last || kind != c.kind {
+			t.Errorf("parseByteRange(%q) = %d, %d, %d; want %d, %d, %d", c.header, first, last, kind, c.first, c.last, c.kind)
+		}
+	}
+}
+
+func TestUserAgentSummary(t *testing.T) {
+	cases := map[string]string{
+		"": "none",
+		"AppleCoreMedia/1.0.0.22A3354 (iPhone; U; CPU OS 18_0 like Mac OS X; en_au)":                                                              "ios-coremedia",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1": "ios-safari",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0 Mobile/15E148 Safari/604.1":  "ios-chrome",
+		"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36":                                "android-chrome",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36":                                       "chrome",
+		"Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0":                               "edge",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15":                      "safari",
+		"Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0":                                                                  "firefox",
+		"curl/8.5.0": "other",
+	}
+	for ua, want := range cases {
+		if got := userAgentSummary(ua); got != want {
+			t.Errorf("userAgentSummary(%q) = %q, want %q", ua, got, want)
+		}
 	}
 }
 
@@ -465,7 +668,8 @@ func TestSpeechUpstreamErrorsAreMapped(t *testing.T) {
 	}{
 		{"rejected key", http.StatusUnauthorized, `{"detail":{"status":"missing_permissions","message":"needs text_to_speech"}}`, http.StatusBadGateway, "ElevenLabs rejected the API key: needs text_to_speech"},
 		{"rate limited", http.StatusTooManyRequests, `{"detail":{"status":"too_many_concurrent_requests","message":"slow down"}}`, http.StatusTooManyRequests, "slow down"},
-		{"out of credit", http.StatusPaymentRequired, `{"detail":"quota exceeded"}`, http.StatusBadGateway, "quota exceeded"},
+		{"out of credit", http.StatusPaymentRequired, `{"detail":"quota exceeded"}`, http.StatusPaymentRequired, "ElevenLabs is out of credit: quota exceeded"},
+		{"quota on a good key", http.StatusUnauthorized, `{"detail":{"status":"quota_exceeded","message":"This request exceeds your quota"}}`, http.StatusPaymentRequired, "ElevenLabs is out of credit: This request exceeds your quota"},
 		{"invalid", http.StatusUnprocessableEntity, `{"detail":[{"loc":["body","text"],"msg":"field required"}]}`, http.StatusBadGateway, "field required"},
 		{"opaque", http.StatusInternalServerError, `oops`, http.StatusBadGateway, "Internal Server Error"},
 	}
@@ -521,19 +725,19 @@ func TestSpeechRefusalIsAnsweredFromMemory(t *testing.T) {
 	r.setVoice("v1")
 
 	first := r.get(speakPath("hello", ""), nil)
-	if first.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status %d, want 502", first.StatusCode)
+	if first.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("status %d, want 402", first.StatusCode)
 	}
 	head, err := http.Head(r.ts.URL + speakPath("hello", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	head.Body.Close()
-	if head.StatusCode != http.StatusBadGateway {
-		t.Fatalf("HEAD after a refusal returned %d, want 502", head.StatusCode)
+	if head.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("HEAD after a refusal returned %d, want 402", head.StatusCode)
 	}
 	again := r.get(speakPath("hello", ""), nil)
-	if again.StatusCode != http.StatusBadGateway || !strings.Contains(errorMessage(t, again), "quota exceeded") {
+	if again.StatusCode != http.StatusPaymentRequired || !strings.Contains(errorMessage(t, again), "quota exceeded") {
 		t.Fatalf("the repeat did not carry the refusal: %d", again.StatusCode)
 	}
 	if n := calls.Load(); n != 1 {

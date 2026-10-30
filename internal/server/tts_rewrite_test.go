@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
 )
@@ -105,8 +106,20 @@ func TestSpeechKeepsNoAudioFromAPartRewrite(t *testing.T) {
 		t.Fatalf("played %.40q…, want the failed part as it came and the other rewritten", got)
 	}
 	fail.Store(false)
+	// While it may still be playing, the uncached clip answers the player's
+	// later requests rather than being paid for again.
+	if got := readBody(t, r.get(speakPath(text, thread), nil)); !strings.Contains(got, "First aaa") {
+		t.Fatalf("a play straight after got %.40q…, want the same clip", got)
+	}
+	if n := len(up.texts()); n != 1 {
+		t.Fatalf("ElevenLabs was asked %d times, want 1", n)
+	}
+	now := time.Now().Add(uncachedTTL)
+	r.srv.syntheses.mu.Lock()
+	r.srv.syntheses.now = func() time.Time { return now }
+	r.srv.syntheses.mu.Unlock()
 	if got := readBody(t, r.get(speakPath(text, thread), nil)); got != "mp3:Better.\n\nBetter." {
-		t.Fatalf("second play %.40q…, want a fresh try at the rewrite", got)
+		t.Fatalf("a later play %.40q…, want a fresh try at the rewrite", got)
 	}
 }
 
