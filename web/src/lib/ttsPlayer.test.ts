@@ -36,7 +36,10 @@ class FakeAudio extends EventTarget {
 
 function rig() {
   const audio = new FakeAudio();
-  const explain = vi.fn(async (url: string) => `explained ${url}`);
+  const explain = vi.fn(
+    async (url: string, { partway }: { partway: boolean }) =>
+      `explained ${url}${partway ? " partway" : ""}`,
+  );
   const notify = vi.fn();
   const p = createPlayer({ makeAudio: () => audio as unknown as AudioLike, explain, notify });
   return { audio, p, explain, notify };
@@ -97,20 +100,55 @@ describe("player", () => {
     audio.fire("error");
     expect(p.getState().status).toBeNull();
     await flush();
-    expect(explain).toHaveBeenCalledWith(speechURL("hello", "t1"));
+    expect(explain).toHaveBeenCalledWith(speechURL("hello", "t1"), { partway: false });
     expect(notify).toHaveBeenCalledWith(`explained ${speechURL("hello", "t1")}`);
   });
 
-  it("does not ask again for a clip that broke partway", () => {
+  it("asks the server about a clip that broke partway, saying it had started", async () => {
     const { audio, p, explain, notify } = rig();
     p.play("m1", "hello", "t1");
     audio.set({ readyState: 4 });
     audio.fire("playing");
     audio.set({ error: { code: 2 } });
     audio.fire("error");
-    expect(explain).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledTimes(1);
     expect(p.getState().status).toBeNull();
+    await flush();
+    expect(explain).toHaveBeenCalledWith(speechURL("hello", "t1"), { partway: true });
+    expect(notify).toHaveBeenCalledWith(`explained ${speechURL("hello", "t1")} partway`);
+  });
+
+  it("shows the server's refusal for a clip that broke partway", async () => {
+    const message = "ElevenLabs is out of credit";
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "HEAD"
+        ? new Response(null, { status: 402 })
+        : Response.json({ error: message }, { status: 402 }),
+    );
+    const audio = new FakeAudio();
+    const notify = vi.fn();
+    const p = createPlayer({
+      makeAudio: () => audio as unknown as AudioLike,
+      explain: (url, opts) => explainFailure(url, fetcher as typeof fetch, opts),
+      notify,
+    });
+    p.play("m1", "hello", "t1");
+    audio.set({ readyState: 4 });
+    audio.fire("playing");
+    audio.set({ error: { code: 2 } });
+    audio.fire("error");
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledWith(message));
+  });
+
+  it("says nothing when a clip is aborted, even partway", async () => {
+    const { audio, p, explain, notify } = rig();
+    p.play("m1", "hello", "t1");
+    audio.set({ readyState: 4 });
+    audio.fire("playing");
+    audio.set({ error: { code: 1 } });
+    audio.fire("error");
+    await flush();
+    expect(explain).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("does not ask the server about a preview, whose audio is not its own", () => {
@@ -183,5 +221,37 @@ describe("explainFailure", () => {
       { method: "HEAD", credentials: "same-origin" },
     ]);
     expect(msg).toBeTruthy();
+  });
+
+  it("words a drop partway differently from one before playback started", async () => {
+    const fetcher = vi.fn(async () => response(200));
+    const before = await explainFailure("/api/tts?text=x", fetcher as typeof fetch);
+    const partway = await explainFailure("/api/tts?text=x", fetcher as typeof fetch, {
+      partway: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(partway).toBeTruthy();
+    expect(partway).not.toBe(before);
+  });
+
+  it("reads the server's message for a clip refused partway, as when out of credit", async () => {
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "HEAD" ? response(402) : response(402, { error: "Out of credit" }),
+    );
+    const msg = await explainFailure("/api/tts?text=x", fetcher as typeof fetch, {
+      partway: true,
+    });
+    expect(msg).toBe("Out of credit");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("says the server could not be reached when the network is down", async () => {
+    const fetcher = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    const msg = await explainFailure("/api/tts?text=x", fetcher as typeof fetch, {
+      partway: true,
+    });
+    expect(msg).toBe("Couldn't reach the server to read that aloud.");
   });
 });

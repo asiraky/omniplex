@@ -72,6 +72,8 @@ type Server struct {
 	// speechFailures remembers what ElevenLabs last refused, so asking again
 	// for the message does not pay for the same failure twice.
 	speechFailures speechFailures
+	// syntheses are the clips being made, which every request for one shares.
+	syntheses syntheses
 	// rewriter rewrites a message for the voice before it is read, with the
 	// model editorFor picks for the thread. A test swaps editorFor.
 	rewriter  *tts.Rewriter
