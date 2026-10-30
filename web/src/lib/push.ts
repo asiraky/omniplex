@@ -135,13 +135,13 @@ export class PushHTTPError extends Error {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
-  // A body that is not JSON (an empty 204, a proxy's HTML error page) reads
-  // as null rather than throwing.
-  if (!res.ok) {
-    const err = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new PushHTTPError(err?.error || `Request failed (${res.status})`, res.status);
+  // Every push endpoint answers JSON. Anything else (a proxy's HTML page, the
+  // dev server's SPA fallback) is a failed request, whatever its status.
+  const body = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
+  if (!res.ok || body === null) {
+    throw new PushHTTPError(body?.error || `Request failed (${res.status})`, res.status);
   }
-  return (await res.json().catch(() => null)) as T;
+  return body;
 }
 
 export async function fetchPush(): Promise<PushState> {

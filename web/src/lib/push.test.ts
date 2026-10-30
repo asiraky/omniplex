@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { base64UrlToBytes, deviceLabel, pushSupport, testSummary, type PushEnv } from "./push";
+import { base64UrlToBytes, deviceLabel, fetchPush, pushSupport, testSummary, type PushEnv } from "./push";
 
 const UA = {
   iphoneSafari:
@@ -115,5 +115,26 @@ describe("testSummary", () => {
 
   it("says when there was nobody to send to", () => {
     expect(testSummary({ sent: 0, removed: 0, failed: 0 })).toBe("No devices to send to.");
+  });
+});
+
+describe("fetchPush", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const answer = (body: string, status = 200) =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status })));
+
+  it("reads the key and devices", async () => {
+    answer(JSON.stringify({ publicKey: "k", subscriptions: [] }));
+    await expect(fetchPush()).resolves.toEqual({ publicKey: "k", subscriptions: [] });
+  });
+
+  it("fails cleanly when a 200 is not JSON, as from an HTML fallback", async () => {
+    answer("<!doctype html><title>app</title>");
+    await expect(fetchPush()).rejects.toThrow("Request failed (200)");
+  });
+
+  it("surfaces the server's error message", async () => {
+    answer(JSON.stringify({ error: "push is off" }), 501);
+    await expect(fetchPush()).rejects.toMatchObject({ message: "push is off", status: 501 });
   });
 });
