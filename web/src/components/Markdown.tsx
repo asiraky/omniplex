@@ -11,38 +11,11 @@ import type { Processor } from "unified";
 
 import { useCopy } from "~/lib/clipboard";
 import { fileIconFor } from "~/lib/fileIcons";
+import { closeOpenFence, splitMarkdownBlocks } from "~/lib/markdownBlocks";
 import { useOpenPath } from "~/lib/openPath";
 import { detectPath } from "~/lib/paths";
 import { cn } from "~/lib/utils";
 const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
-
-// Text arrives a character at a time, so at any moment the parser is being
-// handed a document that is very likely mid-sentence. Most half-written
-// constructs are harmless — an unfinished `**bold` is just literal text until
-// its closing pair lands. A fence is the exception: an opening ``` with no
-// close makes every line after it a paragraph, then reflows the lot into a
-// code block the instant the close arrives. Closing it here means the block is
-// a code block from its first line and simply grows.
-function closeOpenFence(text: string): string {
-  let open: { char: string; len: number } | null = null;
-  for (const line of text.split("\n")) {
-    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (!m) continue;
-    const [, fence, rest] = m;
-    const char = fence[0];
-    if (open === null) {
-      // A backtick fence's info string cannot itself contain a backtick, so
-      // "``` a ` b" opens nothing.
-      if (char === "`" && rest.includes("`")) continue;
-      open = { char, len: fence.length };
-      continue;
-    }
-    // A closing fence is the same character, at least as long as the opener,
-    // and carries no info string — "```js" inside a ```` block is content.
-    if (char === open.char && fence.length >= open.len && rest.trim() === "") open = null;
-  }
-  return open === null ? text : `${text}\n${open.char.repeat(open.len)}`;
-}
 
 // The fenced text as the author wrote it, straight off the syntax tree — the
 // rendered children would have lost the newlines that make it copyable.
@@ -223,10 +196,20 @@ function remarkGfm(this: Processor) {
   (data.fromMarkdownExtensions ??= []).push(gfmFromMarkdown());
 }
 
-const PLUGINS = [remarkGfm, remarkBreaks];
+export const PLUGINS = [remarkGfm, remarkBreaks];
 // A written document means its single newlines as soft wraps, the way every
 // other renderer reads a README; only chat prose relies on them as breaks.
 const DOCUMENT_PLUGINS = [remarkGfm];
+
+// One block of chat Markdown. Memoised on its text: once a later block has
+// started, this one is finished and keeps its render while the stream grows.
+const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  );
+});
 
 /**
  * Markdown as an agent writes it: GitHub flavour, single newlines kept as
@@ -234,8 +217,14 @@ const DOCUMENT_PLUGINS = [remarkGfm];
  * than executed — `rehype-raw` is deliberately absent, so any HTML in the
  * output is text on the page and nothing more.
  *
- * Memoised on the text, so a message that has stopped changing is not
- * re-parsed every time a later one grows.
+ * Chat text is cut into blocks, each parsed on its own, so a streaming
+ * message re-parses only the block still being written and finished blocks
+ * keep their render. They are keyed by position because a stream only ever
+ * changes the last one or adds another. Splitting is unconditional, not just
+ * while streaming, so the end of a stream costs no full re-parse. The blocks
+ * sit directly in the container, with no wrapper each, because `first:` and
+ * `last:` spacing and the streaming caret's `:last-child` all need them as
+ * siblings. Text whose syntax ties blocks together renders whole.
  *
  * `document` is for a whole file rather than a chat message: complete, so no
  * fence needs closing, and written with soft-wrapped lines.
@@ -249,11 +238,22 @@ export const Markdown = memo(function Markdown({
   className?: string;
   document?: boolean;
 }) {
+  if (document) {
+    return (
+      <div className={cn("min-w-0", className)}>
+        <ReactMarkdown remarkPlugins={DOCUMENT_PLUGINS} components={COMPONENTS}>
+          {text}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+  // Only the last block can hold an open fence: the splitter never cuts inside one.
+  const blocks = splitMarkdownBlocks(text) ?? [text];
   return (
     <div className={cn("min-w-0", className)}>
-      <ReactMarkdown remarkPlugins={document ? DOCUMENT_PLUGINS : PLUGINS} components={COMPONENTS}>
-        {document ? text : closeOpenFence(text)}
-      </ReactMarkdown>
+      {blocks.map((block, i) => (
+        <MarkdownBlock key={i} text={i === blocks.length - 1 ? closeOpenFence(block) : block} />
+      ))}
     </div>
   );
 });
