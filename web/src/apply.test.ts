@@ -246,7 +246,7 @@ describe("cards", () => {
 
   it("adds a pending elicitation and a pending card item for the turn", () => {
     const s = applyEvent(emptyState("s1"), requested(1, "r1"));
-    expect(s.pendingElicitations).toEqual([{ requestId: "r1", prompt: "Add linear", schema: {}, card }]);
+    expect(s.pendingElicitations).toEqual([{ requestId: "r1", turnId: "t1", prompt: "Add linear", schema: {}, card }]);
     expect(s.items).toEqual([
       { id: "card:r1", kind: "card", turnId: "t1", card, status: "pending", receivedAt: 5000 },
     ]);
@@ -382,5 +382,36 @@ describe("plans", () => {
     // The running turn's first plan is new, not a straggler.
     const live = applyEvent(s, ev(4, "plan.updated", { turnId: "t2", steps: [step("a")] }));
     expect(live.items.map((it) => it.id)).toEqual(["turn-plan:t2"]);
+  });
+});
+
+// Mirrors TestTurnFinishedSettlesItsRequests in internal/projection/state_test.go.
+describe("turn.finished settles the turn's requests", () => {
+  it("drops the finished turn's permission and question, keeping other turns', untagged ones and cards", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "permission.requested", { requestId: "p1", turnId: "t1", title: "rm -rf" }));
+    s = applyEvent(s, ev(3, "permission.requested", { requestId: "p-other", turnId: "t0", title: "ls" }));
+    s = applyEvent(s, ev(4, "permission.requested", { requestId: "p-untagged", title: "cat" }));
+    s = applyEvent(s, ev(5, "elicitation.requested", { requestId: "q1", turnId: "t1", prompt: "which?", schema: {} }));
+    s = applyEvent(
+      s,
+      ev(6, "elicitation.requested", { requestId: "card1", turnId: "t1", prompt: "", schema: {}, card: { kind: "mcp" } }),
+    );
+
+    s = applyEvent(s, ev(7, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+
+    expect(s.pendingPermissions.map((x) => x.requestId)).toEqual(["p-other", "p-untagged"]);
+    expect(s.pendingElicitations.map((x) => x.requestId)).toEqual(["card1"]);
+  });
+
+  it("leaves every request alone when the finish names no turn", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "permission.requested", { requestId: "p-untagged", title: "cat" }));
+    s = applyEvent(s, ev(3, "elicitation.requested", { requestId: "q-untagged", prompt: "which?", schema: {} }));
+
+    s = applyEvent(s, ev(4, "turn.finished", { stopReason: "cancelled" }));
+
+    expect(s.pendingPermissions.map((x) => x.requestId)).toEqual(["p-untagged"]);
+    expect(s.pendingElicitations.map((x) => x.requestId)).toEqual(["q-untagged"]);
   });
 });

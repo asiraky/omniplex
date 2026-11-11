@@ -237,6 +237,8 @@ export interface PendingPermission {
   title: string;
   input?: unknown;
   options: PermissionOption[];
+  /** The turn that asked, when the harness said; that turn's finish settles it. */
+  turnId?: string;
 }
 
 export interface PendingElicitation {
@@ -248,6 +250,9 @@ export interface PendingElicitation {
     required?: string[];
     "x-url"?: string;
   };
+  /** The turn that asked, when the harness said; that turn's finish settles it
+      unless this is a card. */
+  turnId?: string;
   /** Set when the agent raised this through Omniplex's own tools: a change to
       Omniplex itself, answered with resolve_card rather than as a question. */
   card?: Card;
