@@ -458,7 +458,7 @@ type session struct {
 	// second, named nowhere but turn/started.
 	runningTurnID string
 	interrupting  bool            // an interrupt for the open turn is already in flight
-	streamed     map[string]bool // item ids that arrived as deltas
+	streamed      map[string]bool // item ids that arrived as deltas
 	// lastServerTurn is codex's id for the turn that most recently completed.
 	// A notification that straggles in after its turn ended still names it,
 	// and recording it as the next turn's id would aim the stop button at a
