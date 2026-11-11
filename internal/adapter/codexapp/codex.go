@@ -462,6 +462,9 @@ type session struct {
 	// canonical notice can distinguish a human request from auto-compaction.
 	manualCompact bool
 	compaction    compactionCount
+	// decodeWarned holds each notification method and decode error already
+	// logged, so a drifted codex that repeats a bad shape logs it once.
+	decodeWarned map[string]bool
 }
 
 // compactionCount tracks the compactions one codex turn has reported, so the
@@ -1117,7 +1120,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// aggregated output, which is what the timeline renders.
 
 	case "turn/plan/updated", "item/plan/delta":
-		s.handlePlan(params)
+		s.handlePlan(method, params)
 
 	case "thread/tokenUsage/updated":
 		var p struct {
@@ -1243,9 +1246,7 @@ type codexItem struct {
 	Phase string `json:"phase"`
 
 	// reasoning
-	Summary []struct {
-		Text string `json:"text"`
-	} `json:"summary"`
+	Summary []string `json:"summary"`
 
 	// commandExecution
 	Command          string `json:"command"`
@@ -1253,13 +1254,8 @@ type codexItem struct {
 	AggregatedOutput string `json:"aggregatedOutput"`
 	ExitCode         *int   `json:"exitCode"`
 
-	// fileChange. Each change's kind is an object ({"type":"update"}) on the
-	// wire; decoding it into a string failed the whole item, so it is not
-	// read at all.
-	Changes []struct {
-		Path string `json:"path"`
-		Diff string `json:"diff"`
-	} `json:"changes"`
+	// fileChange
+	Changes []codexChange `json:"changes"`
 
 	// mcpToolCall
 	Server string         `json:"server"`
@@ -1296,12 +1292,89 @@ type mcpToolResult struct {
 	StructuredContent json.RawMessage `json:"structuredContent"`
 }
 
+// codexChange is one file of a fileChange item. Kind is an object, not a
+// string; an update with a move_path renames Path to MovePath.
+type codexChange struct {
+	Path string `json:"path"`
+	Kind struct {
+		Type     string  `json:"type"` // add | delete | update
+		MovePath *string `json:"move_path"`
+	} `json:"kind"`
+	Diff string `json:"diff"`
+}
+
+// op names what the change does to its file: add, delete, update or move.
+func (c codexChange) op() string {
+	if c.Kind.Type == "update" && c.Kind.MovePath != nil && *c.Kind.MovePath != "" {
+		return "move"
+	}
+	return c.Kind.Type
+}
+
+// fileChangeCall renders a patch as one tool row: a title naming every file,
+// and a diff per file. A patch that only renames is a move and one that only
+// deletes is a delete; anything else is an edit.
+func fileChangeCall(changes []codexChange) (kind, title string, content []proto.ToolContent) {
+	ops := map[string]bool{}
+	names := make([]string, 0, len(changes))
+	for _, c := range changes {
+		op := c.op()
+		ops[op] = true
+		if op != "move" {
+			names = append(names, c.Path)
+			content = append(content, proto.ToolContent{Type: "diff", Path: c.Path, Text: c.Diff})
+			continue
+		}
+		to := *c.Kind.MovePath
+		names = append(names, c.Path+" → "+to)
+		// Codex marks a rename by appending this line to the diff; the
+		// content says it in its own words instead.
+		diff := strings.TrimSuffix(c.Diff, "\n\nMoved to: "+to)
+		content = append(content, proto.ToolContent{Type: "diff", Path: to, Text: "moved from " + c.Path + "\n" + diff})
+	}
+	kind, verb := proto.KindEdit, "Edit"
+	if len(ops) == 1 {
+		switch {
+		case ops["move"]:
+			kind, verb = proto.KindMove, "Move"
+		case ops["delete"]:
+			kind, verb = proto.KindDelete, "Delete"
+		case ops["add"]:
+			verb = "Add"
+		}
+	}
+	return kind, verb + " " + strings.Join(names, ", "), content
+}
+
+// decodeFailed logs a notification that would not decode, once per method
+// and error. Dropping it silently is how every fileChange item went missing.
+func (s *session) decodeFailed(method string, err error) {
+	key := method + "\n" + err.Error()
+	s.mu.Lock()
+	seen := s.decodeWarned[key]
+	if !seen {
+		if s.decodeWarned == nil {
+			s.decodeWarned = map[string]bool{}
+		}
+		s.decodeWarned[key] = true
+	}
+	s.mu.Unlock()
+	if !seen {
+		s.host.Logf("codex: dropped %s that failed to decode: %v", method, err)
+	}
+}
+
 func (s *session) handleItem(completed bool, turn string, params json.RawMessage) {
 	var p struct {
 		Item   codexItem `json:"item"`
 		TurnID string    `json:"turnId"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
+		method := "item/started"
+		if completed {
+			method = "item/completed"
+		}
+		s.decodeFailed(method, err)
 		return
 	}
 	it := p.Item
@@ -1378,16 +1451,10 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		}))
 
 	case "fileChange":
-		var content []proto.ToolContent
-		paths := make([]string, 0, len(it.Changes))
-		for _, c := range it.Changes {
-			paths = append(paths, c.Path)
-			content = append(content, proto.ToolContent{Type: "diff", Path: c.Path, Text: c.Diff})
-		}
-		title := "Edit " + strings.Join(paths, ", ")
+		kind, title, content := fileChangeCall(it.Changes)
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindEdit,
+				TurnID: turn, ToolCallID: it.ID, Kind: kind,
 				Title: title, Status: proto.StatusInProgress,
 			}))
 			return
@@ -1566,7 +1633,7 @@ func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 	s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: trigger}))
 }
 
-func (s *session) handlePlan(params json.RawMessage) {
+func (s *session) handlePlan(method string, params json.RawMessage) {
 	var p struct {
 		Plan []struct {
 			Step   string `json:"step"`
@@ -1582,6 +1649,7 @@ func (s *session) handlePlan(params json.RawMessage) {
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
+		s.decodeFailed(method, err)
 		return
 	}
 	steps := p.Plan
