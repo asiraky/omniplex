@@ -1244,10 +1244,11 @@ type codexItem struct {
 	AggregatedOutput string `json:"aggregatedOutput"`
 	ExitCode         *int   `json:"exitCode"`
 
-	// fileChange
+	// fileChange. Each change's kind is an object ({"type":"update"}) on the
+	// wire; decoding it into a string failed the whole item, so it is not
+	// read at all.
 	Changes []struct {
 		Path string `json:"path"`
-		Kind string `json:"kind"`
 		Diff string `json:"diff"`
 	} `json:"changes"`
 
