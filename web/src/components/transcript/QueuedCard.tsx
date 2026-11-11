@@ -7,15 +7,20 @@ import { PromptFiles, PromptImages } from "./Attachments";
 // will land and looks like the user bubble it is about to become, dimmed, so
 // the reader can see what is coming. One the harness already holds is read at
 // its next step and cannot be taken back; one still waiting on the server can.
+// After a usage limit the server holds the queue until a new turn starts, so
+// the card says it is waiting on the reset rather than on the current turn.
 export function QueuedCard({
   queued,
   threadId,
   artefacts,
+  held = false,
   onDequeue,
 }: {
   queued: QueuedPrompt;
   threadId: string;
   artefacts: Artefact[];
+  /** The latest turn stopped at a usage limit, so nothing runs until it resets. */
+  held?: boolean;
   onDequeue: (queueId: string) => void;
 }) {
   const { text, files } = parseAttachedFiles(queued.prompt ?? "");
@@ -36,13 +41,19 @@ export function QueuedCard({
           {text}
         </div>
       )}
-      <div className="text-muted-foreground mt-1 flex items-center gap-1 text-[12px]">
+      <div className="text-muted-foreground mt-1 flex flex-wrap items-center justify-end gap-1 text-[12px]">
         {queued.sent ? (
           <span>Sent · read after the current step</span>
         ) : (
           <>
             <span>Queued</span>
             <span aria-hidden>·</span>
+            {held && (
+              <>
+                <span>held until the limit resets</span>
+                <span aria-hidden>·</span>
+              </>
+            )}
             <button
               type="button"
               onClick={() => onDequeue(queued.queueId)}

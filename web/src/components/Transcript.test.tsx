@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
 import { render, viewport, wrap } from "~/test/harness";
-import type { PullRequest, Turn } from "~/protocol";
+import { shortTime } from "~/lib/scheduleTime";
+import type { PullRequest, ScheduledPrompt, Turn } from "~/protocol";
 
 const state = (text: string): any => ({
   threadId: "a",
@@ -530,6 +531,92 @@ describe("a turn that failed", () => {
       render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
       expect(screen.getByRole("button", { name: /retry this prompt/i })).toBeTruthy();
+    });
+
+    // The server arms a continuation at the reset; the card says when, and
+    // is where it gets called off.
+    describe("with a continuation armed", () => {
+      const dueAt = new Date(2026, 10, 11, 15, 40).getTime();
+      const schedule = (over: Partial<ScheduledPrompt> = {}): ScheduledPrompt => ({
+        id: "s1",
+        revision: 1,
+        prompt: "continue",
+        dueAt,
+        timeZone: "Australia/Brisbane",
+        model: "",
+        mode: "default",
+        effort: "",
+        status: "pending",
+        kind: "limit",
+        ...over,
+      });
+      const armed = (...schedules: ScheduledPrompt[]) => {
+        const s = limited();
+        s.scheduledPrompts = schedules;
+        return s;
+      };
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date(2026, 10, 11, 12, 0));
+      });
+      afterEach(() => vi.useRealTimers());
+
+      it("says when it continues", () => {
+        render(<Transcript state={armed(schedule())} {...props} onCancelContinuation={async () => {}} />);
+        expect(screen.getByText(`Continuing at ${shortTime(dueAt)}`)).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+      });
+
+      it("says nothing once it is cancelled or sent, or when there is none", () => {
+        for (const s of [
+          armed(schedule({ status: "cancelled" })),
+          armed(schedule({ status: "sent" })),
+          armed(schedule({ kind: undefined })),
+          limited(),
+        ]) {
+          const { unmount } = render(<Transcript state={s} {...props} onCancelContinuation={async () => {}} />);
+          expect(screen.queryByText(/Continuing/)).toBeNull();
+          unmount();
+        }
+      });
+
+      it("cancels that schedule, and says so when it could not", async () => {
+        let fail!: (e: Error) => void;
+        const onCancelContinuation = vi.fn(
+          (_p: ScheduledPrompt) => new Promise<void>((_, reject) => (fail = reject)),
+        );
+        render(
+          <Transcript
+            state={armed(schedule({ id: "human", kind: undefined }), schedule())}
+            {...props}
+            onCancelContinuation={onCancelContinuation}
+          />,
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(onCancelContinuation).toHaveBeenCalledOnce();
+        expect(onCancelContinuation.mock.calls[0][0]).toMatchObject({ id: "s1", revision: 1 });
+        const pending = screen.getByRole("button", { name: /Cancelling/ }) as HTMLButtonElement;
+        expect(pending.disabled).toBe(true);
+        await act(async () => fail(new Error("Reconnect first")));
+        expect(screen.getByRole("alert").textContent).toBe("Reconnect first");
+        expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
+      });
+    });
+
+    it("labels queued prompts as held only while the latest turn is stopped at a limit", () => {
+      const queued = [{ queueId: "q1", prompt: "next" }];
+      const s = limited();
+      s.queuedPrompts = queued;
+      const { unmount } = render(<Transcript state={s} {...props} />);
+      expect(screen.getByText(/held until the limit resets/)).toBeTruthy();
+      unmount();
+
+      for (const other of [failed({ failure: "auth" }), failed({}), state("hi")]) {
+        other.queuedPrompts = queued;
+        const { unmount } = render(<Transcript state={other} {...props} />);
+        expect(screen.queryByText(/held until the limit resets/)).toBeNull();
+        unmount();
+      }
     });
   });
 

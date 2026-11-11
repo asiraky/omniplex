@@ -6,7 +6,14 @@ import { Spinner } from "~/components/ui/spinner";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
 import { cn } from "~/lib/utils";
-import type { ComposerItem, Job, PullRequest, ThreadState, Turn } from "~/protocol";
+import type {
+  ComposerItem,
+  Job,
+  PullRequest,
+  ScheduledPrompt,
+  ThreadState,
+  Turn,
+} from "~/protocol";
 import { useAutoScroll } from "~/useAutoScroll";
 
 import type { OpenArtefact } from "./transcript/Attachments";
@@ -71,6 +78,8 @@ type TranscriptProps = {
   /** Moves the thread to another account and re-sends the given turn;
       resolves false when the switch was refused or failed. */
   onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
+  /** Cancels the continuation the server armed at a usage limit's reset. */
+  onCancelContinuation?: (p: ScheduledPrompt) => Promise<void>;
   onOpenDiff: (path?: string) => void;
   /** The thread's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
@@ -170,6 +179,13 @@ export function Transcript({
   usePromptAnchor(scrollerRef, state.threadId, lastPromptID, anchorTo);
 
   const artefacts = state.artefacts ?? NO_ARTEFACTS;
+  // A turn stopped at a usage limit holds the queue on the server until a new
+  // turn starts, and arms a continuation for when the limit resets.
+  const lastTurn = state.turns[state.turns.length - 1];
+  const held = !!lastTurn?.done && lastTurn.failure === "limit";
+  const continuation = state.scheduledPrompts?.find(
+    (p) => p.kind === "limit" && (p.status === "pending" || p.status === "ready"),
+  );
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -252,7 +268,12 @@ export function Transcript({
             )}
 
           {interrupted && (
-            <InterruptedCard turn={interrupted} switchedTo={switchedTo} {...interruptedProps} />
+            <InterruptedCard
+              turn={interrupted}
+              switchedTo={switchedTo}
+              continuation={continuation}
+              {...interruptedProps}
+            />
           )}
 
           {(state.queuedPrompts ?? []).map((q) => (
@@ -261,6 +282,7 @@ export function Transcript({
               queued={q}
               threadId={state.threadId}
               artefacts={artefacts}
+              held={held}
               onDequeue={(id) => onDequeue?.(id)} />
           ))}
 

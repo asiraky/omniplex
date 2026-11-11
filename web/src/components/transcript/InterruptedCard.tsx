@@ -1,8 +1,9 @@
-import { ArrowRightLeftIcon, LogInIcon } from "lucide-react";
+import { ArrowRightLeftIcon, ClockIcon, LogInIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { Button } from "~/components/ui/button";
-import type { Turn } from "~/protocol";
+import { sameDay, shortTime } from "~/lib/scheduleTime";
+import type { ScheduledPrompt, Turn } from "~/protocol";
 
 type SwitchTarget = { id: string; name: string };
 
@@ -23,6 +24,11 @@ type InterruptedProps = {
   /** Moves the thread to another account, then re-sends this turn.
       Resolves false when the switch did not happen, so the card can be used again. */
   onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
+  /** The continuation the server armed for when the limit resets, while it
+      is still to come. */
+  continuation?: ScheduledPrompt;
+  /** Cancels that continuation; rejects with what went wrong. */
+  onCancelContinuation?: (p: ScheduledPrompt) => Promise<void>;
 };
 
 // Whether a button on the card has already sent something, and the setter the
@@ -75,6 +81,61 @@ function SwitchAccountButton({
   );
 }
 
+// The continuation the server armed at the limit's reset, and the one way to
+// call it off. Everything else about it is the server's business: once it
+// is cancelled or sent, the schedule's new status drops it from the card.
+function ContinuationChip({
+  continuation,
+  onCancel,
+}: {
+  continuation: ScheduledPrompt;
+  onCancel?: (p: ScheduledPrompt) => Promise<void>;
+}) {
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState("");
+  async function cancel() {
+    if (!onCancel) return;
+    setCancelling(true);
+    setError("");
+    try {
+      await onCancel(continuation);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCancelling(false);
+    }
+  }
+  return (
+    <div className="mt-2.5">
+      <div className="bg-background text-muted-foreground inline-flex max-w-full flex-wrap items-center gap-x-1.5 rounded-full border py-1 pr-1.5 pl-3 text-[12px]">
+        <ClockIcon className="size-3.5 shrink-0" aria-hidden />
+        <span>
+          Continuing {sameDay(continuation.dueAt, Date.now()) && "at "}
+          {shortTime(continuation.dueAt)}
+        </span>
+        {onCancel && (
+          <>
+            <span aria-hidden>·</span>
+            <button
+              type="button"
+              disabled={cancelling}
+              onClick={() => void cancel()}
+              className="hover:text-foreground focus-visible:ring-ring rounded-full px-1.5 py-1 transition-colors outline-none focus-visible:ring-2 disabled:opacity-60"
+            >
+              {cancelling ? "Cancelling…" : "Cancel"}
+            </button>
+          </>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="text-destructive mt-1.5 text-[12px]">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // A usage limit is not fixed by trying again on the same account; it is
 // fixed by waiting for the reset the error names, or by carrying the
 // conversation to another account and running the prompt there.
@@ -85,12 +146,20 @@ function LimitCard({
   switchTargets,
   switchedTo,
   onSwitchAccount,
+  continuation,
+  onCancelContinuation,
   sending,
   setSending,
 }: Sending &
   Pick<
     InterruptedProps,
-    "turn" | "providerName" | "onRetryTurn" | "switchedTo" | "onSwitchAccount"
+    | "turn"
+    | "providerName"
+    | "onRetryTurn"
+    | "switchedTo"
+    | "onSwitchAccount"
+    | "continuation"
+    | "onCancelContinuation"
   > & {
     switchTargets: SwitchTarget[];
   }) {
@@ -112,6 +181,13 @@ function LimitCard({
       {/* No error text: the harness's own message just above already says
           when the limit resets. */}
       <p className="text-[13px]">{providerName ?? "This account"} hit its usage limit.</p>
+      {continuation && (
+        <ContinuationChip
+          key={continuation.id}
+          continuation={continuation}
+          onCancel={onCancelContinuation}
+        />
+      )}
       {switchedTo ? (
         <>
           <p className="text-muted-foreground mt-1.5 text-[12px]">

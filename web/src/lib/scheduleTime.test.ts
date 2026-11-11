@@ -3,6 +3,7 @@ import {
   absoluteCandidates,
   day,
   localDateTime,
+  shortTime,
   validateSchedule,
 } from "./scheduleTime";
 
@@ -42,5 +43,19 @@ describe("scheduled local times", () => {
     expect(validateSchedule(now + day, now)).toBeUndefined();
     expect(validateSchedule(now + day + 1, now)).toBeTruthy();
     expect(validateSchedule(NaN, now)).toBeTruthy();
+  });
+});
+
+describe("short times", () => {
+  const now = new Date(2026, 10, 11, 9, 0).getTime();
+  it("gives today's time alone, with a lowercase day period", () => {
+    expect(shortTime(new Date(2026, 10, 11, 15, 40).getTime(), now, "en-US")).toBe("3:40pm");
+    expect(shortTime(new Date(2026, 10, 11, 0, 5).getTime(), now, "en-US")).toBe("12:05am");
+  });
+  it("names the weekday on any other day", () => {
+    expect(shortTime(new Date(2026, 10, 12, 15, 40).getTime(), now, "en-US")).toBe("Thu 3:40pm");
+  });
+  it("leaves a 24-hour clock alone", () => {
+    expect(shortTime(new Date(2026, 10, 11, 15, 40).getTime(), now, "en-GB")).toBe("15:40");
   });
 });
