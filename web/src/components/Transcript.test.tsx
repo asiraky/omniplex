@@ -639,6 +639,28 @@ describe("a turn that failed", () => {
       expect(onRetryTurn).toHaveBeenCalledOnce();
     });
 
+    // Extensions speak up as the switched session starts; their notice lands
+    // after the switch and must not read as "something happened since".
+    it("still counts the switch when an extension notice follows it", async () => {
+      const s = limited();
+      s.items.push(
+        { id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" },
+        { id: "notify:10", kind: "notice", noticeKind: "notify", level: "warning", text: "No API key for lint" },
+      );
+      render(
+        <Transcript
+          state={s}
+          {...props}
+          onRetryTurn={() => {}}
+          switchTargets={[{ id: "aaron", name: "Aaron" }]}
+          onSwitchAccount={async () => true}
+        />,
+      );
+      expect(await screen.findByRole("button", { name: /retry this prompt/i })).toBeTruthy();
+      expect(screen.getByText(/No API key for lint/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
+    });
+
     it("with no other account, says to wait and still offers the retry", async () => {
       attach(limited(), <Transcript {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
       expect(await screen.findByRole("button", { name: /retry this prompt/i })).toBeTruthy();

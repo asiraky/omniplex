@@ -46,6 +46,14 @@ export function limitHold(state: Pick<TranscriptState, "scheduledPrompts" | "tur
   return { continuation, heldFor };
 }
 
+function newestBesidesNotify(items: Item[]): Item | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (!(it.kind === "notice" && it.noticeKind === "notify")) return it;
+  }
+  return undefined;
+}
+
 /** What the transcript derives from the thread's state before it draws a row. */
 export function useTranscriptModel(
   state: Pick<TranscriptState, "phase" | "closed" | "items" | "turns" | "scheduledPrompts">,
@@ -109,7 +117,9 @@ export function useTranscriptModel(
     return last?.done && last.stopReason === "error" ? last : undefined;
   }, [state.turns, state.phase, state.closed]);
   // A switch made since the limit hit: the notice it left is the newest item.
-  const lastItem = state.items[state.items.length - 1];
+  // An extension's notice does not count as anything since: extensions speak
+  // up as the switched session starts, which would hide the switch.
+  const lastItem = newestBesidesNotify(state.items);
   const switchedTo =
     lastItem?.kind === "notice" && lastItem.noticeKind === "account" ? lastItem.title : undefined;
 

@@ -46,6 +46,7 @@ const events: ClientEvents = {
   onState() {},
   onTurnStatus() {},
   onAccess() {},
+  onLiveEvent() {},
 };
 
 const latest = () => FakeSocket.all[FakeSocket.all.length - 1];
@@ -788,5 +789,74 @@ describe("turn status", () => {
       event: { threadId: "a", seq: 4, timestamp: 1, type: "turn.finished", payload: { turnId: "t1", status: "done" } },
     });
     expect(seen).toEqual([["a", RETRYING]]);
+  });
+});
+
+describe("live events", () => {
+  const notified = (seq: number): Event => ({
+    threadId: "a",
+    seq,
+    timestamp: 0,
+    type: "extension.notified",
+    payload: { level: "info", message: `note ${seq}` },
+  });
+  const event = (seq: number) => latest().reply({ type: "event", threadId: "a", event: notified(seq) });
+  const replay = (...seqs: number[]) =>
+    latest().reply({ type: "replay", threadId: "a", seq: seqs.at(-1), events: seqs.map(notified) });
+
+  // Attached to "a" at seq 3, with the socket up and the attach sent.
+  const attached = () => {
+    const onLiveEvent = vi.fn();
+    const client = new Client("ws://test", { ...events, onLiveEvent });
+    client.prime({ ...emptyState("a"), seq: 3 });
+    client.connect();
+    latest().open();
+    return onLiveEvent;
+  };
+  const seqs = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.map(([, ev]) => (ev as Event).seq);
+
+  it("holds back the catch-up replay and reports what follows synchronized", () => {
+    const onLiveEvent = attached();
+    replay(4);
+    latest().reply({ type: "synchronized", threadId: "a", seq: 4 });
+    expect(onLiveEvent).not.toHaveBeenCalled();
+
+    event(5);
+    expect(onLiveEvent).toHaveBeenCalledWith("a", notified(5));
+  });
+
+  it("does not report a straggler that lands while an attach is unanswered", () => {
+    const onLiveEvent = attached();
+    event(4);
+    latest().reply({ type: "synchronized", threadId: "a", seq: 4 });
+    event(5);
+    expect(seqs(onLiveEvent)).toEqual([5]);
+  });
+
+  it("does not report a duplicate the reducer dropped", () => {
+    const onLiveEvent = attached();
+    latest().reply({ type: "synchronized", threadId: "a", seq: 3 });
+    event(4);
+    event(4);
+    event(2);
+    expect(seqs(onLiveEvent)).toEqual([4]);
+  });
+
+  it("treats the replay after a reconnect or a resync as catch-up again", () => {
+    const onLiveEvent = attached();
+    latest().reply({ type: "synchronized", threadId: "a", seq: 3 });
+
+    latest().close();
+    vi.runOnlyPendingTimers();
+    latest().open();
+    replay(4);
+    latest().reply({ type: "synchronized", threadId: "a", seq: 4 });
+
+    latest().reply({ type: "resync", threadId: "a" });
+    replay(5);
+    latest().reply({ type: "synchronized", threadId: "a", seq: 5 });
+    event(6);
+
+    expect(seqs(onLiveEvent)).toEqual([6]);
   });
 });

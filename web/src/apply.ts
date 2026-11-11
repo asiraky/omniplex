@@ -6,6 +6,7 @@ import type {
   Artefact,
   CardOutcome,
   Event,
+  ExtensionStatus,
   Item,
   Job,
   JobPayload,
@@ -54,6 +55,7 @@ export function emptyState(threadId: string): ThreadState {
     pendingPermissions: [],
     pendingElicitations: [],
     queuedPrompts: [],
+    extensionStatuses: [],
   };
 }
 
@@ -251,6 +253,16 @@ export function dropsJobRow(s: ThreadState, ev: Event): boolean {
 export function applyJobRow(s: ThreadState, ev: Event): ThreadState {
   const row = ev.type === "job.finished" ? "finished" : "updated";
   return applyJob(s, ev.timestamp, (ev.payload ?? {}) as JobPayload, row);
+}
+
+// applyExtensionStatus sets one key's status line, updating it in place so a
+// chip that changes text does not jump along the header; empty text removes
+// it. Mirrors State.applyExtensionStatus in internal/projection/state.go.
+function applyExtensionStatus(list: ExtensionStatus[], key: string, text: string): ExtensionStatus[] {
+  const i = list.findIndex((x) => x.key === key);
+  if (!text) return i >= 0 ? list.filter((_, j) => j !== i) : list;
+  if (i >= 0) return list.map((x, j) => (j === i ? { key, text } : x));
+  return [...list, { key, text }];
 }
 
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
@@ -753,6 +765,26 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.title = p.toName || p.to;
         }),
       };
+
+    case "extension.notified":
+      // Info is a toast and nothing more, raised by the live event rather
+      // than here (this also runs on replay). A warning or an error is worth
+      // a line the reader can find later; turnless like a compaction, since
+      // the extension speaks for itself. Mirrors internal/projection/state.go.
+      if (p.level !== "warning" && p.level !== "error") return s;
+      return {
+        ...s,
+        items: upsert(s, `notify:${ev.seq}`, (it) => {
+          it.kind = "notice";
+          it.receivedAt ??= ev.timestamp;
+          it.noticeKind = "notify";
+          it.level = p.level;
+          it.text = p.message;
+        }),
+      };
+
+    case "extension.status":
+      return { ...s, extensionStatuses: applyExtensionStatus(s.extensionStatuses ?? [], p.key, p.text ?? "") };
 
     case "permission.requested":
       return {

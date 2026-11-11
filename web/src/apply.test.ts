@@ -882,3 +882,64 @@ describe("stragglers for what the snapshot left out", () => {
     expect(s.items.map((it) => it.id)).toContain("fresh");
   });
 });
+
+// Mirrors internal/projection/state_test.go.
+describe("extension notices", () => {
+  it.each(["warning", "error"] as const)("keeps a %s as a standalone notice item", (level) => {
+    const s = applyEvent(emptyState("s1"), ev(4, "extension.notified", { level, message: "lint failed" }, 5000));
+    expect(s.items).toEqual([
+      { id: "notify:4", kind: "notice", noticeKind: "notify", level, text: "lint failed", receivedAt: 5000 },
+    ]);
+  });
+
+  it("leaves info to the toast", () => {
+    const s = applyEvent(emptyState("s1"), ev(1, "extension.notified", { level: "info", message: "ready" }));
+    expect(s.items).toEqual([]);
+    expect(s.seq).toBe(1);
+  });
+
+  it("gives two notices with the same message two items", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "extension.notified", { level: "error", message: "boom" }));
+    s = applyEvent(s, ev(2, "extension.notified", { level: "error", message: "boom" }));
+    expect(s.items.map((it) => it.id)).toEqual(["notify:1", "notify:2"]);
+  });
+});
+
+describe("extension statuses", () => {
+  const status = (seq: number, key: string, text?: string) =>
+    ev(seq, "extension.status", text === undefined ? { key } : { key, text });
+
+  it("appends new keys and updates a known one in place", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, status(1, "git", "main"));
+    s = applyEvent(s, status(2, "tests", "3 failing"));
+    s = applyEvent(s, status(3, "git", "main*"));
+    expect(s.extensionStatuses).toEqual([
+      { key: "git", text: "main*" },
+      { key: "tests", text: "3 failing" },
+    ]);
+  });
+
+  it.each([
+    ["empty text", ""],
+    ["no text", undefined],
+  ])("clears a key on %s", (_, text) => {
+    let s = emptyState("s1");
+    s = applyEvent(s, status(1, "git", "main"));
+    s = applyEvent(s, status(2, "tests", "ok"));
+    s = applyEvent(s, status(3, "git", text));
+    expect(s.extensionStatuses).toEqual([{ key: "tests", text: "ok" }]);
+  });
+
+  it("ignores clearing a key it never had", () => {
+    let s = applyEvent(emptyState("s1"), status(1, "git", "main"));
+    s = applyEvent(s, status(2, "tests", ""));
+    expect(s.extensionStatuses).toEqual([{ key: "git", text: "main" }]);
+  });
+
+  it("starts the list on a state cached without one", () => {
+    const { extensionStatuses: _, ...older } = emptyState("s1");
+    const s = applyEvent(older, status(1, "git", "main"));
+    expect(s.extensionStatuses).toEqual([{ key: "git", text: "main" }]);
+  });
+});
