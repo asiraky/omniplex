@@ -135,3 +135,25 @@ func TestStreamEndCancelsHandlersInFlight(t *testing.T) {
 		t.Fatalf("handler stopped with %v, want context.Canceled", err)
 	}
 }
+
+// A peer may withdraw a request in the line right behind it, before the
+// handler has even started; the withdrawal must still find it.
+func TestWithdrawalRightBehindItsRequestIsNotLost(t *testing.T) {
+	started, stopped := make(chan struct{}, 1), make(chan error, 1)
+	inR, inW := io.Pipe()
+	var c *Conn
+	ready := make(chan struct{})
+	c = NewConn(inR, io.Discard, blocking(started, stopped), func(method string, params json.RawMessage) {
+		<-ready
+		var p struct{ ID json.RawMessage }
+		_ = json.Unmarshal(params, &p)
+		c.CancelInbound(p.ID)
+	})
+	close(ready)
+	t.Cleanup(func() { _ = inW.Close() })
+
+	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":3,"method":"approve"}`+"\n"+`{"jsonrpc":"2.0","method":"withdraw","params":{"id":3}}`+"\n")
+	if err := wait(t, stopped); err != context.Canceled {
+		t.Fatalf("handler stopped with %v, want context.Canceled", err)
+	}
+}

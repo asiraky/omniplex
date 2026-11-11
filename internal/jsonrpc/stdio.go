@@ -47,7 +47,7 @@ type Conn struct {
 	nextID atomic.Int64
 
 	pending sync.Map // string -> chan Message
-	inbound sync.Map // compact id -> context.CancelFunc, one per request being served
+	inbound sync.Map // compact id -> *inbound, one per request being served
 
 	// life parents every inbound handler's context; it ends with the stream,
 	// since nobody is left to read an answer to what the peer asked.
@@ -107,7 +107,12 @@ func (c *Conn) dispatch(m Message) {
 	case m.Method != "" && len(m.ID) > 0:
 		// Inbound request: serve it off the read loop so a slow handler
 		// (a permission prompt awaiting a human) cannot stall the stream.
-		go c.serve(m)
+		// Its cancel is registered here, on the read loop, so a withdrawal
+		// the peer sends right behind it always finds it.
+		ctx, cancel := context.WithCancel(c.life)
+		in := &inbound{cancel: cancel}
+		c.inbound.Store(idKey(m.ID), in)
+		go c.serve(ctx, in, m)
 	case m.Method != "":
 		if c.notifier != nil {
 			c.notifier(m.Method, m.Params)
@@ -122,19 +127,20 @@ func (c *Conn) dispatch(m Message) {
 	}
 }
 
-func (c *Conn) serve(m Message) {
+// inbound is a request of the peer's being served. A pointer, so a finished
+// handler removes its own entry and not a later request that reused the id.
+type inbound struct{ cancel context.CancelFunc }
+
+func (c *Conn) serve(ctx context.Context, in *inbound, m Message) {
+	defer in.cancel()
 	if c.handler == nil {
+		c.inbound.CompareAndDelete(idKey(m.ID), in)
 		_ = c.send(Message{JSONRPC: "2.0", ID: m.ID, Error: &RPCError{Code: -32601, Message: "method not found"}})
 		return
 	}
-	ctx, cancel := context.WithCancel(c.life)
-	key := idKey(m.ID)
-	c.inbound.Store(key, cancel)
 	result, err := c.handler(ctx, m.Method, m.Params)
-	c.inbound.Delete(key)
-	withdrawn := ctx.Err() != nil
-	cancel()
-	if withdrawn {
+	c.inbound.CompareAndDelete(idKey(m.ID), in)
+	if ctx.Err() != nil {
 		// The peer withdrew the request, or went away: it is not waiting on
 		// an answer, whatever the handler made of the cancel.
 		return
@@ -213,7 +219,7 @@ func (c *Conn) Call(ctx context.Context, method string, params any, out any) err
 func (c *Conn) CancelInbound(id json.RawMessage) bool {
 	v, ok := c.inbound.LoadAndDelete(idKey(id))
 	if ok {
-		v.(context.CancelFunc)()
+		v.(*inbound).cancel()
 	}
 	return ok
 }

@@ -966,7 +966,6 @@ type userInputQuestion struct {
 
 func (s *session) requestUserInput(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
-		TurnID    string              `json:"turnId"`
 		Questions []userInputQuestion `json:"questions"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -993,8 +992,10 @@ func (s *session) requestUserInput(ctx context.Context, params json.RawMessage) 
 		required = append(required, q.ID)
 	}
 	schema := jsonOf(map[string]any{"type": "object", "properties": properties, "required": required})
+	// Omniplex's turn, not codex's: the projection settles a turn's pending
+	// requests by it when the turn ends.
 	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
-		TurnID: p.TurnID, Prompt: "Codex needs your input", Schema: schema,
+		TurnID: s.currentTurn(), Prompt: "Codex needs your input", Schema: schema,
 	})
 	if err != nil || result.Action != "accept" {
 		return map[string]any{"answers": map[string]any{}}, nil
@@ -1010,7 +1011,6 @@ func (s *session) requestUserInput(ctx context.Context, params json.RawMessage) 
 
 func (s *session) requestMCPElicitation(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
-		TurnID          string          `json:"turnId"`
 		Message         string          `json:"message"`
 		Mode            string          `json:"mode"`
 		RequestedSchema json.RawMessage `json:"requestedSchema"`
@@ -1026,7 +1026,7 @@ func (s *session) requestMCPElicitation(ctx context.Context, params json.RawMess
 		})
 	}
 	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
-		TurnID: p.TurnID, Prompt: p.Message, Schema: schema,
+		TurnID: s.currentTurn(), Prompt: p.Message, Schema: schema,
 	})
 	if err != nil {
 		return map[string]any{"action": "cancel"}, nil
@@ -1316,6 +1316,22 @@ func (s *session) handleSubagentNotification(method, thread, turn string, params
 }
 
 func (s *session) handleNotification(method string, params json.RawMessage) {
+	// Codex settled a request it asked us — its turn ended, or it was
+	// interrupted — and no longer wants an answer. Release the handler still
+	// waiting on a human; the host withdraws the prompt. This runs before
+	// subagent routing: request ids belong to the connection, not a thread,
+	// and a subagent's resolution would otherwise be dropped there.
+	// Mirrors t3code@13c7de296c.
+	if method == "serverRequest/resolved" {
+		var p struct {
+			RequestID json.RawMessage `json:"requestId"`
+		}
+		if json.Unmarshal(params, &p) == nil && len(p.RequestID) > 0 {
+			s.conn.CancelInbound(p.RequestID)
+		}
+		return
+	}
+
 	turn := s.currentTurn()
 
 	if thread := s.foreignThread(params); thread != "" {

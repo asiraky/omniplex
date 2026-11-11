@@ -243,6 +243,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		done:    make(chan struct{}),
 		rpcDone: make(chan struct{}),
 		pending: map[string]chan rpcResponse{},
+		dialogs: map[string]context.CancelFunc{},
 	}
 
 	go s.readLoop(stdout)
@@ -310,6 +311,10 @@ type session struct {
 
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
+	// dialogs holds the cancel of every extension dialog still waiting on a
+	// human, keyed by pi's request id. Cancelling one withdraws its card and
+	// answers pi cancelled; each removes itself when its Elicit returns.
+	dialogs map[string]context.CancelFunc
 	turnID  string
 	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
@@ -540,7 +545,10 @@ func (s *session) clearTurn(turnID string) {
 // Cancel aborts the in-flight run. Pi's abort succeeds even when idle, so
 // there is no coalescing to do, but skipping the call when no turn is open
 // keeps a stray stop press from aborting a run that starts a moment later.
+// Open extension dialogs are withdrawn either way: stop means stop, and a
+// dialog outlives the turn that raised it otherwise.
 func (s *session) Cancel(ctx context.Context) error {
+	s.cancelDialogs()
 	s.mu.Lock()
 	idle := s.turnID == ""
 	s.mu.Unlock()
@@ -580,6 +588,7 @@ func (s *session) SetEffort(ctx context.Context, effort string) error {
 
 func (s *session) Close() error {
 	s.closed.Do(func() {
+		s.cancelDialogs()
 		close(s.done)
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
@@ -592,6 +601,9 @@ func (s *session) Close() error {
 
 func (s *session) watchExit() {
 	<-s.rpcDone
+	// Nobody is left to read a dialog's answer, and the read loop has
+	// registered its last one, so this catches them all.
+	s.cancelDialogs()
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
@@ -948,6 +960,9 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 		Prefill     string   `json:"prefill"`
 		Options     []string `json:"options"`
 		NotifyType  string   `json:"notifyType"`
+		// Timeout is in milliseconds. On expiry pi resolves the dialog to its
+		// default by itself and tells us nothing, so the card must go too.
+		Timeout float64 `json:"timeout"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
@@ -962,12 +977,42 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 		return
 	case "select", "confirm", "input", "editor":
 		// Handled below. Elicit blocks on a human, so it must not run on the
-		// read loop: a dialog would freeze every event until answered.
-		go s.elicitUIRequest(p.ID, p.Method, p.Title, p.Message, p.Placeholder, p.Prefill, p.Options)
+		// read loop: a dialog would freeze every event until answered. It is
+		// registered here, not in the goroutine, so a Cancel or exit that
+		// follows this event always finds it.
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if p.Timeout > 0 {
+			ctx, cancel = context.WithTimeout(context.Background(), time.Duration(p.Timeout*float64(time.Millisecond)))
+		} else {
+			ctx, cancel = context.WithCancel(context.Background())
+		}
+		s.mu.Lock()
+		s.dialogs[p.ID] = cancel
+		s.mu.Unlock()
+		go func() {
+			defer func() {
+				cancel()
+				s.mu.Lock()
+				delete(s.dialogs, p.ID)
+				s.mu.Unlock()
+			}()
+			s.elicitUIRequest(ctx, p.ID, p.Method, p.Title, p.Message, p.Placeholder, p.Prefill, p.Options)
+		}()
 	}
 }
 
-func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefill string, options []string) {
+// cancelDialogs withdraws every open extension dialog. The host drops each
+// card when its ctx ends, and elicitUIRequest answers pi cancelled.
+func (s *session) cancelDialogs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, cancel := range s.dialogs {
+		cancel()
+	}
+}
+
+func (s *session) elicitUIRequest(ctx context.Context, id, method, title, message, placeholder, prefill string, options []string) {
 	prompt := title
 	if message != "" {
 		prompt = strings.TrimSpace(title + "\n" + message)
@@ -1000,7 +1045,7 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 		_ = s.send(body)
 	}
 
-	result, err := s.host.Elicit(context.Background(), adapter.ElicitationRequest{
+	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
 		TurnID: s.currentTurn(), Prompt: prompt, Schema: schema,
 	})
 	if err != nil || result.Action != "accept" {
