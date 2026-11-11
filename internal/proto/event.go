@@ -420,7 +420,8 @@ type TurnRecovery struct {
 
 // Causes for TurnRecovery.
 const (
-	// RecoveryRestart: the server died mid-turn and picked the work back up.
+	// RecoveryRestart: the server died mid-turn, or while background work the
+	// agent was waiting on was running, and picked the work back up.
 	RecoveryRestart = "restart"
 	// RecoveryContinue: a human asked to continue a turn that ended in error.
 	RecoveryContinue = "continue"

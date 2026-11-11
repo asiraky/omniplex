@@ -387,7 +387,7 @@ func (s *Store) Append(ctx context.Context, threadID string, em proto.Emission) 
 	return proto.Event{ThreadID: threadID, Seq: seq, Timestamp: ts, Type: em.Type, Payload: payload}, nil
 }
 
-// SetPhase records idle | turn | closing.
+// SetPhase records idle | turn | background | closed, or a workspace phase.
 func (s *Store) SetPhase(ctx context.Context, threadID, phase string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

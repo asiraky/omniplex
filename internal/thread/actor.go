@@ -109,8 +109,13 @@ type Actor struct {
 	onPhase func()
 
 	// recovery is set by Resume when the log shows a turn the server died in
-	// the middle of. Recover consumes it; see recovery.go.
-	recovery *proto.TurnRecovery
+	// the middle of, or background work the agent was waiting on. Recover
+	// consumes it; see recovery.go.
+	recovery *recoveryPlan
+	// heldNote is dead work the agent is owed news of that did not warrant a
+	// turn of its own: shells a restart killed on an idle thread. The next
+	// prompt a human sends carries it. Actor-loop only.
+	heldNote string
 
 	// cardLive says whether the server still holds a card, so resuming the
 	// harness leaves it answerable. Set by the manager at adopt time; nil
@@ -165,6 +170,7 @@ type command struct {
 	mode         string
 	effort       string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
+	plan         *recoveryPlan       // prompt: the restart continuation Recover is sending
 	// from is the harness process a harness event or exit came from. A
 	// process replaced by an account switch, or killed by Stop, still drains
 	// its last events and its exit; those are about a process this actor no
@@ -237,6 +243,7 @@ const (
 	cmdResolveCard   = "resolve_card"
 	cmdHarnessReply  = "harness_reply"
 	cmdStopExpired   = "stop_expired"
+	cmdDropRecovery  = "drop_recovery"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -343,7 +350,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// below stops the UI lying about what is running, but it does not finish
 	// the work — that is what Recover is for, and this is the evidence it
 	// needs.
-	a.recovery = planRecovery(state)
+	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
@@ -408,8 +415,8 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 		store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}),
 		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
 		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
-		recovery: planRecovery(state),
 	}
+	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
 	for _, turn := range state.Turns {
 		if !turn.Done {
 			a.turnActive = turn.ID
@@ -1199,17 +1206,24 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: ErrClosed}
 			return false
 		}
-		if c.recovery != nil {
-			// The continuation is being taken now, whatever becomes of it;
-			// a second Recover racing this one has nothing left to send.
+		if c.plan != nil {
 			a.mu.Lock()
-			a.recovery = nil
+			current := a.recovery
 			a.mu.Unlock()
+			if current != c.plan {
+				// Taken by a second Recover racing this one, or superseded
+				// by a human prompt: either way there is nothing left to
+				// send.
+				c.reply <- cmdResult{}
+				return false
+			}
+			c.prompt, c.recovery = c.plan.prompt, &c.plan.rec
 		}
 		if a.turnActive != "" {
-			if c.recovery != nil {
+			if c.plan != nil {
 				// The server's own continuation does not wait in line: if
 				// work is already running there is nothing to continue.
+				a.setRecovery(nil)
 				c.reply <- cmdResult{err: ErrBusy}
 				return false
 			}
@@ -1239,15 +1253,29 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		if a.sess == nil {
+			// The plan is left in place: the harness is not up yet, and the
+			// continuation is still owed once it is.
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
 		}
+		if c.plan != nil {
+			// The continuation is being taken now; a retry, if it comes to
+			// one, puts it back.
+			a.setRecovery(nil)
+		}
 		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery, "")
 		if err != nil {
+			if c.plan != nil && retryableRecovery(err) {
+				a.setRecovery(c.plan)
+			}
 			c.reply <- cmdResult{err: err}
 			return false
 		}
 		c.reply <- cmdResult{value: PromptResult{TurnID: turnID}}
+
+	case cmdDropRecovery:
+		a.setRecovery(nil)
+		c.reply <- cmdResult{}
 
 	case cmdDequeue:
 		if a.state.Closed {
@@ -1277,9 +1305,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		if a.sess == nil {
 			// A read-only restore may expose the interrupted turn before the
 			// recovery worker activates its process. Stop means do not recover it.
-			a.mu.Lock()
-			a.recovery = nil
-			a.mu.Unlock()
+			a.setRecovery(nil)
 			a.dropQueue()
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: a.turnActive, StopReason: proto.StopCancelled,
@@ -1430,6 +1456,11 @@ func (a *Actor) shutdown(hard bool) {
 		// would erase the only cheap evidence that work was in flight. A kill
 		// -9 leaves the same value behind, so both deaths look alike.
 		phase = "turn"
+	case a.state.LiveJobs().Working():
+		// Idle, but a subagent or a monitor the agent is waiting on dies
+		// with this process. The next start has to tell the agent, or it
+		// waits for a result that never comes.
+		phase = "background"
 	}
 	_ = a.store.SetPhase(ctx, a.ID, phase)
 
@@ -1510,11 +1541,27 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 		_ = a.store.SetTitle(ctx, a.ID, title)
 	}
 
+	// A human prompt is the agent's next chance to hear about work a restart
+	// killed. One that gets in ahead of the continuation supersedes it — the
+	// human has picked the thread up — and carries its news instead.
+	text := prompt
+	if recovery == nil {
+		note := a.heldNote
+		a.mu.Lock()
+		if a.recovery != nil {
+			note = withNote(note, a.recovery.note)
+			a.recovery = nil
+		}
+		a.mu.Unlock()
+		a.heldNote = ""
+		text = withNote(note, prompt)
+	}
+
 	// This one call to the harness is made on the loop, so a harness that
 	// never takes the prompt must not hold the thread for ever. Every adapter
 	// returns once the prompt is written or the turn acknowledged.
 	promptCtx, cancelPrompt := context.WithTimeout(ctx, 30*time.Second)
-	err := a.sess.Prompt(promptCtx, adapter.PromptInput{TurnID: turnID, Text: prompt, Images: images})
+	err := a.sess.Prompt(promptCtx, adapter.PromptInput{TurnID: turnID, Text: text, Images: images})
 	cancelPrompt()
 	if err != nil {
 		// turnActive is left for append to clear: a prompt that failed on
@@ -1576,6 +1623,14 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 		}
 		return
 	}
+}
+
+// setRecovery replaces the pending continuation. Recover reads it from
+// outside the loop, so it is written under mu.
+func (a *Actor) setRecovery(plan *recoveryPlan) {
+	a.mu.Lock()
+	a.recovery = plan
+	a.mu.Unlock()
 }
 
 func (a *Actor) markSent(queueID string) {
@@ -1678,7 +1733,7 @@ func (a *Actor) write(em proto.Emission) error {
 		return err
 	}
 
-	prevPhase := a.state.Phase
+	prevPhase := storedPhase(a.state)
 	a.state.Apply(ev)
 
 	a.mu.Lock()
@@ -1730,12 +1785,15 @@ func (a *Actor) write(em proto.Emission) error {
 	// thread list and for restart recovery, which scans rows without folding
 	// logs. Syncing it on every turn-shaped transition — not just on turn
 	// events — is what lets activity-promoted turns (streaming or a tool
-	// going active while the log said idle) survive a restart. Workspace
-	// events are excluded: the lifecycle runner owns those writes, and its
-	// vocabulary (ready, provisioning, …) is wider than the projection's.
+	// going active while the log said idle) survive a restart, and syncing
+	// it on job events is what lets a kill -9 leave a waiting subagent as
+	// much evidence as a clean shutdown does. Workspace events are excluded:
+	// the lifecycle runner owns those writes, and its vocabulary (ready,
+	// provisioning, …) is wider than the projection's.
 	switch em.Type {
-	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.ThreadClosed:
-		if phase := a.state.Phase; phase != prevPhase && (phase == "turn" || phase == "idle" || phase == "closed") {
+	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.ThreadClosed,
+		proto.JobStarted, proto.JobUpdated, proto.JobFinished:
+		if phase := storedPhase(a.state); phase != prevPhase && phase != "" {
 			if err := a.store.SetPhase(ctx, a.ID, phase); err != nil {
 				a.logf("set phase %s on %s: %v", phase, a.ID, err)
 			}
@@ -1772,6 +1830,25 @@ func (a *Actor) write(em proto.Emission) error {
 		}
 	}
 	return nil
+}
+
+// storedPhase is what the thread row records for a projection: idle, turn or
+// closed as the projection has it, and background for an idle thread whose
+// subagents or monitors are still running — work the agent is waiting on, so
+// a restart has to wake it. Empty for a workspace phase, which is the
+// lifecycle runner's to record.
+func storedPhase(s *projection.State) string {
+	switch {
+	case s.Closed || s.Phase == "closed":
+		return "closed"
+	case s.Phase == "turn":
+		return "turn"
+	case s.Phase == "idle" && s.LiveJobs().Working():
+		return "background"
+	case s.Phase == "idle":
+		return "idle"
+	}
+	return ""
 }
 
 // fanout delivers to every subscriber without blocking. On a full queue the
