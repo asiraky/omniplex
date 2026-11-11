@@ -579,3 +579,16 @@ func TestTurnFinishedSettlesItsRequests(t *testing.T) {
 		t.Fatalf("elicitations after finish = %+v, want only the card", s.Elicitations)
 	}
 }
+
+func TestTurnFinishedNamingNoTurnSettlesNothing(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-untagged", Title: "cat"}))
+	s.Apply(event(t, 3, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q-untagged", Prompt: "which?"}))
+
+	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{StopReason: proto.StopCancelled}))
+
+	if len(s.Pending) != 1 || len(s.Elicitations) != 1 {
+		t.Fatalf("after a finish naming no turn: pending %+v, elicitations %+v; want both kept", s.Pending, s.Elicitations)
+	}
+}
