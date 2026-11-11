@@ -74,10 +74,12 @@ func (a *Actor) handleSchedule(c command) error {
 		if _, err := time.LoadLocation(p.TimeZone); err != nil || p.TimeZone == "" || p.TimeZone == "Local" {
 			return errors.New("choose a valid IANA timezone")
 		}
+		// Kind is the server's to set: a human creates plain schedules, and
+		// editing a continuation does not turn it into one.
 		if old == nil {
-			p.Model, p.Mode, p.Effort = a.state.Model, a.state.Mode, a.state.Effort
+			p.Model, p.Mode, p.Effort, p.Kind = a.state.Model, a.state.Mode, a.state.Effort, ""
 		} else {
-			p.Model, p.Mode, p.Effort = old.Model, old.Mode, old.Effort
+			p.Model, p.Mode, p.Effort, p.Kind = old.Model, old.Mode, old.Effort, old.Kind
 		}
 		p.Status = "pending"
 		p.Error = ""
@@ -111,9 +113,13 @@ func (a *Actor) dispatchScheduled(now int64) error {
 		_, pickedUp := a.scheduleReady.Load(a.ID + ":" + p.ID)
 		if p.Status == "pending" || !pickedUp {
 			p.Revision++
-			if now-p.DueAt > scheduleGrace {
+			grace, missed := scheduleGrace, "The host did not pick up this message within one hour."
+			if p.Kind == proto.ScheduleLimit {
+				grace, missed = limitGrace, "The host did not pick up this continuation within a day of the limit resetting."
+			}
+			if now-p.DueAt > grace {
 				p.Status = "missed"
-				p.Error = "The host did not pick up this message within one hour."
+				p.Error = missed
 			} else {
 				p.Status = "ready"
 			}
@@ -134,7 +140,10 @@ func (a *Actor) dispatchScheduled(now int64) error {
 				return a.failSchedule(p, result.err)
 			}
 		}
-		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || len(a.state.Queued) > 0 {
+		// A queue goes ahead of a schedule, except a queue held by a usage
+		// limit: that waits for the next turn to start, and this is one.
+		queued := len(a.state.Queued) > 0 && !a.state.QueueHeld()
+		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || queued {
 			continue
 		}
 		a.mu.Lock()
@@ -151,8 +160,12 @@ func (a *Actor) dispatchScheduled(now int64) error {
 		}
 		// Restore this instruction's saved settings before sending. They become the
 		// thread's active settings, visibly, just like a manual settings change.
-		if err := a.scheduleSettings(p); err != nil {
-			return a.failSchedule(p, err)
+		// A continuation carries on with the thread as it now is: a model
+		// picked while waiting out the limit is not reverted under the human.
+		if p.Kind != proto.ScheduleLimit {
+			if err := a.scheduleSettings(p); err != nil {
+				return a.failSchedule(p, err)
+			}
 		}
 		_, err := a.startTurn(context.Background(), p.Prompt, images, nil, p.ID)
 		if err != nil {

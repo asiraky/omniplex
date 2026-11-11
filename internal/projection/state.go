@@ -313,6 +313,17 @@ func (s *State) Questions() int {
 	return n
 }
 
+// QueueHeld says queued prompts must wait: the last turn stopped at a usage
+// limit, and each would only hit it again. The next turn to start — the
+// server's continuation, or anything a human sends — lifts it.
+func (s *State) QueueHeld() bool {
+	if len(s.Turns) == 0 {
+		return false
+	}
+	last := s.Turns[len(s.Turns)-1]
+	return last.Done && last.Failure == proto.FailureLimit
+}
+
 // CardID is the timeline item id of the card a request raised.
 func CardID(requestID string) string { return "card:" + requestID }
 

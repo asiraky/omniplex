@@ -1306,7 +1306,9 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdCancel:
 		// Stop means stop: a prompt queued behind the interrupted turn would
 		// otherwise start the moment the interrupt landed. The web puts the
-		// text back in the composer before it asks.
+		// text back in the composer before it asks. A continuation armed for
+		// a usage limit is the same thing, only later.
+		a.disarmLimit("")
 		if a.turnActive == "" {
 			a.dropQueue()
 			c.reply <- cmdResult{value: "idle"}
@@ -1626,6 +1628,11 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	if recovering {
 		return
 	}
+	// A usage limit stopped the last turn; the queue waits for the next one
+	// to start rather than walking into the limit one prompt at a time.
+	if a.state.QueueHeld() {
+		return
+	}
 	// A prompt the harness already holds is its to run: it starts a turn
 	// with it itself, or reads it into one. Only what nobody has is started
 	// here.
@@ -1898,6 +1905,8 @@ func (a *Actor) write(em proto.Emission) error {
 			a.logf("snapshot %s: %v", a.ID, err)
 		}
 	}
+	// Last, so whatever it appends follows this event everywhere it went.
+	a.followLimit(ev)
 	return nil
 }
 

@@ -592,3 +592,25 @@ func TestTurnFinishedNamingNoTurnSettlesNothing(t *testing.T) {
 		t.Fatalf("after a finish naming no turn: pending %+v, elicitations %+v; want both kept", s.Pending, s.Elicitations)
 	}
 }
+
+// A limit holds the queue until another turn starts, and only the newest
+// turn counts: an older limit the thread has moved past holds nothing.
+func TestQueueHeldFollowsTheLastTurn(t *testing.T) {
+	s := New("s1")
+	if s.QueueHeld() {
+		t.Fatal("a thread with no turns is held")
+	}
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopError, Failure: proto.FailureLimit}))
+	if !s.QueueHeld() {
+		t.Fatal("not held after a limit")
+	}
+	s.Apply(event(t, 3, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "again"}))
+	if s.QueueHeld() {
+		t.Fatal("still held while the next turn runs")
+	}
+	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopError, Failure: proto.FailureAuth}))
+	if s.QueueHeld() {
+		t.Fatal("held after a failure that is not a limit")
+	}
+}
