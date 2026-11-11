@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { Item, ToolContent, Turn } from "~/protocol";
 import { render, wrap } from "~/test/harness";
-import type { Item } from "~/protocol";
 
-import { ToolCard, ToolRun } from "./ToolCards";
+import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
 
 function bash(id: string, over: Partial<Item> = {}): Item {
   return { id, kind: "tool", toolKind: "execute", title: `bash ${id}`, status: "in_progress", ...over };
@@ -191,5 +191,179 @@ describe("an untruncated tool card", () => {
     fireEvent.click(screen.getByRole("button", { name: /go test/ }));
     expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+const SRC = "/api/threads/t1/attachments/a1";
+
+function result(content: ToolContent[], over: Partial<Item> = {}): Item {
+  return { id: "tool:1", kind: "tool", title: "browser_screenshot", status: "completed", content, ...over };
+}
+
+const screenshot: ToolContent = { type: "image", url: SRC, mediaType: "image/png", width: 1280, height: 800 };
+
+// The text a rendered diff row shows: gutter numbers, the +/- mark, the line.
+function diffRows(container: HTMLElement) {
+  return Array.from(container.querySelectorAll(".font-mono > div")).map((r) => r.textContent ?? "");
+}
+
+describe("an image in a tool result", () => {
+  it("shows a thumbnail loaded from the url, without opening the card", () => {
+    const { container } = render(<ToolCard threadId="t1" item={result([screenshot])} />);
+    const img = screen.getByRole("img") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe(SRC);
+    expect(img.getAttribute("loading")).toBe("lazy");
+    expect(container.innerHTML).not.toContain("data:");
+  });
+
+  it("reserves the thumbnail's box from the reported size before it loads", () => {
+    render(<ToolCard threadId="t1" item={result([screenshot])} />);
+    const img = screen.getByRole("img") as HTMLImageElement;
+    // 1280x800 held to 96px tall is 153.6px wide.
+    expect(img.style.width).toBe("153.6px");
+    expect(img.style.aspectRatio).toBe("1280 / 800");
+  });
+
+  it("refuses an image that is not a same-origin path", () => {
+    const { container } = render(
+      <ToolCard
+        threadId="t1"
+        item={result([
+          { type: "image", url: "data:image/png;base64,iVBORw0KGgo=" },
+          { type: "image", url: "//evil.example/x.png" },
+        ])}
+      />,
+    );
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(container.innerHTML).not.toContain("data:");
+  });
+
+  it("opens full size on tap, closes on Escape, and hands focus back to the thumbnail", async () => {
+    render(<ToolCard threadId="t1" item={result([screenshot])} />);
+    const thumb = screen.getByRole("button", { name: "View browser_screenshot image full size" });
+    fireEvent.click(thumb);
+    const dialog = screen.getByRole("dialog", { name: "browser_screenshot image" });
+    expect(within(dialog).getByRole("img").getAttribute("src")).toBe(SRC);
+    expect(within(dialog).getByRole("link", { name: "Open original in a new tab" }).getAttribute("href")).toBe(SRC);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(thumb));
+  });
+
+  it("jumps from fitted to the image's own pixel size", () => {
+    let measure!: () => void;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private callback: ResizeObserverCallback) {}
+        observe(el: Element) {
+          if (el.getAttribute("aria-label") === "Expanded browser_screenshot image")
+            measure = () =>
+              this.callback(
+                [{ contentRect: { width: 390, height: 800 } } as ResizeObserverEntry],
+                this as unknown as ResizeObserver,
+              );
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    render(<ToolCard threadId="t1" item={result([screenshot])} />);
+    fireEvent.click(screen.getByRole("button", { name: /full size/ }));
+    act(() => measure());
+    const img = within(screen.getByRole("dialog")).getByRole("img") as HTMLImageElement;
+    // Sized from the event before a byte arrived: fitted to 390 - 32 padding.
+    expect(img.style.width).toBe("358px");
+    fireEvent.click(screen.getByRole("button", { name: "Actual size" }));
+    expect(img.style.width).toBe("1280px");
+    fireEvent.click(screen.getByRole("button", { name: "Fit image" }));
+    expect(img.style.width).toBe("358px");
+    vi.unstubAllGlobals();
+  });
+
+  it("names each of several images apart", () => {
+    render(<ToolCard threadId="t1" item={result([screenshot, { ...screenshot, url: "/api/threads/t1/attachments/a2" }])} />);
+    fireEvent.click(screen.getByRole("button", { name: "View browser_screenshot (image 2 of 2) full size" }));
+    expect(within(screen.getByRole("dialog")).getByRole("img").getAttribute("src")).toBe(
+      "/api/threads/t1/attachments/a2",
+    );
+  });
+});
+
+describe("a run of tool calls", () => {
+  const items = [
+    result([{ type: "text", text: "clicked" }], { id: "tool:a", title: "click" }),
+    result([screenshot], { id: "tool:b" }),
+  ];
+
+  it("shows the run's screenshots while closed, and only the cards' once open", () => {
+    render(<ToolRun threadId="t1" items={items} live={false} />);
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+  });
+
+  it("keeps a finished turn's screenshots in view behind its fold", () => {
+    const turn: Turn = { id: "turn:1", prompt: "check it", done: true } as Turn;
+    render(<TurnFold threadId="t1" turn={turn} items={items} />);
+    expect(screen.getByRole("img").getAttribute("src")).toBe(SRC);
+  });
+});
+
+describe("an edit in a tool result", () => {
+  function open(content: ToolContent[]) {
+    const view = render(<ToolCard threadId="t1" item={result(content, { title: "Edit a.ts", toolKind: "edit" })} />);
+    fireEvent.click(screen.getByRole("button", { name: /Edit a\.ts/ }));
+    return view;
+  }
+
+  it("renders a full unified patch as added and removed lines under its path", () => {
+    const { container } = open([
+      {
+        type: "diff",
+        path: "src/a.ts",
+        text: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n",
+      },
+    ]);
+    expect(screen.getByText("src/a.ts")).toBeTruthy();
+    expect(diffRows(container)).toEqual(["@@ -1,2 +1,2 @@", "11 keep", "2-old", "2+new"]);
+  });
+
+  it("renders a hunks-only patch the way Codex sends it", () => {
+    const { container } = open([{ type: "diff", path: "a.ts", text: "@@ -3 +3 @@\n-before\n+after\n" }]);
+    expect(diffRows(container)).toEqual(["@@ -3 +3 @@", "3-before", "3+after"]);
+  });
+
+  it("shows a hunkless diff as the file's text, not a patch missing a character per line", () => {
+    open([{ type: "diff", path: "new.ts", text: "export const a = 1;\nexport const b = 2;\n" }]);
+    expect(screen.getByText(/export const a = 1;\s+export const b = 2;/)).toBeTruthy();
+  });
+
+  it("counts the change on the closed card", () => {
+    render(
+      <ToolCard
+        threadId="t1"
+        item={result([{ type: "diff", path: "a.ts", text: "@@ -1,2 +1,3 @@\n-x\n+y\n+z\n w\n" }], { title: "Edit a.ts" })}
+      />,
+    );
+    expect(screen.getByText("+2")).toBeTruthy();
+    expect(screen.getByText("−1")).toBeTruthy();
+  });
+});
+
+describe("text in a tool result", () => {
+  it("shows neighbouring text pieces as one output once the card is open", () => {
+    render(
+      <ToolCard
+        threadId="t1"
+        item={result([
+          { type: "text", text: "line one" },
+          { type: "text", text: "line two" },
+        ])}
+      />,
+    );
+    expect(screen.queryByText(/line one/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /browser_screenshot/ }));
+    expect(screen.getByText("line one line two").tagName).toBe("PRE");
   });
 });

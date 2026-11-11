@@ -33,12 +33,20 @@ export type PermissionOutcome =
   | "reject_always"
   | "cancelled";
 
+/** One piece of what a tool call produced. A diff carries a unified patch in
+    `text` (possibly hunks only). An image never carries its bytes: `url` is a
+    same-origin path to load them from, and `width`/`height` (0 or absent when
+    unknown) let a thumbnail hold its place before they arrive. */
 export interface ToolContent {
-  type: "text" | "diff";
+  type: "text" | "diff" | "image";
   text?: string;
   path?: string;
   oldText?: string;
   newText?: string;
+  url?: string;
+  mediaType?: string;
+  width?: number;
+  height?: number;
 }
 
 /** One image a human attached to a prompt. The bytes are read back from the

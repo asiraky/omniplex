@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import { ThemeContext } from "~/lib/theme";
-import { MermaidViewer } from "./MermaidViewer";
+import { ImageViewer } from "./ImageViewer";
 
 export function MermaidDiagram({
   code,
@@ -201,8 +201,10 @@ export function MermaidDiagram({
         </>
       )}
       {expandedImage && (
-        <MermaidViewer
+        <ImageViewer
           image={current?.image ?? expandedImage}
+          title="Mermaid diagram"
+          noun="diagram"
           onClose={close}
           onReturnFocus={() => expandButton.current?.focus()}
         />
