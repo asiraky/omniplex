@@ -1038,7 +1038,8 @@ func (s *session) finishTurn() {
 // extension until extension_ui_response arrives, so each is routed through the
 // host's elicitation and answered even on failure — an unanswered request
 // wedges the extension. Fire-and-forget methods (notify, setStatus, …) expect
-// no response.
+// no response: notify and setStatus become canonical events, the rest of the
+// TUI chrome is dropped.
 func (s *session) handleUIRequest(raw json.RawMessage) {
 	var p uiRequest
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -1047,9 +1048,29 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 
 	switch p.Method {
 	case "notify":
-		s.host.Logf("pi extension notify (%s): %s", p.NotifyType, p.Message)
+		if p.Message == "" {
+			return
+		}
+		level := p.NotifyType
+		if level != proto.NotifyWarning && level != proto.NotifyError {
+			level = proto.NotifyInfo
+		}
+		s.emit(proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{
+			Level: level, Message: p.Message,
+		}))
+	case "setStatus":
+		// An absent or empty statusText is pi's way of clearing the key.
+		if p.StatusKey == "" {
+			return
+		}
+		s.emit(proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{
+			Key: p.StatusKey, Text: p.StatusText,
+		}))
+	case "setTitle":
+		// Deliberately ignored: Omniplex owns thread titles, and an extension
+		// renaming the thread would fight the one the user chose.
 		return
-	case "setStatus", "setWidget", "setTitle", "set_editor_text":
+	case "setWidget", "set_editor_text":
 		// Ephemeral TUI chrome with no equivalent surface here.
 		return
 	case "select", "confirm", "input", "editor":
@@ -1091,6 +1112,8 @@ type uiRequest struct {
 	Prefill     string   `json:"prefill"`
 	Options     []string `json:"options"`
 	NotifyType  string   `json:"notifyType"`
+	StatusKey   string   `json:"statusKey"`
+	StatusText  string   `json:"statusText"`
 	// Timeout is in milliseconds. On expiry pi resolves the dialog to its
 	// default by itself and tells us nothing, so the card must go too.
 	Timeout float64 `json:"timeout"`

@@ -564,6 +564,94 @@ func TestHarnessInitiatedTurnAndCompaction(t *testing.T) {
 	}
 }
 
+// stdinRecorder stands in for pi's stdin so a test can see what was sent.
+type stdinRecorder struct{ strings.Builder }
+
+func (*stdinRecorder) Close() error { return nil }
+
+func TestExtensionUIRequestFireAndForget(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []proto.Emission
+	}{
+		{
+			name: "notify with level",
+			raw:  `{"type":"extension_ui_request","id":"u5","method":"notify","message":"Command blocked","notifyType":"warning"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyWarning, Message: "Command blocked"})},
+		},
+		{
+			name: "notify error",
+			raw:  `{"type":"extension_ui_request","id":"u5","method":"notify","message":"Lint failed","notifyType":"error"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyError, Message: "Lint failed"})},
+		},
+		{
+			name: "notify without level is info",
+			raw:  `{"type":"extension_ui_request","id":"u5","method":"notify","message":"Saved"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyInfo, Message: "Saved"})},
+		},
+		{
+			name: "notify with unknown level is info",
+			raw:  `{"type":"extension_ui_request","id":"u5","method":"notify","message":"Saved","notifyType":"success"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyInfo, Message: "Saved"})},
+		},
+		{
+			name: "notify with no message",
+			raw:  `{"type":"extension_ui_request","id":"u5","method":"notify","notifyType":"error"}`,
+		},
+		{
+			name: "setStatus sets",
+			raw:  `{"type":"extension_ui_request","id":"u6","method":"setStatus","statusKey":"my-ext","statusText":"Turn 3 running..."}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "my-ext", Text: "Turn 3 running..."})},
+		},
+		{
+			name: "setStatus without text clears",
+			raw:  `{"type":"extension_ui_request","id":"u7","method":"setStatus","statusKey":"my-ext"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "my-ext"})},
+		},
+		{
+			name: "setStatus without key",
+			raw:  `{"type":"extension_ui_request","id":"u7","method":"setStatus","statusText":"orphan"}`,
+		},
+		{
+			name: "setTitle is ignored",
+			raw:  `{"type":"extension_ui_request","id":"u8","method":"setTitle","title":"pi - my project"}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stdin := &stdinRecorder{}
+			s := &session{
+				host:    fakeHost{},
+				stdin:   stdin,
+				events:  make(chan proto.Emission, 8),
+				done:    make(chan struct{}),
+				rpcDone: make(chan struct{}),
+				pending: map[string]chan rpcResponse{},
+			}
+			s.handleEvent("extension_ui_request", json.RawMessage(c.raw))
+
+			var got []proto.Emission
+			for len(s.events) > 0 {
+				got = append(got, <-s.events)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("emitted %+v, want %+v", got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Fatalf("emitted %+v, want %+v", got, c.want)
+				}
+			}
+			// Pi expects no extension_ui_response for these; an unsolicited
+			// one would be an unknown id on its side.
+			if stdin.Len() != 0 {
+				t.Fatalf("sent to pi: %s", stdin.String())
+			}
+		})
+	}
+}
+
 func TestFinishTurnStopMapping(t *testing.T) {
 	cases := []struct {
 		stop, errMsg string

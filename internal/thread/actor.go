@@ -413,6 +413,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// needs.
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
 	a.holdRowOnlyIfAsked(meta.Phase)
+	staleStatuses := clearedStatuses(state)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
@@ -435,6 +436,12 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 
 	a.wg.Add(1)
 	go a.run()
+	// Queued ahead of the pump: the fresh process's extensions set their
+	// statuses as it starts, and a clear landing after them would wipe the
+	// live ones along with the stale.
+	for _, em := range staleStatuses {
+		a.enqueueEmission(em)
+	}
 	a.pump(sess)
 
 	// Server death ends the in-flight turn (the harness process is gone), but
@@ -933,6 +940,17 @@ func interruptedJobs(state *projection.State) []proto.Emission {
 	return out
 }
 
+// clearedStatuses clears every extension status in a state whose process is
+// gone. A status is the live word of the extension that set it; the next
+// process's extensions set their own.
+func clearedStatuses(state *projection.State) []proto.Emission {
+	var out []proto.Emission
+	for _, st := range state.ExtensionStatuses {
+		out = append(out, proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: st.Key}))
+	}
+	return out
+}
+
 // ResolvePermission answers a pending request from any presenter.
 func (a *Actor) ResolvePermission(ctx context.Context, requestID string, outcome adapter.PermissionOutcome) error {
 	_, err := a.call(ctx, command{kind: cmdResolvePerm, reqID: requestID, outcome: outcome})
@@ -1123,8 +1141,12 @@ func (a *Actor) handle(c command) (stop bool) {
 				Error: "the harness process ended before the turn finished",
 			}))
 		}
-		// Any job the harness was running died with it.
+		// Any job the harness was running died with it, and so did the
+		// statuses its extensions were keeping.
 		for _, em := range interruptedJobs(a.state) {
+			a.append(em)
+		}
+		for _, em := range clearedStatuses(a.state) {
 			a.append(em)
 		}
 		// So did anything it was holding: the queue in the log is what the
@@ -1204,6 +1226,11 @@ func (a *Actor) handle(c command) (stop bool) {
 				}
 			}
 			for _, em := range interruptedJobs(a.state) {
+				a.append(em)
+			}
+			// The new process's own statuses cannot have been folded yet:
+			// its events wait in the inbox behind this command.
+			for _, em := range clearedStatuses(a.state) {
 				a.append(em)
 			}
 		}
