@@ -25,8 +25,10 @@ import (
 // (see termsession.go). A socket that drops detaches; the pty keeps running
 // and its output keeps landing in a ring buffer. A socket that comes back with
 // the same id reattaches and is caught up from the offset it already has. With
-// nothing attached for termTTL the pty is killed, as it is by DELETE, by the
-// device being revoked, or by its process exiting.
+// nothing attached for termTTL the pty is killed and the id forgotten, as it
+// is by DELETE or by the device being revoked. A process that exits on its own
+// leaves the id in place until a socket has drained its last output (or the
+// TTL passes), so an exit while detached is replayed rather than lost.
 //
 // GET /api/term?id=<id>&thread=<id>|login=<instance>[&since=<n>][&attach=1]
 // upgrades to a WebSocket. attach=1 only ever reattaches; without it a missing
@@ -38,14 +40,17 @@ import (
 // binary byte, then the pty's raw output as binary frames. It sends another
 // sync when the client has fallen so far behind that output was overwritten,
 // which is the client's cue that the screen has a gap. Close 4000 "exited"
-// means the terminal is gone; 4404 "no such terminal" answers an attach=1 for
-// an id the server does not have.
+// means the terminal is gone and its output fully sent; 4404 "no such
+// terminal" answers an attach=1 for an id the server no longer has; 4400
+// "could not start" means a new terminal failed to spawn (no such thread, no
+// checkout, no pty) and retrying will not help.
 //
 // DELETE /api/term?id=<id> kills the terminal: closing a tab is an explicit
 // end, not a drop to wait out.
 
 const (
 	termStatusExited  websocket.StatusCode = 4000
+	termStatusFailed  websocket.StatusCode = 4400
 	termStatusMissing websocket.StatusCode = 4404
 )
 
@@ -111,22 +116,8 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
 	attachOnly := q.Get("attach") == "1"
 
-	// Registered by device, so revoking the device ends this shell too, and
-	// one device cannot reach another's by guessing its id.
-	device, _ := auth.DeviceFrom(r.Context())
-	sess := s.termAttach(device.ID, id, target)
-	if sess == nil && !attachOnly {
-		cmd, err := s.termCommand(r.Context(), threadID, login)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if sess, err = s.termSpawn(device.ID, id, target, cmd); err != nil {
-			http.Error(w, "pty failed", http.StatusInternalServerError)
-			return
-		}
-	}
-
+	// Upgraded before anything is spawned, so a failed upgrade cannot leave a
+	// shell behind with nobody to detach it.
 	opts := &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled}
 	if s.allowAny {
 		opts.InsecureSkipVerify = true
@@ -138,29 +129,50 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, err := websocket.Accept(w, r, opts)
 	if err != nil {
-		if sess != nil {
-			s.termDetach(sess)
-		}
 		return
 	}
-	// A close code is what lets the client tell "gone, open a new one" from a
-	// network drop worth retrying; an HTTP 404 would look like the latter.
+	defer ws.CloseNow()
+
+	// Registered by device, so revoking the device ends this shell too, and
+	// one device cannot reach another's by guessing its id.
+	device, _ := auth.DeviceFrom(r.Context())
+	// A close code is what lets the client tell "gone" or "broken" from a
+	// network drop worth retrying; an HTTP error would look like the latter.
+	sess := s.termAttach(device.ID, id, target)
 	if sess == nil {
-		_ = ws.Close(termStatusMissing, "no such terminal")
-		return
+		if attachOnly {
+			_ = ws.Close(termStatusMissing, "no such terminal")
+			return
+		}
+		cmd, err := s.termCommand(r.Context(), threadID, login)
+		if err == nil {
+			sess, err = s.termSpawn(device.ID, id, target, cmd)
+		}
+		if err != nil {
+			// The reason is capped at 123 bytes; the detail goes to the log.
+			s.logf("term_start_failed target=%s err=%v", target, err)
+			_ = ws.Close(termStatusFailed, "could not start")
+			return
+		}
 	}
 	defer s.termDetach(sess)
 	// A paste into a shell is bounded by the same cap as a prompt; without it
 	// the library's 32 KiB default drops the terminal mid-paste.
 	ws.SetReadLimit(maxWSMessageBytes)
-	defer ws.CloseNow()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	go func() {
 		defer cancel()
-		s.termStream(ctx, ws, sess, since)
+		// This socket has sent everything the ended process printed, so
+		// there is nothing left to replay: forget the id. Forgotten before
+		// the close goes out, so a "start a new shell" straight after it
+		// spawns one rather than finding this one again.
+		if termStream(ctx, ws, sess, since) {
+			s.termRemove(sess)
+			_ = ws.Close(termStatusExited, "exited")
+		}
 	}()
 
 	// A shell can sit silent for hours; ping keeps NAT from reaping the socket.
@@ -198,9 +210,9 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		}
 		switch f.Type {
 		case "input":
-			if _, err := sess.tty.Write([]byte(f.Data)); err != nil {
-				return
-			}
+			// Typing into an ended terminal goes nowhere, but must not end
+			// this socket before the writer has drained it.
+			_, _ = sess.tty.Write([]byte(f.Data))
 		case "resize":
 			if f.Cols > 0 && f.Rows > 0 {
 				_ = pty.Setsize(sess.tty, &pty.Winsize{Cols: f.Cols, Rows: f.Rows})
@@ -240,8 +252,9 @@ func (s *Server) termCommand(ctx context.Context, threadID, login string) (*exec
 // termStream sends one attachment the session's output from offset next,
 // at its own pace. It reads from the ring rather than being handed output, so
 // a slow socket falls behind on its own and is told so with a fresh sync.
-// Returns when the socket fails or, after draining, when the session ends.
-func (s *Server) termStream(ctx context.Context, ws *websocket.Conn, sess *termSession, next int64) {
+// Returns when the socket fails or, after draining, when the session ends;
+// drained reports the latter, and the caller closes the socket.
+func termStream(ctx context.Context, ws *websocket.Conn, sess *termSession, next int64) (drained bool) {
 	write := func(typ websocket.MessageType, p []byte) bool {
 		wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
 		defer wcancel()
@@ -257,26 +270,25 @@ func (s *Server) termStream(ctx context.Context, ws *websocket.Conn, sess *termS
 		if !synced || from != next {
 			frame, _ := json.Marshal(termSyncFrame{Type: "sync", Offset: from})
 			if !write(websocket.MessageText, frame) {
-				return
+				return false
 			}
 			synced = true
 		}
 		next = from
 		if len(data) > 0 {
 			if !write(websocket.MessageBinary, data) {
-				return
+				return false
 			}
 			next += int64(len(data))
 			continue
 		}
 		if ended {
-			_ = ws.Close(termStatusExited, "exited")
-			return
+			return true
 		}
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			return
+			return false
 		}
 	}
 }

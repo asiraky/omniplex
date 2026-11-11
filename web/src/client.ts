@@ -27,7 +27,8 @@ export interface ClientEvents {
   onAccess(access: Access): void;
 }
 
-const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
+/** Reconnect delays in ms. The terminal socket climbs the same ladder. */
+export const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
 
 export class Client {
   private ws: WebSocket | null = null;

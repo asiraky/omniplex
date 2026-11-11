@@ -21,7 +21,7 @@ export function LoginDialog({
 }: {
   instanceId: string;
   name: string;
-  /** The sign-in process exited: whatever it did, the harness's state may have changed. */
+  /** The sign-in ended, or never started: whatever it did, the harness's state may have changed. */
   onEnded: () => void;
   onClose: () => void;
 }) {

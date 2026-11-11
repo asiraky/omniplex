@@ -205,6 +205,36 @@ describe("ending", () => {
     expect(FakeSocket.all).toHaveLength(1);
   });
 
+  it("close 4400 on the first connect ends the terminal as failed, without a retry", () => {
+    // The server could not start it: no checkout, or the pty failed. Retrying
+    // would only fail the same way.
+    const { log } = setup();
+    latest().open();
+    latest().close(4400);
+    vi.advanceTimersByTime(60_000);
+    window.dispatchEvent(new Event("online"));
+    expect(log.ended).toEqual(["failed"]);
+    expect(log.statuses).not.toContain("reconnecting");
+    expect(FakeSocket.all).toHaveLength(1);
+  });
+
+  it("ends as exited when the process died while away, after replaying its output", () => {
+    const { out, log } = setup();
+    latest().open();
+    latest().sync(0);
+    latest().bytes("ab");
+    latest().close();
+    vi.advanceTimersByTime(300);
+    latest().open();
+    latest().sync(2);
+    latest().bytes("cd");
+    latest().close(4000);
+    vi.advanceTimersByTime(60_000);
+    expect(out.join("")).toBe("abcd");
+    expect(log.ended).toEqual(["exited"]);
+    expect(FakeSocket.all).toHaveLength(2);
+  });
+
   it("restart clears the screen and asks for a fresh shell from the start", () => {
     const { term, log } = setup();
     latest().open();

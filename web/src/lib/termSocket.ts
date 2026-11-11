@@ -4,6 +4,8 @@
 // end of the shell: this owns the reconnect, the reattach by terminal id, and
 // the byte offset that says how much of the output the screen already has.
 
+import { BACKOFF } from "~/client";
+
 export type TerminalTarget =
   /** The user's shell in a thread's checkout. */
   | { thread: string }
@@ -12,8 +14,12 @@ export type TerminalTarget =
 
 export type TermStatus = "connecting" | "online" | "reconnecting";
 
-/** "exited": the process ended. "gone": the server has no such terminal any more. */
-export type TermEnd = "exited" | "gone";
+/**
+ * "exited": the process ended. "gone": the server has no such terminal any
+ * more (closed elsewhere, idle too long, or the server restarted). "failed":
+ * the server could not start it.
+ */
+export type TermEnd = "exited" | "gone" | "failed";
 
 export interface TermSocketEvents {
   onData(bytes: Uint8Array): void;
@@ -34,11 +40,9 @@ export interface TermSocket {
   dispose(): void;
 }
 
-// The same ladder as the app's own connection.
-const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
-
-const CLOSE_EXITED = 4000;
-const CLOSE_GONE = 4404;
+// The server's closes that end the terminal. Any other close is a dropped
+// connection, and worth retrying.
+const CLOSE_ENDS: Record<number, TermEnd> = { 4000: "exited", 4404: "gone", 4400: "failed" };
 
 export function openTermSocket(id: string, target: TerminalTarget, events: TermSocketEvents): TermSocket {
   let ws: WebSocket | null = null;
@@ -120,8 +124,9 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
       if (stableTimer !== null) window.clearTimeout(stableTimer);
       stableTimer = null;
       ws = null;
-      if (e.code === CLOSE_EXITED || e.code === CLOSE_GONE) {
-        events.onEnded(e.code === CLOSE_EXITED ? "exited" : "gone");
+      const end = CLOSE_ENDS[e.code];
+      if (end) {
+        events.onEnded(end);
         return;
       }
       events.onStatus("reconnecting");
@@ -182,9 +187,6 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
 
 /** Kill the shell outright: the user closed its tab. */
 export function endTerminal(id: string) {
-  try {
-    fetch(`/api/term?id=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
-  } catch {
-    // Best effort: an unreachable server reaps the shell on its own TTL.
-  }
+  // A failed DELETE is fine: the server reaps the shell on its idle TTL.
+  fetch(`/api/term?id=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
 }

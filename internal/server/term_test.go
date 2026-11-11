@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -63,25 +65,46 @@ func newTermRig(t *testing.T, ttl time.Duration) *termRig {
 		}
 		srv.termMu.Unlock()
 		for _, sess := range all {
-			srv.termEnd(sess)
+			srv.termRemove(sess)
 		}
 	})
 	return &termRig{srv: srv, ts: ts, guard: guard, client: pairedClient(t, ts, guard)}
 }
 
+// dial opens a socket to the rig's thread.
 func (rig *termRig) dial(t *testing.T, ctx context.Context, client *http.Client, query string) *websocket.Conn {
 	t.Helper()
-	url := "ws" + strings.TrimPrefix(rig.ts.URL, "http") + "/api/term?thread=term-thread&" + query
+	return rig.dialQuery(t, ctx, client, "thread=term-thread&"+query)
+}
+
+func (rig *termRig) dialQuery(t *testing.T, ctx context.Context, client *http.Client, query string) *websocket.Conn {
+	t.Helper()
+	conn, err := rig.tryDial(ctx, client, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.CloseNow() })
+	return conn
+}
+
+// tryDial is dial without the *testing.T, for use off the test goroutine.
+func (rig *termRig) tryDial(ctx context.Context, client *http.Client, query string) (*websocket.Conn, error) {
+	url := "ws" + strings.TrimPrefix(rig.ts.URL, "http") + "/api/term?" + query
 	conn, res, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: client})
 	if err != nil {
 		code := 0
 		if res != nil {
 			code = res.StatusCode
 		}
-		t.Fatalf("dial %s: status %d: %v", query, code, err)
+		return nil, fmt.Errorf("dial %s: status %d: %w", query, code, err)
 	}
-	t.Cleanup(func() { conn.CloseNow() })
-	return conn
+	return conn, nil
+}
+
+func (rig *termRig) count() int {
+	rig.srv.termMu.Lock()
+	defer rig.srv.termMu.Unlock()
+	return len(rig.srv.terms)
 }
 
 func (rig *termRig) session(id string) *termSession {
@@ -162,6 +185,12 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func isEnded(sess *termSession) bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.ended
 }
 
 func attachedCount(sess *termSession) int {
@@ -434,5 +463,119 @@ func TestTermReattachBehindTheRingResumesFromItsStart(t *testing.T) {
 	second.until(t, ctx, "flooded")
 	if got := len(second.out.String()); got > termRingBytes {
 		t.Fatalf("replayed %d bytes, more than the ring holds", got)
+	}
+}
+
+// A phone that reconnects twice at once sends two sockets for an id the server
+// has not seen yet. They must share one shell, not have the second replace the
+// first.
+func TestTermConcurrentOpensOfOneIDShareAShell(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	// A few rounds, since the two only race if both miss the registry.
+	for round := range 5 {
+		id := "twin" + strconv.Itoa(round)
+		var (
+			wg    sync.WaitGroup
+			conns [2]*websocket.Conn
+			errs  [2]error
+		)
+		for i := range conns {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				conns[i], errs[i] = rig.tryDial(ctx, rig.client, "thread=term-thread&id="+id)
+			}()
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { conns[i].CloseNow() })
+		}
+		a, b := &termReader{conn: conns[0]}, &termReader{conn: conns[1]}
+		_ = a.next(ctx)
+		_ = b.next(ctx)
+
+		sess := rig.session(id)
+		eventually(t, "both attached to one terminal", func() bool { return attachedCount(sess) == 2 })
+		if isEnded(sess) {
+			t.Fatalf("round %d: the shared shell was ended", round)
+		}
+		a.input(t, ctx, "echo sh\"\"ared"+strconv.Itoa(round)+"\n")
+		a.until(t, ctx, "shared"+strconv.Itoa(round))
+		b.until(t, ctx, "shared"+strconv.Itoa(round))
+	}
+	if n := rig.count(); n != 5 {
+		t.Fatalf("%d terminals registered, want one per id", n)
+	}
+}
+
+// The process finishing while the phone is away: its last words are waiting
+// on reattach, and once they are read the id is gone.
+func TestTermExitWhileDetachedIsReplayedThenForgotten(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	first := &termReader{conn: rig.dial(t, ctx, rig.client, "id=late")}
+	_ = first.next(ctx)
+	first.input(t, ctx, "sleep 0.3; echo do\"\"ne; exit\n")
+	first.until(t, ctx, "sleep 0.3")
+	received := first.offset
+	first.conn.Close(websocket.StatusNormalClosure, "")
+
+	sess := rig.session("late")
+	eventually(t, "the drop to detach", func() bool { return attachedCount(sess) == 0 })
+	eventually(t, "the shell to exit while detached", func() bool { return isEnded(sess) })
+	if rig.session("late") != sess {
+		t.Fatal("an exited terminal was forgotten before its output was read")
+	}
+
+	second := &termReader{conn: rig.dial(t, ctx, rig.client, "id=late&attach=1&since="+strconv.FormatInt(received, 10))}
+	second.until(t, ctx, "done")
+	if code := second.closed(t, ctx); code != termStatusExited {
+		t.Fatalf("replay of an exited terminal closed %d, want 4000", code)
+	}
+	eventually(t, "the drained terminal to be forgotten", func() bool { return rig.session("late") == nil })
+
+	again := &termReader{conn: rig.dial(t, ctx, rig.client, "id=late&attach=1")}
+	if code := again.closed(t, ctx); code != termStatusMissing {
+		t.Fatalf("attach after the replay closed %d, want 4404", code)
+	}
+}
+
+func TestTermExitedTerminalNobodyReadsIsForgottenAfterTheTTL(t *testing.T) {
+	const ttl = time.Second
+	rig := newTermRig(t, ttl)
+	ctx := testCtx(t)
+
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client, "id=orphan")}
+	_ = tr.next(ctx)
+	tr.input(t, ctx, "sleep 0.2; exit\n")
+	tr.until(t, ctx, "sleep 0.2")
+	tr.conn.Close(websocket.StatusNormalClosure, "")
+
+	sess := rig.session("orphan")
+	eventually(t, "the shell to exit while detached", func() bool { return isEnded(sess) })
+	if rig.session("orphan") != sess {
+		t.Fatal("an exited terminal was forgotten before the TTL")
+	}
+	eventually(t, "the TTL to forget it", func() bool { return rig.session("orphan") == nil })
+}
+
+// A thread the server cannot root a shell in is a failure the client should
+// stop retrying, which an HTTP error before the upgrade cannot tell it.
+func TestTermUnknownThreadClosesWith4400(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	tr := &termReader{conn: rig.dialQuery(t, ctx, rig.client, "thread=no-such-thread&id=stray")}
+	if code := tr.closed(t, ctx); code != termStatusFailed {
+		t.Fatalf("close status %d, want 4400", code)
+	}
+	if n := rig.count(); n != 0 {
+		t.Fatalf("%d terminals registered after a failed start", n)
 	}
 }
