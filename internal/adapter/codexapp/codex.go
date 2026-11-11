@@ -217,6 +217,23 @@ func trustArgs(cwd string) []string {
 
 // writableRootsArgs lets a workspace-write sandbox write to folders outside
 // the cwd: the project's home folder, when the session works in a repo.
+// sessionArgs turns on what a session needs that codex leaves off.
+//
+// update_plan has been opt-in since codex 0.152; without it the model never
+// plans, and turn/plan/updated — which feeds the plan card — never arrives.
+//
+// Codex waits one second for optional MCP servers before the first turn and
+// runs it without any still starting. An npx or uvx server, the ones omniplex
+// injects among them, routinely takes longer, so it would be missing from the
+// turn the user just sent. Ten seconds covers them; a server that is ready
+// sooner ends the wait sooner.
+func sessionArgs() []string {
+	return []string{
+		"-c", "tools.update_plan.enabled=true",
+		"-c", "mcp_optional_startup_grace_ms=10000",
+	}
+}
+
 func writableRootsArgs(dirs []string) []string {
 	if len(dirs) == 0 {
 		return nil
@@ -236,7 +253,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
+	args := append([]string{"app-server"}, sessionArgs()...)
+	args = append(args, trustArgs(o.Cwd)...)
 	var native []string
 	if len(o.MCPServers) > 0 {
 		all, err := nativeServers(o.Env)
