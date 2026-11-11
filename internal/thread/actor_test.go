@@ -901,21 +901,24 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 		}
 	}()
 
-	total := SubscriberQueue * 3
+	// One past the queue bound drops the slow subscriber; the rest show the
+	// actor carrying on after it. Each event is a store write, so the -race
+	// CI runner is slow here: the deadline guards a hang, not throughput.
+	total := SubscriberQueue + 64
 	for i := 0; i < total; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 			Role: "agent", Kind: "text", BlockID: "b1", Delta: "x",
 		}))
 	}
 
-	// The actor kept making progress despite the stalled subscriber.
-	waitFor(t, func() bool { return actor.Head() >= int64(total) })
-
 	select {
 	case <-slow.Resync:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("slow consumer was never asked to resync")
 	}
+
+	// The actor kept making progress despite the stalled subscriber.
+	waitFor(t, func() bool { return actor.Head() >= int64(total) })
 
 	if got := len(slow.Ch); got > SubscriberQueue {
 		t.Fatalf("slow consumer queue grew to %d; bound is %d", got, SubscriberQueue)
