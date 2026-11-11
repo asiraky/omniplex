@@ -168,7 +168,7 @@ type claudeAuth struct {
 }
 
 func authStatus(ctx context.Context, claudePath string, env map[string]string) claudeAuth {
-	out := runBrieflyEnv(ctx, adapter.MergeEnv(os.Environ(), env), claudePath, "auth", "status")
+	out := runBrieflyEnv(ctx, claudeEnv(os.Environ(), env), claudePath, "auth", "status")
 	var raw struct {
 		LoggedIn         *bool  `json:"loggedIn"`
 		AuthMethod       string `json:"authMethod"`
