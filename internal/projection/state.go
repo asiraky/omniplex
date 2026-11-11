@@ -424,11 +424,11 @@ type State struct {
 	Artefacts []Artefact `json:"artefacts"`
 
 	itemIndex map[string]int `json:"-"`
+	jobIndex  map[string]int `json:"-"`
 	// recapped is set by FromSnapshot when the stored snapshot held tool
 	// content over the cap: the row on disk is still the big one and wants
 	// rewriting.
 	recapped bool
-	jobIndex  map[string]int `json:"-"`
 }
 
 func New(threadID string) *State {

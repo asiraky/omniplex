@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 
 import type { ToolContent } from "~/protocol";
 
-export const toolContentUrl = (threadId: string, itemId: string) =>
+const toolContentUrl = (threadId: string, itemId: string) =>
   `/api/threads/${encodeURIComponent(threadId)}/items/${encodeURIComponent(itemId)}/content`;
 
-export async function readToolContent(url: string, signal?: AbortSignal): Promise<ToolContent[]> {
+async function readToolContent(url: string, signal?: AbortSignal): Promise<ToolContent[]> {
   const res = await fetch(url, { signal });
   if (!res.ok) {
     const message = await res

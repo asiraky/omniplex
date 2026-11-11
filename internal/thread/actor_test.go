@@ -1605,11 +1605,11 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 	_ = fa.thread().Close()
 
 	waitFor(t, func() bool {
-		state, err := loadState(ctx, st, actor.ID)
+		state, _, err := loadState(ctx, st, actor.ID)
 		return err == nil && len(state.Turns) > 0 && state.Turns[len(state.Turns)-1].Done
 	})
 
-	state, err := loadState(ctx, st, actor.ID)
+	state, _, err := loadState(ctx, st, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1665,11 +1665,11 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 	}
 
 	waitFor(t, func() bool {
-		state, err := loadState(ctx, st, actor.ID)
+		state, _, err := loadState(ctx, st, actor.ID)
 		return err == nil && len(state.Turns) > 0 && state.Turns[len(state.Turns)-1].Done
 	})
 
-	state, err := loadState(ctx, st, actor.ID)
+	state, _, err := loadState(ctx, st, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1701,10 +1701,10 @@ func TestHarnessDeathInterruptsLiveJobs(t *testing.T) {
 	_ = fa.thread().Close()
 
 	waitFor(t, func() bool {
-		state, err := loadState(ctx, st, actor.ID)
+		state, _, err := loadState(ctx, st, actor.ID)
 		return err == nil && !state.LiveJobs().Any()
 	})
-	state, err := loadState(ctx, st, actor.ID)
+	state, _, err := loadState(ctx, st, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -339,7 +339,7 @@ func StartPending(st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, en
 // Resume rebuilds an actor for an existing thread id, replaying its log into
 // the projection before starting a fresh harness process.
 func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, _, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +423,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 // provider process. It is used by read-only attachment; ActivateResume pays
 // the process cost only when a later command actually needs the harness.
 func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, snapAt, err := loadStateFrom(ctx, st, meta.ID)
+	state, snapAt, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +450,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 // harness process, but retains the same attach/state/fanout surface so closed
 // threads remain inspectable by presenters.
 func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, logf func(string, ...any)) (*Actor, error) {
-	state, snapAt, err := loadStateFrom(ctx, st, meta.ID)
+	state, snapAt, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +475,7 @@ func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, 
 }
 
 func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, _, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -485,16 +485,11 @@ func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, me
 	return a, nil
 }
 
-// loadState folds the whole log, using the newest snapshot as a starting point.
-func loadState(ctx context.Context, st *store.Store, id string) (*projection.State, error) {
-	state, _, err := loadStateFrom(ctx, st, id)
-	return state, err
-}
-
-// loadStateFrom is loadState that also says which seq the snapshot it started
-// from was taken at, zero for none. An actor that knows it is not asked to
-// write the same snapshot again.
-func loadStateFrom(ctx context.Context, st *store.Store, id string) (*projection.State, int64, error) {
+// loadState folds the whole log, using the newest snapshot as a starting
+// point, and says which seq that snapshot was taken at, zero for none or for
+// one worth rewriting. An actor that knows it is not asked to write the same
+// snapshot again.
+func loadState(ctx context.Context, st *store.Store, id string) (*projection.State, int64, error) {
 	state := projection.New(id)
 	var snapAt int64
 	if seq, blob, err := st.LatestSnapshot(ctx, id); err == nil && blob != nil {
