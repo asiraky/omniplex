@@ -61,9 +61,10 @@ describe.skipIf(process.platform === "win32")("ServerSupervisor", () => {
       restart: fast,
       ...extra,
     });
-    const until = (kind: ServerStatus["kind"]) =>
+    // Resolves once a status of kind lands at or after index from.
+    const until = (kind: ServerStatus["kind"], from = 0) =>
       new Promise<void>((resolve) => {
-        if (statuses.some((s) => s.kind === kind)) return resolve();
+        if (statuses.slice(from).some((s) => s.kind === kind)) return resolve();
         waiters.push([(s) => s.kind === kind, resolve]);
       });
     supervisor.start();
@@ -126,10 +127,11 @@ describe.skipIf(process.platform === "win32")("ServerSupervisor", () => {
   });
 
   it("retry starts over after giving up", async () => {
-    const { until, sup } = launch("crash");
+    const { until, sup, statuses } = launch("crash");
     await until("failed");
+    const seen = statuses.length;
     sup.retry();
-    await new Promise((r) => setTimeout(r, 200));
+    await until("failed", seen);
     expect(starts()).toHaveLength(2 * (1 + fast.maxRestarts));
   });
 
