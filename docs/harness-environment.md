@@ -22,6 +22,11 @@ Per adapter:
   host's. A Claude Code installed through npm is a script, which the SDK runs
   under the bridge's own runtime: under Bun that is a second Bun in the project
   cwd, so the bridge gives it the same empty env file through `executableArgs`.
+  Omniplex's own environment arrives without `CLAUDECODE` and `CLAUDE_*`: a
+  server started from inside a Claude Code session would otherwise hand every
+  thread that session's id, messaging socket and token, effort, and context
+  window. `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN` stay, because they
+  choose the account; anything the overlay sets still wins.
 - **Codex.** A native binary. It reads `~/.codex/.env` and no project file.
 - **Pi.** A Node script, and its auth bridge is too. Node loads no dotenv file
   unless asked.
