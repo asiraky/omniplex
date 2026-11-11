@@ -247,7 +247,35 @@ describe("ending", () => {
     const p = latest().params;
     expect(p.has("attach")).toBe(false);
     expect(p.has("since")).toBe(false);
+    expect(p.get("fresh")).toBe("1");
     expect(log.statuses.at(-1)).toBe("connecting");
+  });
+
+  it("asks for a fresh shell until the server answers, then reattaches as usual", () => {
+    const { term } = setup();
+    latest().open();
+    latest().sync(0);
+    latest().close(4000);
+
+    term.restart();
+
+    // Dropped before the server answered: the retry still wants a new shell.
+    latest().close();
+    vi.advanceTimersByTime(300);
+    expect(latest().params.get("fresh")).toBe("1");
+
+    latest().open();
+    latest().sync(0);
+    latest().close();
+    vi.advanceTimersByTime(1000);
+    const p = latest().params;
+    expect(p.get("attach")).toBe("1");
+    expect(p.has("fresh")).toBe(false);
+  });
+
+  it("a first connect never asks for a fresh shell, so a reload still replays", () => {
+    setup();
+    expect(latest().params.has("fresh")).toBe(false);
   });
 
   it("restart hangs up a live socket without it counting as a drop", () => {

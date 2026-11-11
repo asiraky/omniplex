@@ -53,6 +53,9 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
   // then is the session known to exist: a first connect that never reached the
   // server spawned nothing, and attach=1 would be told there is no terminal.
   let synced = false;
+  // Set by restart until the server answers: an ended shell still held under
+  // the id is to be replaced, not replayed.
+  let fresh = false;
   let attempt = 0;
   let retryTimer: number | null = null;
   let stableTimer: number | null = null;
@@ -68,6 +71,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     else q.set("login", target.login);
     if (offset > 0) q.set("since", String(offset));
     if (synced) q.set("attach", "1");
+    else if (fresh) q.set("fresh", "1");
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${location.host}/api/term?${q}`;
   };
@@ -118,6 +122,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
       if (frame.offset !== offset) events.onReset();
       offset = frame.offset;
       synced = true;
+      fresh = false;
     };
 
     sock.onclose = (e: CloseEvent) => {
@@ -169,6 +174,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
       hangUp();
       offset = 0;
       synced = false;
+      fresh = true;
       attempt = 0;
       events.onReset();
       events.onStatus("connecting");

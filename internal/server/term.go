@@ -31,9 +31,11 @@ import (
 // leaves the id in place until a socket has drained its last output (or the
 // TTL passes), so an exit while detached is replayed rather than lost.
 //
-// GET /api/term?id=<id>&thread=<id>|login=<instance>[&since=<n>][&attach=1]
+// GET /api/term?id=<id>&thread=<id>|login=<instance>[&since=<n>][&attach=1|&fresh=1]
 // upgrades to a WebSocket. attach=1 only ever reattaches; without it a missing
-// terminal is spawned. since is the stream offset the client already holds.
+// terminal is spawned. fresh=1 is the user asking for a new shell after the
+// last one ended: an ended terminal under the id is replaced, not replayed.
+// since is the stream offset the client already holds.
 //
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
 // to type, {"type":"resize","cols","rows"} on layout change. The server first
@@ -117,6 +119,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	}
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
 	attachOnly := q.Get("attach") == "1"
+	fresh := q.Get("fresh") == "1"
 
 	// Upgraded before anything is spawned, so a failed upgrade cannot leave a
 	// shell behind with nobody to detach it.
@@ -140,7 +143,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 	device, _ := auth.DeviceFrom(r.Context())
 	// A close code is what lets the client tell "gone" or "broken" from a
 	// network drop worth retrying; an HTTP error would look like the latter.
-	sess := s.termAttach(device.ID, id, target)
+	sess := s.termAttach(device.ID, id, target, fresh)
 	if sess == nil {
 		if attachOnly {
 			_ = ws.Close(termStatusMissing, "no such terminal")
@@ -148,7 +151,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		}
 		cmd, err := s.termCommand(r.Context(), threadID, login)
 		if err == nil {
-			sess, err = s.termSpawn(device.ID, id, target, cmd)
+			sess, err = s.termSpawn(device.ID, id, target, fresh, cmd)
 		}
 		if errors.Is(err, errTermClosed) {
 			_ = ws.Close(termStatusMissing, "no such terminal")

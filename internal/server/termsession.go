@@ -96,26 +96,31 @@ func (sess *termSession) isKilled() bool {
 }
 
 // termAttach finds the device's terminal by id and counts a new attachment on
-// it.
-func (s *Server) termAttach(device, id, target string) *termSession {
+// it. fresh is the user asking for a new shell under the id, after the last
+// one ended.
+func (s *Server) termAttach(device, id, target string, fresh bool) *termSession {
 	s.termMu.Lock()
 	defer s.termMu.Unlock()
-	return s.termAttachLocked(termKey(device, id), target)
+	return s.termAttachLocked(termKey(device, id), target, fresh)
 }
 
 // termAttachLocked is termAttach for a caller holding termMu. A terminal
 // opened for another target is treated as absent: the id is the client's, and
 // reusing one for a different checkout is not a reattach. An ended terminal is
-// still found, so its last output can be replayed.
-func (s *Server) termAttachLocked(key, target string) *termSession {
+// still found, so its last output can be replayed — unless the user asked for
+// a fresh one, which a live terminal still satisfies.
+func (s *Server) termAttachLocked(key, target string, fresh bool) *termSession {
 	sess := s.terms[key]
 	if sess == nil || sess.target != target {
 		return nil
 	}
 	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if fresh && sess.ended {
+		return nil
+	}
 	sess.attached++
 	sess.stopIdle()
-	sess.mu.Unlock()
 	return sess
 }
 
@@ -124,19 +129,21 @@ func (s *Server) termAttachLocked(key, target string) *termSession {
 // start: two sockets for a new id arrive together whenever a phone reconnects
 // twice in quick succession, and the second must join the first's shell, not
 // replace it.
-func (s *Server) termSpawn(device, id, target string, cmd *exec.Cmd) (*termSession, error) {
+func (s *Server) termSpawn(device, id, target string, fresh bool, cmd *exec.Cmd) (*termSession, error) {
 	key := termKey(device, id)
 	s.termMu.Lock()
-	if sess := s.termAttachLocked(key, target); sess != nil {
+	if sess := s.termAttachLocked(key, target, fresh); sess != nil {
 		s.termMu.Unlock()
 		return sess, nil
 	}
 	// Closed while its first socket was still on the way: the user is done
-	// with it before it ever ran.
-	if _, ok := s.termClosed[key]; ok {
+	// with it before it ever ran. Asking for a fresh shell is the user
+	// changing their mind, from a tab that was told it was closed elsewhere.
+	if _, ok := s.termClosed[key]; ok && !fresh {
 		s.termMu.Unlock()
 		return nil, errTermClosed
 	}
+	delete(s.termClosed, key)
 	old := s.terms[key]
 
 	// A shell in a checkout starts dev servers and leaves them; end them with
@@ -161,8 +168,11 @@ func (s *Server) termSpawn(device, id, target string, cmd *exec.Cmd) (*termSessi
 	s.terms[key] = sess
 	s.termMu.Unlock()
 
-	// Same id, other target: the old one can no longer be reached.
-	if old != nil {
+	// Same id, other target: the old one can no longer be reached. Same
+	// target: it had ended, and a fresh shell replaces it.
+	if old != nil && old.target == target {
+		s.termRemove(old)
+	} else if old != nil {
 		s.termKillSession(old)
 	}
 
@@ -170,7 +180,7 @@ func (s *Server) termSpawn(device, id, target string, cmd *exec.Cmd) (*termSessi
 	return sess, nil
 }
 
-// termPump copies pty output into the ring. It never touches a socket, so a
+// pump copies pty output into the ring. It never touches a socket, so a
 // stalled phone cannot stall the shell or the terminal's other sockets.
 // Reading fails once the process has exited or the tty was closed, and that
 // is what ends the session; it stays registered for replay.
@@ -227,7 +237,7 @@ func (s *Server) termDetach(sess *termSession) {
 
 // termKill removes the device's terminal by id, and remembers the id as
 // closed so a spawn still on its way for it does not start a shell nobody
-// will ever reattach to. A closed tab's id is never reused.
+// will ever reattach to. Only a fresh-shell request reuses a closed id.
 func (s *Server) termKill(device, id string) {
 	key := termKey(device, id)
 	now := time.Now()

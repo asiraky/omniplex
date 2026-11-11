@@ -390,6 +390,49 @@ func TestTermDeleteBeforeTheSpawnPreventsIt(t *testing.T) {
 	other.until(t, ctx, "ok")
 }
 
+// "Start a new shell" in a tab that was told its shell was closed elsewhere
+// is the user asking again, and the closed id must not refuse it.
+func TestTermFreshSpawnsUnderAClosedID(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	req, _ := http.NewRequest(http.MethodDelete, rig.ts.URL+"/api/term?id=reopened", nil)
+	res, err := rig.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client, "id=reopened&fresh=1")}
+	tr.input(t, ctx, "echo ba\"\"ck\n")
+	tr.until(t, ctx, "back")
+}
+
+// An ended shell whose close the client never acknowledged is still held for
+// replay; a fresh request replaces it rather than replaying the dead one.
+func TestTermFreshReplacesAnEndedTerminal(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	first := &termReader{conn: rig.dial(t, ctx, rig.client, "id=again")}
+	first.input(t, ctx, "echo ol\"\"d\n")
+	first.until(t, ctx, "old")
+	old := rig.session("again")
+	first.conn.CloseNow()
+	eventually(t, "the drop to detach", func() bool { return attachedCount(old) == 0 })
+	old.end()
+
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client, "id=again&fresh=1")}
+	tr.input(t, ctx, "echo ne\"\"w\n")
+	tr.until(t, ctx, "new")
+	if strings.Contains(tr.out.String(), "old") {
+		t.Fatalf("the ended shell was replayed: %q", tr.out.String())
+	}
+	if rig.session("again") == old {
+		t.Fatal("the ended shell is still registered")
+	}
+}
+
 func TestTermShellExitClosesWith4000AndForgetsIt(t *testing.T) {
 	rig := newTermRig(t, time.Minute)
 	ctx := testCtx(t)
