@@ -6,6 +6,7 @@ package thread
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -2255,7 +2256,7 @@ func replayable(gap int64) bool {
 
 // wireReplay is evs as a client should see them, or ok=false when they are
 // more than a replay should carry — past MaxReplayEvents, or past
-// MaxReplayBytes of payload once capped — and one snapshot is the cheaper
+// MaxReplayBytes once capped and encoded — and one snapshot is the cheaper
 // answer. T3 Code's budget, for the same reason: a client back from a long
 // absence on a phone should not download every chunk it missed.
 func wireReplay(evs []proto.Event) (wire []proto.Event, ok bool) {
@@ -2266,7 +2267,13 @@ func wireReplay(evs []proto.Event) (wire []proto.Event, ok bool) {
 	size := 0
 	for _, ev := range evs {
 		w := projection.WireEvent(ev)
-		size += len(w.Payload)
+		// The event as it is encoded in the frame, envelope and all: the
+		// budget is what goes over the wire, not the payloads alone.
+		b, err := json.Marshal(w)
+		if err != nil {
+			return nil, false
+		}
+		size += len(b)
 		if size > MaxReplayBytes {
 			return nil, false
 		}

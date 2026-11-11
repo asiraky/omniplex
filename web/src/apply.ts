@@ -98,10 +98,10 @@ function settle(it: Item, status: Item["status"]): Item {
 // Live events and replays arrive capped too, but the reducer caps what it
 // appends the same way regardless: entries accumulate across updates, and one
 // long session's tool output must not sit in the tab's memory. Mirrors
-// internal/projection. Go measures bytes and
-// this measures UTF-16 units, so the two can cut at slightly different points;
-// that is fine, since a capped preview is shorter than the cap in either unit
-// and the full text is one fetch away.
+// internal/projection. Go measures bytes and this measures UTF-16 units, so
+// the two can cut at slightly different points; that is fine, since a capped
+// preview is shorter than the cap in either unit and the full text is one
+// fetch away.
 export const TOOL_HEAD = 4096;
 export const TOOL_TAIL = 4096;
 export const TOOL_MAX_ENTRIES = 16;

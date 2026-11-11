@@ -124,6 +124,53 @@ func TestWireCopyKeepsChildOfRunningParentOutsideWindow(t *testing.T) {
 	}
 }
 
+// Past a running parent's tail, a child still running rides along — left
+// out, it would miss the update that settles it — and so does the parent's
+// newest message, which may still be streaming. Older settled children do
+// not.
+func TestWireCopyKeepsLiveChildrenBeyondTail(t *testing.T) {
+	s := New("s")
+	busy := tool("busy", "t1", proto.StatusInProgress)
+	busy.ParentID = "p"
+	done := tool("done", "t1", proto.StatusCompleted)
+	done.ParentID = "p"
+	s.Items = []Item{
+		tool("p", "t1", proto.StatusInProgress),
+		item("old-msg", "t1", "p"), busy, item("new-msg", "t1", "p"), done,
+	}
+	for i := range WireChildTail {
+		c := tool("l"+strconv.Itoa(i), "t1", proto.StatusCompleted)
+		c.ParentID = "p"
+		s.Items = append(s.Items, c)
+	}
+	s.reindex()
+	w := s.WireCopy(0)
+	if got := ids(w.Items[:3]); !reflect.DeepEqual(got, []string{"p", "busy", "new-msg"}) || len(w.Items) != WireChildTail+3 {
+		t.Fatalf("items = %v", ids(w.Items))
+	}
+	if w.Items[0].ChildrenBefore != 2 {
+		t.Fatalf("ChildrenBefore = %d, want 2", w.Items[0].ChildrenBefore)
+	}
+}
+
+// A finished job goes over the wire without its activity; a running one keeps
+// it. The live state keeps both.
+func TestWireJobsDropFinishedActivity(t *testing.T) {
+	s := New("s")
+	live, done := job("live", proto.JobRunning), job("done", proto.JobCompleted)
+	live.Activity, done.Activity = "Read", "Edit"
+	s.Jobs = []Job{live, done}
+	s.reindex()
+	for name, got := range map[string][]Job{"WireCopy": s.WireCopy(0).Jobs, "WireJobs": s.WireJobs()} {
+		if len(got) != 2 || got[0].Activity != "Read" || got[1].Activity != "" {
+			t.Fatalf("%s: jobs = %+v", name, got)
+		}
+	}
+	if s.Jobs[1].Activity != "Edit" {
+		t.Fatal("the live state lost its activity")
+	}
+}
+
 // Nothing in a wire copy shares memory with the live state.
 func TestWireCopyDoesNotAliasTheLiveState(t *testing.T) {
 	s := New("s")

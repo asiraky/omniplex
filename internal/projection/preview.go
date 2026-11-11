@@ -35,6 +35,13 @@ const (
 	// maxToolContent is how many content entries one item keeps. Past it a
 	// tool is streaming, and the log has the rest.
 	maxToolContent = 16
+	// maxInputText is how much string text one tool input keeps in all. Each
+	// string is capped on its own too, but an input of many middling strings
+	// (an edit list, a batch of files) would get through that whole.
+	maxInputText = 32 << 10
+	// inputKeep is how long a string may be and still be kept whole once an
+	// input's budget is spent: short fields are its names and flags.
+	inputKeep = 64
 )
 
 // capText returns s as a head/tail preview, and whether anything was cut.
@@ -116,15 +123,17 @@ func capItem(it *Item) bool {
 // capJSONStrings caps every string in a JSON document with capText: a tool's
 // input is short fields around the odd long one, a file's whole text or a
 // script. Keys are names and are left alone, numbers are carried as written,
-// and keys keep their order. It reports whether anything was cut; when nothing
-// was, or raw is not valid JSON, raw comes back as it was.
+// and keys keep their order. Once maxInputText of string text has been kept,
+// any later string longer than inputKeep is replaced by the marker alone. It
+// reports whether anything was cut; when nothing was, or raw is not valid
+// JSON, raw comes back as it was.
 func capJSONStrings(raw json.RawMessage) (json.RawMessage, bool) {
 	// Decoding never lengthens a string, so a document no longer than the
 	// threshold cannot hold one worth cutting.
 	if len(raw) <= previewHead+previewTail+previewSlack {
 		return raw, false
 	}
-	w := &jsonCapper{dec: json.NewDecoder(bytes.NewReader(raw))}
+	w := &jsonCapper{dec: json.NewDecoder(bytes.NewReader(raw)), left: maxInputText}
 	w.dec.UseNumber()
 	w.enc = json.NewEncoder(&w.buf)
 	w.enc.SetEscapeHTML(false)
@@ -144,6 +153,8 @@ type jsonCapper struct {
 	enc *json.Encoder
 	buf bytes.Buffer
 	cut bool
+	// left is how much string text the document may still keep.
+	left int
 }
 
 func (w *jsonCapper) value() error {
@@ -177,6 +188,11 @@ func (w *jsonCapper) value() error {
 		w.buf.WriteByte(byte(end.(json.Delim)))
 	case string:
 		s, cut := capText(v)
+		if len(s) > inputKeep && len(s) > w.left {
+			s, cut = "[… "+strconv.Itoa(utf8.RuneCountInString(v))+" characters truncated …]", true
+		} else {
+			w.left -= len(s)
+		}
 		w.cut = w.cut || cut
 		w.str(s)
 	case json.Number:

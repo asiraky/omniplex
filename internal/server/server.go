@@ -335,12 +335,12 @@ func (s *Server) Handler() http.Handler {
 		started := time.Now()
 		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
 		items, err := actor.Children(r.Context(), r.PathValue("itemId"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		n := writeSized(w, map[string]any{"items": orEmpty(items)})
@@ -354,12 +354,12 @@ func (s *Server) Handler() http.Handler {
 		started := time.Now()
 		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
 		jobs, err := actor.Jobs(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		n := writeSized(w, map[string]any{"jobs": orEmpty(jobs)})

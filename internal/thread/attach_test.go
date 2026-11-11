@@ -66,6 +66,24 @@ func TestReplayIsRefusedPastTheByteBudget(t *testing.T) {
 	}
 }
 
+// The budget counts each event as the frame encodes it, envelope and all, so
+// payloads that just fit on their own do not.
+func TestReplayBudgetCountsTheEnvelope(t *testing.T) {
+	evs := make([]proto.Event, 4)
+	delta := MaxReplayBytes/4 - len(chunkEvent(t, 1, "").Payload) - 8
+	payloads := 0
+	for i := range evs {
+		evs[i] = chunkEvent(t, int64(i+1), strings.Repeat("x", delta))
+		payloads += len(evs[i].Payload)
+	}
+	if payloads > MaxReplayBytes {
+		t.Fatalf("payloads are %d bytes; the test needs them under budget", payloads)
+	}
+	if _, ok := wireReplay(evs); ok {
+		t.Fatal("a replay over budget once encoded was accepted")
+	}
+}
+
 // The budget is spent on what goes over the wire: tool output the log holds
 // in full is capped first, so a catch-up whose raw payloads would blow the
 // budget can still be a replay — of the capped events.

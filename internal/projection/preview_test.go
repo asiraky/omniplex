@@ -270,6 +270,41 @@ func TestCapJSONStringsCapsLeavesOnly(t *testing.T) {
 	}
 }
 
+// The budget is across the whole input: once it is spent, later long strings
+// are reduced to the marker, while short ones — paths, flags — stay whole.
+func TestCapJSONStringsBudgetsTheWholeInput(t *testing.T) {
+	middling := strings.Repeat("m", 6000) // under the per-string cap
+	fields := make([]string, 12)
+	for i := range fields {
+		fields[i] = `"f` + strconv.Itoa(i) + `":"` + middling + `"`
+	}
+	raw := json.RawMessage(`{` + strings.Join(fields, ",") + `,"path":"/a/b.go"}`)
+
+	got, cut := capJSONStrings(raw)
+	if !cut {
+		t.Fatal("not cut")
+	}
+	var v map[string]string
+	if err := json.Unmarshal(got, &v); err != nil {
+		t.Fatal(err)
+	}
+	kept := 0
+	for i := range fields {
+		switch f := v["f"+strconv.Itoa(i)]; {
+		case f == middling:
+			kept++
+		case !strings.Contains(f, "6000 characters truncated"):
+			t.Fatalf("f%d is neither whole nor the marker: %.80s", i, f)
+		}
+	}
+	if kept != maxInputText/len(middling) {
+		t.Fatalf("kept %d whole, want %d", kept, maxInputText/len(middling))
+	}
+	if v["path"] != "/a/b.go" {
+		t.Fatalf("short field = %q", v["path"])
+	}
+}
+
 // Input with nothing to cut comes back as the same bytes, not a re-encoding;
 // so does input that is not JSON at all.
 func TestCapJSONStringsLeavesUncutInputAlone(t *testing.T) {

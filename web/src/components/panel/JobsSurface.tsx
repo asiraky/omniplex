@@ -357,6 +357,86 @@ function EarlierJobs({ load }: { load: () => Promise<ThreadState | null> }) {
   );
 }
 
+/** One job opened from the roster: its header, and its shell or narration. */
+function OpenJob({
+  threadId,
+  job,
+  state,
+  command,
+  onBack,
+  onOpen,
+  onStop,
+}: {
+  threadId: string;
+  job: Job;
+  state: ThreadState;
+  command: JobsSurfaceProps["command"];
+  onBack: () => void;
+  onOpen: (j: Job) => void;
+  onStop: (j: Job) => void;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex min-h-11 items-center gap-1 border-b pr-2">
+        <button
+          type="button"
+          aria-label="Back to jobs"
+          onClick={onBack}
+          className="hover:bg-accent/50 flex min-h-11 min-w-11 shrink-0 items-center justify-center outline-none"
+        >
+          <ArrowLeftIcon className="size-4" />
+        </button>
+        <StatusMark job={job} />
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{jobLabel(job)}</span>
+        <span className="text-muted-foreground shrink-0 text-[10px]">
+          <Elapsed since={job.startedAt} finishedAt={job.finishedAt} />
+        </span>
+        {isLive(job) && (
+          <button
+            type="button"
+            aria-label={`Stop ${jobLabel(job)}`}
+            onClick={() => onStop(job)}
+            className="text-muted-foreground hover:text-destructive flex min-h-11 min-w-11 items-center justify-center outline-none"
+          >
+            <SquareIcon className="size-3.5 fill-current" />
+          </button>
+        )}
+      </div>
+      <div className="min-h-0 flex-1">
+        {job.kind === "shell" ? (
+          <ShellPane key={job.id} threadId={threadId} job={job} command={command} />
+        ) : (
+          <AgentPane
+            threadId={threadId}
+            job={job}
+            jobs={state.jobs}
+            items={state.items}
+            onOpen={onOpen}
+            onStop={onStop}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The roster's foot: what is live, and what the listed jobs have spent. */
+function RosterTotals({ jobs, partial }: { jobs: Job[]; partial: boolean }) {
+  const tokens = jobs.reduce((n, j) => n + (j.usage?.totalTokens ?? 0), 0);
+  const cost = jobs.reduce((n, j) => n + (j.usage?.cost ?? 0), 0);
+  const label = liveJobsLabel(jobs).replace(/, /g, " · ") || "nothing live";
+  return (
+    <div className="text-muted-foreground flex items-center gap-2 border-t px-3 py-1.5 text-[11px]">
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="shrink-0 tabular-nums">
+        {/* Totals over a partial list are a floor, and say so. */}
+        {partial && (tokens || cost) ? "≥ " : ""}
+        {[tokens ? `${fmtTokens(tokens)} tok` : "", cost ? fmtCost(cost) : ""].filter(Boolean).join(" · ")}
+      </span>
+    </div>
+  );
+}
+
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
 export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfaceProps) {
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
@@ -367,47 +447,15 @@ export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfa
 
   if (open) {
     return (
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="flex min-h-11 items-center gap-1 border-b pr-2">
-          <button
-            type="button"
-            aria-label="Back to jobs"
-            onClick={() => setOpenId(null)}
-            className="hover:bg-accent/50 flex min-h-11 min-w-11 shrink-0 items-center justify-center outline-none"
-          >
-            <ArrowLeftIcon className="size-4" />
-          </button>
-          <StatusMark job={open} />
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{jobLabel(open)}</span>
-          <span className="text-muted-foreground shrink-0 text-[10px]">
-            <Elapsed since={open.startedAt} finishedAt={open.finishedAt} />
-          </span>
-          {isLive(open) && (
-            <button
-              type="button"
-              aria-label={`Stop ${jobLabel(open)}`}
-              onClick={() => stop(open)}
-              className="text-muted-foreground hover:text-destructive flex min-h-11 min-w-11 items-center justify-center outline-none"
-            >
-              <SquareIcon className="size-3.5 fill-current" />
-            </button>
-          )}
-        </div>
-        <div className="min-h-0 flex-1">
-          {open.kind === "shell" ? (
-            <ShellPane key={open.id} threadId={threadId} job={open} command={command} />
-          ) : (
-            <AgentPane
-              threadId={threadId}
-              job={open}
-              jobs={state.jobs}
-              items={state.items}
-              onOpen={(j) => setOpenId(j.id)}
-              onStop={stop}
-            />
-          )}
-        </div>
-      </div>
+      <OpenJob
+        threadId={threadId}
+        job={open}
+        state={state}
+        command={command}
+        onBack={() => setOpenId(null)}
+        onOpen={(j) => setOpenId(j.id)}
+        onStop={stop}
+      />
     );
   }
 
@@ -426,10 +474,6 @@ export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfa
     );
   }
 
-  const tokens = state.jobs.reduce((n, j) => n + (j.usage?.totalTokens ?? 0), 0);
-  const cost = state.jobs.reduce((n, j) => n + (j.usage?.cost ?? 0), 0);
-  const label = liveJobsLabel(state.jobs).replace(/, /g, " · ") || "nothing live";
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="scroll-thin min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-2">
@@ -447,14 +491,7 @@ export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfa
         })}
         {missing && loadAllJobs && <EarlierJobs load={loadAllJobs} />}
       </div>
-      <div className="text-muted-foreground flex items-center gap-2 border-t px-3 py-1.5 text-[11px]">
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        <span className="shrink-0 tabular-nums">
-          {/* Totals over a partial list are a floor, and say so. */}
-          {missing && (tokens || cost) ? "≥ " : ""}
-          {[tokens ? `${fmtTokens(tokens)} tok` : "", cost ? fmtCost(cost) : ""].filter(Boolean).join(" · ")}
-        </span>
-      </div>
+      <RosterTotals jobs={state.jobs} partial={missing} />
     </div>
   );
 }

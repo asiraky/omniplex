@@ -79,8 +79,24 @@ func (s *State) WireChildren(parentID string) []Item {
 	return out
 }
 
-// WireJobs returns a copy of every job.
-func (s *State) WireJobs() []Job { return append([]Job{}, s.Jobs...) }
+// WireJobs returns a wire copy of every job (see wireJob).
+func (s *State) WireJobs() []Job {
+	out := make([]Job, len(s.Jobs))
+	for i, j := range s.Jobs {
+		out[i] = wireJob(j)
+	}
+	return out
+}
+
+// wireJob returns j as a client should see it: a finished job goes without
+// its Activity, which a presenter shows only while the job runs and which is
+// most of a long-running agent's bytes.
+func wireJob(j Job) Job {
+	if proto.JobDone(j.Status) {
+		j.Activity = ""
+	}
+	return j
+}
 
 // WireEvent returns ev as a client should see it: a tool_call.started or
 // tool_call.updated has its Content and RawInput capped the way the
@@ -130,7 +146,11 @@ func WireEvent(ev proto.Event) proto.Event {
 
 // wireItems copies s.Items[lo:hi] for a client, Input-capped. A child item
 // rides along only while its parent is still running, and then only if it is
-// among the parent's last WireChildTail children; a settled parent's
+// among the parent's last WireChildTail children, is itself still running, or
+// is the parent's newest message — a running child left out would miss the
+// update that settles it, which the client drops for an item it does not
+// hold, and a message still streaming would grow from a missing prefix,
+// since a chunk carries no status to tell it from a new one. A settled parent's
 // narration lives in the roster's drill-down, fetched on demand. Each parent
 // in the copy counts the children it went without, across the whole timeline.
 func (s *State) wireItems(lo, hi int) []Item {
@@ -138,15 +158,18 @@ func (s *State) wireItems(lo, hi int) []Item {
 	// first WireChildTail met are the tail. The walk ends with every
 	// parent's total.
 	children := map[string]int{}
+	messaged := map[string]bool{}
 	tail := make([]bool, hi-lo)
 	for i := len(s.Items) - 1; i >= 0; i-- {
 		p := s.Items[i].ParentID
 		if p == "" {
 			continue
 		}
+		newestMessage := s.Items[i].Kind == ItemMessage && !messaged[p]
 		if i >= lo && i < hi {
-			tail[i-lo] = children[p] < WireChildTail
+			tail[i-lo] = children[p] < WireChildTail || newestMessage
 		}
+		messaged[p] = messaged[p] || s.Items[i].Kind == ItemMessage
 		children[p]++
 	}
 
@@ -162,7 +185,7 @@ func (s *State) wireItems(lo, hi int) []Item {
 				live = found && (parent.Status == proto.StatusInProgress || parent.Status == proto.StatusPending)
 				running[p] = live
 			}
-			if !live || !tail[i-lo] {
+			if !live || !(tail[i-lo] || it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) {
 				continue
 			}
 			carried[p]++
@@ -210,7 +233,7 @@ func (s *State) jobsSpawnedBy(items []Item) []bool {
 	return keep
 }
 
-// keptJobs copies the jobs keep marks, adding every ancestor of each so a
+// keptJobs wire-copies the jobs keep marks, adding every ancestor of each so a
 // nested job never arrives without the jobs above it. Order is s.Jobs's.
 func (s *State) keptJobs(keep []bool) []Job {
 	if s.jobIndex == nil {
@@ -236,7 +259,7 @@ func (s *State) keptJobs(keep []bool) []Job {
 	out := []Job{}
 	for i, k := range keep {
 		if k {
-			out = append(out, s.Jobs[i])
+			out = append(out, wireJob(s.Jobs[i]))
 		}
 	}
 	return out
