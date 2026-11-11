@@ -632,6 +632,30 @@ func interruptWithQueuedPrompt(t *testing.T, st *store.Store, sa *scriptedAdapte
 	return id
 }
 
+// A thread whose row is not asking to be recovered — a continuation given up
+// on, a row from before this phase existed — is never continued, so it must
+// not keep a plan that holds its queue back.
+func TestUnaskedPlanDoesNotHoldTheQueue(t *testing.T) {
+	st := openRecoveryStore(t)
+	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
+	id := interruptWithQueuedPrompt(t, st, sa)
+	if err := st.SetPhase(context.Background(), id, "idle"); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(st, func(string, ...any) {}, sa)
+	defer m.Shutdown()
+	if _, err := m.Get(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if in := recvPrompt(t, sa.thread().prompts); in.Text != "after" {
+		t.Fatalf("first prompt after activation = %q; want the queued one", in.Text)
+	}
+	if n := sa.callsWhere(isRestartContinuation); n != 0 {
+		t.Fatalf("continuation sent %d times for a row that did not ask for one", n)
+	}
+}
+
 func TestTransientRefusalIsRetriedThenDroppedForTheQueue(t *testing.T) {
 	st := openRecoveryStore(t)
 	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
@@ -920,6 +944,28 @@ func refusedContinuation(id string) projection.Turn {
 	}
 }
 
+// erroredContinuation is a continuation that ran, then ended in an error.
+func erroredContinuation(id string) projection.Turn {
+	t := refusedContinuation(id)
+	t.StartedAt = planNow - 3_500_000
+	return t
+}
+
+// refusedPrompt is a human prompt the harness would not take.
+func refusedPrompt(id string) projection.Turn {
+	return projection.Turn{ID: id, Done: true, StopReason: proto.StopError, StartedAt: planNow - 30_000}
+}
+
+// agentItem is something the agent did in a turn.
+func agentItem(turnID string) projection.Item {
+	return projection.Item{ID: "msg-" + turnID, Kind: projection.ItemMessage, Role: "agent", TurnID: turnID}
+}
+
+func withItems(s *projection.State, items ...projection.Item) *projection.State {
+	s.Items = append(s.Items, items...)
+	return s
+}
+
 func liveJob(id, kind, name string) projection.Job {
 	return projection.Job{ID: id, Kind: kind, Name: name, Status: proto.JobRunning}
 }
@@ -954,6 +1000,12 @@ func TestPlanRecoveryDecidesWhetherToWake(t *testing.T) {
 		{"agent interrupted, then its continuation refused", planState([]projection.Turn{doneTurn("t1"), refusedContinuation("r")},
 			interruptedJob("a", proto.JobAgent, "x", time.Minute)), true, nil},
 		{"turn that errored on its own", planState([]projection.Turn{{ID: "t1", Done: true, StopReason: proto.StopError, StartedAt: planNow - 60_000}}), false, nil},
+		{"continuation that ran, then errored", withItems(planState([]projection.Turn{restartClosedTurn("t1"), erroredContinuation("r")},
+			interruptedJob("a", proto.JobAgent, "x", time.Hour-time.Minute)), agentItem("r")), false, nil},
+		{"shell interrupted, then a human prompt refused", planState([]projection.Turn{doneTurn("t1"), refusedPrompt("h")},
+			interruptedJob("s", proto.JobShell, "dev server", time.Minute)), false, []string{"- shell: dev server"}},
+		{"harness exited mid-turn, agent with it", withItems(planState([]projection.Turn{{ID: "t1", Done: true, StopReason: proto.StopError, StartedAt: planNow - 60_000}},
+			interruptedJob("a", proto.JobAgent, "x", time.Second)), agentItem("t1")), true, nil},
 	}
 	for _, c := range cases {
 		plan, held := planRecovery(c.state, planNow)

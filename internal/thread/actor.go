@@ -1661,13 +1661,15 @@ func (a *Actor) abandonRecovery() {
 	a.writePhase(prev)
 }
 
-// holdRowOnlyIfAsked lets the pending continuation hold the thread's row only
-// when the row is what asked for it. A thread nobody recovered — its last chain given
-// up on, or never woken — still carries its plan's note to the next prompt,
-// but must not start waking on restarts because someone opened it.
+// holdRowOnlyIfAsked keeps the pending continuation only when the thread's
+// row is what asked for it: nothing else sends it, and a plan left pending
+// holds the queue back. A thread nobody is recovering — its last chain given
+// up on, a harness that exited, a row from before rows said "background" —
+// keeps only the note, for its next prompt.
 func (a *Actor) holdRowOnlyIfAsked(rowPhase string) {
 	if a.recovery != nil && !interruptedPhase(rowPhase) {
-		a.recovery.phase = ""
+		a.heldNote = withNote(a.heldNote, a.recovery.note)
+		a.recovery = nil
 	}
 }
 

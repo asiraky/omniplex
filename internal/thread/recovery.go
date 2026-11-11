@@ -48,10 +48,11 @@ const restartPrompt = "[omniplex] The omniplex server restarted and interrupted 
 	"Check the real state of the work first — the files, the diff, whatever you had just run — then continue from where you left off. " +
 	"Do not redo work that is already done, and do not start over."
 
-// deadWorkIntro heads the list of background work a restart killed. The
-// harness that started it is gone, so nothing will ever report back: the
-// agent has to be told, or it waits on a result that never comes.
-const deadWorkIntro = "The omniplex server restarted, and this background work was cancelled before it finished. " +
+// deadWorkIntro heads the list of background work that died with the process
+// running it: a server restart, or the harness exiting. Nothing will ever
+// report back, so the agent has to be told, or it waits on a result that
+// never comes.
+const deadWorkIntro = "This background work was cancelled before it finished, when the process running it went away. " +
 	"It will not report back on its own, so resume or restart what you still need and wait for its result:"
 
 // The dead-work list is for the agent to act on, not a transcript of the
@@ -83,8 +84,7 @@ type recoveryPlan struct {
 	note string
 	// phase is what the thread's row keeps saying while the continuation is
 	// owed — "turn" or "background" — so a restart before it is sent finds
-	// the thread again. Empty when the row never asked for one: such a plan
-	// only carries its note.
+	// the thread again.
 	phase string
 }
 
@@ -103,15 +103,21 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 		return nil, ""
 	}
 	// The newest turn is what a continuation resumes and counts on from;
-	// the newest one that reached the agent is what it last heard. A
-	// continuation that failed to start told it nothing.
+	// the newest one that reached the agent is what it last heard. A prompt
+	// the harness refused told it nothing.
+	acted := map[string]bool{}
+	for _, it := range state.Items {
+		if it.TurnID != "" && it.Role != "user" {
+			acted[it.TurnID] = true
+		}
+	}
 	var last, heard *projection.Turn
 	for i := len(state.Turns) - 1; i >= 0; i-- {
 		t := &state.Turns[i]
 		if last == nil {
 			last = t
 		}
-		if !neverStarted(t) {
+		if reached(t, acted) {
 			heard = t
 			break
 		}
@@ -151,10 +157,11 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 	return plan, ""
 }
 
-// neverStarted is a continuation the harness refused: the agent never saw
-// its prompt, so whatever it was meant to say is still owed.
-func neverStarted(t *projection.Turn) bool {
-	return t.Recovery != nil && t.Done && t.StopReason == proto.StopError && t.Failure != proto.FailureRestart
+// reached says whether the agent saw a turn's prompt. One still running, or
+// cut by a restart, was under way; one that ended in an error with nothing
+// from the agent in it was refused, so whatever it carried is still owed.
+func reached(t *projection.Turn, acted map[string]bool) bool {
+	return !t.Done || t.Failure == proto.FailureRestart || t.StopReason != proto.StopError || acted[t.ID]
 }
 
 // awaited is whether dead work includes something the agent was waiting on.
@@ -167,9 +174,9 @@ func awaited(dead []projection.Job) bool {
 	return false
 }
 
-// deadWork is the background work a restart killed that the agent has not
-// heard about since: still live in a state whose process is gone, or
-// interrupted after the last prompt it read. A job started inside another — a
+// deadWork is the background work that died with its process and that the
+// agent has not heard about since: still live in a state whose process is
+// gone, or interrupted after the last prompt it read. A job started inside another — a
 // shell a subagent ran — is reported under its parent: restarting the
 // subagent is what brings it back.
 func deadWork(state *projection.State, since int64) []projection.Job {
