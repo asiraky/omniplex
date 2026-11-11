@@ -19,6 +19,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"  // registers the decoder image.DecodeConfig uses for a tool image's size
+	_ "image/jpeg" // as above
+	_ "image/png"  // as above
 	"io"
 	"net/http"
 	"os"
@@ -27,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	_ "golang.org/x/image/webp" // as above
 )
 
 // MaxImageBytes bounds one image. Set by what the far end will take rather
@@ -45,6 +50,21 @@ const MaxPDFBytes = 10_000_000
 // MaxBytes is the largest upload of any kind, which is as much as the server
 // will read before it knows what it has been sent.
 const MaxBytes = MaxPDFBytes
+
+// MaxToolImageBytes bounds one image a harness handed back in a tool result.
+// Looser than MaxImageBytes because nothing here sends these bytes on to an
+// API: they already came from the harness, and the far end's limits were its
+// business. This is the backstop against a runaway tool filling the disk.
+const MaxToolImageBytes = 10_000_000
+
+// ErrCorrupt is returned for a tool image whose header does not decode: a
+// thumbnail with no size cannot hold its place, and a browser would show a
+// broken picture anyway.
+var ErrCorrupt = errors.New("image is corrupt")
+
+// errNotToolImage is what PutToolImage says about a PDF or anything else that
+// is not a picture.
+var errNotToolImage = fmt.Errorf("%w: tool images must be PNG, JPEG, GIF or WebP", ErrUnsupported)
 
 // MaxPerPrompt bounds how many files one message may carry. The sidecar holds
 // every attachment of a prompt in memory, base64-expanded, at once; without a
@@ -107,6 +127,10 @@ type Meta struct {
 	ID        string `json:"id"`
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
+	// Width and Height are the pixel size, known only for a tool image:
+	// PutToolImage decodes the header, Put does not.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 }
 
 // Store keeps attachments under one directory, one subdirectory per thread.
@@ -150,18 +174,13 @@ func (s *Store) Put(threadID string, r io.Reader) (Meta, error) {
 		return Meta{}, err
 	}
 	head = head[:n]
-	mediaType, _, _ := strings.Cut(http.DetectContentType(head), ";")
+	mediaType := sniff(head)
 	ext, ok := extensions[mediaType]
 	if !ok {
 		return Meta{}, ErrUnsupported
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Meta{}, err
-	}
-	id := uuid.NewString()
-	path := filepath.Join(dir, id+ext)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	id, path, f, err := create(dir, ext)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -182,6 +201,64 @@ func (s *Store) Put(threadID string, r io.Reader) (Meta, error) {
 		return Meta{}, err
 	}
 	return Meta{ID: id, MediaType: mediaType, Size: written}, nil
+}
+
+// PutToolImage stores an image a harness returned from a tool call, so the
+// event can name a URL instead of carrying the bytes. Only pictures are kept,
+// and only ones whose header decodes: the pixel size goes into the event so a
+// thumbnail can hold its place before the image loads. The file lands where
+// Put would put it, so the same id resolves through Path.
+func (s *Store) PutToolImage(threadID string, data []byte) (Meta, error) {
+	dir, err := s.threadDir(threadID)
+	if err != nil {
+		return Meta{}, err
+	}
+	mediaType := sniff(data)
+	ext, ok := extensions[mediaType]
+	if !ok || mediaType == PDF {
+		return Meta{}, errNotToolImage
+	}
+	if len(data) > MaxToolImageBytes {
+		return Meta{}, fmt.Errorf("%w: tool images are limited to 10 MB", ErrTooLarge)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return Meta{}, ErrCorrupt
+	}
+
+	id, path, f, err := create(dir, ext)
+	if err != nil {
+		return Meta{}, err
+	}
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return Meta{}, err
+	}
+	return Meta{ID: id, MediaType: mediaType, Size: int64(len(data)), Width: cfg.Width, Height: cfg.Height}, nil
+}
+
+// sniff names the media type of a file from its leading bytes.
+func sniff(head []byte) string {
+	mediaType, _, _ := strings.Cut(http.DetectContentType(head), ";")
+	return mediaType
+}
+
+// create opens a new, empty file for a fresh id in a thread's directory.
+func create(dir, ext string) (id, path string, f *os.File, err error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", nil, err
+	}
+	id = uuid.NewString()
+	path = filepath.Join(dir, id+ext)
+	f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return id, path, f, nil
 }
 
 // Path resolves a stored file to a file on disk, along with its media type.
