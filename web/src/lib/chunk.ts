@@ -7,7 +7,9 @@ export interface Chunk<T> {
 
 /**
  * A code-split import fetched once. A failed fetch is forgotten, so the next
- * `load` tries again: on a bad link the first try is often the one that drops.
+ * `load` asks again: on a bad link the first try is often the one that drops.
+ * Whether that refetches is the browser's call; Chrome hands back the same
+ * failure until the page reloads.
  */
 export function chunk<T>(importer: () => Promise<T>): Chunk<T> {
   let value: T | undefined;

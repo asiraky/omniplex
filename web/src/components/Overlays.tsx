@@ -4,6 +4,7 @@ import { chunk, type Chunk } from "~/lib/chunk";
 import { useIsDesktop } from "~/useMediaQuery";
 
 import type { CommandPaletteProps } from "./CommandPalette";
+import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { Sheet, SheetContent, SheetTitle } from "./ui/sheet";
 import { Spinner } from "./ui/spinner";
@@ -55,8 +56,9 @@ interface OverlayProps {
  * An overlay whose code arrives on first open. It mounts then and stays
  * mounted, so it can animate closed. Until the code is in, a placeholder
  * dialog takes focus and Escape, so keys meant for the overlay do not land in
- * the composer under it; if the fetch fails it says so, and the next opening
- * tries again.
+ * the composer under it. If the fetch fails it says so. The next opening tries
+ * again, but Chrome keeps a failed import for the life of the page, so the way
+ * out it offers is a reload.
  */
 export function OnDemand<P extends OverlayProps>({
   chunk,
@@ -109,8 +111,17 @@ export function OnDemand<P extends OverlayProps>({
     },
   };
   const body = (
-    <div className="text-muted-foreground flex min-h-24 items-center justify-center p-6 text-center text-sm">
-      {failed ? "Couldn't load. Check the connection and open it again." : <Spinner />}
+    <div className="text-muted-foreground flex min-h-24 flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm">
+      {failed ? (
+        <>
+          <p>Couldn't load. Reloading the page tries again, but drops anything unsent.</p>
+          <Button variant="outline" size="sm" onClick={() => location.reload()}>
+            Reload
+          </Button>
+        </>
+      ) : (
+        <Spinner />
+      )}
     </div>
   );
   if (look === "sheet") {
