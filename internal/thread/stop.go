@@ -21,10 +21,14 @@ var stopGrace = 10 * time.Second
 // was replaced. The new process never heard of it, so it is not recorded.
 var errHarnessRestarted = errors.New("the harness restarted before the change took effect; try again")
 
-// stopRequest is one Stop: the turn it is meant to end, and the timer that
-// kills the harness if that turn is still running when the grace runs out.
+// stopRequest is one Stop: the turn it is meant to end, the prompts that were
+// waiting behind it, and the timer that kills the harness if that turn is
+// still running when the grace runs out. A prompt sent after Stop is not one
+// of them: it was written knowing the turn was being stopped, and starts once
+// it has.
 type stopRequest struct {
 	turnID string
+	queued []string
 	timer  *time.Timer
 }
 
@@ -140,6 +144,9 @@ func (a *Actor) steer(st adapter.Steerer, queueID string, in adapter.PromptInput
 // caller has checked that there is a turn and a harness to ask.
 func (a *Actor) requestStop() {
 	req := &stopRequest{turnID: a.turnActive}
+	for _, q := range a.state.Queued {
+		req.queued = append(req.queued, q.QueueID)
+	}
 	req.timer = time.AfterFunc(stopGrace, func() {
 		select {
 		case a.inbox <- command{kind: cmdStopExpired, stop: req}:
@@ -159,7 +166,7 @@ func (a *Actor) requestStop() {
 		// although the model saw it. A turn that already ended took the
 		// queue with it (settleStop), and a killed harness took everything.
 		if a.stopping == req {
-			a.dropQueue()
+			a.dropStopped(req)
 		}
 	})
 }
@@ -170,8 +177,20 @@ func (a *Actor) settleStop() {
 	if a.stopping == nil || a.turnActive == a.stopping.turnID {
 		return
 	}
+	req := a.stopping
 	a.clearStopping()
-	a.dropQueue()
+	a.dropStopped(req)
+}
+
+// dropStopped cancels the prompts that were waiting when Stop was pressed.
+// The harness discards whatever of them it was holding (adapter.Steerer).
+func (a *Actor) dropStopped(req *stopRequest) {
+	for _, id := range req.queued {
+		if a.isQueued(id) {
+			a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: id, Reason: proto.DequeueCancelled}))
+		}
+		delete(a.sent, id)
+	}
 }
 
 func (a *Actor) clearStopping() {
@@ -192,8 +211,10 @@ func (a *Actor) forceStop() {
 	// Dropping the process first is what marks its last events, its exit and
 	// its last questions, still on their way through the inbox, as stale.
 	old := a.dropProcess()
-	a.clearStopping()
-	a.dropQueue()
+	if req := a.stopping; req != nil {
+		a.clearStopping()
+		a.dropStopped(req)
+	}
 	a.cancelProcessAsks()
 	if turn != "" {
 		a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn, StopReason: proto.StopCancelled}))
@@ -221,7 +242,9 @@ func (a *Actor) dropProcess() adapter.Session {
 }
 
 // newHost is the host services for a harness process about to be started,
-// under a generation of its own.
+// under a generation of its own. Only for a thread with no process: one still
+// live must go through dropProcess first, or its control calls would never be
+// counted off controlPending and the queue would wait on them for ever.
 func (a *Actor) newHost() hostServices {
 	a.process++
 	return hostServices{a: a, process: a.process}

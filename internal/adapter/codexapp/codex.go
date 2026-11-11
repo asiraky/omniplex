@@ -1106,7 +1106,8 @@ func (s *session) spawningTurn(thread, turn string) string {
 // turn's work, whichever turn spawned it, and becomes that turn's to stop.
 //
 // A subagent of a stopped turn that starts a turn after the interrupt went out
-// — it was between turns when Stop was pressed, or first spoke only after — is
+// — it was between turns when Stop was pressed, or first spoke between the
+// interrupt and the turn ending — is
 // interrupted as it starts, until a new turn of ours opens: a later turn may
 // hand an existing subagent new work, and that is not for this stop to end.
 // The interrupt runs off this goroutine: it is the read loop, and the response

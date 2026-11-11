@@ -79,7 +79,8 @@ type Actor struct {
 	// timer that kills the harness if that turn has not ended in time.
 	stopping *stopRequest
 	// controlTail is closed once the last control call handed to inOrder has
-	// posted its result; the next one waits on it. Nil when none is pending.
+	// posted its result; the next one waits on it. Nil for a process that
+	// has had none.
 	controlTail chan struct{}
 	// controlPending counts the control calls handed to inOrder whose result
 	// has not come back. A prompt waits behind them, so a model change made
@@ -1182,8 +1183,10 @@ func (a *Actor) handle(c command) (stop bool) {
 			// simply queued the old way.
 			queueID := uuid.NewString()
 			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			// Nor while a Stop is open: it would reach the harness behind the
+			// interrupt and start the turn over. It starts once the turn ends.
 			st, ok := a.sess.(adapter.Steerer)
-			if !ok {
+			if !ok || a.stopping != nil {
 				c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 				return false
 			}
@@ -1510,8 +1513,8 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 		return
 	}
 	// Stop means stop. The stopped turn can end before the harness answers
-	// the interrupt; settleStop drops the queue the moment it does, and
-	// nothing queued may start while a Stop is still open.
+	// the interrupt; settleStop drops what was queued behind it the moment
+	// it does, and nothing queued may start while a Stop is still open.
 	if a.stopping != nil {
 		return
 	}

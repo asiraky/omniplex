@@ -571,3 +571,45 @@ func TestPromptWaitsForASettingStillOnItsWay(t *testing.T) {
 		return len(state.Queued) == 0 && len(state.Turns) == 1
 	})
 }
+
+// Stop cancels what was waiting behind the turn, not what is sent after it: a
+// prompt typed once Stop is pressed is held, not handed to the harness behind
+// the interrupt, and starts its own turn once the stopped one has ended.
+func TestPromptSentAfterStopRunsOnceTheTurnEnds(t *testing.T) {
+	withStopGrace(t, time.Hour)
+	release := make(chan struct{})
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true, cancelGate: release})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "work", nil)
+	sess := fa.thread()
+	<-sess.prompts
+	if _, err := actor.Prompt(ctx, "before", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-sess.prompts
+	if err := actor.Cancel(quick(t)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := actor.Prompt(quick(t), "after", nil)
+	if err != nil || !after.Queued() {
+		t.Fatalf("prompt after Stop = %+v, %v; want it queued", after, err)
+	}
+
+	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopCancelled}))
+	waitFor(t, func() bool {
+		state, _ := actor.State(ctx)
+		return state.Phase == "idle" && len(state.Queued) == 1
+	})
+	if state, _ := actor.State(ctx); state.Queued[0].QueueID != after.QueueID {
+		t.Fatalf("queue after the stopped turn = %+v, want only the prompt sent after Stop", state.Queued)
+	}
+
+	close(release)
+	if in := <-sess.prompts; in.Text != "after" {
+		t.Fatalf("next prompt the harness got = %+v", in)
+	}
+	if calls := sess.taken(); len(calls) != 2 || calls[0] != "steer" || calls[1] != "cancel" {
+		t.Fatalf("the harness took %v, want the prompt after Stop not steered", calls)
+	}
+}
