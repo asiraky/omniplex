@@ -215,12 +215,10 @@ func trustArgs(cwd string) []string {
 	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
 }
 
-// writableRootsArgs lets a workspace-write sandbox write to folders outside
-// the cwd: the project's home folder, when the session works in a repo.
 // sessionArgs turns on what a session needs that codex leaves off.
 //
 // update_plan has been opt-in since codex 0.152; without it the model never
-// plans, and turn/plan/updated — which feeds the plan card — never arrives.
+// plans, and turn/plan/updated — recorded as plan.updated — never arrives.
 //
 // Codex waits one second for optional MCP servers before the first turn and
 // runs it without any still starting. An npx or uvx server, the ones omniplex
@@ -234,6 +232,8 @@ func sessionArgs() []string {
 	}
 }
 
+// writableRootsArgs lets a workspace-write sandbox write to folders outside
+// the cwd: the project's home folder, when the session works in a repo.
 func writableRootsArgs(dirs []string) []string {
 	if len(dirs) == 0 {
 		return nil
