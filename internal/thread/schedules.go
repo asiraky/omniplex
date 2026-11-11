@@ -144,10 +144,12 @@ func (a *Actor) dispatchScheduled(now int64) error {
 		// limit: that waits for the next turn to start. The continuation is
 		// the turn it waits for. A human's schedule goes past it only while
 		// none is armed — with the reset unknown it is the way round the
-		// limit; with one armed it would call the continuation off.
-		held := a.state.QueueHeld() && (p.Kind == proto.ScheduleLimit || !a.limitArmed())
+		// limit; with one armed it waits, queue or not, since starting first
+		// would call the continuation off.
+		held := a.state.QueueHeld()
+		behindContinuation := held && p.Kind != proto.ScheduleLimit && a.limitArmed()
 		queued := len(a.state.Queued) > 0 && !held
-		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || queued {
+		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || queued || behindContinuation {
 			continue
 		}
 		a.mu.Lock()

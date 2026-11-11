@@ -59,8 +59,8 @@ async function fits(page) {
 }
 const chip = (page) =>
   page.locator("div.rounded-full").filter({ hasText: /^Continuing/ });
-const heldLabel = (page) =>
-  page.getByText("held until the limit resets", { exact: true });
+const heldLabel = (page, until = "the limit resets") =>
+  page.getByText(`held until ${until}`, { exact: true });
 // Runs a turn that stops at a usage limit resetting in a second, with a
 // prompt queued behind it; the limit card on every page shows the chip.
 async function hitLimit(pages, id, prompt, queued) {
@@ -284,7 +284,7 @@ try {
   for (const page of [mobile.page, desktop.page]) {
     await chip(page).waitFor({ state: "hidden" });
     // Nothing is armed now, so the queue still waits for a human.
-    await heldLabel(page).waitFor();
+    await heldLabel(page, "you send").waitFor();
   }
   assert.equal(
     (await state(cancelId)).scheduledPrompts.find((p) => p.id === cancelled.id)
@@ -336,7 +336,7 @@ try {
       .getByText(`Completed: ${continueQueued}`, { exact: true })
       .waitFor();
     assert.equal(await chip(page).count(), 0);
-    assert.equal(await heldLabel(page).count(), 0);
+    assert.equal(await page.getByText(/^held until/).count(), 0);
     // The server wrote that prompt, so it is not shown as the reader's own.
     await page
       .getByText(

@@ -394,27 +394,31 @@ func TestBackFillThatArmsNothing(t *testing.T) {
 // A human's schedule waits behind a held queue while the continuation is
 // armed: starting it would walk into the limit and call the continuation off.
 func TestHumanScheduleWaitsWhileAContinuationIsArmed(t *testing.T) {
-	a, fa, _ := newTestActor(t)
-	ctx := context.Background()
-	th := fa.thread()
-	turn := hitLimit(t, a, th, time.Now().Add(time.Hour).UnixMilli(), "after")
-	p := scheduleInput("mine")
-	if err := a.Schedule(ctx, p); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
-		t.Fatal(err)
-	}
-	noPrompt(t, th, "human schedule jumped the held queue")
-	cont := scheduled(t, a, limitScheduleID(turn))
-	if cont.Status != "pending" {
-		t.Fatalf("continuation = %s, want it still armed", cont.Status)
-	}
-	if err := a.scheduleTick(ctx, cont.DueAt); err != nil {
-		t.Fatal(err)
-	}
-	if got := nextPrompt(t, th); got != limitContinuePrompt {
-		t.Fatalf("first prompt = %q, want the continuation", got)
+	// With or without a prompt queued: an empty queue is no reason to let the
+	// schedule start first and call the continuation off.
+	for _, queue := range []string{"after", ""} {
+		a, fa, _ := newTestActor(t)
+		ctx := context.Background()
+		th := fa.thread()
+		turn := hitLimit(t, a, th, time.Now().Add(time.Hour).UnixMilli(), queue)
+		p := scheduleInput("mine")
+		if err := a.Schedule(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+			t.Fatal(err)
+		}
+		noPrompt(t, th, "human schedule went ahead of the armed continuation")
+		cont := scheduled(t, a, limitScheduleID(turn))
+		if cont.Status != "pending" {
+			t.Fatalf("queue %q: continuation = %s, want it still armed", queue, cont.Status)
+		}
+		if err := a.scheduleTick(ctx, cont.DueAt); err != nil {
+			t.Fatal(err)
+		}
+		if got := nextPrompt(t, th); got != limitContinuePrompt {
+			t.Fatalf("queue %q: first prompt = %q, want the continuation", queue, got)
+		}
 	}
 }
 
