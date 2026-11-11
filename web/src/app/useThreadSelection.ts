@@ -72,9 +72,17 @@ export function useThreadSelection({
     setSidebarOpen(isDesktop || activeId === null);
   }
 
+  // Picking the thread already open keeps it as it is: no re-attach, no
+  // trip through "Attaching…", the panel and scroll left alone. Only the
+  // phone's sidebar goes, since the thread is what the pick asked to see.
   const select = useCallback(
     (id: string) => {
       pendingLink.current = null;
+      if (id === activeRef.current) {
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: picking the open thread shows it, which on a phone means putting the list away
+        if (!isDesktop) setSidebarOpen(false);
+        return;
+      }
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: selecting attaches the socket and writes storage, and the restore effect is the one caller that reacts to the thread list
       setCreating(null);
       setActiveId(id);
@@ -173,15 +181,9 @@ export function useThreadSelection({
   const openLink = useCallback(
     (id: string) => {
       onOpenLink();
-      if (id !== activeRef.current) {
-        select(id);
-        return;
-      }
-      pendingLink.current = null;
-      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a tapped notification shows its thread, which on a phone means putting the list away
-      if (!isDesktop) setSidebarOpen(false);
+      select(id);
     },
-    [activeRef, isDesktop, onOpenLink, select],
+    [onOpenLink, select],
   );
   const latest = useLatest({ threads, openLink });
   useEffect(() => {

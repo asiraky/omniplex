@@ -214,6 +214,55 @@ describe("pinning", () => {
   });
 });
 
+describe("picking the thread already open", () => {
+  const openThread = async () => {
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a"), thread("b")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", state("a", "default"));
+    });
+    attach.mockClear();
+  };
+  // The header names the open thread too; the pick is the sidebar row.
+  const row = (id: string) =>
+    within(screen.getByRole("navigation", { name: "Threads" })).getByText(`Thread ${id}`);
+
+  it("leaves it as it is, with no re-attach", async () => {
+    await openThread();
+
+    fireEvent.click(row("a"));
+
+    expect(attach).not.toHaveBeenCalled();
+    expect(screen.queryByText("Attaching to thread…")).toBeNull();
+    expect(screen.queryByText("Attaching…")).toBeNull();
+  });
+
+  it("still switches to a different thread", async () => {
+    await openThread();
+
+    fireEvent.click(row("b"));
+
+    expect(attach).toHaveBeenCalledWith("b");
+  });
+
+  it("puts the phone's list away to show it", async () => {
+    viewport("phone");
+    await openThread();
+    fireEvent.click(screen.getByRole("button", { name: "Show threads" }));
+    expect(sidebarShowing()).toBe(true);
+
+    fireEvent.click(row("a"));
+
+    expect(sidebarShowing()).toBe(false);
+    expect(attach).not.toHaveBeenCalled();
+  });
+});
+
 describe("thread actions on a phone", () => {
   const openThread = async () => {
     viewport("phone");
