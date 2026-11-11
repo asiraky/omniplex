@@ -12,7 +12,7 @@ export type StopReason =
   | "cancelled"
   | "error";
 
-export type ToolStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
+export type ToolStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "declined";
 
 export type ToolKind =
   | "read"
