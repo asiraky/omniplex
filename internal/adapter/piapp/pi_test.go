@@ -739,3 +739,28 @@ func TestCloseWithdrawsOpenDialog(t *testing.T) {
 		t.Fatalf("released with %v, want canceled", err)
 	}
 }
+
+// A dialog pi raises as Stop is pressed lands after Cancel has swept, and
+// the turn then settles. Its turn ending must withdraw it, or the card stays
+// up with nothing left to take it down.
+func TestTurnEndWithdrawsDialogRaisedDuringStop(t *testing.T) {
+	dir := t.TempDir()
+	h := newBlockingHost()
+	if err := os.WriteFile(filepath.Join(dir, "events"), []byte(`{"type":"agent_start"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	abort := `{"type":"extension_ui_request","id":"d1","method":"input","title":"Name?"}` + "\n" + `{"type":"agent_settled"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "abort_events"), []byte(abort), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSessionWith(t, dir, h, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "go"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if err := waitReleased(t, h); !errors.Is(err, context.Canceled) {
+		t.Fatalf("released with %v, want canceled", err)
+	}
+}

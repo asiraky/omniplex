@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -243,7 +244,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		done:    make(chan struct{}),
 		rpcDone: make(chan struct{}),
 		pending: map[string]chan rpcResponse{},
-		dialogs: map[string]context.CancelFunc{},
+		dialogs: map[string]dialog{},
 	}
 
 	go s.readLoop(stdout)
@@ -311,10 +312,10 @@ type session struct {
 
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
-	// dialogs holds the cancel of every extension dialog still waiting on a
-	// human, keyed by pi's request id. Cancelling one withdraws its card and
-	// answers pi cancelled; each removes itself when its Elicit returns.
-	dialogs map[string]context.CancelFunc
+	// dialogs holds every extension dialog still waiting on a human, keyed
+	// by pi's request id. Cancelling one withdraws its card and answers pi
+	// cancelled; each removes itself when its Elicit returns.
+	dialogs map[string]dialog
 	turnID  string
 	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
@@ -545,8 +546,7 @@ func (s *session) clearTurn(turnID string) {
 // Cancel aborts the in-flight run. Pi's abort succeeds even when idle, so
 // there is no coalescing to do, but skipping the call when no turn is open
 // keeps a stray stop press from aborting a run that starts a moment later.
-// Open extension dialogs are withdrawn either way: stop means stop, and a
-// dialog outlives the turn that raised it otherwise.
+// Open extension dialogs are withdrawn with it: stop means stop.
 func (s *session) Cancel(ctx context.Context) error {
 	s.cancelDialogs()
 	s.mu.Lock()
@@ -925,6 +925,10 @@ func (s *session) finishTurn() {
 	if turn == "" {
 		return
 	}
+	// Pi is done with the turn, so it is done with its dialogs, whether or
+	// not it said so: one raised as Stop was pressed lands after Cancel's
+	// sweep, and nothing else would take it down.
+	s.cancelDialogs(turn)
 
 	reason, failure := proto.StopEndTurn, ""
 	switch stop {
@@ -951,19 +955,7 @@ func (s *session) finishTurn() {
 // wedges the extension. Fire-and-forget methods (notify, setStatus, …) expect
 // no response.
 func (s *session) handleUIRequest(raw json.RawMessage) {
-	var p struct {
-		ID          string   `json:"id"`
-		Method      string   `json:"method"`
-		Title       string   `json:"title"`
-		Message     string   `json:"message"`
-		Placeholder string   `json:"placeholder"`
-		Prefill     string   `json:"prefill"`
-		Options     []string `json:"options"`
-		NotifyType  string   `json:"notifyType"`
-		// Timeout is in milliseconds. On expiry pi resolves the dialog to its
-		// default by itself and tells us nothing, so the card must go too.
-		Timeout float64 `json:"timeout"`
-	}
+	var p uiRequest
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
@@ -978,8 +970,9 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 	case "select", "confirm", "input", "editor":
 		// Handled below. Elicit blocks on a human, so it must not run on the
 		// read loop: a dialog would freeze every event until answered. It is
-		// registered here, not in the goroutine, so a Cancel or exit that
-		// follows this event always finds it.
+		// registered here, not in the goroutine, so a Cancel, exit or turn
+		// end that follows this event always finds it, under the turn that
+		// was open when pi raised it.
 		var ctx context.Context
 		var cancel context.CancelFunc
 		if p.Timeout > 0 {
@@ -988,7 +981,8 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 			ctx, cancel = context.WithCancel(context.Background())
 		}
 		s.mu.Lock()
-		s.dialogs[p.ID] = cancel
+		turn := s.turnID
+		s.dialogs[p.ID] = dialog{turn: turn, cancel: cancel}
 		s.mu.Unlock()
 		go func() {
 			defer func() {
@@ -997,40 +991,65 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 				delete(s.dialogs, p.ID)
 				s.mu.Unlock()
 			}()
-			s.elicitUIRequest(ctx, p.ID, p.Method, p.Title, p.Message, p.Placeholder, p.Prefill, p.Options)
+			s.elicitUIRequest(ctx, turn, p)
 		}()
 	}
 }
 
-// cancelDialogs withdraws every open extension dialog. The host drops each
-// card when its ctx ends, and elicitUIRequest answers pi cancelled.
-func (s *session) cancelDialogs() {
+// uiRequest is pi's extension_ui_request.
+type uiRequest struct {
+	ID          string   `json:"id"`
+	Method      string   `json:"method"`
+	Title       string   `json:"title"`
+	Message     string   `json:"message"`
+	Placeholder string   `json:"placeholder"`
+	Prefill     string   `json:"prefill"`
+	Options     []string `json:"options"`
+	NotifyType  string   `json:"notifyType"`
+	// Timeout is in milliseconds. On expiry pi resolves the dialog to its
+	// default by itself and tells us nothing, so the card must go too.
+	Timeout float64 `json:"timeout"`
+}
+
+// dialog is an extension dialog waiting on a human, and the turn it was
+// raised in; empty when pi raised it outside one.
+type dialog struct {
+	turn   string
+	cancel context.CancelFunc
+}
+
+// cancelDialogs withdraws the open extension dialogs of turns — every one
+// when none is named. The host drops each card when its ctx ends, and
+// elicitUIRequest answers pi cancelled.
+func (s *session) cancelDialogs(turns ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, cancel := range s.dialogs {
-		cancel()
+	for _, d := range s.dialogs {
+		if len(turns) == 0 || slices.Contains(turns, d.turn) {
+			d.cancel()
+		}
 	}
 }
 
-func (s *session) elicitUIRequest(ctx context.Context, id, method, title, message, placeholder, prefill string, options []string) {
-	prompt := title
-	if message != "" {
-		prompt = strings.TrimSpace(title + "\n" + message)
+func (s *session) elicitUIRequest(ctx context.Context, turn string, p uiRequest) {
+	prompt := p.Title
+	if p.Message != "" {
+		prompt = strings.TrimSpace(p.Title + "\n" + p.Message)
 	}
 
-	field := map[string]any{"type": "string", "title": title}
-	switch method {
+	field := map[string]any{"type": "string", "title": p.Title}
+	switch p.Method {
 	case "select":
-		field["enum"] = options
+		field["enum"] = p.Options
 	case "confirm":
 		field["enum"] = []string{"Yes", "No"}
 	case "input":
-		if placeholder != "" {
-			field["description"] = placeholder
+		if p.Placeholder != "" {
+			field["description"] = p.Placeholder
 		}
 	case "editor":
-		if prefill != "" {
-			field["default"] = prefill
+		if p.Prefill != "" {
+			field["default"] = p.Prefill
 		}
 	}
 	schema, _ := json.Marshal(map[string]any{
@@ -1041,12 +1060,12 @@ func (s *session) elicitUIRequest(ctx context.Context, id, method, title, messag
 
 	respond := func(body map[string]any) {
 		body["type"] = "extension_ui_response"
-		body["id"] = id
+		body["id"] = p.ID
 		_ = s.send(body)
 	}
 
 	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
-		TurnID: s.currentTurn(), Prompt: prompt, Schema: schema,
+		TurnID: turn, Prompt: prompt, Schema: schema,
 	})
 	if err != nil || result.Action != "accept" {
 		respond(map[string]any{"cancelled": true})
@@ -1056,7 +1075,7 @@ func (s *session) elicitUIRequest(ctx context.Context, id, method, title, messag
 		Value string `json:"value"`
 	}
 	_ = json.Unmarshal(result.Value, &values)
-	if method == "confirm" {
+	if p.Method == "confirm" {
 		respond(map[string]any{"confirmed": values.Value == "Yes"})
 		return
 	}
