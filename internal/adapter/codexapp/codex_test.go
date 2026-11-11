@@ -244,7 +244,7 @@ func TestPermissionsApprovalResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 			blob, _ := json.Marshal(got)
-			if canonical(t, blob) != canonical(t, []byte(tc.want)) {
+			if string(blob) != tc.want {
 				t.Fatalf("response=%s, want %s", blob, tc.want)
 			}
 			if host.request.Title != "Needs network to fetch deps" || host.request.ToolCallID != "item-1" {
@@ -287,17 +287,6 @@ func TestCommandApprovalDecision(t *testing.T) {
 			t.Fatalf("%s: response=%s", outcome, blob)
 		}
 	}
-}
-
-// canonical re-encodes JSON with sorted keys so two encodings compare equal.
-func canonical(t *testing.T, blob []byte) string {
-	t.Helper()
-	var v any
-	if err := json.Unmarshal(blob, &v); err != nil {
-		t.Fatal(err)
-	}
-	out, _ := json.Marshal(v)
-	return string(out)
 }
 
 // drain collects every emission a session has queued so far.
