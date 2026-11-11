@@ -911,6 +911,15 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.resume {
 			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
 		}
+		// A resumed thread's worktree can be deleted or moved while the
+		// server is down. A harness started there fails later with an error
+		// that never names the directory, so refuse here, where we can.
+		if cwd != "" {
+			if info, statErr := os.Stat(cwd); statErr != nil || !info.IsDir() {
+				c.reply <- cmdResult{err: fmt.Errorf("this thread's workspace %s no longer exists, so it was probably deleted or moved; restore the directory to continue, or start a new thread", cwd)}
+				return false
+			}
+		}
 		meta, err := a.store.Thread(ctx, a.ID)
 		if err != nil {
 			c.reply <- cmdResult{err: err}
