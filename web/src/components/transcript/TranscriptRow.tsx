@@ -39,14 +39,32 @@ function RowBody({
   recoveredTurns,
   onCardSignIn,
 }: RowContext & { row: Row }) {
-  if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} continued={row.continued} />;
-  if (row.kind === "run") return <ToolRun items={row.items} live={row.live} />;
-  if (row.kind === "jobs") return <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />;
+  if (row.kind === "fold")
+    return (
+      <TurnFold
+        threadId={threadId}
+        turn={row.turn}
+        items={row.items}
+        continued={row.continued}
+      />
+    );
+  if (row.kind === "run")
+    return <ToolRun threadId={threadId} items={row.items} live={row.live} />;
+  if (row.kind === "jobs")
+    return <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")
-    return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
-  if (row.item.kind === "tool") return <ToolCard item={row.item} />;
+    return (
+      <ArtefactCards
+        items={row.items}
+        artefacts={artefacts}
+        onOpen={onOpenArtefact}
+      />
+    );
+  if (row.item.kind === "tool")
+    return <ToolCard threadId={threadId} item={row.item} />;
   if (row.item.kind === "notice") return <NoticeCard item={row.item} />;
-  if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;
+  if (row.item.kind === "card")
+    return <CardRow item={row.item} onSignIn={onCardSignIn} />;
   if (row.item.kind === "plan") return <PlanRow item={row.item} />;
   return (
     <Message
@@ -55,7 +73,9 @@ function RowBody({
       streaming={row.item.id === streamingId}
       artefacts={artefacts}
       onOpenArtefact={onOpenArtefact}
-      recovered={(row.item.turnId && recoveredTurns.get(row.item.turnId)) || undefined}
+      recovered={
+        (row.item.turnId && recoveredTurns.get(row.item.turnId)) || undefined
+      }
     />
   );
 }
@@ -79,7 +99,8 @@ export function TranscriptRow({
   // the row whose successor belongs to a different turn.
   const turnID = rowTurnID(row);
   const nextTurnID = nextRow ? rowTurnID(nextRow) : undefined;
-  const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
+  const diff =
+    turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
 
   return (
     // A plain fragment, not a `content-visibility: auto` box. Skipping
@@ -93,7 +114,13 @@ export function TranscriptRow({
     // had been rendered once and its size remembered.
     <Fragment>
       <RowBody row={row} {...context} />
-      {diff && <ChangedFiles diff={diff} latest={turnID === lastTurnID} onOpenDiff={onOpenDiff} />}
+      {diff && (
+        <ChangedFiles
+          diff={diff}
+          latest={turnID === lastTurnID}
+          onOpenDiff={onOpenDiff}
+        />
+      )}
     </Fragment>
   );
 }

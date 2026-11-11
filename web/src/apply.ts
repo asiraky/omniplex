@@ -2,7 +2,17 @@
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
+import type {
+  Artefact,
+  CardOutcome,
+  Event,
+  Item,
+  Job,
+  JobPayload,
+  ThreadState,
+  ToolContent,
+  TurnDiff,
+} from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 import { isTodoPlan, planItemId } from "./lib/plans";
 import { appendTail } from "./lib/tail";
@@ -18,7 +28,11 @@ export function prependItems(items: Item[], older: Item[]): Item[] {
   const newer = items.some(isTodoPlan);
   const page = older
     .filter((it) => !have.has(it.id))
-    .map((it) => (newer && isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it));
+    .map((it) =>
+      newer && isTodoPlan(it) && !it.superseded
+        ? { ...it, superseded: true }
+        : it,
+    );
   return [...page, ...items];
 }
 
@@ -45,7 +59,11 @@ export function emptyState(threadId: string): ThreadState {
   };
 }
 
-function upsert(state: ThreadState, id: string, mut: (it: Item) => void): Item[] {
+function upsert(
+  state: ThreadState,
+  id: string,
+  mut: (it: Item) => void,
+): Item[] {
   const i = state.items.findIndex((it) => it.id === id);
   if (i >= 0) {
     const next = { ...state.items[i] };
@@ -62,12 +80,18 @@ function upsert(state: ThreadState, id: string, mut: (it: Item) => void): Item[]
 /** Whether a tool call's status is terminal: it has stopped running, one way
     or another. Mirrors proto.ToolDone in internal/proto/event.go. */
 function toolDone(status: Item["status"]): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return (
+    status === "completed" || status === "failed" || status === "cancelled"
+  );
 }
 
 /** The tool calls standing for jobs still running. */
 function liveJobCalls(jobs: Job[]): Set<string> {
-  return new Set(jobs.flatMap((j) => (j.toolCallId && !jobDone(j.status) ? [j.toolCallId] : [])));
+  return new Set(
+    jobs.flatMap((j) =>
+      j.toolCallId && !jobDone(j.status) ? [j.toolCallId] : [],
+    ),
+  );
 }
 
 /** The call without its tail: absent rather than empty, as the server's
@@ -83,18 +107,78 @@ function settle(it: Item, status: Item["status"]): Item {
   return { ...dropTail(it), status };
 }
 
+// The server keeps only a head and tail of each tool output in its projection
+// and serves the rest on demand (GET /api/threads/{id}/items/{itemId}/content).
+// Live events and afterSeq replays still carry the full text, so the reducer
+// caps what it appends the same way, or one long session's tool output would
+// sit in the tab's memory. Mirrors internal/projection. Go measures bytes and
+// this measures UTF-16 units, so the two can cut at slightly different points;
+// that is fine, since a capped preview is shorter than the cap in either unit
+// and the full text is one fetch away.
+export const TOOL_HEAD = 4096;
+export const TOOL_TAIL = 4096;
+export const TOOL_MAX_ENTRIES = 16;
+const TOOL_SLACK = 128;
+
+const highSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const lowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+/** The head and tail of a long string, or the string itself if it is short.
+    Idempotent: a capped string is under the threshold. */
+export function capToolText(s: string): string {
+  if (s.length <= TOOL_HEAD + TOOL_TAIL + TOOL_SLACK) return s;
+  // Never split a surrogate pair: move each cut inward past half a character.
+  let head = TOOL_HEAD;
+  if (highSurrogate(s.charCodeAt(head - 1))) head--;
+  let tail = s.length - TOOL_TAIL;
+  if (lowSurrogate(s.charCodeAt(tail))) tail++;
+  return `${s.slice(0, head)}\n\n[… ${tail - head} characters truncated …]\n\n${s.slice(tail)}`;
+}
+
+function appendToolContent(it: Item, add: ToolContent[]) {
+  const have = it.content ?? [];
+  const room = Math.max(0, TOOL_MAX_ENTRIES - have.length);
+  let cut = add.length > room;
+  const capped = add.slice(0, room).map((c) => {
+    const next = { ...c };
+    for (const key of ["text", "oldText", "newText"] as const) {
+      const v = next[key];
+      if (v === undefined) continue;
+      const short = capToolText(v);
+      if (short !== v) {
+        next[key] = short;
+        cut = true;
+      }
+    }
+    return next;
+  });
+  if (capped.length) it.content = [...have, ...capped];
+  if (cut) it.truncated = true;
+}
+
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
 // was known of it, and anything the agent showed gets a timeline item at the
 // point it was shown. Uploads get no item; they show on the message that
 // carried them. Mirrors State.applyArtefact in internal/projection/state.go.
 type ArtefactShown = Omit<Artefact, "id" | "shownAt"> & { artefactId: string };
 
-function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown): ThreadState {
+function applyArtefact(
+  s: ThreadState,
+  ts: number,
+  seq: number,
+  p: ArtefactShown,
+): ThreadState {
   const { artefactId, ...rest } = p;
-  const artefact: Artefact = { ...rest, id: artefactId, turnId: p.turnId || undefined, shownAt: ts };
+  const artefact: Artefact = {
+    ...rest,
+    id: artefactId,
+    turnId: p.turnId || undefined,
+    shownAt: ts,
+  };
   const list = s.artefacts ?? [];
   const i = list.findIndex((a) => a.id === artefactId);
-  const artefacts = i >= 0 ? list.map((a, j) => (j === i ? artefact : a)) : [...list, artefact];
+  const artefacts =
+    i >= 0 ? list.map((a, j) => (j === i ? artefact : a)) : [...list, artefact];
   if (p.source === "upload") return { ...s, artefacts };
   return {
     ...s,
@@ -114,12 +198,20 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
-function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean): ThreadState {
+function applyJob(
+  s: ThreadState,
+  ts: number,
+  p: JobPayload,
+  finished: boolean,
+): ThreadState {
   if (!p.jobId) return s;
   const jobs = [...s.jobs];
   let i = jobs.findIndex((j) => j.id === p.jobId);
   if (i < 0) {
-    const turnId = s.turns.reduce<string | undefined>((acc, t) => (t.done ? acc : t.id), undefined);
+    const turnId = s.turns.reduce<string | undefined>(
+      (acc, t) => (t.done ? acc : t.id),
+      undefined,
+    );
     jobs.push({
       id: p.jobId,
       depth: 0,
@@ -174,13 +266,18 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
     if (j.toolCallId) {
       const call = j.toolCallId;
       const settled =
-        j.status === "failed" ? "failed" : j.status === "completed" ? "completed" : "cancelled";
+        j.status === "failed"
+          ? "failed"
+          : j.status === "completed"
+            ? "completed"
+            : "cancelled";
       // A live grandchild's spawn call is still its job's to settle.
       const live = liveJobCalls(jobs);
       items = s.items.map((it) => {
         if (it.status !== "in_progress" && it.status !== "pending") return it;
         if (it.id === call) return settle(it, settled);
-        if (it.kind === "tool" && it.parentId === call && !live.has(it.id)) return settle(it, "cancelled");
+        if (it.kind === "tool" && it.parentId === call && !live.has(it.id))
+          return settle(it, "cancelled");
         return it;
       });
     }
@@ -212,7 +309,9 @@ function settleRequests(
   if (!turnId) return { pendingPermissions, pendingElicitations };
   return {
     pendingPermissions: pendingPermissions.filter((x) => x.turnId !== turnId),
-    pendingElicitations: pendingElicitations.filter((x) => x.card || x.turnId !== turnId),
+    pendingElicitations: pendingElicitations.filter(
+      (x) => x.card || x.turnId !== turnId,
+    ),
   };
 }
 
@@ -223,13 +322,21 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
 
   switch (ev.type) {
     case "thread.created":
-      return { ...s, cwd: p.cwd, harness: p.harness, model: p.model ?? "", mode: p.mode ?? "", effort: p.effort ?? "", title: p.title ?? "" };
+      return {
+        ...s,
+        cwd: p.cwd,
+        harness: p.harness,
+        model: p.model ?? "",
+        mode: p.mode ?? "",
+        effort: p.effort ?? "",
+        title: p.title ?? "",
+      };
 
     case "thread.config_changed":
       return {
         ...s,
-        model: p.replaceSettings ? p.model ?? "" : p.model || s.model,
-        mode: p.replaceSettings ? p.mode ?? "" : p.mode || s.mode,
+        model: p.replaceSettings ? (p.model ?? "") : p.model || s.model,
+        mode: p.replaceSettings ? (p.mode ?? "") : p.mode || s.mode,
         // "" is a value effort can be set to — the harness's own default —
         // so an event that carries it must win, which || would not let it.
         effort: p.effort ?? s.effort,
@@ -240,21 +347,95 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       return { ...s, closed: true, phase: "closed" };
 
     case "workspace.requested":
-      return { ...s, phase: "provisioning", workspace: { phase: "provisioning", projectId: p.projectId, projectRoot: p.projectRoot, mode: p.mode, branch: p.branch, baseRef: p.baseRef, startedAt: ev.timestamp } };
+      return {
+        ...s,
+        phase: "provisioning",
+        workspace: {
+          phase: "provisioning",
+          projectId: p.projectId,
+          projectRoot: p.projectRoot,
+          mode: p.mode,
+          branch: p.branch,
+          baseRef: p.baseRef,
+          startedAt: ev.timestamp,
+        },
+      };
     case "workspace.hook_started":
-      return { ...s, phase: p.hook === "deprovision" ? "cleaning" : s.phase, workspace: { ...s.workspace, phase: p.hook === "deprovision" ? "cleaning" : s.workspace.phase, hook: p.hook, command: p.command } };
+      return {
+        ...s,
+        phase: p.hook === "deprovision" ? "cleaning" : s.phase,
+        workspace: {
+          ...s.workspace,
+          phase: p.hook === "deprovision" ? "cleaning" : s.workspace.phase,
+          hook: p.hook,
+          command: p.command,
+        },
+      };
     case "workspace.hook_output":
-      return { ...s, workspace: { ...s.workspace, output: (s.workspace.output ?? "") + (p.stream === "stderr" ? "[stderr] " : "") + (p.chunk ?? "") } };
+      return {
+        ...s,
+        workspace: {
+          ...s.workspace,
+          output:
+            (s.workspace.output ?? "") +
+            (p.stream === "stderr" ? "[stderr] " : "") +
+            (p.chunk ?? ""),
+        },
+      };
     case "workspace.hook_finished":
-      return { ...s, workspace: { ...s.workspace, exitCode: p.exitCode, durationMs: p.durationMs } };
+      return {
+        ...s,
+        workspace: {
+          ...s.workspace,
+          exitCode: p.exitCode,
+          durationMs: p.durationMs,
+        },
+      };
     case "workspace.ready":
-      return { ...s, cwd: p.cwd, phase: "idle", workspace: { ...s.workspace, phase: "ready", branch: p.branch, resources: p.resources, error: undefined } };
+      return {
+        ...s,
+        cwd: p.cwd,
+        phase: "idle",
+        workspace: {
+          ...s.workspace,
+          phase: "ready",
+          branch: p.branch,
+          resources: p.resources,
+          error: undefined,
+        },
+      };
     case "workspace.failed":
-      return { ...s, phase: "provision_failed", workspace: { ...s.workspace, phase: "provision_failed", error: p.error, exitCode: p.exitCode } };
+      return {
+        ...s,
+        phase: "provision_failed",
+        workspace: {
+          ...s.workspace,
+          phase: "provision_failed",
+          error: p.error,
+          exitCode: p.exitCode,
+        },
+      };
     case "workspace.cleanup_started":
-      return { ...s, phase: "cleaning", workspace: { ...s.workspace, phase: "cleaning", deleteAfterCleanup: !!p.purge } };
+      return {
+        ...s,
+        phase: "cleaning",
+        workspace: {
+          ...s.workspace,
+          phase: "cleaning",
+          deleteAfterCleanup: !!p.purge,
+        },
+      };
     case "workspace.cleanup_failed":
-      return { ...s, phase: "cleanup_failed", workspace: { ...s.workspace, phase: "cleanup_failed", error: p.error, exitCode: p.exitCode } };
+      return {
+        ...s,
+        phase: "cleanup_failed",
+        workspace: {
+          ...s.workspace,
+          phase: "cleanup_failed",
+          error: p.error,
+          exitCode: p.exitCode,
+        },
+      };
     case "workspace.cleanup_finished":
     case "workspace.released":
       return { ...s, workspace: { ...s.workspace, phase: "released" } };
@@ -263,7 +444,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // A turn the harness started from a prompt it was holding names the
       // queue entry but not what it carried: the entry has the text and
       // the images, the event may have only the text.
-      const held = p.queueId ? (s.queuedPrompts ?? []).find((q) => q.queueId === p.queueId) : undefined;
+      const held = p.queueId
+        ? (s.queuedPrompts ?? []).find((q) => q.queueId === p.queueId)
+        : undefined;
       const prompt: string = p.prompt || held?.prompt || "";
       const images = p.images?.length ? p.images : held?.images;
       return {
@@ -271,34 +454,74 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         phase: "turn",
         // A recovery prompt is the server talking to itself, so it never
         // names the thread.
-        title: s.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
-        turns: [...s.turns, { id: p.turnId, prompt, images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
+        title:
+          s.title ||
+          (p.recovery
+            ? ""
+            : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
+        turns: [
+          ...s.turns,
+          {
+            id: p.turnId,
+            prompt,
+            images,
+            done: false,
+            recovery: p.recovery,
+            startedAt: ev.timestamp,
+          },
+        ],
         // Starting is what takes a prompt out of the queue.
-        scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.id === p.queueId ? {...q, status: "sent", turnId: p.turnId, revision: q.revision + 1} : q),
-        queuedPrompts: p.queueId ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : s.queuedPrompts,
+        scheduledPrompts: (s.scheduledPrompts ?? []).map((q) =>
+          q.id === p.queueId
+            ? {
+                ...q,
+                status: "sent",
+                turnId: p.turnId,
+                revision: q.revision + 1,
+              }
+            : q,
+        ),
+        queuedPrompts: p.queueId
+          ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId)
+          : s.queuedPrompts,
         // A harness-initiated turn has no prompt — nobody asked anything —
         // so there is no prompt item to add. A prompt that is nothing but
         // pictures still has one.
-        items: prompt || images?.length
-          ? upsert(s, `prompt:${p.turnId}`, (it) => {
-              it.kind = "message";
-              it.receivedAt ??= ev.timestamp;
-              it.role = "user";
-              it.contentKind = "text";
-              it.text = prompt;
-              it.images = images;
-              it.turnId = p.turnId;
-            })
-          : s.items,
+        items:
+          prompt || images?.length
+            ? upsert(s, `prompt:${p.turnId}`, (it) => {
+                it.kind = "message";
+                it.receivedAt ??= ev.timestamp;
+                it.role = "user";
+                it.contentKind = "text";
+                it.text = prompt;
+                it.images = images;
+                it.turnId = p.turnId;
+              })
+            : s.items,
       };
     }
 
     case "prompt.scheduled":
-      return { ...s, scheduledPrompts: [...(s.scheduledPrompts ?? []).filter(q => q.id !== p.id), p] };
+      return {
+        ...s,
+        scheduledPrompts: [
+          ...(s.scheduledPrompts ?? []).filter((q) => q.id !== p.id),
+          p,
+        ],
+      };
     case "prompt.queued":
       return {
         ...s,
-        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+        queuedPrompts: [
+          ...(s.queuedPrompts ?? []),
+          {
+            queueId: p.queueId,
+            prompt: p.prompt,
+            images: p.images,
+            queuedAt: ev.timestamp,
+          },
+        ],
       };
 
     case "prompt.sent":
@@ -307,7 +530,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // internal/projection/state.go.
       return {
         ...s,
-        queuedPrompts: (s.queuedPrompts ?? []).map((q) => (q.queueId === p.queueId ? { ...q, sent: true } : q)),
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) =>
+          q.queueId === p.queueId ? { ...q, sent: true } : q,
+        ),
       };
 
     case "prompt.injected": {
@@ -318,7 +543,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       if (!held) return s;
       return {
         ...s,
-        queuedPrompts: (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId),
+        queuedPrompts: (s.queuedPrompts ?? []).filter(
+          (q) => q.queueId !== p.queueId,
+        ),
         items: upsert(s, `prompt:${p.queueId}`, (it) => {
           it.kind = "message";
           it.receivedAt ??= ev.timestamp;
@@ -332,21 +559,38 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     }
 
     case "prompt.dequeued":
-      return { ...s, queuedPrompts: (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) };
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).filter(
+          (q) => q.queueId !== p.queueId,
+        ),
+      };
 
     case "turn.finished": {
       // Only the finish of the turn that is actually open may take the
       // thread idle: a stale or duplicate finish must not report "user's
       // turn" while different work is running. Mirrors
       // internal/projection/state.go.
-      const open = s.turns.reduce<string>((acc, t) => (t.done ? acc : t.id), "");
+      const open = s.turns.reduce<string>(
+        (acc, t) => (t.done ? acc : t.id),
+        "",
+      );
       const match = open === "" || p.turnId === open;
       const live = liveJobCalls(s.jobs);
       return {
         ...s,
         ...settleRequests(s, p.turnId),
         phase: match ? "idle" : s.phase,
-        scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.turnId === p.turnId && p.stopReason === "error" ? {...q, status: "failed", error: p.error, revision: q.revision + 1} : q),
+        scheduledPrompts: (s.scheduledPrompts ?? []).map((q) =>
+          q.turnId === p.turnId && p.stopReason === "error"
+            ? {
+                ...q,
+                status: "failed",
+                error: p.error,
+                revision: q.revision + 1,
+              }
+            : q,
+        ),
         turns: s.turns.map((t) =>
           t.id === p.turnId
             ? {
@@ -368,10 +612,13 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         // internal/projection/state.go.
         items: match
           ? s.items.map((it) => {
-              if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId)) return it;
+              if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId))
+                return it;
               if (it.parentId && live.has(it.parentId)) return it;
               if (live.has(it.id)) return "tail" in it ? dropTail(it) : it;
-              return it.status === "in_progress" || it.status === "pending" ? settle(it, "cancelled") : it;
+              return it.status === "in_progress" || it.status === "pending"
+                ? settle(it, "cancelled")
+                : it;
             })
           : s.items,
       };
@@ -383,7 +630,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // fold: the event describes a turn that is not in this projection.
       return {
         ...s,
-        turns: s.turns.map((t) => (t.id === p.turnId ? { ...t, diff: p as TurnDiff } : t)),
+        turns: s.turns.map((t) =>
+          t.id === p.turnId ? { ...t, diff: p as TurnDiff } : t,
+        ),
       };
 
     case "message.chunk":
@@ -433,7 +682,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // would then prepend the original under the same id. The server has
       // already folded this event, so the page fetch delivers the updated
       // item; here only the cursor moves.
-      if ((s.itemsBefore ?? 0) > 0 && !s.items.some((it) => it.id === p.toolCallId)) {
+      if (
+        (s.itemsBefore ?? 0) > 0 &&
+        !s.items.some((it) => it.id === p.toolCallId)
+      ) {
         return s;
       }
       return {
@@ -443,7 +695,11 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         // not reopen "working". A subagent's tool is not the parent's turn
         // either. Mirrors internal/projection/state.go.
         phase:
-          s.phase === "idle" && p.status === "in_progress" && !p.parentToolCallId ? "turn" : s.phase,
+          s.phase === "idle" &&
+          p.status === "in_progress" &&
+          !p.parentToolCallId
+            ? "turn"
+            : s.phase,
         items: upsert(s, p.toolCallId, (it) => {
           it.kind = "tool";
           it.receivedAt ??= ev.timestamp;
@@ -451,13 +707,14 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           if (p.title) it.title = p.title;
           if (p.rawInput) it.input = p.rawInput;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
-          if (p.content?.length) it.content = [...(it.content ?? []), ...p.content];
+          if (p.content?.length) appendToolContent(it, p.content);
           // Output lands in the tail only while the call is running, judged
           // after this update's own status: a finished call has its output
           // in content, so its tail is dropped, and a delta straggling in
           // after the finish with it. Mirrors internal/projection/state.go.
           if (toolDone(it.status)) delete it.tail;
-          else if (p.outputDelta) it.tail = appendTail(it.tail ?? "", p.outputDelta);
+          else if (p.outputDelta)
+            it.tail = appendTail(it.tail ?? "", p.outputDelta);
         }),
       };
 
@@ -498,7 +755,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           ? {
               ...s,
               items: s.items.map((it) =>
-                isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it,
+                isTodoPlan(it) && !it.superseded
+                  ? { ...it, superseded: true }
+                  : it,
               ),
             }
           : s;
@@ -570,7 +829,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "permission.resolved":
       return {
         ...s,
-        pendingPermissions: s.pendingPermissions.filter((x) => x.requestId !== p.requestId),
+        pendingPermissions: s.pendingPermissions.filter(
+          (x) => x.requestId !== p.requestId,
+        ),
       };
 
     case "elicitation.requested": {
@@ -601,15 +862,23 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     }
 
     case "elicitation.resolved": {
-      const pendingElicitations = (s.pendingElicitations ?? []).filter((x) => x.requestId !== p.requestId);
+      const pendingElicitations = (s.pendingElicitations ?? []).filter(
+        (x) => x.requestId !== p.requestId,
+      );
       const id = `card:${p.requestId}`;
       // Only a card row this window holds: one paged out is updated on the
       // server, and an upsert here would append an orphan at the tail.
-      if (!s.items.some((it) => it.id === id)) return { ...s, pendingElicitations };
+      if (!s.items.some((it) => it.id === id))
+        return { ...s, pendingElicitations };
       const outcome = p.value as CardOutcome | undefined;
       // The outcome's own result, else what the action implies: cardResult.
       const result =
-        outcome?.result ?? (p.action === "accept" ? "saved" : p.action === "decline" ? "declined" : "cancelled");
+        outcome?.result ??
+        (p.action === "accept"
+          ? "saved"
+          : p.action === "decline"
+            ? "declined"
+            : "cancelled");
       return {
         ...s,
         pendingElicitations,

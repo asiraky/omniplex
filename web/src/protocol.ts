@@ -6,13 +6,10 @@ import type { Artefact } from "./lib/artefacts";
 export type { Artefact } from "./lib/artefacts";
 
 export type StopReason =
-  | "end_turn"
-  | "max_tokens"
-  | "refusal"
-  | "cancelled"
-  | "error";
+  "end_turn" | "max_tokens" | "refusal" | "cancelled" | "error";
 
-export type ToolStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "declined";
+export type ToolStatus =
+  "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "declined";
 
 export type ToolKind =
   | "read"
@@ -27,11 +24,7 @@ export type ToolKind =
   | "other";
 
 export type PermissionOutcome =
-  | "allow_once"
-  | "allow_always"
-  | "reject_once"
-  | "reject_always"
-  | "cancelled";
+  "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancelled";
 
 export interface ToolContent {
   type: "text" | "diff";
@@ -71,6 +64,9 @@ export interface Item {
   /** The last lines a running tool has printed, until it finishes and
       `content` carries the whole output. */
   tail?: string;
+  /** A tool's content is a head/tail preview: some text, or whole entries,
+      were cut. The full content is at /api/threads/{id}/items/{itemId}/content. */
+  truncated?: boolean;
   // notice
   noticeKind?: "compaction" | "account";
   /** For a compaction notice: whether the harness ("auto") or a human triggered it. */
@@ -163,7 +159,14 @@ export interface ComposerItem {
   trigger: string;
   insertText: string;
   argsHint?: string;
-  origin?: "personal" | "repo" | "project" | "plugin" | "system" | "built-in" | "other";
+  origin?:
+    | "personal"
+    | "repo"
+    | "project"
+    | "plugin"
+    | "system"
+    | "built-in"
+    | "other";
   behavior: "prompt" | "client-action" | "adapter-action";
   action?: string;
   aliases?: string[];
@@ -412,7 +415,15 @@ export interface ThreadState {
   mode: string;
   effort: string;
   title: string;
-  phase: "creating" | "provisioning" | "provision_failed" | "idle" | "turn" | "cleaning" | "cleanup_failed" | "closed";
+  phase:
+    | "creating"
+    | "provisioning"
+    | "provision_failed"
+    | "idle"
+    | "turn"
+    | "cleaning"
+    | "cleanup_failed"
+    | "closed";
   closed: boolean;
   workspace: WorkspaceState;
   items: Item[];
@@ -446,7 +457,8 @@ export interface QueuedPrompt {
 }
 
 export type JobKind = "agent" | "shell" | "monitor" | "inert";
-export type JobStatus = "running" | "paused" | "completed" | "failed" | "stopped" | "interrupted";
+export type JobStatus =
+  "running" | "paused" | "completed" | "failed" | "stopped" | "interrupted";
 
 export interface JobUsage {
   totalTokens?: number;
@@ -521,7 +533,10 @@ export interface WorkspaceState {
 /** What a new thread in a project starts with. */
 export interface ProjectDefaults {
   harness?: string;
-  harnesses?: Record<string, { model?: string; effort?: string; mode?: string }>;
+  harnesses?: Record<
+    string,
+    { model?: string; effort?: string; mode?: string }
+  >;
   workspace?: string;
   /** The ElevenLabs voice this project's messages are read in. Empty defers to the user's. */
   voice?: string;
@@ -994,7 +1009,8 @@ export interface FoundServer {
   added: boolean;
 }
 
-export type CliAccountStatus = "signed_in" | "signed_out" | "failed" | "unchecked";
+export type CliAccountStatus =
+  "signed_in" | "signed_out" | "failed" | "unchecked";
 
 export interface CliAccount {
   name: string;
@@ -1017,7 +1033,9 @@ export interface Cli {
 }
 
 /** save_cli's shape: accounts carry no statuses. */
-export type CliSpec = Omit<Cli, "accounts"> & { accounts: Pick<CliAccount, "name" | "env">[] };
+export type CliSpec = Omit<Cli, "accounts"> & {
+  accounts: Pick<CliAccount, "name" | "env">[];
+};
 
 export interface Connections {
   harnesses: McpHarness[];
@@ -1026,7 +1044,8 @@ export interface Connections {
   clis: Cli[];
 }
 
-export type ThreadMcpStatus = "connected" | "needs_auth" | "failed" | "pending" | "disabled";
+export type ThreadMcpStatus =
+  "connected" | "needs_auth" | "failed" | "pending" | "disabled";
 
 /** The live session's own report on one server. */
 export interface ThreadMcp {
@@ -1155,21 +1174,21 @@ export interface ServerFrame {
 }
 
 export interface ScheduledPrompt {
- id: string;
- revision: number;
- prompt: string;
- images?: PromptImage[];
- dueAt: number;
- timeZone: string;
- model: string;
- mode: string;
- effort: string;
- status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
- error?: string;
- turnId?: string;
- /** "limit" marks the continuation the server arms when a turn stops at a
+  id: string;
+  revision: number;
+  prompt: string;
+  images?: PromptImage[];
+  dueAt: number;
+  timeZone: string;
+  model: string;
+  mode: string;
+  effort: string;
+  status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
+  error?: string;
+  turnId?: string;
+  /** "limit" marks the continuation the server arms when a turn stops at a
      usage limit; absent on one a human scheduled. */
- kind?: "limit";
+  kind?: "limit";
 }
 
 // ---- Account-level usage ----
