@@ -72,7 +72,7 @@ export function ThreadView({
   harnesses: HarnessMeta[];
   scroll: {
     positionOf: (id: string) => ScrollPosition | undefined;
-    record: (id: string, top: number, atBottom: boolean) => void;
+    record: (id: string, position: ScrollPosition) => void;
   };
   commands: ThreadCommands;
   harness: ThreadHarness;

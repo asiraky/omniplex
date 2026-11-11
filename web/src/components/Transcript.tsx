@@ -21,7 +21,8 @@ import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
-import { TranscriptRow } from "./transcript/TranscriptRow";
+import type { ScrollPosition } from "./transcript/scrollAnchor";
+import { rowKey, TranscriptRow } from "./transcript/TranscriptRow";
 import { useOlderPages } from "./transcript/useOlderPages";
 import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";
@@ -74,11 +75,11 @@ type TranscriptProps = {
   /** Where this thread was last scrolled — the position the parent kept from
       the previous time this thread was open, or the one a resumed page saved
       as it went to background (resume.ts). Applied once, on mount. */
-  initialScroll?: { top: number; atBottom: boolean };
+  initialScroll?: ScrollPosition;
   /** Reports where the reader is, so the parent can hand it back the next time
       this thread is opened. Switching threads unmounts this component, so a
       position it kept to itself would die with it. */
-  onScrollChange?: (threadId: string, top: number, atBottom: boolean) => void;
+  onScrollChange?: (threadId: string, position: ScrollPosition) => void;
   onRetryProvision: () => void;
   onCleanup: () => void;
   onForceDelete: () => void;
@@ -274,7 +275,7 @@ export function Transcript({
 
           {rows.map((row, i) => (
             <TranscriptRow
-              key={row.kind === "item" ? row.item.id : row.id}
+              key={rowKey(row)}
               row={row}
               nextRow={rows[i + 1]}
               turnDiffs={turnDiffs}

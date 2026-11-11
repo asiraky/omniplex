@@ -14,6 +14,7 @@
 // accumulating transcripts in localStorage forever.
 
 import { currentBuild } from "./boot";
+import type { RowAnchor, ScrollPosition } from "./components/transcript/scrollAnchor";
 import type { ThreadState } from "./protocol";
 
 const KEY = "omniplex.resume";
@@ -27,13 +28,22 @@ export interface ResumeSnapshot {
   /** Pinned to the tail when saved, so the restore re-arms the follow pin
       rather than parking the view at a stale offset near the bottom. */
   atBottom: boolean;
+  /** The row at the top of the view, which the restore prefers over
+      `scrollTop` — see scrollAnchor.ts. */
+  anchor?: RowAnchor;
 }
 
-export function saveResume(state: ThreadState, scrollTop: number, atBottom: boolean) {
+export function saveResume(state: ThreadState, { top, atBottom, anchor }: ScrollPosition) {
   try {
     sessionStorage.setItem(
       KEY,
-      JSON.stringify({ build: currentBuild(), state, scrollTop, atBottom } satisfies ResumeSnapshot),
+      JSON.stringify({
+        build: currentBuild(),
+        state,
+        scrollTop: top,
+        atBottom,
+        anchor,
+      } satisfies ResumeSnapshot),
     );
   } catch {
     // Quota, or storage blocked outright. A cold attach is the fallback, not
@@ -59,6 +69,9 @@ export function loadResume(lastThreadId: string | null): ResumeSnapshot | null {
     if (snap.build !== currentBuild()) return null;
     if (!snap.state || snap.state.threadId !== lastThreadId) return null;
     if (typeof snap.state.seq !== "number") return null;
+    // A malformed anchor costs only the anchor: the offset still restores.
+    const a = snap.anchor;
+    if (a && (typeof a.id !== "string" || typeof a.offset !== "number")) delete snap.anchor;
     return snap;
   } catch {
     return null;

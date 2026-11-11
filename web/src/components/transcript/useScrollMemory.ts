@@ -5,6 +5,16 @@ import { saveResume } from "~/resume";
 import { atBottom } from "~/useAutoScroll";
 import { useLatest } from "~/useLatest";
 
+import { captureAnchor, restoreScroll, type ScrollPosition } from "./scrollAnchor";
+
+// Where the reader is, with the row they are reading. Only taken as the view
+// is left — measuring rows on every scroll event would put layout reads on the
+// hottest path a phone has, and nothing reads the anchor until the next mount.
+const positionOf = (el: HTMLElement): ScrollPosition => {
+  const tail = atBottom(el);
+  return { top: el.scrollTop, atBottom: tail, anchor: tail ? undefined : captureAnchor(el) };
+};
+
 /**
  * Where the reader was, kept across a thread switch and a discarded tab:
  * restores the parent's saved position once on mount, reports the position up
@@ -14,19 +24,21 @@ import { useLatest } from "~/useLatest";
 export function useScrollMemory(
   scrollerRef: RefObject<HTMLDivElement | null>,
   state: ThreadState,
-  initialScroll: { top: number; atBottom: boolean } | undefined,
-  onScrollChange: ((threadId: string, top: number, atBottom: boolean) => void) | undefined,
+  initialScroll: ScrollPosition | undefined,
+  onScrollChange: ((threadId: string, position: ScrollPosition) => void) | undefined,
 ) {
-  // The one-shot restore, from the ref because the prop is cleared after
-  // mount and later renders must not re-apply a stale position. A restore
-  // that was at the tail needs no offset: the pin starts armed and the
-  // stick lands it, exactly as if the reader had never left.
+  // The restore, from the ref because the prop is cleared after mount and
+  // later renders must not re-apply a stale position. A restore that was at
+  // the tail needs no offset: the pin starts armed and the stick lands it,
+  // exactly as if the reader had never left. Anything else goes back to its
+  // row, and the cleanup ends the settle that follows if the thread is left
+  // before it finishes.
   const initialScrollRef = useRef(initialScroll);
   useLayoutEffect(() => {
     const init = initialScrollRef.current;
     const el = scrollerRef.current;
     if (!el || !init || init.atBottom) return;
-    el.scrollTop = init.top;
+    return restoreScroll(el, init);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -40,7 +52,7 @@ export function useScrollMemory(
     const save = () => {
       const el = scrollerRef.current;
       if (!el) return;
-      saveResume(latestState.current, el.scrollTop, atBottom(el));
+      saveResume(latestState.current, positionOf(el));
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") save();
@@ -67,7 +79,10 @@ export function useScrollMemory(
     const el = scrollerRef.current;
     if (!el) return;
     const report = () =>
-      onScrollChangeRef.current?.(latestState.current.threadId, el.scrollTop, atBottom(el));
+      onScrollChangeRef.current?.(latestState.current.threadId, {
+        top: el.scrollTop,
+        atBottom: atBottom(el),
+      });
     el.addEventListener("scroll", report, { passive: true });
     // Mounting counts as a position too: a transcript left at the tail — or
     // one that just restored an offset above — has somewhere to come back to
@@ -75,7 +90,9 @@ export function useScrollMemory(
     report();
     return () => {
       el.removeEventListener("scroll", report);
-      report();
+      // The leaving report is the one that carries the row: it is the last
+      // word on where the reader was, and the scroller is still laid out.
+      onScrollChangeRef.current?.(latestState.current.threadId, positionOf(el));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
