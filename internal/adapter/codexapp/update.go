@@ -39,7 +39,7 @@ func (a *Adapter) Update(ctx context.Context, env map[string]string) (adapter.Up
 		}
 		return versionOutput(ctx, path, cmdEnv)
 	}
-	return adapter.RunUpdate(ctx, cmdEnv, bin, []string{"update"}, version)
+	return adapter.RunUpdate(ctx, cmdEnv, "codex", bin, []string{"update"}, version)
 }
 
 // versionOutput is what `codex --version` prints, or nothing if it did not

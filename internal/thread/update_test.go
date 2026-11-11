@@ -174,7 +174,9 @@ func TestNewBinaryDropsCachedModelsInsideTheTTL(t *testing.T) {
 }
 
 // A binary replaced while the harness was being asked: the answer came from
-// the old one, so the next listing must ask again.
+// the old one, and the watcher that saw the change has already fired, so the
+// harness is asked again straight away and clients hear the answer without
+// anyone listing again.
 func TestBinaryChangedDuringAListingIsAskedAgain(t *testing.T) {
 	mgr, ua := updTestManager(t)
 	ua.setLive([]adapter.ModelMeta{{ID: "m", Label: "M"}})
@@ -182,15 +184,16 @@ func TestBinaryChangedDuringAListingIsAskedAgain(t *testing.T) {
 	gate := make(chan struct{})
 	ua.listGate = gate
 	ua.mu.Unlock()
+	id, ch := mgr.SubscribeHarnesses()
+	defer mgr.UnsubscribeHarnesses(id)
 
 	mgr.Harnesses(context.Background())
 	waitForListing(t, ua.fakeAdapter, 1)
 	ua.replaceBinary(t, "replaced mid-listing")
 	close(gate)
-	waitRefreshed(t, mgr)
 
-	mgr.Harnesses(context.Background())
 	waitForListing(t, ua.fakeAdapter, 2)
+	waitNotified(t, ch, "listing of the replaced binary")
 }
 
 // The probe is keyed on the binary as well: a cached readiness answer about a

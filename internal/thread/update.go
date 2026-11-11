@@ -311,3 +311,8 @@ func tryBeginUpdate(driver string) (done func(), ok bool) {
 		})
 	}, true
 }
+
+// UserConfigChanged tells clients to relist harnesses after the user config
+// was saved: whether update status is shown follows the auto-update setting,
+// and a client that switched it off should not keep showing the last run.
+func (m *Manager) UserConfigChanged() { m.notifyHarnesses() }

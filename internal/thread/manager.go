@@ -831,6 +831,7 @@ func (m *Manager) refreshModels(reg registered, gen int, binary string) {
 	if err != nil {
 		m.logf("models: %s: %v", reg.inst.ID, err)
 	}
+	now := binaryIdentity(reg.ad)
 
 	m.modelsMu.Lock()
 	defer m.modelsMu.Unlock()
@@ -839,11 +840,12 @@ func (m *Manager) refreshModels(reg registered, gen int, binary string) {
 	// the user just changed. Drop it and ask again straight away, so that one
 	// click of "Check again" is enough: waiting for the next listing would
 	// leave the user staring at the fallback with no way to force the issue.
-	if gen != m.modelGen {
+	// A binary replaced mid-listing is the same: the answer came from the old
+	// one, and the watcher that saw the change has already had its say.
+	if gen != m.modelGen || now != binary {
 		if !m.refreshing[reg.inst.ID] {
 			m.refreshing[reg.inst.ID] = true
-			current := m.modelGen
-			go m.refreshModels(reg, current, binaryIdentity(reg.ad))
+			go m.refreshModels(reg, m.modelGen, now)
 		}
 		return
 	}

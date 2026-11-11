@@ -30,5 +30,5 @@ func (a *Adapter) Update(ctx context.Context, env map[string]string) (adapter.Up
 		}
 		return runBrieflyEnv(ctx, cmdEnv, path, "--version")
 	}
-	return adapter.RunUpdate(ctx, cmdEnv, bin, []string{"update"}, version)
+	return adapter.RunUpdate(ctx, cmdEnv, "claude", bin, []string{"update"}, version)
 }

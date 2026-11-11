@@ -61,7 +61,7 @@ func fakeHarness(t *testing.T, version, body string) (string, func(context.Conte
 func TestRunUpdateReportsTheNewVersion(t *testing.T) {
 	bin, version := fakeHarness(t, "1.0.0", `printf '%s' "$NEXT" > "$STATE"; echo updated`)
 	env := append(os.Environ(), "NEXT=1.1.0")
-	got, err := RunUpdate(context.Background(), env, bin, []string{"update"}, version)
+	got, err := RunUpdate(context.Background(), env, "fake", bin, []string{"update"}, version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestRunUpdateReportsTheNewVersion(t *testing.T) {
 
 func TestRunUpdateWithNothingNewer(t *testing.T) {
 	bin, version := fakeHarness(t, "1.0.0", `echo "already on the latest version"`)
-	got, err := RunUpdate(context.Background(), nil, bin, []string{"update"}, version)
+	got, err := RunUpdate(context.Background(), nil, "fake", bin, []string{"update"}, version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestRunUpdateFailureCarriesTheUpdatersLastWords(t *testing.T) {
 echo "downloading 2.0.0"
 echo "error: EACCES writing /usr/local/lib" >&2
 exit 3`)
-	got, err := RunUpdate(context.Background(), nil, bin, []string{"update"}, version)
+	got, err := RunUpdate(context.Background(), nil, "fake", bin, []string{"update"}, version)
 	if err == nil {
 		t.Fatal("a failing updater reported success")
 	}
@@ -100,9 +100,23 @@ exit 3`)
 
 func TestRunUpdateSilentFailureNamesTheStatus(t *testing.T) {
 	bin, version := fakeHarness(t, "1.0.0", `exit 7`)
-	_, err := RunUpdate(context.Background(), nil, bin, []string{"update"}, version)
+	_, err := RunUpdate(context.Background(), nil, "fake", bin, []string{"update"}, version)
 	if err == nil || !strings.Contains(err.Error(), "7") {
 		t.Errorf("error = %v; want the exit status", err)
+	}
+}
+
+func TestRunUpdateFailureNamesTheHarnessNotTheFile(t *testing.T) {
+	// Claude Code's binary resolves to versions/<version>; an error that
+	// named the file would read "2.1 update failed".
+	bin, _ := fakeHarness(t, "1.0.0", `exit 7`)
+	versioned := filepath.Join(filepath.Dir(bin), "2.1.300")
+	if err := os.Rename(bin, versioned); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RunUpdate(context.Background(), nil, "fake", versioned, []string{"update"}, func(context.Context) string { return "1.0.0" })
+	if err == nil || !strings.HasPrefix(err.Error(), "fake update ") {
+		t.Errorf("error = %v; want it to name the harness", err)
 	}
 }
 
@@ -112,7 +126,7 @@ func TestRunUpdateDoesNotWaitOnAPrompt(t *testing.T) {
 printf '2.0.0' > "$STATE"`)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := RunUpdate(ctx, nil, bin, []string{"update"}, version)
+	_, err := RunUpdate(ctx, nil, "fake", bin, []string{"update"}, version)
 	if err == nil || !strings.Contains(err.Error(), "no answer") {
 		t.Errorf("error = %v; want the prompt to fail on closed stdin", err)
 	}
@@ -121,7 +135,7 @@ printf '2.0.0' > "$STATE"`)
 func TestRunUpdateUnreadableVersionBeforeDoesNotUpdate(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
 	bin, version := fakeHarness(t, "", `touch '`+marker+`'`)
-	_, err := RunUpdate(context.Background(), nil, bin, []string{"update"}, version)
+	_, err := RunUpdate(context.Background(), nil, "fake", bin, []string{"update"}, version)
 	if err == nil || !strings.Contains(err.Error(), "before") {
 		t.Errorf("error = %v; want the version before to be unreadable", err)
 	}
@@ -132,7 +146,7 @@ func TestRunUpdateUnreadableVersionBeforeDoesNotUpdate(t *testing.T) {
 
 func TestRunUpdateUnreadableVersionAfter(t *testing.T) {
 	bin, version := fakeHarness(t, "1.0.0", `rm "$STATE"`)
-	got, err := RunUpdate(context.Background(), nil, bin, []string{"update"}, version)
+	got, err := RunUpdate(context.Background(), nil, "fake", bin, []string{"update"}, version)
 	if err == nil || !strings.Contains(err.Error(), "after") {
 		t.Errorf("error = %v; want the version after to be unreadable", err)
 	}
@@ -146,7 +160,7 @@ func TestRunUpdateStuckUpdaterIsKilledAtTheDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := RunUpdate(ctx, nil, bin, []string{"update"}, version)
+	_, err := RunUpdate(ctx, nil, "fake", bin, []string{"update"}, version)
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Errorf("took %s; the deadline did not stop the updater", elapsed)
 	}
@@ -159,7 +173,7 @@ func TestRunUpdateCanceledByCaller(t *testing.T) {
 	bin, version := fakeHarness(t, "1.0.0", `sleep 30`)
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(300*time.Millisecond, cancel)
-	_, err := RunUpdate(ctx, nil, bin, []string{"update"}, version)
+	_, err := RunUpdate(ctx, nil, "fake", bin, []string{"update"}, version)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v; want context.Canceled", err)
 	}

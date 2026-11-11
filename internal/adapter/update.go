@@ -92,7 +92,9 @@ const UpdateTimeout = 10 * time.Minute
 const failureTail = 300
 
 // RunUpdate runs a harness's own updater, `bin args...`, and reports the
-// version on either side of it. version prints the harness's version as its
+// version on either side of it. name is what the harness is called in an
+// error: bin may resolve to a versioned file whose basename says nothing.
+// version prints the harness's version as its
 // --version does, or nothing when it cannot; it is called fresh each time
 // because an install that repoints a link at a new file is only visible to
 // a caller that looks the binary up again.
@@ -102,8 +104,7 @@ const failureTail = 300
 // ambient), and with its whole process tree killed if it outlives
 // UpdateTimeout or an earlier deadline on ctx. A failure carries the end of
 // what the updater printed, which is where updaters say why.
-func RunUpdate(ctx context.Context, env []string, bin string, args []string, version func(context.Context) string) (UpdateResult, error) {
-	name := strings.TrimSuffix(filepath.Base(bin), filepath.Ext(bin))
+func RunUpdate(ctx context.Context, env []string, name, bin string, args []string, version func(context.Context) string) (UpdateResult, error) {
 	label := strings.Join(append([]string{name}, args...), " ")
 
 	from := VersionNumber(version(ctx))

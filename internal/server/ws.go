@@ -991,6 +991,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.srv.mgr.UserConfigChanged()
 		cfg.Providers = nil
 		return map[string]any{"userConfig": cfg, "hasElevenLabsKey": c.srv.speech.HasKey()}, nil
 
