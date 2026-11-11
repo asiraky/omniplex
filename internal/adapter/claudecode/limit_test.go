@@ -77,3 +77,112 @@ func TestSubagentLimitDoesNotFailTheTurn(t *testing.T) {
 		t.Error("a subagent's limit failed the main turn")
 	}
 }
+
+func rateLimitEvent(t *testing.T, s *session, info map[string]any) {
+	t.Helper()
+	s.handleSDKMessage(rawSDK(t, map[string]any{"type": "rate_limit_event", "rate_limit_info": info}))
+}
+
+func limitResult(t *testing.T, s *session) proto.TurnFinishedPayload {
+	t.Helper()
+	s.handleSDKMessage(rawSDK(t, map[string]any{"type": "result", "is_error": true, "result": "You've hit your limit"}))
+	return finished(t, s)
+}
+
+// A turn refused by two windows can only continue once both reopen, so the
+// reset is the later of the two.
+func TestLimitResetIsLatestRejectedWindow(t *testing.T) {
+	s := newTestSession()
+	s.turnID = "turn-1"
+	rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "seven_day", "resetsAt": 1_800_000_000})
+	rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1_700_000_000})
+	limitHit(t, s, "")
+	if p := limitResult(t, s); p.ResetAt != 1_800_000_000_000 {
+		t.Errorf("resetAt = %d, want the later window's reset in ms", p.ResetAt)
+	}
+}
+
+// The CLI throttles rate_limit_event, so the blocked response's own copy of
+// the window may be the only one the turn sees.
+func TestLimitResetFromBlockedResponse(t *testing.T) {
+	s := newTestSession()
+	s.turnID = "turn-1"
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type": "assistant", "error": "rate_limit",
+		"api_error_params": map[string]any{"rate_limit_info": map[string]any{
+			"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1_700_000_000,
+		}},
+		"message": map[string]any{"id": "m1", "model": "<synthetic>", "role": "assistant", "content": []any{}},
+	}))
+	if p := limitResult(t, s); p.Failure != proto.FailureLimit || p.ResetAt != 1_700_000_000_000 {
+		t.Errorf("got failure=%q resetAt=%d, want a limit resetting at the response's window", p.Failure, p.ResetAt)
+	}
+}
+
+// One window with no known reset makes any reset time a guess that would
+// continue into another refusal.
+func TestLimitResetUnknownWhenAnyWindowIs(t *testing.T) {
+	s := newTestSession()
+	s.turnID = "turn-1"
+	rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1_700_000_000})
+	rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "seven_day"})
+	limitHit(t, s, "")
+	if p := limitResult(t, s); p.Failure != proto.FailureLimit || p.ResetAt != 0 {
+		t.Errorf("got failure=%q resetAt=%d, want a limit with unknown reset", p.Failure, p.ResetAt)
+	}
+}
+
+// A window that reopens, or that overage carries past, no longer holds the
+// turn back.
+func TestAllowedWindowNoLongerSetsReset(t *testing.T) {
+	for name, clear := range map[string]map[string]any{
+		"allowed": {"status": "allowed", "rateLimitType": "seven_day"},
+		"overage": {"status": "rejected", "rateLimitType": "seven_day", "resetsAt": 1_900_000_000, "overageStatus": "allowed"},
+	} {
+		s := newTestSession()
+		s.turnID = "turn-1"
+		rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "seven_day", "resetsAt": 1_800_000_000})
+		rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1_700_000_000})
+		rateLimitEvent(t, s, clear)
+		limitHit(t, s, "")
+		if p := limitResult(t, s); p.ResetAt != 1_700_000_000_000 {
+			t.Errorf("%s: resetAt = %d, want the remaining window's reset", name, p.ResetAt)
+		}
+	}
+}
+
+// Windows recorded for one limit turn say nothing about the next; a limit
+// with no window information has no reset rather than the last turn's.
+func TestLimitResetDoesNotLeakIntoNextTurn(t *testing.T) {
+	s := newTestSession()
+	s.turnID = "turn-1"
+	rateLimitEvent(t, s, map[string]any{"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1_700_000_000})
+	limitHit(t, s, "")
+	if p := limitResult(t, s); p.ResetAt == 0 {
+		t.Fatal("first turn has no reset")
+	}
+
+	s.turnID = "turn-2"
+	limitHit(t, s, "")
+	if p := limitResult(t, s); p.Failure != proto.FailureLimit || p.ResetAt != 0 {
+		t.Errorf("got failure=%q resetAt=%d, want a limit with no inherited reset", p.Failure, p.ResetAt)
+	}
+}
+
+// A subagent refused for a limit doesn't fail the turn, so its window can't
+// give the turn a reset either.
+func TestSubagentLimitSetsNoReset(t *testing.T) {
+	s := newTestSession()
+	s.turnID = "turn-1"
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type": "assistant", "error": "rate_limit", "parent_tool_use_id": "toolu_1",
+		"api_error_params": map[string]any{"rate_limit_info": map[string]any{
+			"status": "rejected", "rateLimitType": "five_hour", "resetsAt": 1_700_000_000,
+		}},
+		"message": map[string]any{"id": "m1", "model": "<synthetic>", "role": "assistant", "content": []any{}},
+	}))
+	s.handleSDKMessage(rawSDK(t, map[string]any{"type": "result", "stop_reason": "end_turn"}))
+	if p := finished(t, s); p.Failure != "" || p.ResetAt != 0 {
+		t.Errorf("a subagent's limit reached the main turn: %+v", p)
+	}
+}

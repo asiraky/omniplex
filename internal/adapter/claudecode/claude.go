@@ -519,6 +519,11 @@ type session struct {
 	// limited is set when the turn's main thread was refused for a plan usage
 	// limit, and read and cleared by the result that ends the turn.
 	limited bool
+	// rejected maps each limit window currently refusing the account to when
+	// it reopens (epoch ms, 0 if the CLI did not say). Cleared with limited:
+	// a limit turn's reset time is the latest of these, so the server knows
+	// when continuing can succeed.
+	rejected map[string]int64
 
 	// usage carries both cost accounting and window occupancy; it is kept on
 	// the session and re-emitted whole so a result (accounting + fallback
@@ -1122,6 +1127,19 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 		if ok {
 			s.reportQuota(snap)
 		}
+		// The quota snapshot drops events without utilization; a refusal
+		// still says when its window reopens, so it is tracked on its own.
+		var info rateLimitInfo
+		if json.Unmarshal(msg["rate_limit_info"], &info) == nil {
+			s.mu.Lock()
+			switch {
+			case info.blocked():
+				s.reject(info)
+			case info.Status == "allowed" || info.Status == "allowed_warning" || info.overage():
+				delete(s.rejected, info.window())
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -1403,7 +1421,14 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 		// into a synthetic assistant message. "rate_limit" is a plan usage
 		// limit: the message text says when it resets, and the turn's result
 		// that follows does not say it was a limit at all.
-		Error   string `json:"error"`
+		Error string `json:"error"`
+		// APIErrorParams is undeclared by the SDK, but the CLI repeats the
+		// refusing window on every blocked response, where rate_limit_event
+		// is throttled to changes. Raw, so a malformed one cannot cost the
+		// message its content.
+		APIErrorParams struct {
+			RateLimitInfo json.RawMessage `json:"rate_limit_info"`
+		} `json:"api_error_params"`
 		Message struct {
 			ID      string `json:"id"`
 			Content []struct {
@@ -1425,6 +1450,10 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 	if m.Error == "rate_limit" && str(msg["parent_tool_use_id"]) == "" {
 		s.mu.Lock()
 		s.limited = true
+		var info rateLimitInfo
+		if json.Unmarshal(m.APIErrorParams.RateLimitInfo, &info) == nil && info.blocked() {
+			s.reject(info)
+		}
 		s.mu.Unlock()
 	}
 
@@ -1675,7 +1704,12 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	// happened.
 	s.mu.Lock()
 	limited := s.limited
+	var resetAt int64
+	if limited {
+		resetAt = latestReset(s.rejected)
+	}
 	s.limited = false
+	s.rejected = nil
 	s.mu.Unlock()
 
 	var failure, failureKind string
@@ -1706,8 +1740,65 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	}
 
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind,
+		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind, ResetAt: resetAt,
 	}))
+}
+
+// rateLimitInfo is the CLI's account of one limit window, as rate_limit_event
+// and a blocked assistant response both carry it. Type and reset are untyped
+// because the CLI does not promise them; anything unexpected reads as unknown.
+type rateLimitInfo struct {
+	Status         string `json:"status"`
+	RateLimitType  any    `json:"rateLimitType"`
+	ResetsAt       any    `json:"resetsAt"` // epoch seconds
+	OverageStatus  string `json:"overageStatus"`
+	IsUsingOverage bool   `json:"isUsingOverage"`
+	OverageInUse   bool   `json:"overageInUse"`
+}
+
+// overage reports whether extra usage is carrying the account past the
+// window, in which case a rejected window refuses nothing.
+func (i rateLimitInfo) overage() bool {
+	return i.OverageStatus == "allowed" || i.OverageStatus == "allowed_warning" ||
+		i.IsUsingOverage || i.OverageInUse
+}
+
+func (i rateLimitInfo) blocked() bool { return i.Status == "rejected" && !i.overage() }
+
+func (i rateLimitInfo) window() string {
+	if t, ok := i.RateLimitType.(string); ok && t != "" {
+		return t
+	}
+	return "unknown"
+}
+
+func (i rateLimitInfo) resetAt() int64 {
+	if secs, ok := i.ResetsAt.(float64); ok && secs > 0 && secs < 8.64e12 {
+		return int64(secs * 1000)
+	}
+	return 0
+}
+
+// reject records a window refusing the account. Callers hold s.mu.
+func (s *session) reject(info rateLimitInfo) {
+	if s.rejected == nil {
+		s.rejected = map[string]int64{}
+	}
+	s.rejected[info.window()] = info.resetAt()
+}
+
+// latestReset is when every refusing window has reopened: the latest reset,
+// or 0 if any window's reset is unknown — a guess there would continue into
+// another refusal.
+func latestReset(rejected map[string]int64) int64 {
+	var latest int64
+	for _, at := range rejected {
+		if at == 0 {
+			return 0
+		}
+		latest = max(latest, at)
+	}
+	return latest
 }
 
 // resultFailure turns the harness's last word on a failed turn into something
