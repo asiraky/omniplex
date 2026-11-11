@@ -19,10 +19,6 @@ import (
 )
 
 const schema = `
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
-PRAGMA synchronous=NORMAL;
-
 CREATE TABLE IF NOT EXISTS threads (
   id            TEXT PRIMARY KEY,
   cwd           TEXT NOT NULL,
@@ -138,7 +134,7 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err := sql.Open("sqlite", path+dsnPragmas)
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +233,7 @@ func Open(path string) (*Store, error) {
 	if err := s.initPush(); err != nil {
 		return nil, fmt.Errorf("apply push schema: %w", err)
 	}
+	s.convertToIncrementalVacuum()
 	return s, nil
 }
 
