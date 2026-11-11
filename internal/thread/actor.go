@@ -351,6 +351,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// the work — that is what Recover is for, and this is the evidence it
 	// needs.
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
+	a.claimRow(meta.Phase)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
@@ -417,6 +418,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
 	}
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
+	a.claimRow(meta.Phase)
 	for _, turn := range state.Turns {
 		if !turn.Done {
 			a.turnActive = turn.ID
@@ -1269,10 +1271,12 @@ func (a *Actor) handle(c command) (stop bool) {
 				// Put back for a retry, or for its note to ride on the
 				// next human prompt: either way the agent still has to hear
 				// what died.
+				prev := a.wantedPhase()
 				a.setRecovery(c.plan)
 				if !retryableRecovery(err) {
 					a.abandonRecovery()
 				}
+				a.writePhase(prev)
 			}
 			c.reply <- cmdResult{err: err}
 			return false
@@ -1467,6 +1471,9 @@ func (a *Actor) shutdown(hard bool) {
 		// with this process. The next start has to tell the agent, or it
 		// waits for a result that never comes.
 		phase = "background"
+	case a.owedPhase() != "":
+		// A continuation that was never sent dies with this process too.
+		phase = a.owedPhase()
 	}
 	_ = a.store.SetPhase(ctx, a.ID, phase)
 
@@ -1550,16 +1557,10 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	// A human prompt is the agent's next chance to hear about work a restart
 	// killed. One that gets in ahead of the continuation supersedes it — the
 	// human has picked the thread up — and carries its news instead.
-	text := prompt
+	text, note := prompt, ""
 	if recovery == nil {
-		note := a.heldNote
-		a.mu.Lock()
-		if a.recovery != nil {
-			note = withNote(note, a.recovery.note)
-			a.recovery = nil
-		}
-		a.mu.Unlock()
-		a.heldNote = ""
+		a.abandonRecovery()
+		note, a.heldNote = a.heldNote, ""
 		text = withNote(note, prompt)
 	}
 
@@ -1570,6 +1571,8 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	err := a.sess.Prompt(promptCtx, adapter.PromptInput{TurnID: turnID, Text: text, Images: images})
 	cancelPrompt()
 	if err != nil {
+		// A refused prompt delivered nothing, so its note waits for the next.
+		a.heldNote = withNote(note, a.heldNote)
 		// turnActive is left for append to clear: a prompt that failed on
 		// the way out may still have reached the harness, and the closing
 		// snapshot is the only way to find out what it did.
@@ -1643,12 +1646,55 @@ func (a *Actor) setRecovery(plan *recoveryPlan) {
 // next human prompt: whether or not the thread wakes, the agent should not be
 // left waiting on work that died.
 func (a *Actor) abandonRecovery() {
+	prev := a.wantedPhase()
 	a.mu.Lock()
 	if a.recovery != nil {
 		a.heldNote = withNote(a.heldNote, a.recovery.note)
 		a.recovery = nil
 	}
 	a.mu.Unlock()
+	a.writePhase(prev)
+}
+
+// claimRow lets the pending continuation hold the thread's row only when the
+// row is what asked for it. A thread nobody recovered — its last chain given
+// up on, or never woken — still carries its plan's note to the next prompt,
+// but must not start waking on restarts because someone opened it.
+func (a *Actor) claimRow(rowPhase string) {
+	if a.recovery != nil && !interruptedPhase(rowPhase) {
+		a.recovery.phase = ""
+	}
+}
+
+// owedPhase is the phase a pending continuation holds the row at, or empty.
+func (a *Actor) owedPhase() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.recovery == nil {
+		return ""
+	}
+	return a.recovery.phase
+}
+
+// wantedPhase is what the thread's row should say: the projection's phase,
+// except that an idle thread still owed a continuation keeps the phase that
+// will find it again after another restart.
+func (a *Actor) wantedPhase() string {
+	phase := storedPhase(a.state)
+	if owed := a.owedPhase(); phase == "idle" && owed != "" {
+		return owed
+	}
+	return phase
+}
+
+// writePhase syncs the row's phase column after a change that may have moved
+// it from prev.
+func (a *Actor) writePhase(prev string) {
+	if phase := a.wantedPhase(); phase != prev && phase != "" {
+		if err := a.store.SetPhase(context.Background(), a.ID, phase); err != nil {
+			a.logf("set phase %s on %s: %v", phase, a.ID, err)
+		}
+	}
 }
 
 func (a *Actor) markSent(queueID string) {
@@ -1751,7 +1797,7 @@ func (a *Actor) write(em proto.Emission) error {
 		return err
 	}
 
-	prevPhase := storedPhase(a.state)
+	prevPhase := a.wantedPhase()
 	a.state.Apply(ev)
 
 	a.mu.Lock()
@@ -1811,11 +1857,7 @@ func (a *Actor) write(em proto.Emission) error {
 	switch em.Type {
 	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.ThreadClosed,
 		proto.JobStarted, proto.JobUpdated, proto.JobFinished:
-		if phase := storedPhase(a.state); phase != prevPhase && phase != "" {
-			if err := a.store.SetPhase(ctx, a.ID, phase); err != nil {
-				a.logf("set phase %s on %s: %v", phase, a.ID, err)
-			}
-		}
+		a.writePhase(prevPhase)
 	}
 
 	// Attention is the derived whose-turn-is-it signal. Any event that moves

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/jsonrpc"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
@@ -367,6 +368,145 @@ func TestShellOnlyThreadHoldsTheNoteForTheNextHumanPrompt(t *testing.T) {
 	}
 }
 
+// The note lives in the log, not in the process that read it: a second
+// restart before the human's next prompt does not lose it.
+func TestShellNoteSurvivesASecondRestart(t *testing.T) {
+	st := openRecoveryStore(t)
+	fa := &fakeAdapter{}
+	mgr, actor := startRecoveryThread(t, st, fa)
+	ctx := context.Background()
+	startJob(fa, "s1", proto.JobShell, "npm run dev")
+	waitJobs(t, actor, 1)
+	id := actor.ID
+	mgr.Shutdown()
+
+	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	a, err := mgr2.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		s, err := a.State(ctx)
+		return err == nil && !s.LiveJobs().Any()
+	})
+	mgr2.Shutdown()
+
+	mgr3 := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr3.Shutdown()
+	a, err = mgr3.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Prompt(ctx, "fix the button", nil); err != nil {
+		t.Fatal(err)
+	}
+	in := recvPrompt(t, fa.thread().prompts)
+	if got := deadLines(in.Text); strings.Join(got, "|") != "- shell: npm run dev" || !strings.HasSuffix(in.Text, "\n\nfix the button") {
+		t.Fatalf("first human prompt after two restarts = %q; want the dead shell named before it", in.Text)
+	}
+}
+
+func TestRefusedHumanPromptLeavesTheNoteForTheNext(t *testing.T) {
+	st := openRecoveryStore(t)
+	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
+	mgr, actor := startRecoveryThread(t, st, sa)
+	ctx := context.Background()
+	startJob(sa.fakeAdapter, "s1", proto.JobShell, "npm run dev")
+	waitJobs(t, actor, 1)
+	id := actor.ID
+	mgr.Shutdown()
+
+	refusals := 1
+	sa.script(func(in adapter.PromptInput) error {
+		if refusals > 0 {
+			refusals--
+			return errors.New("attachment unreadable")
+		}
+		return nil
+	})
+	mgr2 := NewManager(st, func(string, ...any) {}, sa)
+	defer mgr2.Shutdown()
+	a, err := mgr2.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Prompt(ctx, "first", nil); err == nil {
+		t.Fatal("refused prompt reported success")
+	}
+	if _, err := a.Prompt(ctx, "second", nil); err != nil {
+		t.Fatal(err)
+	}
+	in := recvPrompt(t, sa.thread().prompts)
+	if got := deadLines(in.Text); strings.Join(got, "|") != "- shell: npm run dev" || !strings.HasSuffix(in.Text, "\n\nsecond") {
+		t.Fatalf("prompt after a refused one = %q; want it to carry the note the refused one never delivered", in.Text)
+	}
+}
+
+// A continuation still waiting on its retry when the server stops again is
+// owed by the next start, which plans it again from the log.
+func TestContinuationOwedAcrossASecondRestart(t *testing.T) {
+	st := openRecoveryStore(t)
+	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
+	mgr, actor := startRecoveryThread(t, st, sa)
+	ctx := context.Background()
+	if _, err := actor.Prompt(ctx, "explore", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := recvPrompt(t, sa.thread().prompts)
+	startJob(sa.fakeAdapter, "j1", proto.JobAgent, "map the auth flow")
+	sa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		s, err := actor.State(ctx)
+		return err == nil && s.Phase == "idle" && s.LiveJobs().Agents == 1
+	})
+	id := actor.ID
+	mgr.Shutdown()
+
+	isWake := func(in adapter.PromptInput) bool { return strings.Contains(in.Text, deadWorkIntro) }
+	sa.script(func(in adapter.PromptInput) error {
+		if isWake(in) {
+			return errors.New("harness hiccup")
+		}
+		return nil
+	})
+	mgr2 := NewManager(st, func(string, ...any) {}, sa)
+	mgr2.recoveryRetries = []time.Duration{time.Hour}
+	mgr2.recoverAll(ctx)
+	waitFor(t, func() bool { return sa.callsWhere(isWake) == 1 })
+	refused, ok := mgr2.Peek(id)
+	if !ok {
+		t.Fatal("thread was not brought back")
+	}
+	waitFor(t, func() bool {
+		s, err := refused.State(ctx)
+		return err == nil && lastTurnOf(s).Recovery != nil && lastTurnOf(s).Done
+	})
+	// Held through the refused turn's own idle, so a stop now finds it again.
+	waitRowPhase(t, st, id, "background")
+	mgr2.Shutdown()
+	if got := rowPhase(t, st, id); got != "background" {
+		t.Fatalf("row phase after stopping with the continuation owed = %q; want background", got)
+	}
+
+	sa.script(nil)
+	mgr3 := NewManager(st, func(string, ...any) {}, sa)
+	defer mgr3.Shutdown()
+	mgr3.recoverAll(ctx)
+	in := recvPrompt(t, sa.thread().prompts)
+	if got := deadLines(in.Text); strings.Join(got, "|") != "- agent: map the auth flow" {
+		t.Fatalf("continuation after the second restart = %q; want it to name the dead subagent", in.Text)
+	}
+	a, _ := mgr3.Peek(id)
+	waitFor(t, func() bool {
+		s, err := a.State(ctx)
+		return err == nil && lastTurnOf(s).ID == in.TurnID
+	})
+	s, _ := a.State(ctx)
+	if rec := lastTurnOf(s).Recovery; rec == nil || rec.Attempt != 2 {
+		t.Fatalf("continuation recovery = %+v; want attempt 2, counting the refused one", rec)
+	}
+}
+
 // A human who picks the thread up before the continuation starts supersedes
 // it: their prompt carries the dead-work news, and the continuation is never
 // sent.
@@ -687,6 +827,8 @@ func TestRetryableRecovery(t *testing.T) {
 		{"needs a login", &adapter.FailureError{Kind: proto.FailureAuth, Err: errors.New("x")}, false},
 		{"out of quota", fmt.Errorf("prompt: %w", &adapter.FailureError{Kind: proto.FailureLimit, Err: errors.New("x")}), false},
 		{"other classified failure", &adapter.FailureError{Kind: proto.FailureRestart, Err: errors.New("x")}, true},
+		{"invalid params", fmt.Errorf("turn/start: %w", &jsonrpc.RPCError{Code: -32602, Message: "bad input"}), false},
+		{"server error over rpc", &jsonrpc.RPCError{Code: -32000, Message: "connection closed"}, true},
 		{"unclassified", errors.New("broken pipe"), true},
 	}
 	for _, c := range cases {
@@ -715,6 +857,24 @@ func cutTurn(id string) projection.Turn {
 	return projection.Turn{ID: id, StartedAt: planNow - 3_600_000}
 }
 
+// interruptedJob is one a restart closed the given time before planNow.
+func interruptedJob(id, kind, name string, ago time.Duration) projection.Job {
+	return projection.Job{ID: id, Kind: kind, Name: name, Status: proto.JobInterrupted, FinishedAt: planNow - ago.Milliseconds()}
+}
+
+// restartClosedTurn is a cut turn as a resume leaves it.
+func restartClosedTurn(id string) projection.Turn {
+	return projection.Turn{ID: id, Done: true, StopReason: proto.StopError, Failure: proto.FailureRestart, StartedAt: planNow - 3_600_000}
+}
+
+// refusedContinuation is a continuation the harness would not start.
+func refusedContinuation(id string) projection.Turn {
+	return projection.Turn{
+		ID: id, Done: true, StopReason: proto.StopError, StartedAt: planNow - 30_000,
+		Recovery: &proto.TurnRecovery{Attempt: 1, Cause: proto.RecoveryRestart},
+	}
+}
+
 func liveJob(id, kind, name string) projection.Job {
 	return projection.Job{ID: id, Kind: kind, Name: name, Status: proto.JobRunning}
 }
@@ -738,6 +898,17 @@ func TestPlanRecoveryDecidesWhetherToWake(t *testing.T) {
 		{"monitor, idle", planState([]projection.Turn{doneTurn("t1")}, liveJob("m", proto.JobMonitor, "x")), true, nil},
 		{"agent, never prompted", planState(nil, liveJob("a", proto.JobAgent, "x")), true, nil},
 		{"shell, cut turn", planState([]projection.Turn{cutTurn("t1")}, liveJob("s", proto.JobShell, "x")), true, nil},
+
+		// A second restart, with the first one's closing already in the log.
+		{"agent interrupted since the last turn", planState([]projection.Turn{doneTurn("t1")}, interruptedJob("a", proto.JobAgent, "x", time.Minute)), true, nil},
+		{"shell interrupted since the last turn", planState([]projection.Turn{doneTurn("t1")}, interruptedJob("s", proto.JobShell, "dev server", time.Minute)),
+			false, []string{"- shell: dev server"}},
+		{"agent interrupted before the last turn", planState([]projection.Turn{doneTurn("t1")}, interruptedJob("a", proto.JobAgent, "x", 2*time.Hour)), false, nil},
+		{"turn closed by a restart", planState([]projection.Turn{restartClosedTurn("t1")}), true, nil},
+		{"turn closed by a restart, then its continuation refused", planState([]projection.Turn{restartClosedTurn("t1"), refusedContinuation("r")}), true, nil},
+		{"agent interrupted, then its continuation refused", planState([]projection.Turn{doneTurn("t1"), refusedContinuation("r")},
+			interruptedJob("a", proto.JobAgent, "x", time.Minute)), true, nil},
+		{"turn that errored on its own", planState([]projection.Turn{{ID: "t1", Done: true, StopReason: proto.StopError, StartedAt: planNow - 60_000}}), false, nil},
 	}
 	for _, c := range cases {
 		plan, held := planRecovery(c.state, planNow)

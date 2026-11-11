@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/jsonrpc"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -80,32 +81,53 @@ type recoveryPlan struct {
 	// gets in before the continuation supersedes it and carries this instead,
 	// as does the next one after a continuation that never started.
 	note string
+	// phase is what the thread's row keeps saying while the continuation is
+	// owed — "turn" or "background" — so a restart before it is sent finds
+	// the thread again. Empty when the row never asked for one: such a plan
+	// only carries its note.
+	phase string
 }
 
 // planRecovery decides whether a resumed thread should continue by itself,
-// and under which attempt number. It reads the state as of the moment before
-// Resume closed the interrupted turn and its jobs, so an unfinished turn there
-// is exactly "the server died while this was running", and a live job is work
-// that died with it.
+// and under which attempt number. Everything it needs is in the log, so a
+// second restart before the first one's news was delivered plans the same
+// thing again: a turn the server died in is unfinished, or was closed as
+// FailureRestart, and work it killed is live or interrupted.
 //
 // A thread wakes itself when its turn was cut, or when a subagent or a monitor
-// was still running: those are work the agent is waiting on. A thread that had
-// only shells running does not — a dev server dying is worth knowing, not
-// worth a turn — so held is the note for its next human prompt instead.
+// died: those are work the agent is waiting on. A thread that lost only
+// shells does not — a dev server dying is worth knowing, not worth a turn —
+// so held is the note for its next human prompt instead.
 func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held string) {
 	if state.Closed {
 		return nil, ""
 	}
-	note := deadWorkNote(deadWork(state))
+	// The newest turn is what a continuation resumes and counts on from;
+	// the newest one that reached the agent is what it last heard. A
+	// continuation that failed to start told it nothing.
+	var last, heard *projection.Turn
+	for i := len(state.Turns) - 1; i >= 0; i-- {
+		t := &state.Turns[i]
+		if last == nil {
+			last = t
+		}
+		if !neverStarted(t) {
+			heard = t
+			break
+		}
+	}
+	var since int64
+	if heard != nil {
+		since = heard.StartedAt
+	}
+	dead := deadWork(state, since)
+	list := deadWorkNote(dead)
+	note := list
 	if note != "" {
-		note = "[omniplex] " + note
+		note = "[omniplex] " + list
 	}
-	var last *projection.Turn
-	if len(state.Turns) > 0 {
-		last = &state.Turns[len(state.Turns)-1]
-	}
-	cut := last != nil && !last.Done
-	if !cut && !state.LiveJobs().Working() {
+	cut := heard != nil && (!heard.Done || heard.Failure == proto.FailureRestart)
+	if !cut && !awaited(dead) {
 		return nil, note
 	}
 	attempt := 1
@@ -116,28 +138,47 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 		// Left for a human, who should still hear what died.
 		return nil, note
 	}
-	plan = &recoveryPlan{rec: proto.TurnRecovery{Attempt: attempt, Cause: proto.RecoveryRestart}, note: note}
+	plan = &recoveryPlan{rec: proto.TurnRecovery{Attempt: attempt, Cause: proto.RecoveryRestart}, note: note, phase: "background"}
 	if last != nil {
 		plan.rec.ResumeOf = last.ID
 	}
 	if cut {
-		plan.prompt = withNote(restartPrompt, strings.TrimPrefix(note, "[omniplex] "))
+		plan.prompt = withNote(restartPrompt, list)
+		plan.phase = "turn"
 	} else {
 		plan.prompt = note
 	}
 	return plan, ""
 }
 
-// deadWork is the background work still live in a state whose process is
-// gone, as the agent should hear about it. A job started inside another — a
+// neverStarted is a continuation the harness refused: the agent never saw
+// its prompt, so whatever it was meant to say is still owed.
+func neverStarted(t *projection.Turn) bool {
+	return t.Recovery != nil && t.Done && t.StopReason == proto.StopError && t.Failure != proto.FailureRestart
+}
+
+// awaited is whether dead work includes something the agent was waiting on.
+func awaited(dead []projection.Job) bool {
+	for _, j := range dead {
+		if j.Kind == proto.JobAgent || j.Kind == proto.JobMonitor {
+			return true
+		}
+	}
+	return false
+}
+
+// deadWork is the background work a restart killed that the agent has not
+// heard about since: still live in a state whose process is gone, or
+// interrupted after the last prompt it read. A job started inside another — a
 // shell a subagent ran — is reported under its parent: restarting the
 // subagent is what brings it back.
-func deadWork(state *projection.State) []projection.Job {
-	live := map[string]bool{}
+func deadWork(state *projection.State, since int64) []projection.Job {
+	dead := map[string]bool{}
 	byToolCall := map[string]string{}
 	for _, j := range state.Jobs {
-		if !proto.JobDone(j.Status) && j.Kind != proto.JobInert {
-			live[j.ID] = true
+		unheard := !proto.JobDone(j.Status) || (j.Status == proto.JobInterrupted && j.FinishedAt > since)
+		if unheard && j.Kind != proto.JobInert {
+			dead[j.ID] = true
 			if j.ToolCallID != "" {
 				byToolCall[j.ToolCallID] = j.ID
 			}
@@ -154,7 +195,7 @@ func deadWork(state *projection.State) []projection.Job {
 	}
 	var out []projection.Job
 	for _, j := range state.Jobs {
-		if !live[j.ID] || live[j.ParentJobID] || live[byToolCall[calledFrom[j.ToolCallID]]] {
+		if !dead[j.ID] || dead[j.ParentJobID] || dead[byToolCall[calledFrom[j.ToolCallID]]] {
 			continue
 		}
 		out = append(out, j)
@@ -240,8 +281,9 @@ func (a *Actor) dropRecovery(ctx context.Context) {
 // retryableRecovery says whether a continuation that failed to start is worth
 // trying again later. A harness that is not up yet, or that refused for some
 // passing reason, may take it in a minute. One that needs a login or is out of
-// quota will refuse again until a human acts, and a thread that is closed or
-// already busy has nothing left to continue.
+// quota will refuse again until a human acts, as will one that rejected the
+// request as invalid, and a thread that is closed or already busy has nothing
+// left to continue.
 func retryableRecovery(err error) bool {
 	switch {
 	case err == nil:
@@ -254,6 +296,15 @@ func retryableRecovery(err error) bool {
 	switch adapter.FailureOf(err) {
 	case proto.FailureAuth, proto.FailureLimit:
 		return false
+	}
+	var rpc *jsonrpc.RPCError
+	if errors.As(err, &rpc) {
+		switch rpc.Code {
+		case -32600, -32601, -32602:
+			// The harness rejected the request itself: invalid, unknown or
+			// malformed. Asking again asks the same thing.
+			return false
+		}
 	}
 	return true
 }
@@ -288,6 +339,11 @@ func (m *Manager) retryRecovery(id string, err error, try func() error) error {
 func (m *Manager) recoverActor(a *Actor) {
 	try := func() error { return a.Recover(m.recoverCtx) }
 	err := m.retryRecovery(a.ID, try(), try)
+	if m.recoverCtx.Err() != nil {
+		// The server is stopping: the plan is still owed, and the actor's
+		// shutdown leaves its row saying so for the next start.
+		return
+	}
 	if err != nil {
 		m.logf("continue interrupted work on %s: %v", a.ID, err)
 		a.dropRecovery(m.recoverCtx)
