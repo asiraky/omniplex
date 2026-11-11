@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadDeleteThreadDialog } from "./loadDeleteThreadDialog";
 import { Sidebar } from "./Sidebar";
+import { readKeyContext } from "~/app/useKeybindings";
+import { useProjectView } from "~/app/useProjectView";
 import { render, viewport } from "~/test/harness";
 import type { Project, ThreadMeta } from "~/protocol";
+import { sidebarOrder } from "~/sidebarOrder";
 
 // The dialog loads after the first paint in the app; here it is on hand from
 // the first render, so a test can open it and look straight away.
@@ -29,7 +32,29 @@ const confirmDelete = (id: string) =>
   fireEvent.click(screen.getByRole("button", { name: `Delete thread Thread ${id}` }));
 const checkbox = () => screen.queryByRole("checkbox", { name: /Also delete the worktree/ });
 
-function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
+type Props = Omit<React.ComponentProps<typeof Sidebar>, "projectView">;
+
+/** The sidebar with its view state held the way App holds it, so stored
+    filters and folds load as they would in the app. */
+function WithView(props: Props) {
+  return <Sidebar {...props} projectView={useProjectView(props.projects)} />;
+}
+
+/** A desktop with a mouse: the one place hints are drawn. */
+function pointerDesktop() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: /min-width|hover: hover/.test(query),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+function renderSidebar(over: Partial<Props> = {}) {
   const props = {
     threads: [thread("a"), thread("b")],
     activeId: null as string | null,
@@ -37,7 +62,10 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     open: true,
     onOpenChange: vi.fn(),
     onSelect: vi.fn(),
+    onNewThreadIn: vi.fn(),
     onNew: vi.fn(),
+    onOpenPalette: vi.fn(),
+    showJumpHints: false,
     onDelete: vi.fn(),
     onShowAccess: vi.fn(),
     onShowUsage: vi.fn(),
@@ -54,7 +82,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
     onReorder: vi.fn(),
     ...over,
   };
-  render(<Sidebar {...props} />);
+  render(<WithView {...props} />);
   return props;
 }
 
@@ -63,7 +91,7 @@ function renderSidebar(over: Partial<React.ComponentProps<typeof Sidebar>> = {})
  * server would — which is the only way to watch a delete finish, because a
  * delete finishes when the thread leaves that list.
  */
-function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
+function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
   let set: (s: ThreadMeta[]) => void = () => {};
   const props = {
     activeId: null as string | null,
@@ -71,7 +99,10 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     open: true,
     onOpenChange: vi.fn(),
     onSelect: vi.fn(),
+    onNewThreadIn: vi.fn(),
     onNew: vi.fn(),
+    onOpenPalette: vi.fn(),
+    showJumpHints: false,
     onDelete: vi.fn(() => Promise.resolve()),
     onShowAccess: vi.fn(),
     onShowUsage: vi.fn(),
@@ -94,7 +125,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<React.ComponentProps<ty
     const [open, setPanelOpen] = useState(true);
     set = setList;
     setOpen = setPanelOpen;
-    return <Sidebar {...props} threads={list} open={open} />;
+    return <WithView {...props} threads={list} open={open} />;
   }
   render(<Live />);
   return {
@@ -662,6 +693,99 @@ describe("Sidebar", () => {
       renderSidebar({ threads: mixed, projects: [projects[0]] });
       // The orphaned threads come back, grouped after the projects that exist.
       expect(rowOrder()).toEqual(["Thread b", "Thread a", "Thread c"]);
+    });
+  });
+
+  describe("header", () => {
+    it("asks where a new thread goes, and skips the question on shift-click", () => {
+      const props = renderSidebar();
+      fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+      expect(props.onNewThreadIn).toHaveBeenCalledTimes(1);
+      expect(props.onNew).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "New thread" }), { shiftKey: true });
+      expect(props.onNew).toHaveBeenCalledTimes(1);
+      expect(props.onNewThreadIn).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["desktop", "phone"] as const)("opens the palette from the header on a %s", (kind) => {
+      viewport(kind);
+      const props = renderSidebar();
+      fireEvent.click(screen.getByRole("button", { name: "Search threads and commands" }));
+      expect(props.onOpenPalette).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the shortcuts working while the phone sheet is open", () => {
+      viewport("phone");
+      renderSidebar({ activeId: "a" });
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      const ctx = readKeyContext({
+        paletteOpen: false,
+        helpOpen: false,
+        threadOpen: true,
+        turnRunning: false,
+        panelOpen: false,
+      });
+      expect(ctx.dialogOpen).toBe(false);
+    });
+  });
+
+  describe("jump hints", () => {
+    const projects = [
+      { id: "p1", name: "omniplex", defaults: {}, folders: [], createdAt: 2, updatedAt: 1 },
+      { id: "p2", name: "worksauce", defaults: {}, folders: [], createdAt: 1, updatedAt: 1 },
+    ] as Project[];
+    // Twelve threads across two projects, two pinned: more rows than digits.
+    const many = Array.from({ length: 12 }, (_, i) =>
+      thread(String.fromCharCode(97 + i), {
+        projectId: i % 3 === 0 ? "p2" : "p1",
+        pinned: i === 4 || i === 9,
+        position: i,
+      }),
+    );
+    // Each row's title and the digit on it, top to bottom.
+    const hints = () =>
+      Array.from(document.querySelectorAll('[aria-label^="Delete thread"]')).map((del) => {
+        const row = del.closest(".group")!;
+        const chord = row.querySelector("[data-slot=kbd-chord]");
+        return [
+          row.querySelector(".truncate")!.textContent,
+          chord ? chord.lastElementChild!.textContent : null,
+        ] as const;
+      });
+
+    beforeEach(() => {
+      pointerDesktop();
+      vi.stubGlobal("omniplexDesktop", { platform: "darwin" });
+    });
+    afterEach(() => localStorage.clear());
+
+    it("numbers the first nine rows in the order the shortcuts walk", () => {
+      // A folded group's rows are skipped by the digits as they are on screen.
+      localStorage.setItem("omniplex.projectCollapsed", JSON.stringify(["p2"]));
+      renderSidebar({ threads: many, projects, showJumpHints: true });
+
+      const order = sidebarOrder(many, projects, {
+        hidden: new Set(),
+        collapsed: new Set(["p2"]),
+        grouped: true,
+      }).map((s) => s.title);
+      const shown = hints();
+      expect(shown.map(([title]) => title)).toEqual(order);
+      expect(shown.map(([, digit]) => digit)).toEqual(
+        order.map((_, i) => (i < 9 ? String(i + 1) : null)),
+      );
+    });
+
+    it("shows no digits until the modifier is held", () => {
+      renderSidebar({ threads: many, projects, showJumpHints: false });
+      expect(hints().some(([, digit]) => digit !== null)).toBe(false);
+    });
+
+    it("shows no digits in a browser tab, where they open nothing", () => {
+      vi.stubGlobal("omniplexDesktop", undefined);
+      renderSidebar({ threads: many, projects, showJumpHints: true });
+      expect(hints().some(([, digit]) => digit !== null)).toBe(false);
     });
   });
 });
