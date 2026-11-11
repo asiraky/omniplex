@@ -1,11 +1,12 @@
 import { ImageOffIcon } from "lucide-react";
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import type { ToolImage } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
 
 // Opens on a tap, never on first paint, so it stays out of the initial bundle.
-const ImageViewer = lazy(() => import("~/components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
+const loadViewer = () => import("~/components/ImageViewer");
+const ImageViewer = lazy(() => loadViewer().then((m) => ({ default: m.ImageViewer })));
 
 // The box a thumbnail fits in. Small enough that a run of screenshots is one
 // strip on a phone, big enough to tell one screen from another.
@@ -20,7 +21,13 @@ const MAX_W = 192;
 export function ToolImages({ images, className }: { images: ToolImage[]; className?: string }) {
   const [open, setOpen] = useState<number | null>(null);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
-  if (images.length === 0) return null;
+  const hasImages = images.length > 0;
+  // Fetched once there is a thumbnail to tap, after first paint, so the tap
+  // opens the viewer at once rather than a 4G round trip later.
+  useEffect(() => {
+    if (hasImages) void loadViewer();
+  }, [hasImages]);
+  if (!hasImages) return null;
   const shown = open === null ? undefined : images[open];
 
   return (

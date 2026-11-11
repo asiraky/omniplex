@@ -15,7 +15,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { lazy, Suspense, useMemo, useState, type ComponentType } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType } from "react";
 
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
@@ -43,7 +43,8 @@ const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ defa
 
 // A diff shows only once its card is opened, so its renderer stays out of the
 // initial bundle.
-const ToolDiff = lazy(() => import("./ToolDiff").then((m) => ({ default: m.ToolDiff })));
+const loadToolDiff = () => import("./ToolDiff");
+const ToolDiff = lazy(() => loadToolDiff().then((m) => ({ default: m.ToolDiff })));
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -168,6 +169,12 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const [open, setOpen] = useState(false);
   const { setFull, content, input, truncated } = useToolOutput(item);
   const body = useMemo(() => blocks(content), [content]);
+  const hasDiff = body.some((b) => b.kind === "diff");
+  // Fetched once a card has a diff to show, after first paint, so opening the
+  // card does not wait a 4G round trip for the renderer.
+  useEffect(() => {
+    if (hasDiff) void loadToolDiff();
+  }, [hasDiff]);
   const images = useMemo(() => toolImages([item]), [item]);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
