@@ -170,6 +170,10 @@ type Item struct {
 	Status   string              `json:"status,omitempty"`
 	Input    json.RawMessage     `json:"input,omitempty"`
 	Content  []proto.ToolContent `json:"content,omitempty"`
+	// Tail is the last lines a running call has printed, folded from its
+	// output deltas and bounded (see appendTail). It is cleared the moment the
+	// call finishes: from then on Content holds the whole output.
+	Tail string `json:"tail,omitempty"`
 
 	// notice
 	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account

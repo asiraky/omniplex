@@ -522,6 +522,12 @@ type ToolCallUpdatedPayload struct {
 	Content          []ToolContent   `json:"content,omitempty"`
 	RawInput         json.RawMessage `json:"rawInput,omitempty"`
 	ParentToolCallID string          `json:"parentToolCallId,omitempty"`
+	// OutputDelta is output a running call has printed since its last update
+	// — a command's stdout and stderr as they arrive. Only the new text, never
+	// the output so far: the projection keeps a short tail of it for the
+	// running row and drops that tail when the call finishes, because the
+	// final output arrives as Content.
+	OutputDelta string `json:"outputDelta,omitempty"`
 }
 
 // Plan step statuses. One vocabulary for every harness: each adapter maps its
