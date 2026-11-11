@@ -3,11 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import { describe, expect, it } from "vitest";
 
-import { Markdown, PLUGINS } from "~/components/Markdown";
+import { Markdown } from "~/components/Markdown";
 import { closeOpenFence, splitMarkdownBlocks } from "./markdownBlocks";
+import { CHAT_PLUGINS } from "./markdownPlugins";
 
 const html = (source: string) =>
-  renderToStaticMarkup(<ReactMarkdown remarkPlugins={PLUGINS}>{source}</ReactMarkdown>)
+  renderToStaticMarkup(<ReactMarkdown remarkPlugins={CHAT_PLUGINS}>{source}</ReactMarkdown>)
     .replace(/>\s+</g, "><")
     .trim();
 
@@ -35,6 +36,19 @@ describe("splitMarkdownBlocks", () => {
     }
   });
 
+  it("splits code that only looks like document-wide syntax", () => {
+    const text =
+      "Code:\n\n```tsx\n<div>hi</div>\n\n[ref]: /x\n$$\n```\n\nA `/[^a-z]/` regex.\n\nend";
+    const blocks = splitMarkdownBlocks(text)!;
+    expect(blocks).toEqual([
+      "Code:\n\n",
+      "```tsx\n<div>hi</div>\n\n[ref]: /x\n$$\n```\n\n",
+      "A `/[^a-z]/` regex.\n\n",
+      "end",
+    ]);
+    expect(blocks.map(html).join("")).toBe(html(text));
+  });
+
   it("splits only between closed blocks", () => {
     expect(splitMarkdownBlocks("a\n\n```\nb\n\nc\n```\n\n- d\n\n- e\n\nf")).toEqual([
       "a\n\n",
@@ -45,6 +59,9 @@ describe("splitMarkdownBlocks", () => {
 
   it.each([
     "[ref]\n\n[ref]: /later",
+    "[ref]\n\n> [ref]: /quoted",
+    "[ref]\n\n- item\n\n  [ref]: /listed",
+    "[ref]\n\n1. [ref]: /numbered",
     "a[^x]\n\n[^x]: note",
     "<details>\n\nbody\n\n</details>",
     ":::note\n\ncontent\n\n:::",

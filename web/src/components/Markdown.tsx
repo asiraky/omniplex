@@ -1,17 +1,12 @@
 import type { Element, Text } from "hast";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { gfmFromMarkdown } from "mdast-util-gfm";
-import { gfm } from "micromark-extension-gfm";
 import { lazy, memo, Suspense, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import remarkBreaks from "remark-breaks";
-// Declares the processor data the GFM plugin below writes to.
-import type {} from "remark-parse";
-import type { Processor } from "unified";
 
 import { useCopy } from "~/lib/clipboard";
 import { fileIconFor } from "~/lib/fileIcons";
 import { closeOpenFence, splitMarkdownBlocks } from "~/lib/markdownBlocks";
+import { CHAT_PLUGINS, DOCUMENT_PLUGINS } from "~/lib/markdownPlugins";
 import { useOpenPath } from "~/lib/openPath";
 import { detectPath } from "~/lib/paths";
 import { cn } from "~/lib/utils";
@@ -185,27 +180,11 @@ const COMPONENTS: Components = {
     ),
 };
 
-/**
- * GitHub flavour, parsing only. remark-gfm also registers the extensions for
- * writing markdown back out, which nothing here does, and that serializer was
- * several KiB of the first load.
- */
-function remarkGfm(this: Processor) {
-  const data = this.data();
-  (data.micromarkExtensions ??= []).push(gfm());
-  (data.fromMarkdownExtensions ??= []).push(gfmFromMarkdown());
-}
-
-export const PLUGINS = [remarkGfm, remarkBreaks];
-// A written document means its single newlines as soft wraps, the way every
-// other renderer reads a README; only chat prose relies on them as breaks.
-const DOCUMENT_PLUGINS = [remarkGfm];
-
 // One block of chat Markdown. Memoised on its text: once a later block has
 // started, this one is finished and keeps its render while the stream grows.
 const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+    <ReactMarkdown remarkPlugins={CHAT_PLUGINS} components={COMPONENTS}>
       {text}
     </ReactMarkdown>
   );

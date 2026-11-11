@@ -35,7 +35,6 @@ export function useReadState(wire: Wire, activeId: string | null) {
     },
     [clientRef],
   );
-  //
   // It watches every frame, seq included, so it subscribes to the store rather
   // than selecting from it: a selection that changes with every frame would
   // rerender the app for each one, only to run this.
