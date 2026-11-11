@@ -700,7 +700,16 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PromptQueued:
 		var p proto.PromptQueuedPayload
 		decode(ev.Payload, &p)
-		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp, Sent: p.Sent})
+		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp})
+
+	case proto.PromptSent:
+		// The harness took a queued prompt mid-turn. One it already read, or
+		// started a turn with, has left the queue, and there is nothing to mark.
+		var p proto.PromptSentPayload
+		decode(ev.Payload, &p)
+		if q := s.queued(p.QueueID); q != nil {
+			q.Sent = true
+		}
 
 	case proto.PromptInjected:
 		// The harness read a prompt it was holding into the running turn.

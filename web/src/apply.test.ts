@@ -192,13 +192,27 @@ describe("a queued prompt starting", () => {
 });
 
 describe("a sent prompt", () => {
+  it("is marked sent only once the harness takes it, and a late prompt.sent changes nothing", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "prompt.queued", { queueId: "q1", prompt: "one" }));
+    s = applyEvent(s, ev(3, "prompt.queued", { queueId: "q2", prompt: "two" }));
+    expect(s.queuedPrompts.map((q) => !!q.sent)).toEqual([false, false]);
+    s = applyEvent(s, ev(4, "prompt.sent", { queueId: "q2" }));
+    expect(s.queuedPrompts.map((q) => !!q.sent)).toEqual([false, true]);
+    s = applyEvent(s, ev(5, "prompt.injected", { queueId: "q1", turnId: "t1" }));
+    s = applyEvent(s, ev(6, "prompt.sent", { queueId: "q1" }));
+    expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q2"]);
+  });
+
   it("joins the running turn as a user message when the harness reads it", () => {
     let s = emptyState("s1");
     s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
     s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", title: "ls" }));
-    s = applyEvent(s, ev(3, "prompt.queued", { queueId: "q1", prompt: "also this", images: [{ id: "img" }], sent: true }));
+    s = applyEvent(s, ev(3, "prompt.queued", { queueId: "q1", prompt: "also this", images: [{ id: "img" }] }));
+    s = applyEvent(s, ev(4, "prompt.sent", { queueId: "q1" }));
     expect(s.queuedPrompts[0].sent).toBe(true);
-    s = applyEvent(s, ev(4, "prompt.injected", { queueId: "q1", turnId: "t1" }, 4000));
+    s = applyEvent(s, ev(5, "prompt.injected", { queueId: "q1", turnId: "t1" }, 4000));
     expect(s.queuedPrompts).toEqual([]);
     const last = s.items[s.items.length - 1];
     expect(last).toMatchObject({ id: "prompt:q1", role: "user", text: "also this", turnId: "t1", receivedAt: 4000 });
@@ -207,14 +221,15 @@ describe("a sent prompt", () => {
     expect(s.phase).toBe("turn");
     // Injecting something not in the queue is not an event.
     const before = s.items.length;
-    s = applyEvent(s, ev(5, "prompt.injected", { queueId: "nope", turnId: "t1" }));
+    s = applyEvent(s, ev(6, "prompt.injected", { queueId: "nope", turnId: "t1" }));
     expect(s.items).toHaveLength(before);
   });
 
   it("fills the turn the harness started from it with what the queue entry carried", () => {
     let s = emptyState("s1");
-    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "next", images: [{ id: "img" }], sent: true }));
-    s = applyEvent(s, ev(2, "turn.started", { turnId: "t2", queueId: "q1" }));
+    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "next", images: [{ id: "img" }] }));
+    s = applyEvent(s, ev(2, "prompt.sent", { queueId: "q1" }));
+    s = applyEvent(s, ev(3, "turn.started", { turnId: "t2", queueId: "q1" }));
     expect(s.queuedPrompts).toEqual([]);
     expect(s.turns[0]).toMatchObject({ id: "t2", prompt: "next" });
     expect(s.turns[0].images).toHaveLength(1);

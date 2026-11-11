@@ -285,11 +285,12 @@ func TestInjectedPromptJoinsTheTurn(t *testing.T) {
 	s := New("s1")
 	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
 	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Title: "ls"}))
-	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "also this", Images: []proto.PromptImage{{ID: "img"}}, Sent: true}))
+	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "also this", Images: []proto.PromptImage{{ID: "img"}}}))
+	s.Apply(event(t, 4, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
 	if len(s.Queued) != 1 || !s.Queued[0].Sent {
 		t.Fatalf("queued = %+v", s.Queued)
 	}
-	s.Apply(event(t, 4, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
+	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
 	if len(s.Queued) != 0 {
 		t.Fatalf("queue after injection = %+v", s.Queued)
 	}
@@ -302,9 +303,31 @@ func TestInjectedPromptJoinsTheTurn(t *testing.T) {
 	}
 	// Injecting something not in the queue is not an event.
 	before := len(s.Items)
-	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "nope", TurnID: "t1"}))
+	s.Apply(event(t, 6, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "nope", TurnID: "t1"}))
 	if len(s.Items) != before {
 		t.Fatalf("unknown injection added an item")
+	}
+}
+
+// TestSentMarksOnlyTheQueuedPrompt: prompt.sent marks the one entry it names.
+// The harness can read a prompt before its acknowledgement is recorded, so a
+// prompt.sent for an entry that already left the queue changes nothing.
+func TestSentMarksOnlyTheQueuedPrompt(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "one"}))
+	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "two"}))
+	if s.Queued[0].Sent || s.Queued[1].Sent {
+		t.Fatalf("queued before any hand-over = %+v", s.Queued)
+	}
+	s.Apply(event(t, 4, proto.PromptSent, proto.PromptSentPayload{QueueID: "q2"}))
+	if s.Queued[0].Sent || !s.Queued[1].Sent {
+		t.Fatalf("queued after q2 was sent = %+v", s.Queued)
+	}
+	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
+	s.Apply(event(t, 6, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
+	if len(s.Queued) != 1 || s.Queued[0].QueueID != "q2" {
+		t.Fatalf("a late prompt.sent brought an entry back: %+v", s.Queued)
 	}
 }
 
@@ -313,8 +336,9 @@ func TestInjectedPromptJoinsTheTurn(t *testing.T) {
 // images, and the title comes from the prompt as usual.
 func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
 	s := New("s1")
-	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "next", Images: []proto.PromptImage{{ID: "img"}}, Sent: true}))
-	s.Apply(event(t, 2, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", QueueID: "q1"}))
+	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "next", Images: []proto.PromptImage{{ID: "img"}}}))
+	s.Apply(event(t, 2, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
+	s.Apply(event(t, 3, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", QueueID: "q1"}))
 	if len(s.Queued) != 0 || len(s.Turns) != 1 {
 		t.Fatalf("queued=%+v turns=%+v", s.Queued, s.Turns)
 	}

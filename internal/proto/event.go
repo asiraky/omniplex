@@ -24,14 +24,19 @@ const (
 	TurnFinished = "turn.finished"
 	// PromptQueued is a prompt sent while a turn was running. It waits in the
 	// log, not in a connection. When the harness can take a message mid-turn
-	// the prompt is handed over at once (Sent) and the harness reads it at
-	// its next step — PromptInjected — or, if the turn ends first, starts a
-	// turn with it (turn.started naming the queue id). Otherwise it starts
-	// its own turn once the thread is idle. PromptDequeued removes it:
-	// because a human took it back, or because the running turn was
-	// interrupted.
+	// the prompt is handed over at once, and PromptSent follows once the
+	// harness has taken it; the harness then reads it at its next step —
+	// PromptInjected — or, if the turn ends first, starts a turn with it
+	// (turn.started naming the queue id). A hand-over that fails leaves it
+	// queued as if none had been tried, and it starts its own turn once the
+	// thread is idle. PromptDequeued removes it: because a human took it
+	// back, or because the running turn was interrupted.
 	PromptQueued   = "prompt.queued"
 	PromptDequeued = "prompt.dequeued"
+	// PromptSent marks a queued prompt as one the harness now holds. The
+	// hand-over is a round trip to the harness, so it is recorded when the
+	// harness answers rather than with the prompt.queued it follows.
+	PromptSent = "prompt.sent"
 	// PromptInjected is a sent prompt the harness read inside the running
 	// turn. From here on it is part of that turn's transcript.
 	PromptInjected = "prompt.injected"
@@ -357,9 +362,10 @@ type PromptQueuedPayload struct {
 	QueueID string        `json:"queueId"`
 	Prompt  string        `json:"prompt"`
 	Images  []PromptImage `json:"images,omitempty"`
-	// Sent means the harness already has the prompt and will read it at its
-	// next step. It can no longer be taken back.
-	Sent bool `json:"sent,omitempty"`
+}
+
+type PromptSentPayload struct {
+	QueueID string `json:"queueId"`
 }
 
 type PromptInjectedPayload struct {
