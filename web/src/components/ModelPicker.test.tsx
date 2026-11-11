@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ModelPicker } from "./ModelPicker";
@@ -284,7 +284,7 @@ describe("ModelPicker effort", () => {
     efforts: ["low", "medium", "high", "xhigh"],
   };
 
-  /** Opens the model menu, then the effort submenu out of it. */
+  /** Opens the model menu, whose foot carries the levels. */
   function openEfforts(props: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
     const onEffortChange = vi.fn();
     render(
@@ -297,9 +297,11 @@ describe("ModelPicker effort", () => {
       />,
     );
     fireEvent.click(screen.getByLabelText("Harness and model"));
-    fireEvent.click(screen.getByLabelText("Reasoning effort"));
     return onEffortChange;
   }
+
+  const levels = () => within(screen.getByRole("radiogroup", { name: "Reasoning effort" }));
+  const isOpen = () => !!screen.queryByPlaceholderText(/Search models/);
 
   it("names the model and the level together, so one control says both", () => {
     render(
@@ -333,23 +335,14 @@ describe("ModelPicker effort", () => {
     expect(screen.getByLabelText("Harness and model").textContent).toContain("Auto");
   });
 
-  it("opens the levels as a submenu of the model menu, formatted", () => {
+  it("offers Auto and each of the model's levels, with the one in effect checked", () => {
     openEfforts({ effort: "high" });
 
-    const menu = within(document.body);
-    expect(menu.getByText("Extra high")).toBeTruthy();
-    expect(menu.getByText("Medium")).toBeTruthy();
-  });
-
-  it("badges the row a thread gets when no level is chosen", () => {
-    openEfforts({ effort: "low" });
-
-    const badges = document.querySelectorAll("[data-slot='badge']");
-    // Exactly one: no harness reports a default level, so the only honest
-    // claim is about the row that defers to it.
-    expect(badges.length).toBe(1);
-    expect(badges[0].textContent).toBe("Default");
-    expect(badges[0].closest("[data-slot='command-item']")!.textContent).toContain("Auto");
+    const radios = levels().getAllByRole("radio");
+    expect(radios.map((r) => r.textContent)).toEqual(["Auto", "Low", "Medium", "High", "Extra high"]);
+    expect(radios.filter((r) => r.getAttribute("aria-checked") === "true")).toEqual([
+      levels().getByRole("radio", { name: "High" }),
+    ]);
   });
 
   it("names a level the model can no longer switch, rather than dropping it", () => {
@@ -369,23 +362,112 @@ describe("ModelPicker effort", () => {
 
     expect(screen.getByLabelText("Harness and model").textContent).toContain("High");
     fireEvent.click(screen.getByLabelText("Harness and model"));
-    expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+    expect(isOpen()).toBe(true);
+    expect(screen.queryByRole("radiogroup", { name: "Reasoning effort" })).toBeNull();
   });
 
-  it("hands back the harness's own id, not the label shown for it", () => {
+  it("hands back the harness's own id, not the label shown for it, and closes", () => {
     const onEffortChange = openEfforts({ effort: "low" });
 
-    fireEvent.click(screen.getByText("Extra high"));
+    fireEvent.click(levels().getByRole("radio", { name: "Extra high" }));
 
     expect(onEffortChange).toHaveBeenCalledWith("xhigh");
+    // The effort is the last choice the menu offers.
+    expect(isOpen()).toBe(false);
   });
 
   it("offers a way back to the harness default once a level is set", () => {
     const onEffortChange = openEfforts({ effort: "high" });
 
-    fireEvent.click(screen.getByText("Auto"));
+    fireEvent.click(levels().getByRole("radio", { name: "Auto" }));
 
     expect(onEffortChange).toHaveBeenCalledWith("");
+  });
+
+  it("closes on the level already in effect without asking for it again", () => {
+    const onEffortChange = openEfforts({ effort: "high" });
+
+    fireEvent.click(levels().getByRole("radio", { name: "High" }));
+
+    expect(onEffortChange).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(false);
+  });
+
+  it("stays open on a model pick that leaves a level to choose", () => {
+    const onChange = vi.fn();
+    openEfforts({ onChange, lockDriver: false, value: { harness: "claude", instance: "claude", model: "" } });
+
+    fireEvent.click(row("Sonnet")!);
+
+    expect(onChange).toHaveBeenCalledWith({ harness: "claude", instance: "claude", model: "sonnet" });
+    expect(isOpen()).toBe(true);
+  });
+
+  it("closes on a model pick when that model has no levels to choose", () => {
+    const onChange = vi.fn();
+    openEfforts({ onChange });
+
+    fireEvent.click(row("Default (recommended)")!);
+
+    expect(onChange).toHaveBeenCalled();
+    expect(isOpen()).toBe(false);
+  });
+
+  it("moves between levels with the arrow keys without choosing one", () => {
+    const onEffortChange = openEfforts({ effort: "high" });
+    const high = levels().getByRole("radio", { name: "High" });
+    high.focus();
+
+    fireEvent.keyDown(high, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(levels().getByRole("radio", { name: "Extra high" }));
+    // Past the end wraps to the start.
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(levels().getByRole("radio", { name: "Auto" }));
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(levels().getByRole("radio", { name: "Extra high" }));
+
+    expect(onEffortChange).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(true);
+  });
+
+  it("opens with focus on the level in effect when asked for effort", async () => {
+    const props = {
+      harnesses: [claude],
+      onChange: () => {},
+      onEffortChange: () => {},
+      ...effortProps,
+      effort: "medium",
+      onOpenChange: () => {},
+    };
+    const { rerender } = render(<ModelPicker {...props} open={false} />);
+
+    rerender(<ModelPicker {...props} open focusRequest={{ target: "effort" }} />);
+
+    // Not the search, which is where opening would otherwise put it.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(levels().getByRole("radio", { name: "Medium" })),
+    );
+  });
+
+  it("moves focus to the level, and back to the search, while already open", async () => {
+    const props = {
+      harnesses: [claude],
+      onChange: () => {},
+      onEffortChange: () => {},
+      ...effortProps,
+      effort: "low",
+      open: true,
+      onOpenChange: () => {},
+    };
+    const { rerender } = render(<ModelPicker {...props} />);
+    const search = screen.getByPlaceholderText(/Search models/);
+    await waitFor(() => expect(document.activeElement).toBe(search));
+
+    rerender(<ModelPicker {...props} focusRequest={{ target: "effort" }} />);
+    expect(document.activeElement).toBe(levels().getByRole("radio", { name: "Low" }));
+
+    rerender(<ModelPicker {...props} focusRequest={{ target: "model" }} />);
+    expect(document.activeElement).toBe(search);
   });
 
   it("keeps the effort row out of the way of callers that do not offer levels", () => {
@@ -398,6 +480,6 @@ describe("ModelPicker effort", () => {
     );
     fireEvent.click(screen.getByLabelText("Harness and model"));
 
-    expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Reasoning effort" })).toBeNull();
   });
 });

@@ -1,7 +1,14 @@
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 
-import { ContextNote, EffortMenu } from "~/components/EffortMenu";
 import { ProviderLogo } from "~/components/ProviderLogo";
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsibleContent } from "~/components/ui/collapsible";
@@ -38,6 +45,9 @@ export interface ModelSelection {
   model: string;
 }
 
+/** Where focus lands when the picker is opened for a purpose. */
+export type PickerFocus = "model" | "effort";
+
 const NO_EFFORTS: string[] = [];
 
 /**
@@ -50,10 +60,13 @@ const NO_EFFORTS: string[] = [];
  * resolved to.
  *
  * Reasoning effort joins it on the same terms. It is a second axis, not a
- * second control: passing the effort props adds a row at the foot of this menu
- * that opens the levels as a submenu, and the trigger then names the model and
- * the level together. A composer that had two dropdowns elbowing the send
- * button has one.
+ * second control: passing the effort props adds a row of levels at the foot of
+ * this menu, and the trigger then names the model and the level together. A
+ * composer that had two dropdowns elbowing the send button has one.
+ *
+ * Picking a model leaves the menu open when there is an effort still to
+ * choose, so changing both is one visit; picking the effort, the last choice,
+ * closes it.
  */
 export function ModelPicker({
   harnesses,
@@ -71,6 +84,7 @@ export function ModelPicker({
   compact = false,
   open: controlledOpen,
   onOpenChange,
+  focusRequest = null,
 }: {
   harnesses: HarnessMeta[];
   value: ModelSelection;
@@ -107,6 +121,12 @@ export function ModelPicker({
   /** Optional controlled state, used by composer actions such as /model. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Where focus should be: the search, or the effort level in effect. Each
+   * request is a new object, so asking again while open moves focus again.
+   * Null leaves focus where opening puts it, on the search.
+   */
+  focusRequest?: { target: PickerFocus } | null;
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -161,9 +181,37 @@ export function ModelPicker({
   const namesEffort = showEffort || !!effort;
 
   const choose = (instance: PickerInstance, model: ModelMeta) => {
-    setOpen(false);
+    // A model with levels to pick leaves the effort row still to choose. One
+    // without, or a caller offering none, makes this pick the last choice.
+    if (!onEffortChange || !model.efforts?.length) setOpen(false);
     onChange({ harness: instance.driver, instance: instance.id, model: model.id });
   };
+
+  const searchRef = useRef<HTMLInputElement>(null);
+  const effortRef = useRef<HTMLDivElement>(null);
+  /** Focuses the target if it is on screen; says whether it was. */
+  const focusOn = (target: PickerFocus) => {
+    const el =
+      target === "effort"
+        ? effortRef.current?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')
+        : searchRef.current;
+    el?.focus();
+    return !!el;
+  };
+  // Opening focuses the search by itself, so a request for effort has to
+  // overrule that as the content mounts. A model with no levels has no effort
+  // row, and the search keeps focus.
+  const openAutoFocus = (event: Event) => {
+    if (focusRequest?.target === "effort" && focusOn("effort")) event.preventDefault();
+  };
+  // Already open, nothing mounts and nothing autofocuses: the request moves
+  // focus itself. On the render that opens the picker the content is not
+  // mounted yet, so this finds nothing and the handler above does the work.
+  useEffect(() => {
+    if (open && focusRequest) focusOn(focusRequest.target);
+    // focusOn reads refs only; the request object is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, focusRequest]);
 
   const body = (
     <Command
@@ -173,6 +221,7 @@ export function ModelPicker({
       className="bg-transparent"
     >
       <CommandInput
+        ref={searchRef}
         value={search}
         onValueChange={setSearch}
         placeholder={instances.length > 1 ? "Search models and accounts…" : "Search models…"}
@@ -229,16 +278,15 @@ export function ModelPicker({
   const footer = (showEffort || contextLabel) && (
     <div className="border-t">
       {showEffort && (
-        <div className="p-1">
-          <EffortMenu
-            efforts={efforts}
-            value={effort}
-            onChange={(next) => {
-              setOpen(false);
-              onEffortChange?.(next);
-            }}
-          />
-        </div>
+        <EffortLevels
+          groupRef={effortRef}
+          efforts={efforts}
+          value={effort}
+          onChoose={(next) => {
+            setOpen(false);
+            if (next !== effort) onEffortChange?.(next);
+          }}
+        />
       )}
       {contextLabel && <ContextNote label={contextLabel} />}
     </div>
@@ -291,7 +339,11 @@ export function ModelPicker({
     return (
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>{trigger}</SheetTrigger>
-        <SheetContent side="bottom" className="flex h-[85dvh] flex-col p-0 pb-[env(safe-area-inset-bottom)]">
+        <SheetContent
+          side="bottom"
+          onOpenAutoFocus={openAutoFocus}
+          className="flex h-[85dvh] flex-col p-0 pb-[env(safe-area-inset-bottom)]"
+        >
           <SheetHeader className="pb-0">
             <SheetTitle>Model</SheetTitle>
           </SheetHeader>
@@ -305,11 +357,118 @@ export function ModelPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(34rem,calc(100vw-2rem))] p-0">
+      <PopoverContent
+        align="start"
+        onOpenAutoFocus={openAutoFocus}
+        className="w-[min(34rem,calc(100vw-2rem))] p-0"
+      >
         {body}
         {footer}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * The reasoning levels, as a row of choices at the foot of the menu.
+ *
+ * It was a submenu: a popover beside the model menu on desktop and a second
+ * sheet stacked on the first on a phone, which was a lot of ceremony for
+ * five words. A row puts every level in view at once and costs one tap.
+ *
+ * A radio group, but arrows only move focus: picking closes the menu, so a
+ * group that picked as you arrowed through it would close on the first press.
+ * Enter or Space picks the focused level.
+ */
+function EffortLevels({
+  groupRef,
+  efforts,
+  value,
+  onChoose,
+}: {
+  groupRef: RefObject<HTMLDivElement | null>;
+  /** Levels the running model accepts, most modest first. */
+  efforts: string[];
+  /** The active effort, or "" for no level named. */
+  value: string;
+  onChoose: (effort: string) => void;
+}) {
+  // "" first: the way back to the harness default, and the level you get by
+  // not choosing.
+  const levels = ["", ...efforts];
+  // A level this model does not offer checks nothing, and the group is still
+  // reachable by Tab, from its first level.
+  const tabStop = Math.max(0, levels.indexOf(value));
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const radios = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]')];
+    const at = radios.indexOf(document.activeElement as HTMLElement);
+    const last = radios.length - 1;
+    const next =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? at >= last ? 0 : at + 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? at <= 0 ? last : at - 1
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : null;
+    if (next === null) return;
+    event.preventDefault();
+    radios[next]?.focus();
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5">
+      <span aria-hidden className="text-muted-foreground px-1 text-[12px]">
+        Effort
+      </span>
+      <div
+        ref={groupRef}
+        role="radiogroup"
+        aria-label="Reasoning effort"
+        onKeyDown={onKeyDown}
+        className="flex flex-wrap gap-1"
+      >
+        {levels.map((level, i) => {
+          const checked = level === value;
+          return (
+            <button
+              key={level || "auto"}
+              type="button"
+              role="radio"
+              aria-checked={checked}
+              tabIndex={i === tabStop ? 0 : -1}
+              title={level ? undefined : "Whatever the harness picks"}
+              onClick={() => onChoose(level)}
+              className={cn(
+                "focus-visible:ring-ring min-h-11 rounded-md px-3 text-[13px] transition-colors outline-none focus-visible:ring-2 md:min-h-7 md:px-2 md:text-[12px]",
+                checked
+                  ? "bg-accent text-accent-foreground font-medium"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+              )}
+            >
+              {formatEffort(level)}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The running model's context window, stated where the model is chosen. It is
+ * a fact of the model rather than a knob — the harness fixes the window per
+ * model — so it is said, never offered.
+ */
+function ContextNote({ label }: { label: string }) {
+  return (
+    <div className="text-muted-foreground border-t px-3 py-2 text-[11px] first:border-t-0">
+      Context window: <span className="text-foreground">{label}</span>
+      <span className="block text-[10px]">Set by the model — not adjustable.</span>
+    </div>
   );
 }
 
