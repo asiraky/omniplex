@@ -1048,7 +1048,8 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 
 	switch p.Method {
 	case "notify":
-		if p.Message == "" {
+		message := plainText(p.Message)
+		if message == "" {
 			return
 		}
 		level := p.NotifyType
@@ -1056,7 +1057,7 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 			level = proto.NotifyInfo
 		}
 		s.emit(proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{
-			Level: level, Message: p.Message,
+			Level: level, Message: message,
 		}))
 	case "setStatus":
 		// An absent or empty statusText is pi's way of clearing the key.
@@ -1064,7 +1065,7 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 			return
 		}
 		s.emit(proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{
-			Key: p.StatusKey, Text: p.StatusText,
+			Key: p.StatusKey, Text: plainText(p.StatusText),
 		}))
 	case "setTitle":
 		// Deliberately ignored: Omniplex owns thread titles, and an extension
@@ -1100,6 +1101,17 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 			s.elicitUIRequest(ctx, turn, p)
 		}()
 	}
+}
+
+// terminalEscape matches the CSI and OSC sequences a terminal reads as styling
+// or links rather than text.
+var terminalEscape = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// plainText strips terminal styling from text an extension meant for pi's
+// TUI. Extensions colour their statuses with ctx.ui.theme, and in RPC mode
+// that theme is still the terminal one, so the escapes arrive in the text.
+func plainText(s string) string {
+	return strings.TrimSpace(terminalEscape.ReplaceAllString(s, ""))
 }
 
 // uiRequest is pi's extension_ui_request.

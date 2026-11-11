@@ -180,7 +180,10 @@ func (c *conn) sendProjects() {
 }
 
 // attach implements the ordering the spec calls load-bearing: subscribe first,
-// then read history, then mark synchronized, then drain what buffered.
+// then read history, then mark synchronized, then drain what buffered. Every
+// attach naming a thread is answered by exactly one "synchronized" or one
+// "error" carrying that thread id, and no other error carries one: the client
+// counts answers to know when its replay is over (web/src/client.ts).
 func (c *conn) attach(f clientFrame) {
 	started := time.Now()
 	if f.ThreadID == "" {

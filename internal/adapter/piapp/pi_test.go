@@ -610,6 +610,21 @@ func TestExtensionUIRequestFireAndForget(t *testing.T) {
 			want: []proto.Emission{proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "my-ext"})},
 		},
 		{
+			name: "setStatus drops theme colours",
+			raw:  `{"type":"extension_ui_request","id":"u6","method":"setStatus","statusKey":"my-ext","statusText":"\u001b[38;5;109m● active\u001b[39m"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "my-ext", Text: "● active"})},
+		},
+		{
+			name: "setStatus with only colours clears",
+			raw:  `{"type":"extension_ui_request","id":"u6","method":"setStatus","statusKey":"my-ext","statusText":"\u001b[1m\u001b[22m"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "my-ext"})},
+		},
+		{
+			name: "notify drops colours and links",
+			raw:  `{"type":"extension_ui_request","id":"u5","method":"notify","message":"\u001b[31mfailed\u001b[0m: \u001b]8;;https://x.test\u0007see log\u001b]8;;\u0007","notifyType":"error"}`,
+			want: []proto.Emission{proto.Emit(proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyError, Message: "failed: see log"})},
+		},
+		{
 			name: "setStatus without key",
 			raw:  `{"type":"extension_ui_request","id":"u7","method":"setStatus","statusText":"orphan"}`,
 		},
