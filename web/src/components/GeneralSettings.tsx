@@ -202,7 +202,7 @@ function VoiceSettings({
             <Label htmlFor="settings-dictation-cleanup">Clean up dictation</Label>
             <p className="text-muted-foreground text-[11px]">
               Fixes punctuation and drops filler words before the text lands. Uses the thread's
-              model and adds a second or two.
+              model and adds a second or two; a new thread's first message is left as heard.
             </p>
           </div>
           <Switch

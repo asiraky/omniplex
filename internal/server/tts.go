@@ -71,7 +71,7 @@ func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
 // is how a media loader's range requests are told apart from taps on play.
 func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	lw := &ttsRecorder{ResponseWriter: w}
+	lw := &statusRecorder{ResponseWriter: w}
 	w = lw
 	source, clip := "-", "-"
 	defer func() {

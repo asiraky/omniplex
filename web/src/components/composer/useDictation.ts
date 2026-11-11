@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 import {
   DICTATION_BITS_PER_SECOND,
@@ -179,32 +179,29 @@ export function useDictation({
       mounted.current = false;
     };
   }, []);
-  resend.current = (from, blob) => {
-    if (!mounted.current || session.current || latest.current.thread !== from.thread) return;
-    const s: Session = {
-      anchor: from.anchor,
-      thread: from.thread,
-      hadFocus: from.hadFocus,
-      chunks: [],
-      abort: new AbortController(),
+  useLayoutEffect(() => {
+    resend.current = (from, blob) => {
+      if (!mounted.current || session.current || latest.current.thread !== from.thread) return;
+      const s: Session = {
+        anchor: from.anchor,
+        thread: from.thread,
+        hadFocus: from.hadFocus,
+        chunks: [],
+        abort: new AbortController(),
+      };
+      session.current = s;
+      setStatus("transcribing");
+      void upload(s, blob);
     };
-    session.current = s;
-    setStatus("transcribing");
-    void upload(s, blob);
-  };
+  }, [latest, upload]);
 
   /** Stops recording and sends what was heard. */
   const stop = useCallback(() => {
     const s = session.current;
     const r = s?.recorder;
     if (!s || !r || r.state === "inactive") return;
-    clearTimeout(s.cap);
-    setStatus("transcribing");
-    r.onstop = () => {
-      void upload(s, new Blob(s.chunks, { type: r.mimeType || s.chunks[0]?.type || "" }));
-    };
     r.stop();
-  }, [upload]);
+  }, []);
 
   /** Starts recording, asking for the mic the first time. */
   const start = useCallback(async () => {
@@ -238,25 +235,33 @@ export function useDictation({
 
     try {
       const mimeType = pickMimeType((type) => MediaRecorder.isTypeSupported(type));
-      s.recorder = new MediaRecorder(stream, {
+      const r = new MediaRecorder(stream, {
         ...(mimeType ? { mimeType } : {}),
         audioBitsPerSecond: DICTATION_BITS_PER_SECOND,
       });
+      s.recorder = r;
+      r.ondataavailable = (e) => {
+        if (e.data.size > 0) s.chunks.push(e.data);
+      };
+      // Set before starting: a recorder also stops by itself, when the mic
+      // goes away mid-sentence, and what it heard until then is still sent.
+      r.onstop = () => {
+        clearTimeout(s.cap);
+        setStatus("transcribing");
+        void upload(s, new Blob(s.chunks, { type: r.mimeType || s.chunks[0]?.type || "" }));
+      };
+      r.start();
     } catch (err) {
       end(s);
       toast.error(`This browser can't record audio${err instanceof Error ? `: ${err.message}` : "."}`);
       return;
     }
-    s.recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) s.chunks.push(e.data);
-    };
-    s.recorder.start();
     const t = Date.now();
     setStartedAt(t);
     setNow(t);
     setStatus("recording");
     s.cap = setTimeout(stop, MAX_DICTATION_MS);
-  }, [caret, draftRef, end, latest, stop, textareaRef]);
+  }, [caret, draftRef, end, latest, stop, textareaRef, upload]);
 
   /** Throws the recording away, or the transcription in flight, unsent. */
   const discard = useCallback(() => {

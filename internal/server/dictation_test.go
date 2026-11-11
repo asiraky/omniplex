@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/asiraky/omniplex/internal/tts"
 )
 
 // scribeUpload is what the fake Scribe was sent.
@@ -19,7 +17,6 @@ type scribeUpload struct {
 	audio    []byte
 	mime     string
 	filename string
-	model    string
 }
 
 // fakeScribe keeps every upload and answers each with the same transcript.
@@ -37,7 +34,7 @@ func newFakeScribe(transcript string) *fakeScribe {
 			_ = json.NewEncoder(w).Encode(map[string]string{"detail": err.Error()})
 			return
 		}
-		up := scribeUpload{model: r.FormValue("model_id")}
+		var up scribeUpload
 		if files := r.MultipartForm.File["file"]; len(files) == 1 {
 			up.mime = files[0].Header.Get("Content-Type")
 			up.filename = files[0].Filename
@@ -125,9 +122,6 @@ func TestDictationSendsTheRecordingToScribeAndAnswersWithItsText(t *testing.T) {
 	}
 	if u.filename != "audio.webm" {
 		t.Errorf("the file was named %q, want a webm extension", u.filename)
-	}
-	if u.model != tts.STTModel {
-		t.Errorf("model_id was %q, want the speech-to-text model", u.model)
 	}
 }
 

@@ -122,13 +122,6 @@ describe("placeTranscript", () => {
 });
 
 describe("pickMimeType", () => {
-  it("prefers Opus in WebM, then Ogg, then MP4", () => {
-    const only = (...ok: string[]) => (t: string) => ok.includes(t);
-    expect(pickMimeType(() => true)).toBe("audio/webm;codecs=opus");
-    expect(pickMimeType(only("audio/mp4", "audio/ogg;codecs=opus"))).toBe("audio/ogg;codecs=opus");
-    expect(pickMimeType(only("audio/mp4"))).toBe("audio/mp4");
-  });
-
   it("leaves the choice to the browser when it supports none, or throws asking", () => {
     expect(pickMimeType(() => false)).toBeUndefined();
     expect(

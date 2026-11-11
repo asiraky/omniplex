@@ -15,7 +15,7 @@ export const HOLD_MS = 350;
 
 const label: Record<DictationStatus, string> = {
   idle: "Dictate",
-  starting: "Stop and transcribe",
+  starting: "Starting the microphone…",
   recording: "Stop and transcribe",
   transcribing: "Transcribing…",
 };

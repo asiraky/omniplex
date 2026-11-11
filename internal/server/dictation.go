@@ -46,7 +46,7 @@ func (s *Server) routeDictation(mux *http.ServeMux) {
 // One line is logged per request, never with the transcript in it.
 func (s *Server) handleDictation(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	lw := &ttsRecorder{ResponseWriter: w}
+	lw := &statusRecorder{ResponseWriter: w}
 	w = lw
 	var size int
 	cleaned := false

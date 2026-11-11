@@ -236,6 +236,30 @@ describe("dictating into the composer", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("sends what was heard when the recorder stops by itself", async () => {
+    render(<Harness initial="as typed" />);
+    await tap(mic());
+    // The mic going away mid-sentence stops the recorder without a press.
+    act(() => FakeRecorder.last!.stop());
+    await settle();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(recordingNow()).toBeNull();
+    await answer("cut short");
+    expect(box().value).toBe("as typed cut short");
+  });
+
+  it("lets the mic go when recording cannot start", async () => {
+    vi.spyOn(FakeRecorder.prototype, "start").mockImplementationOnce(() => {
+      throw new DOMException("busy", "NotSupportedError");
+    });
+    render(<Harness />);
+    await tap(mic());
+    expect(track.stop).toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(recordingNow()).toBeNull();
+    expect(mic()).toBeTruthy();
+  });
+
   it("reports a blocked microphone and goes back to idle", async () => {
     getUserMedia.mockRejectedValueOnce(new DOMException("denied", "NotAllowedError"));
     render(<Harness />);
