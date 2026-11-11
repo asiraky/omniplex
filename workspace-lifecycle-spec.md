@@ -534,6 +534,15 @@ implementation using the suggested `.worktrees/<branch>` location. That default
 only creates and removes Git worktrees; it does not guess how to clone env
 files, databases, Redis state, or other project resources.
 
+The suggested path folds `/` into `-`, so `fix/x` and `fix-x` would share one
+directory. When something other than the branch's own worktree already holds it,
+the suggestion becomes `<slug>-<first 8 hex of sha256(branch)>` instead, and hooks
+receive that path. An existing directory is reused only when
+`git worktree list --porcelain` registers it as a worktree on the requested
+branch; a worktree still under Git's `initializing` lock is the remains of an
+add that died, and is removed and made again. A failed add removes the worktree
+it registered and, when it created the branch, the branch too.
+
 Before the built-in implementation removes a path, Omniplex must verify:
 
 1. the lease says `owned: true`;

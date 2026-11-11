@@ -76,19 +76,82 @@ func TestWorktreePathIsStableForTheBranchThatLostTheSlug(t *testing.T) {
 	slug := filepath.Join(root, ".worktrees", "fix-x")
 	git(t, root, "worktree", "add", slug, "-b", "fix/x")
 
-	path, reuse, err := worktreePath(ctx, root, "fix-x", slug)
-	if err != nil || reuse || path == slug {
-		t.Fatalf("first choice = %q reuse=%v err=%v, want a fresh directory other than %s", path, reuse, err, slug)
+	path, held, err := worktreePath(ctx, root, "fix-x", slug)
+	if err != nil || held != claimFree || path == slug {
+		t.Fatalf("first choice = %q claim=%v err=%v, want a fresh directory other than %s", path, held, err, slug)
 	}
 	git(t, root, "worktree", "add", path, "-b", "fix-x")
 
-	again, reuse, err := worktreePath(ctx, root, "fix-x", slug)
-	if err != nil || !reuse || again != path {
-		t.Fatalf("retry = %q reuse=%v err=%v, want to reuse %s", again, reuse, err, path)
+	again, held, err := worktreePath(ctx, root, "fix-x", slug)
+	if err != nil || held != claimOurs || again != path {
+		t.Fatalf("retry = %q claim=%v err=%v, want to reuse %s", again, held, err, path)
 	}
-	owner, reuse, err := worktreePath(ctx, root, "fix/x", slug)
-	if err != nil || !reuse || owner != slug {
-		t.Fatalf("slug owner = %q reuse=%v err=%v, want to reuse %s", owner, reuse, err, slug)
+	owner, held, err := worktreePath(ctx, root, "fix/x", slug)
+	if err != nil || held != claimOurs || owner != slug {
+		t.Fatalf("slug owner = %q claim=%v err=%v, want to reuse %s", owner, held, err, slug)
+	}
+
+	// Once the branch that pushed fix-x aside is gone the slug is free again,
+	// but fix-x is still checked out on the hashed path, and Git would refuse
+	// to check it out a second time at the slug.
+	git(t, root, "worktree", "remove", slug)
+	moved, held, err := worktreePath(ctx, root, "fix-x", slug)
+	if err != nil || held != claimOurs || moved != path {
+		t.Fatalf("after the slug freed = %q claim=%v err=%v, want to reuse %s", moved, held, err, path)
+	}
+}
+
+// A worktree add that dies partway leaves its worktree registered, on the
+// right branch, under Git's "initializing" lock. That checkout is not finished
+// and is never handed to a thread: it is removed and made again.
+func TestManagedWorktreeRemakesACheckoutWhoseAddDied(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	slug := filepath.Join(root, ".worktrees", "issue-11-crashed")
+	git(t, root, "worktree", "add", slug, "-b", "issue/11-crashed")
+	git(t, root, "worktree", "lock", "--reason", "initializing", slug)
+	leftover := filepath.Join(slug, "HALF-WRITTEN")
+	if err := os.WriteFile(leftover, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := ready(t, st, managedThread(t, mgr, p.ID, "issue/11-crashed", ""))
+	if m.Cwd != slug {
+		t.Fatalf("worktree at %s, want it remade at %s", m.Cwd, slug)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("the unfinished checkout was reused: %s still there (%v)", leftover, err)
+	}
+	if w, ok := registeredAt(t, root, slug); !ok || w.Locked || w.Branch != "issue/11-crashed" {
+		t.Fatalf("remade worktree = %+v registered=%v, want an unlocked worktree on issue/11-crashed", w, ok)
+	}
+}
+
+// A lock the user put on a worktree is theirs. It is not mistaken for a dead
+// add, and the worktree under it is reused untouched.
+func TestManagedWorktreeReusesAWorktreeTheUserLocked(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	slug := filepath.Join(root, ".worktrees", "issue-12-locked")
+	git(t, root, "worktree", "add", slug, "-b", "issue/12-locked")
+	git(t, root, "worktree", "lock", "--reason", "on a usb drive", slug)
+	work := filepath.Join(slug, "WORK")
+	if err := os.WriteFile(work, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := ready(t, st, managedThread(t, mgr, p.ID, "issue/12-locked", ""))
+	if m.Cwd != slug {
+		t.Fatalf("worktree at %s, want the locked one at %s reused", m.Cwd, slug)
+	}
+	if b, err := os.ReadFile(work); err != nil || string(b) != "mine\n" {
+		t.Fatalf("the user's file was touched: %q %v", b, err)
 	}
 }
 
@@ -106,8 +169,8 @@ func TestWorktreePathFailsWhenBothChoicesAreTaken(t *testing.T) {
 	if err := os.MkdirAll(hashed, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if path, reuse, err := worktreePath(ctx, root, "fix-x", slug); err == nil {
-		t.Fatalf("got %q reuse=%v, want an error", path, reuse)
+	if path, held, err := worktreePath(ctx, root, "fix-x", slug); err == nil {
+		t.Fatalf("got %q claim=%v, want an error", path, held)
 	}
 }
 

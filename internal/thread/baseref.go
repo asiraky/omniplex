@@ -189,7 +189,7 @@ func resolveBaseRef(ctx context.Context, root, base string) (baseResolution, err
 	}
 
 	for _, remote := range originFirst(names) {
-		if !fetchBase(ctx, root, remote, base) {
+		if !fetchBranch(ctx, root, remote, base, baseFetchTimeout) {
 			continue
 		}
 		if hasRemoteRef(ctx, root, remote+"/"+base) {
@@ -285,11 +285,6 @@ func trackRemote(ctx context.Context, root, base, remote string, res baseResolut
 		res.Note = fmt.Sprintf("base branch %q was found on %q; %s %q", base, remote, verb, res.Ref)
 	}
 	return res, nil
-}
-
-// fetchBase asks one remote for one branch, and treats every failure as "no".
-func fetchBase(ctx context.Context, root, remote, base string) bool {
-	return fetchBranch(ctx, root, remote, base, baseFetchTimeout)
 }
 
 // fetchBranch updates one remote-tracking ref from its remote, within timeout.

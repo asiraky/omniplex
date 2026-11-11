@@ -183,8 +183,7 @@ func repoRoot(ctx context.Context, cwd string) string {
 }
 
 func runGitEnv(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
+	cmd := gitCmd(ctx, dir, args...)
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {

@@ -359,40 +359,64 @@ func workspaceTarget(meta store.ThreadMeta, f project.Folder) (string, string) {
 	return branch, filepath.Join(f.Path, f.CopiesDir, dir)
 }
 
+// claim is what a candidate directory already holds, as far as a new
+// worktree of one branch is concerned.
+type claim int
+
+const (
+	// claimTaken is something else: a stray directory, or another branch's
+	// checkout. It is never adopted.
+	claimTaken claim = iota
+	// claimFree is nothing at all, so a worktree can be added there.
+	claimFree
+	// claimOurs is a finished worktree of this branch, reused as it stands.
+	claimOurs
+	// claimCrashed is a worktree of this branch whose add died partway. It
+	// is removed and made again rather than trusted.
+	claimCrashed
+)
+
 // worktreePath picks the directory a branch's worktree goes in, and reports
-// whether one is already there to reuse. The readable slug is tried first;
-// when something else holds it, the slug with a short hash of the full branch
-// name is tried, which no other branch can want. A directory counts as this
-// branch's only when Git has it registered as a worktree on that branch: a
-// stray directory, or another branch's checkout, is never adopted, because
-// handing a thread someone else's files is worse than failing. Both choices
-// are pure functions of the branch, so a retry of the same thread finds the
-// worktree its first attempt made.
-func worktreePath(ctx context.Context, root, branch, slug string) (string, bool, error) {
-	out, err := runGit(ctx, root, "worktree", "list", "--porcelain")
+// what is already there. The readable slug is tried first; when something
+// else holds it, the slug with a short hash of the full branch name is tried,
+// which no other branch can want. A directory counts as this branch's only
+// when Git has it registered as a worktree on that branch: a stray directory,
+// or another branch's checkout, is never adopted, because handing a thread
+// someone else's files is worse than failing. Both choices are pure functions
+// of the branch, so a retry of the same thread finds the worktree its first
+// attempt made.
+//
+// The branch's own worktree wins over a free directory wherever it is. Once
+// the branch that pushed it onto the hashed path is gone the slug is free
+// again, but Git will not check the branch out a second time there.
+func worktreePath(ctx context.Context, root, branch, slug string) (string, claim, error) {
+	listed, err := listWorktrees(ctx, root)
 	if err != nil {
-		return "", false, fmt.Errorf("list worktrees: %w", err)
+		return "", claimTaken, err
 	}
-	listed := parseWorktreeList(string(out), canonicalPath(root))
 	sum := sha256.Sum256([]byte(branch))
 	hashed := slug + "-" + hex.EncodeToString(sum[:])[:8]
-	for _, candidate := range []string{slug, hashed} {
-		free, ours := claimOf(candidate, branch, listed)
-		if ours {
-			return candidate, true, nil
-		}
-		if free {
-			return candidate, false, nil
+	candidates := []string{slug, hashed}
+	claims := make([]claim, len(candidates))
+	for i, candidate := range candidates {
+		claims[i] = claimOf(candidate, branch, listed)
+	}
+	for _, want := range []claim{claimOurs, claimCrashed, claimFree} {
+		for i, c := range claims {
+			if c == want {
+				return candidates[i], c, nil
+			}
 		}
 	}
-	return "", false, fmt.Errorf("no free directory for a worktree of %s: %s and %s are both taken by something else", branch, slug, hashed)
+	return "", claimTaken, fmt.Errorf("no free directory for a worktree of %s: %s and %s are both taken by something else", branch, slug, hashed)
 }
 
-// claimOf says whether path is free for a new worktree of branch, or already
-// that branch's worktree. A registered worktree whose directory is gone counts
-// as free: it is the leftover of a crash, and the prune before every add
-// clears it.
-func claimOf(path, branch string, listed []Workspace) (free, ours bool) {
+// claimOf says what path holds for a new worktree of branch. A registered
+// worktree whose directory is gone counts as free: it is the leftover of a
+// crash, and the prune before every add clears it. Only Git's own
+// "initializing" lock marks an add that died; a lock the user set is theirs,
+// and the worktree under it is reused like any other.
+func claimOf(path, branch string, listed []Workspace) claim {
 	_, statErr := os.Lstat(path)
 	exists := statErr == nil
 	canonical := comparablePath(path)
@@ -400,12 +424,29 @@ func claimOf(path, branch string, listed []Workspace) (free, ours bool) {
 		if w.Path != canonical {
 			continue
 		}
-		if !exists {
-			return true, false
+		switch {
+		case !exists:
+			return claimFree
+		case w.Branch != branch:
+			return claimTaken
+		case w.Locked && w.lockReason == "initializing":
+			return claimCrashed
 		}
-		return false, w.Branch == branch
+		return claimOurs
 	}
-	return !exists, false
+	if exists {
+		return claimTaken
+	}
+	return claimFree
+}
+
+// listWorktrees is every worktree Git has registered for the repository.
+func listWorktrees(ctx context.Context, root string) ([]Workspace, error) {
+	out, err := runGit(ctx, root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+	return parseWorktreeList(string(out), canonicalPath(root)), nil
 }
 
 // comparablePath canonicalises a path that may not exist yet, by resolving
@@ -420,17 +461,17 @@ func comparablePath(path string) string {
 	return filepath.Join(canonicalPath(filepath.Dir(path)), filepath.Base(path))
 }
 
-// pruneWorktrees drops Git's record of worktrees whose directories are gone.
-// The caller holds the repository lock.
+// pruneWorktrees drops Git's record of worktrees whose directories are gone,
+// taking the repository lock to do it.
 func pruneWorktrees(ctx context.Context, root string) error {
-	return gitCmd(ctx, root, "worktree", "prune").Run()
+	defer lockRepo(ctx, root)()
+	return pruneWorktreesLocked(ctx, root)
 }
 
-// pruneWorktreesLocked is pruneWorktrees for a caller that does not already
-// hold the repository lock.
+// pruneWorktreesLocked is pruneWorktrees for a caller already holding the
+// repository lock.
 func pruneWorktreesLocked(ctx context.Context, root string) error {
-	defer lockRepo(ctx, root)()
-	return pruneWorktrees(ctx, root)
+	return gitCmd(ctx, root, "worktree", "prune").Run()
 }
 
 func redactHookOutput(value string) string {
@@ -487,15 +528,24 @@ func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.ThreadMeta,
 	// remembering a directory that is not there, and add refuses that path
 	// until the record is pruned. Pruning is cheap, so it is done every time
 	// rather than diagnosed.
-	if err := pruneWorktrees(ctx, f.Path); err != nil {
+	if err := pruneWorktreesLocked(ctx, f.Path); err != nil {
 		m.logf("git worktree prune in %s: %v", f.Path, err)
 	}
-	path, reuse, err := worktreePath(ctx, f.Path, branch, slug)
+	path, held, err := worktreePath(ctx, f.Path, branch, slug)
 	if err != nil {
 		return provisionResult{}, err
 	}
-	if reuse {
+	switch held {
+	case claimOurs:
 		return provisionResult{Cwd: path, Branch: branch}, nil
+	case claimCrashed:
+		// Both forces are needed: the first overrides a dirty checkout, the
+		// second the lock the dead add left on it. Nothing in there is
+		// anyone's work, because the add never got as far as handing it over.
+		m.logf("removing %s: a worktree add for %s died before finishing it", path, branch)
+		if out, rmErr := gitCmd(ctx, f.Path, "worktree", "remove", "--force", "--force", path).CombinedOutput(); rmErr != nil {
+			return provisionResult{}, fmt.Errorf("remove unfinished worktree %s: %w: %s", path, rmErr, strings.TrimSpace(string(out)))
+		}
 	}
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
 	args := []string{"worktree", "add", path, branch}
@@ -532,11 +582,11 @@ func (m *Manager) undoWorktreeAdd(ctx context.Context, root, path, branch string
 			_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stderr", Chunk: msg + "\n"}))
 		}
 	}
-	if out, err := runGit(ctx, root, "worktree", "list", "--porcelain"); err != nil {
+	if listed, err := listWorktrees(ctx, root); err != nil {
 		report("list worktrees", err, nil)
 	} else {
 		canonical := comparablePath(path)
-		for _, w := range parseWorktreeList(string(out), canonicalPath(root)) {
+		for _, w := range listed {
 			if w.Path != canonical {
 				continue
 			}
@@ -684,12 +734,12 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 	}
 	if target == "" || target == root {
 		if allowMissingLease {
-			return pruneWorktreesLocked(ctx, root)
+			return pruneWorktrees(ctx, root)
 		}
 		return errors.New("refusing to remove the project root")
 	}
 	if _, statErr := os.Stat(target); os.IsNotExist(statErr) {
-		return pruneWorktreesLocked(ctx, root)
+		return pruneWorktrees(ctx, root)
 	}
 	if rel, relErr := filepath.Rel(target, root); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return errors.New("refusing to remove an ancestor of the project root")
@@ -796,7 +846,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 		}
 		return nil
 	}
-	return pruneWorktreesLocked(ctx, f.Path)
+	return pruneWorktrees(ctx, f.Path)
 }
 
 // removeTree is os.RemoveAll behind a seam, so a test can reproduce a removal
@@ -834,5 +884,5 @@ func (m *Manager) deleteWorktreeDir(ctx context.Context, root, target string) er
 		}
 		return err
 	}
-	return pruneWorktreesLocked(ctx, root)
+	return pruneWorktrees(ctx, root)
 }

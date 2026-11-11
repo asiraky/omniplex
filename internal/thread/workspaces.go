@@ -30,6 +30,10 @@ type Workspace struct {
 	BusyTitle    string `json:"busyTitle,omitempty"`
 	// Locked reports Git's own worktree lock, which blocks removal too.
 	Locked bool `json:"locked,omitempty"`
+	// lockReason is the text Git keeps with the lock. "initializing" is the
+	// lock `worktree add` holds until it finishes, so seeing it afterwards
+	// means the add died partway.
+	lockReason string
 }
 
 // ListWorkspaces enumerates attachable checkouts of a project folder. A
@@ -178,6 +182,7 @@ func parseWorktreeList(porcelain, root string) []Workspace {
 			cur.Head = head
 		case line == "locked" || strings.HasPrefix(line, "locked "):
 			cur.Locked = true
+			cur.lockReason = strings.TrimPrefix(strings.TrimPrefix(line, "locked"), " ")
 		}
 	}
 	flush()
