@@ -42,6 +42,7 @@ func frame(t *testing.T, raw string) map[string]json.RawMessage {
 func newTailSession(t *testing.T) *session {
 	t.Helper()
 	s := newTestSession()
+	s.host = &fakeHost{}
 	s.taskRoot = t.TempDir()
 	s.tailEvery = 2 * time.Millisecond
 	s.tailPatience = 5 * time.Second
@@ -273,6 +274,50 @@ func TestCloseStopsAllTails(t *testing.T) {
 	if !exited(tl) {
 		t.Fatal("a tailer outlived the session")
 	}
+}
+
+// The actor closes the session from the goroutine that drains its events. A
+// tailer queued behind an emit stuck on the full channel must not hold Close
+// up forever.
+func TestCloseIsNotHeldByATailerBehindAFullChannel(t *testing.T) {
+	s := newTailSession(t)
+	s.cmd, s.tree, s.stdin = &exec.Cmd{}, nopGroup{}, nopWriteCloser{io.Discard}
+	path := taskOutput(t, s.taskRoot, tailSession, tailTask)
+	s.handleSDKMessage(frame(t, frameTaskStarted))
+	tl := runningTail(t, s, tailTool)
+
+	for len(s.events) < cap(s.events) {
+		s.events <- proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "turn-1"})
+	}
+	stuck := make(chan struct{})
+	go func() {
+		defer close(stuck)
+		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "turn-1"}))
+	}()
+	waitFor(t, func() bool {
+		if s.eventsMu.TryLock() {
+			s.eventsMu.Unlock()
+			return false
+		}
+		return true
+	})
+	appendFile(t, path, "queued behind the stuck emit\n")
+	time.Sleep(20 * s.tailEvery)
+
+	closed := make(chan struct{})
+	go func() {
+		_ = s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close waited on a tailer that could not exit")
+	}
+	if !exited(tl) {
+		t.Fatal("a tailer outlived the session")
+	}
+	<-stuck
 }
 
 func TestBridgeExitStopsAllTails(t *testing.T) {

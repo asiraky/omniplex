@@ -720,8 +720,10 @@ func (s *session) StopJob(ctx context.Context, jobID string) error {
 // a backstop for a wedged process.
 func (s *session) Close() error {
 	s.closed.Do(func() {
-		s.stopTails()
+		// done first: it releases any emit stuck on a full channel, and with
+		// it the tailers queued behind that emit, before Close waits on them.
 		close(s.done)
+		s.stopTails()
 		_ = s.stdin.Close()
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()

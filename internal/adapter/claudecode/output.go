@@ -224,6 +224,9 @@ func (s *session) runTail(t *tail, toolUseID, root, sessionID string, every, pat
 		if path == "" {
 			if path = findTaskOutput(root, sessionID, t.taskID); path == "" {
 				if time.Now().After(deadline) {
+					// The CLI keeps its task files where it decides to; this
+					// line is the only sign it has moved them.
+					s.host.Logf("claude: no output file for task %s under %s; its output will not stream", t.taskID, root)
 					return
 				}
 				continue

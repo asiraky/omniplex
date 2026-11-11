@@ -124,6 +124,16 @@ const (
 	StatusDeclined = "declined"
 )
 
+// ToolDone reports whether a tool call's status is terminal: the call has
+// stopped running, one way or another.
+func ToolDone(status string) bool {
+	switch status {
+	case StatusCompleted, StatusFailed, StatusCancelled:
+		return true
+	}
+	return false
+}
+
 // Job kinds. Classified once, at ingestion, by ClassifyJob; every consumer
 // reads the stamp rather than re-deriving it.
 const (

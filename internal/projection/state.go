@@ -199,16 +199,6 @@ type Item struct {
 	Superseded  bool             `json:"superseded,omitempty"`
 }
 
-// ToolDone reports whether a tool call's status is terminal: the call has
-// stopped running, one way or another.
-func ToolDone(status string) bool {
-	switch status {
-	case proto.StatusCompleted, proto.StatusFailed, proto.StatusCancelled:
-		return true
-	}
-	return false
-}
-
 // settle moves a tool call to a terminal status. The tail goes with it: it
 // only ever stands for output still arriving.
 func (it *Item) settle(status string) {
@@ -899,7 +889,7 @@ func (s *State) Apply(ev proto.Event) {
 			it.ToolKind = p.Kind
 			it.Title = p.Title
 			it.Status = p.Status
-			if ToolDone(it.Status) {
+			if proto.ToolDone(it.Status) {
 				it.Tail = ""
 			}
 			it.Input = p.RawInput
@@ -946,7 +936,7 @@ func (s *State) Apply(ev proto.Event) {
 			// coalesced in_progress-then-delta could then fold differently from
 			// the two apart on a call being reopened (see merge in
 			// internal/thread/coalesce.go).
-			if ToolDone(it.Status) {
+			if proto.ToolDone(it.Status) {
 				it.Tail = ""
 			} else if p.OutputDelta != "" {
 				it.Tail = appendTail(it.Tail, p.OutputDelta)

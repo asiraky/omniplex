@@ -60,7 +60,7 @@ function upsert(state: ThreadState, id: string, mut: (it: Item) => void): Item[]
 }
 
 /** Whether a tool call's status is terminal: it has stopped running, one way
-    or another. Mirrors ToolDone in internal/projection/state.go. */
+    or another. Mirrors proto.ToolDone in internal/proto/event.go. */
 function toolDone(status: Item["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }

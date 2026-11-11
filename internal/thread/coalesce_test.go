@@ -522,6 +522,43 @@ func TestActorCoalescesManyDeltasIntoFewEvents(t *testing.T) {
 	}
 }
 
+// A command printing far more than its tail shows is stored and sent only as
+// much as the tail can use, and the running call shows the same lines.
+func TestActorStoresOnlyTheOutputATailCanShow(t *testing.T) {
+	actor, fa, st := newTestActor(t)
+	ctx := context.Background()
+	sess := fa.thread()
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+	sess.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindExecute, Title: "make", Status: proto.StatusInProgress,
+	}))
+	var printed strings.Builder
+	for i := 1; i <= 5000; i++ {
+		fmt.Fprintf(&printed, "compiling unit %d\n", i)
+	}
+	sess.emit(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", OutputDelta: printed.String()}))
+
+	var evs []proto.Event
+	waitFor(t, func() bool {
+		evs, _ = st.ReadEvents(ctx, actor.ID, 0, 10000)
+		it, ok := rebuild(actor.ID, evs).ItemByID("c1")
+		return ok && it.Tail != ""
+	})
+	stored := 0
+	for _, em := range decodeEvents(t, evs) {
+		if p, ok := em.Payload.(proto.ToolCallUpdatedPayload); ok {
+			stored += len(p.OutputDelta)
+		}
+	}
+	if stored > 1000 {
+		t.Fatalf("stored %d bytes of output for a 20-line tail", stored)
+	}
+	it, _ := rebuild(actor.ID, evs).ItemByID("c1")
+	if !strings.HasPrefix(it.Tail, "compiling unit 4981\n") || !strings.HasSuffix(it.Tail, "compiling unit 5000\n") {
+		t.Fatalf("tail = %q, want units 4981 to 5000", it.Tail)
+	}
+}
+
 func TestActorFlushesHeldDeltasBeforeOtherEvents(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	ctx := context.Background()

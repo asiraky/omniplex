@@ -89,6 +89,41 @@ func TestAppendTailInPiecesAgreesWithAtOnce(t *testing.T) {
 	}
 }
 
+// A delta is stored trimmed, so the trimmed one must land on the same tail as
+// the whole one would, whatever tail it lands on, and be small however much
+// the command printed.
+func TestTrimmedDeltaFoldsLikeTheWholeOne(t *testing.T) {
+	text := []string{"a", "é", "漢", "🙂", "\r", " "}
+	rng := rand.New(rand.NewSource(239))
+	piece := func(maxLines int) string {
+		var b strings.Builder
+		width := []int{0, 3, 40, 5000}[rng.Intn(4)]
+		for n := rng.Intn(maxLines + 1); n > 0; n-- {
+			for w := rng.Intn(width + 1); w > 0; w-- {
+				b.WriteString(text[rng.Intn(len(text))])
+			}
+			if rng.Intn(4) > 0 {
+				b.WriteString("\n")
+			}
+		}
+		return b.String()
+	}
+	for i := 0; i < 1000; i++ {
+		tail := appendTail("", piece(30))
+		delta := piece(60)
+		trimmed := TrimOutputDelta(delta)
+		if got, want := appendTail(tail, trimmed), appendTail(tail, delta); got != want {
+			t.Fatalf("tail %q + delta %q:\ntrimmed: %q\nwhole:   %q", tail, delta, got, want)
+		}
+		if !strings.HasSuffix(delta, trimmed) || utf8.RuneCountInString(trimmed) > tailChars {
+			t.Fatalf("trimmed %d code points to %d, not a bounded suffix", utf8.RuneCountInString(delta), utf8.RuneCountInString(trimmed))
+		}
+	}
+	if got := TrimOutputDelta(lines(1, 500)); got != "\n"+lines(481, 500) {
+		t.Fatalf("500 lines trimmed to %q", got)
+	}
+}
+
 // runningCall opens a turn with one running Bash call, c1, and returns the
 // next free seq.
 func runningCall(t *testing.T, s *State) int64 {

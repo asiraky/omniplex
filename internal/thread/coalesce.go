@@ -3,7 +3,6 @@ package thread
 import (
 	"time"
 
-	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -103,7 +102,7 @@ func merge(prev, next proto.Emission) (proto.Emission, bool) {
 		// update that sets the call running again it would be judged by that
 		// status and kept, so that pair stays apart. Every other pairing is
 		// judged the same merged or not.
-		if a.Status == "" && a.OutputDelta != "" && b.Status != "" && !projection.ToolDone(b.Status) {
+		if a.Status == "" && a.OutputDelta != "" && b.Status != "" && !proto.ToolDone(b.Status) {
 			return prev, false
 		}
 		if b.Status != "" {
