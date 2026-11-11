@@ -5,6 +5,7 @@
 import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 import { isTodoPlan, planItemId } from "./lib/plans";
+import { appendTail } from "./lib/tail";
 
 /** Splices a page of older items in front of the window. A straggling event
     for a trimmed item is dropped rather than applied, but belt and braces:
@@ -56,6 +57,20 @@ function upsert(state: ThreadState, id: string, mut: (it: Item) => void): Item[]
   const it: Item = { id, kind: "message" };
   mut(it);
   return [...state.items, it];
+}
+
+/** Whether a tool call's status is terminal: it has stopped running, one way
+    or another. Mirrors ToolDone in internal/projection/state.go. */
+function toolDone(status: Item["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/** A tool call moved to a terminal status. The tail goes with it: it only
+    ever stands for output still arriving. Absent rather than empty, as the
+    server's omitempty leaves it. */
+function settle(it: Item, status: Item["status"]): Item {
+  const { tail: _tail, ...rest } = it;
+  return { ...rest, status };
 }
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
@@ -142,7 +157,7 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
         j.status === "failed" ? "failed" : j.status === "completed" ? "completed" : "cancelled";
       items = s.items.map((it) =>
         it.id === j.toolCallId && (it.status === "in_progress" || it.status === "pending")
-          ? { ...it, status: settled as Item["status"] }
+          ? settle(it, settled)
           : it,
       );
     }
@@ -330,7 +345,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
               (it.status === "in_progress" || it.status === "pending") &&
               (it.turnId === p.turnId || !it.turnId) &&
               !s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)
-                ? { ...it, status: "cancelled" as const }
+                ? settle(it, "cancelled")
                 : it,
             )
           : s.items,
@@ -376,6 +391,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.toolKind = p.kind;
           it.title = p.title;
           it.status = p.status;
+          if (toolDone(it.status)) delete it.tail;
           it.input = p.rawInput;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
         }),
@@ -405,6 +421,12 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           if (p.rawInput) it.input = p.rawInput;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
           if (p.content?.length) it.content = [...(it.content ?? []), ...p.content];
+          // Output lands in the tail only while the call is running, judged
+          // after this update's own status: a finished call has its output
+          // in content, so its tail is dropped, and a delta straggling in
+          // after the finish with it. Mirrors internal/projection/state.go.
+          if (toolDone(it.status)) delete it.tail;
+          else if (p.outputDelta) it.tail = appendTail(it.tail ?? "", p.outputDelta);
         }),
       };
 

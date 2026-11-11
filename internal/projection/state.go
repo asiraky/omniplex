@@ -199,6 +199,23 @@ type Item struct {
 	Superseded  bool             `json:"superseded,omitempty"`
 }
 
+// ToolDone reports whether a tool call's status is terminal: the call has
+// stopped running, one way or another.
+func ToolDone(status string) bool {
+	switch status {
+	case proto.StatusCompleted, proto.StatusFailed, proto.StatusCancelled:
+		return true
+	}
+	return false
+}
+
+// settle moves a tool call to a terminal status. The tail goes with it: it
+// only ever stands for output still arriving.
+func (it *Item) settle(status string) {
+	it.Status = status
+	it.Tail = ""
+}
+
 // Artefact is a file or folder the thread has shown, as it was the last time
 // it was shown. The file itself is live on disk and may have moved on.
 type Artefact struct {
@@ -542,11 +559,11 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 				if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
 					switch j.Status {
 					case proto.JobFailed:
-						it.Status = proto.StatusFailed
+						it.settle(proto.StatusFailed)
 					case proto.JobCompleted:
-						it.Status = proto.StatusCompleted
+						it.settle(proto.StatusCompleted)
 					default:
-						it.Status = proto.StatusCancelled
+						it.settle(proto.StatusCancelled)
 					}
 				}
 			}
@@ -838,7 +855,7 @@ func (s *State) Apply(ev proto.Event) {
 				if it.Kind == ItemTool &&
 					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) &&
 					(it.TurnID == p.TurnID || it.TurnID == "") && !live[it.ID] {
-					it.Status = proto.StatusCancelled
+					it.settle(proto.StatusCancelled)
 				}
 			}
 		}
@@ -882,6 +899,9 @@ func (s *State) Apply(ev proto.Event) {
 			it.ToolKind = p.Kind
 			it.Title = p.Title
 			it.Status = p.Status
+			if ToolDone(it.Status) {
+				it.Tail = ""
+			}
 			it.Input = p.RawInput
 			if p.ParentToolCallID != "" {
 				it.ParentID = p.ParentToolCallID
@@ -917,6 +937,19 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			if len(p.Content) > 0 {
 				it.Content = append(it.Content, p.Content...)
+			}
+			// Output lands in the tail only while the call is running, judged
+			// after this update's own status: a call that finished has its
+			// output in Content, so its tail is dropped, and a delta straggling
+			// in after the finish is dropped with it. Judging by the status
+			// before the update would be equally true to the events, but a
+			// coalesced in_progress-then-delta could then fold differently from
+			// the two apart on a call being reopened (see merge in
+			// internal/thread/coalesce.go).
+			if ToolDone(it.Status) {
+				it.Tail = ""
+			} else if p.OutputDelta != "" {
+				it.Tail = appendTail(it.Tail, p.OutputDelta)
 			}
 		})
 

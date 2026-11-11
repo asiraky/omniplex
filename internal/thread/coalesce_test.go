@@ -48,8 +48,8 @@ func drive(c *coalescer, emitted []proto.Emission, known func(string) bool, writ
 }
 
 // run is one stretch of the log: consecutive deltas for the same item
-// collapse into one, with their text joined.
-type run struct{ typ, item, text string }
+// collapse into one, with their text and their output each joined.
+type run struct{ typ, item, text, output string }
 
 // runsOf collapses consecutive deltas for the same item, so a log can be
 // compared with what was emitted however the windows happened to fall.
@@ -65,12 +65,14 @@ func runsOf(ems []proto.Emission) []run {
 			for _, c := range p.Content {
 				r.text += c.Text
 			}
+			r.output = p.OutputDelta
 		case proto.ToolCallStartedPayload:
 			r.item = p.ToolCallID
 		}
 		delta := em.Type == proto.MessageChunk || em.Type == proto.ToolCallUpdated
 		if n := len(out); delta && n > 0 && out[n-1].typ == r.typ && out[n-1].item == r.item {
 			out[n-1].text += r.text
+			out[n-1].output += r.output
 			continue
 		}
 		out = append(out, r)
@@ -209,6 +211,27 @@ func TestCoalescerMergesToolUpdatesForOneCall(t *testing.T) {
 	}
 }
 
+func TestCoalescerJoinsOutputDeltas(t *testing.T) {
+	var c coalescer
+	for _, u := range []proto.ToolCallUpdatedPayload{
+		{ToolCallID: "c1", OutputDelta: "compiling "},
+		{ToolCallID: "c1", OutputDelta: "a\n"},
+		{ToolCallID: "c1", Status: proto.StatusCompleted, OutputDelta: "ok\n", Content: []proto.ToolContent{textContent("compiling a\nok\n")}},
+	} {
+		if flushed, held := c.add(toolUpdate(u), allKnown); !held || len(flushed) != 0 {
+			t.Fatalf("update %+v: flushed %+v, held %v; want merged and held", u, flushed, held)
+		}
+	}
+	out := c.take()
+	if len(out) != 1 {
+		t.Fatalf("held = %+v", out)
+	}
+	got := out[0].Payload.(proto.ToolCallUpdatedPayload)
+	if got.Status != proto.StatusCompleted || got.OutputDelta != "compiling a\nok\n" || len(got.Content) != 1 {
+		t.Fatalf("merged = %+v", got)
+	}
+}
+
 func TestCoalescerToolStatusChangeFlushesThePendingUpdate(t *testing.T) {
 	var c coalescer
 	c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusInProgress, Content: []proto.ToolContent{textContent("a")}}), allKnown)
@@ -293,6 +316,9 @@ func TestCoalescerMergeRefusesOtherItemsAndTypes(t *testing.T) {
 		{"chunk payload under another type", chunk("A", "a"), proto.Emit(proto.ToolCallStarted, proto.MessageChunkPayload{TurnID: "t1", Role: "agent", Kind: "text", BlockID: "A"})},
 		{"different kind", chunk("A", "a"), thought("A", "t")},
 		{"different turn", chunk("A", "a"), chunkOf("t2", "text", "A", "b")},
+		// Output with no status is judged by the call's own status, which
+		// the merge would replace with the running one.
+		{"status-less output then going active", toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "A", OutputDelta: "x"}), toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "A", Status: proto.StatusInProgress})},
 	}
 	for _, tc := range cases {
 		if _, ok := merge(tc.prev, tc.next); ok {
@@ -390,11 +416,27 @@ func TestCoalescedDeltasFoldLikeTheOriginals(t *testing.T) {
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c2", Content: []proto.ToolContent{textContent("x")}}),
 		chunk("m2", "!"),
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c2", Status: proto.StatusFailed}),
+		// A command streaming output: going active then output, output then
+		// more output, output then the finish with the result, and output
+		// straggling in after the finish.
+		proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c3", Kind: proto.KindExecute, Title: "make", Status: proto.StatusPending}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", Status: proto.StatusInProgress}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", OutputDelta: "cc a.c\n"}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", OutputDelta: "cc b"}),
+		chunk("m2", " building"),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", OutputDelta: ".c\n"}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", Status: proto.StatusCompleted, Content: []proto.ToolContent{textContent("built\n")}}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", OutputDelta: "late\n"}),
 		proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}),
 		// A straggling update after the turn ended, then a fresh turn's chunk
 		// into an old block.
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c2", Content: []proto.ToolContent{textContent("late")}}),
 		chunkOf("t2", "text", "m2", "?"),
+		// Output straggling onto the finished c3 is dropped; the call is then
+		// reopened, and only what it prints from there on is its tail.
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", OutputDelta: "later\n"}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", Status: proto.StatusInProgress}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c3", OutputDelta: "again\n"}),
 	}
 
 	original := newProjectionWriter()
@@ -434,6 +476,10 @@ func TestCoalescedDeltasFoldLikeTheOriginals(t *testing.T) {
 	c1, _ := coalesced.state.ItemByID("c1")
 	if c1.Status != proto.StatusCompleted || c1.Title != "ls -la" || len(c1.Content) != 5 || c1.ParentID != "task" {
 		t.Fatalf("c1 = %+v", c1)
+	}
+	c3, _ := coalesced.state.ItemByID("c3")
+	if c3.Status != proto.StatusInProgress || c3.Tail != "again\n" || len(c3.Content) != 1 || c3.Content[0].Text != "built\n" {
+		t.Fatalf("c3 = %+v", c3)
 	}
 }
 
