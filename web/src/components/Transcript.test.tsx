@@ -7,6 +7,19 @@ import { render, viewport, wrap } from "~/test/harness";
 import { shortTime } from "~/lib/scheduleTime";
 import type { PullRequest, ScheduledPrompt, Turn } from "~/protocol";
 
+// Every message the transcript draws, counted by item id and then drawn for
+// real: the other tests here still see the actual message.
+const messageRenders = vi.hoisted(() => new Map<string, number>());
+vi.mock("./transcript/Message", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./transcript/Message")>();
+  return {
+    Message: (props: Parameters<typeof actual.Message>[0]) => {
+      messageRenders.set(props.item.id, (messageRenders.get(props.item.id) ?? 0) + 1);
+      return <actual.Message {...props} />;
+    },
+  };
+});
+
 const state = (text: string): any => ({
   threadId: "a",
   seq: 1,
@@ -947,5 +960,70 @@ describe("a turn gone quiet", () => {
   it("says nothing once the thread is idle", () => {
     render(view("idle"));
     expect(screen.queryByText("Compacting context…")).toBeNull();
+  });
+});
+
+// Every frame off the wire is a new thread state. A frame redraws the rows it
+// changed and no others: a streamed token repainting every message above it,
+// or a subagent's progress repainting the whole conversation, is what made a
+// long thread crawl on a phone.
+describe("redrawing on a new frame", () => {
+  const props = {
+    onFinish: () => {},
+    onRetryProvision: () => {},
+    onCleanup: () => {},
+    onForceDelete: () => {},
+    onContinue: () => {},
+    onOpenDiff: () => {},
+  };
+  const streaming = (): any => ({
+    ...state(""),
+    phase: "turn",
+    items: [
+      { id: "u1", kind: "message", role: "user", text: "first", turnId: "t1", receivedAt: 1 },
+      { id: "a1", kind: "message", role: "agent", contentKind: "text", text: "Done.", turnId: "t1", receivedAt: 2 },
+      { id: "u2", kind: "message", role: "user", text: "second", turnId: "t2", receivedAt: 3 },
+      { id: "spawn", kind: "tool", toolKind: "agent", title: "scout", status: "in_progress", turnId: "t2", receivedAt: 4 },
+      { id: "a2", kind: "message", role: "agent", contentKind: "text", text: "Look", turnId: "t2", receivedAt: 5 },
+    ],
+    turns: [
+      { id: "t1", prompt: "first", done: true, stopReason: "end_turn" },
+      { id: "t2", prompt: "second", done: false },
+    ],
+    jobs: [{ id: "j1", toolCallId: "spawn", name: "scout", kind: "agent", status: "running", depth: 0, usage: {}, activity: "reading files" }],
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  });
+  const mount = (s: any) => {
+    const r = render(<Transcript state={s} jobs={s.jobs} {...props} />);
+    messageRenders.clear();
+    return (next: any) => r.rerender(wrap(<Transcript state={next} jobs={next.jobs} {...props} />));
+  };
+
+  it("redraws only the message a streamed chunk landed in", () => {
+    const s = streaming();
+    const rerender = mount(s);
+
+    // What apply.ts makes of a chunk: the one item copied, the rest the same.
+    const items = s.items.slice();
+    items[4] = { ...items[4], text: "Looking" };
+    rerender({ ...s, seq: 2, items });
+
+    expect(messageRenders.get("a2")).toBeGreaterThan(0);
+    expect([...messageRenders.keys()]).toEqual(["a2"]);
+  });
+
+  it("redraws no message for a job or usage tick, though the spawn card shows it", () => {
+    const s = streaming();
+    const rerender = mount(s);
+
+    rerender({ ...s, seq: 2, jobs: [{ ...s.jobs[0], activity: "running tests" }] });
+    rerender({ ...s, seq: 3, jobs: [{ ...s.jobs[0], activity: "running tests" }], usage: { ...s.usage, output: 2 } });
+    expect(screen.getByText("running tests")).toBeTruthy();
+    // The job finishing settles its spawn call: a new item list, in which
+    // only that call is a new object.
+    const items = s.items.map((it: any) => (it.id === "spawn" ? { ...it, status: "completed" } : it));
+    rerender({ ...s, seq: 4, items, jobs: [{ ...s.jobs[0], status: "completed" }] });
+
+    expect(messageRenders.size).toBe(0);
   });
 });

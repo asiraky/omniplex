@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Item, Turn } from "./protocol";
-import { buildRows, foldLabel, formatDuration, rowTurnID, summarise, type Row } from "./rows";
+import { buildRows, foldLabel, formatDuration, reuseRows, rowTurnID, summarise, type Row } from "./rows";
 
 let n = 0;
 function tool(over: Partial<Item> = {}): Item {
@@ -280,5 +280,84 @@ describe("buildRows with plans", () => {
   it("breaks a running turn's tool run", () => {
     const rows = buildRows([prompt("go"), tool(), tool(), plan(), tool()], [turn("turn1", { done: false })], "turn");
     expect(shape(rows)).toEqual(["message:user", "run(2)", "plan", "live(1)"]);
+  });
+});
+
+// A frame off the wire rebuilds every row; reuseRows is what keeps the ones
+// that did not change as the objects the transcript already drew.
+describe("reuseRows", () => {
+  // The way apply.ts changes an item: a copy in its place, the rest untouched.
+  const replace = (items: Item[], it: Item, over: Partial<Item>) =>
+    items.map((x) => (x === it ? { ...x, ...over } : x));
+
+  it("hands back the same rows, and the same array, when nothing changed", () => {
+    const items = [prompt("go", { turnId: "t2" }), tool({ turnId: "t2" }), msg("Working on it", { turnId: "t2" })];
+    const turns = [turn("t2", { done: false })];
+    const before = buildRows(items, turns, "turn");
+    // A job or usage tick: a new state whose items are a new array of the
+    // same objects.
+    const after = reuseRows(before, buildRows([...items], turns, "turn"));
+    expect(after).toBe(before);
+  });
+
+  it("gives a streaming message a new row and keeps its neighbours", () => {
+    const ask = prompt("go", { turnId: "t2" });
+    const answer = msg("Work", { turnId: "t2" });
+    const items = [ask, tool({ turnId: "t2" }), answer];
+    const turns = [turn("t2", { done: false })];
+    const before = buildRows(items, turns, "turn");
+
+    const after = reuseRows(before, buildRows(replace(items, answer, { text: "Working" }), turns, "turn"));
+
+    expect(after).not.toBe(before);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(after[2]).not.toBe(before[2]);
+    expect(after[2].kind === "item" && after[2].item.text).toBe("Working");
+  });
+
+  it("keeps the rows above a row that was just added", () => {
+    const items = [prompt("go", { turnId: "t2" }), msg("First", { turnId: "t2" })];
+    const turns = [turn("t2", { done: false })];
+    const before = buildRows(items, turns, "turn");
+
+    const after = reuseRows(before, buildRows([...items, tool({ turnId: "t2" })], turns, "turn"));
+
+    expect(after).toHaveLength(3);
+    expect(after.slice(0, 2)).toEqual(before);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+  });
+
+  it("gives a run that grew, or stopped being live, a new row", () => {
+    const first = tool({ turnId: "t2", status: "in_progress" });
+    const items = [prompt("go", { turnId: "t2" }), first];
+    const turns = [turn("t2", { done: false })];
+    const before = buildRows(items, turns, "turn");
+
+    const grown = reuseRows(before, buildRows([...items, tool({ turnId: "t2" })], turns, "turn"));
+    expect(grown[0]).toBe(before[0]);
+    expect(grown[1]).not.toBe(before[1]);
+    expect(grown[1].kind === "run" && grown[1].items).toHaveLength(2);
+
+    // Same calls, but the thread has gone idle: the run is no longer live.
+    const settled = reuseRows(before, buildRows(items, turns, "idle"));
+    expect(settled[1]).not.toBe(before[1]);
+    expect(settled[1].kind === "run" && settled[1].live).toBe(false);
+  });
+
+  it("gives a fold a new row when its turn changed", () => {
+    const items = [prompt("go"), tool(), msg("Done.")];
+    const turns = [turn("turn1", { startedAt: 0, finishedAt: 1000 })];
+    const before = buildRows(items, turns, "idle");
+
+    // Anything that happens to a turn — its diff arriving, say — copies it,
+    // as apply.ts does; the fold draws the turn, so it is drawn again.
+    const after = reuseRows(before, buildRows(items, [{ ...turns[0] }], "idle"));
+
+    expect(after[0]).toBe(before[0]);
+    expect(after[1].kind).toBe("fold");
+    expect(after[1]).not.toBe(before[1]);
+    expect(after[2]).toBe(before[2]);
   });
 });

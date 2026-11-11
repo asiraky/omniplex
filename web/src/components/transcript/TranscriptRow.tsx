@@ -1,8 +1,10 @@
+import { memo } from "react";
+
 import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
 import type { Job, TurnDiff } from "~/protocol";
-import { rowKey, rowTurnID, type Row } from "~/rows";
+import { rowKey, type Row } from "~/rows";
 
 import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
@@ -13,15 +15,20 @@ import { NoticeCard } from "./NoticeCard";
 import { PlanRow } from "./PlanRow";
 import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
 
+// Everything a row gets is already resolved for that row, never a lookup over
+// the whole thread: a row is memoised, and a prop shared by every row (the
+// streaming id, the next row, a map of every turn) would redraw them all
+// whenever any one of them changed.
 type RowContext = {
   threadId: string;
-  /** The agent message still streaming in, if one is. */
-  streamingId: string | undefined;
+  /** This row is the agent message still streaming in. */
+  streaming: boolean;
   artefacts: Artefact[];
   onOpenArtefact?: OpenArtefact;
   jobs: Job[];
   onOpenJobs?: () => void;
-  recoveredTurns: Map<string, Recovered>;
+  /** Why this row's prompt was sent by the server, if it was. */
+  recovered: Recovered | undefined;
   /** Opens the sign-in a saved card offers. */
   onCardSignIn?: (target: CardSignIn) => void;
   /** Names a model and effort, for the line where the thread switched. */
@@ -31,12 +38,12 @@ type RowContext = {
 function RowBody({
   row,
   threadId,
-  streamingId,
+  streaming,
   artefacts,
   onOpenArtefact,
   jobs,
   onOpenJobs,
-  recoveredTurns,
+  recovered,
   onCardSignIn,
   describeSettings,
 }: RowContext & { row: Row }) {
@@ -54,35 +61,29 @@ function RowBody({
     <Message
       item={row.item}
       threadId={threadId}
-      streaming={row.item.id === streamingId}
+      streaming={streaming}
       artefacts={artefacts}
       onOpenArtefact={onOpenArtefact}
-      recovered={(row.item.turnId && recoveredTurns.get(row.item.turnId)) || undefined}
+      recovered={recovered}
     />
   );
 }
 
 /** One row of the transcript, and the changed-files card for its turn if it closes one. */
-export function TranscriptRow({
+export const TranscriptRow = memo(function TranscriptRow({
   row,
-  nextRow,
-  turnDiffs,
-  lastTurnID,
+  diff,
+  latest,
   onOpenDiff,
   ...context
 }: RowContext & {
   row: Row;
-  nextRow: Row | undefined;
-  turnDiffs: Map<string, TurnDiff>;
-  lastTurnID: string | undefined;
+  /** What this row's turn changed, when this is the turn's last row. */
+  diff: TurnDiff | undefined;
+  /** The diff is the newest turn's. */
+  latest: boolean;
   onOpenDiff: (path?: string) => void;
 }) {
-  // The card goes after the last row of the turn it describes, which is
-  // the row whose successor belongs to a different turn.
-  const turnID = rowTurnID(row);
-  const nextTurnID = nextRow ? rowTurnID(nextRow) : undefined;
-  const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
-
   return (
     // A `display: contents` box, not a `content-visibility: auto` one.
     // Skipping the render of off-screen rows costs nothing to measure and
@@ -100,7 +101,7 @@ export function TranscriptRow({
     // the row and its changed-files card as if they were loose children.
     <div data-row-id={rowKey(row)} className="contents">
       <RowBody row={row} {...context} />
-      {diff && <ChangedFiles diff={diff} latest={turnID === lastTurnID} onOpenDiff={onOpenDiff} />}
+      {diff && <ChangedFiles diff={diff} latest={latest} onOpenDiff={onOpenDiff} />}
     </div>
   );
-}
+});

@@ -1,7 +1,7 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 
 import type { Item, QueuedPrompt, ThreadState } from "~/protocol";
-import { buildRows } from "~/rows";
+import { buildRows, reuseRows, type Row } from "~/rows";
 
 import type { Recovered } from "./Message";
 
@@ -82,10 +82,21 @@ export function useTranscriptModel(state: ThreadState) {
   // its first lines are readable the moment they land.
   const lastPromptID = useMemo(() => newestPrompt(ownItems), [ownItems]);
 
+  // Rows that would draw the same as last time are the same objects as last
+  // time, so a memoised row skips the frame (see reuseRows). The previous rows
+  // are only a cache to match against: whatever the ref holds, reuseRows hands
+  // back rows equal to a fresh build, so reading it here cannot render anything
+  // wrong — a stale value only costs a missed reuse. It is written after commit
+  // rather than here, so a render React throws away (StrictMode's second pass,
+  // an interrupted transition) never becomes what the next one matches against.
+  const prevRows = useRef<Row[]>([]);
   const rows = useMemo(
-    () => buildRows(ownItems, state.turns, state.phase),
+    () => reuseRows(prevRows.current, buildRows(ownItems, state.turns, state.phase)),
     [ownItems, state.turns, state.phase],
   );
+  useLayoutEffect(() => {
+    prevRows.current = rows;
+  }, [rows]);
 
   // Only the newest turn can be continued, and only once nothing is running:
   // an error further back was already answered by whatever came after it.

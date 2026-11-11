@@ -16,7 +16,7 @@ import type {
   Turn,
   TurnStatus,
 } from "~/protocol";
-import { rowKey } from "~/rows";
+import { rowKey, rowTurnID } from "~/rows";
 import { useAutoScroll } from "~/useAutoScroll";
 
 import type { OpenArtefact } from "./transcript/Attachments";
@@ -225,6 +225,7 @@ export function Transcript({
   usePromptAnchor(scrollerRef, state.threadId, lastPromptID, anchorTo);
 
   const artefacts = state.artefacts ?? NO_ARTEFACTS;
+  const streamingId = state.phase === "turn" ? liveAgentId : undefined;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -279,25 +280,40 @@ export function Transcript({
             />
           )}
 
-          {rows.map((row, i) => (
-            <TranscriptRow
-              key={rowKey(row)}
-              row={row}
-              nextRow={rows[i + 1]}
-              turnDiffs={turnDiffs}
-              lastTurnID={lastTurnID}
-              onOpenDiff={onOpenDiff}
-              threadId={state.threadId}
-              streamingId={state.phase === "turn" ? liveAgentId : undefined}
-              artefacts={artefacts}
-              onOpenArtefact={onOpenArtefact}
-              jobs={jobs}
-              onOpenJobs={onOpenJobs}
-              recoveredTurns={recoveredTurns}
-              onCardSignIn={onCardSignIn}
-              describeSettings={describeSettings}
-            />
-          ))}
+          {rows.map((row, i) => {
+            // Each row is memoised, so it is handed only what it draws, worked
+            // out here: a value it would have to look up across the thread is
+            // a value that changes for every row whenever it does for one.
+            // The changed-files card goes after the last row of the turn it
+            // describes, the row whose successor belongs to a different turn.
+            const turnID = rowTurnID(row);
+            const nextTurnID = i + 1 < rows.length ? rowTurnID(rows[i + 1]) : undefined;
+            const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
+            const item = row.kind === "item" ? row.item : undefined;
+            // Only a prompt shows attachments, so only a prompt or an
+            // artefacts row redraws when a new artefact is shown; only a spawn
+            // card reads the jobs, which tick far more often than anything else.
+            const showsArtefacts =
+              row.kind === "artefacts" || (item?.kind === "message" && item.role === "user");
+            return (
+              <TranscriptRow
+                key={rowKey(row)}
+                row={row}
+                diff={diff}
+                latest={diff !== undefined && turnID === lastTurnID}
+                onOpenDiff={onOpenDiff}
+                threadId={state.threadId}
+                streaming={item !== undefined && item.id === streamingId}
+                artefacts={showsArtefacts ? artefacts : NO_ARTEFACTS}
+                onOpenArtefact={onOpenArtefact}
+                jobs={row.kind === "jobs" ? jobs : NO_JOBS}
+                onOpenJobs={onOpenJobs}
+                recovered={item?.turnId ? recoveredTurns.get(item.turnId) : undefined}
+                onCardSignIn={onCardSignIn}
+                describeSettings={describeSettings}
+              />
+            );
+          })}
 
           {state.phase === "turn" &&
             liveAgentId === undefined &&
