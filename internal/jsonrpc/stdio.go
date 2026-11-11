@@ -133,13 +133,12 @@ type inbound struct{ cancel context.CancelFunc }
 
 func (c *Conn) serve(ctx context.Context, in *inbound, m Message) {
 	defer in.cancel()
+	defer c.inbound.CompareAndDelete(idKey(m.ID), in)
 	if c.handler == nil {
-		c.inbound.CompareAndDelete(idKey(m.ID), in)
 		_ = c.send(Message{JSONRPC: "2.0", ID: m.ID, Error: &RPCError{Code: -32601, Message: "method not found"}})
 		return
 	}
 	result, err := c.handler(ctx, m.Method, m.Params)
-	c.inbound.CompareAndDelete(idKey(m.ID), in)
 	if ctx.Err() != nil {
 		// The peer withdrew the request, or went away: it is not waiting on
 		// an answer, whatever the handler made of the cancel.

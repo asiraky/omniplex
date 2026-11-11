@@ -185,6 +185,11 @@ let requestSeq = 0;
 
 const canUseTool = (toolName, input, { signal, suggestions }) =>
   new Promise((resolve) => {
+    // Already aborted: nobody is waiting on the answer, so don't ask.
+    if (signal?.aborted) {
+      resolve({ behavior: "deny", message: "Cancelled" });
+      return;
+    }
     const id = ++requestSeq;
     let settled = false;
     const settle = (value) => {

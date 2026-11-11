@@ -137,7 +137,9 @@ func TestSidecarWithdrawsAbortedPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The stub asks twice. The first ask is answered, then its signal fires;
-	// the second is left waiting until interrupt aborts it.
+	// the second is left waiting until interrupt aborts it. Then it asks once
+	// more on the aborted turn, which must not reach the host, and once on a
+	// fresh one, which must.
 	stubbed := strings.Replace(string(data),
 		`import { query } from "@anthropic-ai/claude-agent-sdk";`,
 		`const query = ({ options }) => {
@@ -149,6 +151,8 @@ func TestSidecarWithdrawsAbortedPermission(t *testing.T) {
       const waiting = options.canUseTool("Bash", { command: "ls" }, { signal: turn.signal, suggestions: [] });
       answered.abort();
       await waiting;
+      await options.canUseTool("Grep", { pattern: "x" }, { signal: turn.signal, suggestions: [] });
+      options.canUseTool("Write", { file_path: "b" }, { signal: new AbortController().signal, suggestions: [] });
       await new Promise(() => {});
     },
     interrupt: async () => turn.abort(),
@@ -229,20 +233,25 @@ func TestSidecarWithdrawsAbortedPermission(t *testing.T) {
 	}
 	write(`{"jsonrpc":"2.0","id":7,"method":"interrupt","params":{}}`)
 
-	// Everything up to the interrupt's answer: the one withdrawal must name
-	// the request left waiting, never the one already answered.
-	var withdrawn []string
-	for {
-		f := next("interrupt response")
-		if f.Method == "permissionCancelled" {
+	// Everything up to the interrupt's answer and the fresh ask: the one
+	// withdrawal must name the request left waiting, never the one already
+	// answered, and the ask on the aborted turn must never be sent.
+	var withdrawn, asked []string
+	for interrupted := false; !interrupted || len(asked) == 0; {
+		f := next("interrupt response and the fresh permission request")
+		switch {
+		case f.Method == "permissionCancelled":
 			withdrawn = append(withdrawn, string(f.Params.ID))
-			continue
-		}
-		if f.Method == "" && string(f.ID) == "7" {
-			break
+		case f.Method == "permission":
+			asked = append(asked, f.Params.ToolName)
+		case f.Method == "" && string(f.ID) == "7":
+			interrupted = true
 		}
 	}
 	if len(withdrawn) != 1 || withdrawn[0] != string(second.ID) {
 		t.Fatalf("withdrawn = %v, want only %s", withdrawn, second.ID)
+	}
+	if len(asked) != 1 || asked[0] != "Write" {
+		t.Fatalf("asked after interrupt = %v, want only Write", asked)
 	}
 }
