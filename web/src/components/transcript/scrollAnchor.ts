@@ -83,8 +83,8 @@ function findRow(scroller: HTMLElement, id: string): Element | undefined {
  * Puts the view back where `position` says, and keeps it there while what is
  * above it settles. Returns a cancel for the settle.
  *
- * By anchor when the row is still here; by raw offset when it is not, which is
- * the old behaviour and as good as anything for a row that has gone. The
+ * By anchor when the row is still here; by raw offset when it is not, or when
+ * there was no row to anchor to, which is as good as anything then. The
  * settle stops after `STABLE_FRAMES` still frames, after `MAX_FRAMES` regardless, on any
  * sign of a reader, or when something else moves the view somewhere other
  * than the anchor — the pin re-arming at the tail, a just-sent prompt being

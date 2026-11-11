@@ -115,7 +115,7 @@ describe("restoring by row", () => {
     expect(scroller.scrollTop).toBe(650);
   });
 
-  it("restores a position saved before anchors existed by its offset", () => {
+  it("restores a position with no row to go by, such as an empty transcript's, by its offset", () => {
     const { scroller } = transcript([300, 300, 300, 300]);
     restoreScroll(scroller, { top: 420, atBottom: false });
     expect(scroller.scrollTop).toBe(420);
