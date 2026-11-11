@@ -1,9 +1,10 @@
 import { PlusIcon } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
+import type { DraftPreset } from "~/app/useThreadSelection";
 import type { ConnectionStatus } from "~/client";
 import type { Attachment } from "~/lib/attachments";
-import { Composer } from "~/components/Composer";
+import { Composer, type ComposerHandle } from "~/components/Composer";
 import { useComposerItems } from "~/components/composer/useComposerItems";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
@@ -107,6 +108,8 @@ export function ThreadDraft({
   onRecheck,
   onLogin,
   onManageProviders,
+  preset,
+  composerRef,
 }: {
   projects: Project[];
   activeProjectId?: string;
@@ -146,12 +149,18 @@ export function ThreadDraft({
   onLogin?: (instanceId: string) => void;
   /** Open the providers screen, for when signing in is not the fix. */
   onManageProviders?: () => void;
+  /** Where the draft was asked to open, over what was last used. Read on mount
+      only: the app keys the draft per request. */
+  preset?: DraftPreset;
+  composerRef?: RefObject<ComposerHandle | null>;
 }) {
   const remembered = useRememberedChoices();
+  const presetProject = preset?.projectId ?? activeProjectId;
   const where = useDraftScope(
     projects,
-    activeProjectId,
+    presetProject,
     remembered.preferences,
+    preset?.folderId,
   );
   const { project, scope, gitScope } = where;
   const agent = useAgentChoice(
@@ -164,7 +173,20 @@ export function ThreadDraft({
     remembered: where.remembered,
     onListWorkspaces,
     onListIssues,
+    preset: preset && { ...preset, projectId: presetProject },
   });
+  const ownComposer = useRef<ComposerHandle | null>(null);
+  const composer = composerRef ?? ownComposer;
+  // Asked for from the keyboard or the palette, the cursor goes straight into
+  // the box: the rest is already chosen. Once, when the box first exists,
+  // which is after the project list if the draft opened before it.
+  const focusPending = useRef(!!preset?.focus);
+  const hasProjects = projects.length > 0;
+  useEffect(() => {
+    if (!hasProjects || !focusPending.current || !composer.current) return;
+    focusPending.current = false;
+    composer.current.focusEnd();
+  }, [hasProjects, composer]);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The toggle beside the composer. Untouched, it follows the setting, which
@@ -293,6 +315,7 @@ export function ThreadDraft({
       <div>
         <Composer
           key="new-thread"
+          ref={composer}
           tools={
             <>
               <AgentTools

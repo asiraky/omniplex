@@ -11,10 +11,21 @@ export interface IssueListing {
   issuesError: string;
 }
 
+/** The workspace a draft was asked to open on, in the project named (or any). */
+export interface WorkspacePreset {
+  projectId?: string;
+  kind?: WorkspaceKind;
+  attachPath?: string;
+}
+
 const NO_CHOICE: WorkspaceChoice = { branch: "", attachPath: "" };
 const NO_WORKSPACES: Workspace[] = [];
 const NO_ISSUES: IssueListing = { issues: [], issuesError: "" };
 const noWorkspaces = () => NO_WORKSPACES;
+const presetChoice = (preset: WorkspacePreset): WorkspaceChoice => ({
+  branch: "",
+  attachPath: preset.kind === "attach" ? (preset.attachPath ?? "") : "",
+});
 const issuesFailed = (e: unknown): IssueListing => ({
   issues: [],
   issuesError: e instanceof Error ? e.message : String(e),
@@ -50,7 +61,8 @@ function sentFor(kind: WorkspaceKind, choice: WorkspaceChoice, baseRef: string) 
 /**
  * Which checkout of a git folder the thread works in: the main checkout, a new
  * worktree (optionally with a named branch and base), or a worktree that
- * already exists. Starts on whatever the project last did.
+ * already exists. Starts on whatever the project last did, or on the preset
+ * the draft was asked for.
  */
 export function useWorkspaceChoice({
   project,
@@ -58,16 +70,28 @@ export function useWorkspaceChoice({
   remembered,
   onListWorkspaces,
   onListIssues,
+  preset,
 }: {
   project: Project | undefined;
   gitScope: Folder | undefined;
   remembered: ProjectPrefs | undefined;
   onListWorkspaces: (projectId: string, folderId: string) => Promise<Workspace[]>;
   onListIssues: (projectId: string, folderId: string) => Promise<IssueListing>;
+  /** Read on mount only. */
+  preset?: WorkspacePreset;
 }) {
-  const [choice, setChoice] = useState<WorkspaceChoice>(NO_CHOICE);
+  // A preset belongs to the scope the draft opens on. Mounted before the
+  // project list, there is no scope yet and it waits for the first one; after
+  // that it is spent, so a folder or project picked later starts over as usual.
+  const fits = (p: WorkspacePreset | undefined): p is WorkspacePreset =>
+    !!p && !!project && (!p.projectId || p.projectId === project.id);
+  const [pending, setPending] = useState(project ? undefined : preset);
+  const initial = fits(preset) ? preset : undefined;
+  const [choice, setChoice] = useState<WorkspaceChoice>(() =>
+    initial ? presetChoice(initial) : NO_CHOICE,
+  );
   // "" defers to what the project last used.
-  const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>("");
+  const [chosenKind, setChosenKind] = useState<"" | WorkspaceKind>(initial?.kind ?? "");
   const [naming, setNaming] = useState(false);
   const [baseRef, setBaseRef] = useState("");
 
@@ -77,8 +101,10 @@ export function useWorkspaceChoice({
   const [choiceScope, setChoiceScope] = useState(scopeKey);
   if (choiceScope !== scopeKey) {
     setChoiceScope(scopeKey);
-    setChoice(NO_CHOICE);
-    setChosenKind("");
+    const late = fits(pending) ? pending : undefined;
+    if (project) setPending(undefined);
+    setChoice(late ? presetChoice(late) : NO_CHOICE);
+    setChosenKind(late?.kind ?? "");
     setBaseRef("");
     setNaming(false);
   }
@@ -98,6 +124,12 @@ export function useWorkspaceChoice({
   const workspaces = spaces.value;
   // The main checkout is its own choice, so it is not offered again as a worktree.
   const attachable = workspaces.filter((w) => !w.isRoot);
+  // A worktree a preset named may be gone by the time the list lands, and is
+  // not sent on then: the draft waits for one to be picked instead. One picked
+  // here always came from the list.
+  const listed =
+    !choice.attachPath || spaces.loading || attachable.some((w) => w.path === choice.attachPath);
+  const current = listed ? choice : { ...choice, attachPath: "" };
   const lastWorktree = remembered?.copy ?? project?.defaults.workspace === "managed";
   const kind: WorkspaceKind = !gitScope ? "main" : chosenKind || (lastWorktree ? "branch" : "main");
   // Branches already on disk are the useful bases: stacking on another worktree's
@@ -108,8 +140,8 @@ export function useWorkspaceChoice({
 
   return {
     kind,
-    label: labelFor(kind, choice, attachable),
-    choice,
+    label: labelFor(kind, current, attachable),
+    choice: current,
     naming,
     baseRef,
     attachable,
@@ -120,7 +152,7 @@ export function useWorkspaceChoice({
     loadingSpaces: spaces.loading,
     loadingIssues: issues.loading,
     /** What the thread is created with. */
-    sent: sentFor(kind, choice, baseRef),
+    sent: sentFor(kind, current, baseRef),
     setChoice,
     setNaming,
     setBaseRef,
