@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"time"
 
@@ -23,39 +24,65 @@ const autoVacuumIncremental = 2
 // database stays as it is until snapshot churn takes it over the line.
 const convertThreshold = 0.1
 
-// convertToIncrementalVacuum moves a database made before auto_vacuum was set
-// onto incremental vacuuming. The mode only changes at a VACUUM, which also
+// convertToIncrementalVacuum puts the database on incremental vacuuming.
+// The mode only changes at a VACUUM, and only on the connection that asked
+// for it, so both run on one connection. It runs before Open writes
+// anything, which makes a new database free to convert. One made before
+// auto_vacuum was set converts once it is worth a full copy; the VACUUM also
 // hands back every free page snapshot churn has left behind, so this is the
-// one-off compaction too; after it, Maintain keeps the freelist down.
+// one-off compaction too, and after it Maintain keeps the freelist down.
 //
 // A failure is logged, not returned: the database works the same either way,
 // and a full disk refusing the copy must not stop the server starting.
-func (s *Store) convertToIncrementalVacuum() {
-	var mode, free, pages int64
+func convertToIncrementalVacuum(db *sql.DB) {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		log.Printf("store: compact database: %v", err)
+		return
+	}
+	defer conn.Close()
+	var mode, free, pages, tables int64
 	for _, read := range []struct {
-		pragma string
-		into   *int64
-	}{{"auto_vacuum", &mode}, {"freelist_count", &free}, {"page_count", &pages}} {
-		if err := s.db.QueryRow(`PRAGMA ` + read.pragma).Scan(read.into); err != nil {
-			log.Printf("store: read %s: %v", read.pragma, err)
+		query string
+		into  *int64
+	}{
+		{`PRAGMA auto_vacuum`, &mode},
+		{`PRAGMA freelist_count`, &free},
+		{`PRAGMA page_count`, &pages},
+		{`SELECT COUNT(*) FROM sqlite_master`, &tables},
+	} {
+		if err := conn.QueryRowContext(ctx, read.query).Scan(read.into); err != nil {
+			log.Printf("store: %s: %v", read.query, err)
 			return
 		}
 	}
 	if mode == autoVacuumIncremental {
 		return
 	}
-	if float64(free) <= convertThreshold*float64(pages) {
+	fresh := tables == 0
+	if !fresh && float64(free) <= convertThreshold*float64(pages) {
+		return
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA auto_vacuum=INCREMENTAL`); err != nil {
+		log.Printf("store: set auto_vacuum: %v", err)
+		return
+	}
+	if fresh {
+		if _, err := conn.ExecContext(ctx, `VACUUM`); err != nil {
+			log.Printf("store: set auto_vacuum: %v", err)
+		}
 		return
 	}
 	log.Printf("store: compacting the database once for incremental vacuum (%d of %d pages free)", free, pages)
 	start := time.Now()
-	if _, err := s.db.Exec(`VACUUM`); err != nil {
+	if _, err := conn.ExecContext(ctx, `VACUUM`); err != nil {
 		log.Printf("store: compact database: %v", err)
 		return
 	}
 	// VACUUM under WAL writes the whole database through the log; truncate it
 	// now rather than leave a file the size of the database beside it.
-	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	if _, err := conn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		log.Printf("store: checkpoint after compacting: %v", err)
 	}
 	log.Printf("store: compacted in %s", time.Since(start).Round(time.Millisecond))
