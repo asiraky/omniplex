@@ -106,6 +106,12 @@ async function recordAndStop() {
   expect(fetcher).toHaveBeenCalledTimes(1);
 }
 
+// Presses Retry on the failure toast, as sonner would.
+function retryOffered() {
+  const action = vi.mocked(toast.error).mock.calls[0]![1]!.action as unknown as { onClick: () => void };
+  action.onClick();
+}
+
 async function answer(text: string) {
   reply({ text });
   await settle();
@@ -231,8 +237,7 @@ describe("dictating into the composer", () => {
     const sent = fetcher.mock.calls[0]![1].body as Blob;
     reply({ error: "connection dropped" }, 502);
     await settle();
-    const retry = vi.mocked(toast.error).mock.calls[0]![1]!.action as { onClick: () => void };
-    await act(async () => retry.onClick());
+    await act(async () => retryOffered());
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[1]![1].body).toBe(sent);
     await answer("said once");
@@ -245,8 +250,7 @@ describe("dictating into the composer", () => {
     reply({ error: "connection dropped" }, 502);
     await settle();
     view.rerender(wrap(<Harness initial="draft" thread="t2" />));
-    const retry = vi.mocked(toast.error).mock.calls[0]![1]!.action as { onClick: () => void };
-    await act(async () => retry.onClick());
+    await act(async () => retryOffered());
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
