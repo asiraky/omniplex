@@ -567,20 +567,25 @@ func TestHarnessInitiatedTurnAndCompaction(t *testing.T) {
 func TestFinishTurnStopMapping(t *testing.T) {
 	cases := []struct {
 		stop, errMsg string
+		aborted      string // the turn Cancel aborted
 		wantReason   string
 		wantFailure  string
 	}{
-		{"stop", "", proto.StopEndTurn, ""},
-		{"toolUse", "", proto.StopEndTurn, ""},
-		{"aborted", "", proto.StopCancelled, ""},
-		{"length", "", proto.StopMaxTokens, ""},
-		{"error", "boom", proto.StopError, ""},
-		{"error", `No API key found for "anthropic"`, proto.StopError, proto.FailureAuth},
-		{"error", "Provider is not configured: openrouter", proto.StopError, proto.FailureAuth},
+		{"stop", "", "", proto.StopEndTurn, ""},
+		{"toolUse", "", "", proto.StopEndTurn, ""},
+		{"aborted", "", "", proto.StopCancelled, ""},
+		{"length", "", "", proto.StopMaxTokens, ""},
+		{"error", "boom", "", proto.StopError, ""},
+		{"error", `No API key found for "anthropic"`, "", proto.StopError, proto.FailureAuth},
+		{"error", "Provider is not configured: openrouter", "", proto.StopError, proto.FailureAuth},
+		// Stopped mid-tool, pi calls the run an error; the user stopped it.
+		{"error", "This operation was aborted", "t1", proto.StopCancelled, ""},
+		{"stop", "", "t1", proto.StopEndTurn, ""},
+		{"error", "boom", "t0", proto.StopError, ""},
 	}
 	for _, c := range cases {
 		s := &session{events: make(chan proto.Emission, 8), done: make(chan struct{})}
-		s.turnID, s.lastStop, s.lastErr = "t1", c.stop, c.errMsg
+		s.turnID, s.lastStop, s.lastErr, s.aborted = "t1", c.stop, c.errMsg, c.aborted
 		s.finishTurn()
 		e := <-s.events
 		p := e.Payload.(proto.TurnFinishedPayload)

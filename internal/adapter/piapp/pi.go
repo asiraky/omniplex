@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -327,6 +326,9 @@ type session struct {
 	// become the turn's stop reason.
 	lastStop string
 	lastErr  string
+	// aborted is the turn Cancel aborted. Pi reports a run aborted mid-tool
+	// (an open extension dialog, say) as an error, and the user pressed Stop.
+	aborted string
 	// Running totals for usage.updated. Pi reports usage per assistant
 	// message; the meter wants the session's cumulative spend.
 	totIn, totOut, totCacheR, totCacheW int64
@@ -551,6 +553,7 @@ func (s *session) Cancel(ctx context.Context) error {
 	s.cancelDialogs()
 	s.mu.Lock()
 	idle := s.turnID == ""
+	s.aborted = s.turnID
 	s.mu.Unlock()
 	if idle {
 		return nil
@@ -917,8 +920,9 @@ func (s *session) finishTurn() {
 	s.mu.Lock()
 	turn := s.turnID
 	stop, errMsg := s.lastStop, s.lastErr
+	aborted := turn != "" && s.aborted == turn
 	s.turnID = ""
-	s.lastStop, s.lastErr = "", ""
+	s.lastStop, s.lastErr, s.aborted = "", "", ""
 	s.mu.Unlock()
 	// A settle with no open turn is a straggler (an abort raced the settle);
 	// emitting an empty turn id would confuse every projection downstream.
@@ -928,8 +932,11 @@ func (s *session) finishTurn() {
 	// Pi is done with the turn, so it is done with its dialogs, whether or
 	// not it said so: one raised as Stop was pressed lands after Cancel's
 	// sweep, and nothing else would take it down.
-	s.cancelDialogs(turn)
+	s.cancelTurnDialogs(turn)
 
+	if aborted && stop == "error" {
+		stop = "aborted"
+	}
 	reason, failure := proto.StopEndTurn, ""
 	switch stop {
 	case "aborted":
@@ -1018,14 +1025,22 @@ type dialog struct {
 	cancel context.CancelFunc
 }
 
-// cancelDialogs withdraws the open extension dialogs of turns — every one
-// when none is named. The host drops each card when its ctx ends, and
-// elicitUIRequest answers pi cancelled.
-func (s *session) cancelDialogs(turns ...string) {
+// cancelDialogs withdraws every open extension dialog. The host drops each
+// card when its ctx ends, and elicitUIRequest answers pi cancelled.
+func (s *session) cancelDialogs() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, d := range s.dialogs {
-		if len(turns) == 0 || slices.Contains(turns, d.turn) {
+		d.cancel()
+	}
+}
+
+// cancelTurnDialogs withdraws the open extension dialogs raised during turn.
+func (s *session) cancelTurnDialogs(turn string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.dialogs {
+		if d.turn == turn {
 			d.cancel()
 		}
 	}
