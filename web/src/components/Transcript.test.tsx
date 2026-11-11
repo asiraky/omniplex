@@ -649,6 +649,31 @@ describe("a turn that failed", () => {
     expect(screen.getByText("Asked the agent to pick the work back up")).toBeTruthy();
     expect(screen.queryByText(/Server restarted/)).toBeNull();
   });
+
+  it("shows a sent limit continuation as the server's note, not the reader's prompt", () => {
+    const s = failed({ failure: "limit" });
+    s.items.push({
+      id: "u2",
+      kind: "message",
+      role: "user",
+      text: "[omniplex] Your previous turn stopped because the account hit its usage limit…",
+      turnId: "t2",
+      receivedAt: 2,
+    });
+    s.turns.push({ id: "t2", done: false });
+    const sent = { id: "limit-t1", kind: "limit", prompt: "", dueAt: 1, timeZone: "UTC" };
+    s.scheduledPrompts = [{ ...sent, status: "sent", turnId: "t2" }];
+    const { unmount } = render(view(s));
+    expect(screen.getByText("Usage limit reset — the agent was asked to pick the work back up")).toBeTruthy();
+    expect(screen.queryByText(/account hit its usage limit/)).toBeNull();
+    unmount();
+
+    // A human's own schedule that started a turn is still their prompt.
+    s.scheduledPrompts = [{ ...sent, kind: undefined, status: "sent", turnId: "t2" }];
+    render(view(s));
+    expect(screen.getByText(/account hit its usage limit/)).toBeTruthy();
+    expect(screen.queryByText(/Usage limit reset/)).toBeNull();
+  });
 });
 
 describe("published artefacts", () => {

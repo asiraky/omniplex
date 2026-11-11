@@ -120,7 +120,8 @@ function ContinuationChip({
               type="button"
               disabled={cancelling}
               onClick={() => void cancel()}
-              className="hover:text-foreground focus-visible:ring-ring rounded-full px-1.5 py-1 transition-colors outline-none focus-visible:ring-2 disabled:opacity-60"
+              // A wider hit area for a thumb, without growing the chip.
+              className="hover:text-foreground focus-visible:ring-ring relative rounded-full px-1.5 py-1 transition-colors outline-none after:absolute after:-inset-x-1 after:-inset-y-2.5 focus-visible:ring-2 disabled:opacity-60 md:after:hidden"
             >
               {cancelling ? "Cancelling…" : "Cancel"}
             </button>

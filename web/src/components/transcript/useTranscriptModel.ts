@@ -3,6 +3,8 @@ import { useMemo } from "react";
 import type { Item, ThreadState } from "~/protocol";
 import { buildRows } from "~/rows";
 
+import type { Recovered } from "./Message";
+
 function newestAgentText(items: Item[]): Item | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
@@ -83,16 +85,17 @@ export function useTranscriptModel(state: ThreadState) {
 
   // Keyed by cause, not merely by "this was recovered": the note the reader
   // gets is a claim about what happened to their work, and only a restart is
-  // allowed to claim one.
-  const recoveredTurns = useMemo(
-    () =>
-      new Map(
-        state.turns
-          .filter((t) => t.recovery)
-          .map((t) => [t.id, t.recovery!.cause ?? "restart"] as const),
-      ),
-    [state.turns],
-  );
+  // allowed to claim one. The continuation armed at a usage limit is the
+  // server's prompt too; the schedule that sent it names its turn.
+  const recoveredTurns = useMemo(() => {
+    const causes = new Map<string, Recovered>(
+      state.turns.filter((t) => t.recovery).map((t) => [t.id, t.recovery!.cause ?? "restart"]),
+    );
+    for (const p of state.scheduledPrompts ?? []) {
+      if (p.kind === "limit" && p.status === "sent" && p.turnId) causes.set(p.turnId, "limit");
+    }
+    return causes;
+  }, [state.turns, state.scheduledPrompts]);
 
   return {
     empty,
