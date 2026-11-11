@@ -10,6 +10,7 @@
 package claudecode
 
 import (
+	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
@@ -1567,6 +1568,15 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		return
 	}
 
+	// tool_use_result is the structured output of the tool, one per message:
+	// it can only be matched to a block when the message carries just one.
+	results := 0
+	for _, c := range m.Message.Content {
+		if c.Type == "tool_result" {
+			results++
+		}
+	}
+
 	for _, c := range m.Message.Content {
 		if c.Type != "tool_result" {
 			continue
@@ -1581,9 +1591,15 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 			status = proto.StatusFailed
 		}
 		var content []proto.ToolContent
-		text := flattenContent(c.Content)
+		text, rest := s.toolResultContent(c.Content)
 		if text != "" {
-			content = []proto.ToolContent{{Type: "text", Text: text}}
+			content = append(content, proto.ToolContent{Type: "text", Text: text})
+		}
+		content = append(content, rest...)
+		if results == 1 && !c.IsError {
+			if diff, ok := fileChangeDiff(msg["tool_use_result"]); ok {
+				content = append(content, diff)
+			}
 		}
 		// Before the completion, so no live delta can trail it.
 		s.stopTail(c.ToolUseID)
@@ -2298,26 +2314,111 @@ func short(p string) string {
 	return ".../" + strings.Join(parts[len(parts)-2:], "/")
 }
 
-func flattenContent(raw json.RawMessage) string {
+// toolResultContent splits a tool_result's content into its text, joined as
+// one string, and the rest: one piece per image block, in order. An image's
+// bytes go to the host's store and never into the content — not even through
+// the raw-JSON fallback, which only ever sees a scalar.
+func (s *session) toolResultContent(raw json.RawMessage) (string, []proto.ToolContent) {
 	if len(raw) == 0 {
-		return ""
+		return "", nil
 	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
 	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		if raw[0] != '{' {
+			return string(raw), nil
+		}
+		// A lone block where an array was expected.
+		items = []json.RawMessage{raw}
 	}
-	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var sb strings.Builder
-		for _, b := range blocks {
-			if b.Type == "text" {
-				sb.WriteString(b.Text)
+	var sb strings.Builder
+	var rest []proto.ToolContent
+	for _, item := range items {
+		var b struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Source struct {
+				Type string `json:"type"`
+				Data string `json:"data"`
+			} `json:"source"`
+		}
+		if json.Unmarshal(item, &b) != nil {
+			// A bare string among the blocks is text; anything else is not
+			// shown.
+			var str string
+			if json.Unmarshal(item, &str) == nil {
+				sb.WriteString(str)
+			}
+			continue
+		}
+		switch b.Type {
+		case "text":
+			sb.WriteString(b.Text)
+		case "image":
+			if b.Source.Type == "base64" {
+				rest = append(rest, adapter.ToolImage(s.host, b.Source.Data))
+			} else {
+				rest = append(rest, proto.ToolContent{Type: "text", Text: "[image not shown: " + cmp.Or(b.Source.Type, "no source") + " source]"})
 			}
 		}
-		return sb.String()
 	}
-	return string(raw)
+	return sb.String(), rest
+}
+
+// maxEditDiff bounds the patch a file change adds to its tool call. Past it
+// the diff is dropped: a whole-file Write would otherwise ride every replay.
+const maxEditDiff = 64 << 10
+
+// fileChangeDiff renders an Edit or Write result's structured output as a
+// unified patch. A new file has no hunks; its content becomes one all-added
+// hunk.
+func fileChangeDiff(raw json.RawMessage) (proto.ToolContent, bool) {
+	if len(raw) == 0 {
+		return proto.ToolContent{}, false
+	}
+	var out struct {
+		Type            string `json:"type"`
+		FilePath        string `json:"filePath"`
+		Content         string `json:"content"`
+		StructuredPatch []struct {
+			OldStart int      `json:"oldStart"`
+			OldLines int      `json:"oldLines"`
+			NewStart int      `json:"newStart"`
+			NewLines int      `json:"newLines"`
+			Lines    []string `json:"lines"`
+		} `json:"structuredPatch"`
+	}
+	if json.Unmarshal(raw, &out) != nil || out.FilePath == "" {
+		return proto.ToolContent{}, false
+	}
+	rel := strings.TrimPrefix(out.FilePath, "/")
+	var sb strings.Builder
+	switch {
+	case len(out.StructuredPatch) > 0:
+		fmt.Fprintf(&sb, "--- a/%s\n+++ b/%s\n", rel, rel)
+		for _, h := range out.StructuredPatch {
+			fmt.Fprintf(&sb, "@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldLines, h.NewStart, h.NewLines)
+			for _, l := range h.Lines {
+				sb.WriteString(l)
+				sb.WriteByte('\n')
+			}
+		}
+	case out.Type == "create" && out.Content != "":
+		lines := strings.Split(strings.TrimSuffix(out.Content, "\n"), "\n")
+		fmt.Fprintf(&sb, "--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", rel, len(lines))
+		for _, l := range lines {
+			sb.WriteByte('+')
+			sb.WriteString(l)
+			sb.WriteByte('\n')
+		}
+	default:
+		return proto.ToolContent{}, false
+	}
+	if sb.Len() > maxEditDiff {
+		return proto.ToolContent{}, false
+	}
+	return proto.ToolContent{Type: "diff", Path: out.FilePath, Text: sb.String()}, true
 }
