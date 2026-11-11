@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
@@ -26,6 +28,37 @@ type recorder struct {
 	method string
 	params json.RawMessage
 	counts map[string]int
+	calls  []recordedCall
+}
+
+type recordedCall struct {
+	method string
+	params json.RawMessage
+}
+
+// interrupts returns every turn/interrupt seen so far as threadId → turnId.
+func (r *recorder) interrupts(t *testing.T) map[string]string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]string{}
+	for _, c := range r.calls {
+		if c.method != "turn/interrupt" {
+			continue
+		}
+		var p struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+		}
+		if err := json.Unmarshal(c.params, &p); err != nil {
+			t.Fatal(err)
+		}
+		if prev, dup := out[p.ThreadID]; dup {
+			t.Fatalf("thread %s interrupted twice (%s, then %s)", p.ThreadID, prev, p.TurnID)
+		}
+		out[p.ThreadID] = p.TurnID
+	}
+	return out
 }
 
 func (r *recorder) last() (string, json.RawMessage) {
@@ -51,8 +84,14 @@ func pairedConn(t *testing.T, reply map[string]any) (*jsonrpc.Conn, *recorder) {
 		rec.method = method
 		rec.params = params
 		rec.counts[method]++
+		rec.calls = append(rec.calls, recordedCall{method, params})
 		rec.mu.Unlock()
 		if r, ok := reply[method]; ok {
+			// A func answers from the request, and may push notifications
+			// first, the way codex writes them ahead of a response.
+			if f, isFunc := r.(func(json.RawMessage) (any, error)); isFunc {
+				return f(params)
+			}
 			// An error in the reply map is a refusal, not a result.
 			if err, isErr := r.(error); isErr {
 				return nil, err
@@ -518,5 +557,236 @@ func TestInstructionsReachCodexAsDeveloperInstructions(t *testing.T) {
 				t.Fatalf("developerInstructions = %v, want %q", got, tc.o.Instructions)
 			}
 		})
+	}
+}
+
+// stopSession is a session wired to a fake app-server, with somewhere to put
+// what it emits.
+func stopSession(t *testing.T, reply map[string]any) (*session, *recorder) {
+	t.Helper()
+	conn, rec := pairedConn(t, reply)
+	s := subagentSession(t)
+	s.conn = conn
+	return s, rec
+}
+
+func notify(s *session, method, params string) {
+	s.handleNotification(method, json.RawMessage(params))
+}
+
+// finishedTurns returns the turn.finished payloads among the emissions.
+func finishedTurns(got []proto.Emission) []proto.TurnFinishedPayload {
+	var out []proto.TurnFinishedPayload
+	for _, e := range got {
+		if e.Type == proto.TurnFinished {
+			out = append(out, e.Payload.(proto.TurnFinishedPayload))
+		}
+	}
+	return out
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// /review answers with its turn, and Stop needs that id: without it Cancel had
+// nothing to address and returned while the UI said cancelling.
+func TestReviewCanBeStopped(t *testing.T) {
+	s, rec := stopSession(t, map[string]any{
+		"review/start": map[string]any{"turn": map[string]any{"id": "review-turn"}, "reviewThreadId": "thread-1"},
+	})
+	if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "omniplex-turn", Action: "review"}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if got := rec.interrupts(t); got["thread-1"] != "review-turn" || len(got) != 1 {
+		t.Fatalf("interrupts = %v, want thread-1/review-turn", got)
+	}
+
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"review-turn","status":"interrupted"}}`)
+	done := finishedTurns(drain(s))
+	if len(done) != 1 || done[0].TurnID != "omniplex-turn" || done[0].StopReason != proto.StopCancelled {
+		t.Fatalf("finished = %+v, want omniplex-turn cancelled", done)
+	}
+}
+
+// A review that finishes before its review/start response is read must not
+// have its id resurrected as the running turn's.
+func TestReviewFinishedBeforeItsResponseStaysFinished(t *testing.T) {
+	var s *session
+	s, _ = stopSession(t, map[string]any{
+		"review/start": func(json.RawMessage) (any, error) {
+			notify(s, "turn/started", `{"threadId":"thread-1","turn":{"id":"review-turn"}}`)
+			notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"review-turn","status":"completed"}}`)
+			return map[string]any{"turn": map[string]any{"id": "review-turn"}}, nil
+		},
+	})
+	if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "omniplex-turn", Action: "review"}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if s.turnID != "" || s.serverTurnID != "" {
+		t.Fatalf("finished review left turnID=%q serverTurnID=%q", s.turnID, s.serverTurnID)
+	}
+}
+
+// thread/compact/start answers with nothing, so a /compact turn's id comes from
+// the notifications that follow it.
+func TestCompactCanBeStopped(t *testing.T) {
+	for _, tc := range []struct{ name, method, params string }{
+		{"turn started", "turn/started", `{"threadId":"thread-1","turn":{"id":"compact-turn"}}`},
+		{"item started", "item/started", `{"threadId":"thread-1","turnId":"compact-turn","item":{"type":"contextCompaction","id":"c1"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, rec := stopSession(t, nil)
+			if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "omniplex-turn", Action: "compact"}); err != nil {
+				t.Fatalf("compact: %v", err)
+			}
+			notify(s, tc.method, tc.params)
+			if err := s.Cancel(context.Background()); err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+			if got := rec.interrupts(t); got["thread-1"] != "compact-turn" || len(got) != 1 {
+				t.Fatalf("interrupts = %v, want thread-1/compact-turn", got)
+			}
+
+			notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"compact-turn","status":"interrupted"}}`)
+			done := finishedTurns(drain(s))
+			if len(done) != 1 || done[0].TurnID != "omniplex-turn" {
+				t.Fatalf("finished = %+v, want omniplex-turn", done)
+			}
+		})
+	}
+}
+
+// A straggler from the turn that just completed can arrive after the next
+// turn opened. Taking its id would aim Stop at a finished turn, and drop the
+// open turn's own completion as stale.
+func TestStragglerDoesNotLendItsTurnID(t *testing.T) {
+	s, _ := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-a","status":"completed"}}`)
+
+	if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "turn-b", Action: "compact"}); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	notify(s, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"codex-a","itemId":"m1","delta":"late"}`)
+	if s.serverTurnID != "" {
+		t.Fatalf("straggler's id recorded: %q", s.serverTurnID)
+	}
+	notify(s, "item/started", `{"threadId":"thread-1","turnId":"codex-b","item":{"type":"contextCompaction","id":"c1"}}`)
+	if s.serverTurnID != "codex-b" {
+		t.Fatalf("serverTurnID = %q, want codex-b", s.serverTurnID)
+	}
+}
+
+// Stop ends the subagents the stopped turn spawned, not just the thread that
+// spawned them. A subagent of an earlier turn, and one whose turn has already
+// finished, are left alone.
+func TestCancelInterruptsTheTurnsRunningSubagents(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID = "turn-0"
+	notify(s, "turn/started", `{"threadId":"sub-old","turn":{"id":"sub-old-turn"}}`)
+
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-turn"}}`)
+	// A subagent first heard from mid-turn, through an item.
+	notify(s, "item/started", `{"threadId":"sub-2","turnId":"sub-2-turn","item":{"type":"commandExecution","id":"c1","command":"ls"}}`)
+	notify(s, "turn/started", `{"threadId":"sub-3","turn":{"id":"sub-3-turn"}}`)
+	notify(s, "turn/completed", `{"threadId":"sub-3","turn":{"id":"sub-3-turn","status":"completed"}}`)
+	// A straggler from sub-3's finished turn does not mark it running again.
+	notify(s, "item/completed", `{"threadId":"sub-3","turnId":"sub-3-turn","item":{"type":"agentMessage","id":"m1","text":"done"}}`)
+
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	want := map[string]string{"thread-1": "codex-a", "sub-1": "sub-1-turn", "sub-2": "sub-2-turn"}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts = %v, want %v", got, want)
+	}
+
+	// A second press does not repeat interrupts codex never answers twice.
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+	if got := rec.interrupts(t); len(got) != len(want) {
+		t.Fatalf("second Cancel repeated interrupts: %v", got)
+	}
+}
+
+// A subagent refusing its interrupt is not this thread's stop failing.
+func TestSubagentInterruptFailureDoesNotFailCancel(t *testing.T) {
+	s, rec := stopSession(t, map[string]any{
+		"turn/interrupt": func(params json.RawMessage) (any, error) {
+			if strings.Contains(string(params), `"sub-1"`) {
+				return nil, errors.New("no such turn")
+			}
+			return map[string]any{}, nil
+		},
+	})
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-turn"}}`)
+
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel failed with the subagent's refusal: %v", err)
+	}
+	if got := rec.interrupts(t); got["thread-1"] != "codex-a" || got["sub-1"] != "sub-1-turn" {
+		t.Fatalf("interrupts = %v", got)
+	}
+	if s.subagents["sub-1"].interrupting {
+		t.Fatal("refused subagent interrupt left claimed; a later stop could not retry it")
+	}
+}
+
+// With no id for this thread's turn there is nothing of its own to interrupt,
+// but its subagents still are.
+func TestCancelWithoutServerTurnStillStopsSubagents(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID = "turn-a"
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-turn"}}`)
+
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	want := map[string]string{"sub-1": "sub-1-turn"}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts = %v, want %v", got, want)
+	}
+}
+
+// A subagent of the stopped turn that only starts a turn after Stop is stopped
+// as it starts, until a new turn of ours opens and may hand it new work.
+func TestSubagentTurnStartingAfterStopIsInterrupted(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	notify(s, "item/completed", `{"threadId":"sub-1","turnId":"sub-1-first","item":{"type":"agentMessage","id":"m1","text":"hi"}}`)
+	notify(s, "turn/completed", `{"threadId":"sub-1","turn":{"id":"sub-1-first","status":"completed"}}`)
+
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if got := rec.interrupts(t); len(got) != 1 {
+		t.Fatalf("interrupts = %v, want only this thread's", got)
+	}
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-a","status":"interrupted"}}`)
+
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-late"}}`)
+	waitFor(t, "the late subagent interrupt", func() bool { return rec.interrupts(t)["sub-1"] == "sub-1-late" })
+
+	// The next turn of ours may reuse the subagent; that is not stopped.
+	notify(s, "turn/completed", `{"threadId":"sub-1","turn":{"id":"sub-1-late","status":"interrupted"}}`)
+	s.turnID, s.serverTurnID = "turn-b", "codex-b"
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-reused"}}`)
+	time.Sleep(50 * time.Millisecond)
+	if got := rec.interrupts(t)["sub-1"]; got != "sub-1-late" {
+		t.Fatalf("subagent's turn in the next turn of ours was interrupted: %s", got)
 	}
 }
