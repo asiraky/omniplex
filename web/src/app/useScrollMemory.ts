@@ -4,8 +4,6 @@ import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { ThreadMeta } from "~/protocol";
 import type { ResumeSnapshot } from "~/resume";
 
-export type { ScrollPosition };
-
 /**
  * Where each thread's transcript was scrolled, kept above the Transcript for
  * the same reason as the drafts: switching threads unmounts it, so a position
@@ -19,15 +17,7 @@ export type { ScrollPosition };
  */
 export function useScrollMemory(resume: ResumeSnapshot | null) {
   const positions = useRef<Record<string, ScrollPosition>>(
-    resume
-      ? {
-          [resume.state.threadId]: {
-            top: resume.scrollTop,
-            atBottom: resume.atBottom,
-            anchor: resume.anchor,
-          },
-        }
-      : {},
+    resume ? { [resume.state.threadId]: resume.position } : {},
   );
   // Threads the list has taken away. A deleted thread's transcript reports
   // one last position as it unmounts, and that unmount happens after the prune

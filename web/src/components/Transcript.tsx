@@ -15,6 +15,7 @@ import type {
   ThreadState,
   Turn,
 } from "~/protocol";
+import { rowKey } from "~/rows";
 import { useAutoScroll } from "~/useAutoScroll";
 
 import type { OpenArtefact } from "./transcript/Attachments";
@@ -22,7 +23,7 @@ import { EmptyTranscript } from "./transcript/EmptyTranscript";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import type { ScrollPosition } from "./transcript/scrollAnchor";
-import { rowKey, TranscriptRow } from "./transcript/TranscriptRow";
+import { TranscriptRow } from "./transcript/TranscriptRow";
 import { useOlderPages } from "./transcript/useOlderPages";
 import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";

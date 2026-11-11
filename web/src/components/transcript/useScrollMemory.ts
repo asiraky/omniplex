@@ -10,7 +10,7 @@ import { captureAnchor, restoreScroll, type ScrollPosition } from "./scrollAncho
 // Where the reader is, with the row they are reading. Only taken as the view
 // is left — measuring rows on every scroll event would put layout reads on the
 // hottest path a phone has, and nothing reads the anchor until the next mount.
-const positionOf = (el: HTMLElement): ScrollPosition => {
+const measurePosition = (el: HTMLElement): ScrollPosition => {
   const tail = atBottom(el);
   return { top: el.scrollTop, atBottom: tail, anchor: tail ? undefined : captureAnchor(el) };
 };
@@ -52,7 +52,7 @@ export function useScrollMemory(
     const save = () => {
       const el = scrollerRef.current;
       if (!el) return;
-      saveResume(latestState.current, positionOf(el));
+      saveResume(latestState.current, measurePosition(el));
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") save();
@@ -78,21 +78,19 @@ export function useScrollMemory(
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    const report = () =>
-      onScrollChangeRef.current?.(latestState.current.threadId, {
-        top: el.scrollTop,
-        atBottom: atBottom(el),
-      });
-    el.addEventListener("scroll", report, { passive: true });
+    const report = (position: ScrollPosition) =>
+      onScrollChangeRef.current?.(latestState.current.threadId, position);
+    const onScroll = () => report({ top: el.scrollTop, atBottom: atBottom(el) });
+    el.addEventListener("scroll", onScroll, { passive: true });
     // Mounting counts as a position too: a transcript left at the tail — or
     // one that just restored an offset above — has somewhere to come back to
     // even if the reader never touches it.
-    report();
+    onScroll();
     return () => {
-      el.removeEventListener("scroll", report);
+      el.removeEventListener("scroll", onScroll);
       // The leaving report is the one that carries the row: it is the last
       // word on where the reader was, and the scroller is still laid out.
-      onScrollChangeRef.current?.(latestState.current.threadId, positionOf(el));
+      report(measurePosition(el));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -130,9 +130,14 @@ describe("restoring by row", () => {
     frame();
     expect(scroller.scrollTop).toBe(800);
 
-    // Two still frames and it lets go.
+    // A diagram that waits a few frames before rendering is still caught.
+    for (let i = 0; i < 12; i++) frame();
+    resize(0, 400);
     frame();
-    frame();
+    expect(scroller.scrollTop).toBe(900);
+
+    // Then, once it has held still for a while, it lets go.
+    for (let i = 0; i < 60 && pending(); i++) frame();
     expect(pending()).toBe(0);
   });
 
@@ -140,7 +145,7 @@ describe("restoring by row", () => {
     const { scroller, resize } = transcript([300, 300, 300, 300]);
     restoreScroll(scroller, { top: 650, atBottom: false, anchor: { id: "r2", offset: 50 } });
     let grown = 300;
-    for (let i = 0; i < 200 && pending(); i++) {
+    for (let i = 0; i < 1000 && pending(); i++) {
       resize(0, (grown += 10));
       frame();
     }

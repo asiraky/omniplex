@@ -19,11 +19,13 @@ export type ScrollPosition = { top: number; atBottom: boolean; anchor?: RowAncho
 
 const ROW = "[data-row-id]";
 
-// A row only has to hold still this many frames in a row to count as settled.
-const STABLE_FRAMES = 2;
-// A streaming reply or a slow diagram can keep moving things for as long as it
-// likes; past this the reader has their place back and anything later is theirs.
-const MAX_FRAMES = 60;
+// A row has to hold still this long, about half a second, to count as settled:
+// a Mermaid diagram above it waits 200ms before it even starts to render, so a
+// few quiet frames say nothing about whether more is coming.
+const STABLE_FRAMES = 30;
+// A streaming reply can keep moving things for as long as it likes; past this,
+// about three seconds, the reader has their place back and anything later is theirs.
+const MAX_FRAMES = 180;
 
 // Any of these on the scroller means a reader has taken the view; a settle
 // still running would drag it back out from under their finger.
@@ -83,7 +85,7 @@ function findRow(scroller: HTMLElement, id: string): Element | undefined {
  *
  * By anchor when the row is still here; by raw offset when it is not, which is
  * the old behaviour and as good as anything for a row that has gone. The
- * settle stops after two still frames, after `MAX_FRAMES` regardless, on any
+ * settle stops after `STABLE_FRAMES` still frames, after `MAX_FRAMES` regardless, on any
  * sign of a reader, or when something else moves the view somewhere other
  * than the anchor — the pin re-arming at the tail, a just-sent prompt being
  * lifted, a scrollbar drag. A prepend of older history moves the view and the

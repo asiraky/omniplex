@@ -2,7 +2,7 @@ import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
 import type { Job, TurnDiff } from "~/protocol";
-import { rowTurnID, type Row } from "~/rows";
+import { rowKey, rowTurnID, type Row } from "~/rows";
 
 import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
@@ -61,9 +61,6 @@ function RowBody({
     />
   );
 }
-
-/** A row's identity: its React key, and the id the scroll memory finds it by. */
-export const rowKey = (row: Row) => (row.kind === "item" ? row.item.id : row.id);
 
 /** One row of the transcript, and the changed-files card for its turn if it closes one. */
 export function TranscriptRow({
