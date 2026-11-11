@@ -133,7 +133,8 @@ describe("new thread project", () => {
     });
     fireEvent.click(screen.getByText("Thread b"));
     fireEvent.click(screen.getByText("Thread a"));
-    fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+    // Shift-click: straight to a draft, past the "New thread in…" step.
+    fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0], { shiftKey: true });
     expect(screen.getByRole("button", { name: /^Project/ }).textContent).toBe("repo");
   });
 });
@@ -960,7 +961,8 @@ describe("composer drafts", () => {
     // Create a thread: it is attached, and can be typed into, before the
     // broadcast listing it arrives.
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+      // Shift-click: straight to a draft, past the "New thread in…" step.
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0], { shiftKey: true });
     });
     command.mockImplementation(async (name: string) =>
       name === "create_thread" ? { threadId: "fresh" } : ({} as any),
@@ -1018,7 +1020,8 @@ describe("losing the attached thread", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+      // Shift-click: straight to a draft, past the "New thread in…" step.
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0], { shiftKey: true });
     });
     command.mockImplementation(async (name: string) =>
       name === "create_thread" ? { threadId: "fresh" } : ({} as any),
@@ -1413,7 +1416,8 @@ describe("a new thread's first message", () => {
       events.onThreads([thread("a")]);
     });
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0]);
+      // Shift-click: straight to a draft, past the "New thread in…" step.
+      fireEvent.click(screen.getAllByRole("button", { name: /New thread/ })[0], { shiftKey: true });
     });
     command.mockImplementation(async (name: string) =>
       name === "create_thread" ? { threadId: "fresh" } : ({} as any),
@@ -1604,5 +1608,217 @@ describe("a card the agent raised", () => {
     await open([card]);
     const band = await screen.findByRole("form", { name: card.prompt });
     expect(within(band).getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+});
+
+describe("keyboard shortcuts and the palette", () => {
+  // Off a Mac, mod is Ctrl; jsdom says nothing about its platform, so the
+  // tests say it.
+  const key = (key: string, mods: Partial<KeyboardEventInit> = {}, target: Element = document.body) =>
+    fireEvent.keyDown(target, { key, ...mods });
+  const palette = () => screen.queryByRole("dialog", { name: "Command palette" });
+  const search = () => within(palette()!).getByRole("combobox");
+  const chip = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}:`) });
+  const composer = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
+  const attached = () => attach.mock.calls.map(([id]) => id);
+
+  const web = { ...project.folders[0], id: "f2", path: "/tmp/web" };
+  const twoFolders = { ...project, folders: [project.folders[0], web] };
+  const side = { path: "/tmp/web/.worktrees/side", branch: "issue/1-side" };
+
+  beforeEach(() => {
+    Object.defineProperty(navigator, "platform", { value: "Linux x86_64", configurable: true });
+    command.mockReset();
+    command.mockImplementation(async (name: string) =>
+      name === "list_workspaces" ? { workspaces: [{ path: "/tmp/web", isRoot: true }, side] } : ({} as any),
+    );
+  });
+  afterEach(() => {
+    delete (navigator as { platform?: string }).platform;
+    delete window.omniplexDesktop;
+  });
+
+  const boot = async (threads: ThreadMeta[] = [thread("a"), thread("b")], projects = [project]) => {
+    render(<App />);
+    await act(async () => {
+      events.onProjects(projects);
+      events.onHarnesses([harness]);
+      events.onThreads(threads);
+    });
+  };
+  const openThread = async (id: string, phase = "idle") => {
+    await act(async () => {
+      fireEvent.click(screen.getByText(`Thread ${id}`));
+      events.onState(id, { ...state(id, "default"), phase });
+    });
+  };
+
+  it("opens the palette on Ctrl+K and puts it away on a second", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    expect(palette()).toBeTruthy();
+    expect(search().getAttribute("placeholder")).toBe("Search threads and actions…");
+    key("k", { ctrlKey: true }, search());
+    await waitFor(() => expect(palette()).toBeNull());
+  });
+
+  it("starts a thread in a project, folder and existing worktree from the keyboard alone", async () => {
+    await boot([thread("a")], [twoFolders]);
+    // Ctrl+N is the browser's, so a tab gets the new-thread step on Ctrl+Shift+O.
+    await act(async () => key("o", { ctrlKey: true, shiftKey: true }));
+    expect(search().getAttribute("placeholder")).toBe("Which project?");
+
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(search().getAttribute("placeholder")).toBe("Which folder?");
+    fireEvent.change(search(), { target: { value: "web" } });
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(search().getAttribute("placeholder")).toBe("Which checkout?");
+    await within(palette()!).findByText("issue/1-side");
+    fireEvent.change(search(), { target: { value: "side" } });
+    await act(async () => {
+      fireEvent.keyDown(search(), { key: "Enter" });
+    });
+
+    await waitFor(() => expect(palette()).toBeNull());
+    expect(chip("Project").textContent).toBe("repo");
+    expect(chip("Scope").textContent).toBe("web");
+    await waitFor(() => expect(chip("Git").textContent).toBe("Worktree: issue/1-side"));
+    await waitFor(() => expect(document.activeElement).toBe(composer()));
+  });
+
+  it("starts the new-thread step over when asked for it with the palette already open", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    await act(async () => key("o", { ctrlKey: true, shiftKey: true }, search()));
+    expect(search().getAttribute("placeholder")).toBe("Which project?");
+  });
+
+  it("walks threads in the sidebar's order, past a folded group, wrapping at the ends", async () => {
+    const other = { ...project, id: "p2", name: "other", createdAt: 1 };
+    const repo = { ...project, createdAt: 2 };
+    localStorage.setItem("omniplex.projectCollapsed", JSON.stringify(["p2"]));
+    await boot(
+      [
+        { ...thread("d"), projectId: "p2", pinned: true, position: 0 },
+        { ...thread("a"), position: 1 },
+        { ...thread("b"), position: 2 },
+        { ...thread("c"), projectId: "p2", position: 3 },
+      ],
+      [repo, other],
+    );
+    const next = () => act(async () => key("}", { code: "BracketRight", ctrlKey: true, shiftKey: true }));
+    const prev = () => act(async () => key("{", { code: "BracketLeft", ctrlKey: true, shiftKey: true }));
+
+    await next(); // nothing open: the first row
+    await next();
+    await next();
+    await next(); // c is folded away, so b wraps to the top
+    await prev();
+    expect(attached()).toEqual(["d", "a", "b", "d", "b"]);
+  });
+
+  it("finds the next thread that needs an answer, folded or not", async () => {
+    localStorage.setItem("omniplex.projectCollapsed", JSON.stringify(["p2"]));
+    const other = { ...project, id: "p2", name: "other", createdAt: 1 };
+    await boot(
+      [
+        { ...thread("a"), position: 0 },
+        { ...thread("b"), position: 1 },
+        { ...thread("c"), projectId: "p2", position: 2, attention: "needs_answer" },
+      ],
+      [{ ...project, createdAt: 2 }, other],
+    );
+    await act(async () => key("ArrowDown", { altKey: true, shiftKey: true }));
+    expect(attached()).toEqual(["c"]);
+  });
+
+  it("jumps to the Nth thread with Ctrl+digit only in the desktop app", async () => {
+    await boot([
+      { ...thread("a"), position: 0 },
+      { ...thread("b"), position: 1 },
+    ]);
+    const jump = () => key("2", { code: "Digit2", ctrlKey: true });
+    // A browser keeps Ctrl+1–9 for its tabs.
+    expect(jump()).toBe(true);
+    expect(attach).not.toHaveBeenCalled();
+
+    window.omniplexDesktop = { platform: "linux" };
+    await act(async () => {
+      jump();
+    });
+    expect(attached()).toEqual(["b"]);
+  });
+
+  it("closes the side panel on Ctrl+W in the desktop app, and leaves Ctrl+W to a browser", async () => {
+    await boot();
+    await openThread("a");
+    fireEvent.click(screen.getByRole("button", { name: "Show the panel" }));
+    expect(screen.getByRole("button", { name: "Hide the panel" })).toBeTruthy();
+
+    expect(key("w", { ctrlKey: true })).toBe(true);
+    expect(screen.getByRole("button", { name: "Hide the panel" })).toBeTruthy();
+
+    window.omniplexDesktop = { platform: "linux" };
+    await act(async () => {
+      key("w", { ctrlKey: true });
+    });
+    expect(screen.getByRole("button", { name: "Show the panel" })).toBeTruthy();
+    // Nothing left to close, and still the window's close is held back.
+    expect(key("w", { ctrlKey: true })).toBe(false);
+  });
+
+  it("asks where from the sidebar's New thread, and skips the question on shift-click", async () => {
+    await boot();
+    const button = within(document.querySelector("aside") ?? document.body).getAllByRole("button", {
+      name: /^New thread/,
+    })[0];
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(search().getAttribute("placeholder")).toBe("Which project?");
+    expect(screen.queryByRole("button", { name: /^Project:/ })).toBeNull();
+
+    key("Escape", {}, search());
+    await waitFor(() => expect(palette()).toBeNull());
+    await act(async () => {
+      fireEvent.click(button, { shiftKey: true });
+    });
+    expect(palette()).toBeNull();
+    expect(chip("Project").textContent).toBe("repo");
+  });
+
+  it("stops a running turn on Escape in the composer, unless the composer's menu takes it", async () => {
+    command.mockImplementation(async (name: string) =>
+      name === "list_composer_items"
+        ? {
+            items: [
+              {
+                id: "skill:alpha",
+                name: "alpha",
+                description: "Run alpha",
+                kind: "skill",
+                trigger: "$",
+                insertText: "$alpha",
+                behavior: "prompt",
+                origin: "project",
+              },
+            ],
+          }
+        : ({} as any),
+    );
+    await boot();
+    await openThread("a", "turn");
+    const cancels = () => command.mock.calls.filter(([name]) => name === "cancel");
+
+    composer().focus();
+    key("Escape", {}, composer());
+    expect(cancels()).toEqual([["cancel", { threadId: "a" }]]);
+
+    fireEvent.focus(composer());
+    fireEvent.change(composer(), { target: { value: "$alp", selectionStart: 4 } });
+    expect(await screen.findByRole("listbox")).toBeTruthy();
+    key("Escape", {}, composer());
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    expect(cancels()).toHaveLength(1);
   });
 });

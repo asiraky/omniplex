@@ -16,11 +16,15 @@ export function EmptyState({
   restoring,
   attaching,
   hasThreads,
+  onNewThreadIn,
   onNew,
 }: {
   restoring: boolean;
   attaching: boolean;
   hasThreads: boolean;
+  /** Pressed: the "New thread in…" step, as the sidebar's button does. */
+  onNewThreadIn: () => void;
+  /** Shift-clicked: a draft straight away, no questions. */
   onNew: () => void;
 }) {
   // Mid-restore. Saying anything here would only be contradicted a moment
@@ -72,7 +76,12 @@ export function EmptyState({
         </>
       )}
       {/* Offered, not insisted on, but still a real target for a thumb. */}
-      <Button variant="outline" size="sm" className="h-11 md:h-8" onClick={onNew}>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-11 md:h-8"
+        onClick={(e) => (e.shiftKey ? onNew() : onNewThreadIn())}
+      >
         <PlusIcon />
         New thread
       </Button>

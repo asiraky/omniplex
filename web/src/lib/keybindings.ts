@@ -85,7 +85,7 @@ const JUMPS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 type JumpId = `jumpThread${(typeof JUMPS)[number]}`;
 
 const jumpCommands = Object.fromEntries(
-  JUMPS.map((n) => [
+  JUMPS.map((n): [JumpId, CommandSpec] => [
     `jumpThread${n}`,
     {
       label: `Go to thread ${n}`,
@@ -93,7 +93,7 @@ const jumpCommands = Object.fromEntries(
       app: [mod(String(n))],
       browser: [],
       hidden: true,
-    } satisfies CommandSpec,
+    },
   ]),
 ) as Record<JumpId, CommandSpec>;
 

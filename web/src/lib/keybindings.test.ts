@@ -19,9 +19,6 @@ function ev(key: string, code: string, mods: Partial<KeyEventLike> = {}): KeyEve
   return { key, code, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...mods };
 }
 
-/** ⌘ on a Mac, Ctrl elsewhere. */
-const modOf = (platform: Platform) => (platform === "mac" ? { metaKey: true } : { ctrlKey: true });
-
 const ctx = (over: Partial<KeyContext> = {}): KeyContext => ({
   electronApp: false,
   editableFocus: false,

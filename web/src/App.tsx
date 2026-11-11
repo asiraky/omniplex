@@ -2,12 +2,16 @@ import { useCallback, useMemo } from "react";
 
 import { NEW_THREAD } from "./app/threadKeys";
 import { useActivePR } from "./app/useActivePR";
+import { useAppKeybindings } from "./app/useAppKeybindings";
 import { useComposerDrafts } from "./app/useComposerDrafts";
 import { useNewThread } from "./app/useNewThread";
+import { usePalette } from "./app/usePalette";
+import { usePaletteActions } from "./app/usePaletteActions";
 import { usePanel } from "./app/usePanel";
 import { usePinThread } from "./app/usePinThread";
 import { usePresence } from "./app/usePresence";
 import { useProjectActions } from "./app/useProjectActions";
+import { useProjectView } from "./app/useProjectView";
 import { useProviderAuth } from "./app/useProviderAuth";
 import { useReadState } from "./app/useReadState";
 import { useRenameThread } from "./app/useRenameThread";
@@ -19,23 +23,27 @@ import { useThreadCommands } from "./app/useThreadCommands";
 import { useThreadDeletion } from "./app/useThreadDeletion";
 import { useThreadHarness } from "./app/useThreadHarness";
 import { useThreadOrder } from "./app/useThreadOrder";
-import { useThreadSelection } from "./app/useThreadSelection";
+import { useThreadSelection, type DraftPreset } from "./app/useThreadSelection";
 import { useThreadTitle } from "./app/useThreadTitle";
 import { useTranscriptCopy } from "./app/useTranscriptCopy";
 import { useWire } from "./app/useWire";
 import { AppDialogs } from "./components/AppDialogs";
+import { CommandPalette } from "./components/CommandPalette";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
 import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
+import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { ThreadView } from "./components/ThreadView";
+import { isElectronApp } from "./lib/keybindings";
 import { loadLastProject } from "./lib/lastProject";
 import { skillsScope } from "./lib/skills";
 import { cn } from "./lib/utils";
 import { useIsDesktop } from "./useMediaQuery";
+import { useModHeld } from "./useShortcuts";
 
 export function App() {
   const isDesktop = useIsDesktop();
@@ -90,7 +98,131 @@ export function App() {
   const projectFolders = (id?: string) =>
     projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [];
 
-  if (screens.themePreview) return <ThemePreviewScreen />;
+  // The keyboard and the palette. Everything below the early returns is one
+  // screen of many, and ⌘K has to work from all of them.
+  const projectView = useProjectView(projects);
+  const palette = usePalette();
+  const showJumpHints = useModHeld(isElectronApp());
+  // One composer at a time, the thread's or the draft's, behind one handle.
+  const { composerRef } = recents;
+  const turnRunning = state?.phase === "turn";
+  // Choosing a thread or starting one is going somewhere: whatever full-page
+  // screen is up gives way, setup included, since the user asked for it.
+  const leaveScreens = () => {
+    screens.uncover();
+    if (screens.setup) screens.leaveSetup();
+  };
+  const openThread = (id: string) => {
+    leaveScreens();
+    select(id);
+  };
+  const startNew = (preset?: DraftPreset) => {
+    leaveScreens();
+    nav.startNew(preset);
+  };
+  const newThreadIn = () => palette.show("newThread");
+  const newThreadHere = () =>
+    startNew({ focus: true, projectId: meta?.projectId ?? nav.creating?.projectId });
+  const toggleSidebar = () => nav.setSidebarOpen((open) => !open);
+  // Settings and the new-project dialog live in the main view's dialogs, so
+  // a full-page screen steps aside for them.
+  const openSettings = () => {
+    screens.uncover();
+    screens.setSettings({});
+  };
+  const copyTranscript = () => void copy.copyAll();
+
+  useAppKeybindings({
+    app: {
+      paletteOpen: palette.open,
+      helpOpen: palette.helpOpen,
+      threadOpen: !!state,
+      turnRunning,
+      panelOpen: panel.open,
+    },
+    threads,
+    projects,
+    view: projectView,
+    activeId,
+    composerRef,
+    onOpenThread: openThread,
+    onTogglePalette: palette.toggle,
+    onNewThreadIn: newThreadIn,
+    onNewThreadHere: newThreadHere,
+    onCopyTranscript: copyTranscript,
+    onStopTurn: commands.cancel,
+    onToggleSidebar: toggleSidebar,
+    onTogglePanel: panel.toggle,
+    onOpenDiff: () => panel.openDiff(),
+    onClosePanel: () => {
+      if (panel.open) panel.close();
+    },
+    onSettings: openSettings,
+    onToggleHelp: palette.toggleHelp,
+  });
+
+  const actions = usePaletteActions({
+    meta,
+    threadOpen: !!state,
+    turnRunning,
+    composerOpen: !!state || !!nav.creating,
+    composerRef,
+    onSetPinned: setPinned,
+    onSetUnread: setThreadUnread,
+    onCopyTranscript: copyTranscript,
+    onDelete: deletion.deleteFlow.ask,
+    onTogglePanel: panel.toggle,
+    onOpenDiff: () => panel.openDiff(),
+    onStopTurn: commands.cancel,
+    onNewThreadHere: newThreadHere,
+    onNewProject: () => {
+      screens.uncover();
+      screens.setNewProject(true);
+    },
+    onSettings: openSettings,
+    onUsage: () => {
+      screens.uncover();
+      screens.setShowUsage(true);
+    },
+    onSkills: () => {
+      screens.uncover();
+      screens.setTools({});
+    },
+    onToggleSidebar: toggleSidebar,
+    onShortcuts: () => palette.setHelpOpen(true),
+  });
+
+  // Rendered on every screen, the full-page ones too.
+  const overlays = (
+    <>
+      <CommandPalette
+        // Asked for another page while open: start over on it in place.
+        key={palette.nonce}
+        open={palette.open}
+        initialPage={palette.page}
+        onOpenChange={palette.setOpen}
+        threads={threads}
+        activeId={activeId}
+        projects={projects}
+        defaultProjectId={meta?.projectId ?? nav.creating?.projectId ?? (loadLastProject() || undefined)}
+        actions={actions}
+        onSelectThread={openThread}
+        onNewThread={startNew}
+        onListWorkspaces={projectActions.listWorkspaces}
+        onRename={activeId && meta ? (title) => renameThread(activeId, title) : undefined}
+      />
+      <ShortcutsHelp open={palette.helpOpen} onOpenChange={palette.setHelpOpen} />
+    </>
+  );
+
+  if (screens.themePreview) {
+    return (
+      <>
+        <ThemePreviewScreen />
+        {overlays}
+      </>
+    );
+  }
 
   // First-run setup covers everything, like Usage, but keeps the app's dialogs
   // mounted: its "Sign in" opens the same sign-in flow the thread view does.
@@ -104,6 +236,7 @@ export function App() {
           auth={auth}
           projects={projectActions}
         />
+        {overlays}
       </>
     );
   }
@@ -113,11 +246,14 @@ export function App() {
   // up.
   if (screens.showUsage) {
     return (
-      <UsageScreen
-        clientRef={clientRef}
-        quotas={wire.quotas}
-        onClose={() => screens.setShowUsage(false)}
-      />
+      <>
+        <UsageScreen
+          clientRef={clientRef}
+          quotas={wire.quotas}
+          onClose={() => screens.setShowUsage(false)}
+        />
+        {overlays}
+      </>
     );
   }
 
@@ -126,19 +262,22 @@ export function App() {
   // the user's own; its MCP tab asks the open thread's session.
   if (screens.tools) {
     return (
-      <ToolsScreen
-        clientRef={clientRef}
-        tab={screens.tools.tab}
-        projects={projects}
-        scope={skillsScope({
-          threadId: activeId,
-          threadProjectId: meta?.projectId,
-          draftProjectId: nav.creating?.projectId,
-          lastProjectId: loadLastProject() || undefined,
-          projects,
-        })}
-        onClose={() => screens.setTools(null)}
-      />
+      <>
+        <ToolsScreen
+          clientRef={clientRef}
+          tab={screens.tools.tab}
+          projects={projects}
+          scope={skillsScope({
+            threadId: activeId,
+            threadProjectId: meta?.projectId,
+            draftProjectId: nav.creating?.projectId,
+            lastProjectId: loadLastProject() || undefined,
+            projects,
+          })}
+          onClose={() => screens.setTools(null)}
+        />
+        {overlays}
+      </>
     );
   }
 
@@ -151,7 +290,11 @@ export function App() {
         open={nav.sidebarOpen}
         onOpenChange={nav.setSidebarOpen}
         onSelect={select}
-        onNew={nav.startNew}
+        onNewThreadIn={newThreadIn}
+        onNew={() => nav.startNew()}
+        onOpenPalette={() => palette.show("root")}
+        projectView={projectView}
+        showJumpHints={showJumpHints}
         onDelete={deletion.remove}
         onShowAccess={() => screens.setShowAccess(true)}
         onShowUsage={() => screens.setShowUsage(true)}
@@ -216,6 +359,10 @@ export function App() {
           />
         ) : nav.creating ? (
           <ThreadDraft
+            // A new request is a new draft, on its own values.
+            key={nav.creating.nonce}
+            preset={nav.creating}
+            composerRef={composerRef}
             projects={projects}
             activeProjectId={nav.creating.projectId}
             onProjectChange={nav.pickDraftProject}
@@ -242,7 +389,8 @@ export function App() {
             restoring={nav.restoring}
             attaching={!!activeId}
             hasThreads={threads.length > 0}
-            onNew={nav.startNew}
+            onNewThreadIn={newThreadIn}
+            onNew={() => nav.startNew()}
           />
         )}
       </main>
@@ -263,6 +411,7 @@ export function App() {
         auth={auth}
         projects={projectActions}
       />
+      {overlays}
     </div>
   );
 }

@@ -15,9 +15,11 @@ import type { PanelControls } from "~/app/usePanel";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { TranscriptCopy } from "~/app/useTranscriptCopy";
 import { liveJobCount } from "~/lib/jobs";
+import type { CommandId } from "~/lib/keybindings";
 import { threadTitle } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta, ThreadState } from "~/protocol";
+import { useShortcutLabel } from "~/useShortcuts";
 
 import { IconButton } from "./IconButton";
 import { TitleEditor } from "./TitleEditor";
@@ -27,6 +29,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -88,6 +91,7 @@ export function ThreadHeader({
           only appears when there is a closed sidebar to reopen. */}
       <IconButton
         label="Show threads"
+        shortcut="toggleSidebar"
         onClick={onShowSidebar}
         className={cn(sidebarOpen && "hidden")}
       >
@@ -226,6 +230,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
 
       <IconButton
         label={copy.copied ? "Transcript copied" : "Copy transcript"}
+        shortcut="copyTranscript"
         onClick={() => void copy.copyAll()}
       >
         {copy.copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
@@ -233,6 +238,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
 
       <IconButton
         label={panel.open ? "Hide the panel" : "Show the panel"}
+        shortcut="togglePanel"
         onClick={panel.toggle}
         className={cn("relative", panel.open && "bg-accent")}
       >
@@ -265,6 +271,7 @@ function PhoneActions({ actions }: { actions: Actions }) {
       <DropdownMenuContent align="end" className="min-w-48">
         <DropdownMenuItem onSelect={panel.show}>
           <PanelRightIcon /> Open panel
+          <ItemShortcut command="togglePanel" />
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onShowMcp}>
           <PlugIcon /> MCP servers
@@ -273,6 +280,7 @@ function PhoneActions({ actions }: { actions: Actions }) {
         <DropdownMenuItem onSelect={() => void copy.copyAll()}>
           {copy.copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
           {copy.copied ? "Transcript copied" : "Copy transcript"}
+          <ItemShortcut command="copyTranscript" />
         </DropdownMenuItem>
         {pin.toggle && (
           <>
@@ -286,6 +294,14 @@ function PhoneActions({ actions }: { actions: Actions }) {
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+// The menu only shows on a phone today, where hints are off and this renders
+// nothing; it is here so the menu says the same as the tooltips wherever a
+// keyboard and pointer do meet it.
+function ItemShortcut({ command }: { command: CommandId }) {
+  const label = useShortcutLabel(command);
+  return label ? <DropdownMenuShortcut>{label}</DropdownMenuShortcut> : null;
 }
 
 function JobsBadge({ state, className }: { state: ThreadState; className: string }) {
