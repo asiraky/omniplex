@@ -424,6 +424,10 @@ type State struct {
 	Artefacts []Artefact `json:"artefacts"`
 
 	itemIndex map[string]int `json:"-"`
+	// recapped is set by FromSnapshot when the stored snapshot held tool
+	// content over the cap: the row on disk is still the big one and wants
+	// rewriting.
+	recapped bool
 	jobIndex  map[string]int `json:"-"`
 }
 
@@ -459,6 +463,10 @@ func (s *State) reindexJobs() {
 	}
 }
 
+// Recapped reports whether FromSnapshot had to cap tool content the stored
+// snapshot held whole, so the stored snapshot is worth replacing.
+func (s *State) Recapped() bool { return s.recapped }
+
 // FromSnapshot decodes a stored snapshot back into usable state.
 func FromSnapshot(blob json.RawMessage) (*State, error) {
 	var s State
@@ -472,7 +480,9 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	// here shrinks it the first time it loads, and the next snapshot written
 	// persists the small form.
 	for i := range s.Items {
-		capItem(&s.Items[i])
+		if capItem(&s.Items[i]) {
+			s.recapped = true
+		}
 	}
 	s.reindex()
 	return &s, nil

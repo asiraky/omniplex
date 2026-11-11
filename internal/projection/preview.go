@@ -13,8 +13,9 @@ import (
 // preview of each result instead; the full text stays in the event log, which
 // remains authoritative, and is read back from there on demand.
 //
-// The web client mirrors this exactly: both sides must cut the same bytes so a
-// client's preview matches the server's.
+// The web client applies the same rule to the live events it folds, so a
+// client holding a thread stays bounded too. It counts UTF-16 units where this
+// counts bytes; the two previews can differ slightly, and nothing compares them.
 const (
 	previewHead = 4096
 	previewTail = 4096
@@ -75,17 +76,22 @@ func appendToolContent(it *Item, add []proto.ToolContent) {
 
 // capItem applies the same caps to an item already built, for a snapshot
 // written before they existed. Dropped entries go into a fresh slice so the
-// old backing array, and the text it holds, can be collected.
-func capItem(it *Item) {
+// old backing array, and the text it holds, can be collected. It reports
+// whether anything was cut.
+func capItem(it *Item) bool {
+	changed := false
 	if len(it.Content) > maxToolContent {
 		it.Content = append([]proto.ToolContent(nil), it.Content[:maxToolContent]...)
 		it.Truncated = true
+		changed = true
 	}
 	for i := range it.Content {
 		c, cut := capToolContent(it.Content[i])
 		if cut {
 			it.Content[i] = c
 			it.Truncated = true
+			changed = true
 		}
 	}
+	return changed
 }
