@@ -85,11 +85,16 @@ function MoreSendOptions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
+        {/* A sliver of the send button's pill, too narrow for a thumb.
+            On touch its target grows to 44px square, but rightwards
+            only, into the composer's padding: growing from the centre
+            would take taps meant for send. Hence a hand-placed
+            ::after rather than `hit-44`. */}
         <Button
           size="icon"
           disabled={cannotSend}
           aria-label="More send options"
-          className="border-primary-foreground/25 h-11 w-7 shrink-0 rounded-l-none rounded-r-full border-l md:h-8 md:w-6"
+          className="border-primary-foreground/25 relative h-11 w-7 shrink-0 rounded-l-none rounded-r-full border-l pointer-coarse:after:absolute pointer-coarse:after:top-1/2 pointer-coarse:after:left-0 pointer-coarse:after:h-[max(100%,44px)] pointer-coarse:after:w-11 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-[''] md:h-8 md:w-6"
         >
           <ChevronDownIcon className="size-3.5" />
         </Button>

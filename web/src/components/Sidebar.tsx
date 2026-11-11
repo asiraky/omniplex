@@ -481,6 +481,9 @@ function SidebarPanel({
 
       <Separator />
 
+      {/* From md up the first three hug their 24px glyphs. A touch screen
+          that wide (an iPad) gets 44px tall targets back as hit area, 40px
+          wide: the 8px gaps are all there is between them. */}
       <div className="flex items-center gap-2 px-3 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
         {/* Filtered, the count says so: with grouping gone there is nothing
             else on screen to admit that threads are missing. */}
@@ -496,7 +499,7 @@ function SidebarPanel({
             <IconButton
               label="Usage and limits"
               onClick={props.onShowUsage}
-              className="text-muted-foreground hover:text-foreground size-6"
+              className="text-muted-foreground hover:text-foreground hit-44 relative [--hit-w:40px] md:size-6"
             >
               <ActivityIcon />
             </IconButton>
@@ -509,7 +512,7 @@ function SidebarPanel({
         <IconButton
           label="Skills, MCP and sign-ins"
           onClick={props.onShowSkills}
-          className="text-muted-foreground hover:text-foreground md:size-6"
+          className="text-muted-foreground hover:text-foreground hit-44 relative [--hit-w:40px] md:size-6"
         >
           <BlocksIcon />
         </IconButton>
@@ -520,15 +523,16 @@ function SidebarPanel({
               onClick={props.onShowAccess}
               aria-label="How to reach this server"
               // The dot stays a dot; the target around it is thumb-sized on a
-              // phone and shrinks to the dot again for a pointer.
-              className="focus-visible:ring-ring flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-full outline-none focus-visible:ring-2 md:size-6"
+              // phone and shrinks to the dot again from md up, where touch
+              // keeps a thumb's target as hit area.
+              className="focus-visible:ring-ring hit-44 relative flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-full [--hit-w:40px] outline-none focus-visible:ring-2 md:size-6"
             >
               <StatusDot status={props.status} />
             </button>
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
-        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings}>
+        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings} className="hit-44 relative">
           <SettingsIcon />
         </IconButton>
         <ThemeToggle />

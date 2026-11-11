@@ -13,13 +13,17 @@ function receivedTime(ms?: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// About 22px tall, which a thumb misses; on a touch screen `hit-44` grows the
+// target to 44px without moving the footer. The rows either side are 14px
+// away, so the grown areas reach into the gap but never another control.
 const footerButton =
-  "hover:text-foreground focus-visible:ring-ring flex cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 outline-none focus-visible:ring-2";
+  "hover:text-foreground focus-visible:ring-ring hit-44 relative flex cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 outline-none focus-visible:ring-2";
 
 /**
  * The footer under a message: when it arrived, and a one-click copy of
  * the raw text. Quiet by design — metadata should not compete with the prose —
- * so it fades in on hover on a desktop and stays small everywhere.
+ * so with a mouse it fades in on hover, and it stays small everywhere. A touch
+ * screen has no hover to bring it in, so there it is always showing.
  *
  * With read-aloud on it also plays the message, or the reader's selection when
  * that reaches into this message. `speakRef` is the message's rendered content
@@ -45,10 +49,10 @@ export function MessageMeta({
   return (
     <div
       className={cn(
-        "text-muted-foreground flex items-center gap-1.5 text-[13px] opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100",
+        "text-muted-foreground flex items-center gap-1.5 text-[13px] opacity-100 transition-opacity mouse:opacity-0 mouse:group-hover:opacity-100 mouse:group-focus-within:opacity-100",
         // Hover-only would hide the very controls in use: the selection
         // indicator, and the stop button once the pointer moves away.
-        "md:has-data-active:opacity-100",
+        "mouse:has-data-active:opacity-100",
       )}
     >
       {time && <span className="font-mono">{time}</span>}

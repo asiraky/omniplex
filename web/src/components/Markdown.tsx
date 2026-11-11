@@ -66,7 +66,10 @@ function CopyButton({ text }: { text: string }) {
       type="button"
       onClick={() => void copy(text)}
       aria-label={copied ? "Copied" : "Copy code"}
-      className="text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring flex size-6 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
+      // 24px to sit in the code block's header; on touch it takes taps
+      // across 44px tall and 40px wide, clipped at the block's edge. 40, not
+      // 44: in a diagram's header the expand button is 8px to its right.
+      className="text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring hit-44 relative flex size-6 [--hit-w:40px] shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
     >
       {copied ? <CheckIcon className="text-success size-3" /> : <CopyIcon className="size-3" />}
     </button>
