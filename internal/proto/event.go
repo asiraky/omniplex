@@ -466,6 +466,9 @@ type TurnFinishedPayload struct {
 	// on English, which is how a login failure came to be reported as a server
 	// restart. Empty means unclassified: show the message and nothing more.
 	Failure string `json:"failure,omitempty"`
+	// ResetAt is when a FailureLimit's window reopens, in epoch ms. Zero means
+	// the harness did not say, or the failure is not a limit.
+	ResetAt int64 `json:"resetAt,omitempty"`
 }
 
 // Failure kinds for turn.finished.
@@ -719,4 +722,10 @@ type ScheduledPrompt struct {
 	Status   string        `json:"status"`
 	Error    string        `json:"error,omitempty"`
 	TurnID   string        `json:"turnId,omitempty"`
+	// Kind is empty for a prompt a human scheduled. ScheduleLimit marks the
+	// continuation the server arms when a turn stops at a usage limit.
+	Kind string `json:"kind,omitempty"`
 }
+
+// ScheduleLimit is the ScheduledPrompt.Kind of a usage-limit continuation.
+const ScheduleLimit = "limit"
