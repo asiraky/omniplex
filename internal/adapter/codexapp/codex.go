@@ -459,8 +459,18 @@ type session struct {
 	subagents map[string]string
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
-	manualCompact  bool
-	lastCompaction string
+	manualCompact bool
+	compaction    compactionCount
+}
+
+// compactionCount tracks the compactions one codex turn has reported, so the
+// two signals for the same compaction become one notice. A turn can compact
+// more than once, so the turn id alone cannot be the key.
+type compactionCount struct {
+	turn    string
+	items   int // contextCompaction items completed
+	notices int // deprecated thread/compacted notifications
+	emitted int
 }
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
@@ -1062,7 +1072,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			TurnID string `json:"turnId"`
 		}
 		_ = json.Unmarshal(params, &p)
-		s.emitContextCompacted(p.TurnID)
+		s.emitContextCompacted(p.TurnID, false)
 
 	case "item/started", "item/completed":
 		// An item starting is work running: open a harness-initiated turn if
@@ -1119,6 +1129,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		}
 		_ = json.Unmarshal(params, &p)
 		t := p.TokenUsage.Total
+		// Codex's input includes the cached and cache-written share; the
+		// canonical input is the uncached remainder, as the usage scanner
+		// reads it from the rollout. Passing it through counted cached
+		// tokens twice wherever input and cache reads are summed.
+		input := max(0, t.InputTokens-t.CachedInputTokens-t.CacheWriteInputTokens)
 		var pct float64
 		window := p.TokenUsage.ModelContextWindow
 		used := p.TokenUsage.Last.TotalTokens
@@ -1129,7 +1144,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			pct = float64(used) / float64(window) * 100
 		}
 		s.emit(proto.Emit(proto.UsageUpdated, proto.UsageUpdatedPayload{
-			Input: t.InputTokens, Output: t.OutputTokens,
+			Input: input, Output: t.OutputTokens,
 			CacheRead: t.CachedInputTokens, CacheWrite: t.CacheWriteInputTokens,
 			ContextPct: pct, ContextUsed: used, ContextWindow: window,
 		}))
@@ -1237,12 +1252,38 @@ type codexItem struct {
 	} `json:"changes"`
 
 	// mcpToolCall
-	Server string          `json:"server"`
-	Tool   string          `json:"tool"`
-	Result json.RawMessage `json:"result"`
+	Server string         `json:"server"`
+	Tool   string         `json:"tool"`
+	Result *mcpToolResult `json:"result"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 
 	// webSearch
-	Query string `json:"query"`
+	Query  string `json:"query"`
+	Action *struct {
+		Type    string   `json:"type"`
+		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
+		URL     string   `json:"url"`
+		Pattern string   `json:"pattern"`
+	} `json:"action"`
+}
+
+// mcpToolResult is an MCP CallToolResult as codex relays it.
+type mcpToolResult struct {
+	Content []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Data     string `json:"data"`
+		MimeType string `json:"mimeType"`
+		URI      string `json:"uri"`
+		Resource *struct {
+			URI  string `json:"uri"`
+			Text string `json:"text"`
+		} `json:"resource"`
+	} `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent"`
 }
 
 func (s *session) handleItem(completed bool, turn string, params json.RawMessage) {
@@ -1268,7 +1309,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !completed {
 			return
 		}
-		s.emitContextCompacted(p.TurnID)
+		s.emitContextCompacted(p.TurnID, true)
 
 	case "userMessage":
 		// The turn's own prompt is already in the log via turn.started. A
@@ -1314,8 +1355,8 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			}))
 			return
 		}
-		status := proto.StatusCompleted
-		if it.ExitCode != nil && *it.ExitCode != 0 {
+		status := itemStatus(it.Status)
+		if status == proto.StatusCompleted && it.ExitCode != nil && *it.ExitCode != 0 {
 			status = proto.StatusFailed
 		}
 		var content []proto.ToolContent
@@ -1341,12 +1382,8 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			}))
 			return
 		}
-		status := proto.StatusCompleted
-		if it.Status == "failed" || it.Status == "declined" {
-			status = proto.StatusFailed
-		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: status, Title: title, Content: content,
+			ToolCallID: it.ID, Status: itemStatus(it.Status), Title: title, Content: content,
 		}))
 
 	case "mcpToolCall":
@@ -1358,36 +1395,141 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			}))
 			return
 		}
+		status, content := mcpOutcome(it)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: proto.StatusCompleted,
-			Content: []proto.ToolContent{{Type: "text", Text: string(it.Result)}},
+			ToolCallID: it.ID, Status: status, Content: content,
 		}))
 
 	case "webSearch":
+		// The query is often empty when the search starts and filled in by
+		// the time it completes, so the completion re-titles the card.
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindFetch,
-				Title: "Search: " + it.Query, Status: proto.StatusInProgress,
+				Title: webSearchTitle(it), Status: proto.StatusInProgress,
 			}))
 			return
 		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: proto.StatusCompleted,
+			ToolCallID: it.ID, Status: proto.StatusCompleted, Title: webSearchTitle(it),
 		}))
 	}
 }
 
+// itemStatus maps a completed item's CommandExecutionStatus or
+// PatchApplyStatus onto the canonical one. A declined call never ran: it is
+// neither done nor broken.
+func itemStatus(status string) string {
+	switch status {
+	case "declined":
+		return proto.StatusDeclined
+	case "failed":
+		return proto.StatusFailed
+	}
+	return proto.StatusCompleted
+}
+
+// mcpOutcome is a completed MCP call's status and what the card shows. A
+// failure carries its error and no result; printing the absent result is what
+// rendered "null" under a green tick.
+func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
+	if it.Status == "failed" || it.Error != nil {
+		msg := "MCP call failed"
+		if it.Error != nil && it.Error.Message != "" {
+			msg = it.Error.Message
+		}
+		return proto.StatusFailed, []proto.ToolContent{{Type: "text", Text: msg}}
+	}
+	if it.Result == nil {
+		return proto.StatusCompleted, nil
+	}
+	var content []proto.ToolContent
+	for _, c := range it.Result.Content {
+		var text string
+		switch c.Type {
+		case "text":
+			text = c.Text
+		case "image", "audio":
+			// The bytes stay off the wire: base64 is unreadable as text and
+			// heavy on a phone. A placeholder says what was there (#287
+			// turns images into thumbnails).
+			text = fmt.Sprintf("[%s: %s, %s]", c.Type, c.MimeType, base64Size(c.Data))
+		case "resource_link":
+			text = c.URI
+		case "resource":
+			if c.Resource != nil {
+				text = c.Resource.Text
+				if text == "" {
+					text = "[resource: " + c.Resource.URI + "]"
+				}
+			}
+		}
+		if text != "" {
+			content = append(content, proto.ToolContent{Type: "text", Text: text})
+		}
+	}
+	if len(content) == 0 && len(it.Result.StructuredContent) > 0 && string(it.Result.StructuredContent) != "null" {
+		content = []proto.ToolContent{{Type: "text", Text: string(it.Result.StructuredContent)}}
+	}
+	return proto.StatusCompleted, content
+}
+
+// base64Size is the decoded size of base64 data, for a human: "42 KB".
+func base64Size(data string) string {
+	n := len(strings.TrimRight(data, "=")) * 3 / 4
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%d KB", (n+512)/1024)
+}
+
+// webSearchTitle names a web search by what it looked for. Codex fills the
+// item's query for a plain search; the action carries the rest.
+func webSearchTitle(it codexItem) string {
+	q := it.Query
+	if a := it.Action; a != nil {
+		switch {
+		case q != "":
+		case a.Query != "":
+			q = a.Query
+		case len(a.Queries) > 0:
+			q = strings.Join(a.Queries, ", ")
+		case a.Type == "openPage" && a.URL != "":
+			return "Open " + a.URL
+		case a.Type == "findInPage" && a.Pattern != "":
+			return "Find \"" + a.Pattern + "\" in " + a.URL
+		}
+	}
+	if q == "" {
+		return "Web search"
+	}
+	return "Search: " + q
+}
+
 // New app-servers emit a contextCompaction item; older ones emit the
 // thread/compacted notification, and transitional versions may emit both.
-func (s *session) emitContextCompacted(turnID string) {
+// Within a turn, the nth compaction is announced by whichever signal reports
+// it first, so both signals count but neither repeats the other.
+func (s *session) emitContextCompacted(turnID string, item bool) {
 	s.mu.Lock()
-	if turnID != "" && turnID == s.lastCompaction {
-		s.mu.Unlock()
-		return
+	if turnID != "" {
+		c := &s.compaction
+		if c.turn != turnID {
+			*c = compactionCount{turn: turnID}
+		}
+		if item {
+			c.items++
+		} else {
+			c.notices++
+		}
+		if max(c.items, c.notices) <= c.emitted {
+			s.mu.Unlock()
+			return
+		}
+		c.emitted++
 	}
 	manual := s.manualCompact
 	s.manualCompact = false
-	s.lastCompaction = turnID
 	s.mu.Unlock()
 	trigger := "auto"
 	if manual {
