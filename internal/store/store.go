@@ -66,6 +66,20 @@ CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
 CREATE INDEX IF NOT EXISTS events_type_time ON events(type, created_at);
 `
 
+// dsnPragmas go in the DSN rather than through db.Exec because a pragma is
+// per connection: one Exec reaches whichever pooled connection ran it, and
+// every other connection keeps the defaults — a full fsync on each commit,
+// in synchronous's case. auto_vacuum comes first so a new database takes it
+// before anything writes its first page; an existing one only takes it at a
+// VACUUM (see convertToIncrementalVacuum). journal_size_limit is what lets
+// the WAL shrink back after a checkpoint instead of keeping its high-water
+// mark on disk.
+const dsnPragmas = "?_pragma=busy_timeout(5000)" +
+	"&_pragma=auto_vacuum(INCREMENTAL)" +
+	"&_pragma=journal_mode(WAL)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=journal_size_limit(67108864)"
+
 // ThreadMeta is the row-level view of a thread, enough for a thread list.
 type ThreadMeta struct {
 	ScheduledCount int    `json:"scheduledCount,omitempty"`

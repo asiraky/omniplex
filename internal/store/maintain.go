@@ -8,20 +8,6 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
-// dsnPragmas go in the DSN rather than through db.Exec because a pragma is
-// per connection: one Exec reaches whichever pooled connection ran it, and
-// every other connection keeps the defaults — a full fsync on each commit,
-// in synchronous's case. auto_vacuum comes first so a new database takes it
-// before anything writes its first page; an existing one only takes it at a
-// VACUUM (see convertToIncrementalVacuum). journal_size_limit is what lets
-// the WAL shrink back after a checkpoint instead of keeping its high-water
-// mark on disk.
-const dsnPragmas = "?_pragma=busy_timeout(5000)" +
-	"&_pragma=auto_vacuum(INCREMENTAL)" +
-	"&_pragma=journal_mode(WAL)" +
-	"&_pragma=synchronous(NORMAL)" +
-	"&_pragma=journal_size_limit(67108864)"
-
 // commandRetention is how long a command id stays replayable. A client only
 // retries a command it is still holding in memory, across a reconnect, so a
 // week is far past any retry that can actually arrive.
@@ -46,13 +32,16 @@ const convertThreshold = 0.1
 // and a full disk refusing the copy must not stop the server starting.
 func (s *Store) convertToIncrementalVacuum() {
 	var mode, free, pages int64
-	if err := s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil || mode == autoVacuumIncremental {
-		return
+	for _, read := range []struct {
+		pragma string
+		into   *int64
+	}{{"auto_vacuum", &mode}, {"freelist_count", &free}, {"page_count", &pages}} {
+		if err := s.db.QueryRow(`PRAGMA ` + read.pragma).Scan(read.into); err != nil {
+			log.Printf("store: read %s: %v", read.pragma, err)
+			return
+		}
 	}
-	if err := s.db.QueryRow(`PRAGMA freelist_count`).Scan(&free); err != nil {
-		return
-	}
-	if err := s.db.QueryRow(`PRAGMA page_count`).Scan(&pages); err != nil {
+	if mode == autoVacuumIncremental {
 		return
 	}
 	if float64(free) <= convertThreshold*float64(pages) {

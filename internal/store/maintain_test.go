@@ -111,7 +111,7 @@ func TestOpenConvertsALegacyDatabaseToIncrementalVacuumAndKeepsItsRows(t *testin
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	if got := pragmaInt(t, s.db, "auto_vacuum"); got != 2 {
+	if got := pragmaInt(t, s.db, "auto_vacuum"); got != autoVacuumIncremental {
 		t.Fatalf("auto_vacuum after open = %d, want 2 (INCREMENTAL)", got)
 	}
 	if got := pragmaInt(t, s.db, "freelist_count"); got != 0 {
@@ -143,7 +143,7 @@ func TestOpenConvertsALegacyDatabaseToIncrementalVacuumAndKeepsItsRows(t *testin
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = s2.Close() })
-	if got := pragmaInt(t, s2.db, "auto_vacuum"); got != 2 {
+	if got := pragmaInt(t, s2.db, "auto_vacuum"); got != autoVacuumIncremental {
 		t.Fatalf("auto_vacuum after reopen = %d, want 2 (INCREMENTAL)", got)
 	}
 	if got := listIDs(t, s2); len(got) != 1 || got[0] != "after-vacuum" {
