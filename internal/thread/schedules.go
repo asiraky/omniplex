@@ -141,8 +141,12 @@ func (a *Actor) dispatchScheduled(now int64) error {
 			}
 		}
 		// A queue goes ahead of a schedule, except a queue held by a usage
-		// limit: that waits for the next turn to start, and this is one.
-		queued := len(a.state.Queued) > 0 && !a.state.QueueHeld()
+		// limit: that waits for the next turn to start. The continuation is
+		// the turn it waits for. A human's schedule goes past it only while
+		// none is armed — with the reset unknown it is the way round the
+		// limit; with one armed it would call the continuation off.
+		held := a.state.QueueHeld() && (p.Kind == proto.ScheduleLimit || !a.limitArmed())
+		queued := len(a.state.Queued) > 0 && !held
 		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || queued {
 			continue
 		}

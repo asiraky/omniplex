@@ -505,6 +505,10 @@ type session struct {
 	// update overtook it.
 	limits    *codexLimitSnapshot
 	limitsGen int
+	// resetTurn is the last turn that finished on a limit with its reset
+	// unknown. The first merge that knows the reset back-fills it with
+	// turn.limit_reset; a turn starting first forgets it.
+	resetTurn string
 	// finishing counts turn.finished emissions deferred behind a rate-limit
 	// read. watchExit waits for them before it closes events.
 	finishing sync.WaitGroup
@@ -543,6 +547,7 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 		return errors.New("the harness resumed work on its own; wait for it to finish")
 	}
 	s.turnID = in.TurnID
+	s.resetTurn = ""
 	s.mu.Unlock()
 
 	params := map[string]any{
@@ -887,6 +892,7 @@ func (s *session) ensureTurn(serverTurn string) string {
 	if serverTurn != s.lastServerTurn {
 		s.serverTurnID = serverTurn
 	}
+	s.resetTurn = ""
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
@@ -1583,7 +1589,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 // finishAfterLimitRead reads the account's limits for a turn that failed on
 // one with no reset time known, then finishes the turn with whatever reset the
 // merged snapshot now says. A failed or slow read still finishes the turn —
-// as a limit, with the reset unknown.
+// as a limit, with the reset unknown until a later snapshot back-fills it.
 func (s *session) finishAfterLimitRead(fin proto.TurnFinishedPayload) {
 	defer s.finishing.Done()
 	ctx, cancel := context.WithTimeout(context.Background(), limitReadTimeout)
@@ -1594,6 +1600,10 @@ func (s *session) finishAfterLimitRead(fin proto.TurnFinishedPayload) {
 	}
 	fin.ResetAt = s.limitResetAt()
 	s.emit(proto.Emit(proto.TurnFinished, fin))
+	// After the finish, so the back-fill never overtakes it.
+	if fin.ResetAt == 0 {
+		s.awaitReset(fin.TurnID)
+	}
 
 	// The read is the post-turn quota refresh too; there is no need for a
 	// second one.

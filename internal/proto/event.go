@@ -22,6 +22,11 @@ const (
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
+	// TurnLimitReset is the reset a turn that finished on a usage limit did
+	// not know when it finished: the harness learned it afterwards. It
+	// changes nothing in the transcript; the server arms the turn's
+	// continuation from it.
+	TurnLimitReset = "turn.limit_reset"
 	// PromptQueued is a prompt sent while a turn was running. It waits in the
 	// log, not in a connection. When the harness can take a message mid-turn
 	// the prompt is handed over at once, and PromptSent follows once the
@@ -469,6 +474,13 @@ type TurnFinishedPayload struct {
 	// ResetAt is when a FailureLimit's window reopens, in epoch ms. Zero means
 	// the harness did not say, or the failure is not a limit.
 	ResetAt int64 `json:"resetAt,omitempty"`
+}
+
+// TurnLimitResetPayload back-fills TurnFinishedPayload.ResetAt for a limit
+// turn that finished with it zero.
+type TurnLimitResetPayload struct {
+	TurnID  string `json:"turnId"`
+	ResetAt int64  `json:"resetAt"`
 }
 
 // Failure kinds for turn.finished.

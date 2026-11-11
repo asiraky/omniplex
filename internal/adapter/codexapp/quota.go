@@ -15,6 +15,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
+	"github.com/asiraky/omniplex/internal/proto"
 )
 
 // Window-duration thresholds, in minutes, that turn a window's width into a
@@ -74,6 +75,10 @@ func kindLabel(kind string) string {
 		return "Session"
 	}
 }
+
+// mainLimitID is the limitId of the account's main allowance. Every other
+// limit is model-specific.
+const mainLimitID = "codex"
 
 // codexLimitSnapshot is one limit's snapshot — the main "codex" allowance or
 // a model-specific one (GPT-5.3-Codex-Spark and friends), which report the
@@ -154,7 +159,7 @@ func parseCodexRead(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
 	for _, id := range ids {
 		s := byID[id]
 		snap.Windows = append(snap.Windows, s.windows()...)
-		if s != nil && s.PlanType != "" && (snap.Plan == "" || id == "codex") {
+		if s != nil && s.PlanType != "" && (snap.Plan == "" || id == mainLimitID) {
 			snap.Plan = s.PlanType
 		}
 	}
@@ -231,23 +236,23 @@ func updateSnapshot(params json.RawMessage) (*codexLimitSnapshot, bool) {
 		return nil, false
 	}
 	if s.LimitID == "" {
-		s.LimitID = "codex" // an older CLI that omits it
+		s.LimitID = mainLimitID // an older CLI that omits it
 	}
 	return &s, true
 }
 
 // mergeLimits folds an update or a read onto the session's snapshot of the
-// main allowance. A model-specific limit is never merged: the reset a limited
-// turn waits for is the main allowance's. A window the update names replaces
-// the old one whole — a reset carried over from an earlier window would name a
-// time that has already passed.
-func mergeLimits(prev, update *codexLimitSnapshot) *codexLimitSnapshot {
-	if update == nil || (update.LimitID != "" && update.LimitID != "codex") {
-		return prev
+// main allowance, and reports whether it did. A model-specific limit is never
+// merged: the reset a limited turn waits for is the main allowance's. A window
+// the update names replaces the old one whole — a reset carried over from an
+// earlier window would name a time that has already passed.
+func mergeLimits(prev, update *codexLimitSnapshot) (*codexLimitSnapshot, bool) {
+	if update == nil || (update.LimitID != "" && update.LimitID != mainLimitID) {
+		return prev, false
 	}
 	if prev == nil {
 		next := *update
-		return &next
+		return &next, true
 	}
 	next := *prev
 	if update.LimitID != "" {
@@ -265,7 +270,7 @@ func mergeLimits(prev, update *codexLimitSnapshot) *codexLimitSnapshot {
 	if update.Secondary != nil {
 		next.Secondary = update.Secondary
 	}
-	return &next
+	return &next, true
 }
 
 // resetAt is when a limited turn can run again, in epoch ms: the latest reset
@@ -303,9 +308,56 @@ func (s *session) mergeUpdate(params json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
-	s.limits = mergeLimits(s.limits, update)
-	s.limitsGen++
+	s.applyLimitsLocked(update)
+	fill := s.takeResetLocked()
 	s.mu.Unlock()
+	s.emitReset(fill)
+}
+
+// applyLimitsLocked merges a snapshot under s.mu. Only a merge that applied
+// counts as one: a model-specific update changes nothing a read in flight
+// would overwrite, so it must not make that read yield.
+func (s *session) applyLimitsLocked(update *codexLimitSnapshot) {
+	if next, ok := mergeLimits(s.limits, update); ok {
+		s.limits = next
+		s.limitsGen++
+	}
+}
+
+// awaitReset remembers a turn that finished on a limit with its reset
+// unknown, so the first snapshot that says when it reopens can back-fill it.
+// The snapshot may already say: an update can land between the turn's finish
+// reading it and this.
+func (s *session) awaitReset(turn string) {
+	s.mu.Lock()
+	// A turn that has since started makes the old one's reset moot.
+	if s.turnID == "" {
+		s.resetTurn = turn
+	}
+	fill := s.takeResetLocked()
+	s.mu.Unlock()
+	s.emitReset(fill)
+}
+
+// takeResetLocked hands over the remembered turn's back-fill, under s.mu,
+// once the snapshot knows its reset. Once only: the turn is forgotten.
+func (s *session) takeResetLocked() proto.TurnLimitResetPayload {
+	if s.resetTurn == "" {
+		return proto.TurnLimitResetPayload{}
+	}
+	reset := s.limits.resetAt()
+	if reset == 0 {
+		return proto.TurnLimitResetPayload{}
+	}
+	fill := proto.TurnLimitResetPayload{TurnID: s.resetTurn, ResetAt: reset}
+	s.resetTurn = ""
+	return fill
+}
+
+func (s *session) emitReset(fill proto.TurnLimitResetPayload) {
+	if fill.TurnID != "" {
+		s.emit(proto.Emit(proto.TurnLimitReset, fill))
+	}
 }
 
 // limitResetAt is resetAt over the session's current snapshot.
@@ -346,16 +398,17 @@ func (s *session) readLimits(ctx context.Context) (json.RawMessage, error) {
 	}
 	var res codexRateLimitsRead
 	if json.Unmarshal(raw, &res) == nil {
-		read := res.RateLimitsByLimitID["codex"]
+		read := res.RateLimitsByLimitID[mainLimitID]
 		if read == nil {
 			read = res.RateLimits
 		}
 		s.mu.Lock()
 		if s.limitsGen == gen {
-			s.limits = mergeLimits(s.limits, read)
-			s.limitsGen++
+			s.applyLimitsLocked(read)
 		}
+		fill := s.takeResetLocked()
 		s.mu.Unlock()
+		s.emitReset(fill)
 	}
 	return raw, nil
 }

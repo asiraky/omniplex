@@ -266,3 +266,85 @@ func TestLimitWithFailedReadStillFinishes(t *testing.T) {
 		t.Fatalf("turn.finished = %+v, want a limit with the reset unknown", fin)
 	}
 }
+
+func limitResets(got []proto.Emission) []proto.TurnLimitResetPayload {
+	var out []proto.TurnLimitResetPayload
+	for _, e := range got {
+		if e.Type == proto.TurnLimitReset {
+			out = append(out, e.Payload.(proto.TurnLimitResetPayload))
+		}
+	}
+	return out
+}
+
+// finishUnknown has the wired session finish its turn on a limit whose
+// reset neither a snapshot nor the read knew.
+func finishUnknown(t *testing.T) *session {
+	t.Helper()
+	s, server, _ := wiredSession(t, map[string]any{
+		"account/rateLimits/read": errors.New("not signed in"),
+	})
+	if err := server.Notify("turn/completed", json.RawMessage(limitCompletion)); err != nil {
+		t.Fatal(err)
+	}
+	if fin := nextFinished(t, s); fin.ResetAt != 0 {
+		t.Fatalf("turn.finished = %+v, want the reset unknown", fin)
+	}
+	s.finishing.Wait()
+	return s
+}
+
+// TestLaterSnapshotBackFillsTheReset: the first main-allowance snapshot that
+// says when the limit reopens back-fills the turn, once.
+func TestLaterSnapshotBackFillsTheReset(t *testing.T) {
+	s := finishUnknown(t)
+	s.handleNotification("account/rateLimits/updated", json.RawMessage(
+		`{"rateLimits":{"limitId":"codex_bengalfox","primary":{"usedPercent":100,"resetsAt":1789900000}}}`))
+	if got := limitResets(drain(s)); len(got) != 0 {
+		t.Fatalf("a model-specific limit back-filled %+v", got)
+	}
+	s.handleNotification("account/rateLimits/updated", json.RawMessage(
+		`{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"resetsAt":1789000000}}}`))
+	got := limitResets(drain(s))
+	if len(got) != 1 || got[0].TurnID != "omniplex-turn" || got[0].ResetAt != 1789000000*1000 {
+		t.Fatalf("back-fill = %+v, want the limited turn's reset", got)
+	}
+	s.handleNotification("account/rateLimits/updated", json.RawMessage(
+		`{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"resetsAt":1789000000}}}`))
+	if got := limitResets(drain(s)); len(got) != 0 {
+		t.Fatalf("back-filled again: %+v", got)
+	}
+}
+
+func TestNewTurnForgetsTheUnknownReset(t *testing.T) {
+	s := finishUnknown(t)
+	s.ensureTurn("codex-turn-2")
+	s.handleNotification("account/rateLimits/updated", json.RawMessage(
+		`{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"resetsAt":1789000000}}}`))
+	if got := limitResets(drain(s)); len(got) != 0 {
+		t.Fatalf("back-filled a turn the thread moved past: %+v", got)
+	}
+}
+
+// TestModelLimitUpdateDoesNotVoidARead: an update for another limit that
+// lands while a read is in flight changes nothing the read would overwrite,
+// so the read still merges.
+func TestModelLimitUpdateDoesNotVoidARead(t *testing.T) {
+	s := subagentSession(t)
+	sr, cw := io.Pipe()
+	cr, sw := io.Pipe()
+	_ = jsonrpc.NewConn(sr, sw, func(_ context.Context, method string, _ json.RawMessage) (any, error) {
+		// Merged before the reply is written: deterministically mid-read.
+		s.mergeUpdate(json.RawMessage(`{"rateLimits":{"limitId":"codex_bengalfox","primary":{"usedPercent":100,"resetsAt":1789900000}}}`))
+		return json.RawMessage(`{"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":100,"resetsAt":1789000000}}}}`), nil
+	}, nil)
+	s.conn = jsonrpc.NewConn(cr, cw, nil, nil)
+	t.Cleanup(func() { _ = cw.Close(); _ = sw.Close() })
+
+	if _, err := s.readLimits(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.limitResetAt(); got != 1789000000*1000 {
+		t.Fatalf("reset = %d, want the read's", got)
+	}
+}

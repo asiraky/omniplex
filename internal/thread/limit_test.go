@@ -97,7 +97,6 @@ func TestLimitWithoutAUsableResetArmsNothing(t *testing.T) {
 	}{
 		{"unknown reset", proto.FailureLimit, func() int64 { return 0 }},
 		{"reset before the finish", proto.FailureLimit, func() int64 { return time.Now().Add(-time.Second).UnixMilli() }},
-		{"reset over a day overdue", proto.FailureLimit, func() int64 { return time.Now().Add(-25 * time.Hour).UnixMilli() }},
 		{"not a limit", proto.FailureAuth, func() int64 { return time.Now().Add(time.Hour).UnixMilli() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,5 +273,166 @@ func TestLimitContinuationSurvivesRestart(t *testing.T) {
 				t.Fatalf("first prompt after restart = %q, want the continuation", got)
 			}
 		})
+	}
+}
+
+// harnessEmit hands the actor an event and waits for it to land in the log,
+// so a test can check that it changed nothing.
+func harnessEmit(t *testing.T, a *Actor, th *fakeThread, em proto.Emission) {
+	t.Helper()
+	ctx := context.Background()
+	before, err := a.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	th.emit(em)
+	waitFor(t, func() bool { s, _ := a.State(ctx); return s.Seq > before.Seq })
+}
+
+func backFill(turn string, resetAt int64) proto.Emission {
+	return proto.Emit(proto.TurnLimitReset, proto.TurnLimitResetPayload{TurnID: turn, ResetAt: resetAt})
+}
+
+// Codex closes its turn and reads the reset before it reports the finish,
+// and Stop in that gap cancels nothing: the turn is still running to the
+// actor, and the harness has nothing left to interrupt. The finish that
+// follows is still the turn the human stopped.
+func TestStopBeforeALateLimitFinishArmsNothing(t *testing.T) {
+	a, fa, _ := newTestActor(t)
+	ctx := context.Background()
+	th := fa.thread()
+	res, err := a.Prompt(ctx, "work", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-th.prompts
+	if err := a.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reset := time.Now().Add(time.Hour).UnixMilli()
+	th.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: res.TurnID, StopReason: proto.StopError, Failure: proto.FailureLimit, ResetAt: reset,
+	}))
+	waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
+	harnessEmit(t, a, th, backFill(res.TurnID, reset))
+	if got := limitSchedules(t, a); len(got) != 0 {
+		t.Fatalf("armed a continuation for a stopped turn: %+v", got)
+	}
+}
+
+// A Codex turn can finish on a limit before the harness knows its reset;
+// the back-fill arms the continuation once it does.
+func TestBackFillArmsTheContinuation(t *testing.T) {
+	a, fa, _ := newTestActor(t)
+	th := fa.thread()
+	turn := hitLimit(t, a, th, 0, "after")
+	if got := limitSchedules(t, a); len(got) != 0 {
+		t.Fatalf("armed with the reset unknown: %+v", got)
+	}
+	reset := time.Now().Add(time.Hour).UnixMilli()
+	harnessEmit(t, a, th, backFill(turn, reset))
+	if got := scheduled(t, a, limitScheduleID(turn)); got.Status != "pending" || got.DueAt != reset+limitDelay {
+		t.Fatalf("continuation = %+v", got)
+	}
+}
+
+func TestBackFillThatArmsNothing(t *testing.T) {
+	hour := func() int64 { return time.Now().Add(time.Hour).UnixMilli() }
+	for _, tc := range []struct {
+		name string
+		// setup leaves the thread where the back-fill lands, and names the
+		// turn it is for and the continuations it should leave.
+		setup func(t *testing.T, a *Actor, th *fakeThread) (turn string, want int)
+		reset func() int64
+	}{
+		{"reset already past", func(t *testing.T, a *Actor, th *fakeThread) (string, int) {
+			return hitLimit(t, a, th, 0, ""), 0
+		}, func() int64 { return time.Now().Add(-time.Second).UnixMilli() }},
+		{"the thread moved on", func(t *testing.T, a *Actor, th *fakeThread) (string, int) {
+			turn := hitLimit(t, a, th, 0, "")
+			ctx := context.Background()
+			res, err := a.Prompt(ctx, "by hand", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-th.prompts
+			th.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: res.TurnID, StopReason: proto.StopEndTurn}))
+			waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
+			return turn, 0
+		}, hour},
+		{"not a limit", func(t *testing.T, a *Actor, th *fakeThread) (string, int) {
+			ctx := context.Background()
+			res, err := a.Prompt(ctx, "work", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-th.prompts
+			th.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+				TurnID: res.TurnID, StopReason: proto.StopError, Failure: proto.FailureAuth,
+			}))
+			waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
+			return res.TurnID, 0
+		}, hour},
+		{"a continuation already armed", func(t *testing.T, a *Actor, th *fakeThread) (string, int) {
+			return hitLimit(t, a, th, time.Now().Add(2*time.Hour).UnixMilli(), ""), 1
+		}, hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, fa, _ := newTestActor(t)
+			th := fa.thread()
+			turn, want := tc.setup(t, a, th)
+			before := limitSchedules(t, a)
+			harnessEmit(t, a, th, backFill(turn, tc.reset()))
+			got := limitSchedules(t, a)
+			if len(got) != want || (want > 0 && (got[0].DueAt != before[0].DueAt || got[0].Revision != before[0].Revision)) {
+				t.Fatalf("continuations = %+v, want %d unchanged", got, want)
+			}
+		})
+	}
+}
+
+// A human's schedule waits behind a held queue while the continuation is
+// armed: starting it would walk into the limit and call the continuation off.
+func TestHumanScheduleWaitsWhileAContinuationIsArmed(t *testing.T) {
+	a, fa, _ := newTestActor(t)
+	ctx := context.Background()
+	th := fa.thread()
+	turn := hitLimit(t, a, th, time.Now().Add(time.Hour).UnixMilli(), "after")
+	p := scheduleInput("mine")
+	if err := a.Schedule(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+		t.Fatal(err)
+	}
+	noPrompt(t, th, "human schedule jumped the held queue")
+	cont := scheduled(t, a, limitScheduleID(turn))
+	if cont.Status != "pending" {
+		t.Fatalf("continuation = %s, want it still armed", cont.Status)
+	}
+	if err := a.scheduleTick(ctx, cont.DueAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextPrompt(t, th); got != limitContinuePrompt {
+		t.Fatalf("first prompt = %q, want the continuation", got)
+	}
+}
+
+// With the reset unknown nothing is armed, and a human's schedule is the way
+// round the limit: it goes past the held queue.
+func TestHumanScheduleJumpsAHeldQueueWithNoContinuation(t *testing.T) {
+	a, fa, _ := newTestActor(t)
+	ctx := context.Background()
+	th := fa.thread()
+	hitLimit(t, a, th, 0, "after")
+	p := scheduleInput("mine")
+	if err := a.Schedule(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextPrompt(t, th); got != p.Prompt {
+		t.Fatalf("first prompt = %q, want the human's schedule", got)
 	}
 }

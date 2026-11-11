@@ -70,6 +70,9 @@ type Actor struct {
 	pendingPerm   map[string]chan adapter.PermissionOutcome
 	pendingElicit map[string]chan adapter.ElicitationResult
 	turnActive    string
+	// stoppedTurn is the last turn a human stopped. It never gets a usage
+	// limit continuation, however late its finish says it hit one.
+	stoppedTurn string
 	// sent holds the queue ids the running harness process has been handed
 	// (adapter.Steerer) and not yet reported reading. Those are the harness's
 	// to run; dispatchQueued skips them. It is knowledge about this process,
@@ -1307,8 +1310,12 @@ func (a *Actor) handle(c command) (stop bool) {
 		// Stop means stop: a prompt queued behind the interrupted turn would
 		// otherwise start the moment the interrupt landed. The web puts the
 		// text back in the composer before it asks. A continuation armed for
-		// a usage limit is the same thing, only later.
-		a.disarmLimit("")
+		// a usage limit is the same thing, only later; so is one for the
+		// turn being stopped, which a late limit finish would otherwise arm.
+		a.disarmLimit()
+		if a.turnActive != "" {
+			a.stoppedTurn = a.turnActive
+		}
 		if a.turnActive == "" {
 			a.dropQueue()
 			c.reply <- cmdResult{value: "idle"}
