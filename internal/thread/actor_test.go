@@ -901,7 +901,9 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 		}
 	}()
 
-	total := SubscriberQueue * 3
+	// One past the bound overflows the stalled queue. Every event is a SQLite
+	// write, which -race slows by an order of magnitude, so send no more.
+	total := SubscriberQueue + 1
 	for i := 0; i < total; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 			Role: "agent", Kind: "text", BlockID: "b1", Delta: "x",
