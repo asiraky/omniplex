@@ -185,6 +185,9 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 	byModel := map[string]int{}
 	// byAlias remembers which input row a kept row came from.
 	byAlias := map[string]int{}
+	// unresolved holds the rows keyed by an alias the harness gave no
+	// resolved id for.
+	unresolved := map[string]bool{}
 	for idx, m := range in {
 		if m.Value == "" || isHaiku(m) {
 			continue
@@ -195,6 +198,7 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			// alias — stripped the same way, so an untagged id is still what
 			// the row is keyed and started by.
 			bare = stripContextTag(m.Value)
+			unresolved[bare] = true
 		}
 		version, description := splitDescription(m.Description)
 		row := adapter.ModelMeta{
@@ -243,11 +247,54 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 		byModel[bare] = len(current)
 		current = append(current, row)
 	}
+	current = foldUnresolved(current, unresolved)
 	sortByStrength(current)
 
 	out := make([]adapter.ModelMeta, 0, len(current)+len(legacyModels))
 	out = append(out, current...)
-	out = append(out, legacyModels...)
+	live := map[string]bool{}
+	for _, m := range current {
+		live[m.ID] = true
+	}
+	// A legacy model the harness still lists is already a live row; repeating
+	// it under Legacy would offer one id twice.
+	for _, m := range legacyModels {
+		if !live[m.ID] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// foldUnresolved collapses an alias the harness gave no resolved id for into
+// the row of the model it runs. Such a row is keyed by its alias ("opus"), so
+// the merge by concrete id cannot see that it names a model already listed;
+// its label can, when it was read from the description and matches a row
+// that has a real id ("Opus 5.5" from "claude-opus-5-5"). The alias adds only
+// its flags. One whose label matches nothing stays a row of its own.
+func foldUnresolved(rows []adapter.ModelMeta, unresolved map[string]bool) []adapter.ModelMeta {
+	out := make([]adapter.ModelMeta, 0, len(rows))
+	byLabel := map[string]int{}
+	for _, r := range rows {
+		if unresolved[r.ID] {
+			continue
+		}
+		if _, seen := byLabel[r.Label]; !seen {
+			byLabel[r.Label] = len(out)
+		}
+		out = append(out, r)
+	}
+	for _, r := range rows {
+		if !unresolved[r.ID] {
+			continue
+		}
+		if i, ok := byLabel[r.Label]; ok && r.Label != r.ID {
+			out[i].Default = out[i].Default || r.Default
+			out[i].Supports1M = out[i].Supports1M || r.Supports1M
+			continue
+		}
+		out = append(out, r)
+	}
 	return out
 }
 

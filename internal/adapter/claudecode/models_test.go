@@ -190,6 +190,50 @@ func TestMapClaudeModelsMergeKeepsTheNameEitherAliasFound(t *testing.T) {
 	}
 }
 
+// A newer CLI lists concrete models alongside a bare "opus" alias it gives no
+// resolved id for. The alias runs the Opus already listed, so it folds into
+// that row — one "Opus 5.5", carrying the alias's flags — instead of standing
+// beside it under the same name. An alias that names no listed model stays.
+func TestMapClaudeModelsFoldsAnUnresolvedAliasIntoItsModel(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "claude-opus-5-5", ResolvedModel: "claude-opus-5-5", DisplayName: "Opus 5.5", Description: "For complex work and everyday tasks"},
+		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Opus 5.5 with 1M context · Best for everyday, complex tasks"},
+		{Value: "sonnet", DisplayName: "Sonnet", Description: "Sonnet Next · Efficient for routine tasks"},
+	})
+
+	var opus []adapter.ModelMeta
+	for _, m := range got {
+		if m.Label == "Opus 5.5" {
+			opus = append(opus, m)
+		}
+	}
+	if len(opus) != 1 || opus[0].ID != "claude-opus-5-5" {
+		t.Fatalf("Opus 5.5 rows = %+v, want one, claude-opus-5-5", opus)
+	}
+	if !opus[0].Supports1M {
+		t.Error("the folded alias's 1M flag was dropped")
+	}
+	if m := findModel(t, got, "sonnet"); m.Label != "Sonnet Next" {
+		t.Errorf("unmatched alias label = %q, want Sonnet Next", m.Label)
+	}
+}
+
+// A legacy model the harness still lists is offered once, as the live row.
+func TestMapClaudeModelsDoesNotRepeatALiveLegacyModel(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "claude-opus-4-8", ResolvedModel: "claude-opus-4-8", DisplayName: "Opus 4.8"},
+	})
+	n := 0
+	for _, m := range got {
+		if m.ID == "claude-opus-4-8" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("claude-opus-4-8 offered %d times, want 1", n)
+	}
+}
+
 func TestModelLabel(t *testing.T) {
 	for id, want := range map[string]string{
 		"claude-opus-5":             "Opus 5",
