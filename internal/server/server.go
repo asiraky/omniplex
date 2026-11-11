@@ -337,6 +337,9 @@ func (s *Server) Handler() http.Handler {
 			r.PathValue("id"), time.Since(started).Milliseconds(), before, len(page), start)
 	})
 
+	// One tool call's whole output; the timeline holds a preview of it.
+	mux.HandleFunc("GET /api/threads/{id}/items/{itemId}/content", s.handleToolContent)
+
 	// Directory browsing, so the UI can pick a working directory.
 	mux.HandleFunc("GET /api/fs", func(w http.ResponseWriter, r *http.Request) {
 		dir := r.URL.Query().Get("path")
