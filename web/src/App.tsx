@@ -107,10 +107,12 @@ export function App() {
   const { composerRef } = recents;
   const turnRunning = state?.phase === "turn";
   // Choosing a thread or starting one is going somewhere: whatever full-page
-  // screen is up gives way, setup included, since the user asked for it.
+  // screen is up gives way, setup and the theme sample included, since the
+  // user asked for it.
   const leaveScreens = () => {
     screens.uncover();
     if (screens.setup) screens.leaveSetup();
+    if (screens.themePreview) screens.leaveThemePreview();
   };
   const openThread = (id: string) => {
     leaveScreens();
@@ -121,8 +123,11 @@ export function App() {
     nav.startNew(preset);
   };
   const newThreadIn = () => palette.show("newThread");
-  const newThreadHere = () =>
+  // Reachable from over the palette, which would otherwise cover the draft.
+  const newThreadHere = () => {
+    palette.setOpen(false);
     startNew({ focus: true, projectId: meta?.projectId ?? nav.creating?.projectId });
+  };
   const toggleSidebar = () => nav.setSidebarOpen((open) => !open);
   // Settings and the new-project dialog live in the main view's dialogs, so
   // a full-page screen steps aside for them.
@@ -165,7 +170,10 @@ export function App() {
     meta,
     threadOpen: !!state,
     turnRunning,
-    composerOpen: !!state || !!nav.creating,
+    // The full-page screens unmount the composer; Settings is a dialog over it.
+    composerOpen:
+      (!!state || !!nav.creating) &&
+      !(screens.showUsage || screens.tools || screens.setup || screens.themePreview),
     composerRef,
     onSetPinned: setPinned,
     onSetUnread: setThreadUnread,

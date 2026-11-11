@@ -464,6 +464,20 @@ describe("the model picker mid-thread", () => {
     expect(trigger().textContent).toContain("Max");
   });
 
+  it("drops a pick the server refused while the picker stays open", async () => {
+    running({
+      onSwitchModel: vi.fn(() => Promise.resolve(false)),
+      onSwitchEffort: vi.fn(() => Promise.resolve(true)),
+    });
+    fireEvent.click(trigger());
+    await choose("Sonnet");
+
+    await waitFor(() => expect(trigger().textContent).toContain("Opus"));
+    expect(search()).not.toBeNull();
+    // Opus's own levels again, Max among them.
+    expect(levels().getByRole("radio", { name: "Max" })).toBeTruthy();
+  });
+
   it("opens on the effort level when asked, and moves focus while open", async () => {
     const { ref } = running({ effort: "high" });
 

@@ -29,6 +29,11 @@ export function useScreens() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  // Drops the hash without a history entry, which fires no hashchange.
+  const leaveThemePreview = useCallback(() => {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setThemePreview(false);
+  }, []);
 
   // The first-run setup page at /setup: what this computer still needs before
   // a thread can start. The only screen with a path of its own, because the
@@ -71,6 +76,7 @@ export function useScreens() {
     tools,
     setTools,
     themePreview,
+    leaveThemePreview,
     setup,
     leaveSetup,
   };

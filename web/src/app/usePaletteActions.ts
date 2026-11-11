@@ -66,23 +66,22 @@ export function usePaletteActions({
   const app = (a: Omit<PaletteAction, "group">) => actions.push({ ...a, group: "App" });
 
   if (threadOpen && meta) {
-    const s = meta;
     thread({
       id: "pin",
-      label: s.pinned ? "Unpin thread" : "Pin thread",
+      label: meta.pinned ? "Unpin thread" : "Pin thread",
       keywords: ["pin", "top"],
-      run: () => onSetPinned(s.id, !s.pinned),
+      run: () => onSetPinned(meta.id, !meta.pinned),
     });
     // As the row's menu has it: a thread whose log is empty has nothing to be
     // unread about.
-    if (unread(s)) {
-      thread({ id: "read", label: "Mark read", keywords: ["seen"], run: () => onSetUnread(s.id, false) });
-    } else if (s.headSeq > 0) {
+    if (unread(meta)) {
+      thread({ id: "read", label: "Mark read", keywords: ["seen"], run: () => onSetUnread(meta.id, false) });
+    } else if (meta.headSeq > 0) {
       thread({
         id: "unread",
         label: "Mark unread",
         keywords: ["later", "new"],
-        run: () => onSetUnread(s.id, true),
+        run: () => onSetUnread(meta.id, true),
       });
     }
   }
@@ -95,8 +94,7 @@ export function usePaletteActions({
       run: onCopyTranscript,
     });
     if (meta) {
-      const s = meta;
-      thread({ id: "delete", label: "Delete thread…", keywords: ["remove", "finish"], run: () => onDelete(s) });
+      thread({ id: "delete", label: "Delete thread…", keywords: ["remove", "finish"], run: () => onDelete(meta) });
     }
     thread({
       id: "panel",

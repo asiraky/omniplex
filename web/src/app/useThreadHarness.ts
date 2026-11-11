@@ -46,21 +46,31 @@ export function useThreadHarness(
     [activeId, clientRef],
   );
 
+  // Both resolve to whether the server took the change, so the picker can stop
+  // showing a pick that will never be echoed back.
   const switchModel = useCallback(
     (modelId: string) => {
-      if (!activeId) return;
-      clientRef.current?.command("set_model", { threadId: activeId, model: modelId }).catch((e) => {
-        toast.error("Could not switch model", { description: e.message });
-      });
+      if (!activeId || !clientRef.current) return Promise.resolve(false);
+      return clientRef.current.command("set_model", { threadId: activeId, model: modelId }).then(
+        () => true,
+        (e) => {
+          toast.error("Could not switch model", { description: e.message });
+          return false;
+        },
+      );
     },
     [activeId, clientRef],
   );
   const switchEffort = useCallback(
     (effort: string) => {
-      if (!activeId) return;
-      clientRef.current?.command("set_effort", { threadId: activeId, effort }).catch((e) => {
-        toast.error("Could not change reasoning effort", { description: e.message });
-      });
+      if (!activeId || !clientRef.current) return Promise.resolve(false);
+      return clientRef.current.command("set_effort", { threadId: activeId, effort }).then(
+        () => true,
+        (e) => {
+          toast.error("Could not change reasoning effort", { description: e.message });
+          return false;
+        },
+      );
     },
     [activeId, clientRef],
   );

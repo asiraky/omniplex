@@ -64,6 +64,10 @@ describe("ShortcutsHelp", () => {
     renderHelp();
 
     expect(chips("Keyboard shortcuts")).toEqual(["⌘", "/", "?"]);
+    // Escape is its own command, so it can wait for the composer's menus, but
+    // reads as one more way to stop.
+    expect(chips("Stop the turn")).toEqual(["⌘", ".", "Esc"]);
+    expect(screen.getAllByText("Stop the turn")).toHaveLength(1);
   });
 
   it("writes chords for the platform", () => {

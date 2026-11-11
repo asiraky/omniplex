@@ -44,8 +44,8 @@ export function ComposerModelPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   focusRequest?: { target: PickerFocus } | null;
-  onSwitchModel?: (id: string) => void;
-  onSwitchEffort?: (effort: string) => void;
+  onSwitchModel?: (id: string) => void | Promise<boolean>;
+  onSwitchEffort?: (effort: string) => void | Promise<boolean>;
   onSwitchAccount?: (instance: string, model: string) => void;
   onPickInstance?: (instance: PickerInstance) => void;
 }) {
@@ -72,6 +72,13 @@ export function ComposerModelPicker({
         effort: p.effort === effort ? undefined : p.effort,
       }));
   }
+  // A switch the server refused is never echoed back: stop showing it.
+  const settle = (field: "model" | "effort", value: string, sent: void | Promise<boolean>) => {
+    if (!(sent instanceof Promise)) return;
+    void sent.then((ok) => {
+      if (!ok) setPending((p) => (p[field] === value ? { ...p, [field]: undefined } : p));
+    });
+  };
   const shownModel = pending.model ?? model;
   const shownEffort = pending.effort ?? effort;
 
@@ -87,7 +94,7 @@ export function ComposerModelPicker({
   const switchEffort = (next: string) => {
     if (!onSwitchEffort) return;
     setPending((p) => ({ ...p, effort: next === effort ? undefined : next }));
-    onSwitchEffort(next);
+    settle("effort", next, onSwitchEffort(next));
   };
 
   return (
@@ -109,7 +116,7 @@ export function ComposerModelPicker({
         }
         if (onSwitchModel) {
           setPending((p) => ({ ...p, model: next.model === model ? undefined : next.model }));
-          onSwitchModel(next.model);
+          settle("model", next.model, onSwitchModel(next.model));
         }
         // Effort is per model: a level the old model allowed (Codex's
         // "ultra") may be one the new model rejects, which would break

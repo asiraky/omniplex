@@ -28,8 +28,7 @@ export interface ComposerAttachments {
   files: ArtefactRef[];
 }
 
-/** What the transcript's recent-skills list and the app's shortcuts need
-    from the composer. */
+/** What the transcript's recent-skills list and the app's shortcuts need from the composer. */
 export interface ComposerHandle {
   /** Focuses the input and parks the cursor at `cursor`, or at the end. */
   focusEnd: (cursor?: number) => void;
@@ -72,8 +71,9 @@ interface ComposerProps {
   instance?: string;
   model?: string;
   effort?: string;
-  onSwitchModel?: (id: string) => void;
-  onSwitchEffort?: (effort: string) => void;
+  /** Mid-thread these resolve to whether the server took the change. */
+  onSwitchModel?: (id: string) => void | Promise<boolean>;
+  onSwitchEffort?: (effort: string) => void | Promise<boolean>;
   /** Moves the thread to another account of its harness, then runs `model`
       there. Omitted, the picker still offers other accounts but choosing one
       does nothing. */

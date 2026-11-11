@@ -69,6 +69,11 @@ export interface CommandSpec {
   late?: boolean;
   /** Left out of the help overlay; the jump commands are listed as one row. */
   hidden?: boolean;
+  /**
+   * Listed in the help overlay on another command's row, as one more way to
+   * it. A command id; typed loosely because COMMANDS is what defines the ids.
+   */
+  listWith?: string;
 }
 
 const mod = (key: string, extra: Omit<Shortcut, "key" | "mod"> = {}): Shortcut => ({
@@ -161,7 +166,7 @@ export const COMMANDS = {
     // No inDialog: a menu or popover over the composer owns Escape.
     guard: (ctx) => ctx.turnRunning && ctx.composerFocus,
     late: true,
-    hidden: true,
+    listWith: "stopTurn",
   },
   focusComposer: {
     label: "Focus the composer",

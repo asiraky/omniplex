@@ -1636,6 +1636,7 @@ describe("keyboard shortcuts and the palette", () => {
   afterEach(() => {
     delete (navigator as { platform?: string }).platform;
     delete window.omniplexDesktop;
+    window.history.replaceState(null, "", "/");
   });
 
   const boot = async (threads: ThreadMeta[] = [thread("a"), thread("b")], projects = [project]) => {
@@ -1691,6 +1692,40 @@ describe("keyboard shortcuts and the palette", () => {
     key("k", { ctrlKey: true });
     await act(async () => key("o", { ctrlKey: true, shiftKey: true }, search()));
     expect(search().getAttribute("placeholder")).toBe("Which project?");
+  });
+
+  it("puts the palette away for a new thread here, so the draft's composer gets the keys", async () => {
+    await boot();
+    key("k", { ctrlKey: true });
+    await act(async () => key("n", { ctrlKey: true, altKey: true }, search()));
+    await waitFor(() => expect(palette()).toBeNull());
+    expect(chip("Project").textContent).toBe("repo");
+    await waitFor(() => expect(document.activeElement).toBe(composer()));
+  });
+
+  it("leaves the theme sample for a new thread", async () => {
+    window.history.replaceState(null, "", "/#themes");
+    await boot();
+    await act(async () => key("n", { ctrlKey: true, altKey: true }));
+    expect(chip("Project").textContent).toBe("repo");
+    expect(window.location.hash).toBe("");
+  });
+
+  it("offers the composer's actions only where the composer is", async () => {
+    await boot();
+    await openThread("a");
+    const offers = (label: string) => !!within(palette()!).queryByText(label);
+    key("k", { ctrlKey: true });
+    expect(offers("Model picker")).toBe(true);
+
+    fireEvent.change(search(), { target: { value: "Skills" } });
+    await act(async () => {
+      fireEvent.keyDown(search(), { key: "Enter" });
+    });
+    await waitFor(() => expect(palette()).toBeNull());
+    key("k", { ctrlKey: true });
+    expect(offers("Model picker")).toBe(false);
+    expect(offers("Reasoning effort")).toBe(false);
   });
 
   it("walks threads in the sidebar's order, past a folded group, wrapping at the ends", async () => {

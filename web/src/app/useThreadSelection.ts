@@ -112,8 +112,7 @@ export function useThreadSelection({
   const startNew = useCallback(
     (preset?: DraftPreset) => {
       pendingLink.current = null;
-      // Handed straight to an onClick, the click event arrives as the preset.
-      const asked = preset && !("nativeEvent" in preset) ? preset : {};
+      const asked = preset ?? {};
       const projectId =
         asked.projectId ?? threads.find((t) => t.id === activeRef.current)?.projectId;
       nonce.current += 1;

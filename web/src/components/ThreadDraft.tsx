@@ -149,8 +149,10 @@ export function ThreadDraft({
   onLogin?: (instanceId: string) => void;
   /** Open the providers screen, for when signing in is not the fix. */
   onManageProviders?: () => void;
-  /** Where the draft was asked to open, over what was last used. Read on mount
-      only: the app keys the draft per request. */
+  /**
+   * Where the draft was asked to open, over what was last used. Read on mount
+   * only: the app keys the draft per request.
+   */
   preset?: DraftPreset;
   composerRef?: RefObject<ComposerHandle | null>;
 }) {

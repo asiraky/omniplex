@@ -404,17 +404,16 @@ function EffortLevels({
     const radios = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]')];
     const at = radios.indexOf(document.activeElement as HTMLElement);
     const last = radios.length - 1;
-    const next =
-      event.key === "ArrowRight" || event.key === "ArrowDown"
-        ? at >= last ? 0 : at + 1
-        : event.key === "ArrowLeft" || event.key === "ArrowUp"
-          ? at <= 0 ? last : at - 1
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? last
-              : null;
-    if (next === null) return;
+    const moves: Record<string, number> = {
+      ArrowRight: at >= last ? 0 : at + 1,
+      ArrowDown: at >= last ? 0 : at + 1,
+      ArrowLeft: at <= 0 ? last : at - 1,
+      ArrowUp: at <= 0 ? last : at - 1,
+      Home: 0,
+      End: last,
+    };
+    const next = moves[event.key];
+    if (next === undefined) return;
     event.preventDefault();
     radios[next]?.focus();
   };

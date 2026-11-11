@@ -43,8 +43,10 @@ function rows(electronApp: boolean, platform: Platform): Map<CommandGroup, Row[]
         ),
       });
     }
-    if (spec.hidden) continue;
-    const chords = shortcutsFor(id, electronApp);
+    if (spec.hidden || spec.listWith) continue;
+    const chords = [id, ...COMMAND_IDS.filter((other) => (COMMANDS[other] as CommandSpec).listWith === id)].flatMap((c) =>
+      shortcutsFor(c, electronApp),
+    );
     if (!chords.length) continue;
     byGroup.get(spec.group)!.push({
       label: spec.label,

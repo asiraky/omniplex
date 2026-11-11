@@ -76,14 +76,4 @@ describe("starting a new thread", () => {
     act(() => result.current.pickDraftProject("p2"));
     expect(result.current.creating).toEqual({ projectId: "p2", nonce });
   });
-
-  it("takes a click event handed in as the preset as no preset at all", () => {
-    const { result } = setup();
-    act(() => result.current.select("t1"));
-    const click = { nativeEvent: {}, type: "click" } as unknown as Parameters<
-      typeof result.current.startNew
-    >[0];
-    act(() => result.current.startNew(click));
-    expect(result.current.creating).toEqual({ projectId: "p1", nonce: expect.any(Number) });
-  });
 });
