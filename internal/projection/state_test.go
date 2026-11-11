@@ -2,6 +2,7 @@ package projection
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/proto"
@@ -780,5 +781,49 @@ func TestQueueHeldFollowsTheLastTurn(t *testing.T) {
 	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopError, Failure: proto.FailureAuth}))
 	if s.QueueHeld() {
 		t.Fatal("held after a failure that is not a limit")
+	}
+}
+
+// Jobs are found by id through an index. Updates land on the right job among
+// many, a snapshot round trip rebuilds the index so an update merges rather
+// than adding a second job, and a clone's index is its own.
+func TestJobsFoundByIDAcrossSnapshotAndClone(t *testing.T) {
+	s := New("s1")
+	seq := int64(0)
+	next := func() int64 { seq++; return seq }
+	const n = 500
+	for i := range n {
+		s.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "j" + strconv.Itoa(i), TaskType: "local_bash"}))
+	}
+	for i := range n {
+		s.Apply(event(t, next(), proto.JobUpdated, proto.JobPayload{JobID: "j" + strconv.Itoa(i), Usage: &proto.JobUsage{ToolUses: int64(i + 1)}}))
+	}
+	if len(s.Jobs) != n {
+		t.Fatalf("jobs = %d, want %d", len(s.Jobs), n)
+	}
+	for i := range n {
+		if j := s.job("j" + strconv.Itoa(i)); j == nil || j.Usage.ToolUses != int64(i+1) {
+			t.Fatalf("job j%d = %+v", i, j)
+		}
+	}
+
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back.Apply(event(t, next(), proto.JobUpdated, proto.JobPayload{JobID: "j7", Activity: "Read"}))
+	back.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "child", ParentJobID: "j7", TaskType: "local_bash"}))
+	if len(back.Jobs) != n+1 || back.job("j7").Activity != "Read" || back.job("child").Depth != 1 {
+		t.Fatalf("after snapshot: jobs=%d j7=%+v child=%+v", len(back.Jobs), back.job("j7"), back.job("child"))
+	}
+
+	c := back.Clone()
+	c.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "only-in-clone", TaskType: "local_bash"}))
+	if c.job("only-in-clone") == nil || back.job("only-in-clone") != nil {
+		t.Fatal("clone shares its job index with the original")
 	}
 }

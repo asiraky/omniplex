@@ -174,6 +174,9 @@ type Item struct {
 	// output deltas and bounded (see appendTail). It is cleared the moment the
 	// call finishes: from then on Content holds the whole output.
 	Tail string `json:"tail,omitempty"`
+	// Truncated: some of Content was cut to a preview or dropped (see
+	// capText). The event log still has it whole.
+	Truncated bool `json:"truncated,omitempty"`
 
 	// notice
 	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
@@ -421,6 +424,7 @@ type State struct {
 	Artefacts []Artefact `json:"artefacts"`
 
 	itemIndex map[string]int `json:"-"`
+	jobIndex  map[string]int `json:"-"`
 }
 
 func New(threadID string) *State {
@@ -435,14 +439,23 @@ func New(threadID string) *State {
 		Queued:       []QueuedPrompt{},
 		Artefacts:    []Artefact{},
 		itemIndex:    map[string]int{},
+		jobIndex:     map[string]int{},
 	}
 }
 
-// reindex rebuilds the id→position map, needed after a snapshot is decoded.
+// reindex rebuilds the id→position maps, needed after a snapshot is decoded.
 func (s *State) reindex() {
 	s.itemIndex = make(map[string]int, len(s.Items))
 	for i, it := range s.Items {
 		s.itemIndex[it.ID] = i
+	}
+	s.reindexJobs()
+}
+
+func (s *State) reindexJobs() {
+	s.jobIndex = make(map[string]int, len(s.Jobs))
+	for i, j := range s.Jobs {
+		s.jobIndex[j.ID] = i
 	}
 }
 
@@ -455,12 +468,16 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	if s.Artefacts == nil {
 		s.Artefacts = []Artefact{}
 	}
+	// A snapshot from before tool content was capped holds it whole. Capping
+	// here shrinks it the first time it loads, and the next snapshot written
+	// persists the small form.
+	for i := range s.Items {
+		capItem(&s.Items[i])
+	}
 	s.reindex()
 	return &s, nil
 }
 
-// jobIndex is a linear scan: a thread has a handful of jobs, not thousands,
-// and an index would be one more thing to rebuild after a snapshot.
 // ItemByID returns the timeline item with that id.
 func (s *State) ItemByID(id string) (Item, bool) {
 	if s.itemIndex == nil {
@@ -473,11 +490,15 @@ func (s *State) ItemByID(id string) (Item, bool) {
 	return s.Items[i], true
 }
 
+// job finds a job by id through jobIndex. A long orchestrator thread runs
+// thousands of jobs and folds a job.updated for every usage tick, so a scan
+// here made replay quadratic.
 func (s *State) job(id string) *Job {
-	for i := range s.Jobs {
-		if s.Jobs[i].ID == id {
-			return &s.Jobs[i]
-		}
+	if s.jobIndex == nil {
+		s.reindexJobs()
+	}
+	if i, ok := s.jobIndex[id]; ok {
+		return &s.Jobs[i]
 	}
 	return nil
 }
@@ -493,6 +514,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 	j := s.job(p.JobID)
 	if j == nil {
 		s.Jobs = append(s.Jobs, Job{ID: p.JobID, Status: proto.JobRunning, StartedAt: ev.Timestamp})
+		s.jobIndex[p.JobID] = len(s.Jobs) - 1
 		j = &s.Jobs[len(s.Jobs)-1]
 		// The turn that spawned it, for the transcript to pin its card to.
 		for i := range s.Turns {
@@ -990,7 +1012,7 @@ func (s *State) Apply(ev proto.Event) {
 				it.Input = p.RawInput
 			}
 			if len(p.Content) > 0 {
-				it.Content = append(it.Content, p.Content...)
+				appendToolContent(it, p.Content)
 			}
 			// Output lands in the tail only while the call is running, judged
 			// after this update's own status: a call that finished has its
@@ -1304,6 +1326,7 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 func (s *State) Clone() *State {
 	out := *s
 	out.itemIndex = nil
+	out.jobIndex = nil
 
 	out.Items = make([]Item, len(s.Items))
 	for i, it := range s.Items {
