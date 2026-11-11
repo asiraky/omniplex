@@ -185,9 +185,6 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 	byModel := map[string]int{}
 	// byAlias remembers which input row a kept row came from.
 	byAlias := map[string]int{}
-	// unresolved holds the rows keyed by an alias the harness gave no
-	// resolved id for.
-	unresolved := map[string]bool{}
 	for idx, m := range in {
 		if m.Value == "" || isHaiku(m) {
 			continue
@@ -198,7 +195,6 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			// alias — stripped the same way, so an untagged id is still what
 			// the row is keyed and started by.
 			bare = stripContextTag(m.Value)
-			unresolved[bare] = true
 		}
 		version, description := splitDescription(m.Description)
 		row := adapter.ModelMeta{
@@ -247,7 +243,7 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 		byModel[bare] = len(current)
 		current = append(current, row)
 	}
-	current = foldUnresolved(current, unresolved)
+	current = foldUnresolved(current)
 	sortByStrength(current)
 
 	out := make([]adapter.ModelMeta, 0, len(current)+len(legacyModels))
@@ -266,17 +262,20 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 	return out
 }
 
-// foldUnresolved collapses an alias the harness gave no resolved id for into
-// the row of the model it runs. Such a row is keyed by its alias ("opus"), so
-// the merge by concrete id cannot see that it names a model already listed;
-// its label can, when it was read from the description and matches a row
-// that has a real id ("Opus 5.5" from "claude-opus-5-5"). The alias adds only
-// its flags. One whose label matches nothing stays a row of its own.
-func foldUnresolved(rows []adapter.ModelMeta, unresolved map[string]bool) []adapter.ModelMeta {
+// foldUnresolved collapses an alias the harness did not resolve to a concrete
+// model into the row of the model it runs. The harness sends such an alias
+// with no resolved id, or with the alias itself as one ("opus[1m]" resolving
+// to "opus[1m]"), so its row is keyed by the alias ("opus") and the merge by
+// concrete id cannot see that it names a model already listed. Its label can,
+// when it was read from the description and matches a row that has a real id
+// ("Opus 5.5" from "claude-opus-5-5"). The alias adds only its flags; one
+// whose label matches nothing stays a row of its own.
+func foldUnresolved(rows []adapter.ModelMeta) []adapter.ModelMeta {
+	unresolved := func(r adapter.ModelMeta) bool { return !strings.HasPrefix(r.ID, "claude-") }
 	out := make([]adapter.ModelMeta, 0, len(rows))
 	byLabel := map[string]int{}
 	for _, r := range rows {
-		if unresolved[r.ID] {
+		if unresolved(r) {
 			continue
 		}
 		if _, seen := byLabel[r.Label]; !seen {
@@ -285,7 +284,7 @@ func foldUnresolved(rows []adapter.ModelMeta, unresolved map[string]bool) []adap
 		out = append(out, r)
 	}
 	for _, r := range rows {
-		if !unresolved[r.ID] {
+		if !unresolved(r) {
 			continue
 		}
 		if i, ok := byLabel[r.Label]; ok && r.Label != r.ID {

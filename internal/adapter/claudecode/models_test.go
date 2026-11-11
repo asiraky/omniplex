@@ -190,14 +190,15 @@ func TestMapClaudeModelsMergeKeepsTheNameEitherAliasFound(t *testing.T) {
 	}
 }
 
-// A newer CLI lists concrete models alongside a bare "opus" alias it gives no
-// resolved id for. The alias runs the Opus already listed, so it folds into
-// that row — one "Opus 5.5", carrying the alias's flags — instead of standing
-// beside it under the same name. An alias that names no listed model stays.
+// A newer CLI (2.1.300) lists concrete models alongside an "opus[1m]" alias it
+// resolves only to itself, or not at all. The alias runs the Opus already
+// listed, so it folds into that row — one "Opus 5.5", carrying the alias's
+// flags — instead of standing beside it under the same name. An alias that
+// names no listed model stays.
 func TestMapClaudeModelsFoldsAnUnresolvedAliasIntoItsModel(t *testing.T) {
 	got := mapClaudeModels([]modelInfo{
 		{Value: "claude-opus-5-5", ResolvedModel: "claude-opus-5-5", DisplayName: "Opus 5.5", Description: "For complex work and everyday tasks"},
-		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Opus 5.5 with 1M context · Best for everyday, complex tasks"},
+		{Value: "opus[1m]", ResolvedModel: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Opus 5.5 with 1M context · Best for everyday, complex tasks"},
 		{Value: "sonnet", DisplayName: "Sonnet", Description: "Sonnet Next · Efficient for routine tasks"},
 	})
 
