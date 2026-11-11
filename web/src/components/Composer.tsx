@@ -1,12 +1,21 @@
 import { PaperclipIcon } from "lucide-react";
-import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { ContextMeter } from "~/components/ContextMeter";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
 import type { PickerInstance } from "~/lib/models";
-import { canDictate } from "~/lib/dictation";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
@@ -15,12 +24,10 @@ import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
-import { MicButton, RecordingStatus } from "./composer/MicButton";
 import { SendButtons } from "./composer/SendButtons";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerSend } from "./composer/useComposerSend";
-import { useDictation } from "./composer/useDictation";
 import { useDraftRef } from "./composer/useDraftRef";
 import { useFileDrop, usePasteIntake } from "./composer/useFileIntake";
 
@@ -106,6 +113,19 @@ interface ComposerProps {
 }
 
 const NO_HARNESSES: HarnessMeta[] = [];
+
+const DictationControls = lazy(() => import("./composer/DictationControls"));
+
+/** Whether this browser can record at all. An insecure origin hides
+    `mediaDevices`, so a plain-http LAN address answers no here. */
+function canDictate(): boolean {
+  return (
+    typeof MediaRecorder !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    typeof navigator.mediaDevices?.getUserMedia === "function"
+  );
+}
+
 const NO_ATTACHMENTS: Attachment[] = [];
 // The tallest the composer grows before it scrolls. Matches max-h-[200px] on
 // the textarea, which has to stay a literal for Tailwind to see it.
@@ -238,17 +258,41 @@ export function Composer({
     },
     [focusAt, setCursor],
   );
-  const dictate = useDictation({
-    thread: dictation?.thread,
-    textareaRef,
-    draftRef,
-    changeDraft,
-    placeCaret,
-  });
   // Not just the key: a browser without MediaRecorder, or a page served over
   // plain http, which hides the microphone entirely, cannot record.
   const showMic = !!dictation && canDictate();
-  const recording = dictate.status === "starting" || dictate.status === "recording";
+  const modelControls = (
+    <>
+      {harnesses.length > 0 && (
+        <ComposerModelPicker
+          harnesses={harnesses}
+          harness={harness}
+          instance={instance}
+          model={model}
+          effort={effort}
+          contextWindow={usage?.contextWindow}
+          anyHarness={anyHarness}
+          disabled={disabled}
+          open={modelPickerOpen}
+          onOpenChange={changeModelPickerOpen}
+          focusRequest={pickerFocus}
+          onSwitchModel={onSwitchModel}
+          onSwitchEffort={onSwitchEffort}
+          onSwitchAccount={onSwitchAccount}
+          onPickInstance={onPickInstance}
+        />
+      )}
+      {tools}
+    </>
+  );
+  const meter = usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />;
+  const noMic = (
+    <>
+      {modelControls}
+      <span className="flex-1" />
+      {meter}
+    </>
+  );
 
   useImperativeHandle(
     ref,
@@ -332,45 +376,23 @@ export function Composer({
         <div className="flex items-center gap-1 px-2.5 pb-2">
           <AttachButton show={!!onAttachFiles} disabled={disabled} onFiles={attach} />
 
-          {/* While recording, the model controls give their room to the
-              recording's own: a phone row has space for one or the other. */}
-          {recording && <RecordingStatus elapsed={dictate.elapsed} onDiscard={dictate.discard} />}
-
-          {!recording && harnesses.length > 0 && (
-            <ComposerModelPicker
-              harnesses={harnesses}
-              harness={harness}
-              instance={instance}
-              model={model}
-              effort={effort}
-              contextWindow={usage?.contextWindow}
-              anyHarness={anyHarness}
-              disabled={disabled}
-              open={modelPickerOpen}
-              onOpenChange={changeModelPickerOpen}
-              focusRequest={pickerFocus}
-              onSwitchModel={onSwitchModel}
-              onSwitchEffort={onSwitchEffort}
-              onSwitchAccount={onSwitchAccount}
-              onPickInstance={onPickInstance}
-            />
-          )}
-
-          {!recording && tools}
-
-          <span className="flex-1" />
-
-          {!recording && usage && (usage.contextUsed ?? 0) > 0 && (
-            <ContextMeter usage={usage} model={model} />
-          )}
-
-          {showMic && (
-            <MicButton
-              status={dictate.status}
-              disabled={disabled}
-              onStart={() => void dictate.start()}
-              onStop={dictate.stop}
-            />
+          {showMic ? (
+            // Until the recorder's code arrives the row is laid out as if
+            // there were no mic.
+            <Suspense fallback={noMic}>
+              <DictationControls
+                thread={dictation?.thread}
+                textareaRef={textareaRef}
+                draftRef={draftRef}
+                changeDraft={changeDraft}
+                placeCaret={placeCaret}
+                disabled={disabled}
+                controls={modelControls}
+                meter={meter}
+              />
+            </Suspense>
+          ) : (
+            noMic
           )}
 
           <SendButtons

@@ -87,16 +87,6 @@ export function pickMimeType(isTypeSupported: (type: string) => boolean): string
   });
 }
 
-/** Whether this browser can record at all. An insecure origin hides
-    `mediaDevices`, so a plain-http LAN address answers no here. */
-export function canDictate(): boolean {
-  return (
-    typeof MediaRecorder !== "undefined" &&
-    typeof navigator !== "undefined" &&
-    typeof navigator.mediaDevices?.getUserMedia === "function"
-  );
-}
-
 /**
  * Sends a recording to the server and resolves to its transcript, which is
  * empty when nothing was heard. A failure throws the server's own message,

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -41,7 +41,9 @@ let fetcher: ReturnType<typeof vi.fn>;
 // The pending transcription, settled by the test when it wants the reply.
 let reply: (body: unknown, status?: number) => void;
 
-beforeEach(() => {
+let micLoaded = false;
+
+beforeEach(async () => {
   track = { stop: vi.fn() };
   getUserMedia = vi.fn(async () => ({ getTracks: () => [track] }));
   vi.stubGlobal("MediaRecorder", FakeRecorder);
@@ -58,6 +60,14 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetcher);
   vi.mocked(toast.info).mockClear();
   vi.mocked(toast.error).mockClear();
+  // The mic's code loads on demand. Wait for it once, so every test renders it
+  // straight away, fake timers or not.
+  if (!micLoaded) {
+    render(<Harness />);
+    await screen.findByRole("button", { name: "Dictate" });
+    cleanup();
+    micLoaded = true;
+  }
 });
 
 afterEach(() => {
