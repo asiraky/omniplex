@@ -1,8 +1,9 @@
 # Harness environment
 
-A harness process receives Omniplex's own environment plus the instance's
-overlay (`CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, API keys and the like) and
-nothing else. It never receives the project's dotenv files. Projects load their
+A harness process receives Omniplex's own environment, less anything its
+adapter strips (Claude's, below), plus the instance's overlay
+(`CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, API keys and the like) and nothing
+else. It never receives the project's dotenv files. Projects load their
 own, and that matters: Vite's `loadEnv`, dotenv and Node's `--env-file` all keep
 a variable that is already set, so a thread carrying the main checkout's
 `.env.local` would override the files of any worktree it starts a dev server or
@@ -22,10 +23,10 @@ Per adapter:
   host's. A Claude Code installed through npm is a script, which the SDK runs
   under the bridge's own runtime: under Bun that is a second Bun in the project
   cwd, so the bridge gives it the same empty env file through `executableArgs`.
-  Omniplex's own environment arrives without `CLAUDECODE` and `CLAUDE_*`: a
-  server started from inside a Claude Code session would otherwise hand every
-  thread that session's id, messaging socket and token, effort, and context
-  window. `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN` stay, because they
+  Every Claude process Omniplex starts, sign-in included, gets Omniplex's own
+  environment without `CLAUDECODE` and `CLAUDE_*`: a server started from inside
+  a Claude Code session would otherwise hand every thread that session's id,
+  messaging socket and token, effort, and context window. `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN` stay, because they
   choose the account; anything the overlay sets still wins.
 - **Codex.** A native binary. It reads `~/.codex/.env` and no project file.
 - **Pi.** A Node script, and its auth bridge is too. Node loads no dotenv file

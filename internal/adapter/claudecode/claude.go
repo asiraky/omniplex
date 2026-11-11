@@ -148,12 +148,12 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 
 // LoginCommand starts Claude Code's own sign-in flow, which walks the user
 // through the browser and takes the code back on the terminal.
-func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
 	r, avail := a.resolve(ctx)
 	if !avail.OK() {
-		return nil, fmt.Errorf("%s", avail.Reason)
+		return nil, nil, fmt.Errorf("%s", avail.Reason)
 	}
-	return []string{r.claudePath, "auth", "login"}, nil
+	return []string{r.claudePath, "auth", "login"}, claudeEnv(os.Environ(), overlay), nil
 }
 
 // claudeAuth is what `claude auth status` reports. known is false when the

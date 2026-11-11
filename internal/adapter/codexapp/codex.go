@@ -127,12 +127,12 @@ func signedOut(ctx context.Context, path string, env map[string]string) bool {
 
 // LoginCommand starts Codex's own sign-in flow, which opens the browser and
 // waits for the callback on this machine.
-func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
 	path, err := exec.LookPath(a.Bin)
 	if err != nil {
-		return nil, fmt.Errorf("the Codex CLI was not found on this machine")
+		return nil, nil, fmt.Errorf("the Codex CLI was not found on this machine")
 	}
-	return []string{path, "login"}, nil
+	return []string{path, "login"}, adapter.MergeEnv(os.Environ(), overlay), nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
