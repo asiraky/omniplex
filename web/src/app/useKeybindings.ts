@@ -25,8 +25,18 @@ export type AppKeyState = Pick<
  */
 export const KEYBINDINGS_PASS = { "data-keybindings": "pass" } as const;
 
-const DIALOGS = '[role="dialog"]:not([data-keybindings="pass"]), [role="alertdialog"], [role="menu"]';
-const LAYERS = `${DIALOGS}, [role="listbox"]`;
+// Anything that owns the keyboard while it is open. A listbox is here for a
+// Select or the workspace list, which take typeahead and arrows. A layer
+// playing its close animation is already gone to the user, so a chord pressed
+// straight after Escape or a pick still lands.
+const DIALOGS = [
+  '[role="dialog"]:not([data-keybindings="pass"])',
+  '[role="alertdialog"]',
+  '[role="menu"]',
+  '[role="listbox"]',
+]
+  .map((s) => `${s}:not([data-state="closed"])`)
+  .join(", ");
 
 function isEditable(el: Element | null): boolean {
   if (!el) return false;
@@ -47,7 +57,6 @@ export function readKeyContext(app: AppKeyState): KeyContext {
     editableFocus: isEditable(active),
     composerFocus: !!active?.matches("[data-composer-input]"),
     dialogOpen: !!document.querySelector(DIALOGS),
-    layerOpen: !!document.querySelector(LAYERS),
     modelPickerOpen: !!document.querySelector('[aria-label="Harness and model"][aria-expanded="true"]'),
   };
 }

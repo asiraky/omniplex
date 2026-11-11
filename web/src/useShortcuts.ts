@@ -53,7 +53,8 @@ export function useModHeld(enabled: boolean): boolean {
       setHeld(false);
       return;
     }
-    const modKey = currentPlatform() === "mac" ? "Meta" : "Control";
+    const mac = currentPlatform() === "mac";
+    const modKey = mac ? "Meta" : "Control";
     let timer: ReturnType<typeof setTimeout> | undefined;
     const clear = () => {
       clearTimeout(timer);
@@ -61,7 +62,7 @@ export function useModHeld(enabled: boolean): boolean {
       setHeld(false);
     };
     const onDown = (e: KeyboardEvent) => {
-      if (e.key !== modKey || e.shiftKey || e.altKey) {
+      if (e.key !== modKey || e.shiftKey || e.altKey || (mac ? e.ctrlKey : e.metaKey)) {
         clear();
         return;
       }

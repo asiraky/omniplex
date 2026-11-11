@@ -30,10 +30,11 @@ export interface KeyContext {
   editableFocus: boolean;
   /** Focus is in a composer's text field. */
   composerFocus: boolean;
-  /** A dialog, sheet, popover or menu is open, the palette and help overlay included. */
+  /**
+   * A dialog, sheet, popover, menu or listbox is open, the palette and help
+   * overlay included: something that owns the keyboard, Escape first.
+   */
   dialogOpen: boolean;
-  /** A menu, listbox or popover is open: something that owns Escape. */
-  layerOpen: boolean;
   paletteOpen: boolean;
   helpOpen: boolean;
   modelPickerOpen: boolean;
@@ -157,7 +158,8 @@ export const COMMANDS = {
     group: "Composer",
     app: [{ key: "escape" }],
     browser: [{ key: "escape" }],
-    guard: (ctx) => ctx.turnRunning && ctx.composerFocus && !ctx.layerOpen,
+    // No inDialog: a menu or popover over the composer owns Escape.
+    guard: (ctx) => ctx.turnRunning && ctx.composerFocus,
     late: true,
     hidden: true,
   },
@@ -220,8 +222,8 @@ export const COMMANDS = {
   shortcutsHelp: {
     label: "Keyboard shortcuts",
     group: "App",
-    app: [mod("/"), { key: "?", shift: true }],
-    browser: [mod("/"), { key: "?", shift: true }],
+    app: [mod("/"), { key: "?" }],
+    browser: [mod("/"), { key: "?" }],
     inDialog: (ctx) => ctx.helpOpen,
   },
 } satisfies Record<string, CommandSpec>;
@@ -336,11 +338,21 @@ export function eventKeys(e: KeyEventLike): Set<string> {
   return keys;
 }
 
+function bareSymbol(s: Shortcut): boolean {
+  return !s.mod && !s.alt && s.key.length === 1 && !/^[a-z0-9]$/.test(s.key);
+}
+
 export function matches(e: KeyEventLike, s: Shortcut, platform: Platform): boolean {
   // AltGr reports as Ctrl+Alt on Windows and Linux; when it types a symbol
   // it is someone typing, not a chord.
   if (platform !== "mac" && e.getModifierState?.("AltGraph") && !/^[a-z0-9]$/i.test(e.key)) {
     return false;
+  }
+  // A bare symbol is the character typed, wherever the layout keeps it and
+  // whatever it takes to reach: "/" is Shift+7 on a German keyboard and "?"
+  // is Shift+, on a French one.
+  if (bareSymbol(s)) {
+    return !e.metaKey && !e.ctrlKey && !e.altKey && normalizeKey(e.key) === s.key;
   }
   const mac = platform === "mac";
   const wantMeta = !!s.mod && mac;
