@@ -6,6 +6,7 @@ import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
 import type { PickerInstance } from "~/lib/models";
+import { canDictate } from "~/lib/dictation";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
@@ -14,10 +15,12 @@ import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
+import { MicButton, RecordingStatus } from "./composer/MicButton";
 import { SendButtons } from "./composer/SendButtons";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerSend } from "./composer/useComposerSend";
+import { useDictation } from "./composer/useDictation";
 import { useDraftRef } from "./composer/useDraftRef";
 import { useFileDrop, usePasteIntake } from "./composer/useFileIntake";
 
@@ -96,6 +99,10 @@ interface ComposerProps {
   tools?: ReactNode;
   /** A drawer under the box, for context that is usually right already. */
   footer?: ReactNode;
+  /** Present when the server can transcribe (an ElevenLabs key is stored), and
+      names the thread a transcript is for. The new-thread screen has no thread
+      yet, so it passes an empty object. */
+  dictation?: { thread?: string };
 }
 
 const NO_HARNESSES: HarnessMeta[] = [];
@@ -141,6 +148,7 @@ export function Composer({
   onCommandUsed,
   tools,
   footer,
+  dictation,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDesktop = useIsDesktop();
@@ -219,8 +227,29 @@ export function Composer({
     el.style.overflowY = full > COMPOSER_MAX_PX ? "auto" : "hidden";
   }, [draft]);
 
-  const { focusAt } = menu;
+  const { focusAt, setCursor } = menu;
   const hasPicker = harnesses.length > 0 && !disabled;
+  const placeCaret = useCallback(
+    (cursor: number, focus: boolean) => {
+      // Without focus the caret is left to the browser: placing it would pull
+      // the phone keyboard up over a transcript the person only wanted to read.
+      if (focus) focusAt(cursor);
+      else setCursor(cursor);
+    },
+    [focusAt, setCursor],
+  );
+  const dictate = useDictation({
+    thread: dictation?.thread,
+    textareaRef,
+    draftRef,
+    changeDraft,
+    placeCaret,
+  });
+  // Not just the key: a browser without MediaRecorder, or a page served over
+  // plain http, which hides the microphone entirely, cannot record.
+  const showMic = !!dictation && canDictate();
+  const recording = dictate.status === "starting" || dictate.status === "recording";
+
   useImperativeHandle(
     ref,
     () => ({
@@ -303,7 +332,11 @@ export function Composer({
         <div className="flex items-center gap-1 px-2.5 pb-2">
           <AttachButton show={!!onAttachFiles} disabled={disabled} onFiles={attach} />
 
-          {harnesses.length > 0 && (
+          {/* While recording, the model controls give their room to the
+              recording's own: a phone row has space for one or the other. */}
+          {recording && <RecordingStatus elapsed={dictate.elapsed} onDiscard={dictate.discard} />}
+
+          {!recording && harnesses.length > 0 && (
             <ComposerModelPicker
               harnesses={harnesses}
               harness={harness}
@@ -323,11 +356,22 @@ export function Composer({
             />
           )}
 
-          {tools}
+          {!recording && tools}
 
           <span className="flex-1" />
 
-          {usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />}
+          {!recording && usage && (usage.contextUsed ?? 0) > 0 && (
+            <ContextMeter usage={usage} model={model} />
+          )}
+
+          {showMic && (
+            <MicButton
+              status={dictate.status}
+              disabled={disabled}
+              onStart={() => void dictate.start()}
+              onStop={dictate.stop}
+            />
+          )}
 
           <SendButtons
             busy={busy}

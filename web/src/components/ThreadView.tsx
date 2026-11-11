@@ -81,7 +81,8 @@ export function ThreadView({
   onLogin: (instanceId: string) => void;
   onForceDelete: (id: string) => void;
   onFinish: (meta: ThreadMeta) => void;
-  /** An ElevenLabs key is stored, so messages get a play button. */
+  /** An ElevenLabs key is stored, so messages get a play button and the
+      composer a mic. */
   readAloud: boolean;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
@@ -181,6 +182,7 @@ export function ThreadView({
           recents={recents}
           schedule={schedule}
           store={store}
+          dictate={readAloud}
         />
       </div>
     </div>
@@ -220,6 +222,7 @@ function ComposerDock({
   recents,
   schedule,
   store,
+  dictate,
 }: {
   state: ThreadState;
   activeId: string | null;
@@ -231,6 +234,7 @@ function ComposerDock({
   recents: RecentSkills;
   schedule: ScheduleEditor;
   store: ComposerDrafts;
+  dictate: boolean;
 }) {
   const pending = state.pendingPermissions?.[0];
   const elicitations = state.pendingElicitations ?? [];
@@ -309,6 +313,7 @@ function ComposerDock({
         schedule={schedule}
         store={store}
         workspace={workspace}
+        dictate={dictate}
       />
     </>
   );
@@ -329,6 +334,7 @@ function ThreadComposer({
   schedule,
   store,
   workspace,
+  dictate,
 }: {
   state: ThreadState;
   activeId: string | null;
@@ -340,6 +346,7 @@ function ThreadComposer({
   schedule: ScheduleEditor;
   store: ComposerDrafts;
   workspace: ReturnType<typeof workspaceStatus>;
+  dictate: boolean;
 }) {
   const catalogue = useComposerItems(commands.loadComposerItems);
   return (
@@ -371,6 +378,7 @@ function ThreadComposer({
       onRunClientAction={commands.runClientComposerAction}
       onRunComposerAction={commands.runComposerAction}
       onCommandUsed={recents.noteUsed}
+      dictation={dictate && activeId ? { thread: activeId } : undefined}
     />
   );
 }

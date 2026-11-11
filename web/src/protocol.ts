@@ -631,6 +631,9 @@ export interface UserConfig {
   pinNewThreads?: boolean;
   /** Whether the server keeps harness CLIs up to date in the background. Absent means on. */
   autoUpdateHarnesses?: boolean;
+  /** Whether the server tidies a dictated transcript (punctuation, filler
+      words) with a model before it reaches the composer. Absent means off. */
+  dictationCleanup?: boolean;
 }
 
 /**
