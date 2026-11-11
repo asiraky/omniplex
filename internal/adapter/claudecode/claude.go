@@ -402,6 +402,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		stdin:            stdin,
 		cwd:              o.Cwd,
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		taskRoot:         claudeTaskRoot(o.Cwd, o.Env),
 		commands:         &a.commands,
 		harnessSessionID: sessionID,
 		model:            o.Model,
@@ -456,6 +457,13 @@ type session struct {
 	// received, so origin enrichment cannot accidentally inspect another
 	// Claude account's skills.
 	configDir string
+	// taskRoot is where the child writes task output files, resolved the
+	// same way; "" disables the live tail of foreground Bash (output.go).
+	// tailEvery and tailPatience override its poll interval and how long it
+	// looks for a file; zero means the defaults.
+	taskRoot     string
+	tailEvery    time.Duration
+	tailPatience time.Duration
 	// commands is the adapter's, shared by every session.
 	commands *commandCache
 
@@ -508,6 +516,9 @@ type session struct {
 	// stream until the tool result arrives, so neither the start nor the
 	// result grows a tool row for a call the transcript shows as a task list.
 	todos map[string]bool
+	// tails are the running foreground Bash calls being tailed, keyed by
+	// tool_use id.
+	tails map[string]*tail
 
 	// fatal is the last thing the bridge said before it died. The SDK reports
 	// a harness that refuses to start — an expired login above all — by
@@ -635,6 +646,7 @@ func (s *session) Cancel(ctx context.Context) error {
 	if err := s.conn.Call(ctx, "interrupt", map[string]any{}, nil); err != nil {
 		return err
 	}
+	s.stopTails()
 	s.mu.Lock()
 	if s.turnID != turn {
 		s.mu.Unlock()
@@ -708,6 +720,7 @@ func (s *session) StopJob(ctx context.Context, jobID string) error {
 // a backstop for a wedged process.
 func (s *session) Close() error {
 	s.closed.Do(func() {
+		s.stopTails()
 		close(s.done)
 		_ = s.stdin.Close()
 		if s.cmd.Process != nil {
@@ -721,6 +734,7 @@ func (s *session) Close() error {
 
 func (s *session) watchExit() {
 	<-s.conn.Done()
+	s.stopTails()
 
 	s.mu.Lock()
 	turn, saw := s.turnID, s.sawResult
@@ -1208,6 +1222,7 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		}))
 	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
 		s.handleTask(msg)
+		s.followTask(msg)
 	case "compact_boundary":
 		var b struct {
 			Meta struct {
@@ -1545,6 +1560,8 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		if text != "" {
 			content = []proto.ToolContent{{Type: "text", Text: text}}
 		}
+		// Before the completion, so no live delta can trail it.
+		s.stopTail(c.ToolUseID)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID: c.ToolUseID, Status: status, Content: content,
 			ParentToolCallID: str(msg["parent_tool_use_id"]),
@@ -1690,6 +1707,8 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		failure, failureKind = resultFailure(r.Result, strings.Join(r.Errors, "\n"), r.TerminalReason)
 	}
 
+	// Whatever is still being tailed belongs to the turn that just ended.
+	s.stopTails()
 	s.mu.Lock()
 	turn := s.turnID
 	s.sawResult = true
