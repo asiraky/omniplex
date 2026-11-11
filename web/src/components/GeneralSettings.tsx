@@ -337,6 +337,20 @@ export function GeneralSettings({
         />
       </div>
 
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Label htmlFor="settings-auto-update-harnesses">Keep harness CLIs up to date</Label>
+          <p className="text-muted-foreground text-[11px]">
+            Runs each agent CLI's own update hourly. Turn off to pin a version.
+          </p>
+        </div>
+        <Switch
+          id="settings-auto-update-harnesses"
+          checked={cfg.autoUpdateHarnesses !== false}
+          onCheckedChange={(on) => patch({ autoUpdateHarnesses: on })}
+        />
+      </div>
+
       <Separator />
 
       <BranchFormatField
