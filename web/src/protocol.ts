@@ -55,6 +55,11 @@ export interface Item {
   turnId?: string;
   /** The Task/Agent tool call this item's work happened inside, for subagents. */
   parentId?: string;
+  /** On a parent (Task/Agent) tool call: how many of its child items the
+      snapshot left out. A settled parent's narration is not sent at all and a
+      running one's only its tail; all of it is at
+      /api/threads/{id}/items/{itemId}/children. */
+  childrenBefore?: number;
   /** When the item's first event landed, in millis. Display metadata only. */
   receivedAt?: number;
   role?: "user" | "agent";
@@ -71,8 +76,9 @@ export interface Item {
   /** The last lines a running tool has printed, until it finishes and
       `content` carries the output (a preview when `truncated`). */
   tail?: string;
-  /** A tool's content is a head/tail preview: some text, or whole entries,
-      were cut. The full content is at /api/threads/{id}/items/{itemId}/content. */
+  /** A tool's content or input is a head/tail preview: some text, or whole
+      entries, were cut. The full content and input are at
+      /api/threads/{id}/items/{itemId}/content. */
   truncated?: boolean;
   // notice
   noticeKind?: "compaction" | "account";
@@ -425,7 +431,12 @@ export interface ThreadState {
       the timeline is complete. */
   itemsBefore?: number;
   turns: Turn[];
+  /** Snapshots carry running jobs, the latest finished ones and those the
+      window's items spawned, not the whole history. */
   jobs: Job[];
+  /** How many jobs the snapshot left out of `jobs`; all of them are at
+      GET /api/threads/{id}/jobs. Zero or absent means the list is complete. */
+  jobsBefore?: number;
   usage: Usage;
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];
@@ -1130,6 +1141,7 @@ export interface ServerFrame {
     | "composer_items_changed"
     | "snapshot"
     | "event"
+    | "replay"
     | "synchronized"
     | "resync"
     | "ack"
@@ -1150,6 +1162,9 @@ export interface ServerFrame {
   seq?: number;
   state?: ThreadState;
   event?: Event;
+  /** A reconnect's whole gap in one frame, oldest first; `synchronized`
+      follows. A gap too big to replay comes as a `snapshot` instead. */
+  events?: Event[];
   commandId?: string;
   result?: any;
   error?: string;

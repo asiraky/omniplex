@@ -2,6 +2,7 @@ import { ArrowLeftIcon, BotIcon, SquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Markdown } from "~/components/Markdown";
+import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
 import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
@@ -9,12 +10,16 @@ import type { Item, Job, JobKind, ThreadState } from "~/protocol";
 import { formatDuration } from "~/rows";
 import { useLatest } from "~/useLatest";
 
+import { mergeChildren, useAgentChildren } from "./useAgentChildren";
+
 export interface JobsSurfaceProps {
   threadId: string;
   /** The thread: `jobs` is the roster, `items` feeds an agent's transcript pane. */
   state: ThreadState;
   /** A ws command: `stop_job` and `thread_job_output`. */
   command: (command: string, args: unknown) => Promise<any>;
+  /** Fetch the jobs the snapshot left out (`state.jobsBefore`); null on failure. */
+  loadAllJobs?: () => Promise<ThreadState | null>;
 }
 
 // A live elapsed timer written straight to the DOM: re-rendering the roster
@@ -238,29 +243,58 @@ function ToolRowMark({ it }: { it: Item }) {
   );
 }
 
+const textButton =
+  "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-11 items-center gap-1.5 rounded-sm px-1 text-[12px] transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none md:min-h-0";
+
 /** What one agent did: its items, plus its own child agents. */
 function AgentPane({
+  threadId,
   job,
   jobs,
   items,
   onOpen,
   onStop,
 }: {
+  threadId: string;
   job: Job;
   jobs: Job[];
   items: Item[];
   onOpen: (j: Job) => void;
   onStop: (j: Job) => void;
 }) {
-  const mine = useMemo(
+  const live = useMemo(
     () => (job.toolCallId ? items.filter((it) => it.parentId === job.toolCallId) : []),
     [items, job.toolCallId],
   );
+  // The snapshot holds only part of an agent's narration, if any: none for a
+  // settled one, the tail for a running one. A spawn call outside the window
+  // says nothing about how much is missing, so that asks too.
+  const spawn = job.toolCallId ? items.find((it) => it.id === job.toolCallId) : undefined;
+  const wanted = !!job.toolCallId && (!spawn || (spawn.childrenBefore ?? 0) > 0);
+  const fetched = useAgentChildren(threadId, job.toolCallId, wanted);
+  const fetchedItems = fetched.status === "ready" ? fetched.items : undefined;
+  const mine = useMemo(() => mergeChildren(fetchedItems, live), [fetchedItems, live]);
   const children = useMemo(() => childJobs(jobs, job.id), [jobs, job.id]);
 
   return (
     <div className="scroll-thin h-full space-y-1.5 overflow-y-auto overscroll-contain p-2">
-      {mine.length === 0 && children.length === 0 && (
+      {fetched.status === "loading" && (
+        <p className="text-muted-foreground flex items-center gap-1.5 px-1 py-1 text-[12px]">
+          <Spinner className="text-primary size-3" />
+          Loading this agent's activity…
+        </p>
+      )}
+      {fetched.status === "error" && (
+        <div className="flex flex-wrap items-center gap-x-2 px-1">
+          <span role="alert" className="text-destructive text-[12px]">
+            {fetched.error}
+          </span>
+          <button type="button" onClick={fetched.retry} className={textButton}>
+            Retry
+          </button>
+        </div>
+      )}
+      {fetched.status !== "loading" && mine.length === 0 && children.length === 0 && (
         <p className="text-muted-foreground px-1 py-4 text-center text-[12px]">Nothing recorded for this agent yet.</p>
       )}
       {mine.map((it) =>
@@ -293,8 +327,38 @@ function AgentPane({
   );
 }
 
+/** The way to the jobs a snapshot left out, and back after 4G drops the fetch. */
+function EarlierJobs({ load }: { load: () => Promise<ThreadState | null> }) {
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const run = () => {
+    setStatus("loading");
+    // Success needs no state of its own: the merged list arrives through
+    // onState with jobsBefore cleared, and this row goes with it.
+    void load().then((next) => setStatus(next ? "idle" : "error"));
+  };
+  if (status === "error") {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2 px-1">
+        <span role="alert" className="text-destructive text-[12px]">
+          Could not load the earlier jobs.
+        </span>
+        <button type="button" onClick={run} className={textButton}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+  const loading = status === "loading";
+  return (
+    <button type="button" onClick={run} disabled={loading} className={textButton}>
+      {loading && <Spinner className="text-primary size-3" />}
+      {loading ? "Loading earlier jobs…" : "Show earlier jobs"}
+    </button>
+  );
+}
+
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({ threadId, state, command }: JobsSurfaceProps) {
+export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfaceProps) {
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = openId ? state.jobs.find((j) => j.id === openId) : undefined;
@@ -333,14 +397,26 @@ export function JobsSurface({ threadId, state, command }: JobsSurfaceProps) {
           {open.kind === "shell" ? (
             <ShellPane key={open.id} threadId={threadId} job={open} command={command} />
           ) : (
-            <AgentPane job={open} jobs={state.jobs} items={state.items} onOpen={(j) => setOpenId(j.id)} onStop={stop} />
+            <AgentPane
+              threadId={threadId}
+              job={open}
+              jobs={state.jobs}
+              items={state.items}
+              onOpen={(j) => setOpenId(j.id)}
+              onStop={stop}
+            />
           )}
         </div>
       </div>
     );
   }
 
-  if (tree.length === 0) {
+  // Every running job is in the snapshot, so what is missing is finished work:
+  // worth a quiet row at the foot of the roster, not a claim of the count —
+  // most of it can be shells the roster would not show anyway.
+  const missing = (state.jobsBefore ?? 0) > 0;
+
+  if (tree.length === 0 && !(missing && loadAllJobs)) {
     return (
       <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
         <BotIcon className="size-5 opacity-60" />
@@ -369,10 +445,13 @@ export function JobsSurface({ threadId, state, command }: JobsSurfaceProps) {
             </section>
           );
         })}
+        {missing && loadAllJobs && <EarlierJobs load={loadAllJobs} />}
       </div>
       <div className="text-muted-foreground flex items-center gap-2 border-t px-3 py-1.5 text-[11px]">
         <span className="min-w-0 flex-1 truncate">{label}</span>
         <span className="shrink-0 tabular-nums">
+          {/* Totals over a partial list are a floor, and say so. */}
+          {missing && (tokens || cost) ? "≥ " : ""}
           {[tokens ? `${fmtTokens(tokens)} tok` : "", cost ? fmtCost(cost) : ""].filter(Boolean).join(" · ")}
         </span>
       </div>

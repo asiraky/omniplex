@@ -4,7 +4,7 @@
 
 import { applyEvent, emptyState, prependItems } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, AuthFlowEvent, HarnessMeta, Item, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
+import type { Access, AuthFlowEvent, HarnessMeta, Item, Job, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -206,16 +206,24 @@ export class Client {
         `/api/threads/${encodeURIComponent(s.threadId)}/items?${query}`,
       );
       if (!response.ok) throw new Error(`items page failed (${response.status})`);
-      const page = (await response.json()) as { items: Item[]; itemsBefore: number };
+      const page = (await response.json()) as { items: Item[]; itemsBefore: number; jobs?: Job[] };
       const cur = this.state;
       // The cursor is the contiguity check: live events only append, so it
       // moves only when a snapshot replaced the state (resync, reattach) — and
       // a page fetched against the old cursor would splice in the wrong place.
       if (!cur || cur.threadId !== s.threadId || (cur.itemsBefore ?? 0) !== before) return null;
+      // The page brings the jobs its spawn items need. One already held is
+      // kept as it is: live events have been folding into it since the
+      // snapshot, so it can be fresher than the page's copy.
+      const haveJobs = new Set(cur.jobs.map((j) => j.id));
+      const added = (page.jobs ?? []).filter((j) => !haveJobs.has(j.id));
       const next: ThreadState = {
         ...cur,
         items: prependItems(cur.items, page.items ?? []),
         itemsBefore: page.itemsBefore,
+        // Older work, so it goes above what the snapshot carried.
+        jobs: added.length ? [...added, ...cur.jobs] : cur.jobs,
+        jobsBefore: cur.jobsBefore ? Math.max(0, cur.jobsBefore - added.length) : cur.jobsBefore,
       };
       this.state = next;
       this.events.onState(next.threadId, next);
@@ -226,6 +234,51 @@ export class Client {
     }
   }
   private olderInFlight: Promise<ThreadState | null> | null = null;
+
+  /**
+   * Fetch every job the snapshot left out (`jobsBefore`) and merge them in,
+   * publishing the merged state. Resolves null on failure or when the thread
+   * changed underneath; concurrent asks share one request.
+   */
+  loadAllJobs(): Promise<ThreadState | null> {
+    if (this.jobsInFlight) return this.jobsInFlight;
+    const request = this.fetchJobs().finally(() => (this.jobsInFlight = null));
+    this.jobsInFlight = request;
+    return request;
+  }
+
+  private async fetchJobs(): Promise<ThreadState | null> {
+    const s = this.state;
+    if (!s) return null;
+    try {
+      const response = await fetch(`/api/threads/${encodeURIComponent(s.threadId)}/jobs`);
+      if (!response.ok) throw new Error(`jobs failed (${response.status})`);
+      const body = (await response.json()) as { jobs?: Job[] };
+      const cur = this.state;
+      // Unlike an items page there is no position to get wrong: the merge is a
+      // union by id, so a snapshot landing meanwhile is harmless. Only another
+      // thread's list would be.
+      if (!cur || cur.threadId !== s.threadId) return null;
+      // The client's copy of a job wins: live events have folded into it
+      // since the server answered. Jobs the server did not list yet (started
+      // after it read) stay, after the rest.
+      const mine = new Map(cur.jobs.map((j) => [j.id, j]));
+      const listed = new Set<string>();
+      const jobs = (body.jobs ?? []).map((j) => {
+        listed.add(j.id);
+        return mine.get(j.id) ?? j;
+      });
+      for (const j of cur.jobs) if (!listed.has(j.id)) jobs.push(j);
+      const next: ThreadState = { ...cur, jobs, jobsBefore: 0 };
+      this.state = next;
+      this.events.onState(next.threadId, next);
+      return next;
+    } catch (error) {
+      console.warn("loading all jobs failed", error);
+      return null;
+    }
+  }
+  private jobsInFlight: Promise<ThreadState | null> | null = null;
 
   detach() {
     this.snapshotRequest?.abort();
@@ -338,13 +391,26 @@ export class Client {
         if (f.threadId === this.threadId) this.events.onComposerItemsChanged(f.threadId);
         break;
 
+      // A snapshot and a replay are both followed by `synchronized`, which
+      // publishes. Holding off until then renders a reconnect once, not once
+      // per event of the gap — on a phone that is the difference between a
+      // tap landing and the page locking up.
       case "snapshot":
         if (f.threadId !== this.threadId || !f.state) return;
         this.state = f.state;
         this.cursor = f.state.seq;
-        this.events.onState(f.threadId, this.state);
         break;
 
+      case "replay": {
+        if (f.threadId !== this.threadId || !f.events?.length) return;
+        let next = this.state ?? emptyState(f.threadId);
+        for (const ev of f.events) next = applyEvent(next, ev);
+        this.state = next;
+        this.cursor = next.seq;
+        break;
+      }
+
+      // A live event, published as it lands.
       case "event": {
         if (f.threadId !== this.threadId || !f.event) return;
         const base = this.state ?? emptyState(f.threadId);

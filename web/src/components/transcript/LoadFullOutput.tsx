@@ -6,7 +6,14 @@ import type { ToolContent } from "~/protocol";
 const toolContentUrl = (threadId: string, itemId: string) =>
   `/api/threads/${encodeURIComponent(threadId)}/items/${encodeURIComponent(itemId)}/content`;
 
-async function readToolContent(url: string, signal?: AbortSignal): Promise<ToolContent[]> {
+/** The whole of a tool call as the server holds it: output, and input. */
+export interface FullToolBody {
+  content: ToolContent[];
+  /** Absent when the call recorded no input. */
+  input?: unknown;
+}
+
+async function readToolContent(url: string, signal?: AbortSignal): Promise<FullToolBody> {
   const res = await fetch(url, { signal });
   if (!res.ok) {
     const message = await res
@@ -18,17 +25,17 @@ async function readToolContent(url: string, signal?: AbortSignal): Promise<ToolC
       res.status === 404 ? "The full output is not available" : `Could not load the output (${res.status})`,
     );
   }
-  const body = (await res.json()) as { content?: ToolContent[] };
-  return body.content ?? [];
+  const body = (await res.json()) as { content?: ToolContent[]; input?: unknown };
+  return { content: body.content ?? [], input: body.input };
 }
 
 const textButton =
   "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-11 items-center gap-1.5 rounded-sm px-1 text-[12px] transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none md:min-h-0";
 
 /**
- * The way from a truncated preview to the whole output, and back after 4G drops
- * it. Loaded lazily, since few cards are truncated and fewer are asked for in
- * full. The output goes to `onLoad` and is held by the card alone: never written
+ * The way from a truncated preview to the whole output and input, and back
+ * after 4G drops it. Loaded lazily, since few cards are truncated and fewer are asked for in
+ * full. The body goes to `onLoad` and is held by the card alone: never written
  * back into the thread, so it is dropped with the card and a long session's
  * output never accumulates in the tab.
  */
@@ -39,7 +46,7 @@ export default function LoadFullOutput({
 }: {
   threadId: string;
   itemId: string;
-  onLoad: (content: ToolContent[]) => void;
+  onLoad: (body: FullToolBody) => void;
 }) {
   // Zero until asked; each load or retry bumps it, re-running the effect.
   const [attempt, setAttempt] = useState(0);

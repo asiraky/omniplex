@@ -653,3 +653,61 @@ describe("applyEvent tool output cap", () => {
     expect(text[text.length - tail.length - 1]).toBe("\n");
   });
 });
+
+describe("a payload the server capped", () => {
+  it("marks the item truncated from either tool event", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "tool_call.started", { toolCallId: "c1", rawInput: { x: "…" }, truncated: true }));
+    expect(s.items[0].truncated).toBe(true);
+    s = applyEvent(emptyState("s1"), ev(1, "tool_call.started", { toolCallId: "c1", rawInput: {} }));
+    expect(s.items[0].truncated).toBeUndefined();
+    s = applyEvent(s, ev(2, "tool_call.updated", { toolCallId: "c1", status: "completed", truncated: true }));
+    expect(s.items[0].truncated).toBe(true);
+  });
+});
+
+describe("stragglers for what the snapshot left out", () => {
+  const withJobs = (jobsBefore: number) => ({
+    ...emptyState("s1"),
+    jobs: [{ id: "j1", depth: 0, kind: "agent" as const, status: "running" as const, usage: {} }],
+    jobsBefore,
+  });
+
+  it("drops an update or finish for a job it does not hold, moving only the cursor", () => {
+    let s = applyEvent(withJobs(4), ev(5, "job.updated", { jobId: "old", activity: "Read" }));
+    expect(s.jobs.map((j) => j.id)).toEqual(["j1"]);
+    expect(s.seq).toBe(5);
+    s = applyEvent(s, ev(6, "job.finished", { jobId: "old", status: "completed" }));
+    expect(s.jobs.map((j) => j.id)).toEqual(["j1"]);
+    expect(s.seq).toBe(6);
+    // A held job still folds.
+    s = applyEvent(s, ev(7, "job.updated", { jobId: "j1", activity: "Grep" }));
+    expect(s.jobs[0].activity).toBe("Grep");
+  });
+
+  it("always creates a started job", () => {
+    const s = applyEvent(withJobs(4), ev(5, "job.started", { jobId: "new", name: "Explore" }));
+    expect(s.jobs.map((j) => j.id)).toEqual(["j1", "new"]);
+  });
+
+  it("creates a job from a later row when the list is complete", () => {
+    const s = applyEvent(withJobs(0), ev(5, "job.updated", { jobId: "late" }));
+    expect(s.jobs.map((j) => j.id)).toEqual(["j1", "late"]);
+  });
+
+  it("drops an update for an unknown child of a parent whose children were left out", () => {
+    const base = {
+      ...emptyState("s1"),
+      items: [{ id: "task", kind: "tool" as const, childrenBefore: 12 }],
+    };
+    let s = applyEvent(base, ev(5, "tool_call.updated", { toolCallId: "child", parentToolCallId: "task", status: "completed" }));
+    expect(s.items.map((it) => it.id)).toEqual(["task"]);
+    expect(s.seq).toBe(5);
+    // A child it does hold still updates, and a parent with nothing left out
+    // takes new children.
+    s = { ...s, items: [...s.items, { id: "held", kind: "tool", parentId: "task" }, { id: "other", kind: "tool" }] };
+    s = applyEvent(s, ev(6, "tool_call.updated", { toolCallId: "held", parentToolCallId: "task", status: "failed" }));
+    expect(s.items.find((it) => it.id === "held")?.status).toBe("failed");
+    s = applyEvent(s, ev(7, "tool_call.updated", { toolCallId: "fresh", parentToolCallId: "other", status: "in_progress" }));
+    expect(s.items.map((it) => it.id)).toContain("fresh");
+  });
+});

@@ -24,6 +24,7 @@ import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
 import { LiveTail } from "./LiveTail";
+import type { FullToolBody } from "./LoadFullOutput";
 
 // Few cards are truncated, so the loader arrives on first open. On a dropped
 // connection or after a redeploy its chunk can fail to load, and with no error
@@ -76,14 +77,15 @@ function joinOutput(content: ToolContent[] | undefined) {
     .trim();
 }
 
-// What a tool card shows: the full output once fetched, standing in for the
-// preview, else the preview. The full output is held by the card only, so it
-// goes when the card does.
+// What a tool card shows: the full output and input once fetched, standing in
+// for the previews, else the previews. The full body is held by the card only,
+// so it goes when the card does.
 function useToolOutput(item: Item) {
-  const [full, setFull] = useState<ToolContent[]>();
+  const [full, setFull] = useState<FullToolBody>();
   return {
     setFull,
-    output: joinOutput(full ?? item.content),
+    output: joinOutput(full ? full.content : item.content),
+    input: full && full.input !== undefined ? full.input : item.input,
     truncated: !!item.truncated && !full,
   };
 }
@@ -96,7 +98,7 @@ function outputLabel(open: boolean, truncated: boolean, output: string) {
 
 export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const [open, setOpen] = useState(false);
-  const { setFull, output, truncated } = useToolOutput(item);
+  const { setFull, output, input, truncated } = useToolOutput(item);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
   return (
@@ -116,7 +118,8 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
           <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
         )}
         <StatusMark status={item.status as ToolStatus | undefined} />
-        {output && (
+        {/* A cut input alone still has a body worth opening for. */}
+        {(output || truncated) && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
             {outputLabel(open, truncated, output)}
             <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
@@ -131,9 +134,9 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
 
       {open && (
         <div className="space-y-2 border-t px-3 py-2">
-          {item.input != null && (
+          {input != null && (
             <pre className="scroll-thin bg-muted/60 text-muted-foreground max-h-40 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed">
-              {JSON.stringify(item.input, null, 2)}
+              {JSON.stringify(input, null, 2)}
             </pre>
           )}
           {output && (

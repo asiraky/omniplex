@@ -130,6 +130,31 @@ describe("a truncated tool card", () => {
   });
 });
 
+describe("a tool card whose input was cut", () => {
+  it("says it is truncated with no output to count", () => {
+    render(<ToolCard threadId="s1" item={tool({ content: undefined, input: { command: "x" } })} />);
+    expect(screen.getByText("truncated")).toBeTruthy();
+  });
+
+  it("offers the load with no output at all, and shows the full input once loaded", async () => {
+    serve(() => new Response(JSON.stringify({ content: [], input: { command: "the whole command" } })));
+    openCard(tool({ content: undefined, status: "in_progress", input: { command: "the [… cut …] command" } }));
+    expect(screen.getByText(/the \[… cut …\] command/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(await screen.findByText(/the whole command/)).toBeTruthy();
+    expect(screen.queryByText(/cut …/)).toBeNull();
+  });
+
+  it("keeps the preview input when the server sends output only", async () => {
+    serve(full("the whole output"));
+    openCard(tool({ input: { command: "kept" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(await screen.findByText("the whole output")).toBeTruthy();
+    expect(screen.getByText(/kept/)).toBeTruthy();
+  });
+});
+
 describe("an untruncated tool card", () => {
   it("counts its lines and offers no load", () => {
     const fetch = serve();
