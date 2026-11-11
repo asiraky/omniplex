@@ -12,49 +12,46 @@ import (
 // one WS frame, which is still smooth to watch.
 const deltaWindow = 75 * time.Millisecond
 
-// coalescer holds the streamed deltas of the current window, in arrival
-// order, and merges each new one into the pending event for the same item.
-// It only ever merges what folds the same either way: message chunks
-// concatenate, and a tool update's fields fold last-non-empty-wins with its
-// content appended, which is exactly how the projection applies them. So the
-// merged event leaves every projection where the separate ones would have.
+// coalescer holds one streamed delta for the current window and merges each
+// consecutive delta for the same item into it. It only ever merges what
+// folds the same either way: message chunks concatenate, and a tool update's
+// fields fold last-non-empty-wins with its content appended, which is exactly
+// how the projection applies them. So the merged event leaves every
+// projection where the separate ones would have.
 //
-// Anything else is the caller's to write, after taking what is pending: an
-// event of any other type ends the window, which is what keeps the log in
-// the order the harness emitted it.
+// Anything that does not merge — a delta for another item, an event of any
+// other type — ends the window, which is what keeps the log in exactly the
+// order the harness emitted it.
 type coalescer struct {
-	pending []proto.Emission
+	pending *proto.Emission
 }
 
-// add takes em into the window when it is a delta that can wait, and reports
-// whether it did. known says whether the projection already has the item;
-// an event that creates its item is never held, so whatever reads the
-// projection to handle the next one — redaction looks up the call's title —
-// finds it there.
-func (c *coalescer) add(em proto.Emission, known func(id string) bool) bool {
-	id, ok := deltaItem(em)
-	if !ok || !known(id) {
-		return false
-	}
-	// Only the latest pending event for the item may take it. An earlier one
-	// would move this delta ahead of a later one it could not merge with.
-	for i := len(c.pending) - 1; i >= 0; i-- {
-		if pid, _ := deltaItem(c.pending[i]); pid != id || c.pending[i].Type != em.Type {
-			continue
+// add offers em to the window. It returns what was held and must be written
+// before em, and whether em itself is now held. known says whether the
+// projection already has the item: an event that creates its item is never
+// held, so whatever reads the projection to handle the next one — redaction
+// looks up the call's title — finds it there.
+func (c *coalescer) add(em proto.Emission, known func(id string) bool) (flushed []proto.Emission, held bool) {
+	if c.pending != nil {
+		if merged, ok := merge(*c.pending, em); ok {
+			c.pending = &merged
+			return nil, true
 		}
-		if merged, ok := merge(c.pending[i], em); ok {
-			c.pending[i] = merged
-			return true
-		}
-		break
 	}
-	c.pending = append(c.pending, em)
-	return true
+	flushed = c.take()
+	if id, ok := deltaItem(em); ok && known(id) {
+		c.pending = &em
+		return flushed, true
+	}
+	return flushed, false
 }
 
-// take returns the pending events in order and empties the window.
+// take returns what is held, if anything, and empties the window.
 func (c *coalescer) take() []proto.Emission {
-	out := c.pending
+	if c.pending == nil {
+		return nil
+	}
+	out := []proto.Emission{*c.pending}
 	c.pending = nil
 	return out
 }
@@ -72,9 +69,13 @@ func deltaItem(em proto.Emission) (string, bool) {
 	return "", false
 }
 
-// merge folds next into prev when the result applies the same as the two in
-// order.
+// merge folds next into prev when both are deltas for the same item and the
+// result applies the same as the two in order.
 func merge(prev, next proto.Emission) (proto.Emission, bool) {
+	prevID, ok := deltaItem(prev)
+	if nextID, nextOK := deltaItem(next); !ok || !nextOK || prevID != nextID || prev.Type != next.Type {
+		return prev, false
+	}
 	switch a := prev.Payload.(type) {
 	case proto.MessageChunkPayload:
 		b := next.Payload.(proto.MessageChunkPayload)

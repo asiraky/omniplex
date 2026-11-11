@@ -658,7 +658,10 @@ func TestRebuildFromLogMatchesLiveState(t *testing.T) {
 	}))
 	var live *projection.State
 	waitFor(t, func() bool {
-		live, _ = actor.State(context.Background())
+		var err error
+		if live, err = actor.State(context.Background()); err != nil {
+			return false
+		}
 		_, ok := live.ItemByID("t1")
 		return ok
 	})

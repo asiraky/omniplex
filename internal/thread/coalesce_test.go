@@ -14,11 +14,14 @@ import (
 
 func allKnown(string) bool { return true }
 
-func chunk(block, delta string) proto.Emission {
+func chunkOf(turn, kind, block, delta string) proto.Emission {
 	return proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-		TurnID: "t1", Role: "agent", Kind: "text", BlockID: block, Delta: delta,
+		TurnID: turn, Role: "agent", Kind: kind, BlockID: block, Delta: delta,
 	})
 }
+
+func chunk(block, delta string) proto.Emission   { return chunkOf("t1", "text", block, delta) }
+func thought(block, delta string) proto.Emission { return chunkOf("t1", "thought", block, delta) }
 
 func toolUpdate(p proto.ToolCallUpdatedPayload) proto.Emission {
 	return proto.Emit(proto.ToolCallUpdated, p)
@@ -26,16 +29,144 @@ func toolUpdate(p proto.ToolCallUpdatedPayload) proto.Emission {
 
 func textContent(s string) proto.ToolContent { return proto.ToolContent{Type: "text", Text: s} }
 
+// drive feeds emitted through c the way the actor does — what add flushes is
+// written, then em unless it is held, and whatever is held at the end — and
+// returns every write in order. known is consulted before each add.
+func drive(c *coalescer, emitted []proto.Emission, known func(string) bool, write func(proto.Emission)) {
+	for _, em := range emitted {
+		flushed, held := c.add(em, known)
+		for _, f := range flushed {
+			write(f)
+		}
+		if !held {
+			write(em)
+		}
+	}
+	for _, f := range c.take() {
+		write(f)
+	}
+}
+
+// run is one stretch of the log: consecutive deltas for the same item
+// collapse into one, with their text joined.
+type run struct{ typ, item, text string }
+
+// runsOf collapses consecutive deltas for the same item, so a log can be
+// compared with what was emitted however the windows happened to fall.
+func runsOf(ems []proto.Emission) []run {
+	var out []run
+	for _, em := range ems {
+		r := run{typ: em.Type}
+		switch p := em.Payload.(type) {
+		case proto.MessageChunkPayload:
+			r.item, r.text = p.BlockID, p.Delta
+		case proto.ToolCallUpdatedPayload:
+			r.item = p.ToolCallID
+			for _, c := range p.Content {
+				r.text += c.Text
+			}
+		case proto.ToolCallStartedPayload:
+			r.item = p.ToolCallID
+		}
+		delta := em.Type == proto.MessageChunk || em.Type == proto.ToolCallUpdated
+		if n := len(out); delta && n > 0 && out[n-1].typ == r.typ && out[n-1].item == r.item {
+			out[n-1].text += r.text
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// decodeEvent turns a stored event back into the emission it was written
+// from, for the payload types these tests read.
+func decodeEvent(t *testing.T, ev proto.Event) proto.Emission {
+	t.Helper()
+	var p any
+	switch ev.Type {
+	case proto.MessageChunk:
+		var c proto.MessageChunkPayload
+		if err := json.Unmarshal(ev.Payload, &c); err != nil {
+			t.Fatal(err)
+		}
+		p = c
+	case proto.ToolCallUpdated:
+		var u proto.ToolCallUpdatedPayload
+		if err := json.Unmarshal(ev.Payload, &u); err != nil {
+			t.Fatal(err)
+		}
+		p = u
+	case proto.ToolCallStarted:
+		var s proto.ToolCallStartedPayload
+		if err := json.Unmarshal(ev.Payload, &s); err != nil {
+			t.Fatal(err)
+		}
+		p = s
+	}
+	return proto.Emit(ev.Type, p)
+}
+
+func decodeEvents(t *testing.T, evs []proto.Event) []proto.Emission {
+	t.Helper()
+	out := make([]proto.Emission, len(evs))
+	for i, ev := range evs {
+		out[i] = decodeEvent(t, ev)
+	}
+	return out
+}
+
+// chunkDeltas returns the deltas the log holds for block, in log order.
+func chunkDeltas(t *testing.T, evs []proto.Event, block string) []string {
+	t.Helper()
+	var out []string
+	for _, em := range decodeEvents(t, evs) {
+		if p, ok := em.Payload.(proto.MessageChunkPayload); ok && p.BlockID == block {
+			out = append(out, p.Delta)
+		}
+	}
+	return out
+}
+
+func rebuild(threadID string, evs []proto.Event) *projection.State {
+	s := projection.New(threadID)
+	for _, ev := range evs {
+		s.Apply(ev)
+	}
+	return s
+}
+
+// projectionWriter applies emissions to a fresh projection with the seqs the
+// log would give them.
+type projectionWriter struct {
+	state *projection.State
+	seq   int64
+}
+
+func newProjectionWriter() *projectionWriter {
+	return &projectionWriter{state: projection.New("th")}
+}
+
+func (w *projectionWriter) write(t *testing.T, em proto.Emission) {
+	t.Helper()
+	raw, err := json.Marshal(em.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.seq++
+	w.state.Apply(proto.Event{ThreadID: "th", Seq: w.seq, Timestamp: 1000, Type: em.Type, Payload: raw})
+}
+
 func TestCoalescerMergesChunksForOneBlock(t *testing.T) {
 	var c coalescer
 	for _, d := range []string{"Hel", "lo, ", "world"} {
-		if !c.add(chunk("b1", d), allKnown) {
-			t.Fatalf("chunk %q refused", d)
+		flushed, held := c.add(chunk("b1", d), allKnown)
+		if !held || len(flushed) != 0 {
+			t.Fatalf("chunk %q: flushed %+v, held %v; want merged and held", d, flushed, held)
 		}
 	}
 	out := c.take()
 	if len(out) != 1 {
-		t.Fatalf("pending = %d entries, want 1: %+v", len(out), out)
+		t.Fatalf("held = %d entries, want 1: %+v", len(out), out)
 	}
 	p := out[0].Payload.(proto.MessageChunkPayload)
 	if out[0].Type != proto.MessageChunk || p.BlockID != "b1" || p.Delta != "Hello, world" {
@@ -52,13 +183,13 @@ func TestCoalescerMergesToolUpdatesForOneCall(t *testing.T) {
 		{ToolCallID: "c1", Status: proto.StatusInProgress, RawInput: json.RawMessage(`{"a":2}`)},
 	}
 	for _, u := range updates {
-		if !c.add(toolUpdate(u), allKnown) {
-			t.Fatalf("update %+v refused", u)
+		if flushed, held := c.add(toolUpdate(u), allKnown); !held || len(flushed) != 0 {
+			t.Fatalf("update %+v: flushed %+v, held %v; want merged and held", u, flushed, held)
 		}
 	}
 	out := c.take()
 	if len(out) != 1 {
-		t.Fatalf("pending = %d entries, want 1: %+v", len(out), out)
+		t.Fatalf("held = %d entries, want 1: %+v", len(out), out)
 	}
 	got := out[0].Payload.(proto.ToolCallUpdatedPayload)
 	want := proto.ToolCallUpdatedPayload{
@@ -78,124 +209,142 @@ func TestCoalescerMergesToolUpdatesForOneCall(t *testing.T) {
 	}
 }
 
-func TestCoalescerKeepsToolStatusChangesApart(t *testing.T) {
+func TestCoalescerToolStatusChangeFlushesThePendingUpdate(t *testing.T) {
 	var c coalescer
 	c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusInProgress, Content: []proto.ToolContent{textContent("a")}}), allKnown)
-	c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusCompleted, Content: []proto.ToolContent{textContent("b")}}), allKnown)
-	out := c.take()
-	if len(out) != 2 {
-		t.Fatalf("pending = %d entries, want 2: %+v", len(out), out)
+
+	flushed, held := c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusCompleted, Content: []proto.ToolContent{textContent("b")}}), allKnown)
+	if !held || len(flushed) != 1 {
+		t.Fatalf("status change: flushed %+v, held %v; want the in_progress update flushed and completed held", flushed, held)
 	}
-	first := out[0].Payload.(proto.ToolCallUpdatedPayload)
-	second := out[1].Payload.(proto.ToolCallUpdatedPayload)
-	if first.Status != proto.StatusInProgress || second.Status != proto.StatusCompleted {
-		t.Fatalf("statuses = %q, %q; want in_progress then completed", first.Status, second.Status)
+	if p := flushed[0].Payload.(proto.ToolCallUpdatedPayload); p.Status != proto.StatusInProgress || !reflect.DeepEqual(p.Content, []proto.ToolContent{textContent("a")}) {
+		t.Fatalf("flushed = %+v", p)
+	}
+
+	// Status-less: merges into the completed update now held.
+	if flushed, held := c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("c")}}), allKnown); !held || len(flushed) != 0 {
+		t.Fatalf("status-less update: flushed %+v, held %v; want merged", flushed, held)
+	}
+	out := c.take()
+	if len(out) != 1 {
+		t.Fatalf("held = %+v", out)
+	}
+	if p := out[0].Payload.(proto.ToolCallUpdatedPayload); p.Status != proto.StatusCompleted || !reflect.DeepEqual(p.Content, []proto.ToolContent{textContent("b"), textContent("c")}) {
+		t.Fatalf("held = %+v", p)
 	}
 }
 
 func TestCoalescerRefusesDeltaForUnknownItem(t *testing.T) {
 	var c coalescer
 	known := func(id string) bool { return id == "known" }
-	if c.add(chunk("new", "x"), known) {
-		t.Fatal("chunk for an item the projection lacks was held")
+	if flushed, held := c.add(chunk("new", "x"), known); held || len(flushed) != 0 {
+		t.Fatalf("chunk for unknown item on empty window: flushed %+v, held %v", flushed, held)
 	}
-	if c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "new", Status: proto.StatusInProgress}), known) {
-		t.Fatal("tool update for an item the projection lacks was held")
+	if flushed, held := c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "new", Status: proto.StatusInProgress}), known); held || len(flushed) != 0 {
+		t.Fatalf("tool update for unknown item on empty window: flushed %+v, held %v", flushed, held)
+	}
+
+	// With something held, the unknown item's delta still is not held, and
+	// what was held is flushed ahead of it.
+	c.add(chunk("known", "k"), known)
+	flushed, held := c.add(chunk("new", "x"), known)
+	if held || len(flushed) != 1 || flushed[0].Payload.(proto.MessageChunkPayload).BlockID != "known" {
+		t.Fatalf("unknown after held: flushed %+v, held %v", flushed, held)
 	}
 	if out := c.take(); len(out) != 0 {
-		t.Fatalf("pending after refusals = %+v", out)
+		t.Fatalf("held after refusal = %+v", out)
 	}
 }
 
 func TestCoalescerRefusesNonDeltaTypes(t *testing.T) {
-	var c coalescer
 	for _, em := range []proto.Emission{
 		proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{ToolCallID: "c1", Title: "ls", Status: proto.StatusInProgress}),
 		proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}),
 		// A delta payload under some other type is not a delta.
-		proto.Emit(proto.ToolCallStarted, proto.MessageChunkPayload{BlockID: "b1", Delta: "x"}),
-		proto.Emit(proto.MessageChunk, proto.ToolCallUpdatedPayload{ToolCallID: "c1"}),
+		proto.Emit(proto.ToolCallStarted, proto.MessageChunkPayload{TurnID: "t1", Role: "agent", Kind: "text", BlockID: "b1", Delta: "x"}),
+		proto.Emit(proto.MessageChunk, proto.ToolCallUpdatedPayload{ToolCallID: "b1"}),
 	} {
-		if c.add(em, allKnown) {
-			t.Fatalf("%s with %T was held", em.Type, em.Payload)
+		var c coalescer
+		if flushed, held := c.add(em, allKnown); held || len(flushed) != 0 {
+			t.Fatalf("%s with %T on empty window: flushed %+v, held %v", em.Type, em.Payload, flushed, held)
+		}
+		// Behind a held delta for the same id, it ends the window.
+		c.add(chunk("b1", "held"), allKnown)
+		flushed, held := c.add(em, allKnown)
+		if held || len(flushed) != 1 || flushed[0].Payload.(proto.MessageChunkPayload).Delta != "held" {
+			t.Fatalf("%s with %T after held chunk: flushed %+v, held %v", em.Type, em.Payload, flushed, held)
+		}
+		if out := c.take(); len(out) != 0 {
+			t.Fatalf("held after %s = %+v", em.Type, out)
 		}
 	}
-	if out := c.take(); len(out) != 0 {
-		t.Fatalf("pending after refusals = %+v", out)
+}
+
+func TestCoalescerMergeRefusesOtherItemsAndTypes(t *testing.T) {
+	cases := []struct {
+		name       string
+		prev, next proto.Emission
+	}{
+		{"chunks for different blocks", chunk("A", "a"), chunk("B", "b")},
+		{"updates for different calls", toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "A"}), toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "B"})},
+		{"chunk then update with the same id", chunk("A", "a"), toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "A"})},
+		{"update then chunk with the same id", toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "A"}), chunk("A", "a")},
+		{"chunk then non-delta", chunk("A", "a"), proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{ToolCallID: "A"})},
+		{"chunk payload under another type", chunk("A", "a"), proto.Emit(proto.ToolCallStarted, proto.MessageChunkPayload{TurnID: "t1", Role: "agent", Kind: "text", BlockID: "A"})},
+		{"different kind", chunk("A", "a"), thought("A", "t")},
+		{"different turn", chunk("A", "a"), chunkOf("t2", "text", "A", "b")},
+	}
+	for _, tc := range cases {
+		if _, ok := merge(tc.prev, tc.next); ok {
+			t.Errorf("%s: merged", tc.name)
+		}
 	}
 }
 
-func TestCoalescerInterleavedItemsKeepFirstAppearanceOrder(t *testing.T) {
+func TestCoalescerInterleavedItemsAreNotMergedAcrossEachOther(t *testing.T) {
 	var c coalescer
-	c.add(chunk("A", "a1"), allKnown)
-	c.add(chunk("B", "b1"), allKnown)
-	c.add(chunk("A", "a2"), allKnown)
-	out := c.take()
-	if len(out) != 2 {
-		t.Fatalf("pending = %d entries, want 2: %+v", len(out), out)
-	}
-	a := out[0].Payload.(proto.MessageChunkPayload)
-	b := out[1].Payload.(proto.MessageChunkPayload)
-	if a.BlockID != "A" || a.Delta != "a1a2" || b.BlockID != "B" || b.Delta != "b1" {
-		t.Fatalf("pending = %+v, %+v", a, b)
-	}
-}
-
-func TestCoalescerUnmergeableDeltaStartsNewEntryAndLaterOnesMergeIntoIt(t *testing.T) {
-	var c coalescer
-	thought := func(d string) proto.Emission {
-		return proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			TurnID: "t1", Role: "agent", Kind: "thought", BlockID: "b1", Delta: d,
-		})
-	}
-	otherTurn := func(d string) proto.Emission {
-		return proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			TurnID: "t2", Role: "agent", Kind: "text", BlockID: "b1", Delta: d,
-		})
-	}
-	c.add(chunk("b1", "text1 "), allKnown)
-	c.add(thought("think1 "), allKnown) // different kind: new entry
-	c.add(chunk("b1", "text2 "), allKnown)
-	// text2 could merge into the first entry by its fields, but that would
-	// move it ahead of the thought. It must start a third entry.
-	c.add(chunk("b1", "text3 "), allKnown) // merges into the third
-	c.add(otherTurn("t2a "), allKnown)     // different turn: fourth entry
-	c.add(otherTurn("t2b"), allKnown)      // merges into the fourth
-
-	out := c.take()
+	var writes []proto.Emission
+	drive(&c, []proto.Emission{chunk("A", "a1"), chunk("B", "b1"), chunk("A", "a2")}, allKnown, func(em proto.Emission) {
+		writes = append(writes, em)
+	})
 	var got []string
-	for _, em := range out {
+	for _, em := range writes {
+		p := em.Payload.(proto.MessageChunkPayload)
+		got = append(got, p.BlockID+":"+p.Delta)
+	}
+	if want := []string{"A:a1", "B:b1", "A:a2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("writes = %q, want %q", got, want)
+	}
+}
+
+func TestCoalescerNonMergeableDeltaFlushesThePendingOneFirst(t *testing.T) {
+	var c coalescer
+	var writes []proto.Emission
+	drive(&c, []proto.Emission{
+		chunk("b1", "text1 "),
+		thought("b1", "think1 "),            // different kind: flushes text1
+		chunk("b1", "text2 "),               // flushes the thought
+		chunk("b1", "text3 "),               // merges with text2
+		chunkOf("t2", "text", "b1", "t2a "), // different turn: flushes text2 text3
+		chunkOf("t2", "text", "b1", "t2b"),  // merges
+	}, allKnown, func(em proto.Emission) { writes = append(writes, em) })
+
+	var got []string
+	for _, em := range writes {
 		p := em.Payload.(proto.MessageChunkPayload)
 		got = append(got, p.TurnID+"/"+p.Kind+":"+p.Delta)
 	}
 	want := []string{"t1/text:text1 ", "t1/thought:think1 ", "t1/text:text2 text3 ", "t2/text:t2a t2b"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("pending = %q\nwant      %q", got, want)
-	}
-}
-
-func TestCoalescerUnmergeableToolUpdateMergesOnlyIntoLatest(t *testing.T) {
-	var c coalescer
-	c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusInProgress, Content: []proto.ToolContent{textContent("a")}}), allKnown)
-	c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusCompleted, Content: []proto.ToolContent{textContent("b")}}), allKnown)
-	// Status-less: merges into the completed entry, never the in_progress one.
-	c.add(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("c")}}), allKnown)
-	out := c.take()
-	if len(out) != 2 {
-		t.Fatalf("pending = %d entries, want 2: %+v", len(out), out)
-	}
-	first := out[0].Payload.(proto.ToolCallUpdatedPayload)
-	second := out[1].Payload.(proto.ToolCallUpdatedPayload)
-	if !reflect.DeepEqual(first.Content, []proto.ToolContent{textContent("a")}) {
-		t.Fatalf("first entry content = %+v", first.Content)
-	}
-	if second.Status != proto.StatusCompleted || !reflect.DeepEqual(second.Content, []proto.ToolContent{textContent("b"), textContent("c")}) {
-		t.Fatalf("second entry = %+v", second)
+		t.Fatalf("writes = %q\nwant     %q", got, want)
 	}
 }
 
 func TestCoalescerTakeEmptiesWindow(t *testing.T) {
 	var c coalescer
+	if out := c.take(); len(out) != 0 {
+		t.Fatalf("take on empty window = %+v", out)
+	}
 	c.add(chunk("b1", "x"), allKnown)
 	if out := c.take(); len(out) != 1 {
 		t.Fatalf("first take = %+v", out)
@@ -204,39 +353,21 @@ func TestCoalescerTakeEmptiesWindow(t *testing.T) {
 		t.Fatalf("second take = %+v, want empty", out)
 	}
 	// A fresh window does not merge into what was taken.
-	c.add(chunk("b1", "y"), allKnown)
+	if flushed, _ := c.add(chunk("b1", "y"), allKnown); len(flushed) != 0 {
+		t.Fatalf("add after take flushed %+v", flushed)
+	}
 	out := c.take()
 	if len(out) != 1 || out[0].Payload.(proto.MessageChunkPayload).Delta != "y" {
 		t.Fatalf("take after refill = %+v", out)
 	}
 }
 
-// foldSeq applies emissions to a fresh projection as the log would hold them.
-type foldSeq struct {
-	state *projection.State
-	seq   int64
-}
-
-func newFold() *foldSeq { return &foldSeq{state: projection.New("th")} }
-
-func (f *foldSeq) apply(t *testing.T, em proto.Emission) {
-	t.Helper()
-	raw, err := json.Marshal(em.Payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.seq++
-	f.state.Apply(proto.Event{ThreadID: "th", Seq: f.seq, Timestamp: 1000, Type: em.Type, Payload: raw})
-}
-
 // TestCoalescedDeltasFoldLikeTheOriginals is the property the coalescer
 // exists under: writing the merged emissions leaves the projection exactly
-// where writing every original would have.
+// where writing every original would have, and the log differs from the
+// emitted sequence only by consecutive same-item deltas being joined.
 func TestCoalescedDeltasFoldLikeTheOriginals(t *testing.T) {
-	thought := func(block, d string) proto.Emission {
-		return proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{TurnID: "t1", Role: "agent", Kind: "thought", BlockID: block, Delta: d})
-	}
-	seq := []proto.Emission{
+	emitted := []proto.Emission{
 		proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}),
 		chunk("m1", "Let "),
 		chunk("m1", "me "),
@@ -250,7 +381,9 @@ func TestCoalescedDeltasFoldLikeTheOriginals(t *testing.T) {
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("a.go\n")}}),
 		chunk("m2", "while "),
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Title: "ls -la", Content: []proto.ToolContent{textContent("b.go\n")}}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("c.go\n")}}),
 		chunk("m2", "waiting"),
+		chunk("m2", "..."),
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Status: proto.StatusCompleted, Content: []proto.ToolContent{{Type: "diff", Path: "x", Old: "1", New: "2"}}}),
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", ParentToolCallID: "task", Content: []proto.ToolContent{textContent("done")}}),
 		proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c2", Kind: proto.KindExecute, Title: "cat", Status: proto.StatusInProgress}),
@@ -261,76 +394,47 @@ func TestCoalescedDeltasFoldLikeTheOriginals(t *testing.T) {
 		// A straggling update after the turn ended, then a fresh turn's chunk
 		// into an old block.
 		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c2", Content: []proto.ToolContent{textContent("late")}}),
-		proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{TurnID: "t2", Role: "agent", Kind: "text", BlockID: "m2", Delta: "?"}),
+		chunkOf("t2", "text", "m2", "?"),
 	}
 
-	plain := newFold()
-	for _, em := range seq {
-		plain.apply(t, em)
+	original := newProjectionWriter()
+	for _, em := range emitted {
+		original.write(t, em)
 	}
 
-	// The actor's path: hold what the coalescer takes, write the rest after
-	// whatever is held.
-	merged := newFold()
+	coalesced := newProjectionWriter()
 	var c coalescer
-	known := func(id string) bool { _, ok := merged.state.ItemByID(id); return ok }
-	written := 0
-	flush := func() {
-		for _, em := range c.take() {
-			merged.apply(t, em)
-			written++
-		}
-	}
-	for _, em := range seq {
-		if c.add(em, known) {
-			continue
-		}
-		flush()
-		merged.apply(t, em)
-		written++
-	}
-	flush()
+	var writes []proto.Emission
+	known := func(id string) bool { _, ok := coalesced.state.ItemByID(id); return ok }
+	drive(&c, emitted, known, func(em proto.Emission) {
+		coalesced.write(t, em)
+		writes = append(writes, em)
+	})
 
-	if written >= len(seq) {
-		t.Fatalf("nothing was merged: %d writes for %d events", written, len(seq))
+	if len(writes) >= len(emitted) {
+		t.Fatalf("nothing was merged: %d writes for %d events", len(writes), len(emitted))
 	}
-	a, _ := json.Marshal(plain.state.Items)
-	b, _ := json.Marshal(merged.state.Items)
+	if a, b := runsOf(emitted), runsOf(writes); !reflect.DeepEqual(a, b) {
+		t.Fatalf("log order differs from emitted order:\nemitted: %+v\nwritten: %+v", a, b)
+	}
+	a, _ := json.Marshal(original.state.Items)
+	b, _ := json.Marshal(coalesced.state.Items)
 	if string(a) != string(b) {
-		t.Fatalf("merged fold differs from the original:\noriginal: %s\nmerged:   %s", a, b)
+		t.Fatalf("coalesced fold differs from the original:\noriginal:  %s\ncoalesced: %s", a, b)
 	}
-	if plain.state.Phase != merged.state.Phase {
-		t.Fatalf("phase = %q merged, %q original", merged.state.Phase, plain.state.Phase)
+	if original.state.Phase != coalesced.state.Phase {
+		t.Fatalf("phase = %q coalesced, %q original", coalesced.state.Phase, original.state.Phase)
 	}
-	// Spot-check the fold itself, so equal-but-wrong cannot pass.
-	m1, _ := merged.state.ItemByID("m1")
-	// A thought on the same block appends to its text; the fold keeps the latest kind.
+	// Spot-check the fold itself, so equal-but-wrong cannot pass. A thought
+	// on the same block appends to its text; the fold keeps the latest kind.
+	m1, _ := coalesced.state.ItemByID("m1")
 	if m1.Text != "Let me hmmlook." || m1.ContentKind != "text" {
 		t.Fatalf("m1 = %+v", m1)
 	}
-	c1, _ := merged.state.ItemByID("c1")
-	if c1.Status != proto.StatusCompleted || c1.Title != "ls -la" || len(c1.Content) != 4 || c1.ParentID != "task" {
+	c1, _ := coalesced.state.ItemByID("c1")
+	if c1.Status != proto.StatusCompleted || c1.Title != "ls -la" || len(c1.Content) != 5 || c1.ParentID != "task" {
 		t.Fatalf("c1 = %+v", c1)
 	}
-}
-
-// chunkDeltas returns the deltas the log holds for block, in log order.
-func chunkDeltas(t *testing.T, evs []proto.Event, block string) []string {
-	t.Helper()
-	var out []string
-	for _, ev := range evs {
-		if ev.Type != proto.MessageChunk {
-			continue
-		}
-		var p proto.MessageChunkPayload
-		if err := json.Unmarshal(ev.Payload, &p); err != nil {
-			t.Fatal(err)
-		}
-		if p.BlockID == block {
-			out = append(out, p.Delta)
-		}
-	}
-	return out
 }
 
 func TestActorCoalescesManyDeltasIntoFewEvents(t *testing.T) {
@@ -367,12 +471,7 @@ func TestActorCoalescesManyDeltasIntoFewEvents(t *testing.T) {
 	if got := strings.Join(deltas, ""); got != want.String() {
 		t.Fatalf("stored text = %q", got)
 	}
-	// The log alone rebuilds the same text.
-	rebuilt := projection.New(actor.ID)
-	for _, ev := range evs {
-		rebuilt.Apply(ev)
-	}
-	if it, _ := rebuilt.ItemByID("b1"); it.Text != want.String() {
+	if it, _ := rebuild(actor.ID, evs).ItemByID("b1"); it.Text != want.String() {
 		t.Fatalf("rebuilt text = %q", it.Text)
 	}
 }
@@ -405,11 +504,7 @@ func TestActorFlushesHeldDeltasBeforeOtherEvents(t *testing.T) {
 	})
 
 	// Everything up to turn.finished already holds the whole reply.
-	before := projection.New(actor.ID)
-	for _, ev := range evs[:finished] {
-		before.Apply(ev)
-	}
-	if it, _ := before.ItemByID("b1"); it.Text != want.String() {
+	if it, _ := rebuild(actor.ID, evs[:finished]).ItemByID("b1"); it.Text != want.String() {
 		t.Fatalf("text before turn.finished = %q, want %q", it.Text, want.String())
 	}
 	for _, ev := range evs[finished+1:] {
@@ -424,20 +519,28 @@ func TestActorDeltaOrderAcrossItemsIsPreserved(t *testing.T) {
 	ctx := context.Background()
 	sess := fa.thread()
 
-	// Two blocks interleaved, then a tool starting, then more of both and the
-	// tool's output, then the turn ending.
-	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
-	sess.emit(chunk("A", "a1 "))
-	sess.emit(chunk("B", "b1 "))
-	sess.emit(chunk("A", "a2 "))
-	sess.emit(chunk("B", "b2 "))
-	sess.emit(chunk("A", "a3 "))
-	sess.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Kind: proto.KindExecute, Title: "ls", Status: proto.StatusInProgress}))
-	sess.emit(chunk("B", "b3 "))
-	sess.emit(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("out1")}}))
-	sess.emit(chunk("A", "a4"))
-	sess.emit(toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("out2")}}))
-	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	// Runs of one item, items interleaved, and the case a reorder would
+	// break: a delta for another item between two deltas for the same one.
+	emitted := []proto.Emission{
+		proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}),
+		chunk("A", "a1 "),
+		chunk("A", "a2 "),
+		chunk("A", "a3 "),
+		chunk("B", "b1 "),
+		chunk("B", "b2 "),
+		chunk("A", "a4 "),
+		proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Kind: proto.KindExecute, Title: "ls", Status: proto.StatusInProgress}),
+		chunk("A", "a5 "),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("out1")}}),
+		chunk("A", "a6 "),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("out2")}}),
+		toolUpdate(proto.ToolCallUpdatedPayload{ToolCallID: "c1", Content: []proto.ToolContent{textContent("out3")}}),
+		chunk("B", "b3"),
+		proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}),
+	}
+	for _, em := range emitted {
+		sess.emit(em)
+	}
 
 	var evs []proto.Event
 	waitFor(t, func() bool {
@@ -445,87 +548,24 @@ func TestActorDeltaOrderAcrossItemsIsPreserved(t *testing.T) {
 		return len(evs) > 0 && evs[len(evs)-1].Type == proto.TurnFinished
 	})
 
-	// Label every event in the log by what it is and, for deltas, which
-	// emitted deltas it carries.
-	type entry struct {
-		typ, item, text string
+	// The log is the emitted sequence with consecutive same-item deltas
+	// joined, and nothing else changed. thread.created opens the log.
+	logged := decodeEvents(t, evs)
+	if len(logged) == 0 || logged[0].Type != proto.ThreadCreated {
+		t.Fatalf("log does not open with thread.created: %+v", logged)
 	}
-	var log []entry
-	for _, ev := range evs {
-		switch ev.Type {
-		case proto.MessageChunk:
-			var p proto.MessageChunkPayload
-			json.Unmarshal(ev.Payload, &p)
-			log = append(log, entry{ev.Type, p.BlockID, p.Delta})
-		case proto.ToolCallUpdated:
-			var p proto.ToolCallUpdatedPayload
-			json.Unmarshal(ev.Payload, &p)
-			var s string
-			for _, c := range p.Content {
-				s += c.Text
-			}
-			log = append(log, entry{ev.Type, p.ToolCallID, s})
-		case proto.ToolCallStarted, proto.TurnStarted, proto.TurnFinished:
-			log = append(log, entry{ev.Type, "", ""})
-		}
-	}
-	index := func(typ string) int {
-		for i, e := range log {
-			if e.typ == typ {
-				return i
-			}
-		}
-		t.Fatalf("no %s in log", typ)
-		return -1
-	}
-	started, toolStart, finished := index(proto.TurnStarted), index(proto.ToolCallStarted), index(proto.TurnFinished)
-	if !(started < toolStart && toolStart < finished && finished == len(log)-1) {
-		t.Fatalf("lifecycle order wrong: %+v", log)
-	}
-
-	// Each item's deltas, in log order, are its emitted deltas in order; and
-	// each emitted delta sits on the same side of tool_call.started as it was
-	// emitted.
-	textBefore := map[string]string{}
-	textAfter := map[string]string{}
-	firstSeen := map[string]int{}
-	for i, e := range log {
-		if e.item == "" {
-			continue
-		}
-		if _, ok := firstSeen[e.item]; !ok {
-			firstSeen[e.item] = i
-		}
-		if i < started {
-			t.Fatalf("delta before turn.started: %+v", log)
-		}
-		if i < toolStart {
-			textBefore[e.item] += e.text
-		} else {
-			textAfter[e.item] += e.text
-		}
-	}
-	wantBefore := map[string]string{"A": "a1 a2 a3 ", "B": "b1 b2 "}
-	wantAfter := map[string]string{"A": "a4", "B": "b3 ", "c1": "out1out2"}
-	if !reflect.DeepEqual(textBefore, wantBefore) || !reflect.DeepEqual(textAfter, wantAfter) {
-		t.Fatalf("before tool start = %q, after = %q\nlog: %+v", textBefore, textAfter, log)
-	}
-	if !(firstSeen["A"] < firstSeen["B"] && firstSeen["B"] < toolStart && toolStart < firstSeen["c1"]) {
-		t.Fatalf("items first appear out of order: %v (tool start %d)\nlog: %+v", firstSeen, toolStart, log)
+	if want, got := runsOf(emitted), runsOf(logged[1:]); !reflect.DeepEqual(want, got) {
+		t.Fatalf("log order differs from emitted order:\nemitted: %+v\nlogged:  %+v", want, got)
 	}
 
 	state, err := actor.State(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
-	for _, it := range state.Items {
-		ids = append(ids, it.ID)
+	if a, _ := state.ItemByID("A"); a.Text != "a1 a2 a3 a4 a5 a6 " {
+		t.Fatalf("A text = %q", a.Text)
 	}
-	if !reflect.DeepEqual(ids, []string{"A", "B", "c1"}) {
-		t.Fatalf("item order = %v", ids)
-	}
-	if c1, _ := state.ItemByID("c1"); len(c1.Content) != 2 || c1.Content[0].Text != "out1" || c1.Content[1].Text != "out2" {
+	if c1, _ := state.ItemByID("c1"); len(c1.Content) != 3 || c1.Content[0].Text != "out1" || c1.Content[2].Text != "out3" {
 		t.Fatalf("c1 content = %+v", c1.Content)
 	}
 }

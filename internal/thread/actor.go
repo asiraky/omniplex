@@ -1598,8 +1598,15 @@ func (a *Actor) appendStreamed(em proto.Emission) {
 		_, ok := a.state.ItemByID(id)
 		return ok
 	}
-	if !a.deltas.add(em, known) {
-		a.append(em)
+	flushed, held := a.deltas.add(em, known)
+	if len(flushed) > 0 {
+		a.stopDeltaFlush()
+	}
+	for _, f := range flushed {
+		a.write(f)
+	}
+	if !held {
+		a.write(em)
 		return
 	}
 	if a.deltaFlush == nil {
@@ -1607,12 +1614,16 @@ func (a *Actor) appendStreamed(em proto.Emission) {
 	}
 }
 
-// flushDeltas writes every held delta, in order, and closes the window.
-func (a *Actor) flushDeltas() {
+func (a *Actor) stopDeltaFlush() {
 	if a.deltaFlush != nil {
 		a.deltaFlush.Stop()
 		a.deltaFlush = nil
 	}
+}
+
+// flushDeltas writes every held delta, in order, and closes the window.
+func (a *Actor) flushDeltas() {
+	a.stopDeltaFlush()
 	for _, em := range a.deltas.take() {
 		a.write(em)
 	}
