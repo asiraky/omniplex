@@ -60,7 +60,7 @@ func captureCheckpoint(ctx context.Context, root, ref string) (string, error) {
 	_ = os.Remove(indexPath)
 	defer os.Remove(indexPath)
 
-	env := append(os.Environ(),
+	env := append(gitEnv(),
 		"GIT_INDEX_FILE="+indexPath,
 		// A snapshot is the server's own bookkeeping. Borrowing the person's
 		// identity for it would put their name on commits they never made,

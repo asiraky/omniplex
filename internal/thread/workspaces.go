@@ -277,7 +277,5 @@ func canonicalPath(path string) string {
 }
 
 func runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	return cmd.Output()
+	return gitCmd(ctx, dir, args...).Output()
 }

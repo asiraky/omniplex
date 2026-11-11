@@ -28,11 +28,16 @@ type baseResolution struct {
 	FellBack  bool
 }
 
-// gitEnv keeps Git non-interactive. A credential or host-key prompt inside a
-// server process has nobody to answer it, so it would hang until the context
-// expired; refusing to prompt turns that into a fast, ordinary failure.
+// gitEnv keeps Git non-interactive and predictable. A credential or host-key
+// prompt inside a server process has nobody to answer it, so it would hang
+// until the context expired; refusing to prompt turns that into a fast,
+// ordinary failure. Optional locks are off so a read such as `git status`
+// never takes the index lock a concurrent write needs, and the C locale keeps
+// the output this package parses in the one language it was written against.
 func gitEnv() []string {
 	return append(os.Environ(),
+		"GIT_OPTIONAL_LOCKS=0",
+		"LC_ALL=C",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
 		"SSH_ASKPASS=",
