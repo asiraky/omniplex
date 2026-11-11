@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FILE_OVER_CHARS, FILE_OVER_LINES, pastedFile, pasteKind } from "./paste";
+import { FILE_OVER_CHARS, FILE_OVER_LINES, pastedFile, pasteKind, pasteTakesText } from "./paste";
 
 const lines = (n: number, line = "some words") => Array(n).fill(line).join("\n");
 
@@ -59,5 +59,46 @@ describe("pasteKind", () => {
 
   it("calls a plain log text", () => {
     expect(pasteKind("2026-09-30 ERROR boom\n2026-09-30 INFO retry")).toBe("text");
+  });
+});
+
+describe("pasteTakesText", () => {
+  const png = (name = "image.png") => new File([new Uint8Array([1])], name, { type: "image/png" });
+  // A clipboard as a paste event hands it over; getData throws when there is
+  // no text, so a decision that reads text it was not offered fails here.
+  const clip = (files: File[], text?: string) => ({
+    files,
+    types: text === undefined ? ["Files"] : ["Files", "text/plain", "text/html"],
+    getData: (type: string) => {
+      if (text === undefined) throw new Error("no text on this clipboard");
+      return type === "text/plain" ? text : "<table></table>";
+    },
+  });
+
+  it("takes the text of spreadsheet cells over the picture of them", () => {
+    expect(pasteTakesText(clip([png()], "Q1\t1200\nQ2\t1350\n"))).toBe(true);
+  });
+
+  it("attaches a screenshot that came with no text", () => {
+    expect(pasteTakesText(clip([png("clipboard.png")]))).toBe(false);
+  });
+
+  it("attaches a copied file whose name rode along as text", () => {
+    expect(pasteTakesText(clip([png("diagram.png")], "diagram.png"))).toBe(false);
+    expect(pasteTakesText(clip([png("my b.png")], "file:///home/a/my%20b.png"))).toBe(false);
+    expect(pasteTakesText(clip([png("50%.png")], "/tmp/50%.png"))).toBe(false);
+  });
+
+  it("attaches files when the text is only whitespace", () => {
+    expect(pasteTakesText(clip([png()], "  \n\t "))).toBe(false);
+  });
+
+  it("attaches several copied files listed one name per line", () => {
+    const files = [png("a.png"), new File(["x"], "notes.txt", { type: "text/plain" })];
+    expect(pasteTakesText(clip(files, "a.png\r\nnotes.txt\n"))).toBe(false);
+  });
+
+  it("takes the text when it names a file but says more than that", () => {
+    expect(pasteTakesText(clip([png("a.png")], "a.png\nand a sentence"))).toBe(true);
   });
 });

@@ -22,6 +22,51 @@ const TYPE: Record<PasteKind, string> = {
   text: "text/plain",
 };
 
+/** What a paste decision reads off the clipboard: DataTransfer has all three. */
+export interface PasteData {
+  files: ArrayLike<File>;
+  types: readonly string[];
+  getData(type: string): string;
+}
+
+/**
+ * Whether a paste goes in as its text even though it carries files.
+ *
+ * Copying cells from Excel or Numbers puts the cells on the clipboard as text
+ * and also as a picture of them; what the user meant is the text. So text
+ * wins whenever there is some. The exception is a copied file: Finder and the
+ * file managers put its name (or path) alongside it as text, and that paste
+ * means "attach the file".
+ */
+export function pasteTakesText(data: PasteData): boolean {
+  if (data.files.length === 0) return true;
+  // A clipboard without text may not answer getData at all.
+  if (!data.types.includes("text/plain")) return false;
+  const lines = data
+    .getData("text/plain")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return false;
+  const names = new Set(Array.from(data.files, (f) => f.name));
+  return !lines.every((l) => namesFile(l, names));
+}
+
+/**
+ * Whether a line of text is one of the files' names, bare, as a path, or as a
+ * file URL ("file:///a/my%20b.png" names "my b.png"). The raw segment counts
+ * too, since a name can contain a "%" of its own.
+ */
+function namesFile(line: string, names: Set<string>): boolean {
+  const last = line.split(/[\\/]/).pop() ?? line;
+  if (names.has(last)) return true;
+  try {
+    return names.has(decodeURIComponent(last));
+  } catch {
+    return false;
+  }
+}
+
 /** The file a paste should become, or null to leave it in the textarea. */
 export function pastedFile(text: string): File | null {
   if (!isLong(text)) return null;

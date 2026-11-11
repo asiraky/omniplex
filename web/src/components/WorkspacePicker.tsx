@@ -5,6 +5,7 @@ import { Badge } from "~/components/ui/badge";
 import { Input } from "~/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
 import { branchTemplate } from "~/lib/branchTemplate";
+import { isComposing } from "~/lib/ime";
 import { cn } from "~/lib/utils";
 import type { Issue, UserConfig, Workspace } from "~/protocol";
 
@@ -128,6 +129,9 @@ export function WorkspacePicker({
   };
 
   const key = (e: React.KeyboardEvent) => {
+    // Enter and Escape mid-composition belong to the IME: they confirm or
+    // cancel a candidate, and must not pick a row or close the list.
+    if (isComposing(e)) return;
     if (e.key === "Escape") {
       // Consume it while the list is open, so it closes the list and not the
       // whole dialog around it.
@@ -269,6 +273,11 @@ export function WorkspacePicker({
           // anchor is likewise exempt from outside-interaction dismissal or
           // clicking the input would close the list it just opened.
           onOpenAutoFocus={(e) => e.preventDefault()}
+          // Radix hears Escape on the document before the input does, so the
+          // input's own IME check cannot keep it from closing the list.
+          onEscapeKeyDown={(e) => {
+            if (isComposing(e)) e.preventDefault();
+          }}
           onInteractOutside={(e) => {
             if (box.current?.contains(e.target as Node)) e.preventDefault();
           }}

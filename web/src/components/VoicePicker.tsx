@@ -14,6 +14,7 @@ import { Input } from "~/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Spinner } from "~/components/ui/spinner";
+import { isComposing } from "~/lib/ime";
 import { player, usePlayback } from "~/lib/ttsPlayer";
 import { cn } from "~/lib/utils";
 import { retryVoices, useVoices, voiceTraits } from "~/lib/voices";
@@ -138,6 +139,7 @@ export function VoicePicker({
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
           side="bottom"
+          onEscapeKeyDown={keepWhileComposing}
           className="flex h-[85dvh] flex-col p-0 pb-[env(safe-area-inset-bottom)]"
         >
           <SheetHeader className="pb-0">
@@ -152,11 +154,24 @@ export function VoicePicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(26rem,calc(100vw-2rem))] p-0">
+      <PopoverContent
+        align="start"
+        onEscapeKeyDown={keepWhileComposing}
+        className="w-[min(26rem,calc(100vw-2rem))] p-0"
+      >
         {body}
       </PopoverContent>
     </Popover>
   );
+}
+
+/**
+ * Escape while an IME is composing in the search box cancels the candidate.
+ * Radix hears the key on the document before cmdk does, so without this it
+ * would close the picker mid-word.
+ */
+function keepWhileComposing(e: KeyboardEvent) {
+  if (isComposing(e)) e.preventDefault();
 }
 
 /** A pasted voice ID offered as a choice. */
@@ -242,7 +257,8 @@ function VoiceIdInput({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
+        // Enter that confirms an IME candidate is still typing, not a save.
+        if (e.key === "Enter" && !isComposing(e)) {
           e.preventDefault();
           commit();
         }
