@@ -1140,6 +1140,19 @@ func (s *session) emitMessageDelta(turn string, p delta) {
 	}))
 }
 
+// emitOutputDelta streams what a running command has printed onto its tool
+// call. It carries no status, so the actor can merge a burst of them into one
+// write and an idle session is not read as working again. The completed item
+// still carries the aggregated output as content.
+func (s *session) emitOutputDelta(p delta) {
+	if p.ItemID == "" || p.Delta == "" {
+		return
+	}
+	s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
+		ToolCallID: p.ItemID, OutputDelta: p.Delta,
+	}))
+}
+
 func (s *session) emitReasoningDelta(turn string, p delta) {
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
@@ -1276,10 +1289,11 @@ func (s *session) trackSubagentTurn(method, thread string, params json.RawMessag
 }
 
 // handleSubagentNotification renders a spawned subagent's work inside the turn
-// that spawned it. Text, reasoning and tool calls are the whole of it:
-// everything else a thread reports — turn lifecycle, token usage, plan,
-// compaction — is about that thread, and applying it here would relabel this
-// session's turn, meter or plan with another thread's state.
+// that spawned it. Text, reasoning and tool calls, with the output their
+// commands stream, are the whole of it: everything else a thread reports —
+// turn lifecycle, token usage, plan, compaction — is about that thread, and
+// applying it here would relabel this session's turn, meter or plan with
+// another thread's state.
 //
 // With no turn of ours to attach it to the output is dropped rather than
 // allowed to open one. Stop interrupts the subagents of the stopped turn, but
@@ -1312,6 +1326,8 @@ func (s *session) handleSubagentNotification(method, thread, turn string, params
 		s.emitMessageDelta(turn, parseDelta(params))
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
 		s.emitReasoningDelta(turn, parseDelta(params))
+	case "item/commandExecution/outputDelta":
+		s.emitOutputDelta(parseDelta(params))
 	}
 }
 
@@ -1399,9 +1415,13 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		turn = s.workingTurn(turn, p.TurnID)
 		s.emitReasoningDelta(turn, p)
 
-	case "item/commandExecution/outputDelta", "command/exec/outputDelta":
-		// Streamed output is dropped; the completed item carries the
-		// aggregated output, which is what the timeline renders.
+	case "item/commandExecution/outputDelta":
+		s.emitOutputDelta(parseDelta(params))
+
+	case "command/exec/outputDelta":
+		// Output of a command/exec RPC — a client-initiated command, keyed by
+		// processId rather than a thread item. Omniplex never sends one, and it
+		// has no tool call to stream onto.
 
 	case "turn/plan/updated":
 		// item/plan/delta is deliberately absent: it streams the text of a

@@ -746,8 +746,7 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 
 	case "tool_execution_update":
 		// Streamed partial results are dropped; tool_execution_end carries the
-		// aggregate, which is what the timeline renders. Same choice as codex's
-		// outputDelta.
+		// aggregate, which is what the timeline renders.
 
 	case "tool_execution_end":
 		var p struct {
