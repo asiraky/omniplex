@@ -54,6 +54,9 @@ function release(s: Session) {
   stopTracks(s.stream);
 }
 
+// Long enough to wait for a signal back, not so long the toast outstays it.
+const RETRY_OFFERED_MS = 60_000;
+
 function micError(err: unknown): string {
   const name = err instanceof DOMException ? err.name : "";
   if (name === "NotAllowedError" || name === "SecurityError") {
@@ -158,6 +161,7 @@ export function useDictation({
         // should not have to say it all again: the clip is kept for a retry.
         toast.error(err instanceof Error ? err.message : String(err), {
           action: { label: "Retry", onClick: () => resend.current(s, blob) },
+          duration: RETRY_OFFERED_MS,
         });
       } finally {
         end(s);

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/tts"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
@@ -82,14 +83,29 @@ func (s *Server) handleDictation(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	text, err := s.speech.Transcribe(ctx, bytes.NewReader(audio), r.Header.Get("Content-Type"))
 	if err != nil {
-		status, msg := speechErrorReply(err)
+		status, msg := dictationErrorReply(err)
 		writeError(w, status, msg)
+		s.logf("dictation: %v", err)
 		return
 	}
 	if text != "" {
 		text, cleaned = s.cleanDictation(r.Context(), r.URL.Query().Get("thread"), text)
 	}
 	writeJSON(w, map[string]string{"text": text})
+}
+
+// dictationErrorReply is speechErrorReply, except that a failure to get an
+// answer at all says so in words: the person sees it on a phone, with a
+// Retry beside it, and a Go dial error tells them nothing.
+func dictationErrorReply(err error) (int, string) {
+	var up *tts.UpstreamError
+	switch {
+	case errors.Is(err, tts.ErrNoKey), errors.As(err, &up):
+		return speechErrorReply(err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, "ElevenLabs took too long to transcribe that"
+	}
+	return http.StatusBadGateway, "Couldn't reach ElevenLabs to transcribe that"
 }
 
 // cleanDictation tidies a transcript with the thread's small model when the

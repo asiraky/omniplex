@@ -206,6 +206,21 @@ func TestDictationUpstreamErrorsAreMapped(t *testing.T) {
 	}
 }
 
+func TestDictationThatGetsNoAnswerDoesNotShowTheTransportError(t *testing.T) {
+	up := &fakeEleven{transcribe: func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler) // drops the connection without an answer
+	}}
+	r := newSpeechRig(t, up)
+	r.setKey("good")
+	res := r.dictate("", "audio/webm", []byte("audio"))
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status %d, want %d", res.StatusCode, http.StatusBadGateway)
+	}
+	if msg := errorMessage(t, res); strings.Contains(msg, "speech-to-text") || strings.Contains(msg, "EOF") {
+		t.Fatalf("message %q passes the transport error through", msg)
+	}
+}
+
 func TestDictationIsNotCleanedWhenCleanupIsOff(t *testing.T) {
 	r := newSpeechRig(t, newFakeScribe("um so fix the uh bug"))
 	r.setKey("good")
