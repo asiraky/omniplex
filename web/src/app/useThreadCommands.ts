@@ -107,12 +107,9 @@ export function useThreadCommands({
   const resolvePermission = useCallback(
     (requestId: string, outcome: string, optionId: string) => {
       if (activeId) {
-        clientRef.current?.command("resolve_permission", {
-          threadId: activeId,
-          requestId,
-          outcome,
-          optionId,
-        });
+        clientRef.current
+          ?.command("resolve_permission", { threadId: activeId, requestId, outcome, optionId })
+          .catch((e) => toast.error("Could not send that answer", { description: e.message }));
       }
     },
     [activeId, clientRef],
@@ -121,12 +118,9 @@ export function useThreadCommands({
   const resolveElicitation = useCallback(
     (requestId: string, action: string, value: unknown) => {
       if (activeId) {
-        clientRef.current?.command("resolve_elicitation", {
-          threadId: activeId,
-          requestId,
-          action,
-          value,
-        });
+        clientRef.current
+          ?.command("resolve_elicitation", { threadId: activeId, requestId, action, value })
+          .catch((e) => toast.error("Could not send that answer", { description: e.message }));
       }
     },
     [activeId, clientRef],
