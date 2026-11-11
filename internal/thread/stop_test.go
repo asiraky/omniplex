@@ -428,3 +428,146 @@ func TestSteerRefusedAfterTheTurnEndedStartsTheQueue(t *testing.T) {
 		return len(state.Queued) == 0 && len(state.Turns) == 2 && state.Turns[1].Prompt == "also"
 	})
 }
+
+// Two settings asked one after the other reach the harness in that order, and
+// are recorded in that order, however long the harness takes to answer the
+// first. Otherwise the second's answer could come back first, and the log
+// would end on the setting the harness no longer has.
+func TestSettingsReachTheHarnessAndTheLogInTheOrderAsked(t *testing.T) {
+	held, asked := make(chan struct{}), make(chan string, 2)
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{modeHeld: map[string]<-chan struct{}{"plan": held}, modeAsked: asked})
+	ctx := context.Background()
+
+	first := command{kind: cmdSetMode, mode: "plan", reply: make(chan cmdResult, 1)}
+	second := command{kind: cmdSetMode, mode: "acceptEdits", reply: make(chan cmdResult, 1)}
+	actor.inbox <- first
+	actor.inbox <- second
+	if mode := <-asked; mode != "plan" {
+		t.Fatalf("first mode the harness was asked for = %q, want plan", mode)
+	}
+	// The harness has taken plan and not yet said so.
+	select {
+	case mode := <-asked:
+		t.Fatalf("the harness was asked for %q before it answered plan", mode)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(held)
+	for _, c := range []command{first, second} {
+		if r := <-c.reply; r.err != nil {
+			t.Fatalf("SetMode %s: %v", c.mode, r.err)
+		}
+	}
+	state, _ := actor.State(ctx)
+	if state.Mode != "acceptEdits" || fa.thread().currentMode() != "acceptEdits" {
+		t.Fatalf("mode recorded %q, harness has %q; want acceptEdits for both", state.Mode, fa.thread().currentMode())
+	}
+}
+
+// A steer still on its way to the harness when Stop is pressed reaches it
+// before the interrupt does, so the interrupt discards it with the rest. The
+// other way round, the harness would take it after the interrupt and start a
+// turn for a prompt the user stopped.
+func TestSteerInFlightReachesTheHarnessBeforeStop(t *testing.T) {
+	withStopGrace(t, time.Hour)
+	release := make(chan struct{})
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true, steerGate: release})
+	ctx := context.Background()
+
+	if _, err := actor.Prompt(ctx, "work", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess := fa.thread()
+	<-sess.prompts
+	go func() { _, _ = actor.Prompt(ctx, "also", nil) }()
+	waitFor(t, func() bool {
+		state, _ := actor.State(ctx)
+		return len(state.Queued) == 1
+	})
+	if err := actor.Cancel(quick(t)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if calls := sess.taken(); len(calls) != 0 {
+		t.Fatalf("the harness took %v while the steer was still on its way", calls)
+	}
+
+	close(release)
+	waitFor(t, func() bool { return len(sess.taken()) == 2 })
+	if calls := sess.taken(); calls[0] != "steer" || calls[1] != "cancel" {
+		t.Fatalf("the harness took %v, want the steer before the interrupt", calls)
+	}
+	waitFor(t, func() bool {
+		state, _ := actor.State(ctx)
+		return len(state.Queued) == 0
+	})
+}
+
+// A question the killed process asks on its way out, after Stop has already
+// replaced it, is answered cancelled at once and leaves nothing waiting in
+// the log: there is no process left for an answer to reach.
+func TestQuestionFromAKilledHarnessIsCancelled(t *testing.T) {
+	withStopGrace(t, time.Hour)
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{cancelGate: gate(t)})
+	ctx := context.Background()
+
+	first, err := actor.Prompt(ctx, "work", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := fa.thread()
+	<-old.prompts
+	_ = actor.Cancel(quick(t))
+	_ = actor.Cancel(quick(t))
+
+	out, err := old.host.RequestPermission(quick(t), adapter.PermissionRequest{TurnID: first.TurnID, Title: "rm -rf"})
+	if err != nil || out.Outcome != proto.OutcomeCancelled {
+		t.Fatalf("permission from the killed process = %+v, %v; want cancelled", out, err)
+	}
+	res, err := old.host.Elicit(quick(t), adapter.ElicitationRequest{TurnID: first.TurnID, Prompt: "which?"})
+	if err != nil || res.Action != "cancel" {
+		t.Fatalf("elicitation from the killed process = %+v, %v; want cancel", res, err)
+	}
+	state, _ := actor.State(ctx)
+	if len(state.Pending) != 0 || len(state.Elicitations) != 0 {
+		t.Fatalf("left waiting: pending=%+v elicitations=%+v", state.Pending, state.Elicitations)
+	}
+}
+
+// A prompt sent while a setting is still on its way to the harness waits for
+// it, so a model or mode changed just before sending is the one the prompt
+// runs under.
+func TestPromptWaitsForASettingStillOnItsWay(t *testing.T) {
+	held, asked := make(chan struct{}), make(chan string, 1)
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{modeHeld: map[string]<-chan struct{}{"plan": held}, modeAsked: asked})
+	ctx := context.Background()
+
+	set := command{kind: cmdSetMode, mode: "plan", reply: make(chan cmdResult, 1)}
+	actor.inbox <- set
+	<-asked
+	res, err := actor.Prompt(ctx, "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Queued() {
+		t.Fatalf("prompt = %+v, want it queued behind the setting", res)
+	}
+	select {
+	case in := <-fa.thread().prompts:
+		t.Fatalf("the harness got %+v before it answered the setting", in)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(held)
+	if r := <-set.reply; r.err != nil {
+		t.Fatal(r.err)
+	}
+	in := <-fa.thread().prompts
+	if in.Text != "go" || fa.thread().currentMode() != "plan" {
+		t.Fatalf("prompt %+v ran under mode %q, want go under plan", in, fa.thread().currentMode())
+	}
+	waitFor(t, func() bool {
+		state, _ := actor.State(ctx)
+		return len(state.Queued) == 0 && len(state.Turns) == 1
+	})
+}

@@ -43,6 +43,9 @@ type fakeAdapter struct {
 	steerGate  <-chan struct{}
 	// modeAsked hears each mode a thread is asked for, before modeGate.
 	modeAsked chan<- string
+	// modeHeld holds the answer to SetMode for a mode, once the thread has
+	// taken it: a harness that applied the change and is slow to say so.
+	modeHeld map[string]<-chan struct{}
 	// opts is what each CreateSession was asked for, oldest first.
 	opts []adapter.CreateOptions
 }
@@ -280,6 +283,7 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
 		steerRefuse: f.steerRefuse, cancelGate: f.cancelGate, modeGate: f.modeGate, modeAsked: f.modeAsked, steerGate: f.steerGate,
+		modeHeld: f.modeHeld,
 	}
 	f.mu.Lock()
 	f.last = s
@@ -303,6 +307,7 @@ func (s steerThread) Steer(ctx context.Context, in adapter.PromptInput) error {
 	if s.steerRefuse != nil {
 		return s.steerRefuse
 	}
+	s.record("steer")
 	s.prompts <- in
 	return nil
 }
@@ -325,9 +330,13 @@ type fakeThread struct {
 	modeGate     <-chan struct{}
 	steerGate    <-chan struct{}
 	modeAsked    chan<- string
+	modeHeld     map[string]<-chan struct{}
 
-	mu          sync.Mutex
-	mode        string
+	mu   sync.Mutex
+	mode string
+	// calls is the control calls the thread has taken, in the order it
+	// took them: "cancel" when asked, "steer" once it has the prompt.
+	calls       []string
 	refuse      error
 	steerRefuse error
 	closed      bool
@@ -357,7 +366,20 @@ func (s *fakeThread) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.prompts <- in
 	return nil
 }
-func (s *fakeThread) Cancel(ctx context.Context) error { return gated(ctx, s.cancelGate) }
+func (s *fakeThread) Cancel(ctx context.Context) error {
+	s.record("cancel")
+	return gated(ctx, s.cancelGate)
+}
+func (s *fakeThread) record(call string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, call)
+}
+func (s *fakeThread) taken() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...)
+}
 func (s *fakeThread) RunComposerAction(ctx context.Context, in adapter.ComposerActionInput) (any, error) {
 	s.actions <- in
 	return map[string]any{}, nil
@@ -375,7 +397,7 @@ func (s *fakeThread) SetMode(ctx context.Context, mode string) error {
 	s.mu.Lock()
 	s.mode = mode
 	s.mu.Unlock()
-	return nil
+	return gated(ctx, s.modeHeld[mode])
 }
 func (s *fakeThread) currentMode() string {
 	s.mu.Lock()

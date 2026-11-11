@@ -33,15 +33,55 @@ type stopRequest struct {
 // holds up only the caller waiting on it. Harness events, questions for a
 // human and every other command carry on meanwhile. then runs on the loop;
 // it is where the caller's reply is sent, and it must check that whatever it
-// is about to act on is still so.
+// is about to act on is still so. Only a read goes this way: it changes
+// nothing, so it does not matter what it overtakes.
 func (a *Actor) offLoop(timeout time.Duration, call func(context.Context) (any, error), then func(v any, err error)) {
-	sess := a.sess
+	a.harnessCall(nil, nil, timeout, call, then)
+}
+
+// inOrder is offLoop for a call that changes what the harness does: Stop, a
+// steer, a setting, a job stopped, a composer action. These reach the harness
+// one at a time, in the order they were asked for, and their results come
+// back to the loop in that order too. Side by side, a steer still on its way
+// when Stop is pressed could land after the interrupt, and the harness would
+// start a turn for a prompt the user stopped; two model changes could be
+// taken A then B and come back B then A, leaving the log saying A while the
+// harness runs B. A call stuck behind one the harness never answers waits
+// with it, which for Stop is what the kill timer is for.
+func (a *Actor) inOrder(timeout time.Duration, call func(context.Context) (any, error), then func(v any, err error)) {
+	prev, next := a.controlTail, make(chan struct{})
+	a.controlTail = next
+	process := a.process
+	a.controlPending++
+	a.harnessCall(prev, next, timeout, call, func(v any, err error) {
+		// A dropped process took its pending count with it (dropProcess).
+		if process == a.process {
+			a.controlPending--
+		}
+		then(v, err)
+	})
+}
+
+// harnessCall waits for after, makes the call, posts its result, and then
+// closes done. Closing done only once the result is in the inbox is what
+// keeps the next call's result behind it.
+func (a *Actor) harnessCall(after <-chan struct{}, done chan struct{}, timeout time.Duration, call func(context.Context) (any, error), then func(v any, err error)) {
 	go func() {
+		if done != nil {
+			defer close(done)
+		}
+		if after != nil {
+			select {
+			case <-after:
+			case <-a.quit:
+				return
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		v, err := call(ctx)
 		cancel()
 		select {
-		case a.inbox <- command{kind: cmdHarnessReply, from: sess, done: func() { then(v, err) }}:
+		case a.inbox <- command{kind: cmdHarnessReply, onReply: func() { then(v, err) }}:
 		case <-a.quit:
 		}
 	}()
@@ -53,7 +93,7 @@ func (a *Actor) offLoop(timeout time.Duration, call func(context.Context) (any, 
 // than a setting the log would claim and the new process does not have.
 func (a *Actor) setting(call func(context.Context) error, changed proto.ThreadConfigChangedPayload, reply chan cmdResult) {
 	sess := a.sess
-	a.offLoop(30*time.Second, func(ctx context.Context) (any, error) {
+	a.inOrder(30*time.Second, func(ctx context.Context) (any, error) {
 		return nil, call(ctx)
 	}, func(_ any, err error) {
 		switch {
@@ -76,7 +116,7 @@ func (a *Actor) setting(call func(context.Context) error, changed proto.ThreadCo
 func (a *Actor) steer(st adapter.Steerer, queueID string, in adapter.PromptInput, reply chan cmdResult) {
 	sess := a.sess
 	a.markSent(queueID)
-	a.offLoop(30*time.Second, func(ctx context.Context) (any, error) {
+	a.inOrder(30*time.Second, func(ctx context.Context) (any, error) {
 		return nil, st.Steer(ctx, in)
 	}, func(_ any, err error) {
 		switch {
@@ -95,10 +135,10 @@ func (a *Actor) steer(st adapter.Steerer, queueID string, in adapter.PromptInput
 	})
 }
 
-// stop asks the harness to interrupt the running turn, and arranges for the
-// process to be killed if the turn has not ended stopGrace later. The caller
-// has checked that there is a turn and a harness to ask.
-func (a *Actor) stop() {
+// requestStop asks the harness to interrupt the running turn, and arranges
+// for the process to be killed if the turn has not ended stopGrace later. The
+// caller has checked that there is a turn and a harness to ask.
+func (a *Actor) requestStop() {
 	req := &stopRequest{turnID: a.turnActive}
 	req.timer = time.AfterFunc(stopGrace, func() {
 		select {
@@ -108,7 +148,7 @@ func (a *Actor) stop() {
 	})
 	a.stopping = req
 	sess := a.sess
-	a.offLoop(stopGrace, func(ctx context.Context) (any, error) {
+	a.inOrder(stopGrace, func(ctx context.Context) (any, error) {
 		return nil, sess.Cancel(ctx)
 	}, func(_ any, err error) {
 		if err != nil {
@@ -149,10 +189,9 @@ func (a *Actor) clearStopping() {
 // new one.
 func (a *Actor) forceStop() {
 	turn := a.turnActive
-	old := a.sess
-	// Dropping the session first is what marks the old process's last events
-	// and its exit, still on their way through the inbox, as stale.
-	a.sess = nil
+	// Dropping the process first is what marks its last events, its exit and
+	// its last questions, still on their way through the inbox, as stale.
+	old := a.dropProcess()
 	a.clearStopping()
 	a.dropQueue()
 	a.cancelProcessAsks()
@@ -168,6 +207,24 @@ func (a *Actor) forceStop() {
 		go func() { _ = old.Close() }()
 	}
 	a.logf("stop on %s: killed the harness to end turn %s", a.ID, turn)
+}
+
+// dropProcess forgets the harness process, for one about to be killed or
+// replaced, and returns it. Its process generation is retired with it, and
+// so is its line of control calls: the next process's calls do not wait on
+// the old one's, which fail fast once it is killed.
+func (a *Actor) dropProcess() adapter.Session {
+	old := a.sess
+	a.sess, a.sent, a.controlTail, a.controlPending = nil, nil, nil, 0
+	a.process++
+	return old
+}
+
+// newHost is the host services for a harness process about to be started,
+// under a generation of its own.
+func (a *Actor) newHost() hostServices {
+	a.process++
+	return hostServices{a: a, process: a.process}
 }
 
 // releaseAsks unblocks every adapter goroutine waiting on a human, for a
