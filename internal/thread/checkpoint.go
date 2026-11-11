@@ -135,12 +135,12 @@ func seedScratchIndex(ctx context.Context, root, indexPath string, scratch func(
 	if err != nil {
 		return false
 	}
-	real := strings.TrimSpace(string(out))
-	info, err := os.Stat(real)
+	own := strings.TrimSpace(string(out))
+	info, err := os.Stat(own)
 	if err != nil {
 		return false
 	}
-	if err := copyFile(real, indexPath); err != nil {
+	if err := copyFile(own, indexPath); err != nil {
 		return false
 	}
 	// Git trusts an entry's stat data only when the file is older than the
