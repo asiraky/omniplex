@@ -113,6 +113,18 @@ func TestCompletedItemStatus(t *testing.T) {
 			wantText:   []string{`{"rows":3}`},
 		},
 		{
+			name:       "mcp structured data behind a text summary",
+			item:       `{"type":"mcpToolCall","id":"call_m6","server":"db","tool":"query","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"2 rows returned"}],"structuredContent":{"rows":[1,2]}},"error":null,"durationMs":9}`,
+			wantStatus: proto.StatusCompleted,
+			wantText:   []string{"2 rows returned", `{"rows":[1,2]}`},
+		},
+		{
+			name:       "mcp structured data mirrored as text is shown once",
+			item:       `{"type":"mcpToolCall","id":"call_m7","server":"db","tool":"query","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"{\n  \"rows\": [1, 2]\n}"}],"structuredContent":{"rows":[1,2]}},"error":null,"durationMs":9}`,
+			wantStatus: proto.StatusCompleted,
+			wantText:   []string{"{\n  \"rows\": [1, 2]\n}"},
+		},
+		{
 			name:       "mcp completed with no result",
 			item:       `{"type":"mcpToolCall","id":"call_m5","server":"db","tool":"ping","status":"completed","arguments":{},"result":null,"error":null,"durationMs":2}`,
 			wantStatus: proto.StatusCompleted,
@@ -176,6 +188,11 @@ func TestWebSearchTitle(t *testing.T) {
 			name: "open page",
 			item: `{"type":"webSearch","id":"ws_3","query":"","action":{"type":"openPage","url":"https://go.dev/doc/"}}`,
 			want: "Open https://go.dev/doc/",
+		},
+		{
+			name: "find in page without a url",
+			item: `{"type":"webSearch","id":"ws_5","query":"","action":{"type":"findInPage","pattern":"GOEXPERIMENT","url":null}}`,
+			want: `Find "GOEXPERIMENT"`,
 		},
 		{
 			name: "nothing to go on",

@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -470,8 +471,16 @@ type compactionCount struct {
 	turn    string
 	items   int // contextCompaction items completed
 	notices int // deprecated thread/compacted notifications
-	emitted int
+	emitted int // notices sent for this turn
 }
+
+// compactionSignal is which of codex's two reports of a compaction arrived.
+type compactionSignal int
+
+const (
+	compactionItem   compactionSignal = iota // a contextCompaction item
+	compactionNotice                         // a thread/compacted notification
+)
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
 
@@ -1072,7 +1081,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			TurnID string `json:"turnId"`
 		}
 		_ = json.Unmarshal(params, &p)
-		s.emitContextCompacted(p.TurnID, false)
+		s.emitContextCompacted(p.TurnID, compactionNotice)
 
 	case "item/started", "item/completed":
 		// An item starting is work running: open a harness-initiated turn if
@@ -1310,7 +1319,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !completed {
 			return
 		}
-		s.emitContextCompacted(p.TurnID, true)
+		s.emitContextCompacted(p.TurnID, compactionItem)
 
 	case "userMessage":
 		// The turn's own prompt is already in the log via turn.started. A
@@ -1469,10 +1478,28 @@ func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 			content = append(content, proto.ToolContent{Type: "text", Text: text})
 		}
 	}
-	if len(content) == 0 && len(it.Result.StructuredContent) > 0 && string(it.Result.StructuredContent) != "null" {
-		content = []proto.ToolContent{{Type: "text", Text: string(it.Result.StructuredContent)}}
+	// Structured output is often the data itself behind a one-line text
+	// summary, so it is kept unless a text block already carries it — MCP
+	// asks servers to mirror it as text, and printing it twice is noise.
+	if sc := it.Result.StructuredContent; len(sc) > 0 && string(sc) != "null" && !textCarries(content, sc) {
+		content = append(content, proto.ToolContent{Type: "text", Text: string(sc)})
 	}
 	return proto.StatusCompleted, content
+}
+
+// textCarries reports whether a text block holds the same JSON as raw.
+func textCarries(content []proto.ToolContent, raw json.RawMessage) bool {
+	var want any
+	if json.Unmarshal(raw, &want) != nil {
+		return false
+	}
+	for _, c := range content {
+		var got any
+		if json.Unmarshal([]byte(c.Text), &got) == nil && reflect.DeepEqual(got, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // base64Size is the decoded size of base64 data, for a human: "42 KB".
@@ -1487,38 +1514,38 @@ func base64Size(data string) string {
 // webSearchTitle names a web search by what it looked for. Codex fills the
 // item's query for a plain search; the action carries the rest.
 func webSearchTitle(it codexItem) string {
-	q := it.Query
+	if it.Query != "" {
+		return "Search: " + it.Query
+	}
 	if a := it.Action; a != nil {
 		switch {
-		case q != "":
 		case a.Query != "":
-			q = a.Query
+			return "Search: " + a.Query
 		case len(a.Queries) > 0:
-			q = strings.Join(a.Queries, ", ")
+			return "Search: " + strings.Join(a.Queries, ", ")
 		case a.Type == "openPage" && a.URL != "":
 			return "Open " + a.URL
-		case a.Type == "findInPage" && a.Pattern != "":
+		case a.Type == "findInPage" && a.Pattern != "" && a.URL != "":
 			return "Find \"" + a.Pattern + "\" in " + a.URL
+		case a.Type == "findInPage" && a.Pattern != "":
+			return "Find \"" + a.Pattern + "\""
 		}
 	}
-	if q == "" {
-		return "Web search"
-	}
-	return "Search: " + q
+	return "Web search"
 }
 
 // New app-servers emit a contextCompaction item; older ones emit the
 // thread/compacted notification, and transitional versions may emit both.
 // Within a turn, the nth compaction is announced by whichever signal reports
 // it first, so both signals count but neither repeats the other.
-func (s *session) emitContextCompacted(turnID string, item bool) {
+func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 	s.mu.Lock()
 	if turnID != "" {
 		c := &s.compaction
 		if c.turn != turnID {
 			*c = compactionCount{turn: turnID}
 		}
-		if item {
+		if signal == compactionItem {
 			c.items++
 		} else {
 			c.notices++
