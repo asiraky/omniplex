@@ -82,10 +82,9 @@ func VersionNumber(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// UpdateTimeout bounds an update run whose caller set no deadline. A download
-// over a slow link takes minutes; an updater that has not finished in ten is
-// waiting on something that is not coming, and it must not hold the
-// instance's update slot forever.
+// UpdateTimeout bounds an update run. A download over a slow link takes
+// minutes; an updater that has not finished in ten is waiting on something
+// that is not coming, and it must not hold the driver's start gate forever.
 const UpdateTimeout = 10 * time.Minute
 
 // failureTail caps how much of an updater's output an error carries: enough
@@ -100,9 +99,9 @@ const failureTail = 300
 //
 // The updater runs with no stdin, so one that wants to ask something fails
 // instead of waiting for an answer nobody will give, under env (nil means
-// ambient), and with its whole process tree killed if it outlives ctx or,
-// when ctx has no deadline, UpdateTimeout. A failure carries the end of what
-// the updater printed, which is where updaters say why.
+// ambient), and with its whole process tree killed if it outlives
+// UpdateTimeout or an earlier deadline on ctx. A failure carries the end of
+// what the updater printed, which is where updaters say why.
 func RunUpdate(ctx context.Context, env []string, bin string, args []string, version func(context.Context) string) (UpdateResult, error) {
 	name := strings.TrimSuffix(filepath.Base(bin), filepath.Ext(bin))
 	label := strings.Join(append([]string{name}, args...), " ")
@@ -112,12 +111,7 @@ func RunUpdate(ctx context.Context, env []string, bin string, args []string, ver
 		return UpdateResult{}, fmt.Errorf("could not read the %s version before updating", name)
 	}
 
-	runCtx, cancel := ctx, context.CancelFunc(func() {})
-	stuck := label + " did not finish in time"
-	if _, ok := ctx.Deadline(); !ok {
-		runCtx, cancel = context.WithTimeout(ctx, UpdateTimeout)
-		stuck = fmt.Sprintf("%s did not finish within %s", label, UpdateTimeout)
-	}
+	runCtx, cancel := context.WithTimeout(ctx, UpdateTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, bin, args...)
@@ -142,6 +136,7 @@ func RunUpdate(ctx context.Context, env []string, bin string, args []string, ver
 		// the updater's failure to report.
 		return UpdateResult{From: from}, ctx.Err()
 	case runCtx.Err() != nil:
+		stuck := label + " did not finish in time"
 		if tail := outputTail(out.String()); tail != "" {
 			stuck += ": " + tail
 		}

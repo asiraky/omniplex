@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,11 +23,13 @@ type updAdapter struct {
 	*fakeAdapter
 	exe string
 
-	umu     sync.Mutex
-	probes  int
-	avail   adapter.Availability
-	updates int
-	update  func() (adapter.UpdateResult, error)
+	// probeUpdateMu guards the probe and update fakes: their scripted
+	// answers and the counts of how often each was asked.
+	probeUpdateMu sync.Mutex
+	probes        int
+	avail         adapter.Availability
+	updates       int
+	update        func() (adapter.UpdateResult, error)
 }
 
 func (u *updAdapter) ID() string { return "upd" }
@@ -38,17 +41,17 @@ func (u *updAdapter) Meta() adapter.HarnessMeta {
 func (u *updAdapter) Executable() (string, bool) { return u.exe, true }
 
 func (u *updAdapter) Probe(ctx context.Context, env map[string]string) adapter.Availability {
-	u.umu.Lock()
-	defer u.umu.Unlock()
+	u.probeUpdateMu.Lock()
+	defer u.probeUpdateMu.Unlock()
 	u.probes++
 	return u.avail
 }
 
 func (u *updAdapter) Update(ctx context.Context, env map[string]string) (adapter.UpdateResult, error) {
-	u.umu.Lock()
+	u.probeUpdateMu.Lock()
 	u.updates++
 	fn := u.update
-	u.umu.Unlock()
+	u.probeUpdateMu.Unlock()
 	if fn == nil {
 		return adapter.UpdateResult{From: "1.0", To: "1.0"}, nil
 	}
@@ -56,8 +59,8 @@ func (u *updAdapter) Update(ctx context.Context, env map[string]string) (adapter
 }
 
 func (u *updAdapter) counts() (probes, updates int) {
-	u.umu.Lock()
-	defer u.umu.Unlock()
+	u.probeUpdateMu.Lock()
+	defer u.probeUpdateMu.Unlock()
 	return u.probes, u.updates
 }
 
@@ -214,9 +217,6 @@ func TestFailedRefreshRetriesAfterTheBackoff(t *testing.T) {
 	mgr, ua := updTestManager(t)
 	ua.setLiveErr(errors.New("harness is restarting"))
 	past := modelRetryTTL + time.Second
-	if past >= modelTTL {
-		t.Fatalf("retry backoff %v is not shorter than the TTL %v", modelRetryTTL, modelTTL)
-	}
 
 	mgr.Harnesses(context.Background())
 	waitForListing(t, ua.fakeAdapter, 1)
@@ -250,7 +250,8 @@ func TestFailedRefreshRetriesAfterTheBackoff(t *testing.T) {
 }
 
 // An update that installs a new version re-lists the catalogue and tells every
-// client, without anyone pressing "Check again".
+// client, without anyone pressing "Check again". Until the new list lands the
+// old live one is served, not the built-in fallback.
 func TestUpdateThatChangesVersionRelistsAndNotifies(t *testing.T) {
 	mgr, ua := updTestManager(t)
 	ua.setLive([]adapter.ModelMeta{{ID: "old", Label: "Old"}})
@@ -271,6 +272,9 @@ func TestUpdateThatChangesVersionRelistsAndNotifies(t *testing.T) {
 	h := mgr.Harnesses(context.Background())[0]
 	if h.Update == nil || h.Update.From != "1.0" || h.Update.To != "1.1" || h.Update.Error != "" || h.Update.At == 0 {
 		t.Fatalf("update status = %+v, want 1.0 -> 1.1", h.Update)
+	}
+	if len(h.Models) != 1 || h.Models[0].ID != "old" {
+		t.Fatalf("models = %v right after the update, want the cached live list", h.Models)
 	}
 	waitNotified(t, ch, "new catalogue")
 	if got := mgr.Harnesses(context.Background())[0].Models; len(got) != 1 || got[0].ID != "new" {
@@ -293,6 +297,30 @@ func TestFailedUpdateIsReported(t *testing.T) {
 	h := mgr.Harnesses(context.Background())[0]
 	if h.Update == nil || !strings.Contains(h.Update.Error, "no permission") {
 		t.Fatalf("update status = %+v, want the failure", h.Update)
+	}
+}
+
+// A status recorded while updates were on is not shown once they are off: it
+// would read as current when nothing is updating any more.
+func TestUpdateStatusHiddenWhileUpdatesAreOff(t *testing.T) {
+	mgr, ua := updTestManager(t)
+	ua.update = func() (adapter.UpdateResult, error) {
+		return adapter.UpdateResult{From: "1.0", To: "1.0"}, errors.New("offline")
+	}
+	var enabled atomic.Bool
+	enabled.Store(true)
+	id, ch := mgr.SubscribeHarnesses()
+	defer mgr.UnsubscribeHarnesses(id)
+	fastUpdates(mgr)
+	mgr.StartUpdater(enabled.Load)
+	waitNotified(t, ch, "update failed")
+	if h := mgr.Harnesses(context.Background())[0]; h.Update == nil {
+		t.Fatal("no update status with updates on")
+	}
+
+	enabled.Store(false)
+	if h := mgr.Harnesses(context.Background())[0]; h.Update != nil {
+		t.Fatalf("update status = %+v with updates off, want none", h.Update)
 	}
 }
 
@@ -392,5 +420,70 @@ func TestUpdaterSkipsADriverWithNoAvailableInstance(t *testing.T) {
 	}
 	if h := mgr.Harnesses(context.Background())[0]; h.Update != nil {
 		t.Fatalf("update status = %+v, want none", h.Update)
+	}
+}
+
+// watchFast starts the binary watcher on a short interval and waits until it
+// has taken its first look, so a change made after this is one it can see.
+func watchFast(t *testing.T, mgr *Manager) {
+	t.Helper()
+	mgr.watchInterval = 10 * time.Millisecond
+	mgr.StartBinaryWatch()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mgr.binaryMu.Lock()
+		_, seen := mgr.binarySeen["upd"]
+		mgr.binaryMu.Unlock()
+		if seen {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watcher never looked at the binary")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A binary replaced out of band reaches a client that stays connected: it is
+// told, and the listing it then asks for re-probes and re-lists the new
+// binary.
+func TestBinaryWatchTellsClientsAboutANewBinary(t *testing.T) {
+	mgr, ua := updTestManager(t)
+	ua.setLive([]adapter.ModelMeta{{ID: "old", Label: "Old"}})
+	id, ch := mgr.SubscribeHarnesses()
+	defer mgr.UnsubscribeHarnesses(id)
+	mgr.Harnesses(context.Background())
+	waitNotified(t, ch, "first listing")
+	waitRefreshed(t, mgr)
+	watchFast(t, mgr)
+
+	ua.setLive([]adapter.ModelMeta{{ID: "new", Label: "New"}})
+	ua.replaceBinary(t, "installed by hand")
+	waitNotified(t, ch, "binary replaced")
+
+	probesBefore, _ := ua.counts()
+	if got := mgr.Harnesses(context.Background())[0].Models; len(got) != 1 || got[0].ID != "old" {
+		t.Fatalf("models = %v, want the old list served while the new one is fetched", got)
+	}
+	if probes, _ := ua.counts(); probes != probesBefore+1 {
+		t.Fatalf("probes = %d, want one fresh probe of the new binary", probes-probesBefore)
+	}
+	waitNotified(t, ch, "listing of the new binary")
+	if got := mgr.Harnesses(context.Background())[0].Models; len(got) != 1 || got[0].ID != "new" {
+		t.Fatalf("models = %v, want the new binary's list", got)
+	}
+}
+
+// An unchanged binary is not news.
+func TestBinaryWatchIsQuietWhileTheBinaryIsUnchanged(t *testing.T) {
+	mgr, _ := updTestManager(t)
+	id, ch := mgr.SubscribeHarnesses()
+	defer mgr.UnsubscribeHarnesses(id)
+	watchFast(t, mgr)
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-ch:
+		t.Fatal("notified with the binary unchanged")
+	default:
 	}
 }

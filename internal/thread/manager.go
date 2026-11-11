@@ -35,14 +35,24 @@ type registered struct {
 type Manager struct {
 	schedulerCancel context.CancelFunc
 	schedulerWG     sync.WaitGroup
-	// The harness updater's loop, its pacing, and the last run per driver;
-	// see update.go. The pacing lives here rather than in constants only so
-	// tests can run a pass without waiting minutes for it.
-	updaterCancel context.CancelFunc
-	updaterWG     sync.WaitGroup
+	// background is the lifetime of the harness updater and the binary
+	// watcher; Shutdown cancels it and waits on backgroundWG. See update.go.
+	background     context.Context
+	stopBackground context.CancelFunc
+	backgroundWG   sync.WaitGroup
+	// The updater's pacing and the watcher's interval live here rather than
+	// only in constants so tests can run a pass without waiting minutes.
 	updatePacing  updatePacing
-	updateMu      sync.Mutex
-	updates       map[string]UpdateStatus
+	watchInterval time.Duration
+	// updateMu guards the last update run per driver and whether updates are
+	// on; updatesEnabled is nil until StartUpdater.
+	updateMu       sync.Mutex
+	updates        map[string]UpdateStatus
+	updatesEnabled func() bool
+	// binaryMu guards binarySeen, the identity of each driver's binary when it
+	// was last looked at by the watcher or the updater.
+	binaryMu      sync.Mutex
+	binarySeen    map[string]string
 	scheduleReady sync.Map
 	store         *store.Store
 	// The idle-actor sweeper; see evict.go. idleEvictAfter is how long a
@@ -196,10 +206,14 @@ type modelResult struct {
 }
 
 // binaryIdentity is the identity on disk of the binary a session of this
-// adapter would run now, or "" when the adapter does not say which binary
-// that is. One lookup and one stat: cheap enough for every listing, which is
-// what lets any update, from any source, invalidate the caches at once.
+// adapter would run now, or "" when there is no adapter or it does not say
+// which binary that is. One lookup and one stat: cheap enough for every
+// listing, which is what lets any update, from any source, invalidate the
+// caches at once.
 func binaryIdentity(ad adapter.Adapter) string {
+	if ad == nil {
+		return ""
+	}
 	exe, ok := ad.(adapter.Executable)
 	if !ok {
 		return ""
@@ -233,8 +247,11 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		idleEvictAfter:  idleEvictAfter,
 		updates:         map[string]UpdateStatus{},
 		updatePacing:    defaultUpdatePacing,
+		watchInterval:   binaryWatchInterval,
+		binarySeen:      map[string]string{},
 	}
 	m.recoverCtx, m.recoverStop = context.WithCancel(context.Background())
+	m.background, m.stopBackground = context.WithCancel(context.Background())
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
 		m.driverOrder = append(m.driverOrder, ad.ID())
@@ -460,7 +477,8 @@ type Harness struct {
 	// to a config file. Absent when the driver has none.
 	ModelSettings *adapter.ModelSettingsSchema `json:"modelSettings,omitempty"`
 	// Update is the last background update of the harness CLI, absent until
-	// one has run. It is how a failing updater gets noticed at all.
+	// one has run and while updates are off. It is how a failing updater gets
+	// noticed at all.
 	Update *UpdateStatus `json:"update,omitempty"`
 }
 
@@ -471,6 +489,7 @@ type Harness struct {
 func (m *Manager) Harnesses(ctx context.Context) []Harness {
 	out := make([]Harness, 0, len(m.driverOrder))
 	seenDrivers := map[string]bool{}
+	showUpdates := m.updatesShown()
 	for _, id := range m.driverOrder {
 		ad := m.drivers[id]
 		seenDrivers[id] = true
@@ -479,7 +498,9 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 			Models:          ad.Models(),
 			PermissionModes: ad.PermissionModes(),
 			Instances:       m.instancesOf(ctx, id),
-			Update:          m.updateStatus(id),
+		}
+		if showUpdates {
+			h.Update = m.updateStatus(id)
 		}
 		if cfg, ok := ad.(adapter.Configurer); ok {
 			h.ConfigFields = cfg.ConfigFields()
@@ -540,10 +561,7 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 		}
 		// One identity per instance per listing, shared by the probe and the
 		// model cache, rather than a stat each.
-		binary := ""
-		if reg.ad != nil {
-			binary = binaryIdentity(reg.ad)
-		}
+		binary := binaryIdentity(reg.ad)
 		im.Availability = m.availabilityOf(ctx, reg, binary)
 		im.Models = m.modelsOf(reg, im.Availability, binary)
 		out = append(out, im)
@@ -589,9 +607,6 @@ func authSurface(ad adapter.Adapter) string {
 // harnesses on every connection does not re-run process lookups, while a user
 // who installs a harness still sees it appear without restarting.
 func (m *Manager) availability(ctx context.Context, reg registered) adapter.Availability {
-	if reg.ad == nil {
-		return m.availabilityOf(ctx, reg, "")
-	}
 	return m.availabilityOf(ctx, reg, binaryIdentity(reg.ad))
 }
 
@@ -697,11 +712,32 @@ func (m *Manager) RecheckHarnesses() {
 	m.notifyList()
 }
 
-// recheckAndNotify is RecheckHarnesses for a change the server noticed itself,
-// such as an update it installed: no client asked, so every connected one is
-// told the harness list moved rather than left to find out on reconnect.
-func (m *Manager) recheckAndNotify() {
-	m.RecheckHarnesses()
+// invalidateDriver is for a new binary the server noticed itself, from its own
+// update or anyone else's: no client asked, so every connected one is told the
+// harness list moved rather than left to find out on reconnect. Unlike
+// RecheckHarnesses it touches only that driver, and it keeps the cached model
+// lists, only marking them stale: dropping them would push every client the
+// built-in fallback first and the real catalogue a moment later.
+func (m *Manager) invalidateDriver(driver string) {
+	var ids []string
+	for _, reg := range m.orderedInstances() {
+		if reg.inst.Driver == driver {
+			ids = append(ids, reg.inst.ID)
+		}
+	}
+	m.probeMu.Lock()
+	for _, id := range ids {
+		delete(m.probes, id)
+	}
+	m.probeMu.Unlock()
+	m.modelsMu.Lock()
+	for _, id := range ids {
+		if r, ok := m.models[id]; ok {
+			r.at = time.Time{}
+			m.models[id] = r
+		}
+	}
+	m.modelsMu.Unlock()
 	m.notifyHarnesses()
 }
 
@@ -738,9 +774,6 @@ func (m *Manager) ageModelsForTest(d time.Duration) {
 // missing or stale. It never blocks: asking a harness costs a process start,
 // and this runs on every connection and every thread-list push.
 func (m *Manager) modelsFor(reg registered, avail adapter.Availability) []adapter.ModelMeta {
-	if reg.ad == nil {
-		return nil
-	}
 	return m.modelsOf(reg, avail, binaryIdentity(reg.ad))
 }
 
@@ -1674,9 +1707,9 @@ func (m *Manager) Shutdown() {
 		m.evictorCancel()
 		m.evictorWG.Wait()
 	}
-	if m.updaterCancel != nil {
-		m.updaterCancel()
-		m.updaterWG.Wait()
+	if m.stopBackground != nil {
+		m.stopBackground()
+		m.backgroundWG.Wait()
 	}
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()

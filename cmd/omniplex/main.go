@@ -217,6 +217,9 @@ func main() {
 		cfg, err := userconfig.Load()
 		return err != nil || cfg.AutoUpdateHarnesses == nil || *cfg.AutoUpdateHarnesses
 	})
+	// Whoever updates a harness, connected clients get its new catalogue
+	// without reconnecting.
+	mgr.StartBinaryWatch()
 
 	// The skills Claude Code ships with are asked of the CLI in the
 	// background, once per version it updates itself to.

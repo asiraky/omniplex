@@ -31,10 +31,10 @@ var defaultUpdatePacing = updatePacing{
 	busyAttempts: 10,
 }
 
-// updateTimeout bounds one harness update. It downloads a release, so it is
-// allowed far longer than a probe, but an updater that hangs must not hold the
-// driver's start gate open forever.
-const updateTimeout = 10 * time.Minute
+// binaryWatchInterval is how often the watcher looks at each harness binary.
+// A look is one stat per driver, so this is about how long a client may show
+// the old catalogue after someone runs an update by hand.
+const binaryWatchInterval = 30 * time.Second
 
 // UpdateStatus is the last background update of one harness's CLI. At is unix
 // milliseconds. From and To are the versions before and after, equal when
@@ -51,12 +51,14 @@ type UpdateStatus struct {
 // updates off takes effect without a restart; a pinned CLI is a legitimate
 // choice while debugging one. Shutdown stops it.
 func (m *Manager) StartUpdater(enabled func() bool) {
-	ctx, cancel := context.WithCancel(context.Background())
-	m.updaterCancel = cancel
+	m.updateMu.Lock()
+	m.updatesEnabled = enabled
+	m.updateMu.Unlock()
+	ctx := m.background
 	pacing := m.updatePacing
-	m.updaterWG.Add(1)
+	m.backgroundWG.Add(1)
 	go func() {
-		defer m.updaterWG.Done()
+		defer m.backgroundWG.Done()
 		wait := pacing.first
 		for {
 			if !sleepCtx(ctx, wait) {
@@ -133,9 +135,7 @@ func (m *Manager) updateDriver(ctx context.Context, driver string) (busy bool) {
 	if !ok {
 		return true
 	}
-	uctx, cancel := context.WithTimeout(ctx, updateTimeout)
-	result, err := up.Update(uctx, env)
-	cancel()
+	result, err := up.Update(ctx, env)
 	done()
 	if ctx.Err() != nil {
 		// Shut down mid-update: the run was cut short by us, not by the
@@ -157,8 +157,10 @@ func (m *Manager) updateDriver(ctx context.Context, driver string) (busy bool) {
 		m.logf("update: %s %s -> %s", driver, result.From, result.To)
 		// The new binary has a new catalogue. The caches would notice the
 		// binary changed on their next listing anyway; this pushes it to
-		// every connected client now instead.
-		m.recheckAndNotify()
+		// every connected client now instead. Noting the binary first keeps
+		// the watcher from acting on the same change a second time.
+		m.noteBinary(driver)
+		m.invalidateDriver(driver)
 	case previous != nil && previous.Error != "":
 		// Nothing installed, but the error a client is showing is over.
 		m.notifyHarnesses()
@@ -176,6 +178,16 @@ func (m *Manager) recordUpdate(driver string, status UpdateStatus) (previous *Up
 	return previous
 }
 
+// updatesShown says whether listings carry the last update run. With updates
+// off, a status from before they were turned off would read as current: a
+// failure nobody is retrying, or a version check that has stopped.
+func (m *Manager) updatesShown() bool {
+	m.updateMu.Lock()
+	enabled := m.updatesEnabled
+	m.updateMu.Unlock()
+	return enabled != nil && enabled()
+}
+
 // updateStatus is a driver's last update run, or nil before its first.
 func (m *Manager) updateStatus(driver string) *UpdateStatus {
 	m.updateMu.Lock()
@@ -185,6 +197,54 @@ func (m *Manager) updateStatus(driver string) *UpdateStatus {
 		return nil
 	}
 	return &s
+}
+
+// StartBinaryWatch notices a harness binary replaced while the server runs,
+// by anyone: a `claude update` run by hand, a package manager, another
+// server. Listings already compare the binary, but only when a client asks
+// for one, so a browser left open would keep the old catalogue until it
+// reconnected. The watcher runs whether or not updates are on, since noticing
+// an update is not performing one. Shutdown stops it.
+func (m *Manager) StartBinaryWatch() {
+	interval := m.watchInterval
+	m.backgroundWG.Add(1)
+	go func() {
+		defer m.backgroundWG.Done()
+		for {
+			m.checkBinaries()
+			if !sleepCtx(m.background, interval) {
+				return
+			}
+		}
+	}()
+}
+
+// checkBinaries looks once at every driver's binary. The first look at a
+// driver only records it: there is nothing to compare against yet.
+func (m *Manager) checkBinaries() {
+	for _, driver := range m.driverOrder {
+		if _, ok := m.drivers[driver].(adapter.Executable); !ok {
+			continue
+		}
+		if m.noteBinary(driver) {
+			m.logf("harness binary: %s changed on disk; refreshing its catalogue", driver)
+			m.invalidateDriver(driver)
+		}
+	}
+}
+
+// noteBinary records the identity of a driver's binary, reporting whether it
+// differs from the one recorded before. The binary is machine-wide, so one
+// identity stands for every instance of the driver. The stat happens under
+// the lock so that the watcher and the updater record in the order they
+// looked.
+func (m *Manager) noteBinary(driver string) (changed bool) {
+	m.binaryMu.Lock()
+	defer m.binaryMu.Unlock()
+	id := binaryIdentity(m.drivers[driver])
+	prev, seen := m.binarySeen[driver]
+	m.binarySeen[driver] = id
+	return seen && prev != id
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
