@@ -250,6 +250,25 @@ describe("an image in a tool result", () => {
     await waitFor(() => expect(document.activeElement).toBe(thumb));
   });
 
+  it("draws the thumbnail from the small copy and the viewer from the original", () => {
+    const THUMB = "/api/threads/t1/attachments/a1-thumb";
+    render(<ToolCard item={tool([{ ...screenshot, thumbUrl: THUMB }])} />);
+    const thumb = screen.getByRole("button", { name: "View browser_screenshot image full size" });
+    expect(within(thumb).getByRole("img").getAttribute("src")).toBe(THUMB);
+    fireEvent.click(thumb);
+    const dialog = screen.getByRole("dialog", { name: "browser_screenshot image" });
+    expect(within(dialog).getByRole("img").getAttribute("src")).toBe(SRC);
+    expect(within(dialog).getByRole("link", { name: "Open original in a new tab" }).getAttribute("href")).toBe(SRC);
+  });
+
+  it("ignores a small copy that is not a same-origin path", () => {
+    const { container } = render(
+      <ToolCard item={tool([{ ...screenshot, thumbUrl: "data:image/jpeg;base64,/9j/4AAQ" }])} />,
+    );
+    expect(screen.getByRole("img").getAttribute("src")).toBe(SRC);
+    expect(container.innerHTML).not.toContain("data:");
+  });
+
   it("jumps from fitted to the image's own pixel size", () => {
     let measure!: () => void;
     vi.stubGlobal(

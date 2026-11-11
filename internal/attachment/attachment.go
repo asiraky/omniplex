@@ -20,9 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	_ "image/gif"  // registers the decoder image.DecodeConfig uses for a tool image's size
-	_ "image/jpeg" // as above
-	_ "image/png"  // as above
+	_ "image/gif" // registers the decoder image.DecodeConfig uses for a tool image's size
+	"image/jpeg"
+	_ "image/png" // as above
 	"io"
 	"net/http"
 	"os"
@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // as above
 )
 
@@ -131,6 +132,10 @@ type Meta struct {
 	// PutToolImage decodes the header, Put does not.
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`
+	// ThumbID names a small JPEG of a tool image, stored alongside it, for a
+	// presenter to show in place of the original. Empty when the image is
+	// already small enough to be its own thumbnail, or could not be shrunk.
+	ThumbID string `json:"thumbId,omitempty"`
 }
 
 // Store keeps attachments under one directory, one subdirectory per thread.
@@ -238,7 +243,69 @@ func (s *Store) PutToolImage(threadID string, data []byte) (Meta, error) {
 		_ = os.Remove(path)
 		return Meta{}, err
 	}
-	return Meta{ID: id, MediaType: mediaType, Size: int64(len(data)), Width: cfg.Width, Height: cfg.Height}, nil
+	meta := Meta{ID: id, MediaType: mediaType, Size: int64(len(data)), Width: cfg.Width, Height: cfg.Height}
+	if cfg.Width > ThumbBound || cfg.Height > ThumbBound {
+		// Best effort: the original is stored and is a fine thumbnail, just a
+		// heavy one, so a picture that will not shrink is not a failure.
+		meta.ThumbID, _ = putThumb(dir, data, cfg.Width, cfg.Height)
+	}
+	return meta, nil
+}
+
+// ThumbBound is the long edge of a tool image's thumbnail, in pixels. The UI
+// shows a thumbnail at most 192 px wide; 2.5x that is sharp on a retina phone
+// and still a few tens of KB, where the screenshot behind it can be megabytes
+// the transcript would otherwise pull over 4G just to draw a strip of previews.
+const ThumbBound = 480
+
+// maxThumbPixels bounds the images a thumbnail is made from. Decoding means
+// holding every pixel at four bytes, and a 10 MB PNG of flat colour can claim
+// to be far larger than any screen: past this the original stands in.
+const maxThumbPixels = 50_000_000
+
+// thumbQuality is the JPEG quality of a thumbnail: no visible artefacts at
+// thumbnail size, a fraction of the bytes of a lossless one.
+const thumbQuality = 80
+
+// putThumb stores a JPEG of the image shrunk to ThumbBound on its long edge,
+// and returns its id.
+func putThumb(dir string, data []byte, w, h int) (string, error) {
+	if int64(w)*int64(h) > maxThumbPixels {
+		return "", ErrTooLarge
+	}
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	tw, th := ThumbBound, ThumbBound
+	if w >= h {
+		th = max(1, (h*ThumbBound+w/2)/w)
+	} else {
+		tw = max(1, (w*ThumbBound+h/2)/h)
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
+	// JPEG has no alpha: a transparent screenshot is laid on white, which is
+	// what a browser shows behind it on a light page anyway.
+	draw.Draw(dst, dst.Bounds(), image.White, image.Point{}, draw.Src)
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: thumbQuality}); err != nil {
+		return "", err
+	}
+	id, path, f, err := create(dir, ".jpg")
+	if err != nil {
+		return "", err
+	}
+	_, err = f.Write(buf.Bytes())
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return id, nil
 }
 
 // sniff names the media type of a file from its leading bytes.

@@ -268,3 +268,86 @@ func TestPutToolImageAcceptsOneAtItsLimit(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 }
+
+// A tool image bigger than a thumbnail gets one: a JPEG stored beside it,
+// shrunk to the bound on its long edge with the shape kept, and the original
+// untouched behind its own id.
+func TestPutToolImageStoresAThumbnailOfALargeImage(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		w, h         int
+		wantW, wantH int
+	}{
+		{"landscape", 2560, 1600, ThumbBound, 300},
+		{"portrait", 600, 1200, 240, ThumbBound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Transparent, so the thumbnail has to lay it on something.
+			data := encoded(t, func(b *bytes.Buffer, i image.Image) error { return png.Encode(b, i) }, tc.w, tc.h)
+			s := New(t.TempDir())
+			meta, err := s.PutToolImage("thread-1", data)
+			if err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			if meta.Width != tc.w || meta.Height != tc.h {
+				t.Fatalf("meta = %+v, want the original's size", meta)
+			}
+			if meta.ThumbID == "" || meta.ThumbID == meta.ID {
+				t.Fatalf("thumb id = %q (original %q)", meta.ThumbID, meta.ID)
+			}
+			path, mediaType, err := s.Path("thread-1", meta.ThumbID)
+			if err != nil || mediaType != "image/jpeg" {
+				t.Fatalf("thumb Path = %q, %q, %v", path, mediaType, err)
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			thumb, err := jpeg.Decode(f)
+			if err != nil {
+				t.Fatalf("thumb is not a JPEG: %v", err)
+			}
+			if b := thumb.Bounds(); b.Dx() != tc.wantW || b.Dy() != tc.wantH {
+				t.Fatalf("thumb is %dx%d, want %dx%d", b.Dx(), b.Dy(), tc.wantW, tc.wantH)
+			}
+			if r, g, b, _ := thumb.At(tc.wantW/2, tc.wantH/2).RGBA(); r>>8 < 240 || g>>8 < 240 || b>>8 < 240 {
+				t.Fatalf("transparent pixels came out (%d,%d,%d), want white", r>>8, g>>8, b>>8)
+			}
+			orig, _, _ := s.Path("thread-1", meta.ID)
+			if got, err := os.ReadFile(orig); err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("original bytes differ (err %v)", err)
+			}
+		})
+	}
+}
+
+// An image already within the bound is its own thumbnail.
+func TestPutToolImageMakesNoThumbnailOfASmallImage(t *testing.T) {
+	dir := t.TempDir()
+	data := encoded(t, func(b *bytes.Buffer, i image.Image) error { return png.Encode(b, i) }, ThumbBound, ThumbBound-1)
+	meta, err := New(dir).PutToolImage("thread-1", data)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if meta.ThumbID != "" {
+		t.Fatalf("thumb id = %q, want none", meta.ThumbID)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "thread-1")); len(entries) != 1 {
+		t.Fatalf("stored %d files, want only the original", len(entries))
+	}
+}
+
+// A picture whose header decodes but whose pixels do not is still stored:
+// losing the thumbnail is not losing the image.
+func TestPutToolImageKeepsAnImageThatWillNotShrink(t *testing.T) {
+	data := encoded(t, func(b *bytes.Buffer, i image.Image) error { return png.Encode(b, i) }, 1000, 800)
+	data = data[:len(data)/2]
+	meta, err := New(t.TempDir()).PutToolImage("thread-1", data)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if meta.ThumbID != "" || meta.Width != 1000 {
+		t.Fatalf("meta = %+v, want the original stored without a thumbnail", meta)
+	}
+}

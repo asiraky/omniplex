@@ -300,9 +300,16 @@ func (m *Manager) SetAttachments(p AttachmentPurger) {
 			if err != nil {
 				return proto.ToolContent{}, err
 			}
+			served := func(id string) string {
+				if id == "" {
+					return ""
+				}
+				return "/api/threads/" + url.PathEscape(threadID) + "/attachments/" + url.PathEscape(id)
+			}
 			return proto.ToolContent{
 				Type:      "image",
-				URL:       "/api/threads/" + url.PathEscape(threadID) + "/attachments/" + url.PathEscape(meta.ID),
+				URL:       served(meta.ID),
+				ThumbURL:  served(meta.ThumbID),
 				MediaType: meta.MediaType,
 				Width:     meta.Width,
 				Height:    meta.Height,

@@ -44,6 +44,9 @@ export interface ToolContent {
   oldText?: string;
   newText?: string;
   url?: string;
+  /** A small JPEG of the same image, for a thumbnail; absent when the image is
+      already thumbnail-sized. */
+  thumbUrl?: string;
   mediaType?: string;
   width?: number;
   height?: number;
