@@ -76,8 +76,9 @@ const continuePrompt = "[omniplex] Your previous turn ended in an error before i
 type recoveryPlan struct {
 	rec    proto.TurnRecovery
 	prompt string
-	// note is the dead-work list alone. A human prompt that gets in before
-	// the continuation supersedes it, and carries this instead.
+	// note is the dead-work list alone, ready to send. A human prompt that
+	// gets in before the continuation supersedes it and carries this instead,
+	// as does the next one after a continuation that never started.
 	note string
 }
 
@@ -95,37 +96,34 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 	if state.Closed {
 		return nil, ""
 	}
-	dead := deadWork(state)
-	note := deadWorkNote(dead)
+	note := deadWorkNote(deadWork(state))
+	if note != "" {
+		note = "[omniplex] " + note
+	}
 	var last *projection.Turn
 	if len(state.Turns) > 0 {
 		last = &state.Turns[len(state.Turns)-1]
 	}
 	cut := last != nil && !last.Done
 	if !cut && !state.LiveJobs().Working() {
-		if note == "" {
-			return nil, ""
-		}
-		return nil, "[omniplex] " + note
+		return nil, note
 	}
 	attempt := 1
 	if last != nil && last.Recovery != nil && now-last.StartedAt < recoveryWindow.Milliseconds() {
 		attempt = last.Recovery.Attempt + 1
 	}
 	if attempt > maxRecoveryAttempts {
-		return nil, ""
+		// Left for a human, who should still hear what died.
+		return nil, note
 	}
 	plan = &recoveryPlan{rec: proto.TurnRecovery{Attempt: attempt, Cause: proto.RecoveryRestart}, note: note}
 	if last != nil {
 		plan.rec.ResumeOf = last.ID
 	}
-	switch {
-	case !cut:
-		plan.prompt = "[omniplex] " + note
-	case note != "":
-		plan.prompt = restartPrompt + "\n\n" + note
-	default:
-		plan.prompt = restartPrompt
+	if cut {
+		plan.prompt = withNote(restartPrompt, strings.TrimPrefix(note, "[omniplex] "))
+	} else {
+		plan.prompt = note
 	}
 	return plan, ""
 }
@@ -136,16 +134,30 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 // subagent is what brings it back.
 func deadWork(state *projection.State) []projection.Job {
 	live := map[string]bool{}
+	byToolCall := map[string]string{}
 	for _, j := range state.Jobs {
 		if !proto.JobDone(j.Status) && j.Kind != proto.JobInert {
 			live[j.ID] = true
+			if j.ToolCallID != "" {
+				byToolCall[j.ToolCallID] = j.ID
+			}
+		}
+	}
+	// A harness does not always name a job's parent job, but the tool call
+	// that started it still sits inside the parent's: Claude reports a
+	// subagent's background shell that way.
+	calledFrom := map[string]string{}
+	for _, it := range state.Items {
+		if it.Kind == projection.ItemTool && it.ParentID != "" {
+			calledFrom[it.ID] = it.ParentID
 		}
 	}
 	var out []projection.Job
 	for _, j := range state.Jobs {
-		if live[j.ID] && !live[j.ParentJobID] {
-			out = append(out, j)
+		if !live[j.ID] || live[j.ParentJobID] || live[byToolCall[calledFrom[j.ToolCallID]]] {
+			continue
 		}
+		out = append(out, j)
 	}
 	return out
 }

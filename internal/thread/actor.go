@@ -1223,7 +1223,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			if c.plan != nil {
 				// The server's own continuation does not wait in line: if
 				// work is already running there is nothing to continue.
-				a.setRecovery(nil)
+				a.abandonRecovery()
 				c.reply <- cmdResult{err: ErrBusy}
 				return false
 			}
@@ -1265,8 +1265,14 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery, "")
 		if err != nil {
-			if c.plan != nil && retryableRecovery(err) {
+			if c.plan != nil {
+				// Put back for a retry, or for its note to ride on the
+				// next human prompt: either way the agent still has to hear
+				// what died.
 				a.setRecovery(c.plan)
+				if !retryableRecovery(err) {
+					a.abandonRecovery()
+				}
 			}
 			c.reply <- cmdResult{err: err}
 			return false
@@ -1274,7 +1280,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: PromptResult{TurnID: turnID}}
 
 	case cmdDropRecovery:
-		a.setRecovery(nil)
+		a.abandonRecovery()
 		c.reply <- cmdResult{}
 
 	case cmdDequeue:
@@ -1305,7 +1311,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		if a.sess == nil {
 			// A read-only restore may expose the interrupted turn before the
 			// recovery worker activates its process. Stop means do not recover it.
-			a.setRecovery(nil)
+			a.abandonRecovery()
 			a.dropQueue()
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: a.turnActive, StopReason: proto.StopCancelled,
@@ -1630,6 +1636,18 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 func (a *Actor) setRecovery(plan *recoveryPlan) {
 	a.mu.Lock()
 	a.recovery = plan
+	a.mu.Unlock()
+}
+
+// abandonRecovery gives up the pending continuation. Its note is held for the
+// next human prompt: whether or not the thread wakes, the agent should not be
+// left waiting on work that died.
+func (a *Actor) abandonRecovery() {
+	a.mu.Lock()
+	if a.recovery != nil {
+		a.heldNote = withNote(a.heldNote, a.recovery.note)
+		a.recovery = nil
+	}
 	a.mu.Unlock()
 }
 
