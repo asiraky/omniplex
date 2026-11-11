@@ -130,6 +130,31 @@ func TestManagedWorktreeRemakesACheckoutWhoseAddDied(t *testing.T) {
 	}
 }
 
+// Prune skips locked worktrees, so a dead add whose directory is already gone
+// stays registered. It must not wedge the path: the thread still gets its
+// worktree there.
+func TestManagedWorktreeRecoversFromADeadAddWhoseDirectoryIsGone(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	slug := filepath.Join(root, ".worktrees", "issue-13-vanished")
+	git(t, root, "worktree", "add", slug, "-b", "issue/13-vanished")
+	git(t, root, "worktree", "lock", "--reason", "initializing", slug)
+	if err := os.RemoveAll(slug); err != nil {
+		t.Fatal(err)
+	}
+
+	m := ready(t, st, managedThread(t, mgr, p.ID, "issue/13-vanished", ""))
+	if m.Cwd != slug {
+		t.Fatalf("worktree at %s, want it made at %s", m.Cwd, slug)
+	}
+	if w, ok := registeredAt(t, root, slug); !ok || w.Locked {
+		t.Fatalf("worktree = %+v registered=%v, want an unlocked worktree", w, ok)
+	}
+}
+
 // A lock the user put on a worktree is theirs. It is not mistaken for a dead
 // add, and the worktree under it is reused untouched.
 func TestManagedWorktreeReusesAWorktreeTheUserLocked(t *testing.T) {

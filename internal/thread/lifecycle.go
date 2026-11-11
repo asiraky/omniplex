@@ -411,11 +411,13 @@ func worktreePath(ctx context.Context, root, branch, slug string) (string, claim
 	return "", claimTaken, fmt.Errorf("no free directory for a worktree of %s: %s and %s are both taken by something else", branch, slug, hashed)
 }
 
-// claimOf says what path holds for a new worktree of branch. A registered
-// worktree whose directory is gone counts as free: it is the leftover of a
-// crash, and the prune before every add clears it. Only Git's own
+// claimOf says what path holds for a new worktree of branch. Only Git's own
 // "initializing" lock marks an add that died; a lock the user set is theirs,
-// and the worktree under it is reused like any other.
+// and the worktree under it is reused like any other. A dead add is checked
+// for before the directory is, because prune skips locked entries: one whose
+// directory is already gone would otherwise block every add at that path. Any
+// other registered worktree whose directory is gone counts as free, since the
+// prune before every add clears it.
 func claimOf(path, branch string, listed []Workspace) claim {
 	_, statErr := os.Lstat(path)
 	exists := statErr == nil
@@ -425,12 +427,12 @@ func claimOf(path, branch string, listed []Workspace) claim {
 			continue
 		}
 		switch {
+		case w.Branch == branch && w.Locked && w.lockReason == "initializing":
+			return claimCrashed
 		case !exists:
 			return claimFree
 		case w.Branch != branch:
 			return claimTaken
-		case w.Locked && w.lockReason == "initializing":
-			return claimCrashed
 		}
 		return claimOurs
 	}
