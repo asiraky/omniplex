@@ -155,6 +155,8 @@ export class Client {
     this.unwatch();
     if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    // Their deadlines would only fail them into a page that has moved on.
+    for (const [, p] of this.pending) window.clearTimeout(p.timer);
     this.ws?.close();
   }
 
@@ -168,8 +170,7 @@ export class Client {
     this.stableTimer = null;
     this.ws = null;
     // A probe of the old socket must not fire against its replacement.
-    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer);
-    this.probeTimer = null;
+    this.clearProbe();
     this.settleProbe(false);
     if (this.closedByUs) return;
     this.dropAuthFlows();
@@ -231,8 +232,7 @@ export class Client {
     window.removeEventListener("online", this.wake);
     window.removeEventListener("pageshow", this.wake);
     this.stopHeartbeat();
-    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer);
-    this.probeTimer = null;
+    this.clearProbe();
   }
 
   private startHeartbeat() {
@@ -268,9 +268,13 @@ export class Client {
   // sit behind a replay, and the replay arriving says the same thing.
   private heard() {
     this.lastHeard = Date.now();
+    this.clearProbe();
+    this.settleProbe(true);
+  }
+
+  private clearProbe() {
     if (this.probeTimer !== null) window.clearTimeout(this.probeTimer);
     this.probeTimer = null;
-    this.settleProbe(true);
   }
 
   private settleProbe(alive: boolean) {

@@ -29,6 +29,8 @@ export function AppDialogs({
   const { clientRef, access, setAccess } = wire;
   const { settings, setSettings, setNewProject } = screens;
   const { authInstance, setAuthInstance, loginInstance, setLoginInstance, recheck } = auth;
+  // After a login, in the background: a failure leaves the list as it was.
+  const refresh = () => void recheck()?.catch(() => {});
   return (
     <>
       {screens.showAccess && access && (
@@ -67,10 +69,10 @@ export function AppDialogs({
           <LoginDialog
             instanceId={loginInstance}
             name={auth.instanceName(loginInstance)}
-            onEnded={recheck}
+            onEnded={refresh}
             onClose={() => {
               setLoginInstance(null);
-              recheck();
+              refresh();
             }}
           />
         </Suspense>
