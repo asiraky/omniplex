@@ -176,8 +176,12 @@ type Item struct {
 	// when it is long (see Truncated).
 	Tail string `json:"tail,omitempty"`
 	// Truncated: some of Content was cut to a preview or dropped (see
-	// capText). The event log still has it whole.
+	// capText), or Input was capped on the way to a client. The event log
+	// still has it whole.
 	Truncated bool `json:"truncated,omitempty"`
+	// ChildrenBefore is how many of this item's child items a wire copy left
+	// out (see WireCopy). Zero on the actor's own state.
+	ChildrenBefore int `json:"childrenBefore,omitempty"`
 
 	// notice
 	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
@@ -413,9 +417,12 @@ type State struct {
 	// own state and on stored snapshots: only copies sent to a client carry a
 	// window, and the count doubles as the client's cursor for paging older
 	// items back in.
-	ItemsBefore  int                       `json:"itemsBefore,omitempty"`
-	Turns        []Turn                    `json:"turns"`
-	Jobs         []Job                     `json:"jobs"`
+	ItemsBefore int    `json:"itemsBefore,omitempty"`
+	Turns       []Turn `json:"turns"`
+	Jobs        []Job  `json:"jobs"`
+	// JobsBefore is how many jobs a wire copy left out of Jobs (see
+	// WireCopy). Zero on the actor's own state and on stored snapshots.
+	JobsBefore   int                       `json:"jobsBefore,omitempty"`
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`

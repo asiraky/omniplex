@@ -538,6 +538,9 @@ type ToolCallStartedPayload struct {
 	// ParentToolCallID links a call made by a subagent to the Task/Agent call
 	// that spawned it. Empty means the top-level conversation.
 	ParentToolCallID string `json:"parentToolCallId,omitempty"`
+	// Truncated is set only on the copy sent to a client, when RawInput was
+	// capped for the wire. The log never holds it.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type ToolCallUpdatedPayload struct {
@@ -553,6 +556,9 @@ type ToolCallUpdatedPayload struct {
 	// running row and drops that tail when the call finishes, because the
 	// final output arrives as Content.
 	OutputDelta string `json:"outputDelta,omitempty"`
+	// Truncated is set only on the copy sent to a client, when Content or
+	// RawInput was capped for the wire. The log never holds it.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Plan step statuses. One vocabulary for every harness: each adapter maps its
