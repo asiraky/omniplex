@@ -273,11 +273,6 @@ export function WorkspacePicker({
           // anchor is likewise exempt from outside-interaction dismissal or
           // clicking the input would close the list it just opened.
           onOpenAutoFocus={(e) => e.preventDefault()}
-          // Radix hears Escape on the document before the input does, so the
-          // input's own IME check cannot keep it from closing the list.
-          onEscapeKeyDown={(e) => {
-            if (isComposing(e)) e.preventDefault();
-          }}
           onInteractOutside={(e) => {
             if (box.current?.contains(e.target as Node)) e.preventDefault();
           }}

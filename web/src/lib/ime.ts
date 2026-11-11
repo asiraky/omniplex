@@ -19,3 +19,22 @@ export function isComposing(e: {
 }): boolean {
   return e.isComposing === true || e.nativeEvent?.isComposing === true || e.keyCode === 229;
 }
+
+/**
+ * A Radix `onEscapeKeyDown` that keeps its surface open while an IME is
+ * composing. Radix listens for Escape on the document, ahead of the field that
+ * is composing, so no field's own check can stop an IME's cancel from closing
+ * the dialog, sheet or popover around it. The shared wrappers in ui/ pass
+ * every caller's handler through this, so no surface has to remember to.
+ */
+export function escapeUnlessComposing(
+  handler?: (e: KeyboardEvent) => void,
+): (e: KeyboardEvent) => void {
+  return (e) => {
+    if (isComposing(e)) {
+      e.preventDefault();
+      return;
+    }
+    handler?.(e);
+  };
+}

@@ -557,12 +557,6 @@ export function AddSheet({
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>
       <DialogContent
         fullscreenOnMobile
-        // Escape mid-composition cancels the IME's candidate. Radix hears it on
-        // the document before any field can, so it would close the dialog and
-        // lose what was typed.
-        onEscapeKeyDown={(e) => {
-          if (isComposing(e)) e.preventDefault();
-        }}
         aria-describedby={undefined}
         className="max-md:grid-rows-[auto_minmax(0,1fr)_auto] max-md:pt-[calc(1.5rem+env(safe-area-inset-top))] md:max-h-[90dvh] md:max-w-xl md:grid-rows-[auto_minmax(0,1fr)_auto]"
       >

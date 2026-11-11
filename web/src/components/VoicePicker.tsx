@@ -139,7 +139,6 @@ export function VoicePicker({
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
           side="bottom"
-          onEscapeKeyDown={keepWhileComposing}
           className="flex h-[85dvh] flex-col p-0 pb-[env(safe-area-inset-bottom)]"
         >
           <SheetHeader className="pb-0">
@@ -154,24 +153,11 @@ export function VoicePicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent
-        align="start"
-        onEscapeKeyDown={keepWhileComposing}
-        className="w-[min(26rem,calc(100vw-2rem))] p-0"
-      >
+      <PopoverContent align="start" className="w-[min(26rem,calc(100vw-2rem))] p-0">
         {body}
       </PopoverContent>
     </Popover>
   );
-}
-
-/**
- * Escape while an IME is composing in the search box cancels the candidate.
- * Radix hears the key on the document before cmdk does, so without this it
- * would close the picker mid-word.
- */
-function keepWhileComposing(e: KeyboardEvent) {
-  if (isComposing(e)) e.preventDefault();
 }
 
 /** A pasted voice ID offered as a choice. */
