@@ -200,6 +200,9 @@ export function useDictation({
     const s = session.current;
     const r = s?.recorder;
     if (!s || !r || r.state === "inactive") return;
+    // Said now, not when the recorder gets round to its stop event.
+    clearTimeout(s.cap);
+    setStatus("transcribing");
     r.stop();
   }, []);
 
@@ -253,7 +256,7 @@ export function useDictation({
       r.start();
     } catch (err) {
       end(s);
-      toast.error(`This browser can't record audio${err instanceof Error ? `: ${err.message}` : "."}`);
+      toast.error(micError(err));
       return;
     }
     const t = Date.now();

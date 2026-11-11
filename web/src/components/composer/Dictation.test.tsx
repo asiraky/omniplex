@@ -66,13 +66,18 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, "mediaDevices");
 });
 
-function Harness({ initial = "", thread = "t1" as string | undefined, dictate = true }) {
+function Harness({
+  initial = "",
+  thread = "t1" as string | undefined,
+  dictate = true,
+  disabled = false,
+}) {
   const [draft, setDraft] = useState(initial);
   return (
     <Composer
       draft={draft}
       onDraftChange={setDraft}
-      disabled={false}
+      disabled={disabled}
       busy={false}
       onSend={vi.fn()}
       onCancel={vi.fn()}
@@ -179,6 +184,15 @@ describe("dictating into the composer", () => {
     await recordAndStop();
     await answer("three");
     expect(box().value).toBe("one two three");
+  });
+
+  it("can still be stopped when the composer is disabled mid-recording", async () => {
+    const view = render(<Harness />);
+    await tap(mic());
+    view.rerender(wrap(<Harness disabled />));
+    await tap(stopButton());
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(track.stop).toHaveBeenCalled();
   });
 
   it("discards a recording without uploading it", async () => {

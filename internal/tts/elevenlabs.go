@@ -29,8 +29,8 @@ const (
 	Format = "mp3_44100_128"
 	// MaxChars is what v4 accepts in one request.
 	MaxChars = 10000
-	// STTModel is Scribe, the model dictation is transcribed with.
-	STTModel = "scribe_v2"
+	// sttModel is Scribe, the model dictation is transcribed with.
+	sttModel = "scribe_v2"
 
 	defaultBaseURL = "https://api.elevenlabs.io"
 	// maxVoicePages bounds the voice list walk. At 100 a page that is far more
@@ -199,7 +199,7 @@ func (c client) transcribe(ctx context.Context, key string, audio io.Reader, mim
 	var buf bytes.Buffer
 	form := multipart.NewWriter(&buf)
 	fields := [][2]string{
-		{"model_id", STTModel},
+		{"model_id", sttModel},
 		// Without this Scribe writes in what it heard besides speech, such
 		// as "(laughter)", which nobody dictating wants in their message.
 		{"tag_audio_events", "false"},

@@ -47,7 +47,9 @@ export function MicButton({
       type="button"
       variant={live ? "destructive" : "ghost"}
       size="icon"
-      disabled={disabled || status === "transcribing"}
+      // A recording under way can always be stopped, so the mic is never
+      // left on when the composer is disabled mid-sentence.
+      disabled={(disabled && !live) || status === "transcribing"}
       aria-label={label[status]}
       title={status === "idle" ? "Dictate: tap to start and stop, or hold to talk" : label[status]}
       onPointerDown={(e) => {
