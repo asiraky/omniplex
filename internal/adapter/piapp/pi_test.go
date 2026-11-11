@@ -624,8 +624,8 @@ func TestProbe(t *testing.T) {
 	if !got.OK() {
 		t.Fatalf("probe not ready: %+v", got)
 	}
-	if got.Facts["piVer"] != "0.84.4" {
-		t.Errorf("piVer = %q", got.Facts["piVer"])
+	if got.Facts[adapter.FactVersion] != "0.84.4" {
+		t.Errorf("version = %q", got.Facts[adapter.FactVersion])
 	}
 	if got.Facts["auth"] != "anthropic (oauth), openrouter (api_key)" {
 		t.Errorf("auth fact = %q", got.Facts["auth"])

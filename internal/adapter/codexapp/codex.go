@@ -103,8 +103,8 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	}
 
 	return adapter.Ready(map[string]string{
-		"codex":    path,
-		"codexVer": strings.TrimSpace(string(out)),
+		"codex":             path,
+		adapter.FactVersion: adapter.VersionNumber(string(out)),
 	})
 }
 
