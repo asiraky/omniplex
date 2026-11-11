@@ -307,7 +307,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	}
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
+	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
 	}))
 	if err != nil {
@@ -375,7 +375,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	a.holdRowOnlyIfAsked(meta.Phase)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
+	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
 		Model:            state.Model,
@@ -1096,7 +1096,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
-		sess, err := a.adapter.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
+		sess, err := createSession(ctx, a.adapter, a.newHost(), x.options(adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
 		}))

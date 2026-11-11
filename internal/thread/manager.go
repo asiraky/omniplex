@@ -35,8 +35,16 @@ type registered struct {
 type Manager struct {
 	schedulerCancel context.CancelFunc
 	schedulerWG     sync.WaitGroup
-	scheduleReady   sync.Map
-	store           *store.Store
+	// The harness updater's loop, its pacing, and the last run per driver;
+	// see update.go. The pacing lives here rather than in constants only so
+	// tests can run a pass without waiting minutes for it.
+	updaterCancel context.CancelFunc
+	updaterWG     sync.WaitGroup
+	updatePacing  updatePacing
+	updateMu      sync.Mutex
+	updates       map[string]UpdateStatus
+	scheduleReady sync.Map
+	store         *store.Store
 	// The idle-actor sweeper; see evict.go. idleEvictAfter is how long a
 	// view-only actor may sit unused before it is dropped.
 	evictorCancel  context.CancelFunc
@@ -149,26 +157,58 @@ type Manager struct {
 // probeTTL bounds how stale a readiness answer may be.
 const probeTTL = 30 * time.Second
 
-// modelTTL bounds how stale a model list may be. Catalogues change on the
-// harness's release cadence, not by the minute, and a user who has just
-// installed or upgraded one can force the question with a recheck.
-const modelTTL = 30 * time.Minute
+// modelTTL bounds how stale a model list may be. A new harness binary drops
+// the list at once, whoever installed it, so this only covers what changes on
+// the account's side with the same binary: a model granted or withdrawn by
+// the provider. A refresh is one background process start, so being wrong
+// for ten minutes is not worth saving it.
+const modelTTL = 10 * time.Minute
+
+// modelRetryTTL is how soon a listing that failed is tried again. Only the
+// failure waits this short: the last good list keeps being served meanwhile,
+// and a harness that cannot answer should not then be wrong for a full TTL.
+const modelRetryTTL = 2 * time.Minute
 
 // modelRefreshTimeout bounds one background listing. The adapters apply their
 // own deadlines; this is the backstop for one that does not return at all.
 const modelRefreshTimeout = 90 * time.Second
 
+// probeResult is one instance's last probe. binary is the identity of the
+// harness binary at the time (see binaryIdentity): a probe of a binary that
+// has since been replaced describes a program that no longer exists.
 type probeResult struct {
 	result adapter.Availability
 	at     time.Time
+	binary string
 }
 
 // modelResult is one instance's last model listing. A failed attempt is cached
-// too, with no list: without that, every connection would retry a harness that
-// cannot answer and pay the process start each time.
+// too, keeping the last good list: without that, every connection would retry
+// a harness that cannot answer and pay the process start each time. failed
+// marks it so the retry comes after modelRetryTTL rather than modelTTL.
+// binary is the identity the listing was asked of; a different binary on disk
+// now has a different catalogue, whatever the clock says.
 type modelResult struct {
-	list []adapter.ModelMeta
-	at   time.Time
+	list   []adapter.ModelMeta
+	at     time.Time
+	binary string
+	failed bool
+}
+
+// binaryIdentity is the identity on disk of the binary a session of this
+// adapter would run now, or "" when the adapter does not say which binary
+// that is. One lookup and one stat: cheap enough for every listing, which is
+// what lets any update, from any source, invalidate the caches at once.
+func binaryIdentity(ad adapter.Adapter) string {
+	exe, ok := ad.(adapter.Executable)
+	if !ok {
+		return ""
+	}
+	path, ok := exe.Executable()
+	if !ok {
+		return ""
+	}
+	return adapter.FileIdentity(path)
 }
 
 func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapter) *Manager {
@@ -191,6 +231,8 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		usageScan:       usage.NewScanner(),
 		recoveryRetries: recoveryRetries,
 		idleEvictAfter:  idleEvictAfter,
+		updates:         map[string]UpdateStatus{},
+		updatePacing:    defaultUpdatePacing,
 	}
 	m.recoverCtx, m.recoverStop = context.WithCancel(context.Background())
 	for _, ad := range ads {
@@ -417,6 +459,9 @@ type Harness struct {
 	// so the UI can offer it beside the account instead of sending the user
 	// to a config file. Absent when the driver has none.
 	ModelSettings *adapter.ModelSettingsSchema `json:"modelSettings,omitempty"`
+	// Update is the last background update of the harness CLI, absent until
+	// one has run. It is how a failing updater gets noticed at all.
+	Update *UpdateStatus `json:"update,omitempty"`
 }
 
 // Harnesses lists every registered harness, available or not, each with its
@@ -434,6 +479,7 @@ func (m *Manager) Harnesses(ctx context.Context) []Harness {
 			Models:          ad.Models(),
 			PermissionModes: ad.PermissionModes(),
 			Instances:       m.instancesOf(ctx, id),
+			Update:          m.updateStatus(id),
 		}
 		if cfg, ok := ad.(adapter.Configurer); ok {
 			h.ConfigFields = cfg.ConfigFields()
@@ -483,17 +529,23 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 			continue
 		}
 		im := InstanceMeta{
-			ID:           reg.inst.ID,
-			Driver:       reg.inst.Driver,
-			DisplayName:  reg.inst.DisplayName,
-			Enabled:      reg.inst.Enabled,
-			CanLogin:     supportsLogin(reg.ad),
-			Auth:         authSurface(reg.ad),
-			Configured:   reg.inst.Raw != nil,
-			Env:          redactedEnv(reg.inst.Env),
-			Availability: m.availability(ctx, reg),
+			ID:          reg.inst.ID,
+			Driver:      reg.inst.Driver,
+			DisplayName: reg.inst.DisplayName,
+			Enabled:     reg.inst.Enabled,
+			CanLogin:    supportsLogin(reg.ad),
+			Auth:        authSurface(reg.ad),
+			Configured:  reg.inst.Raw != nil,
+			Env:         redactedEnv(reg.inst.Env),
 		}
-		im.Models = m.modelsFor(reg, im.Availability)
+		// One identity per instance per listing, shared by the probe and the
+		// model cache, rather than a stat each.
+		binary := ""
+		if reg.ad != nil {
+			binary = binaryIdentity(reg.ad)
+		}
+		im.Availability = m.availabilityOf(ctx, reg, binary)
+		im.Models = m.modelsOf(reg, im.Availability, binary)
 		out = append(out, im)
 	}
 	return out
@@ -538,6 +590,16 @@ func authSurface(ad adapter.Adapter) string {
 // who installs a harness still sees it appear without restarting.
 func (m *Manager) availability(ctx context.Context, reg registered) adapter.Availability {
 	if reg.ad == nil {
+		return m.availabilityOf(ctx, reg, "")
+	}
+	return m.availabilityOf(ctx, reg, binaryIdentity(reg.ad))
+}
+
+// availabilityOf is availability with the binary's identity already taken. A
+// cached probe of a different binary is stale whatever its age: an update
+// that swapped the binary is news the next listing should carry.
+func (m *Manager) availabilityOf(ctx context.Context, reg registered, binary string) adapter.Availability {
+	if reg.ad == nil {
 		return adapter.Unavailable("This build has no " + strconv.Quote(reg.inst.Driver) + " driver. The configuration is kept and will work on a build that has it.")
 	}
 	if !reg.inst.Enabled {
@@ -547,7 +609,7 @@ func (m *Manager) availability(ctx context.Context, reg registered) adapter.Avai
 	m.probeMu.Lock()
 	cached, ok := m.probes[reg.inst.ID]
 	m.probeMu.Unlock()
-	if ok && time.Since(cached.at) < probeTTL {
+	if ok && time.Since(cached.at) < probeTTL && cached.binary == binary {
 		return cached.result
 	}
 
@@ -560,7 +622,7 @@ func (m *Manager) availability(ctx context.Context, reg registered) adapter.Avai
 	result := reg.ad.Probe(ctx, env)
 
 	m.probeMu.Lock()
-	m.probes[reg.inst.ID] = probeResult{result: result, at: time.Now()}
+	m.probes[reg.inst.ID] = probeResult{result: result, at: time.Now(), binary: binary}
 	m.probeMu.Unlock()
 	// A harness answering as a different account — or as one at all, after
 	// being signed out — offers a different catalogue: a signed-out Claude
@@ -635,6 +697,14 @@ func (m *Manager) RecheckHarnesses() {
 	m.notifyList()
 }
 
+// recheckAndNotify is RecheckHarnesses for a change the server noticed itself,
+// such as an update it installed: no client asked, so every connected one is
+// told the harness list moved rather than left to find out on reconnect.
+func (m *Manager) recheckAndNotify() {
+	m.RecheckHarnesses()
+	m.notifyHarnesses()
+}
+
 // ExpireProbes ages every cached probe past its TTL, so the next listing asks
 // every harness again. The setup screen uses it: someone who has just
 // installed or signed in to a harness and pressed "Check again" should not be
@@ -650,11 +720,15 @@ func (m *Manager) ExpireProbes() {
 
 // expireModelsForTest ages every cached listing past its TTL. Tests use it to
 // reach the refresh path without waiting out modelTTL.
-func (m *Manager) expireModelsForTest() {
+func (m *Manager) expireModelsForTest() { m.ageModelsForTest(2 * modelTTL) }
+
+// ageModelsForTest backdates every cached listing by d, so a test can stand
+// between the retry backoff and the TTL.
+func (m *Manager) ageModelsForTest(d time.Duration) {
 	m.modelsMu.Lock()
 	defer m.modelsMu.Unlock()
 	for id, result := range m.models {
-		result.at = time.Now().Add(-2 * modelTTL)
+		result.at = result.at.Add(-d)
 		m.models[id] = result
 	}
 }
@@ -667,9 +741,24 @@ func (m *Manager) modelsFor(reg registered, avail adapter.Availability) []adapte
 	if reg.ad == nil {
 		return nil
 	}
+	return m.modelsOf(reg, avail, binaryIdentity(reg.ad))
+}
+
+// modelsOf is modelsFor with the binary's identity already taken. A list
+// asked of a different binary is stale at once, but it is still what gets
+// served until the new one lands: the old catalogue is closer to right than
+// the adapter's fallback, and the landing notifies clients anyway.
+func (m *Manager) modelsOf(reg registered, avail adapter.Availability, binary string) []adapter.ModelMeta {
+	if reg.ad == nil {
+		return nil
+	}
 	m.modelsMu.Lock()
 	cached, ok := m.models[reg.inst.ID]
-	stale := !ok || time.Since(cached.at) > modelTTL
+	ttl := modelTTL
+	if cached.failed {
+		ttl = modelRetryTTL
+	}
+	stale := !ok || time.Since(cached.at) > ttl || cached.binary != binary
 	// Only one refresh per instance is in flight; the rest of the callers keep
 	// serving what is cached.
 	start := stale && !m.refreshing[reg.inst.ID] && avail.OK() && reg.inst.Enabled
@@ -680,7 +769,7 @@ func (m *Manager) modelsFor(reg registered, avail adapter.Availability) []adapte
 	m.modelsMu.Unlock()
 
 	if start {
-		go m.refreshModels(reg, gen)
+		go m.refreshModels(reg, gen, binary)
 	}
 	if len(cached.list) > 0 {
 		return cached.list
@@ -693,8 +782,11 @@ func (m *Manager) modelsFor(reg registered, avail adapter.Availability) []adapte
 
 // refreshModels asks one instance's harness for its catalogue and caches the
 // answer, telling connected clients when it changed. A failure is cached too,
-// so a harness that cannot answer is not re-asked on every listing.
-func (m *Manager) refreshModels(reg registered, gen int) {
+// so a harness that cannot answer is not re-asked on every listing. binary is
+// the identity taken before asking: should the binary change while the
+// harness answers, the answer is recorded against the old one, and the next
+// listing sees the difference and asks again.
+func (m *Manager) refreshModels(reg registered, gen int, binary string) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelRefreshTimeout)
 	defer cancel()
 
@@ -718,7 +810,7 @@ func (m *Manager) refreshModels(reg registered, gen int) {
 		if !m.refreshing[reg.inst.ID] {
 			m.refreshing[reg.inst.ID] = true
 			current := m.modelGen
-			go m.refreshModels(reg, current)
+			go m.refreshModels(reg, current, binaryIdentity(reg.ad))
 		}
 		return
 	}
@@ -726,12 +818,13 @@ func (m *Manager) refreshModels(reg registered, gen int) {
 	if err != nil {
 		// A harness that could not answer this time has not withdrawn what it
 		// said last time. Keeping the last good list means a blip does not
-		// silently downgrade a live catalogue to the built-in fallback; only
-		// the timestamp moves, so the retry waits out the TTL.
-		m.models[reg.inst.ID] = modelResult{list: previous.list, at: time.Now()}
+		// silently downgrade a live catalogue to the built-in fallback. It is
+		// marked failed so the retry comes after the short backoff: a list
+		// that may be out of date should not stay so for a whole TTL.
+		m.models[reg.inst.ID] = modelResult{list: previous.list, at: time.Now(), binary: binary, failed: true}
 		return
 	}
-	m.models[reg.inst.ID] = modelResult{list: list, at: time.Now()}
+	m.models[reg.inst.ID] = modelResult{list: list, at: time.Now(), binary: binary}
 	if !sameModels(previous.list, list) && len(list) > 0 {
 		m.notifyHarnesses()
 	}
@@ -763,9 +856,10 @@ func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mod
 
 	// Probe fresh here rather than trusting the cache: the answer decides
 	// whether we are about to spawn a process, and it may have changed.
+	binary := binaryIdentity(reg.ad)
 	if avail := reg.ad.Probe(ctx, env); !avail.OK() {
 		m.probeMu.Lock()
-		m.probes[reg.inst.ID] = probeResult{result: avail, at: time.Now()}
+		m.probes[reg.inst.ID] = probeResult{result: avail, at: time.Now(), binary: binary}
 		m.probeMu.Unlock()
 		return nil, fmt.Errorf("%s is not available: %s", reg.inst.DisplayName, avail.Reason)
 	}
@@ -1579,6 +1673,10 @@ func (m *Manager) Shutdown() {
 	if m.evictorCancel != nil {
 		m.evictorCancel()
 		m.evictorWG.Wait()
+	}
+	if m.updaterCancel != nil {
+		m.updaterCancel()
+		m.updaterWG.Wait()
 	}
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
