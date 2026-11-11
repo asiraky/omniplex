@@ -19,10 +19,6 @@ type ToolImageStore interface {
 
 var errNoImageStore = errors.New("host keeps no images")
 
-// MaxToolDiff bounds the patch a file change adds to its tool call. Past it
-// the diff is dropped: a whole-file write would otherwise ride every replay.
-const MaxToolDiff = 64 << 10
-
 // ToolImage turns one base64 image from a tool result into content a
 // presenter can show. It never returns the bytes: if the image cannot be
 // stored, the content says so in words instead.

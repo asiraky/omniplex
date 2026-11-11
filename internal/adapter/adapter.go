@@ -629,3 +629,7 @@ func FailureOf(err error) string {
 	}
 	return ""
 }
+
+// MaxToolDiff bounds the patch a file change adds to its tool call. Past it
+// the diff is dropped: a whole-file write would otherwise ride every replay.
+const MaxToolDiff = 64 << 10
