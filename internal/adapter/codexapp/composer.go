@@ -205,11 +205,11 @@ func (s *session) RunComposerAction(ctx context.Context, in adapter.ComposerActi
 		s.mu.Unlock()
 		return nil, err
 	}
-	// review/start answers with the review's turn, as turn/start does, and
-	// Stop needs its id. /compact's answer carries none; its id comes from
-	// the turn/started that follows (see workingTurn). Recorded under
-	// Prompt's guard, and never over an id that notification already set:
-	// it can beat this response, and names the same turn.
+	// review/start answers with the review's turn, as turn/start does: its
+	// items and its completion carry this id. Stop wants the one turn/started
+	// names (runningTurnID). /compact's answer carries none; its id comes
+	// from the turn/started that follows (see workingTurn). Recorded under
+	// Prompt's guard, and never over an id already set.
 	if id := responseTurnID(response); id != "" {
 		s.mu.Lock()
 		s.backfillServerTurnLocked(in.TurnID, id)

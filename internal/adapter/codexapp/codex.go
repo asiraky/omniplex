@@ -451,7 +451,13 @@ type session struct {
 	// the same value as turnID.
 	turnID       string
 	serverTurnID string
-	interrupting bool            // an interrupt for serverTurnID is already in flight
+	// runningTurnID is the id turn/started gave the open turn, which is the
+	// one turn/interrupt accepts. For most turns it is serverTurnID. A review
+	// is the exception: review/start answers with one turn, its items and its
+	// completion name that one, and codex runs — and will only interrupt — a
+	// second, named nowhere but turn/started.
+	runningTurnID string
+	interrupting  bool            // an interrupt for the open turn is already in flight
 	streamed     map[string]bool // item ids that arrived as deltas
 	// lastServerTurn is codex's id for the turn that most recently completed.
 	// A notification that straggles in after its turn ended still names it,
@@ -595,7 +601,7 @@ func promptInput(text string, attachments []proto.PromptImage) []map[string]any 
 // caller blocked on it, until ctx gives up.
 func (s *session) Cancel(ctx context.Context) error {
 	s.mu.Lock()
-	turnID := s.serverTurnID
+	turnID := s.interruptTargetLocked()
 	parent := turnID != "" && !s.interrupting
 	if parent {
 		s.interrupting = true
@@ -629,12 +635,45 @@ func (s *session) Cancel(ctx context.Context) error {
 		// would coalesce — and so silently swallow — every later press of the
 		// stop button for the life of the session.
 		s.mu.Lock()
-		if s.serverTurnID == turnID {
+		if s.interruptTargetLocked() == turnID {
 			s.interrupting = false
 		}
 		s.mu.Unlock()
 	}
 	return err
+}
+
+// interruptTargetLocked is codex's id for the open turn as turn/interrupt
+// wants it, or "" if none is known. s.mu must be held.
+func (s *session) interruptTargetLocked() string {
+	if s.runningTurnID != "" {
+		return s.runningTurnID
+	}
+	return s.serverTurnID
+}
+
+// noteRunningTurn records the id turn/started gave turn. Stop pressed before
+// it arrived went out under the id the turn was started with, which a review
+// refuses; this is the review's to stop, so it is interrupted now.
+func (s *session) noteRunningTurn(turn, running string) {
+	s.mu.Lock()
+	if running == "" || s.turnID != turn || running == s.lastServerTurn {
+		s.mu.Unlock()
+		return
+	}
+	missed := s.stoppedTurn == turn && running != s.interruptTargetLocked()
+	s.runningTurnID = running
+	s.mu.Unlock()
+	if !missed {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.conn.Call(ctx, "turn/interrupt", map[string]any{"threadId": s.threadID, "turnId": running}, nil); err != nil {
+			s.host.Logf("codex: late interrupt of turn %s: %v", running, err)
+		}
+	}()
 }
 
 // runningSubagentsLocked claims, for interrupting, every subagent spawned in
@@ -731,7 +770,7 @@ func (s *session) watchExit() {
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
-	s.serverTurnID = ""
+	s.serverTurnID, s.runningTurnID = "", ""
 	s.interrupting = false
 	s.mu.Unlock()
 	if turn != "" {
@@ -1256,7 +1295,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			} `json:"turn"`
 		}
 		_ = json.Unmarshal(params, &p)
-		s.workingTurn(turn, p.Turn.ID)
+		s.noteRunningTurn(s.workingTurn(turn, p.Turn.ID), p.Turn.ID)
 
 	case "item/started", "item/completed":
 		// An item starting is work running: open a harness-initiated turn if
@@ -1368,7 +1407,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			s.lastServerTurn = known
 		}
 		s.turnID = ""
-		s.serverTurnID = ""
+		s.serverTurnID, s.runningTurnID = "", ""
 		s.interrupting = false
 		s.mu.Unlock()
 

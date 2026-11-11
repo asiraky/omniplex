@@ -596,26 +596,99 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// /review answers with its turn, and Stop needs that id: without it Cancel had
-// nothing to address and returned while the UI said cancelling.
-func TestReviewCanBeStopped(t *testing.T) {
-	s, rec := stopSession(t, map[string]any{
+// reviewReply is a fake app-server's review/start, answered as codex answers
+// it: with one turn, while it runs and will only interrupt another, which only
+// turn/started names.
+func reviewReply() map[string]any {
+	return map[string]any{
 		"review/start": map[string]any{"turn": map[string]any{"id": "review-turn"}, "reviewThreadId": "thread-1"},
-	})
+		"turn/interrupt": func(params json.RawMessage) (any, error) {
+			var p struct {
+				TurnID string `json:"turnId"`
+			}
+			_ = json.Unmarshal(params, &p)
+			if p.TurnID != "running-turn" {
+				return nil, fmt.Errorf("expected active turn id %s but found running-turn", p.TurnID)
+			}
+			return map[string]any{}, nil
+		},
+	}
+}
+
+// turnInterrupts returns the turn ids of every turn/interrupt seen so far, in
+// order.
+func (r *recorder) turnInterrupts(t *testing.T) []string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, c := range r.calls {
+		if c.method != "turn/interrupt" {
+			continue
+		}
+		var p struct {
+			TurnID string `json:"turnId"`
+		}
+		if err := json.Unmarshal(c.params, &p); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, p.TurnID)
+	}
+	return out
+}
+
+// Stop reaches a review through the turn codex runs it as, not the one
+// review/start answered with, and the review ends when the answered one
+// completes.
+func TestReviewCanBeStopped(t *testing.T) {
+	s, rec := stopSession(t, reviewReply())
 	if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "omniplex-turn", Action: "review"}); err != nil {
 		t.Fatalf("review: %v", err)
 	}
+	notify(s, "item/started", `{"threadId":"thread-1","turnId":"review-turn","item":{"type":"userMessage","id":"u1"}}`)
+	notify(s, "turn/started", `{"threadId":"thread-1","turn":{"id":"running-turn"}}`)
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if got := rec.interrupts(t); got["thread-1"] != "review-turn" || len(got) != 1 {
-		t.Fatalf("interrupts = %v, want thread-1/review-turn", got)
+	if got := rec.turnInterrupts(t); len(got) != 1 || got[0] != "running-turn" {
+		t.Fatalf("interrupts = %v, want running-turn", got)
 	}
 
 	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"review-turn","status":"interrupted"}}`)
 	done := finishedTurns(drain(s))
 	if len(done) != 1 || done[0].TurnID != "omniplex-turn" || done[0].StopReason != proto.StopCancelled {
 		t.Fatalf("finished = %+v, want omniplex-turn cancelled", done)
+	}
+}
+
+// Stop pressed before codex has said which turn the review runs as goes out
+// under the answered one and is refused. The review is interrupted once
+// turn/started names its turn.
+func TestReviewStoppedBeforeItsTurnStartsIsInterruptedWhenItDoes(t *testing.T) {
+	s, rec := stopSession(t, reviewReply())
+	if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "omniplex-turn", Action: "review"}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if err := s.Cancel(context.Background()); err == nil {
+		t.Fatal("Cancel of the answered turn succeeded; the fake should refuse it")
+	}
+	notify(s, "turn/started", `{"threadId":"thread-1","turn":{"id":"running-turn"}}`)
+	waitFor(t, "the late interrupt", func() bool { return len(rec.turnInterrupts(t)) == 2 })
+	if got := rec.turnInterrupts(t); got[1] != "running-turn" {
+		t.Fatalf("interrupts = %v, want running-turn last", got)
+	}
+}
+
+// A turn that was not stopped is not interrupted when it starts.
+func TestReviewNotStoppedIsLeftRunning(t *testing.T) {
+	s, rec := stopSession(t, reviewReply())
+	if _, err := s.RunComposerAction(context.Background(), adapter.ComposerActionInput{TurnID: "omniplex-turn", Action: "review"}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	notify(s, "turn/started", `{"threadId":"thread-1","turn":{"id":"running-turn"}}`)
+	time.Sleep(50 * time.Millisecond)
+	if got := rec.turnInterrupts(t); len(got) != 0 {
+		t.Fatalf("interrupts = %v, want none", got)
 	}
 }
 
