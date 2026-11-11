@@ -859,4 +859,33 @@ describe("live events", () => {
 
     expect(seqs(onLiveEvent)).toEqual([6]);
   });
+
+  it("keeps catching up until the latest attach is answered, not an earlier one", () => {
+    const onLiveEvent = attached();
+    // A second attach goes out before the first is answered.
+    latest().reply({ type: "resync", threadId: "a" });
+    latest().reply({ type: "synchronized", threadId: "a", seq: 3 });
+    event(4);
+    expect(onLiveEvent).not.toHaveBeenCalled();
+
+    latest().reply({ type: "synchronized", threadId: "a", seq: 4 });
+    event(5);
+    expect(seqs(onLiveEvent)).toEqual([5]);
+  });
+
+  it("counts a failed attach as answered", () => {
+    const onLiveEvent = attached();
+    latest().reply({ type: "resync", threadId: "a" });
+    latest().reply({ type: "error", threadId: "a", error: "thread busy" });
+    latest().reply({ type: "synchronized", threadId: "a", seq: 3 });
+    event(4);
+    expect(seqs(onLiveEvent)).toEqual([4]);
+  });
+
+  it("ignores another thread's synchronized", () => {
+    const onLiveEvent = attached();
+    latest().reply({ type: "synchronized", threadId: "b", seq: 9 });
+    event(4);
+    expect(onLiveEvent).not.toHaveBeenCalled();
+  });
 });

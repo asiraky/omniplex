@@ -1189,6 +1189,17 @@ func TestExtensionStatusSetUpdateClear(t *testing.T) {
 	check(ExtensionStatus{"b", "two"}, ExtensionStatus{"a", "back"})
 }
 
+// A thread can close with no process live to clear its statuses, so closing
+// clears them.
+func TestThreadClosedClearsExtensionStatuses(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "a", Text: "watching"}))
+	s.Apply(event(t, 2, proto.ThreadClosed, proto.ThreadClosedPayload{Reason: "done"}))
+	if len(s.ExtensionStatuses) != 0 {
+		t.Fatalf("statuses after close = %+v, want none", s.ExtensionStatuses)
+	}
+}
+
 // A snapshot stored before statuses existed decodes to an empty list, not
 // null, so a client never has to guard for it.
 func TestFromSnapshotDefaultsExtensionStatuses(t *testing.T) {

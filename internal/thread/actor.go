@@ -1755,6 +1755,10 @@ func (a *Actor) switchAccount(sw *accountSwitch) error {
 	if old := a.dropProcess(); old != nil {
 		_ = old.Close()
 	}
+	// Its exit is ignored as stale, so its extensions' statuses go here.
+	for _, em := range clearedStatuses(a.state) {
+		a.append(em)
+	}
 	id := a.state.HarnessSessionID
 	if id == "" {
 		// Named at start by omniplex and reported back only once the harness

@@ -796,6 +796,10 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.ThreadClosed:
 		s.Closed = true
 		s.Phase = "closed"
+		// No process will run for this thread again, so nothing is keeping
+		// its extensions' statuses. A thread can close with no actor live to
+		// clear them first, so the close itself is what clears them.
+		s.ExtensionStatuses = []ExtensionStatus{}
 
 	case proto.WorkspaceRequested:
 		var p proto.WorkspaceRequestedPayload

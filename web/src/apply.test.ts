@@ -937,6 +937,12 @@ describe("extension statuses", () => {
     expect(s.extensionStatuses).toEqual([{ key: "git", text: "main" }]);
   });
 
+  it("clears every status when the thread closes", () => {
+    let s = applyEvent(emptyState("s1"), status(1, "git", "main"));
+    s = applyEvent(s, ev(2, "thread.closed", { reason: "done" }));
+    expect(s.extensionStatuses).toEqual([]);
+  });
+
   it("starts the list on a state cached without one", () => {
     const { extensionStatuses: _, ...older } = emptyState("s1");
     const s = applyEvent(older, status(1, "git", "main"));

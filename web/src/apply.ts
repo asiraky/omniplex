@@ -410,7 +410,8 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     }
 
     case "thread.closed":
-      return { ...s, closed: true, phase: "closed" };
+      // Nothing keeps a closed thread's extension statuses (state.go).
+      return { ...s, closed: true, phase: "closed", extensionStatuses: [] };
 
     case "workspace.requested":
       return { ...s, phase: "provisioning", workspace: { phase: "provisioning", projectId: p.projectId, projectRoot: p.projectRoot, mode: p.mode, branch: p.branch, baseRef: p.baseRef, startedAt: ev.timestamp } };

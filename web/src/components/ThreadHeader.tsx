@@ -116,20 +116,22 @@ export function ThreadHeader({
             {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
           </>
         ) : (
-          <span
-            className={cn(
-              "flex-1 text-[13px]",
-              creating && !meta ? "font-medium" : "text-muted-foreground",
-            )}
-          >
-            {meta ? "Attaching…" : creating ? "New thread" : ""}
-          </span>
+          <PendingTitle attaching={!!meta} creating={creating} />
         )}
       </div>
       {/* A phone's row is the title and one menu, with no room between: the
           chips take a line of their own, there only while there are any. */}
       {actions && !isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline={false} />}
     </header>
+  );
+}
+
+/** The title row's stand-in while there is no thread state to show. */
+function PendingTitle({ attaching, creating }: { attaching: boolean; creating: boolean }) {
+  return (
+    <span className={cn("flex-1 text-[13px]", creating && !attaching ? "font-medium" : "text-muted-foreground")}>
+      {attaching ? "Attaching…" : creating ? "New thread" : ""}
+    </span>
   );
 }
 
