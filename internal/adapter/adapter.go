@@ -208,8 +208,8 @@ type HarnessMeta struct {
 type ModelMeta struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	// Version names the generation behind the label ("Opus 5 with 1M
-	// context", "5.6"), so a row can say which Opus it is.
+	// Version names the generation behind the label ("5.6"), so a row can
+	// say which model of a family it is. A UI shows it beside the label.
 	Version string `json:"version,omitempty"`
 	// Description is the harness's one-line summary of what the model is for.
 	Description string `json:"description,omitempty"`

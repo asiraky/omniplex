@@ -93,7 +93,7 @@ describe("resolveModel", () => {
   const instance = pickerInstances([
     harness({
       models: [
-        { id: "default", label: "Default (recommended)", resolves: "claude-opus-5[1m]", default: true },
+        { id: "default", label: "Opus 5", resolves: "claude-opus-5[1m]", default: true },
         { id: "sonnet", label: "Sonnet" },
       ],
       instances: undefined,
@@ -102,7 +102,7 @@ describe("resolveModel", () => {
 
   it("preselects the model the harness calls its default", () => {
     expect(resolveModel(instance, "")?.id).toBe("default");
-    expect(defaultModel(instance)?.label).toBe("Default (recommended)");
+    expect(defaultModel(instance)?.label).toBe("Opus 5");
   });
 
   it("matches a stored wire id against the alias that resolves to it", () => {

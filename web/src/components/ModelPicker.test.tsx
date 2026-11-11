@@ -56,8 +56,7 @@ const claude: HarnessMeta = {
       models: [
         {
           id: "default",
-          label: "Default (recommended)",
-          version: "Opus 5 with 1M context",
+          label: "Opus 5",
           description: "Best for everyday, complex tasks",
           resolves: "claude-opus-5[1m]",
           default: true,
@@ -147,9 +146,7 @@ describe("ModelPicker", () => {
     );
 
     const trigger = screen.getByRole("combobox");
-    expect(trigger.textContent).toContain("Default (recommended)");
-    // The label alone says nothing about which model that is.
-    expect(trigger.textContent).toContain("Opus 5 with 1M context");
+    expect(trigger.textContent).toContain("Opus 5");
   });
 
   it("shows every row as name, version, and what the model is for", () => {

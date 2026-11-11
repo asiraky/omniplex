@@ -33,8 +33,7 @@ const quotaReadTimeout = 60 * time.Second
 // The default row carries no id at all. That is deliberate: an empty model
 // means "whatever the harness picks", which is the only default that cannot be
 // wrong. Its label says plainly that no model is known yet, and it has no
-// Version: the picker's trigger runs label and version together, which is how
-// it once read "Default chosen by Claude Code".
+// Version: the picker's trigger runs label and version together.
 func (a *Adapter) Models() []adapter.ModelMeta {
 	// The three family aliases all carry a "[1m]" twin in the installed CLI
 	// (verified against claude CLI 2.1.238), so the fallback offers the larger
@@ -197,10 +196,10 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			// the row is keyed and started by.
 			bare = stripContextTag(m.Value)
 		}
-		_, description := splitDescription(m.Description)
+		version, description := splitDescription(m.Description)
 		row := adapter.ModelMeta{
 			ID:          bare,
-			Label:       rowLabel(m, bare),
+			Label:       rowLabel(m, bare, version),
 			Description: description,
 			Resolves:    bare,
 			// The SDK has no isDefault flag; the row it *calls* "default" is
@@ -253,11 +252,13 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 // versions, and the display name names the alias ("Default (recommended)"),
 // not the model.
 //
-// The prose is read only when the id is not one modelLabel can name, and never
-// for the "default" alias, whose description talks about itself ("Use the
-// default model (currently …)"). With nothing better, the label is the id
-// itself: a raw id still names the model, which a marketing sentence does not.
-func rowLabel(m modelInfo, bare string) string {
+// The description's generation is read only when the id is not one modelLabel
+// can name, only when it starts with the family the id names ("Opus Next" for
+// "claude-opus-next", not "Best for complex tasks"), and never for the
+// "default" alias, whose description talks about itself ("Use the default
+// model (currently …)"). With nothing better, the label is the id itself: a
+// raw id still names the model, which a marketing sentence does not.
+func rowLabel(m modelInfo, bare, version string) string {
 	if label := modelLabel(bare); label != "" {
 		return label
 	}
@@ -267,14 +268,23 @@ func rowLabel(m modelInfo, bare string) string {
 		}
 		return bare
 	}
-	version, _ := splitDescription(m.Description)
 	if before, _, found := strings.Cut(version, " with "); found {
 		version = strings.TrimSpace(before)
 	}
-	if version != "" {
+	if first, _, _ := strings.Cut(version, " "); first != "" && strings.EqualFold(first, modelFamily(bare)) {
 		return version
 	}
 	return bare
+}
+
+// modelFamily is the family an id or alias names: "opus" for "claude-opus-next"
+// and for the bare alias "opus".
+func modelFamily(id string) string {
+	parts := strings.Split(id, "-")
+	if len(parts) > 1 && parts[0] == "claude" {
+		return parts[1]
+	}
+	return parts[0]
 }
 
 // modelLabel names a Claude model from its id: "claude-opus-5" -> "Opus 5",

@@ -163,6 +163,9 @@ func TestMapClaudeModelsLabelFallbacks(t *testing.T) {
 	}{
 		{"unknown id, prose generation", modelInfo{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus", Description: "Opus Next with 1M context · Best for everyday tasks"}, "claude-opus-next", "Opus Next"},
 		{"unknown id, no prose", modelInfo{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus"}, "claude-opus-next", "claude-opus-next"},
+		{"unknown id, prose names no model", modelInfo{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus", Description: "Best for complex tasks · 1M context"}, "claude-opus-next", "claude-opus-next"},
+		{"bare alias, prose generation", modelInfo{Value: "opus", DisplayName: "Opus", Description: "Opus 5 · Best for everyday tasks"}, "opus", "Opus 5"},
+		{"bare alias, marketing prose", modelInfo{Value: "opus", DisplayName: "Opus", Description: "Best for complex tasks · 1M context"}, "opus", "opus"},
 		{"default alias, unknown id", modelInfo{Value: "default", ResolvedModel: "claude-opus-next", DisplayName: "Default (recommended)", Description: "Use the default model (currently Opus Next) · $5/$25 per Mtok"}, "claude-opus-next", "claude-opus-next"},
 		{"default alias, unresolved", modelInfo{Value: "default", DisplayName: "Default (recommended)", Description: "Use the default model · $5/$25 per Mtok"}, "default", defaultLabel},
 	}
