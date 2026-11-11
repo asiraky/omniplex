@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
-import { render, viewport, wrap } from "~/test/harness";
+import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
+import { render, viewport } from "~/test/harness";
 import { shortTime } from "~/lib/scheduleTime";
 import type { PullRequest, ScheduledPrompt, Turn } from "~/protocol";
 
@@ -41,10 +43,19 @@ const state = (text: string): any => ({
   queuedPrompts: [],
 });
 
+// The transcript reads its thread from the store the app attaches it into, so
+// each mount here gets a store of its own holding `s`, and `frame` is the next
+// state arriving off the wire.
+function attach(s: any, ui: ReactElement) {
+  const store = createThreadStore(s);
+  const r = render(<ThreadStoreContext.Provider value={store}>{ui}</ThreadStoreContext.Provider>);
+  return { ...r, frame: (next: any) => act(() => store.set(next)) };
+}
+
 function transcript(text: string) {
-  return render(
+  return attach(
+    state(text),
     <Transcript
-      state={state(text)}
       onRetryProvision={() => {}}
       onCleanup={() => {}}
       onForceDelete={() => {}}
@@ -98,7 +109,7 @@ describe("copying a user message", () => {
       { id: "u1", kind: "message", role: "user", text: "A long **raw** prompt", receivedAt: 1 },
     ];
 
-    render(view(userState));
+    attach(userState, view());
     fireEvent.click(screen.getByLabelText("Copy message"));
 
     expect(writeText).toHaveBeenCalledWith("A long **raw** prompt");
@@ -123,10 +134,9 @@ const prompts = (ids: string[], threadId = "a"): any => ({
   items: ids.map((id) => ({ id, kind: "message", role: "user", text: id, receivedAt: 1 })),
 });
 
-function view(s: any) {
+function view() {
   return (
     <Transcript
-      state={s}
       onFinish={() => {}}
       onRetryProvision={() => {}}
       onCleanup={() => {}}
@@ -172,20 +182,20 @@ function measured(container: HTMLElement) {
 
 describe("lifting a just-sent prompt", () => {
   it("anchors a prompt that arrives while the thread is on screen", () => {
-    const { container, rerender } = render(view(prompts(["p1"])));
+    const { container, frame } = attach(prompts(["p1"]), view());
     const el = measured(container);
 
-    rerender(wrap(view(prompts(["p1", "p2"]))));
+    frame(prompts(["p1", "p2"]));
 
     expect(reserve(container)).toBe(RESERVE);
     expect(el.scrollTop).toBe(PROMPT_TOP - 16);
   });
 
   it("anchors the first prompt of a thread that had none", () => {
-    const { container, rerender } = render(view(prompts([])));
+    const { container, frame } = attach(prompts([]), view());
     measured(container);
 
-    rerender(wrap(view(prompts(["p1"]))));
+    frame(prompts(["p1"]));
 
     expect(reserve(container)).toBe(RESERVE);
   });
@@ -193,10 +203,10 @@ describe("lifting a just-sent prompt", () => {
   it("leaves a thread that was only just opened where it is", () => {
     // Switching threads changes the newest prompt too — the whole transcript
     // arrives at once — and nobody asked for that view to move.
-    const { container, rerender } = render(view(prompts(["p1"])));
+    const { container, frame } = attach(prompts(["p1"]), view());
     measured(container);
 
-    rerender(wrap(view(prompts(["p9"], "b"))));
+    frame(prompts(["p9"], "b"));
 
     expect(reserve(container)).toBe("");
   });
@@ -257,9 +267,9 @@ describe("coming back to a thread", () => {
   });
 
   const mount = (props: { initialScroll?: any; onScrollChange?: any }) =>
-    render(
+    attach(
+      prompts(["p1", "p2", "p3", "p4"]),
       <Transcript
-        state={prompts(["p1", "p2", "p3", "p4"])}
         onFinish={() => {}}
         onRetryProvision={() => {}}
         onCleanup={() => {}}
@@ -291,9 +301,9 @@ describe("coming back to a thread", () => {
 // A worktree thread whose branch has landed is offered a way out of the
 // transcript it is being read in.
 function merged(pr: PullRequest | null, onFinish = () => {}) {
-  return render(
+  return attach(
+    state("done"),
     <Transcript
-      state={state("done")}
       onRetryProvision={() => {}}
       onCleanup={() => {}}
       onForceDelete={() => {}}
@@ -350,10 +360,9 @@ describe("the merged-pull-request prompt", () => {
 // for the affordance the user actually needs.
 const empty = (over: any = {}): any => ({ ...state(""), items: [], ...over });
 
-function element(s: any) {
+function element() {
   return (
     <Transcript
-      state={s}
       onRetryProvision={() => {}}
       onCleanup={() => {}}
       onForceDelete={() => {}}
@@ -368,8 +377,8 @@ function element(s: any) {
 // is a receipt for work the reader watched, so the tests that expect to see
 // one have to have watched it.
 function provisioner(s: any) {
-  const r = render(element(empty({ phase: "provisioning", workspace: { phase: "provisioning" } })));
-  act(() => r.rerender(wrap(element(s))));
+  const r = attach(empty({ phase: "provisioning", workspace: { phase: "provisioning" } }), element());
+  r.frame(s);
   return r;
 }
 
@@ -394,7 +403,7 @@ describe("the workspace card leaving on its own", () => {
   });
 
   it("never appears for a workspace that was ready before the transcript mounted", async () => {
-    render(element(empty()));
+    attach(empty(), element());
     expect(screen.queryByText("Workspace ready")).toBeNull();
     await act(async () => {
       vi.advanceTimersByTime(5000);
@@ -413,15 +422,13 @@ describe("the workspace card leaving on its own", () => {
   });
 
   it("comes back at full height when the workspace goes active mid-collapse", async () => {
-    const { container, rerender } = provisioner(empty());
+    const { container, frame } = provisioner(empty());
     await act(async () => {
       vi.advanceTimersByTime(3000);
     });
 
     // The collapse has started but not finished; cleanup begins.
-    await act(async () => {
-      rerender(wrap(element(empty({ phase: "cleaning", workspace: { phase: "cleaning" } }))));
-    });
+    frame(empty({ phase: "cleaning", workspace: { phase: "cleaning" } }));
 
     expect(screen.getByText("Cleaning up workspace")).toBeTruthy();
     // Flat and transparent would be the same as gone, taking any failure
@@ -451,9 +458,9 @@ const RECENTS: any[] = [
 ];
 
 function withRecents(s: any, onPick = () => {}) {
-  return render(
+  return attach(
+    s,
     <Transcript
-      state={s}
       onRetryProvision={() => {}}
       onCleanup={() => {}}
       onForceDelete={() => {}}
@@ -506,9 +513,9 @@ describe("a turn that failed", () => {
 
   it("lets a signed-out user sign in from the failed thread", async () => {
     const onLogin = vi.fn();
-    render(
+    attach(
+      failed({ failure: "auth", error: "claude needs you to sign in again: …" }),
       <Transcript
-        state={failed({ failure: "auth", error: "claude needs you to sign in again: …" })}
         onFinish={() => {}}
         onRetryProvision={() => {}}
         onCleanup={() => {}}
@@ -544,14 +551,15 @@ describe("a turn that failed", () => {
       onRetryTurn,
     };
 
-    const { unmount } = render(
-      <Transcript state={authFailed} {...props} providerReady={false} />,
+    const { unmount } = attach(
+      authFailed,
+      <Transcript {...props} providerReady={false} />,
     );
     await screen.findByText(/needs to sign in again/);
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
     unmount();
 
-    render(<Transcript state={authFailed} {...props} providerReady />);
+    attach(authFailed, <Transcript {...props} providerReady />);
     const retry = await screen.findByRole("button", { name: /retry this prompt/i });
     expect(onRetryTurn).not.toHaveBeenCalled();
     fireEvent.click(retry);
@@ -575,9 +583,9 @@ describe("a turn that failed", () => {
 
     it("moves the failed prompt to the account picked", async () => {
       const onSwitchAccount = vi.fn((_instance: string, _turn: Turn) => new Promise<boolean>(() => {}));
-      render(
+      attach(
+        limited(),
         <Transcript
-          state={limited()}
           {...props}
           onRetryTurn={() => {}}
           switchTargets={[
@@ -598,9 +606,9 @@ describe("a turn that failed", () => {
     });
 
     it("can be used again when the switch is refused", async () => {
-      render(
+      attach(
+        limited(),
         <Transcript
-          state={limited()}
           {...props}
           switchTargets={[{ id: "work", name: "Worksauce" }]}
           onSwitchAccount={async () => false}
@@ -615,9 +623,9 @@ describe("a turn that failed", () => {
       const s = limited();
       s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
       const onRetryTurn = vi.fn();
-      render(
+      attach(
+        s,
         <Transcript
-          state={s}
           {...props}
           onRetryTurn={onRetryTurn}
           switchTargets={[{ id: "aaron", name: "Aaron" }]}
@@ -632,7 +640,7 @@ describe("a turn that failed", () => {
     });
 
     it("with no other account, says to wait and still offers the retry", async () => {
-      render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
+      attach(limited(), <Transcript {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
       expect(await screen.findByRole("button", { name: /retry this prompt/i })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
     });
@@ -667,7 +675,7 @@ describe("a turn that failed", () => {
       afterEach(() => vi.useRealTimers());
 
       it("says when it continues", async () => {
-        render(<Transcript state={armed(schedule())} {...props} onCancelContinuation={async () => {}} />);
+        attach(armed(schedule()), <Transcript {...props} onCancelContinuation={async () => {}} />);
         expect(await screen.findByText(`Continuing at ${shortTime(dueAt)}`)).toBeTruthy();
         expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
       });
@@ -679,7 +687,7 @@ describe("a turn that failed", () => {
           armed(schedule({ kind: undefined })),
           limited(),
         ]) {
-          const { unmount } = render(<Transcript state={s} {...props} onCancelContinuation={async () => {}} />);
+          const { unmount } = attach(s, <Transcript {...props} onCancelContinuation={async () => {}} />);
           await screen.findByText(/hit its usage limit/);
           expect(screen.queryByText(/Continuing/)).toBeNull();
           unmount();
@@ -691,9 +699,9 @@ describe("a turn that failed", () => {
         const onCancelContinuation = vi.fn(
           (_p: ScheduledPrompt) => new Promise<void>((_, reject) => (fail = reject)),
         );
-        render(
+        attach(
+          armed(schedule({ id: "human", kind: undefined }), schedule()),
           <Transcript
-            state={armed(schedule({ id: "human", kind: undefined }), schedule())}
             {...props}
             onCancelContinuation={onCancelContinuation}
           />,
@@ -713,7 +721,7 @@ describe("a turn that failed", () => {
       const queued = [{ queueId: "q1", prompt: "next" }];
       const s = limited();
       s.queuedPrompts = queued;
-      const first = render(<Transcript state={s} {...props} />);
+      const first = attach(s, <Transcript {...props} />);
       // Nothing armed: only the reader sending moves it.
       expect(await screen.findByText(/held until you send/)).toBeTruthy();
       first.unmount();
@@ -722,13 +730,13 @@ describe("a turn that failed", () => {
         { id: "s1", revision: 1, prompt: "continue", dueAt: Date.now() + 60_000, timeZone: "UTC",
           model: "", mode: "default", effort: "", status: "pending", kind: "limit" },
       ];
-      const { unmount } = render(<Transcript state={s} {...props} />);
+      const { unmount } = attach(s, <Transcript {...props} />);
       expect(await screen.findByText(/held until the limit resets/)).toBeTruthy();
       unmount();
 
       for (const other of [failed({ failure: "auth" }), failed({}), state("hi")]) {
         other.queuedPrompts = queued;
-        const { unmount } = render(<Transcript state={other} {...props} />);
+        const { unmount } = attach(other, <Transcript {...props} />);
         // The card loads lazily: wait for it, or the absence proves nothing.
         await screen.findByText("Queued");
         expect(screen.queryByText(/held until/)).toBeNull();
@@ -751,12 +759,12 @@ describe("a turn that failed", () => {
       onContinue: () => {},
       onOpenDiff: () => {},
     };
-    const first = render(<Transcript state={s} {...props} />);
+    const first = attach(s, <Transcript {...props} />);
     expect(await screen.findAllByText(/held until you send/)).toHaveLength(1);
     first.unmount();
 
     s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce", receivedAt: 30 });
-    render(<Transcript state={s} {...props} />);
+    attach(s, <Transcript {...props} />);
     expect(await screen.findAllByText("Queued")).toHaveLength(2);
     expect(screen.queryByText(/held until/)).toBeNull();
   });
@@ -772,24 +780,24 @@ describe("a turn that failed", () => {
       onContinue: () => {},
       onOpenDiff: () => {},
     };
-    const first = render(<Transcript state={s} {...props} />);
+    const first = attach(s, <Transcript {...props} />);
     // The limit lifts on its own; there is nothing to resume.
     expect(await screen.findByText("held until you send")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Resume queue" })).toBeNull();
     first.unmount();
 
     s.queuedPrompts = [{ queueId: "q1", prompt: "before", queuedAt: 5, held: true }];
-    render(<Transcript state={s} {...props} />);
+    attach(s, <Transcript {...props} />);
     expect(await screen.findByText("until you send")).toBeTruthy();
     expect(screen.getByText("Held")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume queue" })).toBeTruthy();
   });
 
   it("only says the server restarted when the server says so", async () => {
-    render(view(failed({ failure: "restart", error: "server restarted during turn" })));
+    attach(failed({ failure: "restart", error: "server restarted during turn" }), view());
     expect(await screen.findByText(/The server restarted/)).toBeTruthy();
 
-    render(view(failed({ error: "claude exited: ENOENT" })));
+    attach(failed({ error: "claude exited: ENOENT" }), view());
     expect(await screen.findByText(/ended with an error/)).toBeTruthy();
     expect(screen.getByText(/claude exited: ENOENT/)).toBeTruthy();
   });
@@ -809,7 +817,7 @@ describe("a turn that failed", () => {
       done: false,
       recovery: { resumeOf: "t1", attempt: 1, cause: "continue" },
     });
-    render(view(s));
+    attach(s, view());
 
     expect(screen.getByText("Asked the agent to pick the work back up")).toBeTruthy();
     expect(screen.queryByText(/Server restarted/)).toBeNull();
@@ -828,14 +836,14 @@ describe("a turn that failed", () => {
     s.turns.push({ id: "t2", done: false });
     const sent = { id: "limit-t1", kind: "limit", prompt: "", dueAt: 1, timeZone: "UTC" };
     s.scheduledPrompts = [{ ...sent, status: "sent", turnId: "t2" }];
-    const { unmount } = render(view(s));
+    const { unmount } = attach(s, view());
     expect(screen.getByText("Usage limit reset — the agent was asked to pick the work back up")).toBeTruthy();
     expect(screen.queryByText(/account hit its usage limit/)).toBeNull();
     unmount();
 
     // A human's own schedule that started a turn is still their prompt.
     s.scheduledPrompts = [{ ...sent, kind: undefined, status: "sent", turnId: "t2" }];
-    render(view(s));
+    attach(s, view());
     expect(screen.getByText(/account hit its usage limit/)).toBeTruthy();
     expect(screen.queryByText(/Usage limit reset/)).toBeNull();
   });
@@ -855,9 +863,9 @@ describe("published artefacts", () => {
       receivedAt: 1,
     }));
     s.turns = [];
-    return render(
+    return attach(
+      s,
       <Transcript
-        state={s}
         onRetryProvision={() => {}}
         onCleanup={() => {}}
         onForceDelete={() => {}}
@@ -888,9 +896,9 @@ describe("a held queue", () => {
   function queued(prompts: { queueId: string; prompt: string; held?: boolean }[], over: Record<string, unknown> = {}) {
     const onResumeQueue = vi.fn();
     const onSendQueued = vi.fn();
-    render(
+    attach(
+      { ...state("hi"), queuedPrompts: prompts, ...over },
       <Transcript
-        state={{ ...state("hi"), queuedPrompts: prompts, ...over }}
         onRetryProvision={() => {}}
         onCleanup={() => {}}
         onForceDelete={() => {}}
@@ -938,27 +946,28 @@ describe("a turn gone quiet", () => {
     ],
     turns: [{ id: "t1", status: phase === "turn" ? "running" : "done" }],
   });
-  const view = (phase: "turn" | "idle") => (
-    <Transcript
-      state={running(phase)}
-      turnStatus={{ state: "compacting" }}
-      onRetryProvision={() => {}}
-      onCleanup={() => {}}
-      onForceDelete={() => {}}
-      onContinue={() => {}}
-      onOpenDiff={() => {}}
-      onFinish={() => {}}
-    />
-  );
+  const view = (phase: "turn" | "idle") =>
+    attach(
+      running(phase),
+      <Transcript
+        turnStatus={{ state: "compacting" }}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+      />,
+    );
 
   it("says why while a tool run is live", () => {
-    render(view("turn"));
+    view("turn");
     expect(screen.queryByText("thinking…")).toBeNull();
     expect(screen.getByText("Compacting context…").closest("[role=status]")).not.toBeNull();
   });
 
   it("says nothing once the thread is idle", () => {
-    render(view("idle"));
+    view("idle");
     expect(screen.queryByText("Compacting context…")).toBeNull();
   });
 });
@@ -994,9 +1003,9 @@ describe("redrawing on a new frame", () => {
     usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
   });
   const mount = (s: any) => {
-    const r = render(<Transcript state={s} jobs={s.jobs} {...props} />);
+    const r = attach(s, <Transcript {...props} />);
     messageRenders.clear();
-    return (next: any) => r.rerender(wrap(<Transcript state={next} jobs={next.jobs} {...props} />));
+    return r.frame;
   };
 
   it("redraws only the message a streamed chunk landed in", () => {

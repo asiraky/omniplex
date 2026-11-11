@@ -6,6 +6,8 @@ import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
 import type { ThreadState } from "~/protocol";
 
+import type { TranscriptState } from "./transcriptState";
+
 // How long a ready workspace card stays before it collapses on its own: long
 // enough to read "Workspace ready" and reach for the disclosure if the output
 // is wanted, short enough that it is gone before the first prompt is typed.
@@ -14,8 +16,10 @@ const AUTO_DISMISS_MS = 2500;
 const COLLAPSE_MS = 320;
 
 type Workspace = ThreadState["workspace"];
+// All the card reads of the thread.
+type CardState = Pick<TranscriptState, "phase" | "workspace">;
 
-function workspaceTitle(state: ThreadState, failed: boolean): string {
+function workspaceTitle(state: CardState, failed: boolean): string {
   const ws = state.workspace;
   if (state.phase === "cleaning") return "Cleaning up workspace";
   if (failed) return "Workspace needs attention";
@@ -29,7 +33,7 @@ function elapsedLabel(ws: Workspace): string {
 }
 
 // The card's open/dismissed lifecycle, apart from what it draws.
-function useWorkspaceCard(state: ThreadState) {
+function useWorkspaceCard(state: CardState) {
   const ws = state.workspace;
   const active =
     state.phase === "provisioning" || state.phase === "creating" || state.phase === "cleaning";
@@ -160,7 +164,7 @@ function WorkspaceOutput({
   active,
   failed,
   ...handlers
-}: FailureHandlers & { state: ThreadState; active: boolean; failed: boolean }) {
+}: FailureHandlers & { state: CardState; active: boolean; failed: boolean }) {
   const ws = state.workspace;
   return (
     <div className="border-t p-3">
@@ -185,7 +189,7 @@ export function WorkspaceCard({
   state,
   ...handlers
 }: FailureHandlers & {
-  state: ThreadState;
+  state: CardState;
 }) {
   const ws = state.workspace;
   const { active, failed, open, toggle, dismissed, leaving, leave, wrapRef } =

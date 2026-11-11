@@ -4,6 +4,7 @@ import type { ComposerHandle } from "~/components/Composer";
 import { loadRecentSkills, recordRecentSkill, resolveRecentSkills } from "~/lib/recentSkills";
 import type { ComposerItem, ThreadState } from "~/protocol";
 
+import { useThread, type ThreadStore } from "./threadStore";
 import type { ComposerDrafts } from "./useComposerDrafts";
 
 export type RecentSkills = ReturnType<typeof useRecentSkills>;
@@ -18,14 +19,14 @@ export type RecentSkills = ReturnType<typeof useRecentSkills>;
 export function useRecentSkills({
   activeId,
   projectId,
-  state,
+  threadStore,
   store,
   isDesktop,
   loadComposerItems,
 }: {
   activeId: string | null;
   projectId: string | undefined;
-  state: ThreadState | null;
+  threadStore: ThreadStore;
   store: ComposerDrafts;
   isDesktop: boolean;
   loadComposerItems: () => Promise<ComposerItem[]>;
@@ -40,9 +41,9 @@ export function useRecentSkills({
   // for the catalogue fetch. A newly provisioned thread publishes empty
   // snapshots before its harness is ready; asking during those snapshots can
   // produce an empty catalogue that would otherwise stick until a thread
-  // switch. Wait for the harness-backed idle/turn phase instead.
-  const transcriptEmpty =
-    !!state && state.items.length === 0 && (state.phase === "idle" || state.phase === "turn");
+  // switch. Wait for the harness-backed idle/turn phase instead. Selected as
+  // the one boolean, so the frames that leave it as it was rerender nothing.
+  const transcriptEmpty = useThread(threadStore, isTranscriptEmpty);
   useEffect(() => {
     if (!activeId || !transcriptEmpty) {
       setRecents((prev) => (prev.items.length === 0 ? prev : { items: [], seeded: false }));
@@ -92,4 +93,8 @@ export function useRecentSkills({
   );
 
   return { composerRef, items: recents.items, seeded: recents.seeded, pick, noteUsed };
+}
+
+function isTranscriptEmpty(state: ThreadState | null) {
+  return !!state && state.items.length === 0 && (state.phase === "idle" || state.phase === "turn");
 }

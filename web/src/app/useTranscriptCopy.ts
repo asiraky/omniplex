@@ -18,10 +18,10 @@ export type TranscriptCopy = ReturnType<typeof useTranscriptCopy>;
  * somewhere the truncation won't be noticed.
  */
 export function useTranscriptCopy(wire: Wire) {
-  const { clientRef, stateRef } = wire;
+  const { clientRef, threadStore } = wire;
   const { copied, copy } = useCopy();
   const copyAll = useCallback(async () => {
-    let s = stateRef.current;
+    let s = threadStore.get();
     if (!s) return;
     if ((s.itemsBefore ?? 0) > 0) {
       const full = await clientRef.current?.loadAll();
@@ -32,6 +32,6 @@ export function useTranscriptCopy(wire: Wire) {
       s = full;
     }
     await copy(transcriptMarkdown(s.items, s.turns));
-  }, [clientRef, copy, stateRef]);
+  }, [clientRef, copy, threadStore]);
   return { copied, copyAll };
 }

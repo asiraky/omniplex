@@ -1,6 +1,14 @@
 import { ChevronDownIcon } from "lucide-react";
-import { lazy, Suspense, useLayoutEffect, type ComponentProps, type ComponentType } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useLayoutEffect,
+  type ComponentProps,
+  type ComponentType,
+} from "react";
 
+import { shallow, useThread, useThreadStore, type ThreadStore } from "~/app/threadStore";
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import type { Artefact } from "~/lib/artefacts";
@@ -8,11 +16,9 @@ import type { CardSignIn } from "~/lib/cards";
 import { cn } from "~/lib/utils";
 import type {
   ComposerItem,
-  Job,
   PullRequest,
   QueuedPrompt,
   ScheduledPrompt,
-  ThreadState,
   Turn,
   TurnStatus,
 } from "~/protocol";
@@ -24,6 +30,7 @@ import { EmptyTranscript } from "./transcript/EmptyTranscript";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import type { ScrollPosition } from "./transcript/scrollAnchor";
+import { transcriptState, type TranscriptState } from "./transcript/transcriptState";
 import { TranscriptRow } from "./transcript/TranscriptRow";
 import { TurnStatusLine } from "./transcript/TurnStatusLine";
 import { useOlderPages } from "./transcript/useOlderPages";
@@ -64,14 +71,10 @@ const CONTENT_RESERVE = `calc(${TAIL_RESERVE} + var(--anchor-reserve, 0px))`;
 const EMPTY_RESERVE = "var(--composer-h, 9rem)";
 
 const NO_ARTEFACTS: Artefact[] = [];
-const NO_JOBS: Job[] = [];
 const NO_RECENTS: ComposerItem[] = [];
 const NO_QUEUED: QueuedPrompt[] = [];
 
 type TranscriptProps = {
-  state: ThreadState;
-  /** True when the server holds items older than the loaded window. */
-  hasOlder?: boolean;
   /** Asks for the page above the window; called as the reader nears the top.
       Idempotent and fire-and-forget — the caller dedups in-flight asks. */
   onLoadOlder?: () => void;
@@ -103,8 +106,6 @@ type TranscriptProps = {
   /** Cancels the continuation the server armed at a usage limit's reset. */
   onCancelContinuation?: (p: ScheduledPrompt) => Promise<void>;
   onOpenDiff: (path?: string) => void;
-  /** The thread's jobs, for the spawn cards to read live status from. */
-  jobs?: Job[];
   /** Opens the panel on the jobs surface. */
   onOpenJobs?: () => void;
   /** Opens an artefact in the panel. */
@@ -169,9 +170,26 @@ function ScrollToBottom({ onClick }: { onClick: () => void }) {
   );
 }
 
-export function Transcript({
+/**
+ * The attached thread's conversation. It selects its own state from the thread
+ * store, without the jobs and usage that tick between messages, and is
+ * memoised: so it redraws when the conversation changes, and not for a job's
+ * progress, a usage count, or the app rendering around it. That last needs
+ * the parent to hand it the same props each time, which ThreadView does.
+ */
+export const Transcript = memo(function Transcript(props: TranscriptProps) {
+  const store = useThreadStore();
+  const state = useThread(store, transcriptState, shallow);
+  // The store lets go of the thread the moment it is left, which reaches here
+  // before the app unmounts the transcript; there is nothing to draw until it
+  // does.
+  if (!state) return null;
+  return <TranscriptBody state={state} store={store} {...props} />;
+});
+
+function TranscriptBody({
   state,
-  hasOlder = false,
+  store,
   onLoadOlder,
   initialScroll,
   onScrollChange,
@@ -179,7 +197,6 @@ export function Transcript({
   onCleanup,
   onForceDelete,
   onOpenDiff,
-  jobs = NO_JOBS,
   onOpenJobs,
   onOpenArtefact,
   pr,
@@ -197,7 +214,7 @@ export function Transcript({
   describeSettings,
   turnStatus,
   ...interruptedProps
-}: TranscriptProps) {
+}: TranscriptProps & { state: TranscriptState; store: ThreadStore }) {
   // Follow the tail unless the reader has scrolled up; the button below is
   // how they get back. A restore that was scrolled up mounts unpinned, or the
   // first stick would snap it to the bottom over the restored position.
@@ -205,8 +222,11 @@ export function Transcript({
     HTMLDivElement,
     HTMLDivElement
   >(initialScroll?.atBottom ?? true);
-  useLayoutEffect(stick, [stick, state.items, state.seq]);
-  useScrollMemory(scrollerRef, state, initialScroll, onScrollChange);
+  // Whenever anything it draws changes. The state is a fresh pick exactly
+  // then, so it stands for all of it.
+  useLayoutEffect(stick, [stick, state]);
+  useScrollMemory(scrollerRef, state.threadId, store, initialScroll, onScrollChange);
+  const hasOlder = (state.itemsBefore ?? 0) > 0;
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
 
   const {
@@ -291,8 +311,9 @@ export function Transcript({
             const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
             const item = row.kind === "item" ? row.item : undefined;
             // Only a prompt shows attachments, so only a prompt or an
-            // artefacts row redraws when a new artefact is shown; only a spawn
-            // card reads the jobs, which tick far more often than anything else.
+            // artefacts row redraws when a new artefact is shown. The jobs are
+            // not handed down at all: a spawn card selects its own from the
+            // store, as they tick far more often than anything else.
             const showsArtefacts =
               row.kind === "artefacts" || (item?.kind === "message" && item.role === "user");
             return (
@@ -306,7 +327,6 @@ export function Transcript({
                 streaming={item !== undefined && item.id === streamingId}
                 artefacts={showsArtefacts ? artefacts : NO_ARTEFACTS}
                 onOpenArtefact={onOpenArtefact}
-                jobs={row.kind === "jobs" ? jobs : NO_JOBS}
                 onOpenJobs={onOpenJobs}
                 recovered={item?.turnId ? recoveredTurns.get(item.turnId) : undefined}
                 onCardSignIn={onCardSignIn}

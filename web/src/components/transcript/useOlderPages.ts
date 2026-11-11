@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
-import type { ThreadState } from "~/protocol";
 import { useLatest } from "~/useLatest";
+
+import type { TranscriptState } from "./transcriptState";
 
 /**
  * Paging older history in above the reader: asks for the page above the
@@ -11,7 +12,7 @@ import { useLatest } from "~/useLatest";
 export function useOlderPages(
   scrollerRef: RefObject<HTMLDivElement | null>,
   contentRef: RefObject<HTMLDivElement | null>,
-  state: ThreadState,
+  state: Pick<TranscriptState, "items" | "itemsBefore">,
   hasOlder: boolean,
   onLoadOlder: (() => void) | undefined,
 ) {

@@ -3,7 +3,7 @@ import { memo } from "react";
 import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
-import type { Job, TurnDiff } from "~/protocol";
+import type { TurnDiff } from "~/protocol";
 import { rowKey, type Row } from "~/rows";
 
 import { ArtefactCards } from "./ArtefactCards";
@@ -25,7 +25,6 @@ type RowContext = {
   streaming: boolean;
   artefacts: Artefact[];
   onOpenArtefact?: OpenArtefact;
-  jobs: Job[];
   onOpenJobs?: () => void;
   /** Why this row's prompt was sent by the server, if it was. */
   recovered: Recovered | undefined;
@@ -41,7 +40,6 @@ function RowBody({
   streaming,
   artefacts,
   onOpenArtefact,
-  jobs,
   onOpenJobs,
   recovered,
   onCardSignIn,
@@ -50,7 +48,7 @@ function RowBody({
   if (row.kind === "fold")
     return <TurnFold threadId={threadId} turn={row.turn} items={row.items} continued={row.continued} />;
   if (row.kind === "run") return <ToolRun threadId={threadId} items={row.items} live={row.live} />;
-  if (row.kind === "jobs") return <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />;
+  if (row.kind === "jobs") return <JobsCard items={row.items} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")
     return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
   if (row.item.kind === "tool") return <ToolCard threadId={threadId} item={row.item} />;

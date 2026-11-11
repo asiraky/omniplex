@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, type RefObject } from "react";
 
+import { useThread, useThreadStore } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
 import type { Client } from "~/client";
 import type {
@@ -21,13 +22,11 @@ const Panel = lazy(() => import("./panel/Panel").then((m) => ({ default: m.Panel
 export function ThreadPanel({
   clientRef,
   threadId,
-  state,
   panel,
   pr,
 }: {
   clientRef: RefObject<Client | null>;
   threadId: string;
-  state: ThreadState;
   panel: PanelControls;
   pr: PullRequest | null;
 }) {
@@ -88,6 +87,9 @@ export function ThreadPanel({
     [clientRef],
   );
 
+  // All this reads of the thread, so the frames of a turn leave it alone.
+  const inTurn = useThread(useThreadStore(), isInTurn);
+
   if (!panel.loaded) return null;
   return (
     <Suspense fallback={null}>
@@ -95,7 +97,6 @@ export function ThreadPanel({
         // Remounted per thread: the tab model is per-thread state.
         key={threadId}
         threadId={threadId}
-        state={state}
         command={command}
         loadAllJobs={loadAllJobs}
         open={panel.open}
@@ -103,7 +104,7 @@ export function ThreadPanel({
         expanded={panel.expanded}
         onToggleExpanded={panel.toggleExpanded}
         // The worktree is worth re-reading when the agent stops writing to it.
-        revision={`${threadId}:${state.phase === "turn" ? "turn" : "settled"}`}
+        revision={`${threadId}:${inTurn ? "turn" : "settled"}`}
         loadChanges={loadChanges}
         loadDiff={loadDiff}
         loadTree={loadTree}
@@ -114,3 +115,5 @@ export function ThreadPanel({
     </Suspense>
   );
 }
+
+const isInTurn = (state: ThreadState | null) => state?.phase === "turn";

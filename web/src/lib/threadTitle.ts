@@ -1,12 +1,12 @@
-import type { ThreadMeta, ThreadState } from "~/protocol";
+import type { ThreadMeta } from "~/protocol";
 
 /**
  * A thread's name. The list entry comes first because that is where a rename
  * lands; the attached state never hears about one. The state's title covers a
  * new thread whose list entry has not caught up with its first prompt yet.
  */
-export function threadTitle(meta: ThreadMeta | undefined, state: ThreadState | null) {
-  return meta?.title || state?.title || "";
+export function threadTitle(meta: ThreadMeta | undefined, stateTitle: string | undefined) {
+  return meta?.title || stateTitle || "";
 }
 
 /**

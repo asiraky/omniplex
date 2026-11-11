@@ -1,9 +1,11 @@
 import { BotIcon, ChevronRightIcon } from "lucide-react";
+import { useCallback } from "react";
 
+import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
 import { isLive, jobLabel } from "~/lib/jobs";
-import type { Item, Job, ToolStatus } from "~/protocol";
+import type { Item, ThreadState, ToolStatus } from "~/protocol";
 
 import { StatusMark } from "./ToolCards";
 
@@ -11,16 +13,19 @@ import { StatusMark } from "./ToolCards";
 // tool call, a spawned agent keeps running after the turn that started it, so
 // the card reads from the live job rather than the tool item where it can.
 // Clicking anywhere on it opens the jobs panel.
-export function JobsCard({
-  items,
-  jobs,
-  onOpen,
-}: {
-  items: Item[];
-  jobs: Job[];
-  onOpen?: () => void;
-}) {
-  const rows = items.map((item) => ({ item, job: jobs.find((j) => j.toolCallId === item.id) }));
+//
+// It selects its own agents' jobs from the store, one per item, rather than
+// being handed the thread's: jobs tick far more often than anything else in
+// the transcript, and this way a tick redraws the card whose agent it is and
+// not the transcript, nor the other cards.
+export function JobsCard({ items, onOpen }: { items: Item[]; onOpen?: () => void }) {
+  const jobsOf = useCallback(
+    (s: ThreadState | null) =>
+      items.map((item) => s?.jobs.find((j) => j.toolCallId === item.id)),
+    [items],
+  );
+  const jobs = useThread(useThreadStore(), jobsOf, shallow);
+  const rows = items.map((item, i) => ({ item, job: jobs[i] }));
   const live = rows.some((r) =>
     r.job ? isLive(r.job) : r.item.status === "in_progress" || r.item.status === "pending",
   );

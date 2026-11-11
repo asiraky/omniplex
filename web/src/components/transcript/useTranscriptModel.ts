@@ -1,9 +1,10 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 
-import type { Item, QueuedPrompt, ThreadState } from "~/protocol";
+import type { Item, QueuedPrompt } from "~/protocol";
 import { buildRows, reuseRows, type Row } from "~/rows";
 
 import type { Recovered } from "./Message";
+import type { TranscriptState } from "./transcriptState";
 
 function newestAgentText(items: Item[]): Item | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -28,7 +29,7 @@ function newestPrompt(items: Item[]): string | undefined {
  * another account: the limit was the old one's. Mirrors the server's
  * projection.State.QueueHeld and HeldByLimit.
  */
-export function limitHold(state: ThreadState) {
+export function limitHold(state: Pick<TranscriptState, "scheduledPrompts" | "turns" | "items">) {
   const continuation = state.scheduledPrompts?.find(
     (p) => p.kind === "limit" && (p.status === "pending" || p.status === "ready"),
   );
@@ -46,7 +47,9 @@ export function limitHold(state: ThreadState) {
 }
 
 /** What the transcript derives from the thread's state before it draws a row. */
-export function useTranscriptModel(state: ThreadState) {
+export function useTranscriptModel(
+  state: Pick<TranscriptState, "phase" | "closed" | "items" | "turns" | "scheduledPrompts">,
+) {
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
   // never provisioned — leaves the empty state to speak.

@@ -1,6 +1,7 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 
 import { useDraft } from "~/app/draftStore";
+import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
 import type { PanelControls } from "~/app/usePanel";
@@ -11,18 +12,20 @@ import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { ConnectionStatus } from "~/client";
 import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { CardSignIn } from "~/lib/cards";
-import { liveJobCount } from "~/lib/jobs";
 import { describeSettings, pickerInstances, resolveInstance } from "~/lib/models";
 import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
+import { useLatest } from "~/useLatest";
 import type {
   HarnessMeta,
   PendingElicitation,
   PullRequest,
+  ScheduledPrompt,
   ThreadMeta,
   ThreadState,
+  Turn,
   TurnStatus,
 } from "~/protocol";
 
@@ -53,9 +56,12 @@ const ScheduleDialog = lazy(() =>
 /**
  * The attached thread: its transcript, and floating over the tail of it the
  * composer with anything that blocks the turn stacked above.
+ *
+ * It takes no state: each part below selects the slice of the thread it draws
+ * from the store, so a frame rerenders the parts it changed, and this only
+ * for a new title.
  */
 export function ThreadView({
-  state,
   activeId,
   meta,
   harnesses,
@@ -75,7 +81,6 @@ export function ThreadView({
   status,
   turnStatus,
 }: {
-  state: ThreadState;
   activeId: string | null;
   meta: ThreadMeta | undefined;
   harnesses: HarnessMeta[];
@@ -102,7 +107,9 @@ export function ThreadView({
   turnStatus: TurnStatus | null;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
-  const title = threadTitle(meta, state);
+  const stateTitle = useThread(useThreadStore(), titleOf);
+  const harnessId = useThread(useThreadStore(), harnessOf) ?? "";
+  const title = threadTitle(meta, stateTitle);
   const speech = useMemo(
     () => (readAloud && activeId ? { threadId: activeId, title } : null),
     [readAloud, activeId, title],
@@ -110,13 +117,56 @@ export function ThreadView({
   const provider = harness.activeProviderInstance;
   const instanceId = meta?.providerInstance ?? "";
   const describe = useMemo(() => {
-    const instance = resolveInstance(pickerInstances(harnesses), instanceId, state.harness);
+    const instance = resolveInstance(pickerInstances(harnesses), instanceId, harnessId);
     if (!instance) return undefined;
     return (model: string, effort: string) => describeSettings(instance, model, effort);
-  }, [harnesses, instanceId, state.harness]);
+  }, [harnesses, instanceId, harnessId]);
   // A sign-in a saved card offers from its row in the transcript.
   const [signIn, setSignIn] = useState<CardSignIn | null>(null);
-  const steers = harnessSteers(harnesses, state);
+  const steers = harnessSteers(harnesses, harnessId);
+
+  // The transcript is memoised and selects its own state, so it redraws when
+  // that changes and not whenever the app does. That holds only while what it
+  // is handed here stays the same object across renders: every handler is
+  // kept to the identities it is built from.
+  const { threadCommand } = commands;
+  const { switchAccount } = harness;
+  const onContinue = useCallback(() => threadCommand("continue_thread"), [threadCommand]);
+  const onRetryProvision = useCallback(() => threadCommand("retry_provision"), [threadCommand]);
+  const onCleanup = useCallback(() => threadCommand("cleanup_thread"), [threadCommand]);
+  const loginId = provider?.canLogin ? provider.id : undefined;
+  const onProviderLogin = useMemo(
+    () => (loginId ? () => onLogin(loginId) : undefined),
+    [loginId, onLogin],
+  );
+  const onSwitchAccount = useCallback(
+    (instance: string, retry: Turn) => switchAccount(instance, { retry }),
+    [switchAccount],
+  );
+  const { runAction } = schedule;
+  const onCancelContinuation = useCallback(
+    (p: ScheduledPrompt) => runAction(activeId, "cancel_schedule", p),
+    [runAction, activeId],
+  );
+  const onForceDeleteThread = useCallback(
+    () => activeId && onForceDelete(activeId),
+    [activeId, onForceDelete],
+  );
+  // The list entry is read at the click: it changes with every broadcast that
+  // touches this thread, and the transcript has no use for those.
+  const metaRef = useLatest(meta);
+  const onFinishThread = useCallback(() => {
+    if (metaRef.current) onFinish(metaRef.current);
+  }, [metaRef, onFinish]);
+  // Where this thread was scrolled when it was opened, which is all the
+  // transcript reads of it, on mount. Asked again only for a new thread (the
+  // transcript is keyed on it), so a scroll recorded since does not hand the
+  // memoised transcript a new object on every render.
+  const { positionOf } = scroll;
+  const initialScroll = useMemo(
+    () => (activeId ? positionOf(activeId) : undefined),
+    [activeId, positionOf],
+  );
 
   return (
     <div ref={layoutRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -129,28 +179,25 @@ export function ThreadView({
         <ReadAloudContext.Provider value={speech}>
           <Transcript
             key={activeId}
-            state={state}
-            hasOlder={(state.itemsBefore ?? 0) > 0}
             onLoadOlder={commands.loadOlderItems}
-            initialScroll={activeId ? scroll.positionOf(activeId) : undefined}
+            initialScroll={initialScroll}
             onScrollChange={scroll.record}
-            onContinue={() => commands.threadCommand("continue_thread")}
-            onLogin={provider?.canLogin ? () => onLogin(provider.id) : undefined}
+            onContinue={onContinue}
+            onLogin={onProviderLogin}
             providerName={provider?.displayName}
             providerReady={provider?.availability.state === "ready"}
             onRetryTurn={harness.retryTurn}
             switchTargets={harness.switchTargets}
-            onSwitchAccount={(instance, retry) => harness.switchAccount(instance, { retry })}
-            onCancelContinuation={(p) => schedule.runAction(activeId, "cancel_schedule", p)}
-            onRetryProvision={() => commands.threadCommand("retry_provision")}
-            onCleanup={() => commands.threadCommand("cleanup_thread")}
-            onForceDelete={() => activeId && onForceDelete(activeId)}
+            onSwitchAccount={onSwitchAccount}
+            onCancelContinuation={onCancelContinuation}
+            onRetryProvision={onRetryProvision}
+            onCleanup={onCleanup}
+            onForceDelete={onForceDeleteThread}
             onOpenDiff={panel.openDiff}
-            jobs={state.jobs}
             onOpenJobs={panel.openJobs}
             onOpenArtefact={panel.openArtefact}
             pr={pr}
-            onFinish={() => meta && onFinish(meta)}
+            onFinish={onFinishThread}
             recents={recents.items}
             recentsSeeded={recents.seeded}
             onPickRecent={recents.pick}
@@ -203,7 +250,6 @@ export function ThreadView({
         className="bg-background absolute right-(--scrollbar-w,0px) bottom-0 left-0 z-10"
       >
         <ComposerDock
-          state={state}
           activeId={activeId}
           meta={meta}
           harnesses={harnesses}
@@ -222,8 +268,8 @@ export function ThreadView({
 
 // Whether the thread's harness can take a message into a running turn, which
 // is what a queued prompt's "Steer now" and the composer's steer both need.
-function harnessSteers(harnesses: HarnessMeta[], state: ThreadState) {
-  return harnesses.find((h) => h.id === state.harness)?.steers ?? false;
+function harnessSteers(harnesses: HarnessMeta[], harnessId: string) {
+  return harnesses.find((h) => h.id === harnessId)?.steers ?? false;
 }
 
 function hasCard(e: PendingElicitation): e is PendingElicitation & { card: NonNullable<PendingElicitation["card"]> } {
@@ -249,7 +295,6 @@ function workspaceStatus(phase: ThreadState["phase"]) {
 
 /** The composer, and what stacks above it: prompts, running jobs, schedules. */
 function ComposerDock({
-  state,
   activeId,
   meta,
   harnesses,
@@ -261,7 +306,6 @@ function ComposerDock({
   store,
   dictate,
 }: {
-  state: ThreadState;
   activeId: string | null;
   meta: ThreadMeta | undefined;
   harnesses: HarnessMeta[];
@@ -273,6 +317,8 @@ function ComposerDock({
   store: ComposerDrafts;
   dictate: boolean;
 }) {
+  const state = useThread(useThreadStore(), dockFields, shallow);
+  if (!state) return null;
   const pending = state.pendingPermissions?.[0];
   const elicitations = state.pendingElicitations ?? [];
   // A card is a proposal, not a question: it does not hold the turn, so it
@@ -318,7 +364,7 @@ function ComposerDock({
         </Suspense>
       )}
 
-      {liveJobCount(state.jobs) > 0 && <JobsStrip jobs={state.jobs} onOpen={panel.openJobs} />}
+      <JobsStrip onOpen={panel.openJobs} />
 
       <ScheduledPrompts
         schedules={state.scheduledPrompts ?? []}
@@ -340,7 +386,6 @@ function ComposerDock({
       )}
       <ThreadComposer
         key={activeId}
-        state={state}
         activeId={activeId}
         meta={meta}
         harnesses={harnesses}
@@ -361,7 +406,6 @@ function ComposerDock({
  * catalogue starts empty on a switch rather than showing the last thread's.
  */
 function ThreadComposer({
-  state,
   activeId,
   meta,
   harnesses,
@@ -373,7 +417,6 @@ function ThreadComposer({
   workspace,
   dictate,
 }: {
-  state: ThreadState;
   activeId: string | null;
   meta: ThreadMeta | undefined;
   harnesses: HarnessMeta[];
@@ -389,6 +432,10 @@ function ThreadComposer({
   // Subscribed here rather than read from the app, so a keystroke rerenders
   // this composer and not the thread view, transcript and sidebar around it.
   const draft = useDraft(store.draftStore, activeId);
+  // The one part of the thread view that draws usage (the context meter), so
+  // the one that rerenders on a usage tick.
+  const state = useThread(useThreadStore(), composerFields, shallow);
+  if (!state) return null;
   return (
     <Composer
       ref={recents.composerRef}
@@ -397,7 +444,7 @@ function ThreadComposer({
       disabled={state.closed || workspace.cleaning || workspace.failed}
       disabledPlaceholder={workspace.placeholder}
       busy={state.phase === "turn"}
-      steers={harnessSteers(harnesses, state)}
+      steers={harnessSteers(harnesses, state.harness)}
       onSend={commands.send}
       onSchedule={() => activeId && schedule.openFromComposer(activeId)}
       onCancel={commands.cancel}
@@ -423,5 +470,38 @@ function ThreadComposer({
       onCommandUsed={recents.noteUsed}
       dictation={dictate && activeId ? { thread: activeId } : undefined}
     />
+  );
+}
+
+const titleOf = (state: ThreadState | null) => state?.title;
+const harnessOf = (state: ThreadState | null) => state?.harness;
+
+// What the dock draws. Not jobs: the strip selects those itself, so a job's
+// progress rerenders the strip and not the prompts and composer beside it.
+// Null with no thread: the store lets go of the state the moment a thread is
+// left, and the subscribers hear of it before the app has unmounted them.
+function dockFields(s: ThreadState | null) {
+  return (
+    s && {
+      pendingPermissions: s.pendingPermissions,
+      pendingElicitations: s.pendingElicitations,
+      scheduledPrompts: s.scheduledPrompts,
+      phase: s.phase,
+      closed: s.closed,
+    }
+  );
+}
+
+function composerFields(s: ThreadState | null) {
+  return (
+    s && {
+      closed: s.closed,
+      phase: s.phase,
+      harness: s.harness,
+      model: s.model,
+      effort: s.effort,
+      serviceTier: s.serviceTier,
+      usage: s.usage,
+    }
   );
 }

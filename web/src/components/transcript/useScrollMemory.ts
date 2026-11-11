@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
-import type { ThreadState } from "~/protocol";
+import type { ThreadStore } from "~/app/threadStore";
 import { saveResume } from "~/resume";
 import { atBottom } from "~/useAutoScroll";
 import { useLatest } from "~/useLatest";
@@ -23,7 +23,8 @@ const measurePosition = (el: HTMLElement): ScrollPosition => {
  */
 export function useScrollMemory(
   scrollerRef: RefObject<HTMLDivElement | null>,
-  state: ThreadState,
+  threadId: string,
+  threadStore: ThreadStore,
   initialScroll: ScrollPosition | undefined,
   onScrollChange: ((threadId: string, position: ScrollPosition) => void) | undefined,
 ) {
@@ -45,14 +46,15 @@ export function useScrollMemory(
   // The other half of resume.ts: as the page goes to background — the moment
   // a mobile browser may discard the tab — save the state and where it was
   // scrolled, so the reload that follows can paint this transcript instead of
-  // "Attaching…". The state rides in a ref so the listeners subscribe once
-  // rather than per event.
-  const latestState = useLatest(state);
+  // "Attaching…". The whole state, not the part the transcript draws: the
+  // reload hydrates everything from it. Read from the store at that moment,
+  // so the listeners subscribe once rather than per event.
   useEffect(() => {
     const save = () => {
       const el = scrollerRef.current;
-      if (!el) return;
-      saveResume(latestState.current, measurePosition(el));
+      const state = threadStore.get();
+      if (!el || !state) return;
+      saveResume(state, measurePosition(el));
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") save();
@@ -71,6 +73,7 @@ export function useScrollMemory(
   // they were reading rather than the bottom. Held in a ref so a new callback
   // identity does not re-subscribe the listener.
   const onScrollChangeRef = useLatest(onScrollChange);
+  const threadIdRef = useLatest(threadId);
   // A layout effect, because its cleanup has to run while the scroller is
   // still in the document: a detached node reports a scrollTop of zero, and
   // the final read below is the one that catches movement whose scroll event
@@ -79,7 +82,7 @@ export function useScrollMemory(
     const el = scrollerRef.current;
     if (!el) return;
     const report = (position: ScrollPosition) =>
-      onScrollChangeRef.current?.(latestState.current.threadId, position);
+      onScrollChangeRef.current?.(threadIdRef.current, position);
     const onScroll = () => report({ top: el.scrollTop, atBottom: atBottom(el) });
     el.addEventListener("scroll", onScroll, { passive: true });
     // Mounting counts as a position too: a transcript left at the tail — or

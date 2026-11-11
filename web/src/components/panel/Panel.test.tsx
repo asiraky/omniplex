@@ -3,7 +3,6 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { emptyState } from "~/apply";
 import { Panel, type PanelProps, type PanelRequest } from "~/components/panel/Panel";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
 import { savePanel } from "~/lib/panel";
@@ -16,7 +15,6 @@ function renderPanel(onClose: () => void) {
     <>
       <Panel
         threadId="s1"
-        state={emptyState("s1")}
         command={never}
         open
         onClose={onClose}
@@ -75,7 +73,6 @@ function props(overrides: Partial<PanelProps> = {}): PanelProps {
   const never = () => new Promise<never>(() => {});
   return {
     threadId: "s1",
-    state: emptyState("s1"),
     command: never,
     open: true,
     onClose: () => {},

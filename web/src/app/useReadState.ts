@@ -10,11 +10,11 @@ import type { Wire } from "./useWire";
  * open, and the explicit flag either way from a row's context menu.
  */
 export function useReadState(wire: Wire, activeId: string | null) {
-  const { clientRef, state, threads } = wire;
-  // Read-on-open. The report carries the seq this page has actually rendered,
-  // not the server's head: events landing mid-report stay unread. Gated on
-  // the phase: while a turn streams, every event bumps seq, and re-reporting
-  // each one would chatter on exactly the connections we care about. The turn
+  const { clientRef, threadStore, threads } = wire;
+  // Read-on-open. The report carries the seq this page holds, not the
+  // server's head: events landing mid-report stay unread. Gated on the phase:
+  // while a turn streams, every event bumps seq, and re-reporting each one
+  // would chatter on exactly the connections we care about. The turn
   // finishing flips the phase and sends one report for the whole turn.
   const viewedReported = useRef<Record<string, number>>({});
   // One chain of read-state commands per thread. The server runs each
@@ -35,19 +35,28 @@ export function useReadState(wire: Wire, activeId: string | null) {
     },
     [clientRef],
   );
+  //
+  // It watches every frame, seq included, so it subscribes to the store rather
+  // than selecting from it: a selection that changes with every frame would
+  // rerender the app for each one, only to run this.
   useEffect(() => {
-    if (!state || state.threadId !== activeId) return;
-    if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning")
-      return;
-    if (state.seq <= (viewedReported.current[state.threadId] ?? 0)) return;
-    viewedReported.current[state.threadId] = state.seq;
-    sendReadState(state.threadId, "mark_thread_viewed", {
-      threadId: state.threadId,
-      seq: state.seq,
-    }).catch(() => {
-      // Nothing to tell the user: the dot clears next time this succeeds.
-    });
-  }, [activeId, state, sendReadState]);
+    const report = () => {
+      const state = threadStore.get();
+      if (!state || state.threadId !== activeId) return;
+      if (state.phase === "turn" || state.phase === "provisioning" || state.phase === "cleaning")
+        return;
+      if (state.seq <= (viewedReported.current[state.threadId] ?? 0)) return;
+      viewedReported.current[state.threadId] = state.seq;
+      sendReadState(state.threadId, "mark_thread_viewed", {
+        threadId: state.threadId,
+        seq: state.seq,
+      }).catch(() => {
+        // Nothing to tell the user: the dot clears next time this succeeds.
+      });
+    };
+    report();
+    return threadStore.subscribe(report);
+  }, [activeId, threadStore, sendReadState]);
 
   // The explicit flag back the other way, from the row's context menu.
   // Fire-and-forget like the label mutations: the threads broadcast is the

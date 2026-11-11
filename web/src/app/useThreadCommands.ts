@@ -42,7 +42,10 @@ export function useThreadCommands({
   store: ComposerDrafts;
   openDiff: (path?: string) => void;
 }) {
-  const { clientRef, state, composerRevision } = wire;
+  // The thread's state is read when a command runs, not subscribed to: these
+  // callbacks only need it at that moment, and holding it would remake them,
+  // and rerender whatever takes them, on every frame.
+  const { clientRef, threadStore, composerRevision } = wire;
   const { getDraft, setDraft, setDrafts, attachments, setAttachments } = store;
 
   // The composer passes what it was handed alongside the text, but the
@@ -78,7 +81,7 @@ export function useThreadCommands({
     if (!activeId) return;
     // Stop drops whatever was queued behind the turn; the text comes back to
     // the composer rather than vanishing, in front of anything already typed.
-    const queued = state?.queuedPrompts ?? [];
+    const queued = threadStore.get()?.queuedPrompts ?? [];
     if (queued.length > 0) {
       const restored = queued.map((q) => q.prompt).filter(Boolean);
       const current = getDraft(activeId);
@@ -88,12 +91,13 @@ export function useThreadCommands({
       const message = e instanceof Error ? e.message : String(e);
       toast.error("Could not stop the turn", { description: message });
     });
-  }, [activeId, clientRef, getDraft, setDraft, state]);
+  }, [activeId, clientRef, getDraft, setDraft, threadStore]);
 
   const dequeue = useCallback(
     (queueId: string) => {
       if (!activeId) return;
-      const text = state?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
+      const text =
+        threadStore.get()?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
       clientRef.current?.command("dequeue_prompt", { threadId: activeId, queueId }).then(
         () => {
           // Against the draft as it is when the reply lands, not as it was
@@ -103,7 +107,7 @@ export function useThreadCommands({
         (e) => toast.error("Could not remove that prompt", { description: e.message }),
       );
     },
-    [activeId, clientRef, setDrafts, state],
+    [activeId, clientRef, setDrafts, threadStore],
   );
 
   // An edit whose prompt started before it was saved: the words go to the
@@ -239,10 +243,11 @@ export function useThreadCommands({
         openDiff();
         return;
       }
+      const state = threadStore.get();
       if (action === "status" && state)
         toast.info("Thread status", { description: statusLine(state) });
     },
-    [openDiff, state],
+    [openDiff, threadStore],
   );
 
   // The transcript asking for the page above its window. Fire-and-forget: the

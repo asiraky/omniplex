@@ -15,7 +15,9 @@ import type {
 import { threadIdFromPath } from "~/lib/threadLinks";
 import { loadResume } from "~/resume";
 
+import { reuseThreads } from "./reuseThreads";
 import { LAST_THREAD } from "./threadKeys";
+import { createThreadStore, useThread } from "./threadStore";
 
 export type Wire = ReturnType<typeof useWire>;
 
@@ -23,6 +25,11 @@ export type Wire = ReturnType<typeof useWire>;
  * The socket, and everything the server pushes down it: the thread list, the
  * catalogues, and the state of the one thread attached. Everything else in the
  * app reads the server through this.
+ *
+ * The attached thread's state is the one thing here not kept in React state:
+ * it changes with every frame, and it lives in a store (threadStore.ts) that
+ * each consumer selects its own slice of, so a frame rerenders only what it
+ * changed rather than the app.
  */
 export function useWire() {
   // The snapshot a previous page of this tab saved as it went to background
@@ -69,13 +76,9 @@ export function useWire() {
   // Whether the server holds an ElevenLabs key, which is what turns read-aloud
   // on. Known only once the user config has arrived; off until then.
   const [hasElevenLabsKey, setHasElevenLabsKey] = useState(false);
-  const [state, setState] = useState<ThreadState | null>(resume?.state ?? null);
-  // Read by long-lived callbacks (openPath) that must see the current state
-  // without re-creating themselves on every event.
-  const stateRef = useRef<ThreadState | null>(resume?.state ?? null);
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
+  // Hydrated from the resume cache like the rest, so the first frame paints
+  // the thread as it was left.
+  const [threadStore] = useState(() => createThreadStore(resume?.state ?? null));
   // Bumped when the attached thread's adapter says its slash commands and
   // skills changed, so the composer knows to ask for them again.
   const [composerRevision, setComposerRevision] = useState(0);
@@ -90,7 +93,9 @@ export function useWire() {
     const client = new Client(wsURL(), {
       onStatus: setStatus,
       onThreads: (list) => {
-        setThreads(list);
+        // Each broadcast is the whole list as fresh JSON; the threads that
+        // did not change keep their objects, so their memoised rows skip it.
+        setThreads((prev) => reuseThreads(prev, list));
         setThreadsLoaded(true);
       },
       onHarnesses: setHarnesses,
@@ -102,7 +107,7 @@ export function useWire() {
       // State only lands for the thread currently attached; the client
       // discards anything else.
       onState: (id, s) => {
-        if (id === activeRef.current) setState(s);
+        if (id === activeRef.current) threadStore.set(s);
       },
       onTurnStatus: (id, s) => setHeldStatus(s ? { threadId: id, status: s } : null),
       onAccess: setAccess,
@@ -114,7 +119,7 @@ export function useWire() {
     if (resumeRef.current) client.prime(resumeRef.current.state);
     client.connect();
     return () => client.close();
-  }, []);
+  }, [threadStore]);
 
   // User-scope preferences are read once the socket is up, and again after a
   // reconnect only if we never got them; they change far less often than state.
@@ -149,12 +154,13 @@ export function useWire() {
   // into the per-thread map as the page hydrated, and the transcript takes
   // over reporting from there, so once a thread is on screen the blob has
   // done its job.
-  const hasThread = state != null;
+  const attached = useThread(threadStore, isAttached);
   useEffect(() => {
-    if (resume && hasThread) setResume(null);
-  }, [resume, hasThread]);
+    if (resume && attached) setResume(null);
+  }, [resume, attached]);
 
-  const turnStatus = heldStatus && heldStatus.threadId === state?.threadId ? heldStatus.status : null;
+  const attachedId = useThread(threadStore, threadIdOf);
+  const turnStatus = heldStatus && heldStatus.threadId === attachedId ? heldStatus.status : null;
 
   return {
     clientRef,
@@ -177,10 +183,17 @@ export function useWire() {
     saveUserConfig,
     hasElevenLabsKey,
     setElevenLabsKey,
-    state,
-    setState,
-    stateRef,
+    /** The attached thread's state: read it with useThread, or get() it at call time. */
+    threadStore,
+    /** Whether a thread's state is on hand, which is all the app renders from it. */
+    attached,
     composerRevision,
     turnStatus,
   };
 }
+
+function isAttached(s: unknown) {
+  return s != null;
+}
+
+const threadIdOf = (s: ThreadState | null) => s?.threadId;

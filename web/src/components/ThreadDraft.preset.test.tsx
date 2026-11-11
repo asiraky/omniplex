@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { createRef, useState } from "react";
+import { createRef } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createDraftStore } from "~/app/draftStore";
+import { NEW_THREAD } from "~/app/threadKeys";
 import { render, wrap } from "~/test/harness";
 import type { ComposerHandle } from "./Composer";
 import { ThreadDraft, type NewThreadInput } from "./ThreadDraft";
@@ -45,13 +47,11 @@ const harness = {
 
 type Props = React.ComponentProps<typeof ThreadDraft>;
 
-function Draft(props: Omit<Props, "draft" | "onDraftChange">) {
-  const [draft, setDraft] = useState("hi");
-  return <ThreadDraft {...props} draft={draft} onDraftChange={setDraft} />;
-}
-
 function open(over: Partial<Props> = {}) {
-  const base: Omit<Props, "draft" | "onDraftChange"> = {
+  const drafts = createDraftStore();
+  drafts.set(NEW_THREAD, "hi");
+  const base: Props = {
+    drafts,
     projects: [bowerbird, garden],
     harnesses: [harness],
     userConfig: null,
@@ -65,9 +65,9 @@ function open(over: Partial<Props> = {}) {
     onRecheck: vi.fn(),
     ...over,
   };
-  const view = render(<Draft {...base} />);
+  const view = render(<ThreadDraft {...base} />);
   return {
-    rerender: (next: Partial<Props>) => view.rerender(wrap(<Draft {...base} {...next} />)),
+    rerender: (next: Partial<Props>) => view.rerender(wrap(<ThreadDraft {...base} {...next} />)),
   };
 }
 
