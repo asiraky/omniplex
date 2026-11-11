@@ -93,7 +93,9 @@ function useToolOutput(item: Item) {
 // A preview's line count is the preview's, not the output's.
 function outputLabel(open: boolean, truncated: boolean, output: string) {
   if (open) return "hide";
-  return truncated ? "truncated" : `${output.split("\n").length} lines`;
+  if (truncated) return "truncated";
+  const lines = output.split("\n").length;
+  return `${lines} ${lines === 1 ? "line" : "lines"}`;
 }
 
 export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
@@ -135,7 +137,7 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
       {open && (
         <div className="space-y-2 border-t px-3 py-2">
           {input != null && (
-            <pre className="scroll-thin bg-muted/60 text-muted-foreground max-h-40 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed">
+            <pre className="scroll-thin bg-muted/60 text-muted-foreground max-h-40 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
               {JSON.stringify(input, null, 2)}
             </pre>
           )}

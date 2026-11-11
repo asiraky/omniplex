@@ -283,7 +283,7 @@ function AgentPane({
         </p>
       )}
       {fetched.status === "error" && <RetryRow className="px-1" message={fetched.error} onRetry={fetched.retry} />}
-      {fetched.status !== "loading" && mine.length === 0 && children.length === 0 && (
+      {fetched.status !== "loading" && fetched.status !== "error" && mine.length === 0 && children.length === 0 && (
         <p className="text-muted-foreground px-1 py-4 text-center text-[12px]">Nothing recorded for this agent yet.</p>
       )}
       {mine.map((it) =>

@@ -79,6 +79,8 @@ describe("an agent's drill-down", () => {
     serve(() => new Response(JSON.stringify({ error: "the disk is on fire" }), { status: 500 }), children(said("m1", "second time lucky")));
     openAgent(thread());
     expect(await screen.findByText("the disk is on fire")).toBeTruthy();
+    // A failure is not a claim that the agent did nothing.
+    expect(screen.queryByText(/Nothing recorded/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("second time lucky")).toBeTruthy();
   });

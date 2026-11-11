@@ -245,7 +245,7 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, row: "started" | "u
   if (p.status) {
     // A finished job reported running again was reopened (a Codex subagent
     // taking a new turn): its elapsed clock runs again.
-    if (!finished && !jobDone(p.status)) j.finishedAt = undefined;
+    if (row !== "finished" && !jobDone(p.status)) j.finishedAt = undefined;
     j.status = p.status;
   }
   let items = s.items;
