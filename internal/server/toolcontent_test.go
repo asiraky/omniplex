@@ -13,7 +13,7 @@ import (
 	"github.com/asiraky/omniplex/internal/store"
 )
 
-func TestToolContentServesTheWholeOutputFromTheLog(t *testing.T) {
+func TestToolContentServesTheWholeBodyFromTheLog(t *testing.T) {
 	handler, guard, st := testServerWithStore(t)
 	ts := httptest.NewServer(asRemote(handler))
 	defer ts.Close()
@@ -23,6 +23,11 @@ func TestToolContentServesTheWholeOutputFromTheLog(t *testing.T) {
 	if err := st.CreateThread(ctx, store.ThreadMeta{
 		ID: "t1", Cwd: t.TempDir(), Harness: "claudecode", CreatedAt: now, UpdatedAt: now, Phase: "idle",
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, "t1", proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		ToolCallID: "call-a", RawInput: json.RawMessage(`{"command":"make test"}`),
+	})); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []proto.ToolCallUpdatedPayload{
@@ -56,6 +61,7 @@ func TestToolContentServesTheWholeOutputFromTheLog(t *testing.T) {
 	}
 	var body struct {
 		Content []proto.ToolContent `json:"content"`
+		Input   json.RawMessage     `json:"input"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -63,6 +69,9 @@ func TestToolContentServesTheWholeOutputFromTheLog(t *testing.T) {
 	want := []proto.ToolContent{{Type: "text", Text: "head"}, {Type: "text", Text: "tail"}}
 	if !reflect.DeepEqual(body.Content, want) {
 		t.Fatalf("content = %+v, want %+v", body.Content, want)
+	}
+	if string(body.Input) != `{"command":"make test"}` {
+		t.Fatalf("input = %s, want the call's", body.Input)
 	}
 
 	for _, missing := range []string{"/api/threads/t1/items/ghost/content", "/api/threads/ghost/items/call-a/content"} {

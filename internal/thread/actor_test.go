@@ -804,7 +804,7 @@ func TestAttachCompletenessUnderConcurrentAppends(t *testing.T) {
 	sub := actor.Subscribe()
 	defer actor.Unsubscribe(sub)
 
-	res, err := actor.Attach(context.Background(), 0, false)
+	res, err := actor.Attach(context.Background(), 0, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

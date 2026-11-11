@@ -74,6 +74,9 @@ type serverFrame struct {
 	Seq      int64             `json:"seq,omitempty"`
 	State    *projection.State `json:"state,omitempty"`
 	Event    *proto.Event      `json:"event,omitempty"`
+	// Events is a whole catch-up ("replay" frames), already capped for the
+	// wire like a live event.
+	Events []proto.Event `json:"events,omitempty"`
 
 	CommandID string          `json:"commandId,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`

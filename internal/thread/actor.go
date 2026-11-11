@@ -24,9 +24,10 @@ import (
 
 // Tunables named by the spec's invariants.
 const (
-	MaxReplayGap    = 1000 // no attach reads more events than this
-	SubscriberQueue = 256  // bounded per-connection outbound queue
-	SnapshotEvery   = 200  // snapshot cadence, a latency cache only
+	MaxReplayEvents = 128     // a longer catch-up is sent as a snapshot
+	MaxReplayBytes  = 1 << 20 // so is one whose wire payloads outweigh this
+	SubscriberQueue = 256     // bounded per-connection outbound queue
+	SnapshotEvery   = 200     // snapshot cadence, a latency cache only
 )
 
 // Subscriber receives live events for one thread. Ch is closed when the
@@ -202,6 +203,8 @@ type command struct {
 	card    *cardCmd
 	// evict commits an eviction with the manager; see Actor.evict.
 	evict func() (idle time.Duration, ok bool)
+	// read runs against the live projection inside the loop; see Actor.read.
+	read func(*projection.State) any
 }
 
 // accountSwitch is what the manager hands the actor to move the thread to
@@ -260,6 +263,7 @@ const (
 	cmdStopExpired   = "stop_expired"
 	cmdDropRecovery  = "drop_recovery"
 	cmdEvict         = "evict"
+	cmdRead          = "read"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -540,6 +544,63 @@ func (a *Actor) State(ctx context.Context) (*projection.State, error) {
 		return nil, err
 	}
 	return v.(*projection.State), nil
+}
+
+// read runs fn on the live projection inside the actor loop and returns what
+// it made. fn must copy whatever it returns: the state goes on changing the
+// moment it returns.
+func (a *Actor) read(ctx context.Context, fn func(*projection.State) any) (any, error) {
+	return a.call(ctx, command{kind: cmdRead, read: fn})
+}
+
+// WireState is the projection as a client should get it: windowed to maxTop
+// top-level items, with tool input capped (see projection.State.WireCopy).
+// Made from the live state, so only what is kept is ever copied.
+func (a *Actor) WireState(ctx context.Context, maxTop int) (*projection.State, error) {
+	v, err := a.read(ctx, func(s *projection.State) any { return s.WireCopy(maxTop) })
+	if err != nil {
+		return nil, err
+	}
+	return v.(*projection.State), nil
+}
+
+// ItemsPage is the page of at most maxTop top-level items ending before index
+// `before`, the index it starts at, and the jobs its items spawned. See
+// projection.State.WirePage.
+func (a *Actor) ItemsPage(ctx context.Context, before, maxTop int) ([]projection.Item, int, []projection.Job, error) {
+	type page struct {
+		items []projection.Item
+		start int
+		jobs  []projection.Job
+	}
+	v, err := a.read(ctx, func(s *projection.State) any {
+		items, start, jobs := s.WirePage(before, maxTop)
+		return page{items, start, jobs}
+	})
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	p := v.(page)
+	return p.items, p.start, p.jobs, nil
+}
+
+// Children is every child item of one parent, which a wire copy leaves out
+// or trims. See projection.State.WireChildren.
+func (a *Actor) Children(ctx context.Context, parentID string) ([]projection.Item, error) {
+	v, err := a.read(ctx, func(s *projection.State) any { return s.WireChildren(parentID) })
+	if err != nil {
+		return nil, err
+	}
+	return v.([]projection.Item), nil
+}
+
+// Jobs is every job, which a wire copy windows.
+func (a *Actor) Jobs(ctx context.Context) ([]projection.Job, error) {
+	v, err := a.read(ctx, func(s *projection.State) any { return s.WireJobs() })
+	if err != nil {
+		return nil, err
+	}
+	return v.([]projection.Job), nil
 }
 
 // Subscribe registers a live listener. Callers must Unsubscribe.
@@ -920,6 +981,8 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{err: a.handleSchedule(c)}
 	case "state":
 		c.reply <- cmdResult{value: a.state.Clone()}
+	case cmdRead:
+		c.reply <- cmdResult{value: c.read(a.state)}
 
 	case cmdShowArtefact:
 		v, err := a.handleShow(c.show)
@@ -2150,7 +2213,8 @@ const (
 	AttachReplay   = "replay"
 )
 
-// AttachResult is what a presenter needs to reconstruct state exactly.
+// AttachResult is what a presenter needs to reconstruct state exactly. Events
+// are the wire copies, capped like live delivery; Snapshot is windowed.
 type AttachResult struct {
 	Kind     string
 	Snapshot *projection.State
@@ -2158,29 +2222,57 @@ type AttachResult struct {
 	Seq      int64
 }
 
-// Attach computes the catch-up payload for a cursor. The caller must already
-// have subscribed.
-func (a *Actor) Attach(ctx context.Context, afterSeq int64, hasCursor bool) (AttachResult, error) {
-	head := a.Head()
-	gap := head - afterSeq
-
-	if !hasCursor || gap < 0 || gap > MaxReplayGap {
-		state, err := a.State(ctx)
+// Attach computes the catch-up payload for a cursor: the events since it, or
+// a snapshot of the newest snapshotItems top-level items when there is no
+// cursor or the catch-up would not fit the replay budget. The caller must
+// already have subscribed.
+func (a *Actor) Attach(ctx context.Context, afterSeq int64, hasCursor bool, snapshotItems int) (AttachResult, error) {
+	if hasCursor && replayable(a.Head()-afterSeq) {
+		evs, err := a.store.ReadEvents(ctx, a.ID, afterSeq, MaxReplayEvents)
 		if err != nil {
 			return AttachResult{}, err
 		}
-		return AttachResult{Kind: AttachSnapshot, Snapshot: state, Seq: state.Seq}, nil
+		if wire, ok := wireReplay(evs); ok {
+			seq := afterSeq
+			if len(evs) > 0 {
+				seq = evs[len(evs)-1].Seq
+			}
+			return AttachResult{Kind: AttachReplay, Events: wire, Seq: seq}, nil
+		}
 	}
-
-	evs, err := a.store.ReadEvents(ctx, a.ID, afterSeq, MaxReplayGap)
+	state, err := a.WireState(ctx, snapshotItems)
 	if err != nil {
 		return AttachResult{}, err
 	}
-	seq := afterSeq
-	if len(evs) > 0 {
-		seq = evs[len(evs)-1].Seq
+	return AttachResult{Kind: AttachSnapshot, Snapshot: state, Seq: state.Seq}, nil
+}
+
+// replayable reports whether a cursor gap events behind head is worth reading
+// at all. A negative gap is a cursor from some other history.
+func replayable(gap int64) bool {
+	return gap >= 0 && gap <= MaxReplayEvents
+}
+
+// wireReplay is evs as a client should see them, or ok=false when they are
+// more than a replay should carry — past MaxReplayEvents, or past
+// MaxReplayBytes of payload once capped — and one snapshot is the cheaper
+// answer. T3 Code's budget, for the same reason: a client back from a long
+// absence on a phone should not download every chunk it missed.
+func wireReplay(evs []proto.Event) (wire []proto.Event, ok bool) {
+	if len(evs) > MaxReplayEvents {
+		return nil, false
 	}
-	return AttachResult{Kind: AttachReplay, Events: evs, Seq: seq}, nil
+	wire = make([]proto.Event, 0, len(evs))
+	size := 0
+	for _, ev := range evs {
+		w := projection.WireEvent(ev)
+		size += len(w.Payload)
+		if size > MaxReplayBytes {
+			return nil, false
+		}
+		wire = append(wire, w)
+	}
+	return wire, true
 }
 
 func truncate(s string, n int) string {

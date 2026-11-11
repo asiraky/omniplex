@@ -13,6 +13,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/attachment"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
 	"github.com/asiraky/omniplex/internal/thread"
@@ -205,7 +206,7 @@ func (c *conn) attach(f clientFrame) {
 		after = *f.AfterSeq
 	}
 
-	res, err := actor.Attach(c.ctx, after, hasCursor)
+	res, err := actor.Attach(c.ctx, after, hasCursor, SnapshotItems)
 	if err != nil {
 		actor.Unsubscribe(sub)
 		c.send(serverFrame{Type: "error", ThreadID: f.ThreadID, Error: err.Error()})
@@ -215,22 +216,19 @@ func (c *conn) attach(f clientFrame) {
 	payloadBytes := 0
 	switch res.Kind {
 	case thread.AttachSnapshot:
-		state := res.Snapshot
-		// Same window as the HTTP snapshot: this branch is the fallback for
-		// exactly the threads too big to replay, so sending the whole
-		// timeline here would undo the trim where it matters most. The
-		// snapshot is a clone; windowing it touches nobody else's state.
-		state.Window(SnapshotItems)
-		payloadBytes += c.send(serverFrame{Type: "snapshot", ThreadID: f.ThreadID, Seq: res.Seq, State: state})
+		// Already windowed, the same as the HTTP snapshot: this branch is the
+		// fallback for exactly the threads too big to replay.
+		payloadBytes += c.send(serverFrame{Type: "snapshot", ThreadID: f.ThreadID, Seq: res.Seq, State: res.Snapshot})
 	default:
-		for i := range res.Events {
-			ev := res.Events[i]
-			payloadBytes += c.send(serverFrame{Type: "event", ThreadID: f.ThreadID, Seq: ev.Seq, Event: &ev})
+		// One frame for the whole catch-up, so the client applies it in one
+		// go rather than rendering once per event.
+		if len(res.Events) > 0 {
+			payloadBytes += c.send(serverFrame{Type: "replay", ThreadID: f.ThreadID, Seq: res.Seq, Events: res.Events})
 		}
 	}
 	payloadBytes += c.send(serverFrame{Type: "synchronized", ThreadID: f.ThreadID, Seq: res.Seq})
-	c.srv.logf("thread_attach thread=%s duration_ms=%d restore_ms=%d payload_bytes=%d kind=%s seq=%d",
-		f.ThreadID, time.Since(started).Milliseconds(), restoreDuration.Milliseconds(), payloadBytes, res.Kind, res.Seq)
+	c.srv.logf("thread_attach thread=%s duration_ms=%d restore_ms=%d payload_bytes=%d kind=%s seq=%d events=%d",
+		f.ThreadID, time.Since(started).Milliseconds(), restoreDuration.Milliseconds(), payloadBytes, res.Kind, res.Seq, len(res.Events))
 
 	ctx, cancel := context.WithCancel(c.ctx)
 	c.amu.Lock()
@@ -260,6 +258,7 @@ func (c *conn) attach(f clientFrame) {
 				if ev.Seq <= res.Seq {
 					continue
 				}
+				ev = projection.WireEvent(ev)
 				c.send(serverFrame{Type: "event", ThreadID: f.ThreadID, Seq: ev.Seq, Event: &ev})
 			}
 		}
