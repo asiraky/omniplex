@@ -242,6 +242,15 @@ describe("picking the thread already open", () => {
     expect(screen.queryByText("Attaching…")).toBeNull();
   });
 
+  it("keeps the side panel open", async () => {
+    await openThread();
+    fireEvent.click(screen.getByRole("button", { name: "Show the panel" }));
+
+    fireEvent.click(row("a"));
+
+    expect(screen.getByRole("button", { name: "Hide the panel" })).toBeTruthy();
+  });
+
   it("still switches to a different thread", async () => {
     await openThread();
 
