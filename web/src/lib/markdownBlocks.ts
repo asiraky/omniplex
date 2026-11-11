@@ -6,13 +6,19 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 // Definitions, footnotes, raw HTML, container directives and display math can
 // tie blocks together. Matched a line at a time outside fences, so code that
 // only looks like one of them (a JSX line, a `[^a-z]` regex) leaves the text
-// splittable. A definition counts inside a quote or a list item too: it still
-// applies to the whole document.
-const DOCUMENT_WIDE_SYNTAX =
-  /^(?:[ \t>]|(?:[-*+]|\d{1,9}[.)])[ \t])*\[[^\]\n]+\]:|^ {0,3}(?:<[A-Za-z!?/]|:::|\$\$)|\[\^/;
+// splittable. A definition is any `]:` at all: its label may hold escaped
+// brackets or code, run across lines, or sit in a quote or a list item, and
+// it applies to the whole document from any of them. Prose that merely has a
+// `]:` in it renders whole, which is only slower.
+const DOCUMENT_WIDE_SYNTAX = /\]:|^ {0,3}(?:<[A-Za-z!?/]|:::|\$\$)/;
+const FOOTNOTE = /\[\^/;
 // A code span, which no footnote reference is inside: a run of backticks to
 // the next run of the same length.
 const CODE_SPAN = /(`+)[^`]*?\1/g;
+
+function documentWide(line: string): boolean {
+  return DOCUMENT_WIDE_SYNTAX.test(line) || FOOTNOTE.test(line.replace(CODE_SPAN, ""));
+}
 // After a blank line these still continue the previous block: a list item or indented content.
 const CONTINUATION_PATTERN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 
@@ -59,20 +65,27 @@ export function splitMarkdownBlocks(text: string): string[] | null {
   let blockStart = 0;
   let lineStart = 0;
   let fence: string | null = null;
+  // Whether the open fence is certainly code. One opened at the margin is; an
+  // indented one may belong to a list item this does not follow, or be the
+  // close of a fence opened behind a list marker, so what follows it could be
+  // anything, and the guard still reads it.
+  let fenceIsCode = false;
   let afterBlankLine = false;
   for (const line of text.split("\n")) {
     if (fence !== null) {
+      if (!fenceIsCode && documentWide(line)) return null;
       fence = fenceAfter(line, fence);
     } else if (line.trim() === "") {
       afterBlankLine = true;
     } else {
-      if (DOCUMENT_WIDE_SYNTAX.test(line.replace(CODE_SPAN, ""))) return null;
+      if (documentWide(line)) return null;
       if (afterBlankLine && lineStart > blockStart && !CONTINUATION_PATTERN.test(line)) {
         blocks.push(text.slice(blockStart, lineStart));
         blockStart = lineStart;
       }
       afterBlankLine = false;
       fence = fenceAfter(line, null);
+      fenceIsCode = fence !== null && !/^[ \t]/.test(line);
     }
     lineStart += line.length + 1;
   }
