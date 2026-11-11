@@ -38,7 +38,10 @@ function PermissionsMenu({
       onOpenChange={(open) => open && setAdvanced(!!modeMeta && !modeMeta.level)}
     >
       <DropdownMenuTrigger asChild>
-        <Chip label="Permissions" icon={<ShieldIcon />} className={toolClass}>
+        {/* A phone row has no room for both this label and the model's
+            once the mic is in it, so on a phone the shield stands alone; the
+            level is still in its name and its menu. */}
+        <Chip label="Permissions" icon={<ShieldIcon />} className={cn(toolClass, "max-md:[&>span]:hidden")}>
           {LEVELS.find((l) => l.id === modeMeta?.level)?.short ?? modeMeta?.label}
         </Chip>
       </DropdownMenuTrigger>

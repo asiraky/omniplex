@@ -206,9 +206,34 @@ describe("dictating into the composer", () => {
     await recordAndStop();
     reply({ error: "Add an ElevenLabs key in Settings." }, 409);
     await settle();
-    expect(toast.error).toHaveBeenCalledWith("Add an ElevenLabs key in Settings.");
+    expect(toast.error).toHaveBeenCalledWith("Add an ElevenLabs key in Settings.", expect.anything());
     expect(box().value).toBe("as typed");
     expect(mic()).toBeTruthy();
+  });
+
+  it("sends the same clip again from the failure's retry", async () => {
+    render(<Harness initial="as typed" />);
+    await recordAndStop();
+    const sent = fetcher.mock.calls[0]![1].body as Blob;
+    reply({ error: "connection dropped" }, 502);
+    await settle();
+    const retry = vi.mocked(toast.error).mock.calls[0]![1]!.action as { onClick: () => void };
+    await act(async () => retry.onClick());
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]![1].body).toBe(sent);
+    await answer("said once");
+    expect(box().value).toBe("as typed said once");
+  });
+
+  it("drops a retry once the thread has changed", async () => {
+    const view = render(<Harness initial="draft" thread="t1" />);
+    await recordAndStop();
+    reply({ error: "connection dropped" }, 502);
+    await settle();
+    view.rerender(wrap(<Harness initial="draft" thread="t2" />));
+    const retry = vi.mocked(toast.error).mock.calls[0]![1]!.action as { onClick: () => void };
+    await act(async () => retry.onClick());
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("reports a blocked microphone and goes back to idle", async () => {

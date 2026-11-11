@@ -93,6 +93,9 @@ export function useDictation({
   const [now, setNow] = useState(0);
   const session = useRef<Session | null>(null);
   const latest = useLatest({ thread, changeDraft, placeCaret });
+  // A failed upload offers to send the same clip again. It is set below,
+  // once upload exists to call.
+  const resend = useRef<(from: Session, blob: Blob) => void>(() => {});
 
   // The caret only means something once the person has put it somewhere. Until
   // the input has been focused its selection is whatever the browser chose
@@ -151,13 +154,40 @@ export function useDictation({
         else toast.info("Didn't catch anything. Try again a little closer to the mic.");
       } catch (err) {
         if (session.current !== s) return;
-        toast.error(err instanceof Error ? err.message : String(err));
+        // On a flaky connection the upload is what fails, and the person
+        // should not have to say it all again: the clip is kept for a retry.
+        toast.error(err instanceof Error ? err.message : String(err), {
+          action: { label: "Retry", onClick: () => resend.current(s, blob) },
+        });
       } finally {
         end(s);
       }
     },
     [end, land],
   );
+
+  // The retry belongs to the thread the clip was recorded in, and waits its
+  // turn behind anything recording now.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  resend.current = (from, blob) => {
+    if (!mounted.current || session.current || latest.current.thread !== from.thread) return;
+    const s: Session = {
+      anchor: from.anchor,
+      thread: from.thread,
+      hadFocus: from.hadFocus,
+      chunks: [],
+      abort: new AbortController(),
+    };
+    session.current = s;
+    setStatus("transcribing");
+    void upload(s, blob);
+  };
 
   /** Stops recording and sends what was heard. */
   const stop = useCallback(() => {
