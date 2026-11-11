@@ -32,11 +32,18 @@ export function usePrefetchOverlays() {
 
 export function LazyCommandPalette(props: CommandPaletteProps) {
   const isDesktop = useIsDesktop();
-  return <OnDemand chunk={palette} props={props} title="Loading the command palette" sheet={!isDesktop} />;
+  return (
+    <OnDemand
+      chunk={palette}
+      props={props}
+      title="Loading the command palette"
+      look={isDesktop ? "palette" : "sheet"}
+    />
+  );
 }
 
-export function LazyShortcutsHelp(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  return <OnDemand chunk={help} props={props} title="Loading keyboard shortcuts" />;
+export function LazyShortcutsHelp(props: OverlayProps) {
+  return <OnDemand chunk={help} props={props} title="Loading keyboard shortcuts" look="help" />;
 }
 
 interface OverlayProps {
@@ -55,13 +62,13 @@ export function OnDemand<P extends OverlayProps>({
   chunk,
   props,
   title,
-  sheet = false,
+  look,
 }: {
   chunk: Chunk<ComponentType<P>>;
   props: P;
   title: string;
-  /** The placeholder is a full-height sheet, like the palette on a phone. */
-  sheet?: boolean;
+  /** The placeholder takes the shape of the overlay it stands in for. */
+  look: "palette" | "sheet" | "help";
 }) {
   const { open, onOpenChange } = props;
   const [seenOpen, setSeenOpen] = useState(open);
@@ -98,7 +105,7 @@ export function OnDemand<P extends OverlayProps>({
     // Replaced by the overlay once it arrives, which focuses its own field:
     // handing focus back to whatever had it would take it away again.
     onCloseAutoFocus: (e: Event) => {
-      if (chunk.get()) e.preventDefault();
+      if (open && chunk.get()) e.preventDefault();
     },
   };
   const body = (
@@ -106,7 +113,7 @@ export function OnDemand<P extends OverlayProps>({
       {failed ? "Couldn't load. Check the connection and open it again." : <Spinner />}
     </div>
   );
-  if (sheet) {
+  if (look === "sheet") {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent
@@ -122,7 +129,13 @@ export function OnDemand<P extends OverlayProps>({
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent {...contentProps} className="top-[15%] translate-y-0 p-0 sm:max-w-xl">
+      <DialogContent
+        {...contentProps}
+        // Only a failure stays up long enough to want a way out other than Escape.
+        showCloseButton={failed}
+        fullscreenOnMobile={look === "help"}
+        className={look === "palette" ? "top-[15%] translate-y-0 p-0 sm:max-w-xl" : "p-0 md:max-w-lg"}
+      >
         <DialogTitle className="sr-only">{title}</DialogTitle>
         {body}
       </DialogContent>

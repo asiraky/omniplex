@@ -40,7 +40,7 @@ function Host({ c, onOpenChange }: { c: ReturnType<typeof heldImport>["c"]; onOp
       <button type="button" onClick={() => setOpen(true)}>
         open
       </button>
-      <OnDemand chunk={c} props={{ open, onOpenChange: change }} title="Loading" />
+      <OnDemand chunk={c} props={{ open, onOpenChange: change }} title="Loading" look="palette" />
     </>
   );
 }
