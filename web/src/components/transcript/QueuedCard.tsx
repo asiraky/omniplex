@@ -8,19 +8,21 @@ import { PromptFiles, PromptImages } from "./Attachments";
 // the reader can see what is coming. One the harness already holds is read at
 // its next step and cannot be taken back; one still waiting on the server can.
 // After a usage limit the server holds the queue until a new turn starts, so
-// the card says it is waiting on the reset rather than on the current turn.
+// the card says what it is waiting on: the continuation armed for the reset,
+// or, with none armed, the reader sending something.
 export function QueuedCard({
   queued,
   threadId,
   artefacts,
-  held = false,
+  held,
   onDequeue,
 }: {
   queued: QueuedPrompt;
   threadId: string;
   artefacts: Artefact[];
-  /** The latest turn stopped at a usage limit, so nothing runs until it resets. */
-  held?: boolean;
+  /** The latest turn stopped at a usage limit: nothing runs until the armed
+      continuation goes out at the reset, or until the reader sends. */
+  held?: "reset" | "send";
   onDequeue: (queueId: string) => void;
 }) {
   const { text, files } = parseAttachedFiles(queued.prompt ?? "");
@@ -50,7 +52,7 @@ export function QueuedCard({
             <span aria-hidden>·</span>
             {held && (
               <>
-                <span>held until the limit resets</span>
+                <span>{held === "reset" ? "held until the limit resets" : "held until you send"}</span>
                 <span aria-hidden>·</span>
               </>
             )}

@@ -607,6 +607,15 @@ describe("a turn that failed", () => {
       const queued = [{ queueId: "q1", prompt: "next" }];
       const s = limited();
       s.queuedPrompts = queued;
+      const first = render(<Transcript state={s} {...props} />);
+      // Nothing armed: only the reader sending moves it.
+      expect(screen.getByText(/held until you send/)).toBeTruthy();
+      first.unmount();
+
+      s.scheduledPrompts = [
+        { id: "s1", revision: 1, prompt: "continue", dueAt: Date.now() + 60_000, timeZone: "UTC",
+          model: "", mode: "default", effort: "", status: "pending", kind: "limit" },
+      ];
       const { unmount } = render(<Transcript state={s} {...props} />);
       expect(screen.getByText(/held until the limit resets/)).toBeTruthy();
       unmount();
@@ -614,7 +623,7 @@ describe("a turn that failed", () => {
       for (const other of [failed({ failure: "auth" }), failed({}), state("hi")]) {
         other.queuedPrompts = queued;
         const { unmount } = render(<Transcript state={other} {...props} />);
-        expect(screen.queryByText(/held until the limit resets/)).toBeNull();
+        expect(screen.queryByText(/held until/)).toBeNull();
         unmount();
       }
     });
