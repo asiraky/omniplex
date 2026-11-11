@@ -224,6 +224,7 @@ export function Composer({
       value={draft}
       disabled={disabled}
       aria-label="Message"
+      data-composer-input=""
       placeholder={placeholderFor(disabled || sendDisabled, disabledPlaceholder, isDesktop)}
       onChange={(e) => {
         changeDraft(e.target.value);
