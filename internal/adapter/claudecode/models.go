@@ -231,6 +231,11 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			}
 			kept.Default = kept.Default || row.Default
 			kept.Supports1M = kept.Supports1M || row.Supports1M
+			// A row that could only be labelled by its raw id takes a real
+			// name another alias for the same model found.
+			if kept.Label == kept.ID && row.Label != row.ID {
+				kept.Label = row.Label
+			}
 			current[i] = kept
 			continue
 		}

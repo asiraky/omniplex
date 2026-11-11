@@ -178,6 +178,18 @@ func TestMapClaudeModelsLabelFallbacks(t *testing.T) {
 	}
 }
 
+// Two aliases for one model collapse into a row, and when only one of them
+// could name it, the row keeps that name rather than the raw id.
+func TestMapClaudeModelsMergeKeepsTheNameEitherAliasFound(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus"},
+		{Value: "opus[1m]", ResolvedModel: "claude-opus-next[1m]", DisplayName: "Opus (1M context)", Description: "Opus Next with 1M context · Best for everyday tasks"},
+	})
+	if m := findModel(t, got, "claude-opus-next"); m.Label != "Opus Next" {
+		t.Errorf("label = %q, want Opus Next", m.Label)
+	}
+}
+
 func TestModelLabel(t *testing.T) {
 	for id, want := range map[string]string{
 		"claude-opus-5":             "Opus 5",
