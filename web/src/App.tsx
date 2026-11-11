@@ -106,20 +106,12 @@ export function App() {
   // One composer at a time, the thread's or the draft's, behind one handle.
   const { composerRef } = recents;
   const turnRunning = state?.phase === "turn";
-  // Choosing a thread or starting one is going somewhere: whatever full-page
-  // screen is up gives way, setup and the theme sample included, since the
-  // user asked for it.
-  const leaveScreens = () => {
-    screens.uncover();
-    if (screens.setup) screens.leaveSetup();
-    if (screens.themePreview) screens.leaveThemePreview();
-  };
   const openThread = (id: string) => {
-    leaveScreens();
+    screens.leaveAll();
     select(id);
   };
   const startNew = (preset?: DraftPreset) => {
-    leaveScreens();
+    screens.leaveAll();
     nav.startNew(preset);
   };
   const newThreadIn = () => palette.show("newThread");
@@ -171,9 +163,7 @@ export function App() {
     threadOpen: !!state,
     turnRunning,
     // The full-page screens unmount the composer; Settings is a dialog over it.
-    composerOpen:
-      (!!state || !!nav.creating) &&
-      !(screens.showUsage || screens.tools || screens.setup || screens.themePreview),
+    composerOpen: (!!state || !!nav.creating) && !screens.fullPage,
     composerRef,
     onSetPinned: setPinned,
     onSetUnread: setThreadUnread,

@@ -51,9 +51,11 @@ export function useScreens() {
     setSetup(false);
   }, []);
 
+  // A full-page screen is up instead of the thread view, composer and all.
+  const fullPage = showUsage || !!tools || setup || themePreview;
   // Whether a full-page screen or Settings hides the thread view, so the
   // server knows the open thread is not actually being watched.
-  const covering = !!settings || showUsage || !!tools || setup || themePreview;
+  const covering = !!settings || fullPage;
   // Clear the screens a tapped notification should not open behind. Setup and
   // the theme sample are left alone: both are pages reached by URL.
   const uncover = useCallback(() => {
@@ -61,10 +63,19 @@ export function useScreens() {
     setShowUsage(false);
     setTools(null);
   }, []);
+  // Choosing a thread or starting one is going somewhere: every screen gives
+  // way, the URL ones too, since the user asked for it.
+  const leaveAll = () => {
+    uncover();
+    if (setup) leaveSetup();
+    if (themePreview) leaveThemePreview();
+  };
 
   return {
+    fullPage,
     covering,
     uncover,
+    leaveAll,
     settings,
     setSettings,
     newProject,

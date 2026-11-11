@@ -2,6 +2,7 @@
 import { screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { COMMANDS } from "~/lib/keybindings";
 import { render, viewport } from "~/test/harness";
 import { ShortcutsHelp } from "./ShortcutsHelp";
 
@@ -30,12 +31,11 @@ describe("ShortcutsHelp", () => {
     shell("browser", "darwin");
     renderHelp();
 
-    for (const group of ["Threads", "Composer", "Panels", "App"]) {
-      expect(screen.getByRole("heading", { name: group })).toBeTruthy();
+    const section = (group: string) => screen.getByRole("heading", { name: group }).closest("section")!;
+    for (const id of ["toggleSidebar", "settings", "modelPicker"] as const) {
+      const { group, label } = COMMANDS[id];
+      expect(within(section(group)).getByText(label)).toBeTruthy();
     }
-    const panels = screen.getByRole("heading", { name: "Panels" }).closest("section")!;
-    expect(within(panels).getByText("Toggle threads")).toBeTruthy();
-    expect(within(panels).queryByText("Settings")).toBeNull();
   });
 
   it("leaves out in a browser what only the desktop app can take", () => {

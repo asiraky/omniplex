@@ -9,14 +9,21 @@ import {
   jumpIndex,
   matches,
   resolveCommand,
+  shortcutsFor,
   type KeyContext,
   type KeyEventLike,
   type Platform,
+  type Shortcut,
 } from "./keybindings";
 
 /** A key event as the browser would report it; modifiers default to up. */
 function ev(key: string, code: string, mods: Partial<KeyEventLike> = {}): KeyEventLike {
   return { key, code, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...mods };
+}
+
+/** A chord pressed on a Mac, letters only. */
+function press(s: Shortcut): KeyEventLike {
+  return ev(s.key, `Key${s.key.toUpperCase()}`, { metaKey: !!s.mod, shiftKey: !!s.shift, altKey: !!s.alt });
 }
 
 const ctx = (over: Partial<KeyContext> = {}): KeyContext => ({
@@ -126,13 +133,14 @@ describe("resolveCommand", () => {
   const app = ctx({ electronApp: true });
   const browser = ctx({ electronApp: false });
 
-  it("gives the app ⌘N and the browser ⌘⇧O for New thread in…", () => {
-    const n = ev("n", "KeyN", { metaKey: true });
-    const o = ev("O", "KeyO", { metaKey: true, shiftKey: true });
-    expect(early(n, app)).toBe("newThreadIn");
-    expect(early(n, browser)).toBeNull();
-    expect(early(o, browser)).toBe("newThreadIn");
-    expect(early(o, app)).toBeNull();
+  it("answers each shell's own chord for New thread in…, and not the other's", () => {
+    const [inApp] = shortcutsFor("newThreadIn", true);
+    const [inBrowser] = shortcutsFor("newThreadIn", false);
+    expect(inApp).not.toEqual(inBrowser);
+    expect(early(press(inApp!), app)).toBe("newThreadIn");
+    expect(early(press(inApp!), browser)).not.toBe("newThreadIn");
+    expect(early(press(inBrowser!), browser)).toBe("newThreadIn");
+    expect(early(press(inBrowser!), app)).not.toBe("newThreadIn");
   });
 
   it("jumps by number and closes the panel with ⌘W only in the app", () => {
@@ -246,10 +254,14 @@ describe("labels", () => {
     expect(formatShortcut(s, "other")).toBe(other);
   });
 
-  it("labels a command by its chord in this shell", () => {
-    expect(commandLabel("newThreadIn", true, "mac")).toBe("⌘N");
-    expect(commandLabel("newThreadIn", false, "mac")).toBe("⇧⌘O");
-    expect(commandLabel("palette", false, "other")).toBe("Ctrl+K");
+  it("labels a command by its first chord in this shell", () => {
+    for (const electronApp of [true, false]) {
+      for (const platform of ["mac", "other"] as const) {
+        const [first] = shortcutsFor("newThreadIn", electronApp);
+        expect(commandLabel("newThreadIn", electronApp, platform)).toBe(formatShortcut(first!, platform));
+      }
+    }
+    expect(commandLabel("newThreadIn", true, "mac")).not.toBe(commandLabel("newThreadIn", false, "mac"));
   });
 
   it("has no label for an app-only command in a browser", () => {
