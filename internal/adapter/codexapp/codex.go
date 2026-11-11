@@ -221,10 +221,9 @@ func trustArgs(cwd string) []string {
 // plans, and turn/plan/updated — recorded as plan.updated — never arrives.
 //
 // Codex waits one second for optional MCP servers before the first turn and
-// runs it without any still starting. An npx or uvx server, the ones omniplex
-// injects among them, routinely takes longer, so it would be missing from the
-// turn the user just sent. Ten seconds covers them; a server that is ready
-// sooner ends the wait sooner.
+// runs it without any still starting. An npx or uvx server routinely takes
+// longer, so it would be missing from the turn the user just sent. Ten seconds
+// covers them; a server that is ready sooner ends the wait sooner.
 func sessionArgs() []string {
 	return []string{
 		"-c", "tools.update_plan.enabled=true",
