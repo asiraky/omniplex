@@ -149,3 +149,16 @@ func TestErroredEditHasNoDiff(t *testing.T) {
 		}
 	}
 }
+
+// A patch past the cap stays off the wire; the result text still lands.
+func TestOversizedEditPatchIsDropped(t *testing.T) {
+	big := "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-" + strings.Repeat("x", adapter.MaxToolDiff) + "\n+y\n"
+	details, _ := json.Marshal(map[string]any{"patch": big})
+	upd := runToolTurn(t, fakeHost{},
+		`{"type":"tool_execution_start","toolCallId":"call_1","toolName":"edit","args":{"path":"src/a.ts"}}`,
+		`{"type":"tool_execution_end","toolCallId":"call_1","toolName":"edit","isError":false,"result":{"content":[{"type":"text","text":"Successfully replaced 1 block(s) in src/a.ts."}],"details":`+string(details)+`}}`,
+	)
+	if len(upd.Content) != 1 || upd.Content[0].Type != "text" {
+		t.Fatalf("content %+v, want only the result text", upd.Content)
+	}
+}

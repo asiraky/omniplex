@@ -848,7 +848,7 @@ func (s *session) handleToolEnd(raw json.RawMessage) {
 			Patch string `json:"patch"`
 		}
 		_ = json.Unmarshal(p.Result.Details, &d)
-		if d.Patch != "" {
+		if d.Patch != "" && len(d.Patch) <= adapter.MaxToolDiff {
 			content = append(content, proto.ToolContent{Type: "diff", Path: path, Text: d.Patch})
 		}
 	}

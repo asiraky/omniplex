@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePatch } from "./Diff";
+import { parsePatch } from "./patch";
 
 const kinds = (patch: string) => parsePatch(patch).map((l) => `${l.kind}:${l.text}`);
 

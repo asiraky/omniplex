@@ -17,17 +17,19 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useMemo, useState, type ComponentType } from "react";
 
-import { Diff, parsePatch } from "~/components/Diff";
+import { Diff } from "~/components/Diff";
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
 import { useDiffWrap } from "~/lib/diffWrap";
+import { parsePatch } from "~/lib/patch";
+import { toolImages } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
 import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
 import { LiveTail } from "./LiveTail";
 import type { FullToolBody } from "./LoadFullOutput";
-import { ToolImages, toolImages } from "./ToolImages";
+import { ToolImages } from "./ToolImages";
 
 // Few cards are truncated, so the loader arrives on first open. On a dropped
 // connection or after a redeploy its chunk can fail to load, and with no error

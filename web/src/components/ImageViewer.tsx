@@ -67,8 +67,11 @@ export function ImageViewer({
           ),
         )
       : 1;
-  // Zoom is relative to the fitted size, so its own pixel size is 1/fit.
-  const actual = Math.min(MAX_ZOOM, 1 / fit);
+  // Zoom is relative to the fitted size, so its own pixel size is 1/fit. A
+  // tall full-page screenshot fits far below that, so the ceiling rises to
+  // reach it.
+  const actual = 1 / fit;
+  const maxZoom = Math.max(MAX_ZOOM, actual);
   const width = size.width * fit * zoom;
   const height = size.height * fit * zoom;
 
@@ -87,7 +90,7 @@ export function ImageViewer({
   function changeZoom(direction: number) {
     setZoom((value) =>
       Math.min(
-        MAX_ZOOM,
+        maxZoom,
         Math.max(MIN_ZOOM, value * (direction > 0 ? 1.25 : 0.8)),
       ),
     );
@@ -151,7 +154,7 @@ export function ImageViewer({
                 type="button"
                 aria-label="Zoom in"
                 title="Zoom in (+)"
-                disabled={zoom >= MAX_ZOOM}
+                disabled={zoom >= maxZoom}
                 onClick={() => changeZoom(1)}
                 className={control}
               >

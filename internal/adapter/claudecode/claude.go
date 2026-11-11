@@ -2368,10 +2368,6 @@ func (s *session) toolResultContent(raw json.RawMessage) (string, []proto.ToolCo
 	return sb.String(), rest
 }
 
-// maxEditDiff bounds the patch a file change adds to its tool call. Past it
-// the diff is dropped: a whole-file Write would otherwise ride every replay.
-const maxEditDiff = 64 << 10
-
 // fileChangeDiff renders an Edit or Write result's structured output as a
 // unified patch. A new file has no hunks; its content becomes one all-added
 // hunk.
@@ -2417,7 +2413,7 @@ func fileChangeDiff(raw json.RawMessage) (proto.ToolContent, bool) {
 	default:
 		return proto.ToolContent{}, false
 	}
-	if sb.Len() > maxEditDiff {
+	if sb.Len() > adapter.MaxToolDiff {
 		return proto.ToolContent{}, false
 	}
 	return proto.ToolContent{Type: "diff", Path: out.FilePath, Text: sb.String()}, true

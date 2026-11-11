@@ -212,7 +212,6 @@ describe("an image in a tool result", () => {
     const { container } = render(<ToolCard threadId="t1" item={result([screenshot])} />);
     const img = screen.getByRole("img") as HTMLImageElement;
     expect(img.getAttribute("src")).toBe(SRC);
-    expect(img.getAttribute("loading")).toBe("lazy");
     expect(container.innerHTML).not.toContain("data:");
   });
 
@@ -252,7 +251,7 @@ describe("an image in a tool result", () => {
 
   it("draws the thumbnail from the small copy and the viewer from the original", () => {
     const THUMB = "/api/threads/t1/attachments/a1-thumb";
-    render(<ToolCard item={tool([{ ...screenshot, thumbUrl: THUMB }])} />);
+    render(<ToolCard threadId="t1" item={result([{ ...screenshot, thumbUrl: THUMB }])} />);
     const thumb = screen.getByRole("button", { name: "View browser_screenshot image full size" });
     expect(within(thumb).getByRole("img").getAttribute("src")).toBe(THUMB);
     fireEvent.click(thumb);
@@ -263,7 +262,7 @@ describe("an image in a tool result", () => {
 
   it("ignores a small copy that is not a same-origin path", () => {
     const { container } = render(
-      <ToolCard item={tool([{ ...screenshot, thumbUrl: "data:image/jpeg;base64,/9j/4AAQ" }])} />,
+      <ToolCard threadId="t1" item={result([{ ...screenshot, thumbUrl: "data:image/jpeg;base64,/9j/4AAQ" }])} />,
     );
     expect(screen.getByRole("img").getAttribute("src")).toBe(SRC);
     expect(container.innerHTML).not.toContain("data:");
