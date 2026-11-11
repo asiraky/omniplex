@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"time"
+
+	"github.com/asiraky/omniplex/internal/proto"
 )
 
 // dsnPragmas go in the DSN rather than through db.Exec because a pragma is
@@ -25,6 +27,16 @@ const dsnPragmas = "?_pragma=busy_timeout(5000)" +
 // week is far past any retry that can actually arrive.
 const commandRetention = 7 * 24 * time.Hour
 
+// autoVacuumIncremental is what PRAGMA auto_vacuum reads back as for
+// INCREMENTAL.
+const autoVacuumIncremental = 2
+
+// convertThreshold is the share of a legacy database's pages that must be
+// free before Open pays for the VACUUM that converts it. Below it the copy
+// would cost a startup and a database's worth of disk to reclaim little; the
+// database stays as it is until snapshot churn takes it over the line.
+const convertThreshold = 0.1
+
 // convertToIncrementalVacuum moves a database made before auto_vacuum was set
 // onto incremental vacuuming. The mode only changes at a VACUUM, which also
 // hands back every free page snapshot churn has left behind, so this is the
@@ -34,11 +46,18 @@ const commandRetention = 7 * 24 * time.Hour
 // and a full disk refusing the copy must not stop the server starting.
 func (s *Store) convertToIncrementalVacuum() {
 	var mode, free, pages int64
-	if err := s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil || mode == 2 {
+	if err := s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil || mode == autoVacuumIncremental {
 		return
 	}
-	s.db.QueryRow(`PRAGMA freelist_count`).Scan(&free)
-	s.db.QueryRow(`PRAGMA page_count`).Scan(&pages)
+	if err := s.db.QueryRow(`PRAGMA freelist_count`).Scan(&free); err != nil {
+		return
+	}
+	if err := s.db.QueryRow(`PRAGMA page_count`).Scan(&pages); err != nil {
+		return
+	}
+	if float64(free) <= convertThreshold*float64(pages) {
+		return
+	}
 	log.Printf("store: compacting the database once for incremental vacuum (%d of %d pages free)", free, pages)
 	start := time.Now()
 	if _, err := s.db.Exec(`VACUUM`); err != nil {
@@ -59,7 +78,7 @@ func (s *Store) convertToIncrementalVacuum() {
 func (s *Store) Maintain(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cutoff := time.Now().Add(-commandRetention).UnixMilli()
+	cutoff := proto.NowMillis() - commandRetention.Milliseconds()
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM commands WHERE created_at < ?`, cutoff); err != nil {
 		return err
 	}

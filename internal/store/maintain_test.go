@@ -151,6 +151,42 @@ func TestOpenConvertsALegacyDatabaseToIncrementalVacuumAndKeepsItsRows(t *testin
 	}
 }
 
+// A legacy database with little free is not worth a full copy at startup:
+// Open leaves it in its old mode and its file the size it was.
+func TestOpenLeavesALegacyDatabaseWithASmallFreelistUnconverted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(schema); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+	// 1000 rows, 50 deleted: about 5% of the pages free.
+	churn(t, raw, "scratch", 1000, 950)
+	freeBefore := pragmaInt(t, raw, "freelist_count")
+	pagesBefore := pragmaInt(t, raw, "page_count")
+	if freeBefore == 0 || float64(freeBefore) > convertThreshold*float64(pagesBefore) {
+		t.Fatalf("fixture freelist %d of %d pages, want some but under the threshold", freeBefore, pagesBefore)
+	}
+	raw.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	if got := pragmaInt(t, s.db, "auto_vacuum"); got != 0 {
+		t.Fatalf("auto_vacuum after open = %d, want 0: the VACUUM ran under the threshold", got)
+	}
+	// Open's own migrations may reuse a few free pages, but a VACUUM would
+	// have cut the file by the whole freelist.
+	if got := pragmaInt(t, s.db, "page_count"); got < pagesBefore {
+		t.Fatalf("page_count after open = %d, want the %d it had: the file was compacted", got, pagesBefore)
+	}
+}
+
 // Deleted rows leave their pages on the freelist; Maintain hands them back to
 // the filesystem so the file shrinks.
 func TestMaintainReturnsFreedPagesToTheFilesystem(t *testing.T) {
