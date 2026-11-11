@@ -77,7 +77,7 @@ func TestContextCompactionCarriesManualOrigin(t *testing.T) {
 		"turnId": "codex-turn",
 		"item":   map[string]any{"id": "compact-1", "type": "contextCompaction"},
 	})
-	s.handleItem(true, "", params)
+	s.handleItem("item/completed", "", params)
 
 	em := <-s.events
 	if em.Type != proto.ContextCompacted {

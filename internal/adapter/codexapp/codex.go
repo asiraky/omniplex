@@ -1048,7 +1048,7 @@ func (s *session) handleSubagentNotification(method, thread, turn string, params
 		if p.Item.Type == "contextCompaction" {
 			return
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method, turn, params)
 	case "item/agentMessage/delta":
 		s.emitMessageDelta(turn, parseDelta(params))
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
@@ -1097,7 +1097,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			_ = json.Unmarshal(params, &p)
 			turn = s.ensureTurn(p.TurnID)
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method, turn, params)
 
 	case "item/agentMessage/delta":
 		p := parseDelta(params)
@@ -1364,19 +1364,16 @@ func (s *session) decodeFailed(method string, err error) {
 	}
 }
 
-func (s *session) handleItem(completed bool, turn string, params json.RawMessage) {
+func (s *session) handleItem(method, turn string, params json.RawMessage) {
 	var p struct {
 		Item   codexItem `json:"item"`
 		TurnID string    `json:"turnId"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
-		method := "item/started"
-		if completed {
-			method = "item/completed"
-		}
 		s.decodeFailed(method, err)
 		return
 	}
+	completed := method == "item/completed"
 	it := p.Item
 	// open reports whether omniplex has this turn open; a completion arriving with
 	// no open turn is a straggler from after turn/completed. Labelling such
