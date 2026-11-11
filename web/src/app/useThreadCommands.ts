@@ -203,7 +203,12 @@ export function useThreadCommands({
   // The transcript's own buttons for a thread that stopped: carry on, retry
   // the workspace, or tear it down.
   const threadCommand = useCallback(
-    (command: string) => activeId && clientRef.current?.command(command, { threadId: activeId }),
+    (command: string) => {
+      if (!activeId) return;
+      clientRef.current?.command(command, { threadId: activeId }).catch((e) => {
+        toast.error("That didn't go through", { description: e.message });
+      });
+    },
     [activeId, clientRef],
   );
 

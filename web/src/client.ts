@@ -75,6 +75,7 @@ export class Client {
   private heartbeat: number | null = null;
   private watching = false;
   private lastHeard = 0;
+  private openedAt = 0;
 
   private pending = new Map<string, Pending>();
 
@@ -109,6 +110,7 @@ export class Client {
 
   private open() {
     this.retryTimer = null;
+    this.openedAt = Date.now();
     this.events.onStatus("connecting");
 
     const ws = new WebSocket(this.url);
@@ -119,7 +121,6 @@ export class Client {
       // leave the socket open with no hello sent — the client looked connected
       // and waited forever for a welcome that could not come.
       try {
-        this.events.onStatus("online");
         this.raw({ type: "hello", protocolVersion: 1, clientId: clientId() });
 
         // Re-attach where we left off; the server sends only what we missed.
@@ -144,7 +145,7 @@ export class Client {
       this.handle(JSON.parse(e.data as string) as ServerFrame);
     };
 
-    ws.onclose = () => this.closed(this.backoff());
+    ws.onclose = () => this.lost(this.backoff());
 
     ws.onerror = () => ws.close();
   }
@@ -161,11 +162,14 @@ export class Client {
     return Math.random() * BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)];
   }
 
-  /** The socket is gone: settle what waited on it and, unless we closed it, retry after `delay`. */
-  private closed(delay: number) {
+  /** The socket is gone: settle what waited on it and, unless we closed it, retry after `delay` (0: now). */
+  private lost(delay: number) {
     if (this.stableTimer) window.clearTimeout(this.stableTimer);
     this.stableTimer = null;
     this.ws = null;
+    // A probe of the old socket must not fire against its replacement.
+    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer);
+    this.probeTimer = null;
     this.settleProbe(false);
     if (this.closedByUs) return;
     this.dropAuthFlows();
@@ -185,7 +189,7 @@ export class Client {
     if (!ws) return;
     ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
     ws.close();
-    this.closed(0);
+    this.lost(0);
   }
 
   // Wake signals. A page coming back to the screen, the network coming back,
@@ -202,6 +206,11 @@ export class Client {
       // not for a phone that was asleep. Try now.
       window.clearTimeout(this.retryTimer);
       this.open();
+    } else if (this.ws?.readyState === WebSocket.CONNECTING) {
+      // An attempt begun before the network changed can hang on the old one
+      // until the browser gives up on it. One that has had a probe's worth of
+      // time is replaced rather than waited on.
+      if (Date.now() - this.openedAt > PROBE_TIMEOUT) this.drop();
     } else {
       this.probe();
     }
@@ -418,12 +427,12 @@ export class Client {
   }
 
   /**
-   * Send a command, resolving with its ack result. Safe to retry. Rejects with
+   * Send a command, resolving with its ack result. Safe to retry: passing a
+   * failed command's id back runs it at most once. Rejects with
    * CommandTimeout if, COMMAND_TIMEOUT after sending (and every such interval
    * after), the connection is down or fails a probe.
    */
-  command(command: string, args: unknown): Promise<any> {
-    const commandId = uuid();
+  command(command: string, args: unknown, commandId = uuid()): Promise<any> {
     const frame = { type: "command", commandId, command, args };
     return new Promise((resolve, reject) => {
       const p: Pending = { resolve, reject, frame, timer: 0 };
@@ -491,6 +500,9 @@ export class Client {
         // Checked first: if this page is running a bundle the server has
         // replaced, nothing else it reports is worth acting on.
         checkBuild(f.build);
+        // Online once the server has answered, not when the socket opened: on
+        // a slow link the gap is seconds, and "Reconnecting…" should last it.
+        this.events.onStatus("online");
         this.events.onThreads(f.threads ?? []);
         this.events.onHarnesses(f.harnesses ?? []);
         this.events.onProjects(f.projects ?? []);

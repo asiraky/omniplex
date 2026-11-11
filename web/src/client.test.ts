@@ -6,6 +6,7 @@ import type { ThreadState } from "./protocol";
 
 // A socket the test opens and closes by hand, recording what the client sends.
 class FakeSocket {
+  static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static all: FakeSocket[] = [];
   readyState = 0;
@@ -63,6 +64,29 @@ function setVisibility(v: DocumentVisibilityState) {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 const presence = (s: FakeSocket) => s.sent.filter((f) => f.type === "presence");
+const commandFrames = (s: FakeSocket) => s.sent.filter((f) => f.type === "command");
+
+// Connected and greeted, so nothing is probing yet.
+function live(on: Partial<ClientEvents> = {}): { c: Client; s: FakeSocket } {
+  const c = new Client("ws://test", { ...events, ...on });
+  clients.push(c);
+  c.connect();
+  latest().open();
+  latest().reply({ type: "welcome" });
+  return { c, s: latest() };
+}
+
+// A fetch that never answers and rejects only when aborted, as fetch does.
+function stallFetch() {
+  vi.stubGlobal(
+    "fetch",
+    (_url: string, init: { signal: AbortSignal }) =>
+      new Promise((_, reject) =>
+        init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+      ),
+  );
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+}
 
 beforeEach(() => {
   FakeSocket.all = [];
@@ -125,23 +149,27 @@ describe("presence", () => {
   });
 });
 
-describe("liveness probe", () => {
-  // Open, and heard from, so nothing is probing yet.
-  function live(): FakeSocket {
-    const c = newClient();
-    c.connect();
+describe("status", () => {
+  it("is online once the server has greeted, not when the socket opens", () => {
+    const statuses: ConnectionStatus[] = [];
+    const client = new Client("ws://test", { ...events, onStatus: (st) => statuses.push(st) });
+    clients.push(client);
+    client.connect();
     latest().open();
+    expect(statuses).toEqual(["connecting"]);
     latest().reply({ type: "welcome" });
-    return latest();
-  }
+    expect(statuses).toEqual(["connecting", "online"]);
+  });
+});
 
+describe("liveness probe", () => {
   for (const [name, fire] of [
     ["becoming visible", () => setVisibility("visible")],
     ["coming back online", () => window.dispatchEvent(new Event("online"))],
     ["a back-forward cache restore", () => window.dispatchEvent(new Event("pageshow"))],
   ] as const) {
     it(`pings on ${name}`, () => {
-      const s = live();
+      const { s } = live();
       fire();
       expect(pings(s)).toBe(1);
     });
@@ -149,11 +177,7 @@ describe("liveness probe", () => {
 
   it("drops a silent socket and reconnects at once, without waiting on backoff", () => {
     const statuses: ConnectionStatus[] = [];
-    const c = new Client("ws://test", { ...events, onStatus: (st) => statuses.push(st) });
-    clients.push(c);
-    c.connect();
-    latest().open();
-    latest().reply({ type: "welcome" });
+    live({ onStatus: (st) => statuses.push(st) });
     vi.spyOn(Math, "random").mockReturnValue(0.99);
 
     setVisibility("visible");
@@ -165,7 +189,7 @@ describe("liveness probe", () => {
   });
 
   it("takes any frame as an answer, not just the pong", () => {
-    const s = live();
+    const { s } = live();
     setVisibility("visible");
     vi.advanceTimersByTime(2_000);
     s.reply({ type: "threads", threads: [] });
@@ -174,14 +198,26 @@ describe("liveness probe", () => {
   });
 
   it("shares one ping between overlapping wake signals", () => {
-    const s = live();
+    const { s } = live();
     setVisibility("visible");
     window.dispatchEvent(new Event("pageshow"));
     expect(pings(s)).toBe(1);
   });
 
+  it("never lets a probe of a lost socket drop its replacement", () => {
+    const { s } = live();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    setVisibility("visible");
+    vi.advanceTimersByTime(2_800);
+    s.close(); // went on its own, mid-probe; retried at once
+    expect(FakeSocket.all).toHaveLength(2);
+    latest().open();
+    vi.advanceTimersByTime(1_000);
+    expect(FakeSocket.all).toHaveLength(2);
+  });
+
   it("pings on a heartbeat while visible, and stops while hidden", () => {
-    const s = live();
+    const { s } = live();
     vi.advanceTimersByTime(25_000);
     expect(pings(s)).toBe(1);
     s.reply({ type: "pong" });
@@ -197,7 +233,7 @@ describe("liveness probe", () => {
   });
 
   it("cuts a backoff wait short on wake", () => {
-    const s = live();
+    const { s } = live();
     vi.spyOn(Math, "random").mockReturnValue(0.99);
     s.close(); // the server went away
     expect(FakeSocket.all).toHaveLength(1);
@@ -206,6 +242,17 @@ describe("liveness probe", () => {
     expect(FakeSocket.all).toHaveLength(2);
     // And the abandoned wait does not open a third.
     vi.advanceTimersByTime(1_000);
+    expect(FakeSocket.all).toHaveLength(2);
+  });
+
+  it("replaces a stalled connection attempt on wake, but not a fresh one", () => {
+    const c = newClient();
+    c.connect();
+    window.dispatchEvent(new Event("online"));
+    expect(FakeSocket.all).toHaveLength(1);
+
+    vi.advanceTimersByTime(5_000);
+    window.dispatchEvent(new Event("online"));
     expect(FakeSocket.all).toHaveLength(2);
   });
 
@@ -221,22 +268,37 @@ describe("liveness probe", () => {
 });
 
 describe("reconnect backoff", () => {
-  it("draws each wait uniformly below its step's ceiling", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
+  // The wait before each of `n` successive retries, at a fixed draw.
+  function waits(draw: number, n: number): number[] {
+    vi.spyOn(Math, "random").mockReturnValue(draw);
     const c = newClient();
     c.connect();
-    const waits: number[] = [];
-    for (let i = 0; i < 7; i++) {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
       const before = FakeSocket.all.length;
       latest().close();
       let waited = 0;
       while (FakeSocket.all.length === before) {
-        vi.advanceTimersByTime(10);
-        waited += 10;
+        vi.advanceTimersByTime(1);
+        waited += 1;
       }
-      waits.push(waited);
+      out.push(waited);
     }
-    expect(waits).toEqual([150, 500, 1000, 2000, 4000, 8000, 8000]);
+    c.close();
+    return out;
+  }
+
+  it("scales each wait by the draw, so a lower draw always retries sooner", () => {
+    const half = waits(0.5, 8);
+    const quarter = waits(0.25, 8);
+    expect(quarter.map((w) => w * 2)).toEqual(half);
+  });
+
+  it("climbs and then holds at its last step", () => {
+    const w = waits(0.5, 8);
+    for (let i = 1; i < w.length; i++) expect(w[i]).toBeGreaterThanOrEqual(w[i - 1]);
+    expect(w[0]).toBeLessThan(w[w.length - 1]);
+    expect(w[w.length - 1]).toBe(w[w.length - 2]);
   });
 
   it("can retry at once on a low draw", () => {
@@ -244,32 +306,24 @@ describe("reconnect backoff", () => {
     const c = newClient();
     c.connect();
     latest().close();
-    vi.advanceTimersByTime(0);
     expect(FakeSocket.all).toHaveLength(2);
   });
 });
 
 describe("command timeout", () => {
-  const commandFrames = (s: FakeSocket) => s.sent.filter((f) => f.type === "command");
-
-  it("fails with the command's id when the socket never comes up", async () => {
+  it("fails, carrying its id for a retry, when the socket never comes up", async () => {
     const c = newClient();
     c.connect();
-    const result = c.command("prompt", { text: "hi" });
-    const caught = result.catch((e) => e);
+    const caught = c.command("prompt", { text: "hi" }, "cmd-1").catch((e) => e);
     await vi.advanceTimersByTimeAsync(15_000);
     const err = await caught;
     expect(err).toBeInstanceOf(CommandTimeout);
     expect(err.command).toBe("prompt");
-    expect(err.commandId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(err.commandId).toBe("cmd-1");
   });
 
   it("keeps waiting on a connection that answers, however long the command takes", async () => {
-    const c = newClient();
-    c.connect();
-    const s = latest();
-    s.open();
-    s.reply({ type: "welcome" });
+    const { c, s } = live();
     let settled: unknown = "pending";
     c.command("create_thread", {}).then((v) => (settled = v), (e) => (settled = e));
     const id = commandFrames(s)[0].commandId;
@@ -291,11 +345,7 @@ describe("command timeout", () => {
   });
 
   it("fails, and reconnects, when the deadline's probe goes unanswered", async () => {
-    const c = newClient();
-    c.connect();
-    const s = latest();
-    s.open();
-    s.reply({ type: "welcome" });
+    const { c } = live();
     const caught = c.command("cancel", {}).catch((e) => e);
 
     await vi.advanceTimersByTimeAsync(15_000 + 3_000);
@@ -307,11 +357,7 @@ describe("command timeout", () => {
   });
 
   it("probes a quiet socket on send, and resends on the replacement with the same id", async () => {
-    const c = newClient();
-    c.connect();
-    const s = latest();
-    s.open();
-    s.reply({ type: "welcome" });
+    const { c, s } = live();
     await vi.advanceTimersByTimeAsync(10_000); // quiet since
 
     let settled: unknown = "pending";
@@ -331,21 +377,12 @@ describe("command timeout", () => {
 });
 
 describe("snapshot fetch", () => {
+  const attaches = () => latest().sent.filter((f) => f.type === "attach");
+
   it("falls back to attaching over the socket when the fetch stalls", async () => {
-    // Never answers; rejects only when aborted, as fetch does.
-    vi.stubGlobal(
-      "fetch",
-      (_url: string, init: { signal: AbortSignal }) =>
-        new Promise((_, reject) =>
-          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
-        ),
-    );
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const c = newClient();
-    c.connect();
-    latest().open();
+    stallFetch();
+    const { c } = live();
     c.attach("t");
-    const attaches = () => latest().sent.filter((f) => f.type === "attach");
 
     await vi.advanceTimersByTimeAsync(9_999);
     expect(attaches()).toEqual([]);
@@ -354,20 +391,11 @@ describe("snapshot fetch", () => {
   });
 
   it("does nothing for a fetch superseded by another attach", async () => {
-    vi.stubGlobal(
-      "fetch",
-      (_url: string, init: { signal: AbortSignal }) =>
-        new Promise((_, reject) =>
-          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
-        ),
-    );
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const c = newClient();
-    c.connect();
-    latest().open();
+    stallFetch();
+    const { c } = live();
     c.attach("a");
     c.attach("b");
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(latest().sent.filter((f) => f.type === "attach")).toEqual([{ type: "attach", threadId: "b" }]);
+    expect(attaches()).toEqual([{ type: "attach", threadId: "b" }]);
   });
 });
