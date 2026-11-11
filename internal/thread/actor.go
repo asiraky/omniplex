@@ -351,7 +351,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// the work — that is what Recover is for, and this is the evidence it
 	// needs.
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
-	a.claimRow(meta.Phase)
+	a.holdRowOnlyIfAsked(meta.Phase)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
@@ -418,7 +418,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
 	}
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
-	a.claimRow(meta.Phase)
+	a.holdRowOnlyIfAsked(meta.Phase)
 	for _, turn := range state.Turns {
 		if !turn.Done {
 			a.turnActive = turn.ID
@@ -1471,9 +1471,11 @@ func (a *Actor) shutdown(hard bool) {
 		// with this process. The next start has to tell the agent, or it
 		// waits for a result that never comes.
 		phase = "background"
-	case a.owedPhase() != "":
+	default:
 		// A continuation that was never sent dies with this process too.
-		phase = a.owedPhase()
+		if owed := a.owedPhase(); owed != "" {
+			phase = owed
+		}
 	}
 	_ = a.store.SetPhase(ctx, a.ID, phase)
 
@@ -1554,11 +1556,12 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 		_ = a.store.SetTitle(ctx, a.ID, title)
 	}
 
-	// A human prompt is the agent's next chance to hear about work a restart
-	// killed. One that gets in ahead of the continuation supersedes it — the
-	// human has picked the thread up — and carries its news instead.
+	// A turn a human asked for — a prompt, or a continue — is the agent's
+	// next chance to hear about work a restart killed. One that gets in ahead
+	// of the continuation supersedes it — the human has picked the thread up
+	// — and carries its news instead.
 	text, note := prompt, ""
-	if recovery == nil {
+	if recovery == nil || recovery.Cause == proto.RecoveryContinue {
 		a.abandonRecovery()
 		note, a.heldNote = a.heldNote, ""
 		text = withNote(note, prompt)
@@ -1572,7 +1575,9 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	cancelPrompt()
 	if err != nil {
 		// A refused prompt delivered nothing, so its note waits for the next.
-		a.heldNote = withNote(note, a.heldNote)
+		if note != "" {
+			a.heldNote = withNote(note, a.heldNote)
+		}
 		// turnActive is left for append to clear: a prompt that failed on
 		// the way out may still have reached the harness, and the closing
 		// snapshot is the only way to find out what it did.
@@ -1656,11 +1661,11 @@ func (a *Actor) abandonRecovery() {
 	a.writePhase(prev)
 }
 
-// claimRow lets the pending continuation hold the thread's row only when the
-// row is what asked for it. A thread nobody recovered — its last chain given
+// holdRowOnlyIfAsked lets the pending continuation hold the thread's row only
+// when the row is what asked for it. A thread nobody recovered — its last chain given
 // up on, or never woken — still carries its plan's note to the next prompt,
 // but must not start waking on restarts because someone opened it.
-func (a *Actor) claimRow(rowPhase string) {
+func (a *Actor) holdRowOnlyIfAsked(rowPhase string) {
 	if a.recovery != nil && !interruptedPhase(rowPhase) {
 		a.recovery.phase = ""
 	}

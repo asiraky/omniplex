@@ -496,7 +496,10 @@ func TestContinuationOwedAcrossASecondRestart(t *testing.T) {
 	if got := deadLines(in.Text); strings.Join(got, "|") != "- agent: map the auth flow" {
 		t.Fatalf("continuation after the second restart = %q; want it to name the dead subagent", in.Text)
 	}
-	a, _ := mgr3.Peek(id)
+	a, ok := mgr3.Peek(id)
+	if !ok {
+		t.Fatal("thread was not brought back")
+	}
 	waitFor(t, func() bool {
 		s, err := a.State(ctx)
 		return err == nil && lastTurnOf(s).ID == in.TurnID
@@ -565,6 +568,48 @@ func TestHumanPromptSupersedesPendingContinuation(t *testing.T) {
 	if n := sa.callsWhere(func(adapter.PromptInput) bool { return true }); n != 2 {
 		t.Fatalf("harness prompts = %d; want the refused continuation and the human's", n)
 	}
+}
+
+// Pressing continue is a human picking the thread up too.
+func TestHumanContinueSupersedesPendingContinuation(t *testing.T) {
+	st := openRecoveryStore(t)
+	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
+	mgr, actor := startRecoveryThread(t, st, sa)
+	ctx := context.Background()
+	startJob(sa.fakeAdapter, "a1", proto.JobAgent, "audit deps")
+	waitJobs(t, actor, 1)
+	id := actor.ID
+	mgr.Shutdown()
+
+	sa.script(func(in adapter.PromptInput) error {
+		if strings.HasSuffix(in.Text, continuePrompt) {
+			return nil
+		}
+		return errors.New("harness hiccup")
+	})
+	m := NewManager(st, func(string, ...any) {}, sa)
+	m.recoveryRetries = []time.Duration{time.Hour}
+	defer m.Shutdown()
+	a, err := m.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		s, err := a.State(ctx)
+		return err == nil && len(s.Turns) == 1 && s.Turns[0].Done
+	})
+
+	if _, err := a.Continue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	in := recvPrompt(t, sa.thread().prompts)
+	if got := deadLines(in.Text); strings.Join(got, "|") != "- agent: audit deps" || !strings.HasSuffix(in.Text, "\n\n"+continuePrompt) {
+		t.Fatalf("continue sent as %q; want the note in front of the continue prompt", in.Text)
+	}
+	if err := a.Recover(ctx); err != nil {
+		t.Fatalf("recover after a human continued: %v", err)
+	}
+	noPrompt(t, sa.thread().prompts, 50*time.Millisecond)
 }
 
 // ---- retries ----
