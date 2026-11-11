@@ -31,7 +31,7 @@ import { AppDialogs } from "./components/AppDialogs";
 import { DeleteThreadDialog } from "./components/DeleteThreadDialog";
 import { EmptyState } from "./components/EmptyState";
 import { SetupScreen, ThemePreviewScreen, ToolsScreen, UsageScreen } from "./components/FullPageScreens";
-import { CommandPalette, ShortcutsHelp } from "./components/Overlays";
+import { LazyCommandPalette, LazyShortcutsHelp, usePrefetchOverlays } from "./components/Overlays";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
@@ -101,6 +101,7 @@ export function App() {
   // screen of many, and ⌘K has to work from all of them.
   const projectView = useProjectView(projects);
   const palette = usePalette();
+  usePrefetchOverlays();
   const showJumpHints = useModHeld(isElectronApp());
   // One composer at a time, the thread's or the draft's, behind one handle.
   const { composerRef } = recents;
@@ -192,7 +193,7 @@ export function App() {
   // Rendered on every screen, the full-page ones too.
   const overlays = (
     <>
-      <CommandPalette
+      <LazyCommandPalette
         // Asked for another page while open: start over on it in place.
         key={palette.nonce}
         open={palette.open}
@@ -208,7 +209,7 @@ export function App() {
         onListWorkspaces={projectActions.listWorkspaces}
         onRename={activeId && meta ? (title) => renameThread(activeId, title) : undefined}
       />
-      <ShortcutsHelp open={palette.helpOpen} onOpenChange={palette.setHelpOpen} />
+      <LazyShortcutsHelp open={palette.helpOpen} onOpenChange={palette.setHelpOpen} />
     </>
   );
 
