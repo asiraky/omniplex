@@ -35,7 +35,8 @@ func onlyToolUpdate(t *testing.T, got []proto.Emission) proto.ToolCallUpdatedPay
 // TestCompletedItemStatus guards the status each completed tool card gets. A
 // declined command or file change rendered as completed (or failed) though it
 // never ran; a failed MCP call rendered "null" under a green tick; an MCP image
-// put kilobytes of base64 into the card as text.
+// put kilobytes of base64 into the card as text, and a result the tool
+// flagged isError showed as a success.
 func TestCompletedItemStatus(t *testing.T) {
 	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 	tests := []struct {
@@ -100,11 +101,24 @@ func TestCompletedItemStatus(t *testing.T) {
 			forbid:     []string{"null"},
 		},
 		{
-			name:        "mcp image becomes a placeholder",
+			name:        "mcp image with no host store becomes a placeholder",
 			item:        `{"type":"mcpToolCall","id":"call_m3","server":"browser","tool":"screenshot","status":"completed","arguments":{},"result":{"content":[{"type":"image","data":"` + imageData + `","mimeType":"image/png"}]},"error":null,"durationMs":400}`,
 			wantStatus:  proto.StatusCompleted,
 			forbid:      []string{imageData},
-			wantMention: []string{"image/png"},
+			wantMention: []string{"image not shown"},
+		},
+		{
+			name:        "mcp audio becomes a placeholder",
+			item:        `{"type":"mcpToolCall","id":"call_m8","server":"tts","tool":"say","status":"completed","arguments":{},"result":{"content":[{"type":"audio","data":"` + imageData + `","mimeType":"audio/wav"}]},"error":null,"durationMs":400}`,
+			wantStatus:  proto.StatusCompleted,
+			forbid:      []string{imageData},
+			wantMention: []string{"audio/wav"},
+		},
+		{
+			name:       "mcp result the tool flagged isError",
+			item:       `{"type":"mcpToolCall","id":"call_m9","server":"browser","tool":"navigate","status":"completed","arguments":{},"result":{"content":[{"type":"text","text":"page not found"}],"isError":true},"error":null,"durationMs":40}`,
+			wantStatus: proto.StatusFailed,
+			wantText:   []string{"page not found"},
 		},
 		{
 			name:       "mcp structured content when content is empty",
