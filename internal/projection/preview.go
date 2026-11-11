@@ -35,6 +35,10 @@ const (
 	// maxToolContent is how many content entries one item keeps. Past it a
 	// tool is streaming, and the log has the rest.
 	maxToolContent = 16
+	// maxToolText is how much text one item's content keeps in all. Each
+	// field is capped on its own, but sixteen capped diffs would still be a
+	// few hundred KB; past this, further entries are dropped.
+	maxToolText = 32 << 10
 	// maxInputText is how much string text one tool input keeps in all. Each
 	// string is capped on its own too, but an input of many middling strings
 	// (an edit list, a batch of files) would get through that whole.
@@ -68,9 +72,16 @@ func capText(s string) (string, bool) {
 			tailStart++
 		}
 	}
-	omitted := utf8.RuneCountInString(s[h:tailStart])
-	return s[:h] + "\n\n[… " + strconv.Itoa(omitted) + " characters truncated …]\n\n" + s[tailStart:], true
+	return s[:h] + "\n\n" + truncMarker(s[h:tailStart]) + "\n\n" + s[tailStart:], true
 }
+
+// truncMarker is what stands in for the text omitted, counted in characters.
+func truncMarker(omitted string) string {
+	return "[… " + strconv.Itoa(utf8.RuneCountInString(omitted)) + " characters truncated …]"
+}
+
+// contentText is how much text c holds, as maxToolText counts it.
+func contentText(c proto.ToolContent) int { return len(c.Text) + len(c.Old) + len(c.New) }
 
 // capToolContent caps the free-text fields of one content entry. Path is a
 // name, not output, and is left alone.
@@ -83,17 +94,28 @@ func capToolContent(c proto.ToolContent) (proto.ToolContent, bool) {
 }
 
 // appendToolContent adds a tool update's content to the item, capped, and
-// marks the item truncated if any of it was cut or dropped.
+// marks the item truncated if any of it was cut or dropped. An entry is kept
+// while the entries before it hold less than maxToolText, so what is kept is
+// the same however the content arrived.
 func appendToolContent(it *Item, add []proto.ToolContent) {
 	if room := maxToolContent - len(it.Content); len(add) > room {
 		add = add[:max(room, 0)]
 		it.Truncated = true
 	}
+	used := 0
+	for _, c := range it.Content {
+		used += contentText(c)
+	}
 	for _, c := range add {
+		if used >= maxToolText {
+			it.Truncated = true
+			return
+		}
 		c, cut := capToolContent(c)
 		if cut {
 			it.Truncated = true
 		}
+		used += contentText(c)
 		it.Content = append(it.Content, c)
 	}
 }
@@ -109,13 +131,20 @@ func capItem(it *Item) bool {
 		it.Truncated = true
 		changed = true
 	}
+	used := 0
 	for i := range it.Content {
+		if used >= maxToolText {
+			it.Content = append([]proto.ToolContent(nil), it.Content[:i]...)
+			it.Truncated = true
+			return true
+		}
 		c, cut := capToolContent(it.Content[i])
 		if cut {
 			it.Content[i] = c
 			it.Truncated = true
 			changed = true
 		}
+		used += contentText(it.Content[i])
 	}
 	return changed
 }
@@ -189,7 +218,7 @@ func (w *jsonCapper) value() error {
 	case string:
 		s, cut := capText(v)
 		if len(s) > inputKeep && len(s) > w.left {
-			s, cut = "[… "+strconv.Itoa(utf8.RuneCountInString(v))+" characters truncated …]", true
+			s, cut = truncMarker(v), true
 		} else {
 			w.left -= len(s)
 		}

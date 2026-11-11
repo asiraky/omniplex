@@ -548,8 +548,8 @@ func (a *Actor) State(ctx context.Context) (*projection.State, error) {
 }
 
 // read runs fn on the live projection inside the actor loop and returns what
-// it made. fn must copy whatever it returns: the state goes on changing the
-// moment it returns.
+// it made. fn may refresh the state's indexes, and must copy whatever it
+// returns: the state goes on changing the moment it returns.
 func (a *Actor) read(ctx context.Context, fn func(*projection.State) any) (any, error) {
 	return a.call(ctx, command{kind: cmdRead, read: fn})
 }

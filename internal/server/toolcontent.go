@@ -11,8 +11,9 @@ import (
 
 // handleToolContent serves one tool call's full output and input. The
 // timeline and the events a client is sent carry only a preview of each, so
-// the whole of a long one is fetched when the reader opens it. Read straight from the log: a thread's actor is never
-// started or copied for it, which on a long thread is the expensive part.
+// the whole of a long one is fetched when the reader opens it. Read straight
+// from the log: a thread's actor is never started or copied for it, which on
+// a long thread is the expensive part.
 func (s *Server) handleToolContent(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	threadID, itemID := r.PathValue("id"), r.PathValue("itemId")

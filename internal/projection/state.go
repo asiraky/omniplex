@@ -622,7 +622,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		if j.ToolCallID != "" {
 			if i, ok := s.itemIndex[j.ToolCallID]; ok {
 				it := &s.Items[i]
-				if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+				if proto.ToolRunning(it.Status) {
 					switch j.Status {
 					case proto.JobFailed:
 						it.settle(proto.StatusFailed)
@@ -638,7 +638,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 			for i := range s.Items {
 				it := &s.Items[i]
 				if it.Kind == ItemTool && it.ParentID == j.ToolCallID && !live[it.ID] &&
-					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) {
+					proto.ToolRunning(it.Status) {
 					it.settle(proto.StatusCancelled)
 				}
 			}
@@ -944,7 +944,7 @@ func (s *State) Apply(ev proto.Event) {
 				}
 				if live[it.ID] {
 					it.Tail = ""
-				} else if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+				} else if proto.ToolRunning(it.Status) {
 					it.settle(proto.StatusCancelled)
 				}
 			}

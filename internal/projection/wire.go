@@ -147,12 +147,12 @@ func WireEvent(ev proto.Event) proto.Event {
 // wireItems copies s.Items[lo:hi] for a client, Input-capped. A child item
 // rides along only while its parent is still running, and then only if it is
 // among the parent's last WireChildTail children, is itself still running, or
-// is the parent's newest message — a running child left out would miss the
-// update that settles it, which the client drops for an item it does not
-// hold, and a message still streaming would grow from a missing prefix,
-// since a chunk carries no status to tell it from a new one. A settled parent's
-// narration lives in the roster's drill-down, fetched on demand. Each parent
-// in the copy counts the children it went without, across the whole timeline.
+// is the parent's newest message. The client drops an update for an item it
+// does not hold, so a running child left out would never settle. A chunk
+// carries no status to tell an old message from a new one, so a message still
+// streaming would grow from a missing prefix. A settled parent's narration
+// lives in the roster's drill-down, fetched on demand. Each parent in the copy
+// counts the children it went without, across the whole timeline.
 func (s *State) wireItems(lo, hi int) []Item {
 	// Walking back from the end ranks each child among its parent's: the
 	// first WireChildTail met are the tail. The walk ends with every
@@ -182,10 +182,10 @@ func (s *State) wireItems(lo, hi int) []Item {
 			live, ok := running[p]
 			if !ok {
 				parent, found := s.ItemByID(p)
-				live = found && (parent.Status == proto.StatusInProgress || parent.Status == proto.StatusPending)
+				live = found && proto.ToolRunning(parent.Status)
 				running[p] = live
 			}
-			if !live || !(tail[i-lo] || it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) {
+			if !live || !(tail[i-lo] || proto.ToolRunning(it.Status)) {
 				continue
 			}
 			carried[p]++

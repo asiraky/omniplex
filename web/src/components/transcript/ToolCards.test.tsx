@@ -146,7 +146,7 @@ describe("a tool card whose input was cut", () => {
     expect(screen.queryByText(/cut …/)).toBeNull();
   });
 
-  it("keeps the preview input when the server sends output only", async () => {
+  it("keeps the preview input when the call recorded no input", async () => {
     serve(full("the whole output"));
     openCard(tool({ input: { command: "kept" } }));
     fireEvent.click(screen.getByRole("button", { name: "Load full output" }));

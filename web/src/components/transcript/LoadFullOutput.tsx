@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { RetryRow, textButton } from "~/components/RetryRow";
 import { Spinner } from "~/components/ui/spinner";
 import type { ToolContent } from "~/protocol";
 
@@ -29,9 +30,6 @@ async function readToolContent(url: string, signal?: AbortSignal): Promise<FullT
   return { content: body.content ?? [], input: body.input };
 }
 
-const textButton =
-  "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-11 items-center gap-1.5 rounded-sm px-1 text-[12px] transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none md:min-h-0";
-
 /**
  * The way from a truncated preview to the whole output and input, and back
  * after 4G drops it. Loaded lazily, since few cards are truncated and fewer are asked for in
@@ -59,8 +57,8 @@ export default function LoadFullOutput({
     if (attempt === 0) return;
     const ctl = new AbortController();
     readToolContent(toolContentUrl(threadId, itemId), ctl.signal)
-      .then((content) => {
-        if (!ctl.signal.aborted) onLoad(content);
+      .then((body) => {
+        if (!ctl.signal.aborted) onLoad(body);
       })
       .catch((e: unknown) => {
         if (!ctl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
@@ -73,18 +71,7 @@ export default function LoadFullOutput({
     setAttempt((n) => n + 1);
   };
 
-  if (error) {
-    return (
-      <div className="flex flex-wrap items-center gap-x-2">
-        <span role="alert" className="text-destructive text-[12px]">
-          {error}
-        </span>
-        <button type="button" onClick={load} className={textButton}>
-          Retry
-        </button>
-      </div>
-    );
-  }
+  if (error) return <RetryRow message={error} onRetry={load} />;
   const loading = attempt > 0;
   return (
     <button type="button" onClick={load} disabled={loading} className={textButton}>

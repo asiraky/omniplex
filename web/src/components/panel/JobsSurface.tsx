@@ -2,6 +2,7 @@ import { ArrowLeftIcon, BotIcon, SquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Markdown } from "~/components/Markdown";
+import { RetryRow, textButton } from "~/components/RetryRow";
 import { Spinner } from "~/components/ui/spinner";
 import { fmtTokens } from "~/lib/format";
 import { childJobs, isLive, jobLabel, jobTree, liveJobsLabel } from "~/lib/jobs";
@@ -243,9 +244,6 @@ function ToolRowMark({ it }: { it: Item }) {
   );
 }
 
-const textButton =
-  "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-11 items-center gap-1.5 rounded-sm px-1 text-[12px] transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none md:min-h-0";
-
 /** What one agent did: its items, plus its own child agents. */
 function AgentPane({
   threadId,
@@ -284,16 +282,7 @@ function AgentPane({
           Loading this agent's activity…
         </p>
       )}
-      {fetched.status === "error" && (
-        <div className="flex flex-wrap items-center gap-x-2 px-1">
-          <span role="alert" className="text-destructive text-[12px]">
-            {fetched.error}
-          </span>
-          <button type="button" onClick={fetched.retry} className={textButton}>
-            Retry
-          </button>
-        </div>
-      )}
+      {fetched.status === "error" && <RetryRow className="px-1" message={fetched.error} onRetry={fetched.retry} />}
       {fetched.status !== "loading" && mine.length === 0 && children.length === 0 && (
         <p className="text-muted-foreground px-1 py-4 text-center text-[12px]">Nothing recorded for this agent yet.</p>
       )}
@@ -336,18 +325,7 @@ function EarlierJobs({ load }: { load: () => Promise<ThreadState | null> }) {
     // onState with jobsBefore cleared, and this row goes with it.
     void load().then((next) => setStatus(next ? "idle" : "error"));
   };
-  if (status === "error") {
-    return (
-      <div className="flex flex-wrap items-center gap-x-2 px-1">
-        <span role="alert" className="text-destructive text-[12px]">
-          Could not load the earlier jobs.
-        </span>
-        <button type="button" onClick={run} className={textButton}>
-          Retry
-        </button>
-      </div>
-    );
-  }
+  if (status === "error") return <RetryRow className="px-1" message="Could not load the earlier jobs." onRetry={run} />;
   const loading = status === "loading";
   return (
     <button type="button" onClick={run} disabled={loading} className={textButton}>
@@ -361,7 +339,8 @@ function EarlierJobs({ load }: { load: () => Promise<ThreadState | null> }) {
 function OpenJob({
   threadId,
   job,
-  state,
+  jobs,
+  items,
   command,
   onBack,
   onOpen,
@@ -369,7 +348,8 @@ function OpenJob({
 }: {
   threadId: string;
   job: Job;
-  state: ThreadState;
+  jobs: Job[];
+  items: Item[];
   command: JobsSurfaceProps["command"];
   onBack: () => void;
   onOpen: (j: Job) => void;
@@ -409,8 +389,8 @@ function OpenJob({
           <AgentPane
             threadId={threadId}
             job={job}
-            jobs={state.jobs}
-            items={state.items}
+            jobs={jobs}
+            items={items}
             onOpen={onOpen}
             onStop={onStop}
           />
@@ -450,7 +430,8 @@ export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfa
       <OpenJob
         threadId={threadId}
         job={open}
-        state={state}
+        jobs={state.jobs}
+        items={state.items}
         command={command}
         onBack={() => setOpenId(null)}
         onOpen={(j) => setOpenId(j.id)}

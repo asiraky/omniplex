@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, capToolText, emptyState, prependItems, TOOL_HEAD, TOOL_MAX_ENTRIES, TOOL_TAIL } from "./apply";
+import { applyEvent, capToolText, emptyState, prependItems, TOOL_HEAD, TOOL_MAX_ENTRIES, TOOL_MAX_TEXT, TOOL_TAIL } from "./apply";
 import type { Event, Item } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
@@ -629,6 +629,18 @@ describe("applyEvent tool output cap", () => {
     s = applyEvent(s, output(3, [entry(200)]));
     expect(s.items[0].content).toHaveLength(TOOL_MAX_ENTRIES);
     expect(s.items[0].truncated).toBe(true);
+  });
+
+  it("drops entries past the text budget, however they arrive", () => {
+    const entry = { type: "diff", path: "a.go", oldText: "o".repeat(3000), newText: "n".repeat(3000) };
+    const want = Math.ceil(TOOL_MAX_TEXT / 6000);
+    const whole = applyEvent(emptyState("s1"), output(1, Array(10).fill(entry)));
+    let split = applyEvent(emptyState("s1"), output(1, Array(2).fill(entry)));
+    split = applyEvent(split, output(2, Array(8).fill(entry)));
+    for (const s of [whole, split]) {
+      expect(s.items[0].content).toHaveLength(want);
+      expect(s.items[0].truncated).toBe(true);
+    }
   });
 
   it("does not split a surrogate pair at either cut", () => {

@@ -176,5 +176,3 @@ func TestAttachChoosesReplayOrSnapshot(t *testing.T) {
 		t.Fatalf("cursor %d events behind: kind %s, want a snapshot", MaxReplayEvents+1, res.Kind)
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

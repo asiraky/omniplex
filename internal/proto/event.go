@@ -193,6 +193,10 @@ func ClassifyJob(taskType string) string {
 	}
 }
 
+// ToolRunning reports whether a tool call's status is unsettled: still
+// running, or yet to start.
+func ToolRunning(status string) bool { return status == StatusInProgress || status == StatusPending }
+
 // JobDone reports whether a job status is terminal.
 func JobDone(status string) bool {
 	switch status {

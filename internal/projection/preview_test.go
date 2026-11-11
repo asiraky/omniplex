@@ -162,6 +162,44 @@ func TestToolContentEntriesAreBounded(t *testing.T) {
 	}
 }
 
+// keptUnder is how many entries of size bytes each fit the text budget: one is
+// kept while those before it hold less than maxToolText.
+func keptUnder(size int) int { return (maxToolText + size - 1) / size }
+
+// An item's content keeps a bounded amount of text: past it further entries
+// are dropped, however the content arrived, and loading a snapshot that held
+// more drops the same ones.
+func TestToolContentTextIsBounded(t *testing.T) {
+	entry := proto.ToolContent{Type: "diff", Path: "a.go", Old: strings.Repeat("o", 3000), New: strings.Repeat("n", 3000)}
+	batch := make([]proto.ToolContent, 10)
+	for i := range batch {
+		batch[i] = entry
+	}
+	// Each entry is under the field cap, so only the budget cuts: an entry is
+	// kept while those before it hold less than maxToolText.
+	want := keptUnder(6000)
+
+	whole := New("s1")
+	whole.Apply(toolUpdate(t, 1, "c1", batch...))
+	split := New("s1")
+	split.Apply(toolUpdate(t, 1, "c1", batch[:2]...))
+	split.Apply(toolUpdate(t, 2, "c1", batch[2:]...))
+	for name, s := range map[string]*State{"one update": whole, "two updates": split} {
+		it, _ := s.ItemByID("c1")
+		if !it.Truncated || len(it.Content) != want {
+			t.Fatalf("%s: truncated=%v entries=%d, want true/%d", name, it.Truncated, len(it.Content), want)
+		}
+	}
+
+	old := Item{ID: "c1", Kind: ItemTool, Content: batch}
+	if !capItem(&old) || !old.Truncated || len(old.Content) != want {
+		t.Fatalf("capItem: truncated=%v entries=%d, want true/%d", old.Truncated, len(old.Content), want)
+	}
+	if capItem(&old) {
+		t.Fatal("capping capped content cut it again")
+	}
+}
+
 // A snapshot written before the cap holds results whole. Loading it caps them,
 // so the next snapshot written is small.
 func TestFromSnapshotCapsAnOldSnapshot(t *testing.T) {
@@ -185,8 +223,9 @@ func TestFromSnapshotCapsAnOldSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	c1, _ := s.ItemByID("c1")
-	if !c1.Truncated || len(c1.Content) != maxToolContent {
-		t.Fatalf("c1 truncated=%v entries=%d", c1.Truncated, len(c1.Content))
+	// Every entry capped alike, so the text budget is what stops it.
+	if n := len(c1.Content); !c1.Truncated || n == 0 || n != keptUnder(len(c1.Content[0].Text)) {
+		t.Fatalf("c1 truncated=%v entries=%d", c1.Truncated, n)
 	}
 	for _, c := range c1.Content {
 		if _, n, _ := splitPreview(t, c.Text); n == 0 {

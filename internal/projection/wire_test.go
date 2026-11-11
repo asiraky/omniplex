@@ -313,7 +313,7 @@ func TestWireJobsIsACopy(t *testing.T) {
 	}
 }
 
-// A tool update on the wire keeps the projection's head/tail and entry cap,
+// A tool update on the wire keeps the projection's head/tail and text budget,
 // says it was cut, and leaves the log's bytes alone.
 func TestWireEventCapsToolUpdate(t *testing.T) {
 	content := make([]proto.ToolContent, maxToolContent+4)
@@ -331,7 +331,7 @@ func TestWireEventCapsToolUpdate(t *testing.T) {
 	if err := json.Unmarshal(out.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
-	if !p.Truncated || len(p.Content) != maxToolContent || p.ToolCallID != "c1" {
+	if n := len(p.Content); !p.Truncated || n == 0 || n != keptUnder(len(p.Content[0].Text)) || p.ToolCallID != "c1" {
 		t.Fatalf("truncated=%v entries=%d id=%q", p.Truncated, len(p.Content), p.ToolCallID)
 	}
 	for i, c := range p.Content {

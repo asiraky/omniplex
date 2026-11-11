@@ -105,6 +105,9 @@ function settle(it: Item, status: Item["status"]): Item {
 export const TOOL_HEAD = 4096;
 export const TOOL_TAIL = 4096;
 export const TOOL_MAX_ENTRIES = 16;
+// How much text one item's content keeps in all: an entry is kept while the
+// entries before it hold less.
+export const TOOL_MAX_TEXT = 32 * 1024;
 const TOOL_SLACK = 128;
 // How far a cut may move to land on a line break.
 const TOOL_SNAP = 512;
@@ -134,7 +137,13 @@ function appendToolContent(it: Item, add: ToolContent[]) {
   const have = it.content ?? [];
   const room = Math.max(0, TOOL_MAX_ENTRIES - have.length);
   let cut = add.length > room;
-  const capped = add.slice(0, room).map((c) => {
+  let used = have.reduce((n, c) => n + contentText(c), 0);
+  const capped: ToolContent[] = [];
+  for (const c of add.slice(0, room)) {
+    if (used >= TOOL_MAX_TEXT) {
+      cut = true;
+      break;
+    }
     const next = { ...c };
     for (const key of ["text", "oldText", "newText"] as const) {
       const v = next[key];
@@ -145,11 +154,14 @@ function appendToolContent(it: Item, add: ToolContent[]) {
         cut = true;
       }
     }
-    return next;
-  });
+    used += contentText(next);
+    capped.push(next);
+  }
   if (capped.length) it.content = [...have, ...capped];
   if (cut) it.truncated = true;
 }
+
+const contentText = (c: ToolContent) => (c.text?.length ?? 0) + (c.oldText?.length ?? 0) + (c.newText?.length ?? 0);
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
 // was known of it, and anything the agent showed gets a timeline item at the
@@ -182,7 +194,7 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
-function applyJob(s: ThreadState, ts: number, p: JobPayload, started: boolean, finished: boolean): ThreadState {
+function applyJob(s: ThreadState, ts: number, p: JobPayload, row: "started" | "updated" | "finished"): ThreadState {
   if (!p.jobId) return s;
   const jobs = [...s.jobs];
   let i = jobs.findIndex((j) => j.id === p.jobId);
@@ -191,7 +203,7 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, started: boolean, f
   // or start in the roster, and fetching the full list would then hold the
   // real one beside it. The server has folded this row, so the list fetch
   // delivers it; here only the cursor moves. A start is always new work.
-  if (i < 0 && !started && (s.jobsBefore ?? 0) > 0) return s;
+  if (i < 0 && row !== "started" && (s.jobsBefore ?? 0) > 0) return s;
   if (i < 0) {
     const turnId = s.turns.reduce<string | undefined>((acc, t) => (t.done ? acc : t.id), undefined);
     jobs.push({
@@ -237,7 +249,7 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, started: boolean, f
     j.status = p.status;
   }
   let items = s.items;
-  if (finished) {
+  if (row === "finished") {
     if (!jobDone(j.status)) j.status = "completed";
     j.finishedAt ??= ts;
     // The spawning tool call, if still waiting on this job, is settled by it.
@@ -546,13 +558,13 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       };
 
     case "job.started":
-      return applyJob(s, ev.timestamp, p as JobPayload, true, false);
+      return applyJob(s, ev.timestamp, p as JobPayload, "started");
 
     case "job.updated":
-      return applyJob(s, ev.timestamp, p as JobPayload, false, false);
+      return applyJob(s, ev.timestamp, p as JobPayload, "updated");
 
     case "job.finished":
-      return applyJob(s, ev.timestamp, p as JobPayload, false, true);
+      return applyJob(s, ev.timestamp, p as JobPayload, "finished");
 
     case "plan.updated": {
       // A TodoWrite call is a list of its own, keyed by the call; a codex
