@@ -49,7 +49,7 @@ export function useThreadDeletion({
       const removes = threads.find((s) => s.id === id)?.workspaceMode === "managed";
       const accepted = window.confirm(
         removes
-          ? "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script, removes the recorded Git worktree, and permanently deletes the thread."
+          ? "Tear down failed. Would you like to force delete?\n\nThis runs the teardown script once more, if there is one, and carries on even if it fails. Then it removes the recorded Git worktree and permanently deletes the thread."
           : "Tear down failed. Would you like to force delete?\n\nThis skips the teardown script and permanently deletes the thread. The checkout is left on disk — omniplex did not create it.",
       );
       if (!accepted) return;

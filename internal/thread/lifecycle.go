@@ -493,6 +493,51 @@ func (m *Manager) cleanup(meta store.ThreadMeta, f project.Folder, a *Actor, pur
 	m.notifyList()
 }
 
+// forceDelete is ForceDelete's teardown for a managed thread with a
+// deprovision hook. The hook gets one more run, and its failure is recorded
+// but does not stop anything: the user has already chosen to lose whatever it
+// cannot release. Only a failure to remove the worktree itself keeps the
+// thread, because purging it then would leave a directory nothing names.
+func (m *Manager) forceDelete(meta store.ThreadMeta, f project.Folder, a *Actor) {
+	ctx := context.Background()
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupStarted, map[string]any{"purge": true, "removeWorktree": true}))
+	m.notifyList()
+	fail := func(stage string, err error) {
+		m.logf("force delete failed for %s (%s): %v", meta.ID, stage, err)
+		if phaseErr := m.store.SetPhase(ctx, meta.ID, "cleanup_failed"); phaseErr != nil {
+			m.logf("marking %s cleanup_failed: %v", meta.ID, phaseErr)
+		}
+		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceCleanupFailed, proto.WorkspaceFailedPayload{Hook: stage, Error: err.Error()}))
+		m.notifyList()
+	}
+	// Checked again outside the lock, as cleanup does: a thread that moved in
+	// since keeps its files, and the hook must not run over them either.
+	if holder, shared := m.otherThreadIn(ctx, meta.ID, meta.Cwd); shared {
+		fail("worktree-remove", fmt.Errorf("%s is still used by %q", filepath.Base(meta.Cwd), holder))
+		return
+	}
+	if err := m.runDeprovisionHook(ctx, meta, f, a); err != nil {
+		m.logf("force delete of %s: deprovision failed, continuing: %v", meta.ID, err)
+		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "deprovision", Stream: "stderr", Chunk: "deprovision failed (" + err.Error() + "); force delete continues\n"}))
+	}
+	if err := m.removeGitWorktree(ctx, meta, f, a, true); err != nil {
+		fail("worktree-remove", err)
+		return
+	}
+	m.lifecycle.Lock()
+	a.Dispose("force deleted")
+	if err := m.store.DeleteThread(ctx, meta.ID); err != nil {
+		m.logf("delete force-deleted thread %s: %v", meta.ID, err)
+		// Disposing left the row idle with its checkout gone; failed is
+		// the truth, and keeps force delete on offer.
+		_ = m.store.SetPhase(ctx, meta.ID, "cleanup_failed")
+	} else {
+		m.purgeAttachments(meta.ID)
+	}
+	m.lifecycle.Unlock()
+	m.notifyList()
+}
+
 func (m *Manager) runDeprovisionHook(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor) error {
 	stateDir, err := lifecycleDir(meta.ID)
 	if err != nil {
