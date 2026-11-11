@@ -43,6 +43,47 @@ function cliVersion(harness: HarnessMeta, instance: ProviderInstanceMeta): strin
   return instance.availability.facts?.version || harness.availability?.facts?.version;
 }
 
+/** The list row's one-line summary: account, auth, model count, CLI version. */
+function instanceSummary(harness: HarnessMeta, instance: ProviderInstanceMeta): string {
+  const version = cliVersion(harness, instance);
+  const models = instance.models?.length;
+  return (
+    [
+      instance.availability.facts?.account,
+      instance.availability.facts?.auth,
+      models ? `${models} model${models === 1 ? "" : "s"}` : null,
+      version ? `v${version}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || instance.id
+  );
+}
+
+/** The harness CLI's version and its last auto-update, under the detail heading. */
+function HarnessVersionLine({ harness, instance }: { harness: HarnessMeta; instance: ProviderInstanceMeta }) {
+  const version = cliVersion(harness, instance);
+  const update = describeHarnessUpdate(harness.update, Date.now());
+  if (!version && !update) return null;
+  return (
+    <div className="-mt-3 space-y-0.5 text-[11px]">
+      {version && (
+        <p className="text-muted-foreground">
+          {harness.name} {version}
+        </p>
+      )}
+      {update && (
+        <p
+          className={
+            update.tone === "attention" ? "text-attention-foreground wrap-anywhere" : "text-muted-foreground"
+          }
+        >
+          {update.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ReadyBadge({ instance }: { instance: ProviderInstanceMeta }) {
   if (instance.enabled === false) {
     return (
@@ -142,20 +183,9 @@ function InstanceList({
                     <ReadyBadge instance={inst} />
                   </span>
                   <span className="flex min-w-0 gap-1.5 text-[11px]">
-                    <span className="text-muted-foreground truncate">
-                      {[
-                        inst.availability.facts?.account,
-                        inst.availability.facts?.auth,
-                        inst.models?.length
-                          ? `${inst.models.length} model${inst.models.length === 1 ? "" : "s"}`
-                          : null,
-                        cliVersion(h, inst) ? `v${cliVersion(h, inst)}` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ") || inst.id}
-                    </span>
+                    <span className="text-muted-foreground truncate">{instanceSummary(h, inst)}</span>
                     {/* Outside the truncated text, so a narrow screen cannot clip it off. */}
-                    {h.update?.error && (
+                    {describeHarnessUpdate(h.update, Date.now())?.tone === "attention" && (
                       <span className="text-attention-foreground shrink-0">update failed</span>
                     )}
                   </span>
@@ -329,8 +359,6 @@ function InstanceView({
   }
 
   const fields = harness.configFields ?? [];
-  const version = cliVersion(harness, instance);
-  const update = describeHarnessUpdate(harness.update, Date.now());
   const knownDriver = harnesses.some((h) => h.id === instance.driver);
 
   const save = async (enabled: boolean) => {
@@ -384,26 +412,7 @@ function InstanceView({
         <span className="text-muted-foreground ml-auto font-mono text-[10px]">{instance.id}</span>
       </div>
 
-      {(version || update) && (
-        <div className="-mt-3 space-y-0.5 text-[11px]">
-          {version && (
-            <p className="text-muted-foreground">
-              {harness.name} {version}
-            </p>
-          )}
-          {update && (
-            <p
-              className={
-                update.tone === "attention"
-                  ? "text-attention-foreground wrap-anywhere"
-                  : "text-muted-foreground"
-              }
-            >
-              {update.text}
-            </p>
-          )}
-        </div>
-      )}
+      <HarnessVersionLine harness={harness} instance={instance} />
 
       {!knownDriver && (
         <Alert>

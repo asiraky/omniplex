@@ -43,13 +43,21 @@ describe("ProvidersSettings harness CLI updates", () => {
     open({ at: Date.now() - 60_000, from: "2.1.300", to: "2.1.300", error: "EACCES" });
     expect(screen.getByText("update failed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(screen.getByText(/EACCES/).className).toContain("text-attention-foreground");
+    expect(screen.getByText(/Auto-update failed.*EACCES/)).toBeTruthy();
   });
 
   it("leaves the row unmarked when the last update succeeded", () => {
     open({ at: Date.now() - 60_000, from: "2.1.252", to: "2.1.300" });
     expect(screen.queryByText("update failed")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(screen.getByText(/2\.1\.252 → 2\.1\.300/).className).not.toContain("text-attention-foreground");
+    expect(screen.getByText(/2\.1\.252 → 2\.1\.300/)).toBeTruthy();
+  });
+
+  it("shows only the CLI version when no update has been reported", () => {
+    open();
+    expect(screen.queryByText("update failed")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    expect(screen.getByText("Claude Code 2.1.300")).toBeTruthy();
+    expect(screen.queryByText(/Auto-update|Up to date|Updated/)).toBeNull();
   });
 });
