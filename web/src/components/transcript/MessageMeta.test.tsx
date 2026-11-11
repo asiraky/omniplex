@@ -29,9 +29,9 @@ const items: Item[] = [
   { id: "m2", kind: "message", role: "agent", text: "Second answer here." },
 ];
 
-/** The play buttons load in their own chunk. */
+/** The play buttons load in their own chunk, which a cold, busy run can take over a second to import. */
 async function playButtonsLoaded() {
-  await screen.findAllByRole("button", { name: /aloud/ });
+  await screen.findAllByRole("button", { name: /aloud/ }, { timeout: 5000 });
 }
 
 async function transcript(on = true) {

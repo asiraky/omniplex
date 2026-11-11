@@ -126,10 +126,10 @@ describe.skipIf(process.platform === "win32")("ServerSupervisor", () => {
   });
 
   it("retry starts over after giving up", async () => {
-    const { until, sup } = launch("crash");
+    const { until, statuses, sup } = launch("crash");
     await until("failed");
     sup.retry();
-    await new Promise((r) => setTimeout(r, 200));
+    await expect.poll(() => statuses.filter((s) => s.kind === "failed").length, { timeout: 5000 }).toBe(2);
     expect(starts()).toHaveLength(2 * (1 + fast.maxRestarts));
   });
 
