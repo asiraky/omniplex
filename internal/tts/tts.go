@@ -32,8 +32,8 @@ var (
 	ErrTextTooLong = fmt.Errorf("too long to read aloud: ElevenLabs takes at most %d characters at a time", MaxChars)
 )
 
-// Service is text-to-speech for the server: the key, the voice list and the
-// audio cache.
+// Service is text-to-speech for the server, and the speech-to-text that
+// dictation runs on: the key, the voice list and the audio cache.
 type Service struct {
 	secrets *provider.SecretStore
 	client  client
@@ -141,6 +141,17 @@ func (s *Service) Stream(ctx context.Context, voiceID, text string) (io.ReadClos
 		return nil, ErrNoKey
 	}
 	return s.client.stream(ctx, key, voiceID, text)
+}
+
+// Transcribe turns recorded speech into text with Scribe. mimeType is what
+// the browser recorded in. Silence comes back as an empty transcript, not an
+// error.
+func (s *Service) Transcribe(ctx context.Context, audio io.Reader, mimeType string) (string, error) {
+	key, ok := s.key()
+	if !ok {
+		return "", ErrNoKey
+	}
+	return s.client.transcribe(ctx, key, audio, mimeType)
 }
 
 // PrepareText trims text and checks it fits one request. Splitting a longer

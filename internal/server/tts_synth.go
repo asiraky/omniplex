@@ -385,7 +385,8 @@ func parseByteRange(h string) (first, last int64, kind rangeKind) {
 	return first, last, rangeClosed
 }
 
-// ttsRecorder records what one /api/tts request was answered with.
+// ttsRecorder records what one /api/tts or /api/dictation request was
+// answered with.
 type ttsRecorder struct {
 	http.ResponseWriter
 	status int

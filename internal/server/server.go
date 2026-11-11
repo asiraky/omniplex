@@ -430,6 +430,7 @@ func (s *Server) Handler() http.Handler {
 
 	s.routeArtefacts(mux)
 	s.routeTTS(mux)
+	s.routeDictation(mux)
 	s.routePush(mux)
 
 	mux.HandleFunc("/ws", s.serveWS)

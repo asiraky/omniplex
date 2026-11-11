@@ -39,3 +39,21 @@ func TestUpstreamErrorTellsQuotaFromABadKey(t *testing.T) {
 		})
 	}
 }
+
+func TestAudioFilenameFollowsTheRecordedFormat(t *testing.T) {
+	cases := map[string]string{
+		"audio/webm;codecs=opus": "audio.webm",
+		"audio/webm":             "audio.webm",
+		"audio/mp4":              "audio.mp4",
+		"audio/ogg; codecs=opus": "audio.ogg",
+		"audio/x-m4a":            "audio.m4a",
+		"audio/wav":              "audio",
+		"not a type;;":           "audio",
+		"":                       "audio",
+	}
+	for mimeType, want := range cases {
+		if got := audioFilename(mimeType); got != want {
+			t.Errorf("audioFilename(%q) = %q, want %q", mimeType, got, want)
+		}
+	}
+}

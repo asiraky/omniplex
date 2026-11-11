@@ -298,7 +298,8 @@ func (s *Server) speechVoice(ctx context.Context, threadID string) (string, erro
 // speechErrorReply is the status and message for a failure before any audio
 // went out. The client cannot read an <audio> element's error body, so it
 // asks the same URL again (HEAD, then GET only if that fails) to show the
-// message; it has to be one a person can act on.
+// message; it has to be one a person can act on. Dictation answers its
+// failures the same way.
 func speechErrorReply(err error) (int, string) {
 	var up *tts.UpstreamError
 	switch {
