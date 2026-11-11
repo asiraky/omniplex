@@ -346,8 +346,10 @@ func TestTermDeleteKillsTheTerminal(t *testing.T) {
 	if code := del("doomed"); code != http.StatusNoContent {
 		t.Fatalf("DELETE returned %d, want 204", code)
 	}
-	if code := tr.closed(t, ctx); code != termStatusExited {
-		t.Fatalf("attached socket closed %d, want 4000", code)
+	// Closed, not exited: another tab on the same panel must not report
+	// that the shell ended on its own.
+	if code := tr.closed(t, ctx); code != termStatusMissing {
+		t.Fatalf("attached socket closed %d, want 4404", code)
 	}
 	eventually(t, "the shell to die", func() bool { return processGone(pid) })
 
@@ -359,6 +361,33 @@ func TestTermDeleteKillsTheTerminal(t *testing.T) {
 	if code := del("doomed"); code != http.StatusNoContent {
 		t.Fatalf("DELETE of a gone terminal returned %d, want 204", code)
 	}
+}
+
+// A tab closed while its first socket was still resolving the command: the
+// DELETE lands first, and the spawn behind it must not start a shell that
+// nothing will ever reattach to or close.
+func TestTermDeleteBeforeTheSpawnPreventsIt(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	req, _ := http.NewRequest(http.MethodDelete, rig.ts.URL+"/api/term?id=early", nil)
+	res, err := rig.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client, "id=early")}
+	if code := tr.closed(t, ctx); code != termStatusMissing {
+		t.Fatalf("spawn after DELETE closed %d, want 4404", code)
+	}
+	if rig.count() != 0 {
+		t.Fatal("a shell was started for a closed id")
+	}
+	// Only that id: a different one still opens.
+	other := &termReader{conn: rig.dial(t, ctx, rig.client, "id=later")}
+	other.input(t, ctx, "echo o\"\"k\n")
+	other.until(t, ctx, "ok")
 }
 
 func TestTermShellExitClosesWith4000AndForgetsIt(t *testing.T) {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -40,8 +41,9 @@ import (
 // binary byte, then the pty's raw output as binary frames. It sends another
 // sync when the client has fallen so far behind that output was overwritten,
 // which is the client's cue that the screen has a gap. Close 4000 "exited"
-// means the terminal is gone and its output fully sent; 4404 "no such
-// terminal" answers an attach=1 for an id the server no longer has; 4400
+// means the process ended and its output was fully sent; 4404 "no such
+// terminal" answers an attach=1 for an id the server no longer has, and ends
+// a socket whose terminal was closed or revoked; 4400
 // "could not start" means a new terminal failed to spawn (no such thread, no
 // checkout, no pty) and retrying will not help.
 //
@@ -148,6 +150,10 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			sess, err = s.termSpawn(device.ID, id, target, cmd)
 		}
+		if errors.Is(err, errTermClosed) {
+			_ = ws.Close(termStatusMissing, "no such terminal")
+			return
+		}
 		if err != nil {
 			// The reason is capped at 123 bytes; the detail goes to the log.
 			s.logf("term_start_failed target=%s err=%v", target, err)
@@ -165,13 +171,19 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
-		// This socket has sent everything the ended process printed, so
-		// there is nothing left to replay: forget the id. Forgotten before
-		// the close goes out, so a "start a new shell" straight after it
-		// spawns one rather than finding this one again.
-		if termStream(ctx, ws, sess, since) {
+		if !termStream(ctx, ws, sess, since) {
+			return
+		}
+		if sess.isKilled() {
+			_ = ws.Close(termStatusMissing, "no such terminal")
+			return
+		}
+		// A clean close means the client echoed it, which it does only after
+		// reading everything sent before it: nothing is left to replay, so
+		// forget the id. A close that fails may have left the tail in flight,
+		// and the session waits for a reattach (or the TTL) to send it again.
+		if ws.Close(termStatusExited, "exited") == nil {
 			s.termRemove(sess)
-			_ = ws.Close(termStatusExited, "exited")
 		}
 	}()
 

@@ -103,6 +103,9 @@ type Server struct {
 	termMu  sync.Mutex
 	terms   map[string]*termSession
 	termTTL time.Duration
+	// termClosed are ids DELETE ended, with when, so a spawn that was still
+	// resolving its command when the tab closed does not start a shell.
+	termClosed map[string]time.Time
 }
 
 type Options struct {
@@ -150,6 +153,7 @@ func New(o Options) *Server {
 		live:          map[*conn]struct{}{},
 		terms:         map[string]*termSession{},
 		termTTL:       termIdleTTL,
+		termClosed:    map[string]time.Time{},
 		id:            uuid.NewString(),
 		mgr:           o.Manager,
 		store:         o.Store,

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"sync"
@@ -51,8 +52,11 @@ type termSession struct {
 	// changed is closed and replaced whenever output arrives or the session
 	// ends, so each attachment's writer can wait on it without the pty read
 	// loop ever waiting on a socket.
-	changed  chan struct{}
-	ended    bool
+	changed chan struct{}
+	ended   bool
+	// killed is an end the user (or a revocation) chose, as opposed to the
+	// process exiting: an attached socket is told it is gone, not exited.
+	killed   bool
 	attached int
 	// idle is the pending removal while nothing is attached. idleGen tells a
 	// timer that fired late, after an attach and another detach, that it is
@@ -63,6 +67,9 @@ type termSession struct {
 	cleanup sync.Once
 }
 
+// errTermClosed is a spawn for an id DELETE already closed.
+var errTermClosed = errors.New("terminal closed")
+
 func termKey(device, id string) string { return device + "\x00" + id }
 
 // notify wakes every attachment's writer. The caller holds mu.
@@ -71,10 +78,9 @@ func (sess *termSession) notify() {
 	sess.changed = make(chan struct{})
 }
 
-// attachLocked counts a new attachment and stops the idle clock. The caller
-// holds mu.
-func (sess *termSession) attachLocked() {
-	sess.attached++
+// stopIdle cancels the pending removal; the generation bump turns a timer
+// that already fired into a no-op. The caller holds mu.
+func (sess *termSession) stopIdle() {
 	sess.idleGen++
 	if sess.idle != nil {
 		sess.idle.Stop()
@@ -82,19 +88,33 @@ func (sess *termSession) attachLocked() {
 	}
 }
 
+// isKilled reports whether the session was ended on purpose.
+func (sess *termSession) isKilled() bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.killed
+}
+
 // termAttach finds the device's terminal by id and counts a new attachment on
-// it. A terminal opened for another target is treated as absent: the id is
-// the client's, and reusing one for a different checkout is not a reattach.
-// An ended terminal is still found, so its last output can be replayed.
+// it.
 func (s *Server) termAttach(device, id, target string) *termSession {
 	s.termMu.Lock()
 	defer s.termMu.Unlock()
-	sess := s.terms[termKey(device, id)]
+	return s.termAttachLocked(termKey(device, id), target)
+}
+
+// termAttachLocked is termAttach for a caller holding termMu. A terminal
+// opened for another target is treated as absent: the id is the client's, and
+// reusing one for a different checkout is not a reattach. An ended terminal is
+// still found, so its last output can be replayed.
+func (s *Server) termAttachLocked(key, target string) *termSession {
+	sess := s.terms[key]
 	if sess == nil || sess.target != target {
 		return nil
 	}
 	sess.mu.Lock()
-	sess.attachLocked()
+	sess.attached++
+	sess.stopIdle()
 	sess.mu.Unlock()
 	return sess
 }
@@ -107,14 +127,17 @@ func (s *Server) termAttach(device, id, target string) *termSession {
 func (s *Server) termSpawn(device, id, target string, cmd *exec.Cmd) (*termSession, error) {
 	key := termKey(device, id)
 	s.termMu.Lock()
-	old := s.terms[key]
-	if old != nil && old.target == target {
-		old.mu.Lock()
-		old.attachLocked()
-		old.mu.Unlock()
+	if sess := s.termAttachLocked(key, target); sess != nil {
 		s.termMu.Unlock()
-		return old, nil
+		return sess, nil
 	}
+	// Closed while its first socket was still on the way: the user is done
+	// with it before it ever ran.
+	if _, ok := s.termClosed[key]; ok {
+		s.termMu.Unlock()
+		return nil, errTermClosed
+	}
+	old := s.terms[key]
 
 	// A shell in a checkout starts dev servers and leaves them; end them with
 	// the terminal rather than with the machine.
@@ -140,10 +163,10 @@ func (s *Server) termSpawn(device, id, target string, cmd *exec.Cmd) (*termSessi
 
 	// Same id, other target: the old one can no longer be reached.
 	if old != nil {
-		s.termRemove(old)
+		s.termKillSession(old)
 	}
 
-	go termPump(sess)
+	go sess.pump()
 	return sess, nil
 }
 
@@ -151,7 +174,7 @@ func (s *Server) termSpawn(device, id, target string, cmd *exec.Cmd) (*termSessi
 // stalled phone cannot stall the shell or the terminal's other sockets.
 // Reading fails once the process has exited or the tty was closed, and that
 // is what ends the session; it stays registered for replay.
-func termPump(sess *termSession) {
+func (sess *termSession) pump() {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := sess.tty.Read(buf)
@@ -162,7 +185,7 @@ func termPump(sess *termSession) {
 			sess.mu.Unlock()
 		}
 		if err != nil {
-			termEnd(sess)
+			sess.end()
 			return
 		}
 	}
@@ -197,19 +220,39 @@ func (s *Server) termDetach(sess *termSession) {
 		sess.mu.Unlock()
 		s.termMu.Unlock()
 		if !stale {
-			termEnd(sess)
+			sess.end()
 		}
 	})
 }
 
-// termKill removes the device's terminal by id, if it has one.
+// termKill removes the device's terminal by id, and remembers the id as
+// closed so a spawn still on its way for it does not start a shell nobody
+// will ever reattach to. A closed tab's id is never reused.
 func (s *Server) termKill(device, id string) {
+	key := termKey(device, id)
+	now := time.Now()
 	s.termMu.Lock()
-	sess := s.terms[termKey(device, id)]
+	sess := s.terms[key]
+	for k, at := range s.termClosed {
+		// A spawn is pending for as long as it takes to resolve a command;
+		// a TTL is far longer than that.
+		if now.Sub(at) > s.termTTL {
+			delete(s.termClosed, k)
+		}
+	}
+	s.termClosed[key] = now
 	s.termMu.Unlock()
 	if sess != nil {
-		s.termRemove(sess)
+		s.termKillSession(sess)
 	}
+}
+
+// termKillSession removes a session the user (or a revocation) ended.
+func (s *Server) termKillSession(sess *termSession) {
+	sess.mu.Lock()
+	sess.killed = true
+	sess.mu.Unlock()
+	s.termRemove(sess)
 }
 
 // termRemove unregisters a session, if it is still the registered one, and
@@ -220,22 +263,17 @@ func (s *Server) termRemove(sess *termSession) {
 		delete(s.terms, sess.key)
 	}
 	sess.mu.Lock()
-	// The generation bump turns a timer that already fired into a no-op.
-	sess.idleGen++
-	if sess.idle != nil {
-		sess.idle.Stop()
-		sess.idle = nil
-	}
+	sess.stopIdle()
 	sess.mu.Unlock()
 	s.termMu.Unlock()
-	termEnd(sess)
+	sess.end()
 }
 
-// termEnd marks a session ended and kills its process, leaving it registered.
+// end marks a session ended and kills its process, leaving it registered.
 // Idempotent: the pump, the idle timer, an explicit close and a revocation
 // can all race to it. Attached writers see ended, drain what is left in the
 // ring, and close their sockets.
-func termEnd(sess *termSession) {
+func (sess *termSession) end() {
 	sess.mu.Lock()
 	if !sess.ended {
 		sess.ended = true
@@ -262,6 +300,6 @@ func (s *Server) termEndDevice(device string) {
 	}
 	s.termMu.Unlock()
 	for _, sess := range doomed {
-		s.termRemove(sess)
+		s.termKillSession(sess)
 	}
 }
