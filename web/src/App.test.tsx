@@ -1618,6 +1618,8 @@ describe("keyboard shortcuts and the palette", () => {
     fireEvent.keyDown(target, { key, ...mods });
   const palette = () => screen.queryByRole("dialog", { name: "Command palette" });
   const search = () => within(palette()!).getByRole("combobox");
+  // The palette loads on first use, so it shows up a tick after the key.
+  const opened = () => screen.findByRole("dialog", { name: "Command palette" });
   const chip = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}:`) });
   const composer = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
   const attached = () => attach.mock.calls.map(([id]) => id);
@@ -1657,7 +1659,7 @@ describe("keyboard shortcuts and the palette", () => {
   it("opens the palette on Ctrl+K and puts it away on a second", async () => {
     await boot();
     key("k", { ctrlKey: true });
-    expect(palette()).toBeTruthy();
+    await opened();
     expect(search().getAttribute("placeholder")).toBe("Search threads and actions…");
     key("k", { ctrlKey: true }, search());
     await waitFor(() => expect(palette()).toBeNull());
@@ -1667,6 +1669,7 @@ describe("keyboard shortcuts and the palette", () => {
     await boot([thread("a")], [twoFolders]);
     // Ctrl+N is the browser's, so a tab gets the new-thread step on Ctrl+Shift+O.
     await act(async () => key("o", { ctrlKey: true, shiftKey: true }));
+    await opened();
     expect(search().getAttribute("placeholder")).toBe("Which project?");
 
     fireEvent.keyDown(search(), { key: "Enter" });
@@ -1690,6 +1693,7 @@ describe("keyboard shortcuts and the palette", () => {
   it("starts the new-thread step over when asked for it with the palette already open", async () => {
     await boot();
     key("k", { ctrlKey: true });
+    await opened();
     await act(async () => key("o", { ctrlKey: true, shiftKey: true }, search()));
     expect(search().getAttribute("placeholder")).toBe("Which project?");
   });
@@ -1697,6 +1701,7 @@ describe("keyboard shortcuts and the palette", () => {
   it("puts the palette away for a new thread here, so the draft's composer gets the keys", async () => {
     await boot();
     key("k", { ctrlKey: true });
+    await opened();
     await act(async () => key("n", { ctrlKey: true, altKey: true }, search()));
     await waitFor(() => expect(palette()).toBeNull());
     expect(chip("Project").textContent).toBe("repo");
@@ -1716,6 +1721,7 @@ describe("keyboard shortcuts and the palette", () => {
     await openThread("a");
     const offers = (label: string) => !!within(palette()!).queryByText(label);
     key("k", { ctrlKey: true });
+    await opened();
     expect(offers("Model picker")).toBe(true);
 
     fireEvent.change(search(), { target: { value: "Skills" } });
@@ -1810,6 +1816,7 @@ describe("keyboard shortcuts and the palette", () => {
     await act(async () => {
       fireEvent.click(button);
     });
+    await opened();
     expect(search().getAttribute("placeholder")).toBe("Which project?");
     expect(screen.queryByRole("button", { name: /^Project:/ })).toBeNull();
 
