@@ -349,25 +349,15 @@ func (s *session) send(cmd map[string]any) error {
 // call sends a command with a correlation id and waits for its response,
 // decoding data into out when non-nil.
 func (s *session) call(ctx context.Context, cmd map[string]any, out any) error {
-	id := uuid.NewString()
-	cmd["id"] = id
-	ch := make(chan rpcResponse, 1)
-	s.mu.Lock()
-	s.pending[id] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.pending, id)
-		s.mu.Unlock()
-	}()
-
-	if err := s.send(cmd); err != nil {
+	ch, release, err := s.request(cmd)
+	if err != nil {
 		return err
 	}
+	defer release()
 	select {
 	case res := <-ch:
-		if !res.Success {
-			return fmt.Errorf("%s: %s", res.Command, res.Error)
+		if err := res.err(); err != nil {
+			return err
 		}
 		if out != nil && len(res.Data) > 0 {
 			return json.Unmarshal(res.Data, out)
@@ -378,6 +368,38 @@ func (s *session) call(ctx context.Context, cmd map[string]any, out any) error {
 	case <-s.rpcDone:
 		return errors.New("pi exited before responding")
 	}
+}
+
+// request is the sending half of call: it registers a correlation id, writes
+// the command, and hands back the channel its response will arrive on. The
+// caller must call release once it stops waiting, or the pending entry leaks.
+// A write failure is returned here, so a dead pipe is still reported
+// synchronously even when the response is awaited elsewhere.
+func (s *session) request(cmd map[string]any) (<-chan rpcResponse, func(), error) {
+	id := uuid.NewString()
+	cmd["id"] = id
+	ch := make(chan rpcResponse, 1)
+	s.mu.Lock()
+	s.pending[id] = ch
+	s.mu.Unlock()
+	release := func() {
+		s.mu.Lock()
+		delete(s.pending, id)
+		s.mu.Unlock()
+	}
+	if err := s.send(cmd); err != nil {
+		release()
+		return nil, nil, err
+	}
+	return ch, release, nil
+}
+
+// err is the response's refusal as an error, or nil when it succeeded.
+func (r rpcResponse) err() error {
+	if r.Success {
+		return nil
+	}
+	return fmt.Errorf("%s: %s", r.Command, r.Error)
 }
 
 func (s *session) readLoop(r io.Reader) {
@@ -451,14 +473,58 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	if len(images) > 0 {
 		cmd["images"] = images
 	}
-	if err := s.call(ctx, cmd, nil); err != nil {
-		// The prompt was refused, so no agent_settled will ever clear this
-		// turn id; leaving it set would make the collision guard above reject
-		// every later prompt forever.
+	// Pi acks a prompt only after its preflight: extension commands and input
+	// handlers, the auth check, and possibly a full context compaction. That
+	// can take minutes, and an extension that opens a dialog during preflight
+	// needs the thread actor to answer it, so the actor calling Prompt must not
+	// wait for the ack. Only the write happens here; the ack is awaited on its
+	// own goroutine and a refusal closes the turn there.
+	ack, release, err := s.request(cmd)
+	if err != nil {
 		s.clearTurn(in.TurnID)
 		return s.classify(err)
 	}
+	go s.awaitPromptAck(in.TurnID, ack, release)
 	return nil
+}
+
+// awaitPromptAck waits out pi's prompt preflight and, if pi refuses the prompt,
+// finishes the turn with the refusal. It is bounded by the session rather than
+// the caller's context: the caller has long since returned. If pi exits first,
+// watchExit closes the turn instead.
+func (s *session) awaitPromptAck(turnID string, ack <-chan rpcResponse, release func()) {
+	defer release()
+	var res rpcResponse
+	select {
+	case res = <-ack:
+	case <-s.rpcDone:
+		return
+	case <-s.done:
+		return
+	}
+	refusal := res.err()
+	if refusal == nil {
+		return
+	}
+	// The prompt was refused, so no agent_settled will ever clear this turn
+	// id; leaving it set would make the collision guard in Prompt reject every
+	// later prompt forever. But only a turn that is still ours: if it already
+	// settled (an abort during preflight) or another turn has since opened,
+	// closing it here would finish work this prompt never started.
+	s.mu.Lock()
+	ours := s.turnID == turnID
+	if ours {
+		s.turnID = ""
+	}
+	s.mu.Unlock()
+	if !ours {
+		return
+	}
+	refusal = s.classify(refusal)
+	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: turnID, StopReason: proto.StopError, Error: refusal.Error(),
+		Failure: adapter.FailureOf(refusal),
+	}))
 }
 
 // clearTurn resets the active turn id if it is still ours. Guarded because the

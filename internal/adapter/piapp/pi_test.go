@@ -3,7 +3,6 @@ package piapp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +27,9 @@ func (fakeHost) Logf(format string, args ...any) {}
 
 // fakePi writes a shell script that speaks just enough of pi's RPC protocol
 // for one test: it records argv and every stdin line under dir, answers
-// get_state, and on prompt/abort replays the events files the test staged.
+// get_state, and on prompt/abort replays the events files the test staged. An
+// ack_gate file holds the prompt's response until ack_open appears, standing
+// in for pi's preflight.
 func fakePi(t *testing.T, dir string, promptResponse string) string {
 	t.Helper()
 	if promptResponse == "" {
@@ -46,8 +47,15 @@ while IFS= read -r line; do
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"sessionId\":\"harness-123\",\"thinkingLevel\":\"medium\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
       ;;
     *'"type":"prompt"'*)
-      printf '%%s\n' "%s"
-      [ -f "$DIR/events" ] && cat "$DIR/events"
+      if [ -f "$DIR/ack_gate" ]; then
+        # Pi's preflight: the ack waits, but the loop keeps reading stdin.
+        ( while [ ! -f "$DIR/ack_open" ]; do sleep 0.02; done
+          printf '%%s\n' "%s"
+          [ -f "$DIR/events" ] && cat "$DIR/events" ) &
+      else
+        printf '%%s\n' "%s"
+        [ -f "$DIR/events" ] && cat "$DIR/events"
+      fi
       ;;
     *'"type":"abort"'*)
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"abort\",\"success\":true}"
@@ -64,7 +72,7 @@ while IFS= read -r line; do
       ;;
   esac
 done
-`, dir, promptResponse)
+`, dir, promptResponse, promptResponse)
 	bin := filepath.Join(dir, "pi")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -349,21 +357,127 @@ func TestPromptAuthRefusal(t *testing.T) {
 	}
 	defer s.Close()
 
-	err = s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"})
-	if err == nil {
-		t.Fatal("expected the prompt to be refused")
+	// The refusal arrives after Prompt has returned, so it closes the turn
+	// itself, carrying the failure kind so a login is offered.
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
 	}
-	if adapter.FailureOf(err) != proto.FailureAuth {
-		t.Fatalf("failure kind = %q, want %q (err: %v)", adapter.FailureOf(err), proto.FailureAuth, err)
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if final.TurnID != "t1" || final.StopReason != proto.StopError || final.Failure != proto.FailureAuth {
+		t.Fatalf("refused turn wrong: %+v", final)
+	}
+	if !strings.Contains(final.Error, "No API key found") {
+		t.Errorf("refusal message lost: %q", final.Error)
 	}
 	// The refusal must clear the turn so the next prompt is not rejected by
 	// the collision guard.
-	var fe *adapter.FailureError
-	if !errors.As(err, &fe) {
-		t.Fatalf("expected FailureError, got %T", err)
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t2", Text: "again"}); err != nil {
+		t.Fatalf("session left busy after a refused prompt: %v", err)
+	}
+}
+
+// Pi acks a prompt only after its preflight, which can run a whole compaction
+// or wait on an extension's dialog. Prompt must return without that ack, and
+// the session must still take a Stop while it is outstanding.
+func TestPromptReturnsBeforeAck(t *testing.T) {
+	dir := t.TempDir()
+	events := []string{
+		`{"type":"agent_start"}`,
+		`{"type":"message_start","message":{"role":"assistant"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"late"}}`,
+		`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{}}}`,
+		`{"type":"agent_settled"}`,
+	}
+	for name, body := range map[string]string{
+		"events":   strings.Join(events, "\n") + "\n",
+		"ack_gate": "",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
+
+	returned := make(chan error, 1)
+	go func() { returned <- s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}) }()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("Prompt: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Prompt waited for pi's ack")
 	}
 	if err := s.Cancel(context.Background()); err != nil {
-		t.Fatalf("session left busy after a refused prompt: %v", err)
+		t.Fatalf("Cancel while the ack is outstanding: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ack_open"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	var text string
+	for _, e := range got {
+		if p, ok := e.Payload.(proto.MessageChunkPayload); ok && p.TurnID == "t1" {
+			text += p.Delta
+		}
+	}
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if text != "late" || final.TurnID != "t1" || final.StopReason != proto.StopEndTurn {
+		t.Fatalf("turn after a delayed ack wrong: text=%q final=%+v", text, final)
+	}
+}
+
+// A refusal only closes the turn it was sent for. One that lands after that
+// turn settled, or after pi opened a turn of its own, must leave both alone.
+func TestLatePromptRefusal(t *testing.T) {
+	refusal := rpcResponse{Command: "prompt", Success: false, Error: "No API key found for anthropic"}
+	cases := []struct {
+		name, current string
+		wantTurn      string
+		wantFinished  bool
+	}{
+		{"still ours", "t1", "", true},
+		{"already settled", "", "", false},
+		{"relabelled", "harness-turn", "harness-turn", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := &session{
+				host:    fakeHost{},
+				events:  make(chan proto.Emission, 8),
+				done:    make(chan struct{}),
+				rpcDone: make(chan struct{}),
+				pending: map[string]chan rpcResponse{},
+			}
+			s.turnID = c.current
+			ack := make(chan rpcResponse, 1)
+			ack <- refusal
+			released := false
+			s.awaitPromptAck("t1", ack, func() { released = true })
+
+			if !released {
+				t.Error("pending entry not released")
+			}
+			if s.turnID != c.wantTurn {
+				t.Errorf("turn id = %q, want %q", s.turnID, c.wantTurn)
+			}
+			select {
+			case e := <-s.events:
+				p := e.Payload.(proto.TurnFinishedPayload)
+				if !c.wantFinished {
+					t.Fatalf("late refusal emitted %+v", p)
+				}
+				if p.TurnID != "t1" || p.StopReason != proto.StopError || p.Failure != proto.FailureAuth {
+					t.Errorf("refusal finish wrong: %+v", p)
+				}
+			default:
+				if c.wantFinished {
+					t.Fatal("refusal of the open turn emitted nothing")
+				}
+			}
+		})
 	}
 }
 
