@@ -279,6 +279,7 @@ type QueuedPrompt struct {
 // log, not in a connection, so any attached presenter can answer it.
 type PendingPermission struct {
 	RequestID  string                   `json:"requestId"`
+	TurnID     string                   `json:"turnId,omitempty"`
 	ToolCallID string                   `json:"toolCallId"`
 	ToolName   string                   `json:"toolName"`
 	Title      string                   `json:"title"`
@@ -288,6 +289,7 @@ type PendingPermission struct {
 
 type PendingElicitation struct {
 	RequestID string          `json:"requestId"`
+	TurnID    string          `json:"turnId,omitempty"`
 	Prompt    string          `json:"prompt"`
 	Schema    json.RawMessage `json:"schema"`
 	// Card is set on a proposal the agent raised through omniplex's tools.
@@ -803,6 +805,7 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 		match := open == "" || p.TurnID == open
+		s.settleRequests(p.TurnID)
 		for i := range s.Turns {
 			if s.Turns[i].ID == p.TurnID {
 				s.Turns[i].StopReason = p.StopReason
@@ -1005,6 +1008,7 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		s.Pending = append(s.Pending, PendingPermission{
 			RequestID:  p.RequestID,
+			TurnID:     p.TurnID,
 			ToolCallID: p.ToolCallID,
 			ToolName:   p.ToolName,
 			Title:      p.Title,
@@ -1027,7 +1031,7 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.ElicitationRequestedPayload
 		decode(ev.Payload, &p)
 		s.Elicitations = append(s.Elicitations, PendingElicitation{
-			RequestID: p.RequestID, Prompt: p.Prompt, Schema: p.Schema, Card: p.Card,
+			RequestID: p.RequestID, TurnID: p.TurnID, Prompt: p.Prompt, Schema: p.Schema, Card: p.Card,
 		})
 		if len(p.Card) > 0 {
 			s.upsert(CardID(p.RequestID), func(it *Item) {
@@ -1061,6 +1065,32 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 	}
+}
+
+// settleRequests drops the permissions and questions a finished turn was
+// blocked on. The harness has stopped waiting on them once its turn is over,
+// whether or not it said so, and a card left up would answer nothing. A
+// request that names no turn is left alone: nothing says this finish ended
+// it. Cards are omniplex's to hold and outlive the turn. Mirrored in
+// web/src/apply.ts.
+func (s *State) settleRequests(turnID string) {
+	if turnID == "" {
+		return
+	}
+	perms := s.Pending[:0]
+	for _, p := range s.Pending {
+		if p.TurnID != turnID {
+			perms = append(perms, p)
+		}
+	}
+	s.Pending = perms
+	elicits := s.Elicitations[:0]
+	for _, p := range s.Elicitations {
+		if p.IsCard() || p.TurnID != turnID {
+			elicits = append(elicits, p)
+		}
+	}
+	s.Elicitations = elicits
 }
 
 // Card statuses: pending until answered, then the outcome's result.

@@ -5,6 +5,7 @@ package jsonrpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,12 @@ type Conn struct {
 	nextID atomic.Int64
 
 	pending sync.Map // string -> chan Message
+	inbound sync.Map // compact id -> context.CancelFunc, one per request being served
+
+	// life parents every inbound handler's context; it ends with the stream,
+	// since nobody is left to read an answer to what the peer asked.
+	life    context.Context
+	endLife context.CancelFunc
 
 	handler  Handler
 	notifier Notifier
@@ -57,6 +64,7 @@ type Conn struct {
 
 func NewConn(r io.Reader, w io.Writer, h Handler, n Notifier) *Conn {
 	c := &Conn{w: w, handler: h, notifier: n, done: make(chan struct{})}
+	c.life, c.endLife = context.WithCancel(context.Background())
 	go c.readLoop(r)
 	return c
 }
@@ -81,6 +89,7 @@ func (c *Conn) readLoop(r io.Reader) {
 		c.dispatch(m)
 	}
 	c.readErr = sc.Err()
+	c.endLife()
 
 	// Fail every in-flight call so no caller waits on a dead process.
 	c.pending.Range(func(k, v any) bool {
@@ -118,7 +127,18 @@ func (c *Conn) serve(m Message) {
 		_ = c.send(Message{JSONRPC: "2.0", ID: m.ID, Error: &RPCError{Code: -32601, Message: "method not found"}})
 		return
 	}
-	result, err := c.handler(context.Background(), m.Method, m.Params)
+	ctx, cancel := context.WithCancel(c.life)
+	key := idKey(m.ID)
+	c.inbound.Store(key, cancel)
+	result, err := c.handler(ctx, m.Method, m.Params)
+	c.inbound.Delete(key)
+	withdrawn := ctx.Err() != nil
+	cancel()
+	if withdrawn {
+		// The peer withdrew the request, or went away: it is not waiting on
+		// an answer, whatever the handler made of the cancel.
+		return
+	}
 	if err != nil {
 		_ = c.send(Message{JSONRPC: "2.0", ID: m.ID, Error: &RPCError{Code: -32000, Message: err.Error()}})
 		return
@@ -185,6 +205,27 @@ func (c *Conn) Call(ctx context.Context, method string, params any, out any) err
 		}
 		return nil
 	}
+}
+
+// CancelInbound cancels the context of the handler serving the peer's
+// request id, for a peer that settled the request on its own. No response is
+// sent for it. Reports whether such a request was being served.
+func (c *Conn) CancelInbound(id json.RawMessage) bool {
+	v, ok := c.inbound.LoadAndDelete(idKey(id))
+	if ok {
+		v.(context.CancelFunc)()
+	}
+	return ok
+}
+
+// idKey is a request id in a form both ends agree on, whatever whitespace the
+// peer echoed it back with.
+func idKey(id json.RawMessage) string {
+	var b bytes.Buffer
+	if json.Compact(&b, id) != nil {
+		return string(id)
+	}
+	return b.String()
 }
 
 // Respond replies to an inbound request that was handled out of band.
