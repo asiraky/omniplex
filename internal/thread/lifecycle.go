@@ -3,6 +3,8 @@ package thread
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,6 +120,13 @@ func (m *Manager) runProvisionHook(ctx context.Context, meta store.ThreadMeta, f
 	}
 	branch, suggested := workspaceTarget(meta, f)
 	meta.Branch = branch
+	// The hook is told the same directory omniplex would pick itself, so a hook
+	// that honours the suggestion cannot land on another branch's checkout.
+	// Whether that directory is already this branch's worktree is the hook's
+	// business, and a failure to look only costs the hook the collision check.
+	if path, _, err := worktreePath(ctx, f.Path, branch, suggested); err == nil {
+		suggested = path
+	}
 	// The base is resolved once, here, and the answer is what every hook sees:
 	// a ref that exists in this clone. Resolving it per-hook would fetch twice
 	// and could hand the hook a name Git cannot look up.
@@ -337,6 +346,10 @@ func emitBaseNote(ctx context.Context, a *Actor, res baseResolution) {
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stdout", Chunk: "note: " + res.Note + "\n"}))
 }
 
+// workspaceTarget names the thread's branch and the readable directory its
+// worktree would ideally live in. The directory is only a first choice: the
+// slug folds "/" into "-", so "fix/x" and "fix-x" share it, and worktreePath
+// decides where the worktree actually goes.
 func workspaceTarget(meta store.ThreadMeta, f project.Folder) (string, string) {
 	branch := meta.Branch
 	if branch == "" {
@@ -344,6 +357,80 @@ func workspaceTarget(meta store.ThreadMeta, f project.Folder) (string, string) {
 	}
 	dir := strings.ReplaceAll(branch, "/", "-")
 	return branch, filepath.Join(f.Path, f.CopiesDir, dir)
+}
+
+// worktreePath picks the directory a branch's worktree goes in, and reports
+// whether one is already there to reuse. The readable slug is tried first;
+// when something else holds it, the slug with a short hash of the full branch
+// name is tried, which no other branch can want. A directory counts as this
+// branch's only when Git has it registered as a worktree on that branch: a
+// stray directory, or another branch's checkout, is never adopted, because
+// handing a thread someone else's files is worse than failing. Both choices
+// are pure functions of the branch, so a retry of the same thread finds the
+// worktree its first attempt made.
+func worktreePath(ctx context.Context, root, branch, slug string) (string, bool, error) {
+	out, err := runGit(ctx, root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false, fmt.Errorf("list worktrees: %w", err)
+	}
+	listed := parseWorktreeList(string(out), canonicalPath(root))
+	sum := sha256.Sum256([]byte(branch))
+	hashed := slug + "-" + hex.EncodeToString(sum[:])[:8]
+	for _, candidate := range []string{slug, hashed} {
+		free, ours := claimOf(candidate, branch, listed)
+		if ours {
+			return candidate, true, nil
+		}
+		if free {
+			return candidate, false, nil
+		}
+	}
+	return "", false, fmt.Errorf("no free directory for a worktree of %s: %s and %s are both taken by something else", branch, slug, hashed)
+}
+
+// claimOf says whether path is free for a new worktree of branch, or already
+// that branch's worktree. A registered worktree whose directory is gone counts
+// as free: it is the leftover of a crash, and the prune before every add
+// clears it.
+func claimOf(path, branch string, listed []Workspace) (free, ours bool) {
+	_, statErr := os.Lstat(path)
+	exists := statErr == nil
+	canonical := comparablePath(path)
+	for _, w := range listed {
+		if w.Path != canonical {
+			continue
+		}
+		if !exists {
+			return true, false
+		}
+		return false, w.Branch == branch
+	}
+	return !exists, false
+}
+
+// comparablePath canonicalises a path that may not exist yet, by resolving
+// its parent instead, so it compares equal to what Git lists for it.
+func comparablePath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if resolved := canonicalPath(path); resolved != path {
+		return resolved
+	}
+	return filepath.Join(canonicalPath(filepath.Dir(path)), filepath.Base(path))
+}
+
+// pruneWorktrees drops Git's record of worktrees whose directories are gone.
+// The caller holds the repository lock.
+func pruneWorktrees(ctx context.Context, root string) error {
+	return gitCmd(ctx, root, "worktree", "prune").Run()
+}
+
+// pruneWorktreesLocked is pruneWorktrees for a caller that does not already
+// hold the repository lock.
+func pruneWorktreesLocked(ctx context.Context, root string) error {
+	defer lockRepo(ctx, root)()
+	return pruneWorktrees(ctx, root)
 }
 
 func redactHookOutput(value string) string {
@@ -365,20 +452,20 @@ func (m *Manager) createWorktree(ctx context.Context, meta store.ThreadMeta, f p
 // createWorktreeFrom takes an already-resolved base when the caller has one, so
 // a provision that resolves the base for its hooks does not resolve it a second
 // time here — and cannot reach a different answer than the one the hook saw.
+//
+// The base is resolved before the repository lock is taken, because resolving
+// takes that lock itself and it is not re-entrant. Everything after that —
+// deciding the branch must be created, choosing the directory, adding the
+// worktree and undoing a failed add — happens under the lock, so a second
+// thread provisioning in the same repository cannot see the state half made.
 func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.ThreadMeta, f project.Folder, a *Actor, resolved *baseResolution) (provisionResult, error) {
-	branch, path := workspaceTarget(meta, f)
-	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-		return provisionResult{Cwd: path, Branch: branch}, nil
-	}
-	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
+	branch, slug := workspaceTarget(meta, f)
 	// An existing branch is checked out where it stands: the base names where a
 	// branch begins, and this one already began somewhere. Only the create case
 	// consults it, so only the create case has to be able to resolve it.
-	args := []string{"worktree", "add", path, branch}
-	branchCheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	branchCheck.Dir = f.Path
-	if branchCheck.Run() != nil {
-		res := baseResolution{}
+	var res baseResolution
+	create := !hasLocalBranch(ctx, f.Path, branch)
+	if create {
 		if resolved != nil {
 			res = *resolved
 		} else {
@@ -387,25 +474,83 @@ func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.ThreadMeta,
 				return provisionResult{}, err
 			}
 		}
-		// Resolving can itself create the branch: asking for base "staging" on
-		// a thread branch also called "staging" tracks the remote one, and by
-		// now it exists. Creating it a second time is an error, so ask again.
-		recheck := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-		recheck.Dir = f.Path
-		if recheck.Run() != nil {
-			args = []string{"worktree", "add", path, "-b", branch, res.Ref}
-		}
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = f.Path
-	b, err := cmd.CombinedOutput()
+
+	defer lockRepo(ctx, f.Path)()
+	// Resolving can itself create the branch: asking for base "staging" on a
+	// thread branch also called "staging" tracks the remote one, and by now it
+	// exists. Creating it a second time is an error, so ask again.
+	if create && hasLocalBranch(ctx, f.Path, branch) {
+		create = false
+	}
+	// A crash between registering a worktree and finishing it leaves Git
+	// remembering a directory that is not there, and add refuses that path
+	// until the record is pruned. Pruning is cheap, so it is done every time
+	// rather than diagnosed.
+	if err := pruneWorktrees(ctx, f.Path); err != nil {
+		m.logf("git worktree prune in %s: %v", f.Path, err)
+	}
+	path, reuse, err := worktreePath(ctx, f.Path, branch, slug)
+	if err != nil {
+		return provisionResult{}, err
+	}
+	if reuse {
+		return provisionResult{Cwd: path, Branch: branch}, nil
+	}
+	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
+	args := []string{"worktree", "add", path, branch}
+	if create {
+		args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+	}
+	b, err := gitCmd(ctx, f.Path, args...).CombinedOutput()
 	if len(b) > 0 && a != nil {
 		_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stdout", Chunk: string(b)}))
 	}
 	if err != nil {
+		m.undoWorktreeAdd(ctx, f.Path, path, branch, create, a)
 		return provisionResult{}, fmt.Errorf("git worktree add: %w", err)
 	}
 	return provisionResult{Cwd: path, Branch: branch}, nil
+}
+
+// undoWorktreeAdd removes what a failed "worktree add" left behind. Git can
+// register the worktree — and, with -b, create the branch — and still exit
+// non-zero: a failing post-checkout hook does exactly that. A worktree left
+// registered would be adopted by the retry as if it were finished, and a
+// branch left behind makes every retry fail with "branch already exists". The
+// directory was free before the add, so it is always ours to remove; the
+// branch is deleted only when createdBranch says this attempt made it. A
+// cleanup failure is reported but never replaces the add's own error, which
+// is the one that explains what happened. The caller holds the repository
+// lock.
+func (m *Manager) undoWorktreeAdd(ctx context.Context, root, path, branch string, createdBranch bool, a *Actor) {
+	ctx = context.WithoutCancel(ctx)
+	report := func(what string, err error, out []byte) {
+		msg := fmt.Sprintf("cleanup after failed worktree add: %s: %v %s", what, err, strings.TrimSpace(string(out)))
+		m.logf("%s", msg)
+		if a != nil {
+			_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookOutput, proto.WorkspaceHookOutputPayload{Hook: "provision", Stream: "stderr", Chunk: msg + "\n"}))
+		}
+	}
+	if out, err := runGit(ctx, root, "worktree", "list", "--porcelain"); err != nil {
+		report("list worktrees", err, nil)
+	} else {
+		canonical := comparablePath(path)
+		for _, w := range parseWorktreeList(string(out), canonicalPath(root)) {
+			if w.Path != canonical {
+				continue
+			}
+			if out, err := gitCmd(ctx, root, "worktree", "remove", "--force", path).CombinedOutput(); err != nil {
+				report("git worktree remove "+path, err, out)
+			}
+			break
+		}
+	}
+	if createdBranch && hasLocalBranch(ctx, root, branch) {
+		if out, err := gitCmd(ctx, root, "branch", "-D", branch).CombinedOutput(); err != nil {
+			report("git branch -D "+branch, err, out)
+		}
+	}
 }
 
 func writeJSON(path string, v any) error {
@@ -539,22 +684,18 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 	}
 	if target == "" || target == root {
 		if allowMissingLease {
-			prune := exec.CommandContext(ctx, "git", "worktree", "prune")
-			prune.Dir = root
-			return prune.Run()
+			return pruneWorktreesLocked(ctx, root)
 		}
 		return errors.New("refusing to remove the project root")
 	}
 	if _, statErr := os.Stat(target); os.IsNotExist(statErr) {
-		prune := exec.CommandContext(ctx, "git", "worktree", "prune")
-		prune.Dir = root
-		return prune.Run()
+		return pruneWorktreesLocked(ctx, root)
 	}
 	if rel, relErr := filepath.Rel(target, root); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return errors.New("refusing to remove an ancestor of the project root")
 	}
 	common := func(dir string) (string, error) {
-		b, e := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-common-dir").Output()
+		b, e := runGit(ctx, dir, "rev-parse", "--git-common-dir")
 		if e != nil {
 			return "", e
 		}
@@ -578,7 +719,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 	if err != nil {
 		return err
 	}
-	listed, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "list", "--porcelain").Output()
+	listed, err := runGit(ctx, root, "worktree", "list", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("list worktrees: %w", err)
 	}
@@ -628,9 +769,11 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 			return fmt.Errorf("refusing cleanup: %s is still in use by %s — stop it and delete again", filepath.Base(target), describeProcs(procs))
 		}
 	}
-	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", target)
-	cmd.Dir = f.Path
-	b, err := cmd.CombinedOutput()
+	// The lock covers the remove alone: the fallback below and the prune after
+	// it take the lock themselves, and it is not re-entrant.
+	unlock := lockRepo(ctx, f.Path)
+	b, err := gitCmd(ctx, f.Path, "worktree", "remove", "--force", target).CombinedOutput()
+	unlock()
 	if len(b) > 0 {
 		// Git's own diagnosis is the only useful thing in a failure, so it is
 		// logged whether or not there is an actor to narrate it to. Without
@@ -653,9 +796,7 @@ func (m *Manager) removeGitWorktree(ctx context.Context, meta store.ThreadMeta, 
 		}
 		return nil
 	}
-	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
-	prune.Dir = f.Path
-	return prune.Run()
+	return pruneWorktreesLocked(ctx, f.Path)
 }
 
 // removeTree is os.RemoveAll behind a seam, so a test can reproduce a removal
@@ -693,7 +834,5 @@ func (m *Manager) deleteWorktreeDir(ctx context.Context, root, target string) er
 		}
 		return err
 	}
-	prune := exec.CommandContext(ctx, "git", "worktree", "prune")
-	prune.Dir = root
-	return prune.Run()
+	return pruneWorktreesLocked(ctx, root)
 }
