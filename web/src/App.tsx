@@ -369,8 +369,7 @@ export function App() {
             harnesses={harnesses}
             userConfig={wire.userConfig}
             status={wire.status}
-            draft={store.drafts[NEW_THREAD] ?? ""}
-            onDraftChange={(text) => store.setDraft(NEW_THREAD, text)}
+            drafts={store.draftStore}
             onStart={create}
             attachments={store.attachments[NEW_THREAD] ?? []}
             onAttachFiles={store.attachToDraft}

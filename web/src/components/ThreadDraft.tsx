@@ -1,6 +1,8 @@
 import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
+import { useDraft, type DraftStore } from "~/app/draftStore";
+import { NEW_THREAD } from "~/app/threadKeys";
 import type { DraftPreset } from "~/app/useThreadSelection";
 import type { ConnectionStatus } from "~/client";
 import type { Attachment } from "~/lib/attachments";
@@ -99,8 +101,7 @@ export function ThreadDraft({
   harnesses,
   userConfig,
   status,
-  draft,
-  onDraftChange,
+  drafts,
   onStart,
   attachments,
   onAttachFiles,
@@ -124,8 +125,8 @@ export function ThreadDraft({
   harnesses: HarnessMeta[];
   userConfig: UserConfig | null;
   status: ConnectionStatus;
-  draft: string;
-  onDraftChange: (text: string) => void;
+  /** Where the message being typed lives, under the not-yet-a-thread key. */
+  drafts: DraftStore;
   /** `schedule` starts the thread empty and opens a schedule for the message. */
   onStart: (input: NewThreadInput, schedule?: boolean) => Promise<void>;
   /** Files for the first message, held until the thread exists. */
@@ -164,6 +165,13 @@ export function ThreadDraft({
   /** An ElevenLabs key is stored, so the composer gets a mic. */
   dictate?: boolean;
 }) {
+  // Read here, not handed down by the app, so typing the first message
+  // rerenders this draft and not the app around it.
+  const draft = useDraft(drafts, NEW_THREAD);
+  const onDraftChange = useCallback(
+    (text: string) => drafts.set(NEW_THREAD, text),
+    [drafts],
+  );
   const remembered = useRememberedChoices();
   const presetProject = preset?.projectId ?? activeProjectId;
   const where = useDraftScope(

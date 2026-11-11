@@ -25,7 +25,7 @@ type Editing = {
  */
 export function useScheduleEditor(wire: Wire, store: ComposerDrafts) {
   const { clientRef } = wire;
-  const { drafts, setDrafts, attachments, setAttachments } = store;
+  const { getDraft, setDrafts, attachments, setAttachments } = store;
   const [editing, setEditing] = useState<Editing | null>(null);
 
   const openNew = useCallback(
@@ -36,8 +36,8 @@ export function useScheduleEditor(wire: Wire, store: ComposerDrafts) {
   // What the thread's composer holds right now becomes the schedule.
   const openFromComposer = useCallback(
     (threadId: string) =>
-      openNew(threadId, drafts[threadId] ?? "", sendPayload(attachments[threadId] ?? []).imageIds),
-    [attachments, drafts, openNew],
+      openNew(threadId, getDraft(threadId), sendPayload(attachments[threadId] ?? []).imageIds),
+    [attachments, getDraft, openNew],
   );
   const openExisting = useCallback(
     (threadId: string, p: ScheduledPrompt) =>

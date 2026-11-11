@@ -30,7 +30,7 @@ export function useRecentSkills({
   isDesktop: boolean;
   loadComposerItems: () => Promise<ComposerItem[]>;
 }) {
-  const { drafts, setDraft } = store;
+  const { getDraft, setDraft } = store;
   const composerRef = useRef<ComposerHandle>(null);
   const [recents, setRecents] = useState<{ items: ComposerItem[]; seeded: boolean }>({
     items: [],
@@ -77,13 +77,13 @@ export function useRecentSkills({
   const pick = useCallback(
     (item: ComposerItem) => {
       if (!activeId) return;
-      const current = drafts[activeId] ?? "";
+      const current = getDraft(activeId);
       const prefix = current && !/\s$/.test(current) ? `${current} ` : current;
       const next = `${prefix}${item.insertText} `;
       setDraft(activeId, next);
       if (isDesktop) composerRef.current?.focusEnd(next.length);
     },
-    [activeId, drafts, isDesktop, setDraft],
+    [activeId, getDraft, isDesktop, setDraft],
   );
 
   const noteUsed = useCallback(

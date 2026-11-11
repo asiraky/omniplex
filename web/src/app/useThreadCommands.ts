@@ -43,7 +43,7 @@ export function useThreadCommands({
   openDiff: (path?: string) => void;
 }) {
   const { clientRef, state, composerRevision } = wire;
-  const { drafts, setDraft, setDrafts, attachments, setAttachments } = store;
+  const { getDraft, setDraft, setDrafts, attachments, setAttachments } = store;
 
   // The composer passes what it was handed alongside the text, but the
   // attachments it sends are the staged ones held here; delivery, when the
@@ -81,14 +81,14 @@ export function useThreadCommands({
     const queued = state?.queuedPrompts ?? [];
     if (queued.length > 0) {
       const restored = queued.map((q) => q.prompt).filter(Boolean);
-      const current = drafts[activeId] ?? "";
+      const current = getDraft(activeId);
       setDraft(activeId, [...restored, current].filter(Boolean).join("\n\n"));
     }
     clientRef.current?.command("cancel", { threadId: activeId }).catch((e) => {
       const message = e instanceof Error ? e.message : String(e);
       toast.error("Could not stop the turn", { description: message });
     });
-  }, [activeId, clientRef, drafts, setDraft, state]);
+  }, [activeId, clientRef, getDraft, setDraft, state]);
 
   const dequeue = useCallback(
     (queueId: string) => {

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 
+import { useDraft } from "~/app/draftStore";
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
 import type { PanelControls } from "~/app/usePanel";
@@ -385,10 +386,13 @@ function ThreadComposer({
   dictate: boolean;
 }) {
   const catalogue = useComposerItems(commands.loadComposerItems);
+  // Subscribed here rather than read from the app, so a keystroke rerenders
+  // this composer and not the thread view, transcript and sidebar around it.
+  const draft = useDraft(store.draftStore, activeId);
   return (
     <Composer
       ref={recents.composerRef}
-      draft={activeId ? (store.drafts[activeId] ?? "") : ""}
+      draft={draft}
       onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
       disabled={state.closed || workspace.cleaning || workspace.failed}
       disabledPlaceholder={workspace.placeholder}
