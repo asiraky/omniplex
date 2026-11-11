@@ -790,3 +790,31 @@ func TestSubagentTurnStartingAfterStopIsInterrupted(t *testing.T) {
 		t.Fatalf("subagent's turn in the next turn of ours was interrupted: %s", got)
 	}
 }
+
+// Codex reuses a subagent across turns of ours. One spawned in turn A and
+// handed new work in turn B is B's work: its output lands in B, and Stop during
+// B ends it rather than leaving it spending after B is gone.
+func TestReusedSubagentIsStoppedWithTheTurnReusingIt(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-first"}}`)
+	notify(s, "turn/completed", `{"threadId":"sub-1","turn":{"id":"sub-1-first","status":"completed"}}`)
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-a","status":"completed"}}`)
+	drain(s)
+
+	s.turnID, s.serverTurnID = "turn-b", "codex-b"
+	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-reused"}}`)
+	notify(s, "item/agentMessage/delta", `{"threadId":"sub-1","turnId":"sub-1-reused","itemId":"m2","delta":"on it"}`)
+	got := drain(s)
+	if len(got) != 1 || got[0].Payload.(proto.MessageChunkPayload).TurnID != "turn-b" {
+		t.Fatalf("reused subagent's output = %+v, want one chunk in turn-b", got)
+	}
+
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	want := map[string]string{"thread-1": "codex-b", "sub-1": "sub-1-reused"}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts = %v, want %v", got, want)
+	}
+}

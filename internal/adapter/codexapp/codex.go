@@ -463,7 +463,7 @@ type session struct {
 	// pruning.
 	subagents map[string]*subagent
 	// stoppedTurn is the last turn of ours Stop was pressed on. A subagent it
-	// spawned that starts a turn after the interrupt went out is stopped too.
+	// owns that starts a turn after the interrupt went out is stopped too.
 	stoppedTurn string
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
@@ -590,9 +590,9 @@ func promptInput(text string, attachments []proto.PromptImage) []map[string]any 
 // either went out or failed on its own.
 //
 // A second interrupt for a turn that is already being interrupted is coalesced:
-// codex leaves repeated interrupts of the same turn pending indefinitely, and
-// this call runs on the session actor goroutine, so a hung Call would wedge the
-// whole session (a double-clicked stop button).
+// codex leaves repeated interrupts of the same turn pending indefinitely, so each
+// extra press of the stop button would only add a Call that never returns, and a
+// caller blocked on it, until ctx gives up.
 func (s *session) Cancel(ctx context.Context) error {
 	s.mu.Lock()
 	turnID := s.serverTurnID
@@ -1069,8 +1069,10 @@ func (s *session) foreignThread(params json.RawMessage) string {
 
 // subagent is what this session knows of one thread it spawned.
 type subagent struct {
-	// owner is the turn of ours that was running when the thread first spoke
-	// — the turn that spawned it.
+	// owner is the turn of ours the thread is working for: the one running when
+	// it first spoke, or when it last started a turn. Codex reuses a subagent
+	// across our turns (send_input hands it new work), and a Stop that only
+	// reached the turn that spawned it would leave the reused one running.
 	owner string
 	// turn is codex's id for the thread's running turn, empty between turns;
 	// finished is the one that last completed, so a straggling item from it
@@ -1081,32 +1083,27 @@ type subagent struct {
 	interrupting bool
 }
 
-// spawningTurn returns the turn a subagent thread's output belongs in: the one
-// that was running the first time that thread spoke. Empty means nowhere —
-// either nothing of ours was running when it first appeared, or the turn that
-// spawned it has since ended and a subagent that outlives its turn must not
-// spill into whatever turn is running now.
+// spawningTurn returns the turn a subagent thread's output belongs in: its
+// owner, if that is the turn running now. Empty means nowhere — either nothing
+// of ours was running when it first appeared, or the turn it works for has
+// since ended and a subagent that outlives its turn must not spill into
+// whatever turn is running now.
 func (s *session) spawningTurn(thread, turn string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if child, ok := s.subagents[thread]; ok {
-		if child.owner == turn {
-			return turn
-		}
-		return ""
+	if child, ok := s.subagents[thread]; ok && child.owner == turn {
+		return turn
 	}
-	if turn == "" {
-		return ""
-	}
-	if s.subagents == nil {
-		s.subagents = map[string]*subagent{}
-	}
-	s.subagents[thread] = &subagent{owner: turn}
-	return turn
+	return ""
 }
 
-// trackSubagentTurn follows a known subagent's turns, which is what lets Stop
-// address them: turn/interrupt needs the child's own turn id.
+// trackSubagentTurn follows a subagent's turns, which is what lets Stop address
+// them: turn/interrupt needs the child's own turn id. A thread first heard from
+// while a turn of ours is open is recorded as that turn's; one first heard from
+// while idle is not tracked at all.
+//
+// A subagent that starts a turn while a turn of ours is open is doing that
+// turn's work, whichever turn spawned it, and becomes that turn's to stop.
 //
 // A subagent of a stopped turn that starts a turn after the interrupt went out
 // — it was between turns when Stop was pressed, or first spoke only after — is
@@ -1126,10 +1123,17 @@ func (s *session) trackSubagentTurn(method, thread string, params json.RawMessag
 	s.mu.Lock()
 	child, ok := s.subagents[thread]
 	if !ok {
-		s.mu.Unlock()
-		return
+		if s.turnID == "" {
+			s.mu.Unlock()
+			return
+		}
+		if s.subagents == nil {
+			s.subagents = map[string]*subagent{}
+		}
+		child = &subagent{owner: s.turnID}
+		s.subagents[thread] = child
 	}
-	late := ""
+	started := ""
 	switch method {
 	case "turn/completed", "turn/failed":
 		if p.Turn.ID == "" || p.Turn.ID == child.turn {
@@ -1138,19 +1142,26 @@ func (s *session) trackSubagentTurn(method, thread string, params json.RawMessag
 			child.interrupting = false
 		}
 	case "turn/started":
-		if p.Turn.ID == "" || p.Turn.ID == child.turn {
-			break
-		}
-		child.turn = p.Turn.ID
-		child.interrupting = false
-		stopped := s.stoppedTurn != "" && child.owner == s.stoppedTurn
-		if stopped && (s.turnID == "" || s.turnID == s.stoppedTurn) {
-			child.interrupting = true
-			late = child.turn
+		if p.Turn.ID != "" && p.Turn.ID != child.turn {
+			started = p.Turn.ID
 		}
 	default:
+		// An item naming a turn the thread was not known to be running is
+		// that turn starting, heard about late.
 		if child.turn == "" && p.TurnID != "" && p.TurnID != child.finished {
-			child.turn = p.TurnID
+			started = p.TurnID
+		}
+	}
+	late := ""
+	if started != "" {
+		child.turn = started
+		child.interrupting = false
+		if s.turnID != "" {
+			child.owner = s.turnID
+		}
+		if s.stoppedTurn != "" && child.owner == s.stoppedTurn {
+			child.interrupting = true
+			late = started
 		}
 	}
 	s.mu.Unlock()
@@ -1178,8 +1189,8 @@ func (s *session) trackSubagentTurn(method, thread string, params json.RawMessag
 // thread's turn — which codex ignores, so the phantom turn could not be
 // stopped at all.
 func (s *session) handleSubagentNotification(method, thread, turn string, params json.RawMessage) {
-	turn = s.spawningTurn(thread, turn)
 	s.trackSubagentTurn(method, thread, params)
+	turn = s.spawningTurn(thread, turn)
 	if turn == "" {
 		return
 	}
