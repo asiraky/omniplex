@@ -94,8 +94,16 @@ export function App() {
     (id: string) => harnesses.find((h) => h.id === id)?.accent,
     [harnesses],
   );
-  const projectFolders = (id?: string) =>
-    projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [];
+  // Kept to the projects list's identity, like accentOf: the sidebar is
+  // memoised, and a fresh lookup on every App render would re-render it.
+  const projectName = useCallback(
+    (id?: string) => projects.find((p) => p.id === id)?.name,
+    [projects],
+  );
+  const projectFolders = useCallback(
+    (id?: string) => projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [],
+    [projects],
+  );
 
   // The keyboard and the palette. Everything below the early returns is one
   // screen of many, and ⌘K has to work from all of them.
@@ -114,7 +122,12 @@ export function App() {
     screens.leaveAll();
     nav.startNew(preset);
   };
-  const newThreadIn = () => palette.show("newThread");
+  // The sidebar's, kept stable for its memo like the screens' openers.
+  const { show: showPalette } = palette;
+  const { startNew: startFresh } = nav;
+  const newThreadIn = useCallback(() => showPalette("newThread"), [showPalette]);
+  const openPaletteRoot = useCallback(() => showPalette("root"), [showPalette]);
+  const startBlank = useCallback(() => startFresh(), [startFresh]);
   // Reachable from over the palette, which would otherwise cover the draft.
   const newThreadHere = () => {
     palette.setOpen(false);
@@ -289,21 +302,21 @@ export function App() {
         onOpenChange={nav.setSidebarOpen}
         onSelect={select}
         onNewThreadIn={newThreadIn}
-        onNew={() => nav.startNew()}
-        onOpenPalette={() => palette.show("root")}
+        onNew={startBlank}
+        onOpenPalette={openPaletteRoot}
         projectView={projectView}
         showJumpHints={showJumpHints}
         onDelete={deletion.remove}
-        onShowAccess={() => screens.setShowAccess(true)}
-        onShowUsage={() => screens.setShowUsage(true)}
-        onShowSkills={() => screens.setTools({})}
-        onShowSettings={() => screens.setSettings({})}
+        onShowAccess={screens.openAccess}
+        onShowUsage={screens.openUsage}
+        onShowSkills={screens.openSkills}
+        onShowSettings={screens.openSettings}
         accentOf={accentOf}
         projects={projects}
-        projectName={(id) => projects.find((p) => p.id === id)?.name}
+        projectName={projectName}
         projectFolders={projectFolders}
         onSetPinned={setPinned}
-        onNewProject={() => screens.setNewProject(true)}
+        onNewProject={screens.openNewProject}
         onSetUnread={setThreadUnread}
         onRename={renameThread}
         onReorder={moveThread}

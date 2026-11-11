@@ -7,7 +7,7 @@ import {
   PinOffIcon,
   XIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 
 import { HarnessBadge } from "~/components/HarnessBadge";
 import { TitleEditor } from "~/components/TitleEditor";
@@ -303,7 +303,8 @@ function DragHandle({ s, drag }: { s: ThreadMeta; drag: RowDrag | undefined }) {
       type="button"
       aria-label={`Move thread ${s.title || "Untitled"}`}
       disabled={!drag}
-      {...drag?.handle}
+      onPointerDown={drag && ((e) => drag.onHandlePointerDown(e, s.id))}
+      onKeyDown={drag && ((e) => drag.onHandleKeyDown(e, s.id))}
       className="text-muted-foreground hover:text-foreground focus-visible:ring-ring absolute inset-y-0 left-0 flex w-11 cursor-grab touch-none items-center justify-center rounded-lg outline-none select-none [-webkit-touch-callout:none] focus-visible:ring-2 active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
     >
       <GripVerticalIcon aria-hidden className="size-3.5" />
@@ -346,7 +347,12 @@ function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMet
 // owning a column of their own, so an un-hovered row has no phantom right
 // margin; wherever the pin is showing (on hover with a mouse, always on a
 // wide touch screen) the timestamp yields.
-export function ThreadRow({
+//
+// Memoised: App re-renders on every frame the server sends and every key the
+// composer takes, and a list of rows re-rendering for each is the bulk of that
+// cost. Every prop is either the row's own data or a callback that keeps its
+// identity, so a row renders again only when something about it changed.
+export const ThreadRow = memo(function ThreadRow({
   s,
   showProject,
   active,
@@ -480,7 +486,7 @@ export function ThreadRow({
                   onClick={reordering ? undefined : () => onSelect(s.id)}
                   // A mouse or pen drags the row itself; a finger only ever
                   // drags by the handle, so a scroll is never a drag.
-                  onPointerDown={drag?.onRowPointerDown}
+                  onPointerDown={drag && ((e) => drag.onRowPointerDown(e, s.id))}
                   aria-current={active ? "true" : undefined}
                   className={cn(
                     "focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2",
@@ -550,4 +556,4 @@ export function ThreadRow({
       </ContextMenu>
     </div>
   );
-}
+});

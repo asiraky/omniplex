@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 import { useStoredFlag, useStoredKeys, withKey } from "~/components/sidebar/useStoredKeys";
 import type { Project } from "~/protocol";
@@ -39,23 +39,33 @@ export function useProjectView(projects: Project[]): ProjectView {
   const [collapsed, setCollapsed] = useStoredKeys(COLLAPSED_KEY);
   const [grouped, setGrouped] = useStoredFlag(GROUPED_KEY, true);
 
-  return {
-    grouped,
-    onToggleGrouped: setGrouped,
-    hidden,
-    collapsed,
-    onToggle: useCallback(
-      (id: string, show: boolean) => setHidden((current) => withKey(current, id, !show)),
-      [setHidden],
-    ),
-    onShowAll: useCallback(() => setHidden(new Set()), [setHidden]),
-    onHideAll: useCallback(
-      () => setHidden(new Set(projects.map((p) => p.id))),
-      [projects, setHidden],
-    ),
-    onToggleCollapse: useCallback(
-      (key: string) => setCollapsed((current) => withKey(current, key, !current.has(key))),
-      [setCollapsed],
-    ),
-  };
+  const onToggle = useCallback(
+    (id: string, show: boolean) => setHidden((current) => withKey(current, id, !show)),
+    [setHidden],
+  );
+  const onShowAll = useCallback(() => setHidden(new Set()), [setHidden]);
+  const onHideAll = useCallback(
+    () => setHidden(new Set(projects.map((p) => p.id))),
+    [projects, setHidden],
+  );
+  const onToggleCollapse = useCallback(
+    (key: string) => setCollapsed((current) => withKey(current, key, !current.has(key))),
+    [setCollapsed],
+  );
+
+  // One object while none of it changes: the sidebar is memoised, and a fresh
+  // view on every App render would re-render it for each.
+  return useMemo(
+    () => ({
+      grouped,
+      onToggleGrouped: setGrouped,
+      hidden,
+      collapsed,
+      onToggle,
+      onShowAll,
+      onHideAll,
+      onToggleCollapse,
+    }),
+    [grouped, setGrouped, hidden, collapsed, onToggle, onShowAll, onHideAll, onToggleCollapse],
+  );
 }

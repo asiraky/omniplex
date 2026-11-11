@@ -120,11 +120,16 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
+  let bump: () => void = () => {};
   function Live() {
     const [list, setList] = useState(threads);
     const [open, setPanelOpen] = useState(true);
+    // State of the parent's own that the sidebar never sees, the way App's
+    // transcript and composer are.
+    const [, setTick] = useState(0);
     set = setList;
     setOpen = setPanelOpen;
+    bump = () => setTick((n) => n + 1);
     return <WithView {...props} threads={list} open={open} />;
   }
   render(<Live />);
@@ -132,6 +137,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     props,
     serverSays: (next: ThreadMeta[]) => act(() => set(next)),
     setSidebarOpen: (open: boolean) => act(() => setOpen(open)),
+    parentRenders: () => act(() => bump()),
   };
 }
 
@@ -195,6 +201,38 @@ describe("Sidebar", () => {
     // The row is a row again, not a field.
     expect(screen.queryByRole("textbox", { name: "Thread title" })).toBeNull();
     expect(props.onSelect).not.toHaveBeenCalled();
+  });
+
+  describe("rendering", () => {
+    // A row asks for its harness's accent once each time it renders, so with a
+    // harness per thread the calls name exactly the rows that rendered.
+    const counted = () => {
+      const rendered: string[] = [];
+      const accentOf = (harness: string) => {
+        rendered.push(harness);
+        return undefined;
+      };
+      const threads = ["a", "b", "c"].map((id, i) => thread(id, { harness: id, position: i }));
+      const live = renderLive(threads, { accentOf });
+      rendered.length = 0;
+      return { ...live, threads, rendered };
+    };
+
+    it("renders no row when the parent renders for something else", () => {
+      const { parentRenders, rendered } = counted();
+      parentRenders();
+      parentRenders();
+      expect(rendered).toEqual([]);
+      expect(rowOrder()).toEqual(["Thread a", "Thread b", "Thread c"]);
+    });
+
+    it("renders only the row whose thread changed", () => {
+      const { serverSays, threads, rendered } = counted();
+      const [a, b, c] = threads;
+      serverSays([a, { ...b, title: "Renamed" }, c]);
+      expect(rendered).toEqual(["b"]);
+      expect(rowOrder()).toEqual(["Thread a", "Renamed", "Thread c"]);
+    });
   });
 
   describe("reordering", () => {

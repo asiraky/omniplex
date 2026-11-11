@@ -8,6 +8,7 @@ import {
   SquarePenIcon,
 } from "lucide-react";
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -39,6 +40,7 @@ import { visibleByProject } from "~/projectGroups";
 import { newCount } from "~/threadStatus";
 import type { Project, ThreadMeta } from "~/protocol";
 import { sectionRows, sidebarSections, type SidebarSection } from "~/sidebarOrder";
+import { useLatest } from "~/useLatest";
 import { useIsDesktop } from "~/useMediaQuery";
 import { useShortcut, useShowShortcuts } from "~/useShortcuts";
 import { Wordmark } from "./Logo";
@@ -191,7 +193,12 @@ function useDeleteFlow({
     return list;
   }, [threads, frozen, exiting]);
 
-  return { thread, rows, ask: thread.ask, deleting, exiting };
+  // Every row takes this, and the hook's own is a fresh function each render,
+  // which would re-render every memoised row whenever the sidebar renders.
+  const askLatest = useLatest(thread.ask);
+  const ask = useCallback((s: ThreadMeta) => askLatest.current(s), [askLatest]);
+
+  return { thread, rows, ask, deleting, exiting };
 }
 
 type DeleteFlow = ReturnType<typeof useDeleteFlow>;
@@ -541,7 +548,10 @@ function SidebarPanel({
   );
 }
 
-export function Sidebar(props: SidebarProps) {
+// Memoised, as its rows are: App re-renders on every frame the server sends and
+// every key the composer takes, and almost none of them touch the list. App
+// hands it nothing but values and callbacks that keep their identity.
+export const Sidebar = memo(function Sidebar(props: SidebarProps) {
   const isDesktop = useIsDesktop();
   // Held here, above both shapes, so a delete survives the sheet closing under
   // it and the switch between them. The dialog is rendered here for the same
@@ -615,7 +625,7 @@ export function Sidebar(props: SidebarProps) {
       <DeleteThreadDialog flow={flow.thread} />
     </>
   );
-}
+});
 
 function DockedSidebar({
   flow,

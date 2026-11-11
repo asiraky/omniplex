@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { toast } from "~/lib/toast";
+import { useLatest } from "~/useLatest";
 
 import type { Wire } from "./useWire";
 
@@ -50,7 +51,10 @@ export function useReadState(wire: Wire, activeId: string | null) {
 
   // The explicit flag back the other way, from the row's context menu.
   // Fire-and-forget like the label mutations: the threads broadcast is the
-  // authoritative answer.
+  // authoritative answer. Every sidebar row takes this, so it reads the list
+  // through a ref instead of changing with each broadcast and re-rendering
+  // every memoised row.
+  const threadsRef = useLatest(threads);
   const setThreadUnread = useCallback(
     (threadId: string, unread: boolean) => {
       if (unread) {
@@ -62,12 +66,12 @@ export function useReadState(wire: Wire, activeId: string | null) {
         });
         return;
       }
-      const head = threads.find((s) => s.id === threadId)?.headSeq ?? 0;
+      const head = threadsRef.current.find((s) => s.id === threadId)?.headSeq ?? 0;
       sendReadState(threadId, "mark_thread_viewed", { threadId, seq: head }).catch((e) => {
         toast.error("Could not mark that thread read", { description: e.message });
       });
     },
-    [threads, sendReadState],
+    [threadsRef, sendReadState],
   );
 
   return setThreadUnread;
