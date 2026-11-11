@@ -413,7 +413,7 @@ type State struct {
 
 	Items []Item `json:"items"`
 	// ItemsBefore is how many items were trimmed from the front of Items when
-	// this state was windowed for the wire (see Window). Zero on the actor's
+	// this state was windowed for the wire (see WireCopy). Zero on the actor's
 	// own state and on stored snapshots: only copies sent to a client carry a
 	// window, and the count doubles as the client's cursor for paging older
 	// items back in.
@@ -1342,35 +1342,48 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 // shallow copy would share the item and content slices with the live state,
 // which the actor keeps mutating.
 func (s *State) Clone() *State {
+	out := s.cloneRest()
+	out.Items = make([]Item, len(s.Items))
+	for i, it := range s.Items {
+		out.Items[i] = copyItem(it)
+	}
+	out.Jobs = make([]Job, len(s.Jobs))
+	copy(out.Jobs, s.Jobs)
+	return out
+}
+
+// copyItem deep-copies one item, so the copy shares no bytes with the live
+// state.
+func copyItem(it Item) Item {
+	if len(it.Content) > 0 {
+		it.Content = append([]proto.ToolContent(nil), it.Content...)
+	}
+	if len(it.Input) > 0 {
+		it.Input = append(json.RawMessage(nil), it.Input...)
+	}
+	if len(it.Card) > 0 {
+		it.Card = append(json.RawMessage(nil), it.Card...)
+	}
+	if len(it.Outcome) > 0 {
+		it.Outcome = append(json.RawMessage(nil), it.Outcome...)
+	}
+	if len(it.Steps) > 0 {
+		it.Steps = append([]proto.PlanStep(nil), it.Steps...)
+	}
+	return it
+}
+
+// cloneRest deep-copies everything but Items and Jobs, which Clone copies
+// whole and WireCopy windows.
+func (s *State) cloneRest() *State {
 	out := *s
 	out.itemIndex = nil
 	out.jobIndex = nil
-
-	out.Items = make([]Item, len(s.Items))
-	for i, it := range s.Items {
-		cp := it
-		if len(it.Content) > 0 {
-			cp.Content = append([]proto.ToolContent(nil), it.Content...)
-		}
-		if len(it.Input) > 0 {
-			cp.Input = append(json.RawMessage(nil), it.Input...)
-		}
-		if len(it.Card) > 0 {
-			cp.Card = append(json.RawMessage(nil), it.Card...)
-		}
-		if len(it.Outcome) > 0 {
-			cp.Outcome = append(json.RawMessage(nil), it.Outcome...)
-		}
-		if len(it.Steps) > 0 {
-			cp.Steps = append([]proto.PlanStep(nil), it.Steps...)
-		}
-		out.Items[i] = cp
-	}
+	out.Items = nil
+	out.Jobs = nil
 
 	out.Turns = make([]Turn, len(s.Turns))
 	copy(out.Turns, s.Turns)
-	out.Jobs = make([]Job, len(s.Jobs))
-	copy(out.Jobs, s.Jobs)
 	out.Artefacts = append([]Artefact{}, s.Artefacts...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))

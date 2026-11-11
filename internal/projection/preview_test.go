@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"regexp"
@@ -223,5 +224,66 @@ func TestPreviewCutsBetweenLines(t *testing.T) {
 	}
 	if head != text[:len(head)] || len(head)+n+len(tail) != len(text) {
 		t.Fatal("preview is not the original's head and tail")
+	}
+}
+
+// Every string leaf in a JSON document is capped, at any depth, while keys,
+// numbers as written, literals and key order come through untouched.
+func TestCapJSONStringsCapsLeavesOnly(t *testing.T) {
+	long := strings.Repeat("h", 6000) + strings.Repeat("m", 10000) + strings.Repeat("t", 6000)
+	key := strings.Repeat("k", 9000)
+	raw := json.RawMessage(`{"z":"` + long + `","a":[1.50,12345678901234567890,true,null,{"` + key + `":"` + long + `"}],"m":"<b>&"}`)
+
+	got, cut := capJSONStrings(raw)
+	if !cut {
+		t.Fatal("not cut")
+	}
+	if !json.Valid(got) {
+		t.Fatalf("capped input is not valid JSON")
+	}
+	// Order and numbers as written, read straight off the bytes.
+	if !strings.HasPrefix(string(got), `{"z":"`) || !strings.Contains(string(got), `"a":[1.50,12345678901234567890,true,null,{"`+key+`":"`) ||
+		!strings.HasSuffix(string(got), `,"m":"<b>&"}`) {
+		t.Fatalf("structure changed: %.200s … %.200s", got, got[len(got)-200:])
+	}
+	var v struct {
+		Z string `json:"z"`
+		A []json.RawMessage
+	}
+	if err := json.Unmarshal(got, &v); err != nil {
+		t.Fatal(err)
+	}
+	var nested map[string]string
+	if err := json.Unmarshal(v.A[4], &nested); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{v.Z, nested[key]} {
+		head, n, tail := splitPreview(t, s)
+		if head != long[:len(head)] || tail != long[len(long)-len(tail):] || len(head)+n+len(tail) != len(long) {
+			t.Fatal("string is not the original's head and tail")
+		}
+	}
+
+	again, cut := capJSONStrings(got)
+	if cut || !bytes.Equal(again, got) {
+		t.Fatal("capping capped input cut it again")
+	}
+}
+
+// Input with nothing to cut comes back as the same bytes, not a re-encoding;
+// so does input that is not JSON at all.
+func TestCapJSONStringsLeavesUncutInputAlone(t *testing.T) {
+	many := make([]string, 2000)
+	for i := range many {
+		many[i] = strconv.Quote("short " + strconv.Itoa(i))
+	}
+	bigButFine := json.RawMessage(`{ "list" : [` + strings.Join(many, ", ") + `] }`)
+	broken := json.RawMessage(`{"a":"` + strings.Repeat("x", 20000) + `"`)
+	trailing := json.RawMessage(`{"a":"` + strings.Repeat("x", 20000) + `"} {}`)
+	for _, raw := range []json.RawMessage{bigButFine, broken, trailing, json.RawMessage(`"hi"`), nil} {
+		got, cut := capJSONStrings(raw)
+		if cut || len(got) != len(raw) || (len(raw) > 0 && &got[0] != &raw[0]) {
+			t.Fatalf("%.40s…: cut=%v, or not the original bytes", raw, cut)
+		}
 	}
 }

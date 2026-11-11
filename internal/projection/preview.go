@@ -1,6 +1,9 @@
 package projection
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -108,4 +111,87 @@ func capItem(it *Item) bool {
 		}
 	}
 	return changed
+}
+
+// capJSONStrings caps every string in a JSON document with capText: a tool's
+// input is short fields around the odd long one, a file's whole text or a
+// script. Keys are names and are left alone, numbers are carried as written,
+// and keys keep their order. It reports whether anything was cut; when nothing
+// was, or raw is not valid JSON, raw comes back as it was.
+func capJSONStrings(raw json.RawMessage) (json.RawMessage, bool) {
+	// Decoding never lengthens a string, so a document no longer than the
+	// threshold cannot hold one worth cutting.
+	if len(raw) <= previewHead+previewTail+previewSlack {
+		return raw, false
+	}
+	w := &jsonCapper{dec: json.NewDecoder(bytes.NewReader(raw))}
+	w.dec.UseNumber()
+	w.enc = json.NewEncoder(&w.buf)
+	w.enc.SetEscapeHTML(false)
+	if err := w.value(); err != nil || !w.cut {
+		return raw, false
+	}
+	if _, err := w.dec.Token(); err != io.EOF {
+		return raw, false
+	}
+	return json.RawMessage(w.buf.Bytes()), true
+}
+
+// jsonCapper re-emits a JSON document token by token, capping strings on the
+// way through.
+type jsonCapper struct {
+	dec *json.Decoder
+	enc *json.Encoder
+	buf bytes.Buffer
+	cut bool
+}
+
+func (w *jsonCapper) value() error {
+	tok, err := w.dec.Token()
+	if err != nil {
+		return err
+	}
+	switch v := tok.(type) {
+	case json.Delim:
+		w.buf.WriteByte(byte(v))
+		for first := true; w.dec.More(); first = false {
+			if !first {
+				w.buf.WriteByte(',')
+			}
+			if v == '{' {
+				k, err := w.dec.Token()
+				if err != nil {
+					return err
+				}
+				w.str(k.(string))
+				w.buf.WriteByte(':')
+			}
+			if err := w.value(); err != nil {
+				return err
+			}
+		}
+		end, err := w.dec.Token()
+		if err != nil {
+			return err
+		}
+		w.buf.WriteByte(byte(end.(json.Delim)))
+	case string:
+		s, cut := capText(v)
+		w.cut = w.cut || cut
+		w.str(s)
+	case json.Number:
+		w.buf.WriteString(v.String())
+	case bool:
+		w.buf.WriteString(strconv.FormatBool(v))
+	case nil:
+		w.buf.WriteString("null")
+	}
+	return nil
+}
+
+// str writes s as a JSON string. The encoder ends every value with a newline,
+// which a string in the middle of a document must not have.
+func (w *jsonCapper) str(s string) {
+	_ = w.enc.Encode(s)
+	w.buf.Truncate(w.buf.Len() - 1)
 }
