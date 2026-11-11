@@ -121,8 +121,8 @@ type Actor struct {
 	// compared against a picture of the checkout from the wrong moment.
 	measuring string
 
-	// deltas holds streamed deltas for up to deltaWindow, and deltaFlush
-	// fires when the window closes. Nil when nothing is held.
+	// deltas holds a streamed delta for up to deltaWindow, and deltaFlush
+	// fires when the window closes. deltaFlush is nil when nothing is held.
 	deltas     coalescer
 	deltaFlush *time.Timer
 
@@ -1621,7 +1621,7 @@ func (a *Actor) stopDeltaFlush() {
 	}
 }
 
-// flushDeltas writes every held delta, in order, and closes the window.
+// flushDeltas writes the held delta, if any, and closes the window.
 func (a *Actor) flushDeltas() {
 	a.stopDeltaFlush()
 	for _, em := range a.deltas.take() {

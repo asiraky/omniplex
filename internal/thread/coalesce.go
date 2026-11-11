@@ -27,10 +27,10 @@ type coalescer struct {
 }
 
 // add offers em to the window. It returns what was held and must be written
-// before em, and whether em itself is now held. known says whether the
-// projection already has the item: an event that creates its item is never
-// held, so whatever reads the projection to handle the next one — redaction
-// looks up the call's title — finds it there.
+// before em (at most one event), and whether em itself is now held. known
+// says whether the projection already has the item: an event that creates
+// its item is never held, so whatever reads the projection to handle the next
+// one — redaction looks up the call's title — finds it there.
 func (c *coalescer) add(em proto.Emission, known func(id string) bool) (flushed []proto.Emission, held bool) {
 	if c.pending != nil {
 		if merged, ok := merge(*c.pending, em); ok {
@@ -46,7 +46,7 @@ func (c *coalescer) add(em proto.Emission, known func(id string) bool) (flushed 
 	return flushed, false
 }
 
-// take returns what is held, if anything, and empties the window.
+// take returns what is held — one event or none — and empties the window.
 func (c *coalescer) take() []proto.Emission {
 	if c.pending == nil {
 		return nil

@@ -29,9 +29,9 @@ func toolUpdate(p proto.ToolCallUpdatedPayload) proto.Emission {
 
 func textContent(s string) proto.ToolContent { return proto.ToolContent{Type: "text", Text: s} }
 
-// drive feeds emitted through c the way the actor does — what add flushes is
-// written, then em unless it is held, and whatever is held at the end — and
-// returns every write in order. known is consulted before each add.
+// drive feeds emitted through c the way the actor does, calling write for
+// each event the log would get, in order: what add flushes, then em unless it
+// is held, and whatever is still held at the end.
 func drive(c *coalescer, emitted []proto.Emission, known func(string) bool, write func(proto.Emission)) {
 	for _, em := range emitted {
 		flushed, held := c.add(em, known)

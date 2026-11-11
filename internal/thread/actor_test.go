@@ -907,6 +907,7 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 	}()
 
 	total := SubscriberQueue * 3
+	// One block each: deltas to the same block would be merged.
 	for i := 0; i < total; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 			Role: "agent", Kind: "text", BlockID: fmt.Sprintf("b%d", i), Delta: "x",
