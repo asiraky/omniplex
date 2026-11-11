@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -623,9 +624,10 @@ func TestSeqIsGaplessAndMonotonic(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	sess := fa.thread()
 
+	// One block each: deltas to the same block would be merged.
 	for i := 0; i < 50; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			Role: "agent", Kind: "text", BlockID: "b1", Delta: "x",
+			Role: "agent", Kind: "text", BlockID: fmt.Sprintf("b%d", i), Delta: "x",
 		}))
 	}
 	waitFor(t, func() bool { return actor.Head() >= 51 })
@@ -654,12 +656,12 @@ func TestRebuildFromLogMatchesLiveState(t *testing.T) {
 	sess.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 		ToolCallID: "t1", Kind: proto.KindExecute, Title: "ls", Status: proto.StatusInProgress,
 	}))
-	waitFor(t, func() bool { return actor.Head() >= 22 })
-
-	live, err := actor.State(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	var live *projection.State
+	waitFor(t, func() bool {
+		live, _ = actor.State(context.Background())
+		_, ok := live.ItemByID("t1")
+		return ok
+	})
 
 	rebuilt := projection.New(actor.ID)
 	evs, _ := st.ReadEvents(context.Background(), actor.ID, 0, 10000)
@@ -904,7 +906,7 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 	total := SubscriberQueue * 3
 	for i := 0; i < total; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			Role: "agent", Kind: "text", BlockID: "b1", Delta: "x",
+			Role: "agent", Kind: "text", BlockID: fmt.Sprintf("b%d", i), Delta: "x",
 		}))
 	}
 
