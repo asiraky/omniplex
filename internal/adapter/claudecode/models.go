@@ -32,14 +32,16 @@ const quotaReadTimeout = 60 * time.Second
 //
 // The default row carries no id at all. That is deliberate: an empty model
 // means "whatever the harness picks", which is the only default that cannot be
-// wrong — and it says so, rather than being an unexplained "Default".
+// wrong. Its label says plainly that no model is known yet, and it has no
+// Version: the picker's trigger runs label and version together, which is how
+// it once read "Default chosen by Claude Code".
 func (a *Adapter) Models() []adapter.ModelMeta {
 	// The three family aliases all carry a "[1m]" twin in the installed CLI
 	// (verified against claude CLI 2.1.238), so the fallback offers the larger
 	// window too rather than hiding it until discovery lands. The unnamed
 	// default row does not: no id means no tag to hang the choice on.
 	base := []adapter.ModelMeta{
-		{ID: "", Label: "Default", Version: "chosen by Claude Code", Description: "No model is named, so the harness starts whatever it is set to use", Default: true},
+		{ID: "", Label: defaultLabel, Description: "Claude Code has not said which model yet, so it starts whatever it is set to use", Default: true},
 		{ID: "fable", Label: "Fable", Supports1M: true},
 		{ID: "opus", Label: "Opus", Supports1M: true},
 		{ID: "sonnet", Label: "Sonnet", Supports1M: true},
@@ -69,6 +71,10 @@ var legacyModels = []adapter.ModelMeta{
 	{ID: "claude-opus-4-6", Label: "Opus 4.6", Resolves: "claude-opus-4-6", Description: "An older Opus generation.", Group: adapter.GroupLegacy, Supports1M: true},
 	{ID: "claude-sonnet-4-5", Label: "Sonnet 4.5", Resolves: "claude-sonnet-4-5", Description: "The previous Sonnet generation.", Group: adapter.GroupLegacy},
 }
+
+// defaultLabel names a row whose model omniplex does not know: the fallback's
+// unnamed default, or a "default" alias the harness did not resolve.
+const defaultLabel = "Claude Code's default"
 
 // modelInfo is the SDK's ModelInfo, as the sidecar relays it.
 type modelInfo struct {
@@ -156,9 +162,10 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 // The presentation calls made here, none of which the harness list does itself:
 //   - Haiku is dropped — it is a quick-answer model, not a coding one.
 //   - Every alias that resolves to one concrete model collapses into a single
-//     row (the "default" and "opus[1m]" aliases both name Opus 5), labelled by
-//     its generation ("Opus 5", "Fable 5", "Sonnet 5") rather than repeating
-//     the name twice.
+//     row (the "default" and "opus[1m]" aliases both name Opus 5), labelled
+//     from the model's id ("claude-opus-5" -> "Opus 5"), never from the
+//     SDK's display name, which for the recommended alias is "Default
+//     (recommended)". See rowLabel.
 //   - The row's id is the bare concrete model — no "[1m]" tag — so a session
 //     defaults to the 200k window; the 1M variant is chosen separately (the
 //     adapter turns the tag into the context-window env at start). The bare id
@@ -190,10 +197,10 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			// the row is keyed and started by.
 			bare = stripContextTag(m.Value)
 		}
-		version, description := splitDescription(m.Description)
+		_, description := splitDescription(m.Description)
 		row := adapter.ModelMeta{
 			ID:          bare,
-			Label:       generationLabel(version, m.DisplayName),
+			Label:       rowLabel(m, bare),
 			Description: description,
 			Resolves:    bare,
 			// The SDK has no isDefault flag; the row it *calls* "default" is
@@ -207,8 +214,6 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			Supports1M: has1MTag(m.Value) || has1MTag(m.ResolvedModel),
 		}
 		if i, seen := byModel[bare]; seen {
-			// Same concrete model under another alias: keep one row, preserving
-			// the recommended flag and a real (non-"default") label.
 			// Same concrete model under another alias: keep one row. The
 			// "default" alias describes itself ("Use the default model
 			// (currently …)") rather than the model, so a named alias for the
@@ -227,9 +232,6 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 			}
 			kept.Default = kept.Default || row.Default
 			kept.Supports1M = kept.Supports1M || row.Supports1M
-			if kept.Label == "" || strings.EqualFold(kept.Label, "default") {
-				kept.Label = row.Label
-			}
 			current[i] = kept
 			continue
 		}
@@ -245,18 +247,75 @@ func mapClaudeModels(in []modelInfo) []adapter.ModelMeta {
 	return out
 }
 
-// generationLabel is the clean one-line name for a current model: the
-// generation the harness names in its description ("Opus 5 with 1M context" ->
-// "Opus 5", "Fable 5" -> "Fable 5"), falling back to the display name when the
-// description carries no generation.
-func generationLabel(version, display string) string {
-	if version == "" {
-		return display
+// rowLabel is the clean one-line name for a current model. The model's id is
+// the source of truth, because it is the one part of the SDK's answer that is
+// structured: the description is English prose whose shape changes between CLI
+// versions, and the display name names the alias ("Default (recommended)"),
+// not the model.
+//
+// The prose is read only when the id is not one modelLabel can name, and never
+// for the "default" alias, whose description talks about itself ("Use the
+// default model (currently …)"). With nothing better, the label is the id
+// itself: a raw id still names the model, which a marketing sentence does not.
+func rowLabel(m modelInfo, bare string) string {
+	if label := modelLabel(bare); label != "" {
+		return label
 	}
+	if m.Value == "default" {
+		if m.ResolvedModel == "" {
+			return defaultLabel
+		}
+		return bare
+	}
+	version, _ := splitDescription(m.Description)
 	if before, _, found := strings.Cut(version, " with "); found {
-		return strings.TrimSpace(before)
+		version = strings.TrimSpace(before)
 	}
-	return version
+	if version != "" {
+		return version
+	}
+	return bare
+}
+
+// modelLabel names a Claude model from its id: "claude-opus-5" -> "Opus 5",
+// "claude-opus-4-8" -> "Opus 4.8", "claude-haiku-4-5-20251001" -> "Haiku 4.5"
+// (a dated snapshot is the same generation). An id in any other shape gives
+// "", so the caller falls back rather than this guessing at it.
+func modelLabel(id string) string {
+	parts := strings.Split(stripContextTag(id), "-")
+	if len(parts) < 3 || parts[0] != "claude" || !isLetters(parts[1]) || !isDigits(parts[2]) {
+		return ""
+	}
+	version, rest := parts[2], parts[3:]
+	if len(rest) > 0 && len(rest[0]) <= 2 && isDigits(rest[0]) {
+		version += "." + rest[0]
+		rest = rest[1:]
+	}
+	if len(rest) == 1 && len(rest[0]) == 8 && isDigits(rest[0]) {
+		rest = nil
+	}
+	if len(rest) > 0 {
+		return ""
+	}
+	return strings.ToUpper(parts[1][:1]) + parts[1][1:] + " " + version
+}
+
+func isLetters(s string) bool {
+	for _, r := range s {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // isHaiku spots the quick-answer model by either alias or resolved id, so it is
