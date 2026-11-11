@@ -203,8 +203,16 @@ function result(content: ToolContent[], over: Partial<Item> = {}): Item {
 const screenshot: ToolContent = { type: "image", url: SRC, mediaType: "image/png", width: 1280, height: 800 };
 
 // The text a rendered diff row shows: gutter numbers, the +/- mark, the line.
-function diffRows(container: HTMLElement) {
+// The renderer loads in its own chunk, so wait for its first row.
+async function diffRows(container: HTMLElement) {
+  await waitFor(() => expect(container.querySelector(".font-mono > div")).not.toBeNull(), { timeout: 5000 });
   return Array.from(container.querySelectorAll(".font-mono > div")).map((r) => r.textContent ?? "");
+}
+
+/** The viewer loads in its own chunk, which a cold, busy test run can take
+    well past findBy's one-second default to transform. */
+function viewer(name?: string) {
+  return screen.findByRole("dialog", { name }, { timeout: 5000 });
 }
 
 describe("an image in a tool result", () => {
@@ -241,7 +249,7 @@ describe("an image in a tool result", () => {
     render(<ToolCard threadId="t1" item={result([screenshot])} />);
     const thumb = screen.getByRole("button", { name: "View browser_screenshot image full size" });
     fireEvent.click(thumb);
-    const dialog = screen.getByRole("dialog", { name: "browser_screenshot image" });
+    const dialog = await viewer("browser_screenshot image");
     expect(within(dialog).getByRole("img").getAttribute("src")).toBe(SRC);
     expect(within(dialog).getByRole("link", { name: "Open original in a new tab" }).getAttribute("href")).toBe(SRC);
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -249,13 +257,13 @@ describe("an image in a tool result", () => {
     await waitFor(() => expect(document.activeElement).toBe(thumb));
   });
 
-  it("draws the thumbnail from the small copy and the viewer from the original", () => {
+  it("draws the thumbnail from the small copy and the viewer from the original", async () => {
     const THUMB = "/api/threads/t1/attachments/a1-thumb";
     render(<ToolCard threadId="t1" item={result([{ ...screenshot, thumbUrl: THUMB }])} />);
     const thumb = screen.getByRole("button", { name: "View browser_screenshot image full size" });
     expect(within(thumb).getByRole("img").getAttribute("src")).toBe(THUMB);
     fireEvent.click(thumb);
-    const dialog = screen.getByRole("dialog", { name: "browser_screenshot image" });
+    const dialog = await viewer("browser_screenshot image");
     expect(within(dialog).getByRole("img").getAttribute("src")).toBe(SRC);
     expect(within(dialog).getByRole("link", { name: "Open original in a new tab" }).getAttribute("href")).toBe(SRC);
   });
@@ -268,7 +276,7 @@ describe("an image in a tool result", () => {
     expect(container.innerHTML).not.toContain("data:");
   });
 
-  it("jumps from fitted to the image's own pixel size", () => {
+  it("jumps from fitted to the image's own pixel size", async () => {
     let measure!: () => void;
     vi.stubGlobal(
       "ResizeObserver",
@@ -288,8 +296,9 @@ describe("an image in a tool result", () => {
     );
     render(<ToolCard threadId="t1" item={result([screenshot])} />);
     fireEvent.click(screen.getByRole("button", { name: /full size/ }));
+    const dialog = await viewer();
     act(() => measure());
-    const img = within(screen.getByRole("dialog")).getByRole("img") as HTMLImageElement;
+    const img = within(dialog).getByRole("img") as HTMLImageElement;
     // Sized from the event before a byte arrived: fitted to 390 - 32 padding.
     expect(img.style.width).toBe("358px");
     fireEvent.click(screen.getByRole("button", { name: "Actual size" }));
@@ -299,12 +308,10 @@ describe("an image in a tool result", () => {
     vi.unstubAllGlobals();
   });
 
-  it("names each of several images apart", () => {
+  it("names each of several images apart", async () => {
     render(<ToolCard threadId="t1" item={result([screenshot, { ...screenshot, url: "/api/threads/t1/attachments/a2" }])} />);
     fireEvent.click(screen.getByRole("button", { name: "View browser_screenshot (image 2 of 2) full size" }));
-    expect(within(screen.getByRole("dialog")).getByRole("img").getAttribute("src")).toBe(
-      "/api/threads/t1/attachments/a2",
-    );
+    expect(within(await viewer()).getByRole("img").getAttribute("src")).toBe("/api/threads/t1/attachments/a2");
   });
 });
 
@@ -335,7 +342,7 @@ describe("an edit in a tool result", () => {
     return view;
   }
 
-  it("renders a full unified patch as added and removed lines under its path", () => {
+  it("renders a full unified patch as added and removed lines under its path", async () => {
     const { container } = open([
       {
         type: "diff",
@@ -344,12 +351,12 @@ describe("an edit in a tool result", () => {
       },
     ]);
     expect(screen.getByText("src/a.ts")).toBeTruthy();
-    expect(diffRows(container)).toEqual(["@@ -1,2 +1,2 @@", "11 keep", "2-old", "2+new"]);
+    expect(await diffRows(container)).toEqual(["@@ -1,2 +1,2 @@", "11 keep", "2-old", "2+new"]);
   });
 
-  it("renders a hunks-only patch the way Codex sends it", () => {
+  it("renders a hunks-only patch the way Codex sends it", async () => {
     const { container } = open([{ type: "diff", path: "a.ts", text: "@@ -3 +3 @@\n-before\n+after\n" }]);
-    expect(diffRows(container)).toEqual(["@@ -3 +3 @@", "3-before", "3+after"]);
+    expect(await diffRows(container)).toEqual(["@@ -3 +3 @@", "3-before", "3+after"]);
   });
 
   it("shows a hunkless diff as the file's text, not a patch missing a character per line", () => {

@@ -1,9 +1,11 @@
 import { ImageOffIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 
-import { ImageViewer } from "~/components/ImageViewer";
 import type { ToolImage } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
+
+// Opens on a tap, never on first paint, so it stays out of the initial bundle.
+const ImageViewer = lazy(() => import("~/components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 
 // The box a thumbnail fits in. Small enough that a run of screenshots is one
 // strip on a phone, big enough to tell one screen from another.
@@ -34,15 +36,17 @@ export function ToolImages({ images, className }: { images: ToolImage[]; classNa
         />
       ))}
       {shown && open !== null && (
-        <ImageViewer
-          image={shown.url}
-          title={shown.label}
-          href={shown.url}
-          width={shown.width}
-          height={shown.height}
-          onClose={() => setOpen(null)}
-          onReturnFocus={() => buttons.current[open]?.focus()}
-        />
+        <Suspense fallback={null}>
+          <ImageViewer
+            image={shown.url}
+            title={shown.label}
+            href={shown.url}
+            width={shown.width}
+            height={shown.height}
+            onClose={() => setOpen(null)}
+            onReturnFocus={() => buttons.current[open]?.focus()}
+          />
+        </Suspense>
       )}
     </div>
   );

@@ -17,10 +17,8 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useMemo, useState, type ComponentType } from "react";
 
-import { Diff } from "~/components/Diff";
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
-import { useDiffWrap } from "~/lib/diffWrap";
 import { parsePatch } from "~/lib/patch";
 import { toolImages } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
@@ -42,6 +40,10 @@ function LoaderUnavailable() {
   );
 }
 const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ default: LoaderUnavailable })));
+
+// A diff shows only once its card is opened, so its renderer stays out of the
+// initial bundle.
+const ToolDiff = lazy(() => import("./ToolDiff").then((m) => ({ default: m.ToolDiff })));
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -138,13 +140,15 @@ function PathLabel({ path }: { path: string }) {
 const PRE =
   "scroll-thin bg-muted/60 max-h-80 overflow-auto overscroll-contain p-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap";
 
-function ContentBlock({ block, wrap }: { block: Block; wrap: boolean }) {
+function ContentBlock({ block }: { block: Block }) {
   if (block.kind === "diff") {
     return (
       <div className="overflow-hidden rounded-md border">
         {block.path && <PathLabel path={block.path} />}
         <div className="scroll-thin max-h-80 overflow-auto overscroll-contain">
-          <Diff patch={block.patch} wrap={wrap} />
+          <Suspense fallback={null}>
+            <ToolDiff patch={block.patch} />
+          </Suspense>
         </div>
       </div>
     );
@@ -163,7 +167,6 @@ function ContentBlock({ block, wrap }: { block: Block; wrap: boolean }) {
 export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const [open, setOpen] = useState(false);
   const { setFull, content, input, truncated } = useToolOutput(item);
-  const [wrap] = useDiffWrap();
   const body = useMemo(() => blocks(content), [content]);
   const images = useMemo(() => toolImages([item]), [item]);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
@@ -243,7 +246,7 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
             </pre>
           )}
           {body.map((block, i) => (
-            <ContentBlock key={i} block={block} wrap={wrap} />
+            <ContentBlock key={i} block={block} />
           ))}
           {truncated && (
             <Suspense fallback={<Spinner className="text-primary size-3" />}>
