@@ -42,6 +42,7 @@ import {
   type PanelState,
   type Surface,
 } from "~/lib/panel";
+import { endTerminal } from "~/lib/termSocket";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
 import type { DiffComparison, FileContent, FileDiff, FileTree, PullRequest, ThreadChanges, ThreadState } from "~/protocol";
@@ -372,7 +373,12 @@ function PanelBody({
                 <button
                   type="button"
                   aria-label={`Close ${surfaceLabel(s, artefacts)}`}
-                  onClick={() => setPanel((p) => closeSurface(p, s.id))}
+                  onClick={() => {
+                    // Closing the tab is what ends a shell; everything else
+                    // only hangs up and leaves it running to reattach to.
+                    if (s.termId) endTerminal(s.termId);
+                    setPanel((p) => closeSurface(p, s.id));
+                  }}
                   className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-8 items-center rounded-r-md py-1 pr-1.5 pl-1 opacity-60 outline-none focus-visible:ring-2 group-hover:opacity-100"
                 >
                   <XIcon className="size-3" />
@@ -475,13 +481,15 @@ function PanelBody({
               This artefact is not in this thread.
             </div>
           ))}
-        {/* Terminals stay mounted while inactive: unmounting one hangs up its
-            shell, and a tab switch must not kill a running command. */}
+        {/* Terminals stay mounted while inactive. Unmounting one only hangs
+            up — the server keeps the shell — but a mounted one keeps its
+            socket and scrollback live, so switching back is instant. */}
         {panel.surfaces
-          .filter((s) => s.kind === "terminal")
+          // newTerminalSurface and loadPanel give every terminal its id.
+          .filter((s): s is Surface & { termId: string } => s.kind === "terminal" && !!s.termId)
           .map((s) => (
             <div key={s.id} className={cn("h-full", s.id !== panel.active && "hidden")}>
-              <TerminalSurface target={{ thread: threadId }} />
+              <TerminalSurface termId={s.termId} target={{ thread: threadId }} />
             </div>
           ))}
       </div>

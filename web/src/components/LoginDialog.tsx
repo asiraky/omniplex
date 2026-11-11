@@ -1,5 +1,9 @@
+import { useState } from "react";
+
+import { uuid } from "~/client";
 import { TerminalSurface } from "~/components/panel/TerminalSurface";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "~/components/ui/dialog";
+import { endTerminal } from "~/lib/termSocket";
 
 /**
  * A harness's own sign-in, run in a terminal the user can see and type into.
@@ -21,8 +25,18 @@ export function LoginDialog({
   onEnded: () => void;
   onClose: () => void;
 }) {
+  // One sign-in per dialog: a dropped socket reattaches to it, and closing
+  // the dialog ends it rather than leaving it to the server's TTL.
+  const [termId] = useState(uuid);
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (open) return;
+        endTerminal(termId);
+        onClose();
+      }}
+    >
       <DialogContent className="flex h-[80dvh] max-h-[80dvh] w-[calc(100vw-1rem)] max-w-3xl flex-col gap-3 p-4 sm:w-full">
         <DialogHeader>
           <DialogTitle>Sign in to {name}</DialogTitle>
@@ -32,7 +46,7 @@ export function LoginDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-hidden rounded-md">
-          <TerminalSurface target={{ login: instanceId }} onEnded={onEnded} />
+          <TerminalSurface termId={termId} target={{ login: instanceId }} onEnded={onEnded} />
         </div>
       </DialogContent>
     </Dialog>
