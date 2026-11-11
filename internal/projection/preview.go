@@ -2,6 +2,7 @@ package projection
 
 import (
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/asiraky/omniplex/internal/proto"
@@ -24,25 +25,38 @@ const (
 	// outweighs the marker, so a capped string is under the threshold and
 	// capping it again is a no-op.
 	previewSlack = 128
+	// previewSnap is how far a cut may move to land on a line break, so the
+	// preview never ends or starts on part of a line that reads like a whole
+	// one.
+	previewSnap = 512
 	// maxToolContent is how many content entries one item keeps. Past it a
 	// tool is streaming, and the log has the rest.
 	maxToolContent = 16
 )
 
 // capText returns s as a head/tail preview, and whether anything was cut.
-// The cut points move back to rune boundaries so neither half splits a
-// character, and the marker counts the omitted middle in characters.
+// Each cut moves inward to a line break when one is near, else to a rune
+// boundary so neither half splits a character. The marker counts the omitted
+// middle in characters.
 func capText(s string) (string, bool) {
 	if len(s) <= previewHead+previewTail+previewSlack {
 		return s, false
 	}
 	h := previewHead
-	for h > 0 && !utf8.RuneStart(s[h]) {
-		h--
+	if i := strings.LastIndexByte(s[h-previewSnap:h], '\n'); i >= 0 {
+		h = h - previewSnap + i + 1
+	} else {
+		for h > 0 && !utf8.RuneStart(s[h]) {
+			h--
+		}
 	}
 	tailStart := len(s) - previewTail
-	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
-		tailStart++
+	if i := strings.IndexByte(s[tailStart:tailStart+previewSnap], '\n'); i >= 0 {
+		tailStart += i + 1
+	} else {
+		for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+			tailStart++
+		}
 	}
 	omitted := utf8.RuneCountInString(s[h:tailStart])
 	return s[:h] + "\n\n[… " + strconv.Itoa(omitted) + " characters truncated …]\n\n" + s[tailStart:], true

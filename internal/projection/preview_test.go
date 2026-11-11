@@ -204,3 +204,24 @@ func TestFromSnapshotCapsAnOldSnapshot(t *testing.T) {
 		t.Fatalf("re-written snapshot is %d bytes, from %d", len(next), len(blob))
 	}
 }
+
+// Line output is cut between lines when a break is near, so neither half
+// ends or starts with part of a line that reads like a whole one.
+func TestPreviewCutsBetweenLines(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 5000; i++ {
+		b.WriteString(strconv.Itoa(i) + "\n")
+	}
+	text := b.String()
+	got, cut := capText(text)
+	if !cut {
+		t.Fatal("not capped")
+	}
+	head, n, tail := splitPreview(t, got)
+	if !strings.HasSuffix(head, "\n") || !strings.HasPrefix(text[len(text)-len(tail)-1:], "\n") {
+		t.Fatalf("cut mid-line: head ends %q, tail starts %q", head[len(head)-8:], tail[:8])
+	}
+	if head != text[:len(head)] || len(head)+n+len(tail) != len(text) {
+		t.Fatal("preview is not the original's head and tail")
+	}
+}

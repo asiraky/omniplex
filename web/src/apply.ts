@@ -119,6 +119,8 @@ export const TOOL_HEAD = 4096;
 export const TOOL_TAIL = 4096;
 export const TOOL_MAX_ENTRIES = 16;
 const TOOL_SLACK = 128;
+// How far a cut may move to land on a line break.
+const TOOL_SNAP = 512;
 
 const highSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
 const lowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
@@ -127,11 +129,17 @@ const lowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
     Idempotent: a capped string is under the threshold. */
 export function capToolText(s: string): string {
   if (s.length <= TOOL_HEAD + TOOL_TAIL + TOOL_SLACK) return s;
-  // Never split a surrogate pair: move each cut inward past half a character.
+  // Each cut moves inward to a line break when one is near, so the preview
+  // never shows part of a line as if it were whole; failing that, past half a
+  // surrogate pair so no character is split.
   let head = TOOL_HEAD;
-  if (highSurrogate(s.charCodeAt(head - 1))) head--;
+  const nl = s.lastIndexOf("\n", head - 1);
+  if (nl >= head - TOOL_SNAP) head = nl + 1;
+  else if (highSurrogate(s.charCodeAt(head - 1))) head--;
   let tail = s.length - TOOL_TAIL;
-  if (lowSurrogate(s.charCodeAt(tail))) tail++;
+  const tnl = s.indexOf("\n", tail);
+  if (tnl >= 0 && tnl < tail + TOOL_SNAP) tail = tnl + 1;
+  else if (lowSurrogate(s.charCodeAt(tail))) tail++;
   return `${s.slice(0, head)}\n\n[… ${tail - head} characters truncated …]\n\n${s.slice(tail)}`;
 }
 

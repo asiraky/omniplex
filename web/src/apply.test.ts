@@ -1361,4 +1361,13 @@ describe("applyEvent tool output cap", () => {
     // The emoji went whole into the omitted middle, and the count says so.
     expect(capped).toContain(`[… ${text.length - head.length - tail.length} characters truncated …]`);
   });
+
+  it("cuts between lines when a break is near", () => {
+    const text = Array.from({ length: 5000 }, (_, i) => `${i + 1}\n`).join("");
+    const [head, tail] = capToolText(text).split(/\n\n\[… \d+ characters truncated …\]\n\n/);
+    expect(head.endsWith("\n")).toBe(true);
+    expect(text.startsWith(head)).toBe(true);
+    expect(text.endsWith(tail)).toBe(true);
+    expect(text[text.length - tail.length - 1]).toBe("\n");
+  });
 });
