@@ -204,8 +204,9 @@ func (s *session) stopTails() {
 
 // runTail polls one call's output file and emits what it gained each time.
 // It never takes s.mu — stopTail's callers may hold locks of their own while
-// waiting for it — and its sends give way to quit, so a stop never waits on a
-// consumer that is not reading.
+// waiting for it — and a send blocked on a full channel gives way to quit. One
+// queued on eventsMu behind another emit does not: it waits for that emit, so
+// a stop on the goroutine that drains events must close done first (Close).
 func (s *session) runTail(t *tail, toolUseID, root, sessionID string, every, patience time.Duration) {
 	defer close(t.done)
 	tick := time.NewTicker(every)

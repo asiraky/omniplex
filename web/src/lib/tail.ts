@@ -1,5 +1,5 @@
 // The tail of a running call's output: the last lines it has printed, folded
-// from its output deltas. Mirrors internal/projection/tail.go exactly, since
+// from its output deltas. Mirrors appendTail in internal/projection/tail.go, since
 // the client folds the same deltas the server does and must cut in the same
 // place.
 

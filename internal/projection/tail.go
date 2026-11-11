@@ -26,7 +26,7 @@ const (
 // appendTail(t, a+b). The coalescer relies on that when it joins deltas.
 // Mirrored in web/src/lib/tail.ts.
 func appendTail(tail, delta string) string {
-	return keepTail(tail+delta, 1)
+	return keepTail(tail+delta, false)
 }
 
 // TrimOutputDelta cuts an output delta down to what can still reach a tail:
@@ -37,13 +37,12 @@ func appendTail(tail, delta string) string {
 // It keeps the newline ahead of the oldest line it keeps, so that line is
 // still cut from whatever tail it lands on rather than joined to it.
 func TrimOutputDelta(delta string) string {
-	return keepTail(delta, 0)
+	return keepTail(delta, true)
 }
 
 // keepTail cuts s to its last tailLines lines, then to its last tailChars
-// code points. The line cut drops the newline it cuts at when skip is 1 and
-// keeps it when skip is 0.
-func keepTail(s string, skip int) string {
+// code points. keepCut keeps the newline the line cut lands on.
+func keepTail(s string, keepCut bool) string {
 	// A newline is one byte in UTF-8 and never part of a longer sequence, so
 	// walking bytes is walking lines.
 	end := len(s)
@@ -53,7 +52,10 @@ func keepTail(s string, skip int) string {
 	for i, n := end-1, 0; i >= 0; i-- {
 		if s[i] == '\n' {
 			if n++; n == tailLines {
-				s = s[i+skip:]
+				if !keepCut {
+					i++
+				}
+				s = s[i:]
 				break
 			}
 		}
