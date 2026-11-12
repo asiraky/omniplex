@@ -721,7 +721,7 @@ func TestFirstTurnRunsInAProvisionedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	a, err := mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: p.ID})
 	if err != nil {
