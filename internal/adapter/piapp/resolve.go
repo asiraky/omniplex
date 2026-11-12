@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/asiraky/omniplex/internal/adapter"
 )
 
 // This file finds the pi binary. PATH alone is not enough: pi is installed by
@@ -16,6 +18,15 @@ import (
 // dev script — so a machine with a perfectly good pi install would report the
 // CLI as missing. Claude Code has the same problem and solves it the same way,
 // by walking the places an install can be.
+
+var _ adapter.Executable = (*Adapter)(nil)
+
+// Executable is the pi binary a session would start, found the same way. Pi
+// has no Updater: npm replaces its package files in place and pi loads chunks
+// lazily from them, so updating under a running session could break it.
+func (a *Adapter) Executable() (string, bool) {
+	return a.findPi()
+}
 
 // findPi returns the pi binary's path, most explicit source first.
 func (a *Adapter) findPi() (string, bool) {

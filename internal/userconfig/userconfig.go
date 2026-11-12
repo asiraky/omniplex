@@ -62,6 +62,10 @@ type Config struct {
 	// PinNewThreads is whether the new-thread composer starts with its pin
 	// on. Nil means on.
 	PinNewThreads *bool `json:"pinNewThreads,omitempty"`
+	// AutoUpdateHarnesses is whether the server runs each harness CLI's own
+	// self-update in the background. Nil means on; off is for pinning a CLI
+	// version while debugging.
+	AutoUpdateHarnesses *bool `json:"autoUpdateHarnesses,omitempty"`
 }
 
 // ProjectsDirOrDefault is the folder project home folders go in.

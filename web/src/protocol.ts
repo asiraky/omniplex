@@ -629,6 +629,8 @@ export interface UserConfig {
   voice?: string;
   /** Whether the new-thread composer starts with its pin on. Absent means on. */
   pinNewThreads?: boolean;
+  /** Whether the server keeps harness CLIs up to date in the background. Absent means on. */
+  autoUpdateHarnesses?: boolean;
 }
 
 /**
@@ -1077,6 +1079,23 @@ export interface HarnessMeta {
    * driver has none.
    */
   modelSettings?: ModelSettingsSchema;
+  /**
+   * The last background self-update of this harness's CLI. Machine-wide, so
+   * shared by every instance of the driver. Absent until one has run.
+   */
+  update?: HarnessUpdate;
+}
+
+/**
+ * One self-update attempt. from === to means the CLI was already current;
+ * error set means the attempt failed.
+ */
+export interface HarnessUpdate {
+  /** Unix ms. */
+  at: number;
+  from?: string;
+  to?: string;
+  error?: string;
 }
 
 /**

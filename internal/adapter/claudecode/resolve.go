@@ -158,10 +158,10 @@ func (a *Adapter) resolve(ctx context.Context) (resolved, adapter.Availability) 
 	r.claudePath = claudePath
 
 	return r, adapter.Ready(map[string]string{
-		"runtime":   r.runtimeKind,
-		"claude":    claudePath,
-		"sidecar":   dir,
-		"claudeVer": claudeVersion(ctx, claudePath),
+		"runtime":           r.runtimeKind,
+		"claude":            claudePath,
+		"sidecar":           dir,
+		adapter.FactVersion: adapter.VersionNumber(claudeVersion(ctx, claudePath)),
 	})
 }
 

@@ -117,9 +117,9 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	}
 
 	return adapter.Ready(map[string]string{
-		"pi":    path,
-		"piVer": strings.TrimSpace(string(out)),
-		"auth":  authSummary(env),
+		"pi":                path,
+		adapter.FactVersion: adapter.VersionNumber(string(out)),
+		"auth":              authSummary(env),
 	})
 }
 

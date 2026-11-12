@@ -209,6 +209,17 @@ func main() {
 	mgr.ResumeInterrupted()
 	mgr.StartScheduler()
 	mgr.StartIdleEvictor()
+	// Harness CLIs only update themselves from their interactive UI, which a
+	// server never opens, so the server runs their self-update. The config is
+	// read on every pass so the settings switch takes effect without a restart;
+	// an unreadable config leaves updates on, the default.
+	mgr.StartUpdater(func() bool {
+		cfg, err := userconfig.Load()
+		return err != nil || cfg.AutoUpdateHarnesses == nil || *cfg.AutoUpdateHarnesses
+	})
+	// Whoever updates a harness, connected clients get its new catalogue
+	// without reconnecting.
+	mgr.StartBinaryWatch()
 
 	// The skills Claude Code ships with are asked of the CLI in the
 	// background, once per version it updates itself to.

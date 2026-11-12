@@ -14,6 +14,7 @@ import { Label } from "~/components/ui/label";
 import { Separator } from "~/components/ui/separator";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
+import { describeHarnessUpdate } from "~/lib/harnessUpdate";
 import { buildInstanceSpec, deriveInstanceId, hasStoredSecret, initialFieldValues } from "~/lib/providerSpec";
 import type { HarnessMeta, ProviderConfigField, ProviderEnvVar, ProviderInstanceMeta } from "~/protocol";
 
@@ -35,6 +36,52 @@ type View =
 /** Every instance id in play, for slug collision checks. */
 function takenIds(harnesses: HarnessMeta[]): string[] {
   return harnesses.flatMap((h) => (h.instances ?? []).map((i) => i.id));
+}
+
+/** The harness CLI's version: the instance's own probe, else the driver's. */
+function cliVersion(harness: HarnessMeta, instance: ProviderInstanceMeta): string | undefined {
+  return instance.availability.facts?.version || harness.availability?.facts?.version;
+}
+
+/** The list row's one-line summary: account, auth, model count, CLI version. */
+function instanceSummary(harness: HarnessMeta, instance: ProviderInstanceMeta): string {
+  const version = cliVersion(harness, instance);
+  const models = instance.models?.length;
+  return (
+    [
+      instance.availability.facts?.account,
+      instance.availability.facts?.auth,
+      models ? `${models} model${models === 1 ? "" : "s"}` : null,
+      version ? `v${version}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || instance.id
+  );
+}
+
+/** The harness CLI's version and its last auto-update, under the detail heading. */
+function HarnessVersionLine({ harness, instance }: { harness: HarnessMeta; instance: ProviderInstanceMeta }) {
+  const version = cliVersion(harness, instance);
+  const update = describeHarnessUpdate(harness.update, Date.now());
+  if (!version && !update) return null;
+  return (
+    <div className="-mt-3 space-y-0.5 text-[11px]">
+      {version && (
+        <p className="text-muted-foreground">
+          {harness.name} {version}
+        </p>
+      )}
+      {update && (
+        <p
+          className={
+            update.tone === "attention" ? "text-attention-foreground wrap-anywhere" : "text-muted-foreground"
+          }
+        >
+          {update.text}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function ReadyBadge({ instance }: { instance: ProviderInstanceMeta }) {
@@ -135,16 +182,12 @@ function InstanceList({
                     {inst.displayName || inst.id}
                     <ReadyBadge instance={inst} />
                   </span>
-                  <span className="text-muted-foreground block truncate text-[11px]">
-                    {[
-                      inst.availability.facts?.account,
-                      inst.availability.facts?.auth,
-                      inst.models?.length
-                        ? `${inst.models.length} model${inst.models.length === 1 ? "" : "s"}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") || inst.id}
+                  <span className="flex min-w-0 gap-1.5 text-[11px]">
+                    <span className="text-muted-foreground truncate">{instanceSummary(h, inst)}</span>
+                    {/* Outside the truncated text, so a narrow screen cannot clip it off. */}
+                    {describeHarnessUpdate(h.update, Date.now())?.tone === "attention" && (
+                      <span className="text-attention-foreground shrink-0">update failed</span>
+                    )}
                   </span>
                 </span>
                 <ChevronRightIcon aria-hidden className="text-muted-foreground size-4 shrink-0" />
@@ -368,6 +411,8 @@ function InstanceView({
         <ReadyBadge instance={instance} />
         <span className="text-muted-foreground ml-auto font-mono text-[10px]">{instance.id}</span>
       </div>
+
+      <HarnessVersionLine harness={harness} instance={instance} />
 
       {!knownDriver && (
         <Alert>
