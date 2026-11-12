@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -140,15 +142,15 @@ func (a *Actor) dispatchScheduled(now int64) error {
 				return a.failSchedule(p, result.err)
 			}
 		}
-		// A queue goes ahead of a schedule, except a queue held by a usage
-		// limit: that waits for the next turn to start. The continuation is
+		// A queue goes ahead of a schedule, except what a usage limit holds:
+		// that waits for the next turn to start. The continuation is
 		// the turn it waits for. A human's schedule goes past it only while
 		// none is armed — with the reset unknown it is the way round the
 		// limit; with one armed it waits, queue or not, since starting first
 		// would call the continuation off.
 		held := a.state.QueueHeld()
 		behindContinuation := held && p.Kind != proto.ScheduleLimit && a.limitArmed()
-		queued := len(a.state.Queued) > 0 && !held
+		queued := slices.ContainsFunc(a.state.Queued, func(q projection.QueuedPrompt) bool { return !a.state.HeldByLimit(q) })
 		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || queued || behindContinuation {
 			continue
 		}

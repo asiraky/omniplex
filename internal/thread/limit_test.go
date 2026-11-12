@@ -362,6 +362,39 @@ func TestHandSendBehindASettingsChangeIsNotHeld(t *testing.T) {
 	}
 }
 
+// Nor does a human's schedule go past that hand send while it waits.
+func TestHandSendBehindASettingsChangeGoesAheadOfASchedule(t *testing.T) {
+	release, asked := make(chan struct{}), make(chan string, 1)
+	a, fa, _ := newTestActorWith(t, &fakeAdapter{modeGate: release, modeAsked: asked})
+	ctx := context.Background()
+	th := fa.thread()
+	hitLimit(t, a, th, 0, "")
+	s, _ := a.State(ctx)
+	finished := lastTurnOf(s).FinishedAt
+	waitFor(t, func() bool { return time.Now().UnixMilli() > finished })
+	switched := make(chan error, 1)
+	go func() { switched <- a.SetMode(ctx, "acceptEdits") }()
+	<-asked
+	if res, err := a.Prompt(ctx, "by hand", nil); err != nil || !res.Queued() {
+		t.Fatalf("send during SetMode = %+v, %v; want it queued", res, err)
+	}
+	p := scheduleInput("mine")
+	if err := a.Schedule(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+		t.Fatal(err)
+	}
+	nothingSent(t, th, "schedule went past the hand send")
+	close(release)
+	if err := <-switched; err != nil {
+		t.Fatal(err)
+	}
+	if got := nextPrompt(t, th); got != "by hand" {
+		t.Fatalf("got %q, want the hand send", got)
+	}
+}
+
 // A Codex turn can finish on a limit before the harness knows its reset;
 // the back-fill arms the continuation once it does.
 func TestBackFillArmsTheContinuation(t *testing.T) {
