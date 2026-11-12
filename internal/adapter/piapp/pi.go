@@ -1036,7 +1036,7 @@ func (s *session) handleMessageEnd(raw json.RawMessage) {
 
 func (s *session) finishTurn() {
 	s.mu.Lock()
-	s.endTurnLocked()
+	s.endTurnAndUnlock()
 }
 
 // closeUnrunTurn closes turnID on pi's behalf, for a prompt pi took without
@@ -1052,12 +1052,12 @@ func (s *session) closeUnrunTurn(turnID string) {
 	if s.aborted == turnID && s.lastStop == "" {
 		s.lastStop = "aborted"
 	}
-	s.endTurnLocked()
+	s.endTurnAndUnlock()
 }
 
-// endTurnLocked finishes the open turn with the stop reason pi left for it.
+// endTurnAndUnlock finishes the open turn with the stop reason pi left for it.
 // It is entered with mu held and releases it, so the emit happens unlocked.
-func (s *session) endTurnLocked() {
+func (s *session) endTurnAndUnlock() {
 	turn := s.turnID
 	stop, errMsg := s.lastStop, s.lastErr
 	aborted := turn != "" && s.aborted == turn
