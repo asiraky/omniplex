@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { render } from "~/test/harness";
@@ -210,6 +210,34 @@ describe("UsagePage limits view", () => {
     fireEvent.click(screen.getByRole("button", { name: /Refresh/ }));
 
     expect(refresh).toHaveBeenCalledWith("claude");
+  });
+
+  it("shows each row's signed-in email over its account id", async () => {
+    renderPage({
+      quotas: [
+        quotaStatus({ account: "aaron@example.com", snapshot: { ...quotaStatus().snapshot, accountId: "acct-1" } }),
+      ],
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Limits" }));
+
+    expect(await screen.findByText("aaron@example.com")).toBeTruthy();
+    expect(screen.queryByText("acct-1")).toBeNull();
+  });
+
+  it("warns on each row signed in to the same login, naming the other", async () => {
+    renderPage({
+      quotas: [
+        quotaStatus({ instance: "claude", displayName: "Aaron", sameLoginAs: ["zero8"] }),
+        quotaStatus({ instance: "zero8", displayName: "zero8", sameLoginAs: ["claude"] }),
+        quotaStatus({ instance: "work", displayName: "Worksauce" }),
+      ],
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Limits" }));
+
+    const row = (name: string) => screen.getByRole("region", { name: `${name} usage limits` });
+    expect(await within(row("Aaron")).findByText(/same login as zero8/)).toBeTruthy();
+    expect(within(row("zero8")).getByText(/same login as Aaron/)).toBeTruthy();
+    expect(within(row("Worksauce")).queryByText(/same login/)).toBeNull();
   });
 
   it("explains an account with no plan limits", async () => {

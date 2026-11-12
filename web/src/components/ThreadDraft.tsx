@@ -114,6 +114,7 @@ export function ThreadDraft({
   onRecheck,
   onLogin,
   onManageProviders,
+  onAddAccount,
   preset,
   composerRef,
   dictate = false,
@@ -156,6 +157,8 @@ export function ThreadDraft({
   onLogin?: (instanceId: string) => void;
   /** Open the providers screen, for when signing in is not the fix. */
   onManageProviders?: () => void;
+  /** Open adding an account: for this harness, or null to ask which. */
+  onAddAccount?: (harnessId: string | null) => void;
   /**
    * Where the draft was asked to open, over what was last used. Read on mount
    * only: the app keys the draft per request.
@@ -314,10 +317,12 @@ export function ThreadDraft({
 
       <div className="mx-auto w-full max-w-3xl space-y-2 px-4 md:px-5">
         <InstanceAlerts
+          harnesses={harnesses}
           instances={agent.instances}
           onLogin={onLogin}
           onRecheck={onRecheck}
           onManageProviders={onManageProviders}
+          onAddAccount={onAddAccount}
         />
 
         {error && (

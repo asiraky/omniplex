@@ -8,11 +8,12 @@ export async function fetchSetup(): Promise<SetupReport> {
 }
 
 /** Where one check stands, in the words the page uses. */
-export type CheckStatus = "ready" | "sign-in" | "missing";
+export type CheckStatus = "ready" | "sign-in" | "account" | "missing";
 
 export function checkStatus(check: SetupCheck): CheckStatus {
   const a = check.availability;
   if (a.state === "ready") return "ready";
+  if (a.remedy?.some((r) => r.action === "add_account")) return "account";
   return a.remedy?.some((r) => r.action === "login") ? "sign-in" : "missing";
 }
 

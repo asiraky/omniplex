@@ -43,6 +43,9 @@ const harness = {
   models: [],
   permissionModes: [],
   availability: { state: "ready" },
+  instances: [
+    { id: "claude", driver: "claude", displayName: "Claude Code", enabled: true, availability: { state: "ready" } },
+  ],
 } as unknown as HarnessMeta;
 
 type Props = React.ComponentProps<typeof ThreadDraft>;

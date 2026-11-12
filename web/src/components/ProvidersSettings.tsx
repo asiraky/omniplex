@@ -1,4 +1,4 @@
-import { ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { ChevronRightIcon, CircleAlertIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
 import { AuthMethods } from "~/components/AuthFlowDialog";
@@ -16,7 +16,13 @@ import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import { describeHarnessUpdate } from "~/lib/harnessUpdate";
 import { buildInstanceSpec, deriveInstanceId, hasStoredSecret, initialFieldValues } from "~/lib/providerSpec";
-import type { HarnessMeta, ProviderConfigField, ProviderEnvVar, ProviderInstanceMeta } from "~/protocol";
+import type {
+  HarnessMeta,
+  ProviderConfigField,
+  ProviderEnvVar,
+  ProviderInstanceMeta,
+  UseSharedConfigResult,
+} from "~/protocol";
 
 /** A section heading, matching the weight the other settings screens use. */
 function SectionHeading({ children, note }: { children: React.ReactNode; note?: string }) {
@@ -49,7 +55,7 @@ function instanceSummary(harness: HarnessMeta, instance: ProviderInstanceMeta): 
   const models = instance.models?.length;
   return (
     [
-      instance.availability.facts?.account,
+      instance.account,
       instance.availability.facts?.auth,
       models ? `${models} model${models === 1 ? "" : "s"}` : null,
       version ? `v${version}` : null,
@@ -59,13 +65,36 @@ function instanceSummary(harness: HarnessMeta, instance: ProviderInstanceMeta): 
   );
 }
 
-/** The harness CLI's version and its last auto-update, under the detail heading. */
-function HarnessVersionLine({ harness, instance }: { harness: HarnessMeta; instance: ProviderInstanceMeta }) {
+/**
+ * The other accounts of this driver signed in to the same login, by display
+ * name. Two such accounts share one set of limits and one history, which is
+ * what made two rows on the Usage page look like mixed-up data.
+ */
+function sameLoginNames(harness: HarnessMeta, instance: ProviderInstanceMeta): string[] {
+  return (instance.sameLoginAs ?? []).map(
+    (id) => (harness.instances ?? []).find((i) => i.id === id)?.displayName || id,
+  );
+}
+
+/** "a", "a and b", "a, b and c". */
+function joinAnd(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** The signed-in login, the CLI's version and its last auto-update, under the detail heading. */
+function InstanceFacts({ harness, instance }: { harness: HarnessMeta; instance: ProviderInstanceMeta }) {
   const version = cliVersion(harness, instance);
   const update = describeHarnessUpdate(harness.update, Date.now());
-  if (!version && !update) return null;
+  if (!instance.account && !version && !update) return null;
   return (
     <div className="-mt-3 space-y-0.5 text-[11px]">
+      {instance.account && (
+        <p className="break-all">
+          <span className="text-muted-foreground">Signed in as </span>
+          {instance.account}
+        </p>
+      )}
       {version && (
         <p className="text-muted-foreground">
           {harness.name} {version}
@@ -103,6 +132,94 @@ function ReadyBadge({ instance }: { instance: ProviderInstanceMeta }) {
     <Badge variant="outline" className="text-attention-foreground text-[10px]">
       {instance.availability.reason || "unavailable"}
     </Badge>
+  );
+}
+
+/** An Alert that needs the user to act, in the attention colours the setup page uses. */
+const WARNING_ALERT = "border-attention/40 bg-attention-surface/60 [&>svg]:text-attention";
+
+/** One attention line under a list row's summary; wraps rather than clips on a phone. */
+function RowWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-attention-foreground flex items-start gap-1 text-[11px]">
+      <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+      <span className="min-w-0">{children}</span>
+    </span>
+  );
+}
+
+/**
+ * Shared config entries this account keeps its own copy of. Its copy is never
+ * overwritten behind its back; "Use shared" moves it aside and links the
+ * shared one. A finished move stays listed with where the copy went, since
+ * the entry itself drops out of the conflicts once the server re-broadcasts.
+ */
+function ConfigConflicts({ instance, wires }: { instance: ProviderInstanceMeta; wires: AuthWires }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [moved, setMoved] = useState<{ entry: string; backup: string }[]>([]);
+  const conflicts = (instance.configConflicts ?? []).filter((e) => !moved.some((m) => m.entry === e));
+  if (conflicts.length === 0 && moved.length === 0) return null;
+
+  const adoptShared = async (entry: string) => {
+    setBusy(entry);
+    setErrors((s) => ({ ...s, [entry]: "" }));
+    try {
+      const res: UseSharedConfigResult | undefined = await wires.command("use_shared_config", {
+        instanceId: instance.id,
+        entry,
+      });
+      setMoved((m) => [...m, { entry, backup: res?.backup ?? "" }]);
+    } catch (e) {
+      setErrors((s) => ({ ...s, [entry]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Alert className={WARNING_ALERT}>
+      <CircleAlertIcon aria-hidden />
+      <AlertDescription className="text-[12px]">
+        {conflicts.length > 0 && (
+          <p className="text-foreground">
+            This account has its own copy of shared config, so it does not see the skills and
+            settings the other accounts share.
+          </p>
+        )}
+        <ul className="w-full space-y-1.5">
+          {conflicts.map((entry) => (
+            <li key={entry} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-foreground min-w-0 flex-1 font-mono break-all">{entry}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Use shared ${entry}`}
+                  disabled={busy !== null}
+                  onClick={() => void adoptShared(entry)}
+                >
+                  {busy === entry && <Spinner aria-hidden className="size-3.5" />}
+                  Use shared
+                </Button>
+              </div>
+              {errors[entry] && <p className="text-destructive break-words">{errors[entry]}</p>}
+            </li>
+          ))}
+          {moved.map((m) => (
+            <li key={m.entry}>
+              <span className="text-foreground font-mono">{m.entry}</span> now uses the shared copy.
+              {m.backup && (
+                <>
+                  {" "}
+                  This account's copy is at <span className="font-mono break-all">{m.backup}</span>.
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -154,14 +271,17 @@ function ConfigFields({
 function InstanceList({
   harnesses,
   onOpen,
+  onAdd,
 }: {
   harnesses: HarnessMeta[];
   onOpen: (harnessId: string, instanceId: string) => void;
+  /** Start adding an account for this harness. */
+  onAdd: (harnessId: string) => void;
 }) {
   return (
     <div className="space-y-5">
       {harnesses.map((h) => (
-        <div key={h.id} className="space-y-2">
+        <div key={h.id} role="group" aria-label={h.name} className="space-y-2">
           <div className="flex items-center gap-2">
             <HarnessBadge harness={h.id} accent={h.accent} className="size-4" />
             <SectionHeading>{h.name}</SectionHeading>
@@ -189,12 +309,26 @@ function InstanceList({
                       <span className="text-attention-foreground shrink-0">update failed</span>
                     )}
                   </span>
+                  {(inst.sameLoginAs?.length ?? 0) > 0 && (
+                    <RowWarning>
+                      Same login as {joinAnd(sameLoginNames(h, inst))}
+                    </RowWarning>
+                  )}
+                  {(inst.configConflicts?.length ?? 0) > 0 && (
+                    <RowWarning>Own copy of {joinAnd(inst.configConflicts!)}, not shared</RowWarning>
+                  )}
                 </span>
                 <ChevronRightIcon aria-hidden className="text-muted-foreground size-4 shrink-0" />
               </button>
             ))}
             {(h.instances ?? []).length === 0 && (
-              <p className="text-muted-foreground px-3 py-2.5 text-[11px]">No accounts yet.</p>
+              <div className="flex items-center gap-2 px-3 py-2">
+                <p className="text-muted-foreground min-w-0 flex-1 text-[11px]">No accounts yet.</p>
+                <Button variant="outline" size="sm" onClick={() => onAdd(h.id)}>
+                  <PlusIcon />
+                  Add account
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -376,10 +510,7 @@ function InstanceView({
         values,
         stored: instance.env,
       });
-      // The implicit default account has no config entry yet; writing it the
-      // first time is an add, which the server accepts for id == driver.
-      const cmd = instance.configured ? "save_provider_instance" : "add_provider_instance";
-      await wires.command(cmd, { spec });
+      await wires.command("save_provider_instance", { spec });
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -412,7 +543,21 @@ function InstanceView({
         <span className="text-muted-foreground ml-auto font-mono text-[10px]">{instance.id}</span>
       </div>
 
-      <HarnessVersionLine harness={harness} instance={instance} />
+      <InstanceFacts harness={harness} instance={instance} />
+
+      {(instance.sameLoginAs?.length ?? 0) > 0 && (
+        <Alert className={WARNING_ALERT}>
+          <CircleAlertIcon aria-hidden />
+          <AlertDescription className="text-[12px]">
+            <p className="text-foreground">
+              Signed in to the same login as {joinAnd(sameLoginNames(harness, instance))}.
+            </p>
+            <p>They share one set of limits and history. Sign one of them in to another login.</p>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <ConfigConflicts instance={instance} wires={wires} />
 
       {!knownDriver && (
         <Alert>
@@ -526,18 +671,12 @@ function InstanceView({
           <Button
             variant="outline"
             size="sm"
-            disabled={!instance.configured}
             onClick={() => setConfirming(true)}
             className="text-destructive hover:text-destructive"
           >
             <Trash2Icon />
             Remove account
           </Button>
-        )}
-        {!instance.configured && (
-          <p className="text-muted-foreground text-[11px]">
-            This is the driver's built-in default; there is no config entry to remove.
-          </p>
         )}
       </div>
     </div>
@@ -556,6 +695,7 @@ export default function ProvidersSettings({
   onOpenTerminal,
   onRecheck,
   onBack,
+  addFor,
 }: {
   harnesses: HarnessMeta[];
   wires: AuthWires;
@@ -564,8 +704,15 @@ export default function ProvidersSettings({
   /** Re-probe the harnesses; the refreshed list arrives via the prop. */
   onRecheck: () => Promise<void> | void;
   onBack?: () => void;
+  /**
+   * Open on the add view instead of the list: a harness id preselects that
+   * agent, null asks which. Read once, on mount.
+   */
+  addFor?: string | null;
 }) {
-  const [view, setView] = useState<View>({ kind: "list" });
+  const [view, setView] = useState<View>(() =>
+    addFor === undefined ? { kind: "list" } : { kind: "add", harnessId: addFor },
+  );
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 
@@ -597,6 +744,7 @@ export default function ProvidersSettings({
           <InstanceList
             harnesses={harnesses}
             onOpen={(harnessId, instanceId) => go({ kind: "instance", harnessId, instanceId })}
+            onAdd={(harnessId) => go({ kind: "add", harnessId })}
           />
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => go({ kind: "add", harnessId: null })}>

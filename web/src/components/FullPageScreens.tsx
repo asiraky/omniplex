@@ -128,20 +128,27 @@ export function ThemePreviewScreen() {
 export function SetupScreen({
   harnesses,
   auth,
+  onAddAccount,
   onContinue,
 }: {
   harnesses: HarnessMeta[];
   auth: ProviderAuth;
+  /** Opens Providers settings on adding an account for this harness. */
+  onAddAccount: (harnessId: string) => void;
   onContinue: () => void;
 }) {
   const { openInstanceAuth, recheck } = auth;
-  // A check names a harness; sign-in goes to that harness's default account,
-  // which is its first instance.
+  // A check names a harness; sign-in goes to its first account. A harness
+  // with none has nothing to sign in to yet, so that is adding one.
   const onLogin = useCallback(
-    (check: SetupCheck) =>
-      openInstanceAuth(harnesses.find((h) => h.id === check.id)?.instances[0]?.id ?? check.id),
-    [harnesses, openInstanceAuth],
+    (check: SetupCheck) => {
+      const first = harnesses.find((h) => h.id === check.id)?.instances?.[0]?.id;
+      if (first) openInstanceAuth(first);
+      else onAddAccount(check.id);
+    },
+    [harnesses, openInstanceAuth, onAddAccount],
   );
+  const addAccount = useCallback((check: SetupCheck) => onAddAccount(check.id), [onAddAccount]);
   // Reload the report when the server's view of the harnesses changes (a
   // recheck after sign-in lands here) and when a sign-in dialog opens or
   // closes, so a finished sign-in shows as ready without a button press.
@@ -153,6 +160,7 @@ export function SetupScreen({
         load={fetchSetup}
         onRecheck={recheck}
         onLogin={onLogin}
+        onAddAccount={addAccount}
         onContinue={onContinue}
         refreshKey={refreshKey}
       />

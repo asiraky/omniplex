@@ -28,7 +28,8 @@ import type {
 
 export type SettingsSection =
   | { kind: "general" }
-  | { kind: "providers" }
+  /** addFor opens on adding an account: a harness id preselects it, null asks which. */
+  | { kind: "providers"; addFor?: string | null }
   | { kind: "notifications" }
   | { kind: "project"; id: string };
 
@@ -111,7 +112,14 @@ export function SettingsScreen({
       </SettingsPane>
     );
   } else if (section?.kind === "providers") {
-    pane = <ProvidersSettings harnesses={harnesses} {...providers} onBack={back} />;
+    pane = (
+      <ProvidersSettings
+        harnesses={harnesses}
+        {...providers}
+        addFor={section.addFor}
+        onBack={back}
+      />
+    );
   } else if (section?.kind === "notifications") {
     pane = <NotificationsSettings onBack={back} />;
   } else if (section?.kind === "project") {

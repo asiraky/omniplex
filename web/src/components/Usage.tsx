@@ -499,7 +499,14 @@ function LimitsView({ quotas, onRefresh }: { quotas: QuotaStatus[]; onRefresh: (
   return (
     <div className="mt-2 flex flex-col gap-3">
       {quotas.map((q) => (
-        <ProviderLimits key={q.instance} status={q} now={now} refreshing={refreshing.has(q.instance)} onRefresh={() => refresh(q.instance)} />
+        <ProviderLimits
+          key={q.instance}
+          status={q}
+          sameLoginAs={(q.sameLoginAs ?? []).map((id) => quotas.find((o) => o.instance === id)?.displayName || id)}
+          now={now}
+          refreshing={refreshing.has(q.instance)}
+          onRefresh={() => refresh(q.instance)}
+        />
       ))}
     </div>
   );
@@ -507,11 +514,14 @@ function LimitsView({ quotas, onRefresh }: { quotas: QuotaStatus[]; onRefresh: (
 
 function ProviderLimits({
   status,
+  sameLoginAs,
   now,
   refreshing,
   onRefresh,
 }: {
   status: QuotaStatus;
+  /** Display names of the other rows signed in to this one's login. */
+  sameLoginAs: string[];
   now: number;
   refreshing: boolean;
   onRefresh: () => void;
@@ -533,15 +543,27 @@ function ProviderLimits({
           <p className="truncate text-[13px] font-semibold">{status.displayName}</p>
           <p className="text-muted-foreground text-[11px]">
             {snap.plan ? `${snap.plan} plan` : "plan unknown"}
-            {snap.accountId && <span className="block break-all">{snap.accountId}</span>}
             {observed > 0 && ` · observed ${formatAge(observed, now)}`}
           </p>
+          {/* Who is signed in: the email, else the provider's account id. */}
+          {(status.account || snap.accountId) && (
+            <p className="text-muted-foreground text-[11px] break-all">{status.account || snap.accountId}</p>
+          )}
         </div>
         <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[12px]" onClick={onRefresh} disabled={refreshing}>
           {refreshing ? <Spinner className="size-3.5" /> : <RefreshCwIcon className="size-3.5" />}
           Refresh
         </Button>
       </div>
+
+      {sameLoginAs.length > 0 && (
+        <p className="text-attention-foreground mt-2 flex items-start gap-1.5 rounded-md bg-attention-surface/70 px-2 py-1.5 text-[11px] leading-relaxed">
+          <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+          <span>
+            Signed in to the same login as {sameLoginAs.join(", ")}, so these are the same limits.
+          </span>
+        </p>
+      )}
 
       {stale && (
         <p className="text-attention-foreground mt-2 flex items-start gap-1.5 rounded-md bg-attention-surface/70 px-2 py-1.5 text-[11px] leading-relaxed">
