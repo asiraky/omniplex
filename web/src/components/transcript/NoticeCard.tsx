@@ -1,11 +1,19 @@
-import { ArchiveIcon, ArrowRightLeftIcon, SparklesIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArrowRightLeftIcon,
+  OctagonXIcon,
+  SparklesIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 
 import { fmtTokens } from "~/lib/format";
+import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
 // A system event as one quiet centered line in the flow: a switch of model or
-// effort, of account, or a compaction boundary. For a compaction the reader
-// mostly needs to know it happened and roughly how much it recovered.
+// effort, of account, a compaction boundary, or something a harness extension
+// warned about. The reader mostly needs to know it happened, not to stop and
+// read it.
 export function NoticeCard({
   item,
   describeSettings,
@@ -15,6 +23,7 @@ export function NoticeCard({
       catalogue. Absent until the catalogue has loaded. */
   describeSettings?: (model: string, effort: string) => string;
 }) {
+  if (item.noticeKind === "notify") return <NotifyNotice item={item} />;
   if (item.noticeKind === "model") {
     // Without the catalogue an alias and the id it resolves to read as two
     // models; drawing nothing until it loads beats a line for no switch.
@@ -57,6 +66,25 @@ export function NoticeCard({
         <span>
           {item.trigger === "manual" ? "Context compacted" : "Context auto-compacted"}
           {detail && ` — ${detail}`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// An extension's message is its own words at its own length, so unlike the
+// fixed phrases above it has to wrap: a pill would overflow a phone. Only the
+// icon carries the level: this is the record, and the toast was the alarm.
+function NotifyNotice({ item }: { item: Item }) {
+  const error = item.level === "error";
+  const Icon = error ? OctagonXIcon : TriangleAlertIcon;
+  return (
+    <div className="fade-in flex justify-center">
+      <div className="text-muted-foreground flex max-w-full items-start gap-1.5 rounded-lg border px-3 py-1 text-[12px]">
+        <Icon className={cn("mt-0.5 size-3.5 shrink-0", error ? "text-destructive" : "text-attention")} />
+        <span className="min-w-0 break-words whitespace-pre-wrap">
+          <span className="sr-only">{error ? "Error: " : "Warning: "}</span>
+          {item.text}
         </span>
       </div>
     </div>

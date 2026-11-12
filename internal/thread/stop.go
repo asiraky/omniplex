@@ -230,6 +230,10 @@ func (a *Actor) forceStop() {
 	for _, em := range interruptedJobs(a.state) {
 		a.append(em)
 	}
+	// Its exit is dropped as stale, so its extensions' statuses go here.
+	for _, em := range clearedStatuses(a.state) {
+		a.append(em)
+	}
 	if old != nil {
 		// Close kills the process tree and waits for it, which is not
 		// something the loop can sit through.

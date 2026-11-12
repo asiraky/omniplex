@@ -22,6 +22,7 @@ import { cn } from "~/lib/utils";
 import type { ThreadMeta, ThreadState } from "~/protocol";
 import { useShortcutLabel } from "~/useShortcuts";
 
+import { ExtensionStatuses } from "./ExtensionStatuses";
 import { IconButton } from "./IconButton";
 import { TitleEditor } from "./TitleEditor";
 import { Button } from "./ui/button";
@@ -87,42 +88,50 @@ export function ThreadHeader({
   const thread = useThread(useThreadStore(), headerFields, shallow);
   const actions = thread && { activeId, meta, onSetPinned, copy, panel, onShowMcp };
   return (
-    <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
-      {/* The open sidebar carries its own collapse button, so this one
-          only appears when there is a closed sidebar to reopen. */}
-      <IconButton
-        label="Show threads"
-        shortcut="toggleSidebar"
-        onClick={onShowSidebar}
-        className={cn(sidebarOpen && "hidden")}
-      >
-        <PanelLeftIcon className="size-3.5" />
-      </IconButton>
-
-      {actions ? (
-        <>
-          <HeaderTitle
-            threadId={activeId}
-            title={threadTitle(meta, thread.title)}
-            editing={renamingId !== null && renamingId === activeId}
-            onEdit={() => setRenamingId(activeId)}
-            onDone={() => setRenamingId(null)}
-            onRename={onRename}
-          />
-          {SHOW_MODE_SWITCHER && !thread.closed && <ModeSwitcher harness={harness} />}
-          {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
-        </>
-      ) : (
-        <span
-          className={cn(
-            "flex-1 text-[13px]",
-            creating && !meta ? "font-medium" : "text-muted-foreground",
-          )}
+    <header className="px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
+      <div className="flex items-center gap-2">
+        {/* The open sidebar carries its own collapse button, so this one
+            only appears when there is a closed sidebar to reopen. */}
+        <IconButton
+          label="Show threads"
+          shortcut="toggleSidebar"
+          onClick={onShowSidebar}
+          className={cn(sidebarOpen && "hidden")}
         >
-          {meta ? "Attaching…" : creating ? "New thread" : ""}
-        </span>
-      )}
+          <PanelLeftIcon className="size-3.5" />
+        </IconButton>
+
+        {actions ? (
+          <>
+            <HeaderTitle
+              threadId={activeId}
+              title={threadTitle(meta, thread.title)}
+              editing={renamingId !== null && renamingId === activeId}
+              onEdit={() => setRenamingId(activeId)}
+              onDone={() => setRenamingId(null)}
+              onRename={onRename}
+            />
+            {isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline />}
+            {SHOW_MODE_SWITCHER && !thread.closed && <ModeSwitcher harness={harness} />}
+            {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
+          </>
+        ) : (
+          <PendingTitle attaching={!!meta} creating={creating} />
+        )}
+      </div>
+      {/* A phone's row is the title and one menu, with no room between: the
+          chips take a line of their own, there only while there are any. */}
+      {actions && !isDesktop && <ExtensionStatuses statuses={thread.extensionStatuses} inline={false} />}
     </header>
+  );
+}
+
+/** The title row's stand-in while there is no thread state to show. */
+function PendingTitle({ attaching, creating }: { attaching: boolean; creating: boolean }) {
+  return (
+    <span className={cn("flex-1 text-[13px]", creating && !attaching ? "font-medium" : "text-muted-foreground")}>
+      {attaching ? "Attaching…" : creating ? "New thread" : ""}
+    </span>
   );
 }
 
@@ -319,7 +328,7 @@ function JobsBadge({ className }: { className: string }) {
 }
 
 function headerFields(state: ThreadState | null) {
-  return state && { title: state.title, closed: state.closed };
+  return state && { title: state.title, closed: state.closed, extensionStatuses: state.extensionStatuses };
 }
 
 function liveJobsOf(state: ThreadState | null) {
