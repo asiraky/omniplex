@@ -405,7 +405,7 @@ describe("ModelPicker effort", () => {
     const onChange = vi.fn();
     openEfforts({ onChange });
 
-    fireEvent.click(row("Default (recommended)")!);
+    fireEvent.click(row("Opus 5")!);
 
     expect(onChange).toHaveBeenCalled();
     expect(isOpen()).toBe(false);
