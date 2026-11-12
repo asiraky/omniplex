@@ -32,10 +32,10 @@ async function readToolContent(url: string, signal?: AbortSignal): Promise<FullT
 
 /**
  * The way from a truncated preview to the whole output and input, and back
- * after 4G drops it. Loaded lazily, since few cards are truncated and fewer are asked for in
- * full. The body goes to `onLoad` and is held by the card alone: never written
- * back into the thread, so it is dropped with the card and a long session's
- * output never accumulates in the tab.
+ * after 4G drops it. Loaded lazily, since few cards are truncated and fewer
+ * are asked for in full. The body goes to `onLoad` and is held by the card
+ * alone: never written back into the thread, so it is dropped with the card
+ * and a long session's output never accumulates in the tab.
  */
 export default function LoadFullOutput({
   threadId,

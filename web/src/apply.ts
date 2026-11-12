@@ -197,9 +197,25 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
 // server has already folded the row into; otherwise the running agent would be
 // missing from the roster, and its Stop with it, until the next attach.
 export function revivesUnheldJob(s: ThreadState, ev: Event): boolean {
-  if (ev.type !== "job.updated" || !(s.jobsBefore ?? 0)) return false;
+  if (ev.type !== "job.updated" || !dropsJobRow(s, ev)) return false;
   const p = (ev.payload ?? {}) as JobPayload;
-  return !!p.status && !jobDone(p.status) && !s.jobs.some((j) => j.id === p.jobId);
+  return !!p.status && !jobDone(p.status);
+}
+
+// dropsJobRow says whether applyJob drops ev as a straggler for a job s left
+// out. A row dropped while the list is being fetched may postdate the
+// server's read of it, so the caller holds it for applyJobRow.
+export function dropsJobRow(s: ThreadState, ev: Event): boolean {
+  if (!ev.type.startsWith("job.") || ev.type === "job.started" || !(s.jobsBefore ?? 0)) return false;
+  const p = (ev.payload ?? {}) as JobPayload;
+  return !!p.jobId && !s.jobs.some((j) => j.id === p.jobId);
+}
+
+// applyJobRow folds a job row the state's cursor is already past: one
+// dropped while the job list was on its way, re-applied over the list.
+export function applyJobRow(s: ThreadState, ev: Event): ThreadState {
+  const row = ev.type === "job.started" ? "started" : ev.type === "job.finished" ? "finished" : "updated";
+  return applyJob(s, ev.timestamp, (ev.payload ?? {}) as JobPayload, row);
 }
 
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a

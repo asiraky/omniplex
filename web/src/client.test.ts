@@ -225,6 +225,20 @@ describe("loading all jobs", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a row for an unheld job that lands while the list is on its way", async () => {
+    const { frame, published } = attached({ jobs: [], jobsBefore: 2 });
+    let answer!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))));
+    const row = (seq: number, payload: Record<string, unknown>) => ({ threadId: "a", seq, timestamp: 0, type: "job.updated", payload });
+    frame({ type: "event", threadId: "a", event: row(1, { jobId: "old", status: "running" }) });
+    // After the server read the list, before its answer arrives.
+    frame({ type: "event", threadId: "a", event: row(2, { jobId: "old", status: "completed" }) });
+
+    answer(new Response(JSON.stringify({ jobs: [job("old", { status: "running", name: "reopened" })] })));
+    await vi.waitFor(() => expect(published.at(-1)?.jobsBefore).toBe(0));
+    expect(published.at(-1)?.jobs.map((j) => [j.name, j.status])).toEqual([["reopened", "completed"]]);
+  });
+
   it("resolves null and publishes nothing when the fetch fails", async () => {
     const { client, published } = attached({ jobsBefore: 2 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));

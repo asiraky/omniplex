@@ -2,7 +2,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { render } from "~/test/harness";
+import { render, wrap } from "~/test/harness";
 import type { Item } from "~/protocol";
 
 import { ToolCard, ToolRun } from "./ToolCards";
@@ -144,6 +144,19 @@ describe("a tool card whose input was cut", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
     expect(await screen.findByText(/the whole command/)).toBeTruthy();
     expect(screen.queryByText(/cut …/)).toBeNull();
+  });
+
+  it("shows output that lands after the load, and offers the load again", async () => {
+    serve(() => new Response(JSON.stringify({ content: [], input: { command: "the whole command" } })));
+    const running = tool({ content: undefined, status: "in_progress", input: { command: "the [… cut …] command" } });
+    const { rerender } = render(<ToolCard threadId="s1" item={running} />);
+    fireEvent.click(screen.getByRole("button", { name: /go test/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(await screen.findByText(/the whole command/)).toBeTruthy();
+
+    rerender(wrap(<ToolCard threadId="s1" item={{ ...running, status: "completed", content: [{ type: "text", text: preview }] }} />));
+    expect(screen.getByText(/characters truncated/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Load full output" })).toBeTruthy();
   });
 
   it("keeps the preview input when the call recorded no input", async () => {

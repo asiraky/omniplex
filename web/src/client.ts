@@ -2,9 +2,9 @@
 // here: backoff, cursor tracking, reattach with afterSeq, resync handling, and
 // command idempotency across reconnects.
 
-import { applyEvent, emptyState, prependItems, revivesUnheldJob } from "./apply";
+import { applyEvent, applyJobRow, dropsJobRow, emptyState, prependItems, revivesUnheldJob } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, AuthFlowEvent, HarnessMeta, Item, Job, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
+import type { Access, AuthFlowEvent, Event, HarnessMeta, Item, Job, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -242,6 +242,7 @@ export class Client {
    */
   loadAllJobs(): Promise<ThreadState | null> {
     if (this.jobsInFlight) return this.jobsInFlight;
+    this.droppedJobRows = [];
     const request = this.fetchJobs().finally(() => (this.jobsInFlight = null));
     this.jobsInFlight = request;
     return request;
@@ -269,7 +270,10 @@ export class Client {
         return mine.get(j.id) ?? j;
       });
       for (const j of cur.jobs) if (!listed.has(j.id)) jobs.push(j);
-      const next: ThreadState = { ...cur, jobs, jobsBefore: 0 };
+      // Rows for jobs the client did not hold were dropped, and those that
+      // landed after the server read are in neither copy: fold them in now.
+      const next = this.droppedJobRows.reduce(applyJobRow, { ...cur, jobs, jobsBefore: 0 });
+      this.droppedJobRows = [];
       this.state = next;
       this.events.onState(next.threadId, next);
       return next;
@@ -279,6 +283,8 @@ export class Client {
     }
   }
   private jobsInFlight: Promise<ThreadState | null> | null = null;
+  // Job rows applyEvent dropped while jobsInFlight; see fetchJobs.
+  private droppedJobRows: Event[] = [];
 
   detach() {
     this.snapshotRequest?.abort();
@@ -399,6 +405,8 @@ export class Client {
         if (f.threadId !== this.threadId || !f.state) return;
         this.state = f.state;
         this.cursor = f.state.seq;
+        // The snapshot is newer than any row held for a jobs fetch.
+        this.droppedJobRows = [];
         break;
 
       case "replay": {
@@ -407,6 +415,7 @@ export class Client {
         let revived = false;
         for (const ev of f.events) {
           revived ||= revivesUnheldJob(next, ev);
+          if (this.jobsInFlight && dropsJobRow(next, ev)) this.droppedJobRows.push(ev);
           next = applyEvent(next, ev);
         }
         this.state = next;
@@ -421,6 +430,7 @@ export class Client {
         const base = this.state ?? emptyState(f.threadId);
         const next = applyEvent(base, f.event);
         if (next === base) return; // duplicate; already applied
+        if (this.jobsInFlight && dropsJobRow(base, f.event)) this.droppedJobRows.push(f.event);
         this.state = next;
         this.cursor = next.seq;
         this.events.onState(f.threadId, next);

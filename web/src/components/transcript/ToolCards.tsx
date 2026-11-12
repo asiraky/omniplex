@@ -79,9 +79,16 @@ function joinOutput(content: ToolContent[] | undefined) {
 
 // What a tool card shows: the full output and input once fetched, standing in
 // for the previews, else the previews. The full body is held by the card only,
-// so it goes when the card does.
+// so it goes when the card does. It is the call as it stood when loaded: once
+// more output lands (a call still running) it is stale, and the previews and
+// the load come back.
 function useToolOutput(item: Item) {
   const [full, setFull] = useState<FullToolBody>();
+  const [loadedOver, setLoadedOver] = useState(item.content);
+  if (loadedOver !== item.content) {
+    setLoadedOver(item.content);
+    setFull(undefined);
+  }
   return {
     setFull,
     output: joinOutput(full ? full.content : item.content),
