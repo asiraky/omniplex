@@ -481,15 +481,18 @@ type session struct {
 	// and recording it as the next turn's id would aim the stop button at a
 	// finished turn and drop the real turn's completion as stale.
 	lastServerTurn string
+	// lastTurn is ours for that same turn: a spawn that completes after its
+	// turn ended names it by codex's id, and its child works for ours.
+	lastTurn string
 	// children are the subagent threads codex spawned from this one, or from
 	// each other, by thread id; each is a job. See subagents.go. Lazily
 	// filled; a session runs few enough subagents that it is never worth
 	// pruning, and the same goes for the other per-thread and per-turn maps.
 	children map[string]*child
-	// pendingTurns holds a turn/started for a thread not yet known to be a
-	// child: codex can announce the child's turn before the spawn item that
-	// names it completes, and stopping it needs that turn id.
-	pendingTurns map[string]string
+	// pending holds what a thread not yet known to be a child did before the
+	// spawn item naming it completed: codex can start, and even finish, the
+	// child's turn first, and stopping or settling it needs that turn.
+	pending map[string]*pendingChild
 	// unknownThreads is the threads already logged as dropped, so a stray
 	// thread's stream logs once rather than per delta.
 	unknownThreads map[string]bool
@@ -707,6 +710,10 @@ func (s *session) interruptTargetLocked() string {
 	return s.serverTurnID
 }
 
+// lateInterruptTimeout bounds an interrupt sent off the read loop, after the
+// Stop that asked for it has returned: nobody else is waiting on it.
+const lateInterruptTimeout = 10 * time.Second
+
 // noteRunningTurn records the id turn/started gave turn. Stop pressed before
 // it arrived went out under the id the turn was started with, which a review
 // refuses; this is the review's to stop, so it is interrupted now.
@@ -723,7 +730,7 @@ func (s *session) noteRunningTurn(turn, running string) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), lateInterruptTimeout)
 		defer cancel()
 		if err := s.conn.Call(ctx, "turn/interrupt", map[string]any{"threadId": s.threadID, "turnId": running}, nil); err != nil {
 			s.host.Logf("codex: late interrupt of turn %s: %v", running, err)
@@ -1289,17 +1296,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// names say anything about the one open now. A spawn is work.
 		if method == "item/started" {
 			var p struct {
-				TurnID string `json:"turnId"`
-				Item   struct {
-					Type string `json:"type"`
-					Kind string `json:"kind"`
-					Tool string `json:"tool"`
-				} `json:"item"`
+				TurnID string    `json:"turnId"`
+				Item   codexItem `json:"item"`
 			}
 			_ = json.Unmarshal(params, &p)
-			bookkeeping := (p.Item.Type == "subAgentActivity" && p.Item.Kind != "started") ||
-				(p.Item.Type == "collabAgentToolCall" && p.Item.Tool != "spawnAgent")
-			if !bookkeeping {
+			if !collabBookkeeping(p.Item) {
 				turn = s.workingTurn(turn, p.TurnID)
 			}
 		}
@@ -1407,6 +1408,9 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 
 		s.mu.Lock()
 		done := s.turnID
+		if done != "" {
+			s.lastTurn = done
+		}
 		if finished := p.Turn.ID; finished != "" {
 			s.lastServerTurn = finished
 		} else if known != "" {
@@ -1739,6 +1743,9 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 		}))
 
 	case "collabAgentToolCall", "subAgentActivity":
+		if !open {
+			turn = s.endedTurn(p.TurnID)
+		}
 		s.handleSpawnItem(completed, turn, owner, it)
 	}
 }

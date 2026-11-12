@@ -566,12 +566,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 				}
 			}
 			// A live grandchild's spawn call is still its job's to settle.
-			live := map[string]bool{}
-			for _, o := range s.Jobs {
-				if o.ToolCallID != "" && !proto.JobDone(o.Status) {
-					live[o.ToolCallID] = true
-				}
-			}
+			live := s.liveJobCalls()
 			for i := range s.Items {
 				it := &s.Items[i]
 				if it.Kind == ItemTool && it.ParentID == j.ToolCallID && !live[it.ID] &&
@@ -583,6 +578,17 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 	} else if proto.JobDone(j.Status) && j.FinishedAt == 0 {
 		j.FinishedAt = ev.Timestamp
 	}
+}
+
+// liveJobCalls is the tool calls standing for jobs still running.
+func (s *State) liveJobCalls() map[string]bool {
+	live := map[string]bool{}
+	for _, j := range s.Jobs {
+		if j.ToolCallID != "" && !proto.JobDone(j.Status) {
+			live[j.ToolCallID] = true
+		}
+	}
+	return live
 }
 
 func (s *State) upsert(id string, mut func(*Item)) {
@@ -861,12 +867,7 @@ func (s *State) Apply(ev proto.Event) {
 			// running command) is left alone entirely: it is still running.
 			// Tools of other turns are left alone too: a stray finish must
 			// not touch unrelated running work.
-			live := map[string]bool{}
-			for _, j := range s.Jobs {
-				if !proto.JobDone(j.Status) && j.ToolCallID != "" {
-					live[j.ToolCallID] = true
-				}
-			}
+			live := s.liveJobCalls()
 			for i := range s.Items {
 				it := &s.Items[i]
 				if it.Kind != ItemTool || (it.TurnID != p.TurnID && it.TurnID != "") ||

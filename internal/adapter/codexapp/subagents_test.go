@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -681,5 +682,104 @@ func TestWakeFollowsTheTurnThatGaveTheWork(t *testing.T) {
 				t.Fatalf("turn/start sent %d times, want %d", n, tc.wakes)
 			}
 		})
+	}
+}
+
+// An earlier message is commentary; a final answer only in the turn's
+// summary is the result, and goes into the pane.
+func TestSummaryAnswerBeatsEarlierCommentary(t *testing.T) {
+	s := subagentSession(t)
+	s.turnID = "turn-a"
+	spawn(s, "spawn-1", "x", "child-a")
+	childSays(s, "child-a", "m1", "commentary", "Looking around")
+	drain(s)
+	notify(s, "turn/completed", `{"threadId":"child-a","turn":{"id":"ct","status":"completed","items":[
+		{"type":"agentMessage","id":"m1","phase":"commentary","text":"Looking around"},
+		{"type":"agentMessage","id":"m2","phase":"final_answer","text":"The answer"}]}}`)
+	got := drain(s)
+	if fin := jobs(got, proto.JobFinished); len(fin) != 1 || fin[0].Activity != "The answer" {
+		t.Fatalf("finish = %+v", fin)
+	}
+	chunks := ofType(got, proto.MessageChunk)
+	if len(chunks) != 1 || chunks[0].Payload.(proto.MessageChunkPayload).BlockID != "m2" {
+		t.Fatalf("chunks = %+v, want the summary's answer", chunks)
+	}
+}
+
+// A child can finish before the spawn naming it completes; it registers
+// finished, not running forever.
+func TestChildFinishedBeforeRegistrationRegistersFinished(t *testing.T) {
+	s, _ := stopSession(t, nil)
+	s.turnID = "turn-a"
+	childTurn(s, "child-a", "ct-1")
+	notify(s, "turn/completed", `{"threadId":"child-a","turn":{"id":"ct-1","status":"completed","items":[
+		{"type":"agentMessage","id":"m1","phase":"final_answer","text":"Done early"}]}}`)
+	spawn(s, "spawn-1", "x", "child-a")
+	got := drain(s)
+
+	if st := jobs(got, proto.JobStarted); len(st) != 1 {
+		t.Fatalf("started = %+v", st)
+	}
+	fin := jobs(got, proto.JobFinished)
+	if len(fin) != 1 || fin[0].Status != proto.JobCompleted || fin[0].Activity != "Done early" {
+		t.Fatalf("finish = %+v", fin)
+	}
+	if err := s.StopJob(context.Background(), "child-a"); err == nil {
+		t.Fatal("StopJob on a finished child succeeded")
+	}
+}
+
+// A spawn can complete after Stop has ended its turn, naming a child already
+// running for it; that child is stopped as it registers.
+func TestSpawnCompletingAfterItsStoppedTurnStopsTheChild(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-turn"
+	item := func(status string, rs []string) string {
+		b, _ := json.Marshal(map[string]any{
+			"threadId": "thread-1", "turnId": "codex-turn",
+			"item": map[string]any{
+				"type": "collabAgentToolCall", "id": "spawn-1", "tool": "spawnAgent",
+				"status": status, "prompt": "one", "receiverThreadIds": rs,
+			},
+		})
+		return string(b)
+	}
+	notify(s, "item/started", item("inProgress", []string{}))
+	childTurn(s, "sub-1", "sub-1-turn")
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-turn","status":"interrupted"}}`)
+	notify(s, "item/completed", item("completed", []string{"sub-1"}))
+
+	waitFor(t, "the late subagent interrupt", func() bool { return rec.interrupts(t)["sub-1"] == "sub-1-turn" })
+	childDone(s, "sub-1", "sub-1-turn", "completed")
+	if len(s.wakeQueue) != 0 {
+		t.Fatalf("a stopped turn's child queued a wake: %q", s.wakeQueue)
+	}
+}
+
+// A grandchild works for what its spawner works for now: spawned by a child
+// codex reused in turn B, it is stopped with B, not left running for A.
+func TestGrandchildOfAReusedChildIsStoppedWithItsTurn(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	spawn(s, "spawn-1", "one", "sub-1")
+	childTurn(s, "sub-1", "sub-1-first")
+	childDone(s, "sub-1", "sub-1-first", "completed")
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-a","status":"completed"}}`)
+
+	s.turnID, s.serverTurnID = "turn-b", "codex-b"
+	childTurn(s, "sub-1", "sub-1-reused")
+	childTurn(s, "grand", "grand-turn")
+	spawnOn(s, "sub-1", "spawn-2", "deeper", "grand")
+	drain(s)
+
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	want := map[string]string{"thread-1": "codex-b", "sub-1": "sub-1-reused", "grand": "grand-turn"}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts = %v, want %v", got, want)
 	}
 }

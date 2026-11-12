@@ -53,15 +53,23 @@ type child struct {
 	// session.
 	workTurn string
 	// serverTurn is the child's running codex turn, which turn/interrupt
-	// needs; empty between turns. finished is the one that last completed,
-	// so a straggling item from it cannot mark the child running again.
-	// interrupting is set while an interrupt for serverTurn is in flight.
+	// needs; empty between turns. finishedTurn is the one that last
+	// completed, so a straggling item from it cannot mark the child running
+	// again. interrupting is set while an interrupt for serverTurn is in
+	// flight.
 	serverTurn   string
-	finished     string
+	finishedTurn string
 	interrupting bool
 	settled      bool
 	lastMessage  string
 	finalMessage string
+}
+
+// pendingChild is what a thread did before the spawn naming it completed:
+// the turn it started, and that turn's completion if it got that far.
+type pendingChild struct {
+	turn string
+	done json.RawMessage
 }
 
 func (c *child) toolCall() string {
@@ -94,33 +102,58 @@ func subagentLabel(prompt, path, thread string) string {
 	return label
 }
 
+// spawnsAgent reports whether a collaboration item is a spawn: v1's
+// spawnAgent call, or v2's "started" activity.
+func spawnsAgent(it codexItem) bool {
+	switch it.Type {
+	case "collabAgentToolCall":
+		return it.Tool == "spawnAgent"
+	case "subAgentActivity":
+		return it.Kind == "started"
+	}
+	return false
+}
+
+// collabBookkeeping reports whether an item is collaboration other than a
+// spawn (wait, sendInput, v2's "completed" activity), which is not work.
+func collabBookkeeping(it codexItem) bool {
+	return (it.Type == "collabAgentToolCall" || it.Type == "subAgentActivity") && !spawnsAgent(it)
+}
+
+// endedTurn is ours for codex's turn id serverTurn when that is the turn
+// that just completed, else serverTurn itself: a spawn that straggles in
+// after its turn ended names it by codex's id, and stopping that turn must
+// still reach the child.
+func (s *session) endedTurn(serverTurn string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if serverTurn != "" && serverTurn == s.lastServerTurn && s.lastTurn != "" {
+		return s.lastTurn
+	}
+	return serverTurn
+}
+
 // handleSpawnItem renders a spawn as an agent tool call and registers the
 // threads it names. v1 names its children only on completion; v2 announces
 // each in a subAgentActivity "started" item. Every other collaboration item
 // (wait, sendInput, the v2 "completed" activity) is ignored: the child's own
 // turn/completed is the authoritative end.
 func (s *session) handleSpawnItem(completed bool, turn string, owner *child, it codexItem) {
+	if !spawnsAgent(it) {
+		return
+	}
 	var label string
 	var receivers []string
-	switch it.Type {
-	case "collabAgentToolCall":
-		if it.Tool != "spawnAgent" {
-			return
-		}
+	if it.Type == "collabAgentToolCall" {
 		label = subagentLabel(it.Prompt, "", "")
 		if completed {
 			receivers = it.ReceiverThreadIDs
 		}
-	case "subAgentActivity":
-		if it.Kind != "started" {
-			return
-		}
+	} else {
 		label = subagentLabel("", it.AgentPath, "")
 		if it.AgentThreadID != "" {
 			receivers = []string{it.AgentThreadID}
 		}
-	default:
-		return
 	}
 	parent := owner.toolCall()
 
@@ -175,16 +208,25 @@ func (s *session) registerChild(thread, toolCallID, label, turn string, owner *c
 	}
 	c := &child{jobID: thread, toolCallID: toolCallID, label: label, spawnTurn: turn, workTurn: turn}
 	if owner != nil {
+		// A grandchild works for whatever its spawner is working for now,
+		// which is not the turn its output is filed under once codex has
+		// reused the spawner.
 		c.parentJobID = owner.jobID
+		c.workTurn = owner.workTurn
 	}
-	if t, ok := s.pendingTurns[thread]; ok {
-		c.serverTurn = t
-		delete(s.pendingTurns, thread)
+	var done json.RawMessage
+	if p := s.pending[thread]; p != nil {
+		c.serverTurn, done = p.turn, p.done
+		delete(s.pending, thread)
 	}
 	s.children[thread] = c
 	// A child that started working before the spawn naming it arrived, for
-	// a turn already stopped, missed Cancel; it is stopped now.
-	late := s.lateInterruptLocked(c)
+	// a turn already stopped, missed Cancel; it is stopped now, unless it
+	// has already finished.
+	var late string
+	if done == nil {
+		late = s.lateInterruptLocked(c)
+	}
 	row := c.row()
 	s.mu.Unlock()
 
@@ -192,6 +234,10 @@ func (s *session) registerChild(thread, toolCallID, label, turn string, owner *c
 	row.Name = label
 	row.Status = proto.JobRunning
 	s.emit(proto.Emit(proto.JobStarted, row))
+	if done != nil {
+		s.childTurnCompleted(c, done)
+		return
+	}
 	s.interruptLate(c, late)
 }
 
@@ -214,7 +260,7 @@ func (s *session) interruptLate(c *child, turn string) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), lateInterruptTimeout)
 		defer cancel()
 		_ = s.interruptChild(ctx, c, turn)
 	}()
@@ -255,7 +301,7 @@ func (s *session) handleChildNotification(method, thread string, params json.Raw
 		// An item naming a turn the child was not known to be running is
 		// that turn starting, heard about late.
 		s.mu.Lock()
-		started := c.serverTurn == "" && p.TurnID != "" && p.TurnID != c.finished
+		started := c.serverTurn == "" && p.TurnID != "" && p.TurnID != c.finishedTurn
 		s.mu.Unlock()
 		if started {
 			s.childTurnStarted(c, p.TurnID)
@@ -304,11 +350,12 @@ func (s *session) handleChildNotification(method, thread string, params json.Raw
 	}
 }
 
-// unregisteredLocked handles a thread not (yet) known as a child. Its
-// turn/started is kept for registration; the rest is dropped. Caller holds
-// s.mu.
+// unregisteredLocked handles a thread not (yet) known as a child. Its turn
+// starting and finishing are kept for registration; the rest is dropped.
+// Caller holds s.mu.
 func (s *session) unregisteredLocked(method, thread string, params json.RawMessage) {
-	if method == "turn/started" {
+	switch method {
+	case "turn/started":
 		var p struct {
 			Turn struct {
 				ID string `json:"id"`
@@ -316,11 +363,22 @@ func (s *session) unregisteredLocked(method, thread string, params json.RawMessa
 		}
 		_ = json.Unmarshal(params, &p)
 		if p.Turn.ID != "" {
-			if s.pendingTurns == nil {
-				s.pendingTurns = map[string]string{}
+			if s.pending == nil {
+				s.pending = map[string]*pendingChild{}
 			}
-			s.pendingTurns[thread] = p.Turn.ID
+			s.pending[thread] = &pendingChild{turn: p.Turn.ID}
 		}
+		return
+	case "turn/completed", "turn/failed":
+		if s.pending == nil {
+			s.pending = map[string]*pendingChild{}
+		}
+		p := s.pending[thread]
+		if p == nil {
+			p = &pendingChild{}
+			s.pending[thread] = p
+		}
+		p.done = params
 		return
 	}
 	// Status and MCP startup chatter precede every child's registration;
@@ -440,25 +498,27 @@ func (s *session) childTurnCompleted(c *child, params json.RawMessage) {
 		s.mu.Unlock()
 		return
 	}
-	final := c.finalMessage
-	if final == "" {
-		final = c.lastMessage
-	}
 	// A final answer only in the turn's summary never reached the job's pane
 	// as an item; it goes out as one below, unless its deltas already did.
+	// It beats an earlier message, which was only commentary; the summary's
+	// last message stands in for an answer only when nothing else was seen.
+	final := c.finalMessage
 	var summary *codexItem
 	if final == "" {
-		if it := turnFinalMessage(p.Turn.Items); it != nil {
+		it := turnFinalMessage(p.Turn.Items)
+		if it != nil && (it.Phase == "final_answer" || c.lastMessage == "") {
 			final = it.Text
 			if !s.streamed[it.ID] {
 				summary = it
 			}
+		} else {
+			final = c.lastMessage
 		}
 	}
 	c.settled = true
-	c.finished = c.serverTurn
+	c.finishedTurn = c.serverTurn
 	if p.Turn.ID != "" {
-		c.finished = p.Turn.ID
+		c.finishedTurn = p.Turn.ID
 	}
 	c.serverTurn = ""
 	c.interrupting = false

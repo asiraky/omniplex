@@ -65,6 +65,11 @@ function toolDone(status: Item["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+/** The tool calls standing for jobs still running. */
+function liveJobCalls(jobs: Job[]): Set<string> {
+  return new Set(jobs.flatMap((j) => (j.toolCallId && !jobDone(j.status) ? [j.toolCallId] : [])));
+}
+
 /** The call without its tail: absent rather than empty, as the server's
     omitempty leaves it. */
 function dropTail(it: Item): Item {
@@ -171,7 +176,7 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
       const settled =
         j.status === "failed" ? "failed" : j.status === "completed" ? "completed" : "cancelled";
       // A live grandchild's spawn call is still its job's to settle.
-      const live = new Set(jobs.filter((o) => !jobDone(o.status) && o.toolCallId).map((o) => o.toolCallId));
+      const live = liveJobCalls(jobs);
       items = s.items.map((it) => {
         if (it.status !== "in_progress" && it.status !== "pending") return it;
         if (it.id === call) return settle(it, settled);
@@ -336,9 +341,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // internal/projection/state.go.
       const open = s.turns.reduce<string>((acc, t) => (t.done ? acc : t.id), "");
       const match = open === "" || p.turnId === open;
-      const live = new Set(
-        s.jobs.filter((j) => !jobDone(j.status) && j.toolCallId).map((j) => j.toolCallId),
-      );
+      const live = liveJobCalls(s.jobs);
       return {
         ...s,
         ...settleRequests(s, p.turnId),
