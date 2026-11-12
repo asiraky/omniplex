@@ -6,6 +6,7 @@ package projection
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -134,6 +135,10 @@ const (
 	// where it raised it. Its Status is pending until answered, then the
 	// outcome's result: saved, declined or cancelled.
 	ItemCard = "card"
+	// ItemPlan is the agent's task list, where it set it. A Claude TodoWrite
+	// call is an item of its own, and the newest marks the earlier ones
+	// Superseded. A codex plan is one item per turn, revised in place.
+	ItemPlan = "plan"
 )
 
 // Item is one entry in the thread timeline, in the order it first appeared.
@@ -180,6 +185,12 @@ type Item struct {
 	// is the outcome's result.
 	Card    json.RawMessage `json:"card,omitempty"`
 	Outcome json.RawMessage `json:"outcome,omitempty"`
+
+	// plan: the whole list as it stands, never a delta. Superseded is set on
+	// a TodoWrite list once a later one exists.
+	Steps       []proto.PlanStep `json:"steps,omitempty"`
+	Explanation string           `json:"explanation,omitempty"`
+	Superseded  bool             `json:"superseded,omitempty"`
 }
 
 // Artefact is a file or folder the thread has shown, as it was the last time
@@ -345,7 +356,6 @@ type State struct {
 	ItemsBefore  int                       `json:"itemsBefore,omitempty"`
 	Turns        []Turn                    `json:"turns"`
 	Jobs         []Job                     `json:"jobs"`
-	Plan         []proto.PlanEntry         `json:"plan"`
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
@@ -364,7 +374,6 @@ func New(threadID string) *State {
 		Items:        []Item{},
 		Turns:        []Turn{},
 		Jobs:         []Job{},
-		Plan:         []proto.PlanEntry{},
 		Pending:      []PendingPermission{},
 		Elicitations: []PendingElicitation{},
 		Queued:       []QueuedPrompt{},
@@ -889,7 +898,38 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PlanUpdated:
 		var p proto.PlanUpdatedPayload
 		decode(ev.Payload, &p)
-		s.Plan = p.Entries
+		// A plan anchored to nothing — the old shape, logged before plans
+		// had a turn — has nowhere in the transcript to go.
+		if p.TurnID == "" && p.ToolCallID == "" {
+			return
+		}
+		// A TodoWrite call is a list of its own, keyed by the call; a codex
+		// plan is the turn's, revised in place. Each update is the whole
+		// plan, so steps and explanation are replaced outright — an empty
+		// explanation clears the last one. Mirrored in web/src/apply.ts.
+		id := "turn-plan:" + p.TurnID
+		if p.ToolCallID != "" {
+			id = "todo:" + p.ToolCallID
+			if s.itemIndex == nil {
+				s.reindex()
+			}
+			if _, ok := s.itemIndex[id]; !ok {
+				for i := range s.Items {
+					if s.Items[i].Kind == ItemPlan && strings.HasPrefix(s.Items[i].ID, "todo:") {
+						s.Items[i].Superseded = true
+					}
+				}
+			}
+		}
+		s.upsert(id, func(it *Item) {
+			it.Kind = ItemPlan
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.TurnID = p.TurnID
+			it.Steps = p.Steps
+			it.Explanation = p.Explanation
+		})
 
 	case proto.UsageUpdated:
 		var p proto.UsageUpdatedPayload
@@ -1135,6 +1175,9 @@ func (s *State) Clone() *State {
 		if len(it.Outcome) > 0 {
 			cp.Outcome = append(json.RawMessage(nil), it.Outcome...)
 		}
+		if len(it.Steps) > 0 {
+			cp.Steps = append([]proto.PlanStep(nil), it.Steps...)
+		}
 		out.Items[i] = cp
 	}
 
@@ -1142,8 +1185,6 @@ func (s *State) Clone() *State {
 	copy(out.Turns, s.Turns)
 	out.Jobs = make([]Job, len(s.Jobs))
 	copy(out.Jobs, s.Jobs)
-	out.Plan = make([]proto.PlanEntry, len(s.Plan))
-	copy(out.Plan, s.Plan)
 	out.Artefacts = append([]Artefact{}, s.Artefacts...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))
