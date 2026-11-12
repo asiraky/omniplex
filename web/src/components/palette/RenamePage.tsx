@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { isComposing } from "~/lib/ime";
 import { titleToSave } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 
@@ -43,7 +44,7 @@ export function RenamePage({
           autoComplete="off"
           spellCheck={false}
           onKeyDown={(e) => {
-            if (e.nativeEvent.isComposing) return;
+            if (isComposing(e)) return;
             if (e.key === "Enter") {
               e.preventDefault();
               onSave(titleToSave(e.currentTarget.value, title));
