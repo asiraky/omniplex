@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -59,7 +58,7 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.Bin, "app-server")
-	cmd.Env = adapter.MergeEnv(os.Environ(), env)
+	cmd.Env = codexEnv(env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -71,7 +71,7 @@ func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	actor, err := mgr.View(ctx, meta.ID)
@@ -101,7 +101,7 @@ func TestViewedInterruptedTurnRecoversWhenActivated(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	first := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, first)
+	mgr := newManager(st, func(string, ...any) {}, first)
 	actor, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestViewedInterruptedTurnRecoversWhenActivated(t *testing.T) {
 	mgr.Shutdown()
 
 	resumed := &fakeAdapter{}
-	mgr = NewManager(st, func(string, ...any) {}, resumed)
+	mgr = newManager(st, func(string, ...any) {}, resumed)
 	defer mgr.Shutdown()
 	if _, err := mgr.View(ctx, id); err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestCancelProcesslessInterruptedTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 	actor, err := mgr.View(ctx, meta.ID)
 	if err != nil {
@@ -198,7 +198,7 @@ func TestHarnessActivationDoesNotBlockUnrelatedView(t *testing.T) {
 	release := func() { gateOnce.Do(func() { close(gate) }) }
 	started := make(chan struct{}, 1)
 	fa := &fakeAdapter{createGate: gate, createStarted: started}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	defer release()
 	if _, err := mgr.View(ctx, "slow"); err != nil {
@@ -469,7 +469,7 @@ func newTestActorWith(t *testing.T, fa *fakeAdapter) (*Actor, *fakeAdapter, *sto
 	}
 	t.Cleanup(func() { st.Close() })
 
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -648,7 +648,7 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
 	if err != nil {
@@ -721,7 +721,7 @@ func TestFirstTurnRunsInAProvisionedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	a, err := mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: p.ID})
 	if err != nil {
@@ -778,7 +778,7 @@ func TestClawdCompatibilityHookGetsBranchAndNeedsNoResultFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{ProjectID: p.ID})
 	if err != nil {
@@ -1218,7 +1218,7 @@ func TestResumeFinishesInterruptedTurnAndCancelsPendingPermission(t *testing.T) 
 	defer st.Close()
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1244,7 +1244,7 @@ func TestResumeFinishesInterruptedTurnAndCancelsPendingPermission(t *testing.T) 
 		t.Fatalf("shutdown resolved permission as %q; want cancelled", out.Outcome)
 	}
 
-	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	mgr2 := newManager(st, func(string, ...any) {}, fa)
 	defer mgr2.Shutdown()
 	resumed, err := mgr2.Get(context.Background(), id)
 	if err != nil {
@@ -1268,7 +1268,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 	defer st.Close()
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1296,7 +1296,7 @@ func TestResumeContinuesTheInterruptedWork(t *testing.T) {
 		t.Fatalf("phase after mid-turn shutdown = %q; want turn", meta.Phase)
 	}
 
-	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	mgr2 := newManager(st, func(string, ...any) {}, fa)
 	defer mgr2.Shutdown()
 	resumed, err := mgr2.Get(context.Background(), id)
 	if err != nil {
@@ -1336,7 +1336,7 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 	defer st.Close()
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1362,7 +1362,7 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 
 	// Burn every automatic attempt, so the thread is left for a human.
 	for attempt := 1; attempt <= maxRecoveryAttempts; attempt++ {
-		m := NewManager(st, func(string, ...any) {}, fa)
+		m := newManager(st, func(string, ...any) {}, fa)
 		a, err := m.Get(context.Background(), id)
 		if err != nil {
 			t.Fatal(err)
@@ -1375,7 +1375,7 @@ func TestContinueRestartsWorkAfterTheAutomaticTriesRunOut(t *testing.T) {
 		m.Shutdown()
 	}
 
-	m := NewManager(st, func(string, ...any) {}, fa)
+	m := newManager(st, func(string, ...any) {}, fa)
 	defer m.Shutdown()
 	a, err := m.Get(context.Background(), id)
 	if err != nil {
@@ -1435,7 +1435,7 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 	defer st.Close()
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1453,7 +1453,7 @@ func TestStartupResumesInterruptedWorkWithoutAnAttach(t *testing.T) {
 	mgr.Shutdown()
 
 	// Nobody attaches. The work should come back anyway.
-	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	mgr2 := newManager(st, func(string, ...any) {}, fa)
 	defer mgr2.Shutdown()
 	mgr2.recoverAll(context.Background())
 
@@ -1485,7 +1485,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 	defer st.Close()
 
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1504,7 +1504,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 
 	// Every restart dies in the middle of the turn the previous one started.
 	for attempt := 1; attempt <= maxRecoveryAttempts; attempt++ {
-		m := NewManager(st, func(string, ...any) {}, fa)
+		m := newManager(st, func(string, ...any) {}, fa)
 		a, err := m.Get(context.Background(), id)
 		if err != nil {
 			t.Fatal(err)
@@ -1524,7 +1524,7 @@ func TestRepeatedlyInterruptedTurnStopsRecoveringItself(t *testing.T) {
 
 	// The cap is reached: this resume closes the turn and leaves the thread
 	// alone rather than starting a fourth continuation.
-	m := NewManager(st, func(string, ...any) {}, fa)
+	m := newManager(st, func(string, ...any) {}, fa)
 	defer m.Shutdown()
 	a, err := m.Get(context.Background(), id)
 	if err != nil {
@@ -1552,7 +1552,7 @@ func TestClosedThreadRemainsAttachableWithoutHarness(t *testing.T) {
 	}
 	defer st.Close()
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
@@ -1631,7 +1631,7 @@ func TestGetCannotResumeWhileCloseIsInProgress(t *testing.T) {
 	}
 	defer st.Close()
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
@@ -1912,7 +1912,7 @@ func TestResumeClearsStaleExtensionStatusesOnly(t *testing.T) {
 
 			var actor *Actor
 			if path == "activate" {
-				mgr := NewManager(st, func(string, ...any) {}, fa)
+				mgr := newManager(st, func(string, ...any) {}, fa)
 				defer mgr.Shutdown()
 				if actor, err = mgr.Get(ctx, meta.ID); err != nil {
 					t.Fatal(err)
@@ -2178,7 +2178,7 @@ func restartWithQueue(t *testing.T, fa *fakeAdapter) restarted {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -2194,7 +2194,7 @@ func restartWithQueue(t *testing.T, fa *fakeAdapter) restarted {
 	id := actor.ID
 	mgr.Shutdown()
 
-	m := NewManager(st, func(string, ...any) {}, fa)
+	m := newManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(m.Shutdown)
 	a, err := m.Get(context.Background(), id)
 	if err != nil {
@@ -2871,7 +2871,7 @@ func TestSendQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	fa := &fakeAdapter{}
 	ctx := context.Background()
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -2885,7 +2885,7 @@ func TestSendQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 	}
 	mgr.Shutdown()
 
-	m := NewManager(st, func(string, ...any) {}, fa)
+	m := newManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(m.Shutdown)
 	a, err := m.View(ctx, actor.ID)
 	if err != nil {
@@ -2982,7 +2982,7 @@ func TestHarnessExitDoesNotHoldTheQueue(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &fakeAdapter{}
-	m := NewManager(st, func(string, ...any) {}, fa)
+	m := newManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(m.Shutdown)
 	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {

@@ -315,7 +315,7 @@ func TestKilledHarnessResumesOnTheNextPrompt(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	fa := &fakeAdapter{cancelGate: gate(t)}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	actor, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"time"
 
@@ -55,7 +54,7 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 		return nil, fmt.Errorf("the Pi CLI (%s) was not found on this machine", a.Bin)
 	}
 	cmd := exec.CommandContext(ctx, bin, "--mode", "rpc", "--no-session")
-	cmd.Env = withBinDir(bin, adapter.MergeEnv(os.Environ(), env))
+	cmd.Env = withBinDir(bin, adapter.HarnessEnv(env, agentDirEnv))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

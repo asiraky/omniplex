@@ -73,7 +73,7 @@ func (a *Adapter) ConfigFields() []adapter.ConfigField {
 		{
 			Env:         "CLAUDE_CONFIG_DIR",
 			Label:       "Config directory",
-			Description: "Directory holding this account's Claude Code login and conversations. Settings, CLAUDE.md, skills, agents, commands and plugins are shared from ~/.claude. Leave empty on the default instance to use the machine's own login.",
+			Description: "Directory holding this account's Claude Code login and conversations. Settings, CLAUDE.md, skills, agents, commands and plugins are shared from ~/.claude.",
 			Placeholder: "~/.claude",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
@@ -135,7 +135,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 		)
 	case st.known:
 		if st.email != "" {
-			avail.Facts["account"] = st.email
+			avail.Facts[adapter.FactAccount] = st.email
 		}
 		if st.subscription != "" {
 			avail.Facts["plan"] = st.subscription
@@ -404,6 +404,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		stdin:            stdin,
 		cwd:              o.Cwd,
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		accountFile:      claudeJSON(o.Env),
 		taskRoot:         claudeTaskRoot(o.Cwd, o.Env),
 		commands:         &a.commands,
 		harnessSessionID: sessionID,
@@ -459,6 +460,10 @@ type session struct {
 	// received, so origin enrichment cannot accidentally inspect another
 	// Claude account's skills.
 	configDir string
+	// accountFile is the .claude.json the child reads its login from;
+	// account caches the id in it (see accountID).
+	accountFile string
+	account     string
 	// taskRoot is where the child writes task output files, resolved the
 	// same way; "" disables the live tail of foreground Bash (output.go).
 	// tailEvery and tailPatience override its poll interval and how long it

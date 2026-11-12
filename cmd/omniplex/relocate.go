@@ -33,7 +33,6 @@ func runRelocateCommand(ctx context.Context, args []string, out io.Writer) error
 	report, err := relocate.Run(ctx, flags.Arg(0), flags.Arg(1), relocate.Options{
 		DBPath:           *dbPath,
 		HomeDir:          home,
-		ClaudeConfigDir:  os.Getenv("CLAUDE_CONFIG_DIR"),
 		ClaudeConfigDirs: configDirs,
 	})
 	if err != nil {

@@ -2147,6 +2147,33 @@ describe("the setup page", () => {
       expect(command).toHaveBeenCalledWith("provider_auth_overview", { instanceId: "claude-work" }),
     );
   });
+
+  it("opens adding an account for a harness that has none", async () => {
+    const noAccount = {
+      ...setupReport,
+      checks: [
+        setupReport.checks[0],
+        {
+          id: "claude",
+          name: "Claude Code",
+          kind: "harness",
+          availability: {
+            state: "unavailable",
+            reason: "No Claude Code account yet.",
+            remedy: [{ text: "Add account", action: "add_account" }],
+          },
+        },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(noAccount))));
+    render(<App />);
+    await act(async () => events.onHarnesses([{ ...harness, instances: [] }]));
+    const card = await screen.findByRole("article", { name: "Claude Code" });
+
+    fireEvent.click(within(card).getByRole("button"));
+
+    expect(await screen.findByText("New Claude Code account")).toBeTruthy();
+  });
 });
 
 describe("a card the agent raised", () => {

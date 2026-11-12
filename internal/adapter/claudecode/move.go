@@ -3,12 +3,12 @@ package claudecode
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"syscall"
+
+	"github.com/asiraky/omniplex/internal/accounthome"
 )
 
 // MoveConversation hands a conversation from one Claude account to another.
@@ -49,7 +49,7 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := move(file, destFile); err != nil {
+	if err := accounthome.MoveAndDiscardAside(file, destFile); err != nil {
 		return fmt.Errorf("move the Claude conversation: %w", err)
 	}
 	// Subagent transcripts are part of the conversation but not needed to
@@ -59,11 +59,11 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	if info, err := os.Lstat(side); err == nil && info.IsDir() {
 		destSide := filepath.Join(destDir, id)
 		if _, err := os.Lstat(destSide); err == nil {
-			_ = move(destFile, file)
+			_ = accounthome.MoveAndDiscardAside(destFile, file)
 			return fmt.Errorf("the other account already has Claude subagent transcripts for %s; not overwriting them", id)
 		}
-		if err := move(side, destSide); err != nil {
-			_ = move(destFile, file)
+		if err := accounthome.MoveAndDiscardAside(side, destSide); err != nil {
+			_ = accounthome.MoveAndDiscardAside(destFile, file)
 			return fmt.Errorf("move the Claude subagent transcripts: %w", err)
 		}
 	}
@@ -95,69 +95,3 @@ func findConversation(configDir, cwd, id string) (string, error) {
 
 // nonAlphanumeric is how Claude Code turns a cwd into its project key.
 var nonAlphanumeric = regexp.MustCompile(`[^a-zA-Z0-9]`)
-
-// move renames, falling back to a copy when the two accounts' config
-// directories sit on different filesystems. The source is first renamed aside
-// (same filesystem, so atomic): a failed copy puts it straight back, and once
-// the copy is whole the conversation has moved — the leftover is under a name
-// Claude never reads, so failing to delete it cannot split the history.
-func move(src, dst string) error {
-	err := os.Rename(src, dst)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, syscall.EXDEV) {
-		return err
-	}
-	aside := filepath.Join(filepath.Dir(src), "."+filepath.Base(src)+".moving")
-	_ = os.RemoveAll(aside) // a leftover from an earlier move
-	if err := os.Rename(src, aside); err != nil {
-		return err
-	}
-	if err := copyTree(aside, dst); err != nil {
-		_ = os.RemoveAll(dst)
-		if back := os.Rename(aside, src); back != nil {
-			return fmt.Errorf("%w (and restoring %s failed: %v)", err, src, back)
-		}
-		return err
-	}
-	_ = os.RemoveAll(aside)
-	return nil
-}
-
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(out, in); err != nil {
-			out.Close()
-			return err
-		}
-		return out.Close()
-	})
-}

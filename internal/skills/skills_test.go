@@ -240,7 +240,8 @@ func TestDefaultRoots(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	r := DefaultRoots("/h", map[string]string{"CLAUDE_CONFIG_DIR": "~/inst/a"}, "/p/")
 	got := [5]string{r.Home, r.ClaudeConfigDir, r.CodexHome, r.PiAgentDir, r.ProjectRoot}
-	want := [5]string{"/h", "/h/inst/a", "/from/process", "/h/.pi/agent", "/p"}
+	// The process's own homes are never used: an unset one is the default.
+	want := [5]string{"/h", "/h/inst/a", "/h/.codex", "/h/.pi/agent", "/p"}
 	if got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}

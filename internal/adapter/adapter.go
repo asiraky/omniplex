@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -317,6 +319,11 @@ type Authenticator interface {
 // sign-in that runs the adapter's LoginCommand in a terminal.
 const RemedyLogin = "login"
 
+// RemedyAddAccount marks a remedy for a driver with no account at all: the UI
+// opens Providers settings to add one. Signing in always happens inside an
+// account that already has its own home.
+const RemedyAddAccount = "add_account"
+
 func Ready(facts map[string]string) Availability {
 	return Availability{State: StateReady, Facts: facts}
 }
@@ -326,6 +333,23 @@ func Unavailable(reason string, remedy ...Remedy) Availability {
 }
 
 func (a Availability) OK() bool { return a.State == StateReady }
+
+// HarnessEnv is the environment a harness process runs under: the server's
+// own without the strip variables (the harness's config-home variable and the
+// credentials it signs in with), then the instance's overlay. A home or a
+// credential the server inherited, say from a harness session it was started
+// in or the service's own environment, is nobody's account: it would override
+// every account's login. Only an account's overlay sets them.
+func HarnessEnv(overlay map[string]string, strip ...string) []string {
+	base := os.Environ()
+	kept := make([]string, 0, len(base))
+	for _, kv := range base {
+		if key, _, _ := strings.Cut(kv, "="); !slices.Contains(strip, key) {
+			kept = append(kept, kv)
+		}
+	}
+	return MergeEnv(kept, overlay)
+}
 
 // MergeEnv applies an instance's overlay onto a base environment, replacing
 // any variable the overlay names. Overlay keys are applied in sorted order so

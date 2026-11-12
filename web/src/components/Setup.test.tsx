@@ -47,6 +47,17 @@ const notInstalled = (id: string, name: string, command: string): SetupCheck => 
   },
 });
 
+const noAccount = (id: string, name: string): SetupCheck => ({
+  id,
+  name,
+  kind: "harness",
+  availability: {
+    state: "unavailable",
+    reason: `No ${name} account yet.`,
+    remedy: [{ text: "Add account", action: "add_account" }],
+  },
+});
+
 const readyHarness = (id: string, name: string): SetupCheck => ({
   id,
   name,
@@ -98,6 +109,18 @@ describe("SetupPage", () => {
     fireEvent.click(button);
 
     expect(onLogin).toHaveBeenCalledWith(claude);
+  });
+
+  it("adds an account for a harness that has none, instead of calling it missing", async () => {
+    const codex = noAccount("codex", "Codex");
+    const onAddAccount = vi.fn();
+    const { onLogin } = renderPage(async () => report([git(true), codex]), { onAddAccount });
+
+    await waitFor(() => expect(card("Codex").dataset.status).toBe("account"));
+    fireEvent.click(within(card("Codex")).getByRole("button"));
+
+    expect(onAddAccount).toHaveBeenCalledWith(codex);
+    expect(onLogin).not.toHaveBeenCalled();
   });
 
   it("offers the command itself when there is no sign-in flow to open", async () => {

@@ -98,7 +98,7 @@ func openRecoveryStore(t *testing.T) *store.Store {
 // the manager down: that is the restart under test.
 func startRecoveryThread(t *testing.T, st *store.Store, ad adapter.Adapter) (*Manager, *Actor) {
 	t.Helper()
-	mgr := NewManager(st, func(string, ...any) {}, ad)
+	mgr := newManager(st, func(string, ...any) {}, ad)
 	a, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestRestartWakesIdleThreadWaitingOnASubagent(t *testing.T) {
 		t.Fatalf("row phase after shutdown with a live subagent = %q; want background", got)
 	}
 
-	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	mgr2 := newManager(st, func(string, ...any) {}, fa)
 	defer mgr2.Shutdown()
 	mgr2.recoverAll(ctx)
 
@@ -317,7 +317,7 @@ func TestShellOnlyThreadHoldsTheNoteForTheNextHumanPrompt(t *testing.T) {
 		t.Fatalf("row phase after shutdown with only a shell = %q; want idle", got)
 	}
 
-	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	mgr2 := newManager(st, func(string, ...any) {}, fa)
 	defer mgr2.Shutdown()
 	mgr2.recoverAll(ctx)
 	if _, ok := mgr2.Peek(id); ok {
@@ -380,7 +380,7 @@ func TestShellNoteSurvivesASecondRestart(t *testing.T) {
 	id := actor.ID
 	mgr.Shutdown()
 
-	mgr2 := NewManager(st, func(string, ...any) {}, fa)
+	mgr2 := newManager(st, func(string, ...any) {}, fa)
 	a, err := mgr2.Get(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +391,7 @@ func TestShellNoteSurvivesASecondRestart(t *testing.T) {
 	})
 	mgr2.Shutdown()
 
-	mgr3 := NewManager(st, func(string, ...any) {}, fa)
+	mgr3 := newManager(st, func(string, ...any) {}, fa)
 	defer mgr3.Shutdown()
 	a, err = mgr3.Get(ctx, id)
 	if err != nil {
@@ -424,7 +424,7 @@ func TestRefusedHumanPromptLeavesTheNoteForTheNext(t *testing.T) {
 		}
 		return nil
 	})
-	mgr2 := NewManager(st, func(string, ...any) {}, sa)
+	mgr2 := newManager(st, func(string, ...any) {}, sa)
 	defer mgr2.Shutdown()
 	a, err := mgr2.Get(ctx, id)
 	if err != nil {
@@ -469,7 +469,7 @@ func TestContinuationOwedAcrossASecondRestart(t *testing.T) {
 		}
 		return nil
 	})
-	mgr2 := NewManager(st, func(string, ...any) {}, sa)
+	mgr2 := newManager(st, func(string, ...any) {}, sa)
 	mgr2.recoveryRetries = []time.Duration{time.Hour}
 	mgr2.recoverAll(ctx)
 	waitFor(t, func() bool { return sa.callsWhere(isWake) == 1 })
@@ -489,7 +489,7 @@ func TestContinuationOwedAcrossASecondRestart(t *testing.T) {
 	}
 
 	sa.script(nil)
-	mgr3 := NewManager(st, func(string, ...any) {}, sa)
+	mgr3 := newManager(st, func(string, ...any) {}, sa)
 	defer mgr3.Shutdown()
 	mgr3.recoverAll(ctx)
 	in := recvPrompt(t, sa.thread().prompts)
@@ -533,7 +533,7 @@ func TestHumanPromptSupersedesPendingContinuation(t *testing.T) {
 		}
 		return errors.New("harness hiccup")
 	})
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	m.recoveryRetries = []time.Duration{time.Hour}
 	defer m.Shutdown()
 	a, err := m.Get(ctx, id)
@@ -587,7 +587,7 @@ func TestHumanContinueSupersedesPendingContinuation(t *testing.T) {
 		}
 		return errors.New("harness hiccup")
 	})
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	m.recoveryRetries = []time.Duration{time.Hour}
 	defer m.Shutdown()
 	a, err := m.Get(ctx, id)
@@ -643,7 +643,7 @@ func TestUnaskedPlanDoesNotHoldTheQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	defer m.Shutdown()
 	a, err := m.Get(context.Background(), id)
 	if err != nil {
@@ -674,7 +674,7 @@ func TestTransientRefusalIsRetriedThenDroppedForTheQueue(t *testing.T) {
 		}
 		return nil
 	})
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	m.recoveryRetries = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond}
 	defer m.Shutdown()
 	a, err := m.Get(context.Background(), id)
@@ -722,7 +722,7 @@ func TestLimitFailureIsNotRetried(t *testing.T) {
 		}
 		return nil
 	})
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	m.recoveryRetries = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond}
 	defer m.Shutdown()
 	a, err := m.Get(context.Background(), id)
@@ -761,7 +761,7 @@ func TestLimitedContinuationHandsItsNoteToTheLimitContinuation(t *testing.T) {
 	id := actor.ID
 	mgr.Shutdown()
 
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	defer m.Shutdown()
 	a, err := m.Get(ctx, id)
 	if err != nil {
@@ -825,7 +825,7 @@ func TestLimitRefusedContinuationHoldsItsNoteOnce(t *testing.T) {
 		}
 		return nil
 	})
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	defer m.Shutdown()
 	a, err := m.Get(ctx, id)
 	if err != nil {
@@ -864,7 +864,7 @@ func TestContinuationAcceptedOnRetryRunsOnce(t *testing.T) {
 		}
 		return nil
 	})
-	m := NewManager(st, func(string, ...any) {}, sa)
+	m := newManager(st, func(string, ...any) {}, sa)
 	m.recoveryRetries = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond}
 	defer m.Shutdown()
 	a, err := m.Get(ctx, id)
@@ -898,7 +898,7 @@ func TestContinuationAcceptedOnRetryRunsOnce(t *testing.T) {
 
 func TestRetryRecoverySchedule(t *testing.T) {
 	newMgr := func(t *testing.T) *Manager {
-		m := NewManager(openRecoveryStore(t), func(string, ...any) {})
+		m := newManager(openRecoveryStore(t), func(string, ...any) {})
 		t.Cleanup(m.Shutdown)
 		m.recoveryRetries = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
 		return m

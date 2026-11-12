@@ -2,7 +2,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Project } from "~/protocol";
+import type { HarnessMeta, Project } from "~/protocol";
 import { render, viewport } from "~/test/harness";
 import { SettingsScreen, type SettingsSection } from "./SettingsScreen";
 
@@ -26,11 +26,16 @@ const project = (id: string, name: string) =>
   }) satisfies Project;
 
 function open(
-  over: { at?: SettingsSection; projects?: Project[]; onAddProject?: () => void } = {},
+  over: {
+    at?: SettingsSection;
+    projects?: Project[];
+    harnesses?: HarnessMeta[];
+    onAddProject?: () => void;
+  } = {},
 ) {
   const props = {
     projects: [project("p1", "alpha"), project("p2", "beta")],
-    harnesses: [],
+    harnesses: [] as HarnessMeta[],
     userConfig: { version: 1 },
     threadCounts: {},
     onSaveUserConfig: vi.fn(async () => {}),
@@ -102,6 +107,20 @@ describe("on a phone", () => {
     expect(nav()).toBeNull();
     expect(pane()?.getAttribute("aria-label")).toBe("Providers");
   });
+});
+
+it("opens Providers on adding an account for the asked-for agent", () => {
+  const codex: HarnessMeta = {
+    id: "codex",
+    name: "Codex",
+    accent: "#000",
+    models: [],
+    permissionModes: [],
+    availability: { state: "unavailable", remedy: [{ text: "Add account", action: "add_account" }] },
+    instances: [],
+  };
+  open({ at: { kind: "providers", addFor: "codex" }, harnesses: [codex] });
+  expect(screen.getByText("New Codex account")).toBeTruthy();
 });
 
 it("hands New project to the caller", () => {

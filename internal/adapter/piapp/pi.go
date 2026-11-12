@@ -66,9 +66,9 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 func (a *Adapter) ConfigFields() []adapter.ConfigField {
 	return []adapter.ConfigField{
 		{
-			Env:         "PI_CODING_AGENT_DIR",
+			Env:         agentDirEnv,
 			Label:       "Pi agent directory",
-			Description: "Directory holding this account's Pi credentials and conversations. Settings, models, AGENTS.md, skills, prompts and extensions are shared from ~/.pi/agent. Leave empty on the default instance to use the machine's own login.",
+			Description: "Directory holding this account's Pi credentials and conversations. Settings, models, AGENTS.md, skills, prompts and extensions are shared from ~/.pi/agent.",
 			Placeholder: "~/.pi/agent",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
@@ -108,7 +108,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, path, "--version")
-	probe.Env = withBinDir(path, adapter.MergeEnv(os.Environ(), env))
+	probe.Env = withBinDir(path, adapter.HarnessEnv(env, agentDirEnv))
 	out, err := probe.Output()
 	if err != nil {
 		return adapter.Unavailable(
@@ -149,13 +149,14 @@ func authSummary(env map[string]string) string {
 	return strings.Join(parts, ", ")
 }
 
-// agentDir resolves the Pi agent directory the way Pi itself does: the
-// instance overlay wins, then the ambient environment, then ~/.pi/agent.
+// agentDirEnv is the variable that points Pi at an account's agent directory.
+const agentDirEnv = "PI_CODING_AGENT_DIR"
+
+// agentDir is the Pi agent directory a session under env uses: the
+// overlay's, or ~/.pi/agent. The server process's own PI_CODING_AGENT_DIR is
+// never an account's, and piEnv keeps it from the child too.
 func agentDir(env map[string]string) string {
-	if dir := env["PI_CODING_AGENT_DIR"]; dir != "" {
-		return dir
-	}
-	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
+	if dir := env[agentDirEnv]; dir != "" {
 		return dir
 	}
 	home, err := os.UserHomeDir()
@@ -213,7 +214,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account PI_CODING_AGENT_DIR isolates
 	// auth.json and settings.
-	cmd.Env = withBinDir(bin, adapter.MergeEnv(os.Environ(), o.Env))
+	cmd.Env = withBinDir(bin, adapter.HarnessEnv(o.Env, agentDirEnv))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

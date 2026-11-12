@@ -61,12 +61,19 @@ describe("pickerInstances", () => {
     expect(got.map((i) => i.driver)).toEqual(["codex", "codex"]);
   });
 
-  it("still yields an entry for a harness that reports no instances", () => {
-    const got = pickerInstances([harness({ instances: undefined }) as HarnessMeta]);
+  it("yields nothing for a driver with no accounts", () => {
+    const got = pickerInstances([
+      harness({ instances: [] }),
+      harness({ id: "pi", name: "Pi", instances: undefined } as Partial<HarnessMeta>),
+    ]);
 
-    expect(got).toHaveLength(1);
-    expect(got[0]).toMatchObject({ id: "codex", driver: "codex", name: "Codex" });
-    expect(got[0].models.map((m) => m.id)).toEqual(["gpt-5.6-sol"]);
+    expect(got).toEqual([]);
+  });
+
+  it("lists only the drivers that have accounts", () => {
+    const got = pickerInstances([harness(), harness({ id: "pi", name: "Pi", instances: [] })]);
+
+    expect(got.map((i) => i.id)).toEqual(["codex"]);
   });
 
   it("falls back to the harness catalogue for an instance that has none yet", () => {
@@ -96,7 +103,10 @@ describe("resolveModel", () => {
         { id: "default", label: "Opus 5", resolves: "claude-opus-5[1m]", default: true },
         { id: "sonnet", label: "Sonnet" },
       ],
-      instances: undefined,
+      // No catalogue of its own yet, so it shows the harness's.
+      instances: [
+        { id: "codex", driver: "codex", displayName: "Codex", enabled: true, availability: ready, models: [] },
+      ],
     } as Partial<HarnessMeta>),
   ])[0];
 
@@ -143,11 +153,11 @@ describe("resolveInstance", () => {
     } as Partial<HarnessMeta>),
   ]);
 
-  it("routes a thread recorded before instances existed to the driver's default", () => {
+  it("routes a thread that recorded only its harness to the account named after it", () => {
     expect(resolveInstance(instances, "", "codex")?.id).toBe("codex");
   });
 
-  it("prefers the named instance over its driver's default", () => {
+  it("prefers the named instance over the one named after its driver", () => {
     expect(resolveInstance(instances, "codex_work", "codex")?.id).toBe("codex_work");
   });
 

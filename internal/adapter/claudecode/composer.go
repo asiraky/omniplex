@@ -157,12 +157,11 @@ func (c *commandCache) recall(configDir string) remembered {
 	return c.byConfigDir[configDir]
 }
 
+// claudeConfigDir is the config dir a session under env uses: the overlay's
+// CLAUDE_CONFIG_DIR, or ~/.claude. The server process's own variable never
+// counts; claudeEnv keeps it from the child too.
 func claudeConfigDir(cwd string, env map[string]string) string {
-	configured, overridden := env["CLAUDE_CONFIG_DIR"]
-	if !overridden {
-		configured = os.Getenv("CLAUDE_CONFIG_DIR")
-	}
-	if configured = strings.TrimSpace(configured); configured != "" {
+	if configured := strings.TrimSpace(env["CLAUDE_CONFIG_DIR"]); configured != "" {
 		if filepath.IsAbs(configured) {
 			return filepath.Clean(configured)
 		}

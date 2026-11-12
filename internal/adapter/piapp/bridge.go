@@ -156,7 +156,7 @@ func (a *Adapter) runBridge(ctx context.Context, env map[string]string, ia adapt
 	// The overlay is what points ModelRuntime at this instance's
 	// PI_CODING_AGENT_DIR; without it every account would sign into the
 	// default directory.
-	proc.Env = adapter.MergeEnv(os.Environ(), env)
+	proc.Env = adapter.HarnessEnv(env, agentDirEnv)
 
 	stdin, err := proc.StdinPipe()
 	if err != nil {

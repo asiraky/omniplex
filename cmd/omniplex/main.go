@@ -71,6 +71,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "migrate-homes" {
+		if err := runMigrateHomesCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("migrate homes: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "relocate" {
 		if err := runRelocateCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("relocate project: %v", err)
@@ -149,6 +155,11 @@ func main() {
 		}
 	}
 
+	// Accounts still on a machine harness home get their own, with the
+	// conversations Omniplex started, before any session or provider reads
+	// the config.
+	migrateHomesAtStartup(context.Background(), st, *dbPath, logf)
+
 	claude := claudecode.New(*claudePath)
 	mgr := thread.NewManager(st, logf,
 		claude,
@@ -185,13 +196,16 @@ func main() {
 	// One store for provider credentials and the text-to-speech key.
 	secrets, err := provider.OpenSecretStore()
 	if err != nil {
-		logf("open secret store: %v (provider instances and read-aloud off)", err)
+		logf("open secret store: %v (accounts with sensitive variables and read-aloud off)", err)
 	}
 
-	// Provider instances: configured accounts layered over the default
-	// (ambient-credential) instance each adapter already has. A broken or
-	// unknowable config degrades to defaults; it never stops the server.
+	// Provider instances: the accounts in the user config are the only ones;
+	// there is no built-in default per adapter. A broken or unreadable config
+	// leaves no accounts configured; it never stops the server.
 	configureProviders(mgr, secrets, logf)
+	// Every account's home is checked for its shared configuration links
+	// before anything uses it, so a conflict shows from the first listing.
+	mgr.CheckAccountHomes()
 	speech := openSpeech(secrets, logf)
 	pushSvc := openPush(filepath.Dir(*dbPath), st, logf)
 
@@ -379,10 +393,12 @@ func main() {
 // configureProviders loads provider instances from the user config, sweeping
 // any literal sensitive values into the secret store (and rewriting the config
 // so no secret stays on disk in it), then installs them on the manager.
+//
+// With no secret store every account is still installed: the config's
+// accounts are the only ones there are. One with a sensitive variable cannot
+// be given it, so it is listed as unavailable and refuses to start rather
+// than run without it, and only that account is affected.
 func configureProviders(mgr *thread.Manager, secrets *provider.SecretStore, logf func(string, ...any)) {
-	if secrets == nil {
-		return
-	}
 	cfg, err := userconfig.Load()
 	if err != nil {
 		logf("load user config: %v (provider instances skipped)", err)
@@ -399,8 +415,17 @@ func configureProviders(mgr *thread.Manager, secrets *provider.SecretStore, logf
 			logf("rewrite user config after sweeping secrets: %v", err)
 		}
 	}
-	// Clearing a variable's sensitive flag deletes its stored secret.
-	if err := secrets.Sync(instances); err != nil {
+	if secrets == nil {
+		for _, inst := range instances {
+			for _, v := range inst.Env {
+				if v.Sensitive {
+					logf("provider instance %q: %s is sensitive and there is no secret store; the account will not start until the store opens", inst.ID, v.Name)
+					break
+				}
+			}
+		}
+	} else if err := secrets.Sync(instances); err != nil {
+		// Clearing a variable's sensitive flag deletes its stored secret.
 		logf("sync secret store: %v", err)
 	}
 	mgr.ConfigureInstances(instances, secrets)

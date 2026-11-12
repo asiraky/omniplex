@@ -19,7 +19,7 @@ func modelsTestManager(t *testing.T, fa *fakeAdapter) *Manager {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewManager(st, func(string, ...any) {}, fa)
+	return newManager(st, func(string, ...any) {}, fa)
 }
 
 // Listing harnesses runs on every connection. Asking a harness for its
@@ -190,7 +190,7 @@ func TestAccountChangeDropsCachedModels(t *testing.T) {
 		if account == "unavailable" {
 			return adapter.Unavailable("not signed in")
 		}
-		return adapter.Ready(map[string]string{"account": account})
+		return adapter.Ready(map[string]string{adapter.FactAccount: account})
 	}
 
 	mgr.Harnesses(context.Background())

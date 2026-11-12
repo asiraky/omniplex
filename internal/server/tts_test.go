@@ -21,7 +21,6 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/tts"
 )
 
@@ -59,7 +58,7 @@ func newSpeechRig(t *testing.T, upstream http.Handler) *speechRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := newManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 	srv := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, false, auth.DefaultPort), Speech: speech})
 	ts := httptest.NewServer(srv.Handler())

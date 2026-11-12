@@ -11,7 +11,6 @@ import (
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // statusAdapter's turns never finish on their own; the test drives the
@@ -60,7 +59,7 @@ func TestAttachDeliversTheHeldTurnStatus(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &statusAdapter{}
-	mgr := thread.NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(mgr.Shutdown)
 	h := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort)}).Handler()
 

@@ -1107,6 +1107,17 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		}
 		return map[string]any{"status": "deleted"}, nil
 
+	case "use_shared_config":
+		var a useSharedConfigArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		backup, err := c.srv.mgr.UseSharedConfig(a.InstanceID, a.Entry)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"backup": backup}, nil
+
 	case "provider_model_settings":
 		var a instanceArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {

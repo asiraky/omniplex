@@ -26,7 +26,6 @@ import (
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/push"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 )
 
 func newPushService(t *testing.T, st *store.Store) *push.Service {
@@ -186,7 +185,7 @@ func pushServer(t *testing.T) (*httptest.Server, *store.Store, *push.Service, *a
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := newManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 	svc := newPushService(t, st)
 	guard := auth.New(st, true, auth.DefaultPort)
@@ -377,7 +376,7 @@ func TestTheServiceWorkerScriptIsServedToAnUnpairedBrowserWhileThePushAPIIsNot(t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := newManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 	bundle := testBundle("index-aaaa1111.js", "app")
 	bundle["sw.js"] = &fstest.MapFile{Data: []byte("self.addEventListener('push', () => {})")}

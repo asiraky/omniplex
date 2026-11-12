@@ -7,6 +7,7 @@ import {
   ExternalLinkIcon,
   KeyRoundIcon,
   LogInIcon,
+  PlusIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -34,6 +35,8 @@ export interface SetupPageProps {
   onRecheck?: () => Promise<unknown> | void;
   /** Opens the app's sign-in flow for a check whose remedy is "login". */
   onLogin?: (check: SetupCheck) => void;
+  /** Opens adding an account for a check whose remedy is "add_account". */
+  onAddAccount?: (check: SetupCheck) => void;
   onContinue: () => void;
   /** Changing this reloads the report, e.g. once a sign-in dialog closes. */
   refreshKey?: unknown;
@@ -45,7 +48,14 @@ export interface SetupPageProps {
  * opened a terminal, so it says what is missing in plain words and puts the
  * fix one click away where it can.
  */
-export function SetupPage({ load, onRecheck, onLogin, onContinue, refreshKey }: SetupPageProps) {
+export function SetupPage({
+  load,
+  onRecheck,
+  onLogin,
+  onAddAccount,
+  onContinue,
+  refreshKey,
+}: SetupPageProps) {
   const [report, setReport] = useState<SetupReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
@@ -102,7 +112,7 @@ export function SetupPage({ load, onRecheck, onLogin, onContinue, refreshKey }: 
           </header>
 
           {report ? (
-            <SetupBody report={report} onLogin={onLogin} />
+            <SetupBody report={report} actions={{ onLogin, onAddAccount }} />
           ) : error ? null : (
             <div className="flex justify-center py-10">
               <Spinner className="text-muted-foreground size-5" />
@@ -158,13 +168,13 @@ export function SetupPage({ load, onRecheck, onLogin, onContinue, refreshKey }: 
   );
 }
 
-function SetupBody({
-  report,
-  onLogin,
-}: {
-  report: SetupReport;
+/** What a remedy button can ask the app to do. */
+interface RemedyActions {
   onLogin?: (check: SetupCheck) => void;
-}) {
+  onAddAccount?: (check: SetupCheck) => void;
+}
+
+function SetupBody({ report, actions }: { report: SetupReport; actions: RemedyActions }) {
   const gaps = setupGaps(report);
   const tools = report.checks.filter((c) => c.kind === "tool");
   const harnesses = report.checks.filter((c) => c.kind === "harness");
@@ -214,7 +224,7 @@ function SetupBody({
               key={c.id}
               check={c}
               platformHint={platformHint(c, report.platform)}
-              onLogin={onLogin}
+              actions={actions}
             />
           ))}
         </section>
@@ -232,7 +242,7 @@ function SetupBody({
               optionalBecause={
                 gaps.readyHarness && gaps.readyHarness !== c ? gaps.readyHarness.name : undefined
               }
-              onLogin={onLogin}
+              actions={actions}
             />
           ))}
         </section>
@@ -255,12 +265,17 @@ function platformHint(check: SetupCheck, platform: SetupReport["platform"]): str
 const STATUS_LABEL: Record<CheckStatus, string> = {
   ready: "Ready",
   "sign-in": "Needs sign-in",
+  account: "No account",
   missing: "Not installed",
 };
 
 function StatusBadge({ status, muted }: { status: CheckStatus; muted?: boolean }) {
   const Icon =
-    status === "ready" ? CircleCheckIcon : status === "sign-in" ? KeyRoundIcon : CircleAlertIcon;
+    status === "ready"
+      ? CircleCheckIcon
+      : status === "sign-in" || status === "account"
+        ? KeyRoundIcon
+        : CircleAlertIcon;
   return (
     <span
       data-status={status}
@@ -270,7 +285,7 @@ function StatusBadge({ status, muted }: { status: CheckStatus; muted?: boolean }
           ? "text-muted-foreground border-border"
           : status === "ready"
             ? "border-success/40 text-success"
-            : status === "sign-in"
+            : status === "sign-in" || status === "account"
               ? "border-attention/40 text-attention-foreground bg-attention-surface/60"
               : "border-destructive/40 text-destructive",
       )}
@@ -285,13 +300,13 @@ function CheckCard({
   check,
   platformHint,
   optionalBecause,
-  onLogin,
+  actions,
 }: {
   check: SetupCheck;
   platformHint?: string;
   /** Another assistant is ready, so this one is not needed. */
   optionalBecause?: string;
-  onLogin?: (check: SetupCheck) => void;
+  actions: RemedyActions;
 }) {
   const status = checkStatus(check);
   const { reason, remedy } = check.availability;
@@ -322,7 +337,7 @@ function CheckCard({
             <ul className="flex flex-col gap-2">
               {remedy.map((r, i) => (
                 <li key={i}>
-                  <RemedyView check={check} remedy={r} onLogin={onLogin} />
+                  <RemedyView check={check} remedy={r} actions={actions} />
                 </li>
               ))}
             </ul>
@@ -336,14 +351,22 @@ function CheckCard({
 function RemedyView({
   check,
   remedy,
-  onLogin,
+  actions: { onLogin, onAddAccount },
 }: {
   check: SetupCheck;
   remedy: Remedy;
-  onLogin?: (check: SetupCheck) => void;
+  actions: RemedyActions;
 }) {
-  // Signing in is something the app can do itself, so it is a button rather
-  // than a command to go and type.
+  // Adding the first account and signing in are things the app can do
+  // itself, so they are buttons rather than a command to go and type.
+  if (remedy.action === "add_account" && onAddAccount) {
+    return (
+      <Button onClick={() => onAddAccount(check)}>
+        <PlusIcon />
+        Add {check.name} account
+      </Button>
+    );
+  }
   if (remedy.action === "login" && onLogin) {
     return (
       <Button onClick={() => onLogin(check)}>

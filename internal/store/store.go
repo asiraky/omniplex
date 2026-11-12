@@ -109,8 +109,8 @@ type ThreadMeta struct {
 	Harness        string `json:"harness"`
 	// ProviderInstance is the provider instance the thread was created under.
 	// It sits alongside Harness rather than repurposing it, so existing rows
-	// keep meaning what they say; empty resolves to the default instance for
-	// Harness, which is the migration.
+	// keep meaning what they say; empty is a row from before accounts, and
+	// means the account whose id is Harness.
 	ProviderInstance string `json:"providerInstance,omitempty"`
 	Title            string `json:"title"`
 	CreatedAt        int64  `json:"createdAt"`

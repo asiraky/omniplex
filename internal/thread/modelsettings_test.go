@@ -41,7 +41,9 @@ func (s *settingsAdapter) SetModelSetting(env map[string]string, modelID, value 
 func settingsManager(t *testing.T) (*Manager, *settingsAdapter) {
 	t.Helper()
 	ad := &settingsAdapter{}
-	return adminTestManagerWith(t, ad), ad
+	mgr := adminTestManagerWith(t, ad)
+	addAccount(t, mgr, "fake")
+	return mgr, ad
 }
 
 func TestModelSettingsRoundTrip(t *testing.T) {
@@ -94,6 +96,7 @@ func TestModelSettingsUnknownInstance(t *testing.T) {
 // empty, and only the write refuses.
 func TestModelSettingsAbsentCapability(t *testing.T) {
 	mgr := adminTestManager(t)
+	addAccount(t, mgr, "fake")
 	values, err := mgr.ModelSettings("fake")
 	if err != nil || len(values) != 0 {
 		t.Fatalf("values = %v, err = %v", values, err)

@@ -30,6 +30,11 @@ type QuotaStatus struct {
 	LastError string `json:"lastError,omitempty"`
 	// LastAttempt is when the quota was last observed, successful or not.
 	LastAttempt int64 `json:"lastAttempt,omitempty"`
+	// Account and SameLoginAs are InstanceMeta's: who the instance is signed
+	// in as, and the other instances of its driver on the same login, whose
+	// limits are therefore these too. Filled when listing.
+	Account     string   `json:"account,omitempty"`
+	SameLoginAs []string `json:"sameLoginAs,omitempty"`
 }
 
 // quotaTimeout bounds one quota read. The adapters apply their own deadlines;
@@ -64,9 +69,69 @@ func (m *Manager) Quotas() []QuotaStatus {
 			status = QuotaStatus{Provider: reg.inst.Driver, Instance: reg.inst.ID, DisplayName: reg.inst.DisplayName}
 		}
 		m.quotaMu.Unlock()
+		status.Account = m.probedAccount(reg.inst.ID)
 		out = append(out, status)
 	}
+	logins := make([]login, len(out))
+	for i, s := range out {
+		logins[i] = login{id: s.Instance, driver: s.Provider, email: s.Account, accountID: s.Snapshot.AccountID}
+	}
+	same := sameLogins(logins)
+	for i := range out {
+		out[i].SameLoginAs = same[out[i].Instance]
+	}
 	return out
+}
+
+// login is who one instance is signed in as, as far as Omniplex can tell:
+// the email its probe reported, and the account id its quota snapshot did.
+type login struct{ id, driver, email, accountID string }
+
+// sameLogins maps each instance id to the other instances of its driver
+// signed in to the same login (see sameLogin). Blank never matches blank:
+// unknown is not the same.
+func sameLogins(ls []login) map[string][]string {
+	out := map[string][]string{}
+	for i, a := range ls {
+		for j, b := range ls {
+			if i == j || a.driver != b.driver {
+				continue
+			}
+			if sameLogin(a, b) {
+				out[a.id] = append(out[a.id], b.id)
+			}
+		}
+	}
+	return out
+}
+
+// sameLogin reports whether two accounts are signed in as one login. Emails
+// decide when both sides have one: an account id can name something shared by
+// several logins (Codex's is the ChatGPT workspace, one for a whole team).
+// Only when an email is missing does a matching account id count.
+func sameLogin(a, b login) bool {
+	if a.email != "" && b.email != "" {
+		return strings.EqualFold(a.email, b.email)
+	}
+	return a.accountID != "" && a.accountID == b.accountID
+}
+
+// probedAccount is the account instance id's last probe answered as,
+// without probing again.
+func (m *Manager) probedAccount(id string) string {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	return m.probes[id].result.Facts[adapter.FactAccount]
+}
+
+// quotaAccount is the account id instance id's quota snapshot carries.
+func (m *Manager) quotaAccount(id string) string {
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+	if s, ok := m.quotas[id]; ok {
+		return s.Snapshot.AccountID
+	}
+	return ""
 }
 
 // reportQuota caches one instance's snapshot. A full snapshot replaces the
@@ -219,6 +284,12 @@ func (m *Manager) RefreshQuota(ctx context.Context, instanceID string) (QuotaSta
 	out := *status
 	m.quotaMu.Unlock()
 	m.notifyQuota()
+	// The listing is what knows the other accounts, for SameLoginAs.
+	for _, s := range m.Quotas() {
+		if s.Instance == instanceID {
+			out = s
+		}
+	}
 	return out, err
 }
 
@@ -316,8 +387,11 @@ func (m *Manager) WarmUsage(ctx context.Context) {
 	m.logf("usage: transcript cache warm in %s", time.Since(start).Round(time.Millisecond))
 }
 
-// usageSources lists each configured account's transcript directories. Two
-// instances sharing a config home share a source; the scanner reads it once.
+// usageSources lists each configured account's transcript directories, each
+// in the config home the account runs in. There is no source for the
+// machine's own harness homes as such: what a terminal writes there is not an
+// Omniplex account's. Two instances sharing a config home share a source,
+// which the scanner reads once.
 func (m *Manager) usageSources() []usage.Source {
 	serverHome, _ := os.UserHomeDir()
 	var out []usage.Source

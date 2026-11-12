@@ -49,7 +49,7 @@ func flowTestManager(t *testing.T) (*Manager, *flowAdapter) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &flowAdapter{}
-	return NewManager(st, func(string, ...any) {}, fa), fa
+	return newManager(st, func(string, ...any) {}, fa), fa
 }
 
 func collect(t *testing.T, ch <-chan AuthFlowEvent) []AuthFlowEvent {
@@ -219,7 +219,7 @@ func (t *termAdapter) LoginCommand(ctx context.Context, overlay map[string]strin
 }
 
 func (t *termAdapter) Probe(ctx context.Context, env map[string]string) adapter.Availability {
-	return adapter.Ready(map[string]string{"account": "me@example.com", "auth": "oauth"})
+	return adapter.Ready(map[string]string{adapter.FactAccount: "me@example.com", "auth": "oauth"})
 }
 
 func TestAuthOverviewSynthesisesTerminalMethod(t *testing.T) {
@@ -228,7 +228,7 @@ func TestAuthOverviewSynthesisesTerminalMethod(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := NewManager(st, func(string, ...any) {}, &termAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &termAdapter{})
 
 	auth, err := mgr.AuthOverview(context.Background(), "fake")
 	if err != nil {
@@ -275,7 +275,7 @@ func TestAuthSurfaceInListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	mgr := NewManager(st, func(string, ...any) {}, &flowAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &flowAdapter{})
 	hs := mgr.Harnesses(context.Background())
 	if got := hs[0].Instances[0].Auth; got != AuthSurfaceFlows {
 		t.Errorf("flows adapter lists auth=%q", got)
@@ -286,7 +286,7 @@ func TestAuthSurfaceInListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st2.Close() })
-	mgr2 := NewManager(st2, func(string, ...any) {}, &termAdapter{})
+	mgr2 := newManager(st2, func(string, ...any) {}, &termAdapter{})
 	hs2 := mgr2.Harnesses(context.Background())
 	if got := hs2[0].Instances[0].Auth; got != AuthSurfaceTerminal {
 		t.Errorf("terminal adapter lists auth=%q", got)

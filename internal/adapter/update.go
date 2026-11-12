@@ -20,6 +20,10 @@ import (
 // knowing which harness printed it.
 const FactVersion = "version"
 
+// FactAccount is the Availability fact an adapter reports who the account is
+// signed in as under: the login's email, when the harness says.
+const FactAccount = "account"
+
 // Executable is implemented by an adapter whose harness is a program on disk.
 // It names the binary a session would run right now, found the same way a
 // session finds it. The core watches it: a binary that changed under a

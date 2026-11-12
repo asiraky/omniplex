@@ -2,8 +2,11 @@ package claudecode
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asiraky/omniplex/internal/adapter"
 )
 
 func TestParseClaudeUsageFullResponse(t *testing.T) {
@@ -119,5 +122,46 @@ func TestParseClaudeUsageMissingStandardWindows(t *testing.T) {
 				t.Fatalf("available window lost: %+v", snap)
 			}
 		})
+	}
+}
+
+type quotaHost struct {
+	fakeHost
+	got []adapter.QuotaSnapshot
+}
+
+func (h *quotaHost) ReportQuota(snap adapter.QuotaSnapshot) { h.got = append(h.got, snap) }
+
+// Limits are Anthropic's per account, so every snapshot carries the account
+// signed in to the session's own config dir: two Omniplex accounts reporting
+// the same id are one login. The server's own CLAUDE_CONFIG_DIR, and a
+// different login in ~/.claude.json, do not count.
+func TestQuotaSnapshotsCarryTheSessionsAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ambient := filepath.Join(t.TempDir(), "ambient")
+	t.Setenv("CLAUDE_CONFIG_DIR", ambient)
+	writeFile(t, filepath.Join(ambient, ".claude.json"), `{"oauthAccount":{"accountUuid":"ambient-account"}}`)
+	writeFile(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"accountUuid":"terminal-account"}}`)
+	config := filepath.Join(home, ".omniplex", "instances", "work")
+	writeFile(t, filepath.Join(config, ".claude.json"), `{"oauthAccount":{"accountUuid":"work-account","emailAddress":"me@work"}}`)
+
+	host := &quotaHost{}
+	s := newTestSession()
+	s.host = host
+	s.accountFile = claudeJSON(map[string]string{"CLAUDE_CONFIG_DIR": config})
+	rateLimitEvent(t, s, map[string]any{"rateLimitType": "five_hour", "utilization": 0.5, "resetsAt": 1_800_000_000})
+	if len(host.got) != 1 || host.got[0].AccountID != "work-account" {
+		t.Fatalf("reported %+v, want the work account", host.got)
+	}
+
+	// No overlay home is Claude's default: ~/.claude.json, never the
+	// server's CLAUDE_CONFIG_DIR.
+	if got := claudeAccountID(claudeJSON(nil)); got != "terminal-account" {
+		t.Errorf("default account = %q", got)
+	}
+	// Signed out, or never signed in: no id rather than a guess.
+	if got := claudeAccountID(claudeJSON(map[string]string{"CLAUDE_CONFIG_DIR": t.TempDir()})); got != "" {
+		t.Errorf("signed-out account = %q", got)
 	}
 }

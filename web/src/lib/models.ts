@@ -23,27 +23,14 @@ export interface PickerInstance {
 }
 
 /**
- * Flattens harnesses into the instance list the picker renders. A harness that
- * reports no instances — an older server, or a build mid-upgrade — still
- * yields one entry, so the picker never comes up empty because of a protocol
- * gap.
+ * Flattens harnesses into the instance list the picker renders: exactly the
+ * configured accounts. A driver with none yields no entry; there is no
+ * built-in account to stand in for it.
  */
 export function pickerInstances(harnesses: HarnessMeta[]): PickerInstance[] {
   const out: PickerInstance[] = [];
   for (const h of harnesses) {
-    const instances = h.instances?.length
-      ? h.instances
-      : [
-          {
-            id: h.id,
-            driver: h.id,
-            displayName: h.name,
-            enabled: true,
-            availability: h.availability,
-            models: h.models,
-          },
-        ];
-    for (const inst of instances) {
+    for (const inst of h.instances ?? []) {
       out.push({
         id: inst.id,
         driver: inst.driver || h.id,
@@ -124,8 +111,9 @@ export function resolveInstance(
 ): PickerInstance | undefined {
   return (
     instances.find((i) => i.id === instanceId) ??
-    // A thread created before instances existed records only its harness; its
-    // default instance is the one whose id matches the driver.
+    // A thread created before instances existed records only its harness; an
+    // account whose id is the driver's (the migrated first one) is its best
+    // match, else any account of that driver.
     instances.find((i) => i.driver === harnessId && i.id === harnessId) ??
     instances.find((i) => i.driver === harnessId) ??
     instances.find((i) => i.availability?.state === "ready") ??

@@ -1,0 +1,310 @@
+package homemigrate
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// What each harness records as having started a conversation, when it was
+// Omniplex: the Claude Agent SDK's entrypoint (Omniplex's bridge; a terminal
+// is "cli", `claude -p` is "sdk-cli"), and the originator Omniplex gives
+// Codex's app-server (`codex exec` is "codex_exec").
+const (
+	claudeOmniplex = "sdk-ts"
+	codexOmniplex  = "omniplex"
+)
+
+// headLimit bounds how much of a transcript is read to learn who started it.
+// The first lines are small records, and the one that says is among the first
+// few; a transcript that has not said by then is left where it is.
+const (
+	headLimit  = 64 << 20
+	headValues = 64
+)
+
+// scan lists the Omniplex-started conversations in a machine home, and counts
+// the rest, which stay.
+func scan(driver, root string) (found []*Conversation, kept int, err error) {
+	switch driver {
+	case DriverClaude:
+		return scanClaude(root)
+	case DriverCodex:
+		return scanCodex(root)
+	}
+	return nil, 0, nil
+}
+
+// scanClaude reads projects/<key>/<id>.jsonl, each with its <id>/ folder of
+// subagent transcripts and tool results beside it.
+func scanClaude(root string) ([]*Conversation, int, error) {
+	projects := filepath.Join(root, "projects")
+	keys, err := os.ReadDir(projects)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	var found []*Conversation
+	kept := 0
+	for _, key := range keys {
+		if !key.IsDir() {
+			continue
+		}
+		dir := filepath.Join(projects, key.Name())
+		names, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, n := range names {
+			name := n.Name()
+			if !n.Type().IsRegular() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".jsonl") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			origin, err := claudeEntrypoint(path)
+			if err != nil || origin != claudeOmniplex {
+				kept++
+				continue
+			}
+			c := &Conversation{Driver: DriverClaude, ID: strings.TrimSuffix(name, ".jsonl"), Origin: origin}
+			// The transcript and its sidecar move together or not at all, so
+			// anything at the sidecar's path that is not a plain folder keeps
+			// the transcript where it is too.
+			side := filepath.Join(dir, c.ID)
+			info, err := os.Lstat(side)
+			switch {
+			case err == nil && info.IsDir():
+				c.Entries = append(c.Entries, &Entry{Src: side, Dir: true})
+			case err == nil:
+				kind := irregular(side)
+				if kind == "" {
+					kind = "a file"
+				}
+				c.blocked = "its sidecar " + side + " is " + kind + ", not a folder, and a transcript does not move without its sidecar"
+			case !errors.Is(err, fs.ErrNotExist):
+				c.blocked = "cannot check its sidecar " + side + ": " + err.Error()
+			}
+			c.Entries = append(c.Entries, &Entry{Src: path})
+			if err := c.collect(); err != nil {
+				return nil, 0, err
+			}
+			found = append(found, c)
+		}
+	}
+	return found, kept, nil
+}
+
+// claudeEntrypoint is the entrypoint the first record carrying one names,
+// "" when none does within the bound.
+func claudeEntrypoint(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	dec := json.NewDecoder(io.LimitReader(f, headLimit))
+	for i := 0; i < headValues; i++ {
+		var rec struct {
+			Entrypoint *string `json:"entrypoint"`
+		}
+		if err := dec.Decode(&rec); err != nil {
+			if errors.Is(err, io.EOF) {
+				return "", nil
+			}
+			return "", err
+		}
+		if rec.Entrypoint != nil {
+			return *rec.Entrypoint, nil
+		}
+	}
+	return "", nil
+}
+
+// scanCodex reads every rollout under sessions/ and archived_sessions/. The
+// first line of one is its session_meta, which names the originator.
+func scanCodex(root string) ([]*Conversation, int, error) {
+	var found []*Conversation
+	kept := 0
+	for _, sub := range []string{"sessions", "archived_sessions"} {
+		err := filepath.WalkDir(filepath.Join(root, sub), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) && path == filepath.Join(root, sub) {
+					return filepath.SkipDir
+				}
+				return err
+			}
+			// WalkDir does not follow a symlink, so a rollout behind one would
+			// go unseen and its thread read as gone. Refuse instead.
+			if d.Type()&fs.ModeSymlink != 0 {
+				return errors.New(path + " is a symlink, which is not followed; no " + DriverCodex + " account migrates while one is there")
+			}
+			name := d.Name()
+			if !d.Type().IsRegular() || !isRollout(name) {
+				return nil
+			}
+			id, origin, err := codexMeta(path)
+			if err != nil || origin != codexOmniplex {
+				kept++
+				return nil
+			}
+			c := &Conversation{Driver: DriverCodex, ID: id, Origin: origin, Entries: []*Entry{{Src: path}}}
+			if err := c.collect(); err != nil {
+				return err
+			}
+			found = append(found, c)
+			return nil
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	return found, kept, nil
+}
+
+func isRollout(name string) bool {
+	return strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, ".jsonl")
+}
+
+// codexMeta reads a rollout's session_meta: the conversation id and its
+// originator. A rollout that does not open with one has no originator.
+func codexMeta(path string) (id, originator string, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	var rec struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ID         string `json:"id"`
+			Originator string `json:"originator"`
+		} `json:"payload"`
+	}
+	if err := json.NewDecoder(io.LimitReader(f, headLimit)).Decode(&rec); err != nil {
+		return "", "", err
+	}
+	if rec.Type != "session_meta" {
+		return "", "", nil
+	}
+	return rec.Payload.ID, rec.Payload.Originator, nil
+}
+
+// collect lists every regular file of the conversation with its size, and
+// the newest modification time among them and its folders.
+func (c *Conversation) collect() error {
+	c.Files, c.Bytes = nil, 0
+	for _, e := range c.Entries {
+		err := filepath.WalkDir(e.Src, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if info.ModTime().After(c.modified) {
+				c.modified = info.ModTime()
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			c.Files = append(c.Files, &File{Src: path, Size: info.Size()})
+			c.Bytes += info.Size()
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Modified is the newest modification time among the conversation's files.
+func (c *Conversation) Modified() time.Time { return c.modified }
+
+// locateSidecar finds a Claude conversation's <id>/ folder in a config home,
+// "" when there is none.
+func locateSidecar(driver, root, id string) string {
+	if driver != DriverClaude || root == "" || id == "" {
+		return ""
+	}
+	matches, _ := filepath.Glob(filepath.Join(root, "projects", "*", id))
+	for _, m := range matches {
+		if info, err := os.Lstat(m); err == nil && info.IsDir() {
+			return m
+		}
+	}
+	return ""
+}
+
+// locate finds conversation id in a config home, "" when it is not there.
+// Anything at the transcript's path counts, whatever it is: a symlink or a
+// folder there is the conversation found but not movable, never it being
+// gone. A Codex home with a symlink under sessions/ or archived_sessions/
+// and no rollout found answers with the symlink, which is not followed: the
+// rollout may be behind it.
+func locate(driver, root, id string) string {
+	if root == "" || id == "" {
+		return ""
+	}
+	switch driver {
+	case DriverClaude:
+		matches, _ := filepath.Glob(filepath.Join(root, "projects", "*", id+".jsonl"))
+		for _, m := range matches {
+			if _, err := os.Lstat(m); err == nil {
+				return m
+			}
+		}
+	case DriverCodex:
+		var hit, link string
+		for _, sub := range []string{"sessions", "archived_sessions"} {
+			_ = filepath.WalkDir(filepath.Join(root, sub), func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return filepath.SkipDir
+				}
+				if isRollout(d.Name()) && strings.HasSuffix(d.Name(), "-"+id+".jsonl") {
+					hit = path
+					return filepath.SkipAll
+				}
+				if d.Type()&fs.ModeSymlink != 0 && link == "" {
+					link = path
+				}
+				return nil
+			})
+			if hit != "" {
+				return hit
+			}
+		}
+		return link
+	}
+	return ""
+}
+
+// irregular names what is at path when it is not a regular file, "" when it
+// is one.
+func irregular(path string) string {
+	info, err := os.Lstat(path)
+	switch {
+	case err != nil:
+		return "something that cannot be read (" + err.Error() + ")"
+	case info.Mode().IsRegular():
+		return ""
+	case info.Mode()&fs.ModeSymlink != 0:
+		return "a symlink"
+	case info.IsDir():
+		return "a folder"
+	}
+	return "a " + info.Mode().Type().String() + " entry"
+}
+
+func isSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&fs.ModeSymlink != 0
+}

@@ -257,16 +257,17 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	// What the first-run screen shows: is git here, and can at least one
-	// harness start a thread. Asked fresh each time, so "Check again" after an
-	// install sees the install.
+	// harness start a thread. A harness with no account yet shows the
+	// add-account remedy, not a sign-in. Asked fresh each time, so "Check
+	// again" after an install sees the install.
 	mux.HandleFunc("GET /api/setup", func(w http.ResponseWriter, r *http.Request) {
 		s.mgr.ExpireProbes()
 		var hs []setup.Harness
 		for _, h := range s.mgr.Harnesses(r.Context()) {
 			sh := setup.Harness{ID: h.ID, Name: h.Name, Availability: h.Availability}
 			for _, inst := range h.Instances {
-				if inst.ID != h.ID && inst.Enabled && inst.Availability.OK() {
-					sh.OtherInstanceOK = true
+				if inst.Enabled && inst.Availability.OK() {
+					sh.AnyAccountOK = true
 				}
 			}
 			hs = append(hs, sh)

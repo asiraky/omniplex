@@ -21,6 +21,9 @@ const harness = {
   models: [],
   permissionModes: [],
   availability: { state: "ready" },
+  instances: [
+    { id: "claude", driver: "claude", displayName: "Claude Code", enabled: true, availability: { state: "ready" } },
+  ],
 } as unknown as HarnessMeta;
 
 type Props = React.ComponentProps<typeof ThreadDraft>;
@@ -784,6 +787,40 @@ describe("a signed-out harness", () => {
   });
 });
 
+describe("no accounts yet", () => {
+  const empty = (id: string, name: string) =>
+    ({
+      ...harness,
+      id,
+      name,
+      availability: {
+        state: "unavailable",
+        reason: `No ${name} account yet.`,
+        remedy: [{ text: "Add account", action: "add_account" }],
+      },
+      instances: [],
+    }) as unknown as HarnessMeta;
+
+  it("offers adding the one agent's first account", () => {
+    const onAddAccount = vi.fn();
+    open({ harnesses: [empty("claude", "Claude Code")], onAddAccount });
+    expect(screen.getByText("No Claude Code account yet.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+    expect(onAddAccount).toHaveBeenCalledWith("claude");
+  });
+
+  it("asks which agent when several have no account", () => {
+    const onAddAccount = vi.fn();
+    open({ harnesses: [empty("claude", "Claude Code"), empty("codex", "Codex")], onAddAccount });
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+    expect(onAddAccount).toHaveBeenCalledWith(null);
+  });
+
+  it("says nothing about agents without accounts while another has one", () => {
+    open({ harnesses: [harness, empty("codex", "Codex")], onAddAccount: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Add account" })).toBeNull();
+  });
+});
 
 describe("remembered thread choices", () => {
   const ready = { state: "ready" } as const;

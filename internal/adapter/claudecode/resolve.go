@@ -40,15 +40,18 @@ func bunArgs(script string) []string {
 
 // claudeEnv is the environment Claude Code runs under: base without the
 // CLAUDECODE and CLAUDE_* variables a Claude Code session exports to whatever
-// it starts, then the instance's overlay. A server started from inside Claude
+// it starts, and without the credentials that pick who Claude Code is signed
+// in as, then the instance's overlay. A server started from inside Claude
 // Code would otherwise hand its threads that session's id, messaging socket
-// and token, effort, and context window. The overlay is applied after, so a
-// CLAUDE_* variable the instance sets still wins.
+// and token, effort, context window and config dir. A credential in the
+// server's own environment would override every account's login, so the only
+// credential a session gets is one its account's overlay sets. The overlay is
+// applied after, so a CLAUDE_* variable the instance sets still wins.
 func claudeEnv(base []string, overlay map[string]string) []string {
 	kept := make([]string, 0, len(base))
 	for _, kv := range base {
 		key, _, _ := strings.Cut(kv, "=")
-		if (key == "CLAUDECODE" || strings.HasPrefix(key, "CLAUDE_")) && !claudeAccountEnv[key] {
+		if key == "CLAUDECODE" || strings.HasPrefix(key, "CLAUDE_") || claudeCredentialEnv[key] {
 			continue
 		}
 		kept = append(kept, kv)
@@ -56,12 +59,11 @@ func claudeEnv(base []string, overlay map[string]string) []string {
 	return adapter.MergeEnv(kept, overlay)
 }
 
-// claudeAccountEnv are the CLAUDE_* variables that pick the account rather
-// than describe a session. Omniplex reads an ambient CLAUDE_CONFIG_DIR itself
-// (skills, MCP servers, slash commands), so Claude Code must see the same one.
-var claudeAccountEnv = map[string]bool{
-	"CLAUDE_CONFIG_DIR":       true,
-	"CLAUDE_CODE_OAUTH_TOKEN": true,
+// claudeCredentialEnv is every non-CLAUDE_* variable Claude Code signs in
+// with. CLAUDE_CODE_OAUTH_TOKEN goes with the rest of CLAUDE_*.
+var claudeCredentialEnv = map[string]bool{
+	"ANTHROPIC_API_KEY":    true,
+	"ANTHROPIC_AUTH_TOKEN": true,
 }
 
 // command builds a bridge process: the config blob on argv, the ambient

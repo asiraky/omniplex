@@ -38,12 +38,13 @@ func TestReadyNeedsGitAndOneHarness(t *testing.T) {
 	}
 }
 
-// A second account that works is as good as the default one: a user signed
-// out of the default Codex but into another must not be sent back to setup.
+// A second account that works is as good as the primary one: a user signed
+// out of the primary Codex account but into another must not be sent back to
+// setup.
 func TestAWorkingSecondAccountIsEnough(t *testing.T) {
 	r := Build("darwin", ready, []Harness{
 		{ID: "claude", Name: "Claude Code", Availability: missing},
-		{ID: "codex", Name: "Codex", Availability: missing, OtherInstanceOK: true},
+		{ID: "codex", Name: "Codex", Availability: missing, AnyAccountOK: true},
 	})
 	if !r.Ready {
 		t.Fatal("not ready with a working second Codex account")

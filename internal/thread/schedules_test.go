@@ -119,7 +119,7 @@ func TestScheduledCatchUpBoundaryAndRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer st.Close()
-			m := NewManager(st, t.Logf, &fakeAdapter{})
+			m := newManager(st, t.Logf, &fakeAdapter{})
 			a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 			if err != nil {
 				t.Fatal(err)
@@ -131,7 +131,7 @@ func TestScheduledCatchUpBoundaryAndRestart(t *testing.T) {
 			id := a.ID
 			m.Shutdown()
 			fa := &fakeAdapter{}
-			m = NewManager(st, t.Logf, fa)
+			m = newManager(st, t.Logf, fa)
 			defer m.Shutdown()
 			ids, err := st.DueScheduleThreads(ctx, p.DueAt+tc.late)
 			if err != nil || len(ids) != 1 {
@@ -231,7 +231,7 @@ func TestScheduledBusyWaitSurvivesHarnessExit(t *testing.T) {
 	}
 	defer st.Close()
 	fa := &fakeAdapter{}
-	m := NewManager(st, t.Logf, fa)
+	m := newManager(st, t.Logf, fa)
 	defer m.Shutdown()
 	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
@@ -284,7 +284,7 @@ func TestScheduledRestoreClearsStaleRequestsAndSkipsHeldQueue(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer st.Close()
-			m := NewManager(st, t.Logf, &fakeAdapter{})
+			m := newManager(st, t.Logf, &fakeAdapter{})
 			a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 			if err != nil {
 				t.Fatal(err)
@@ -308,7 +308,7 @@ func TestScheduledRestoreClearsStaleRequestsAndSkipsHeldQueue(t *testing.T) {
 				t.Fatal(err)
 			}
 			fa := &fakeAdapter{}
-			m = NewManager(st, t.Logf, fa)
+			m = newManager(st, t.Logf, fa)
 			defer m.Shutdown()
 			a, err = m.View(ctx, id)
 			if err != nil {
@@ -347,7 +347,7 @@ func TestScheduledReadyExpiresAcrossHostRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	m := NewManager(st, t.Logf, &fakeAdapter{})
+	m := newManager(st, t.Logf, &fakeAdapter{})
 	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +364,7 @@ func TestScheduledReadyExpiresAcrossHostRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	m = NewManager(st, t.Logf, fa)
+	m = newManager(st, t.Logf, fa)
 	defer m.Shutdown()
 	a, err = m.View(ctx, id)
 	if err != nil {

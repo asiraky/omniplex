@@ -832,8 +832,11 @@ export interface Remedy {
   text: string;
   url?: string;
   command?: string;
-  /** Something the server can do itself: "login" runs the harness's sign-in in a terminal. */
-  action?: "login";
+  /**
+   * Something the app can do itself: "login" runs the harness's sign-in;
+   * "add_account" opens Providers settings to add the driver's first account.
+   */
+  action?: "login" | "add_account";
 }
 
 export interface Availability {
@@ -890,8 +893,18 @@ export interface ProviderInstanceMeta {
    * CLI in an embedded terminal, absent when it has none.
    */
   auth?: "flows" | "terminal";
-  /** Exists in the user config, so it can be edited or removed. */
-  configured?: boolean;
+  /** The signed-in login's email, when the harness reports one. */
+  account?: string;
+  /**
+   * Ids of other instances of the same driver signed in to the same login, so
+   * their limits and history are one account's. Absent when there are none.
+   */
+  sameLoginAs?: string[];
+  /**
+   * Shared config entries ("skills", "CLAUDE.md"…) this account holds its own
+   * copy of instead of linking the shared one. use_shared_config fixes one.
+   */
+  configConflicts?: string[];
   /**
    * The instance's configured environment, sensitive values redacted to bare
    * names. Prefill edit forms from this — save replaces env wholesale.
@@ -922,6 +935,11 @@ export interface ProviderEnvVar {
    */
   value?: string;
   sensitive?: boolean;
+}
+
+/** use_shared_config's reply: where the account's own copy was moved aside. */
+export interface UseSharedConfigResult {
+  backup: string;
 }
 
 /** The write shape for add/save_provider_instance. */
@@ -1124,9 +1142,9 @@ export interface HarnessMeta {
   permissionModes: PermissionModeMeta[];
   availability: Availability;
   /**
-   * Every account configured for this harness, default first. With a single
-   * instance this is one entry whose id equals the harness id, which is why
-   * the one-account case renders exactly as before.
+   * Every account configured for this harness, and nothing else: there is no
+   * built-in default account, so a driver nobody has added an account for
+   * reports none (and an "add_account" remedy on its availability).
    */
   instances: ProviderInstanceMeta[];
   /** The driver's instance-configuration schema; absent means no settings. */
@@ -1320,6 +1338,10 @@ export interface QuotaStatus {
   provider: string;
   instance: string;
   displayName: string;
+  /** The signed-in login's email, when known. */
+  account?: string;
+  /** Instance ids of other accounts of the same driver on the same login. */
+  sameLoginAs?: string[];
   snapshot: QuotaSnapshot;
   lastError?: string;
   lastAttempt?: number;

@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"time"
@@ -434,7 +433,7 @@ func (a *Adapter) ReadQuota(ctx context.Context, env map[string]string) (adapter
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.Bin, "app-server")
-	cmd.Env = adapter.MergeEnv(os.Environ(), env)
+	cmd.Env = codexEnv(env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
