@@ -492,7 +492,7 @@ type session struct {
 	// pending holds what a thread not yet known to be a child did before the
 	// spawn item naming it completed: codex can start, and even finish, the
 	// child's turn first, and stopping or settling it needs that turn.
-	pending map[string]*pendingChild
+	pendingChildren map[string]*pendingChild
 	// unknownThreads is the threads already logged as dropped, so a stray
 	// thread's stream logs once rather than per delta.
 	unknownThreads map[string]bool
@@ -916,6 +916,19 @@ func (s *session) ensureTurn(serverTurn string) string {
 
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
 	return id
+}
+
+// endedTurn is ours for codex's turn id serverTurn when that is the turn
+// that just completed, else serverTurn itself: a spawn that straggles in
+// after its turn ended names it by codex's id, and stopping that turn must
+// still reach the child.
+func (s *session) endedTurn(serverTurn string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if serverTurn != "" && serverTurn == s.lastServerTurn && s.lastTurn != "" {
+		return s.lastTurn
+	}
+	return serverTurn
 }
 
 // workingTurn is the turn a notification that shows work running belongs to:
@@ -1408,13 +1421,15 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 
 		s.mu.Lock()
 		done := s.turnID
-		if done != "" {
-			s.lastTurn = done
-		}
+		// lastTurn and lastServerTurn name one turn or lastTurn is empty: a
+		// completion naming no codex id leaves lastServerTurn the turn before.
+		s.lastTurn = done
 		if finished := p.Turn.ID; finished != "" {
 			s.lastServerTurn = finished
 		} else if known != "" {
 			s.lastServerTurn = known
+		} else {
+			s.lastTurn = ""
 		}
 		s.turnID = ""
 		s.serverTurnID, s.runningTurnID = "", ""

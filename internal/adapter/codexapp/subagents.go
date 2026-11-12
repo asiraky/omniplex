@@ -120,19 +120,6 @@ func collabBookkeeping(it codexItem) bool {
 	return (it.Type == "collabAgentToolCall" || it.Type == "subAgentActivity") && !spawnsAgent(it)
 }
 
-// endedTurn is ours for codex's turn id serverTurn when that is the turn
-// that just completed, else serverTurn itself: a spawn that straggles in
-// after its turn ended names it by codex's id, and stopping that turn must
-// still reach the child.
-func (s *session) endedTurn(serverTurn string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if serverTurn != "" && serverTurn == s.lastServerTurn && s.lastTurn != "" {
-		return s.lastTurn
-	}
-	return serverTurn
-}
-
 // handleSpawnItem renders a spawn as an agent tool call and registers the
 // threads it names. v1 names its children only on completion; v2 announces
 // each in a subAgentActivity "started" item. Every other collaboration item
@@ -215,9 +202,9 @@ func (s *session) registerChild(thread, toolCallID, label, turn string, owner *c
 		c.workTurn = owner.workTurn
 	}
 	var done json.RawMessage
-	if p := s.pending[thread]; p != nil {
+	if p := s.pendingChildren[thread]; p != nil {
 		c.serverTurn, done = p.turn, p.done
-		delete(s.pending, thread)
+		delete(s.pendingChildren, thread)
 	}
 	s.children[thread] = c
 	// A child that started working before the spawn naming it arrived, for
@@ -363,22 +350,11 @@ func (s *session) unregisteredLocked(method, thread string, params json.RawMessa
 		}
 		_ = json.Unmarshal(params, &p)
 		if p.Turn.ID != "" {
-			if s.pending == nil {
-				s.pending = map[string]*pendingChild{}
-			}
-			s.pending[thread] = &pendingChild{turn: p.Turn.ID}
+			*s.pendingChildLocked(thread) = pendingChild{turn: p.Turn.ID}
 		}
 		return
 	case "turn/completed", "turn/failed":
-		if s.pending == nil {
-			s.pending = map[string]*pendingChild{}
-		}
-		p := s.pending[thread]
-		if p == nil {
-			p = &pendingChild{}
-			s.pending[thread] = p
-		}
-		p.done = params
+		s.pendingChildLocked(thread).done = params
 		return
 	}
 	// Status and MCP startup chatter precede every child's registration;
@@ -394,6 +370,20 @@ func (s *session) unregisteredLocked(method, thread string, params json.RawMessa
 	}
 	s.unknownThreads[thread] = true
 	s.host.Logf("codex: dropping output from unknown thread %s (first: %s)", thread, method)
+}
+
+// pendingChildLocked is what thread has done so far unnamed, created empty
+// on first use. Caller holds s.mu.
+func (s *session) pendingChildLocked(thread string) *pendingChild {
+	if s.pendingChildren == nil {
+		s.pendingChildren = map[string]*pendingChild{}
+	}
+	p := s.pendingChildren[thread]
+	if p == nil {
+		p = &pendingChild{}
+		s.pendingChildren[thread] = p
+	}
+	return p
 }
 
 // childActivity reports what a child is doing now: the tool it started, or

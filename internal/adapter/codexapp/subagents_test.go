@@ -20,18 +20,24 @@ func spawn(s *session, itemID, prompt string, receivers ...string) {
 }
 
 func spawnOn(s *session, thread, itemID, prompt string, receivers ...string) {
-	item := func(status string, rs []string) string {
-		b, _ := json.Marshal(map[string]any{
-			"threadId": thread, "turnId": "codex-turn",
-			"item": map[string]any{
-				"type": "collabAgentToolCall", "id": itemID, "tool": "spawnAgent",
-				"status": status, "prompt": prompt, "receiverThreadIds": rs,
-			},
-		})
-		return string(b)
+	notify(s, "item/started", spawnItem(thread, itemID, prompt, "inProgress"))
+	notify(s, "item/completed", spawnItem(thread, itemID, prompt, "completed", receivers...))
+}
+
+// spawnItem is the params of a v1 spawnAgent item in codex's turn
+// "codex-turn" on thread.
+func spawnItem(thread, itemID, prompt, status string, receivers ...string) string {
+	if receivers == nil {
+		receivers = []string{}
 	}
-	notify(s, "item/started", item("inProgress", []string{}))
-	notify(s, "item/completed", item("completed", receivers))
+	b, _ := json.Marshal(map[string]any{
+		"threadId": thread, "turnId": "codex-turn",
+		"item": map[string]any{
+			"type": "collabAgentToolCall", "id": itemID, "tool": "spawnAgent",
+			"status": status, "prompt": prompt, "receiverThreadIds": receivers,
+		},
+	})
+	return string(b)
 }
 
 func childTurn(s *session, thread, turn string) {
@@ -734,28 +740,19 @@ func TestChildFinishedBeforeRegistrationRegistersFinished(t *testing.T) {
 func TestSpawnCompletingAfterItsStoppedTurnStopsTheChild(t *testing.T) {
 	s, rec := stopSession(t, nil)
 	s.turnID, s.serverTurnID = "turn-a", "codex-turn"
-	item := func(status string, rs []string) string {
-		b, _ := json.Marshal(map[string]any{
-			"threadId": "thread-1", "turnId": "codex-turn",
-			"item": map[string]any{
-				"type": "collabAgentToolCall", "id": "spawn-1", "tool": "spawnAgent",
-				"status": status, "prompt": "one", "receiverThreadIds": rs,
-			},
-		})
-		return string(b)
-	}
-	notify(s, "item/started", item("inProgress", []string{}))
+	notify(s, "item/started", spawnItem("thread-1", "spawn-1", "one", "inProgress"))
 	childTurn(s, "sub-1", "sub-1-turn")
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-turn","status":"interrupted"}}`)
-	notify(s, "item/completed", item("completed", []string{"sub-1"}))
+	notify(s, "item/completed", spawnItem("thread-1", "spawn-1", "one", "completed", "sub-1"))
 
 	waitFor(t, "the late subagent interrupt", func() bool { return rec.interrupts(t)["sub-1"] == "sub-1-turn" })
 	childDone(s, "sub-1", "sub-1-turn", "completed")
-	if len(s.wakeQueue) != 0 {
-		t.Fatalf("a stopped turn's child queued a wake: %q", s.wakeQueue)
+	s.flushWake()
+	if n := rec.count("turn/start"); n != 0 {
+		t.Fatalf("a stopped turn's child woke the session (%d turn/start)", n)
 	}
 }
 
