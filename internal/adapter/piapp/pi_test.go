@@ -28,9 +28,9 @@ func (fakeHost) Logf(format string, args ...any) {}
 
 // fakePi writes a shell script that speaks just enough of pi's RPC protocol
 // for one test: it records argv and every stdin line under dir, answers
-// get_state, and on prompt/abort replays the events files the test staged. An
-// ack_gate file holds the prompt's response until ack_open appears, standing
-// in for pi's preflight.
+// get_state (streaming while a streaming file exists), and on prompt/abort
+// replays the events files the test staged. An ack_gate file holds the
+// prompt's response until ack_open appears, standing in for pi's preflight.
 func fakePi(t *testing.T, dir string, promptResponse string) string {
 	t.Helper()
 	if promptResponse == "" {
@@ -45,7 +45,8 @@ while IFS= read -r line; do
   id=$(printf '%%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
   case "$line" in
     *'"type":"get_state"'*)
-      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"sessionId\":\"harness-123\",\"thinkingLevel\":\"medium\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
+      streaming=false; [ -f "$DIR/streaming" ] && streaming=true
+      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"isStreaming\":$streaming,\"sessionId\":\"harness-123\",\"thinkingLevel\":\"medium\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
       ;;
     *'"type":"prompt"'*)
       if [ -f "$DIR/ack_gate" ]; then
@@ -59,8 +60,9 @@ while IFS= read -r line; do
       fi
       ;;
     *'"type":"abort"'*)
-      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"abort\",\"success\":true}"
+      # Pi answers abort once idle, after the aborted run has settled.
       [ -f "$DIR/abort_events" ] && cat "$DIR/abort_events"
+      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"abort\",\"success\":true}"
       ;;
     *'"type":"get_commands"'*)
       printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_commands\",\"success\":true,\"data\":{\"commands\":[{\"name\":\"skill:merge\",\"description\":\"Land a PR\",\"source\":\"skill\",\"sourceInfo\":{\"path\":\"/home/me/.agents/skills/merge/SKILL.md\",\"scope\":\"user\",\"origin\":\"top-level\"}},{\"name\":\"llama\",\"description\":\"Manage models\",\"source\":\"extension\",\"sourceInfo\":{\"path\":\"<inline>\",\"scope\":\"temporary\",\"origin\":\"top-level\"}}]}}"
@@ -385,7 +387,9 @@ func TestPromptAuthRefusal(t *testing.T) {
 
 // Pi acks a prompt only after its preflight, which can run a whole compaction
 // or wait on an extension's dialog. Prompt must return without that ack, and
-// the session must still take a Stop while it is outstanding.
+// a Stop while it is outstanding must end the turn: pi's abort does not reach
+// a preflight, and if it never runs anything nothing else would end it. A run
+// the preflight goes on to start is still shown, as pi's own turn.
 func TestPromptReturnsBeforeAck(t *testing.T) {
 	dir := t.TempDir()
 	events := []string{
@@ -418,21 +422,118 @@ func TestPromptReturnsBeforeAck(t *testing.T) {
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel while the ack is outstanding: %v", err)
 	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	if final := got[len(got)-1].Payload.(proto.TurnFinishedPayload); final.TurnID != "t1" || final.StopReason != proto.StopCancelled {
+		t.Fatalf("stopped turn wrong: %+v", final)
+	}
 
 	if err := os.WriteFile(filepath.Join(dir, "ack_open"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	got = drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	started, ok := got[0].Payload.(proto.TurnStartedPayload)
+	if !ok || started.TurnID == "t1" {
+		t.Fatalf("late run did not open a turn of its own: %+v", got[0])
+	}
 	var text string
 	for _, e := range got {
-		if p, ok := e.Payload.(proto.MessageChunkPayload); ok && p.TurnID == "t1" {
+		if p, ok := e.Payload.(proto.MessageChunkPayload); ok && p.TurnID == started.TurnID {
 			text += p.Delta
 		}
 	}
 	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
-	if text != "late" || final.TurnID != "t1" || final.StopReason != proto.StopEndTurn {
-		t.Fatalf("turn after a delayed ack wrong: text=%q final=%+v", text, final)
+	if text != "late" || final.TurnID != started.TurnID || final.StopReason != proto.StopEndTurn {
+		t.Fatalf("late run wrong: text=%q final=%+v", text, final)
 	}
+}
+
+// stillOpen fails if s finishes a turn within a short window.
+func stillOpen(t *testing.T, s adapter.Session) {
+	t.Helper()
+	window := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case e := <-s.Events():
+			if e.Type == proto.TurnFinished {
+				t.Fatalf("turn finished: %+v", e.Payload)
+			}
+		case <-window:
+			return
+		}
+	}
+}
+
+// An extension command (/name) or an input handler can take a prompt whole:
+// pi acks it and starts no agent run, so no agent_settled ever comes. The
+// turn must end anyway, and the session take the next prompt.
+func TestPromptPiRanNothingEndsTurn(t *testing.T) {
+	dir := t.TempDir()
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "/uitest"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if final.TurnID != "t1" || final.StopReason != proto.StopEndTurn || final.Error != "" {
+		t.Fatalf("command turn wrong: %+v", final)
+	}
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t2", Text: "next"}); err != nil {
+		t.Fatalf("session left busy after a command: %v", err)
+	}
+}
+
+// A prompt that runs is acked just before its run starts, so pi already
+// reports itself streaming when the ack lands and its agent_start is still in
+// flight. That turn is left for agent_settled; a Stop pressed before
+// agent_start arrives still ends it.
+func TestPromptAckedWhileStreamingStaysOpen(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "streaming"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	stillOpen(t, s)
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	if final := got[len(got)-1].Payload.(proto.TurnFinishedPayload); final.TurnID != "t1" || final.StopReason != proto.StopCancelled {
+		t.Fatalf("stopped turn wrong: %+v", final)
+	}
+}
+
+// Pi answers abort only once idle, so a run that has started but is still
+// going after the answer is a new one, begun after the abort. Stop leaves it
+// to settle rather than end a turn whose work carries on under its id.
+func TestCancelLeavesRunStartedAfterAbort(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "events"), []byte(`{"type":"agent_start"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "go"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	// Prompt returns before the ack, so wait for pi's get_state, sent once
+	// the ack and agent_start are in, before pressing Stop.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lines, _ := os.ReadFile(filepath.Join(dir, "lines"))
+		if strings.Count(string(lines), `"type":"get_state"`) >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no get_state after the ack; pi saw:\n%s", lines)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	stillOpen(t, s)
 }
 
 // A refusal only closes the turn it was sent for. One that lands after that
