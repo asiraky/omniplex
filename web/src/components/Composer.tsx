@@ -329,6 +329,7 @@ export function Composer({
           onSwitchAccount={onSwitchAccount}
           onPickInstance={onPickInstance}
           compact={fit.compactTrigger}
+          ownLine={fit.triggerOwnLine}
         />
       )}
       {fit.toolsInRow && tools?.("row")}
@@ -433,7 +434,13 @@ export function Composer({
           onChoose={menu.choose}
         />
 
-        <div className="flex items-center gap-1 px-2.5 pb-2">
+        <div
+          className={cn(
+            "flex items-center gap-1 px-2.5 pb-2",
+            // Tighter, so attach, meter, mic, stop and send fit one line under it.
+            fit.triggerOwnLine && "flex-wrap gap-x-0.5",
+          )}
+        >
           <AttachButton show={!!onAttachFiles} disabled={disabled} onFiles={attach} />
 
           {showMic ? (

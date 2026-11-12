@@ -338,7 +338,7 @@ export function ThreadDraft({
           ref={composer}
           tools={(place) => {
             // The toolbar's touch-height controls, or the drawer's chips.
-            const size = place === "row" ? toolClass : undefined;
+            const toolSize = place === "row" ? toolClass : undefined;
             return (
               <>
                 <AgentTools
@@ -349,12 +349,12 @@ export function ThreadDraft({
                   want1m={agent.want1m}
                   onPickMode={(mode) => agent.remember({ mode })}
                   onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
-                  className={size}
+                  className={toolSize}
                 />
                 <PinToggle
                   pinned={pinned}
                   onToggle={() => setPinChoice(!pinned)}
-                  className={size}
+                  className={toolSize}
                 />
               </>
             );

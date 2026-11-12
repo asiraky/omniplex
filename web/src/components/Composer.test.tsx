@@ -824,6 +824,13 @@ describe("fitting the toolbar to the composer's width", () => {
     expect(screen.queryByRole("button", { name: "tool in row" })).toBeNull();
   });
 
+  it("gives the model its whole name on a line of its own when the box is too narrow to share one", () => {
+    const trigger = mountAt(236);
+    expect(trigger.textContent).toContain("Sol");
+    expect(trigger.textContent).toContain("High");
+    expect(screen.getByRole("button", { name: "tool in drawer" })).toBeTruthy();
+  });
+
   it("names the effort again once there is room, with the tools still under the box", () => {
     const trigger = mountAt(480);
     expect(trigger.textContent).toContain("High");
