@@ -365,10 +365,8 @@ function SharePopover({ threadId, artefact: a }: { threadId: string; artefact: A
     }
   };
 
-  // The labels move on with the shared minute clock; whether the link still
-  // works is read off the real time, or it would offer a dead URL for a minute.
   const now = useNow();
-  const live = link && link.expiresAt > Date.now() ? link : null;
+  const live = link && link.expiresAt > now ? link : null;
   // Only as good as the last time the file was shown: an edit the agent has
   // not shown yet is not known here, which is why Update link is always there.
   const changed = live !== null && a.modifiedAt > live.sharedAt;

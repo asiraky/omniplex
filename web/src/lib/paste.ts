@@ -44,7 +44,7 @@ export function pasteTakesText(data: PasteData): boolean {
   if (!data.types.includes("text/plain")) return false;
   const lines = data
     .getData("text/plain")
-    .split(/\r?\n/)
+    .split(/\r\n|\r|\n/)
     .map((l) => l.trim())
     .filter(Boolean);
   if (lines.length === 0) return false;

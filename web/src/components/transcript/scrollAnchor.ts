@@ -9,8 +9,8 @@ import { layoutTop } from "~/useAutoScroll";
 // So the position is remembered as "this row, this far into it" — the row at
 // the top of the view, which is the one being read — with the raw offset kept
 // as the fallback for a row that no longer exists. Restoring finds the row and
-// puts the view back on it, then keeps putting it back for a few frames while
-// late content above it settles.
+// puts the view back on it, then keeps putting it back for a moment while late
+// content above it settles.
 
 /** The row at the top of the view, and how far the view's top edge sits into it. */
 export type RowAnchor = { id: string; offset: number };
@@ -19,13 +19,14 @@ export type ScrollPosition = { top: number; atBottom: boolean; anchor?: RowAncho
 
 const ROW = "[data-row-id]";
 
-// A row has to hold still this long, about half a second, to count as settled:
-// a Mermaid diagram above it waits 200ms before it even starts to render, so a
-// few quiet frames say nothing about whether more is coming.
-const STABLE_FRAMES = 30;
-// A streaming reply can keep moving things for as long as it likes; past this,
-// about three seconds, the reader has their place back and anything later is theirs.
-const MAX_FRAMES = 180;
+// A row has to hold still this long to count as settled: a Mermaid diagram
+// above it waits 200ms before it even starts to render, so a few quiet frames
+// say nothing about whether more is coming. Both limits are wall time, not
+// frames — a 120Hz screen runs frames twice as fast, and the diagram does not.
+const STABLE_MS = 500;
+// A streaming reply can keep moving things for as long as it likes; past this
+// the reader has their place back and anything later is theirs.
+const MAX_MS = 3000;
 
 // Any of these on the scroller means a reader has taken the view; a settle
 // still running would drag it back out from under their finger.
@@ -84,17 +85,18 @@ function findRow(scroller: HTMLElement, id: string): Element | undefined {
  * above it settles. Returns a cancel for the settle.
  *
  * By anchor when the row is still here; by raw offset when it is not, or when
- * there was no row to anchor to, which is as good as anything then. The
- * settle stops after `STABLE_FRAMES` still frames, after `MAX_FRAMES` regardless, on any
- * sign of a reader, or when something else moves the view somewhere other
- * than the anchor — the pin re-arming at the tail, a just-sent prompt being
- * lifted, a scrollbar drag. A prepend of older history moves the view and the
- * row by the same amount, so it never reads as a rival.
+ * there was no row to anchor to, or when the row rendered nothing to measure —
+ * which is as good as anything then. The settle stops once the row has held
+ * still for `STABLE_MS`, after `MAX_MS` regardless, on any sign of a reader, or
+ * when something else moves the view somewhere other than the anchor — the pin
+ * re-arming at the tail, a just-sent prompt being lifted, a scrollbar drag. A
+ * prepend of older history moves the view and the row by the same amount, so
+ * it never reads as a rival.
  */
 export function restoreScroll(scroller: HTMLElement, position: ScrollPosition): () => void {
   const anchor = position.anchor;
   const row = anchor && findRow(scroller, anchor.id);
-  if (!anchor || !row) {
+  if (!anchor || !row || !span(row, layoutTop(scroller))) {
     scroller.scrollTop = position.top;
     return () => {};
   }
@@ -107,8 +109,8 @@ export function restoreScroll(scroller: HTMLElement, position: ScrollPosition): 
     return Math.max(0, Math.min(s.top + anchor.offset, max));
   };
 
-  let frames = 0;
-  let still = 0;
+  const start = performance.now();
+  let stillSince = start;
   let raf = 0;
   let done = false;
   // Where this loop last left the view, to tell its own position from one
@@ -123,19 +125,17 @@ export function restoreScroll(scroller: HTMLElement, position: ScrollPosition): 
   };
 
   const step = () => {
+    const now = performance.now();
     const want = target();
     if (want === undefined) return stop();
     const at = scroller.scrollTop;
     if (Math.abs(at - left) > 1 && Math.abs(at - want) > 1) return stop();
     if (Math.abs(at - want) > 1) {
       scroller.scrollTop = want;
-      still = 0;
-    } else {
-      still += 1;
+      stillSince = now;
     }
     left = scroller.scrollTop;
-    frames += 1;
-    if (still >= STABLE_FRAMES || frames >= MAX_FRAMES) return stop();
+    if (now - stillSince >= STABLE_MS || now - start >= MAX_MS) return stop();
     raf = requestAnimationFrame(step);
   };
 

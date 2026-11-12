@@ -42,22 +42,29 @@ function transcript(heights: number[]) {
       sizes[i] = h;
     },
     remove: (i: number) => scroller.querySelector(`[data-row-id="r${i}"]`)!.remove(),
+    // The row stays; what it rendered goes, leaving it nothing to measure.
+    empty: (i: number) => scroller.querySelector(`[data-row-id="r${i}"]`)!.replaceChildren(),
   };
 }
 
-// Frames run when the test says so, not on a clock.
+// Frames run when the test says so, each moving the clock on by one frame's
+// worth — 60Hz unless the test is standing in for a faster screen.
 let frames: Map<number, FrameRequestCallback>;
 let nextFrame: number;
-const frame = () => {
+let clock: number;
+const frame = (ms = 16) => {
+  clock += ms;
   const due = [...frames.values()];
   frames.clear();
-  for (const cb of due) cb(0);
+  for (const cb of due) cb(clock);
 };
 const pending = () => frames.size;
 
 beforeEach(() => {
   frames = new Map();
   nextFrame = 1;
+  clock = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => clock);
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
     frames.set(nextFrame, cb);
     return nextFrame++;
@@ -66,6 +73,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
 
@@ -115,6 +123,14 @@ describe("restoring by row", () => {
     expect(scroller.scrollTop).toBe(650);
   });
 
+  it("falls back to the raw offset when the row is there but rendered nothing to measure", () => {
+    const { scroller, empty } = transcript([300, 300, 300, 300]);
+    empty(2);
+    restoreScroll(scroller, { top: 650, atBottom: false, anchor: { id: "r2", offset: 50 } });
+    expect(scroller.scrollTop).toBe(650);
+    expect(pending()).toBe(0);
+  });
+
   it("restores a position with no row to go by, such as an empty transcript's, by its offset", () => {
     const { scroller } = transcript([300, 300, 300, 300]);
     restoreScroll(scroller, { top: 420, atBottom: false });
@@ -141,7 +157,52 @@ describe("restoring by row", () => {
     expect(pending()).toBe(0);
   });
 
-  it("gives up after a bounded number of frames when the row never holds still", () => {
+  it("waits as long on a fast screen as a slow one for content above to land", () => {
+    const { scroller, resize } = transcript([300, 300, 300, 300]);
+    restoreScroll(scroller, { top: 650, atBottom: false, anchor: { id: "r2", offset: 50 } });
+
+    // At 120Hz, a diagram that renders a third of a second later — well past
+    // the point a frame count tuned for 60Hz would have run out.
+    while (clock < 330) frame(8);
+    resize(0, 500);
+    frame(8);
+    expect(scroller.scrollTop).toBe(850);
+  });
+
+  it("holds still for the same stretch of time whatever the frame rate", () => {
+    const settle = (ms: number) => {
+      const { scroller } = transcript([300, 300, 300, 300]);
+      clock = 0;
+      restoreScroll(scroller, { top: 650, atBottom: false, anchor: { id: "r2", offset: 50 } });
+      while (pending()) frame(ms);
+      document.body.innerHTML = "";
+      return clock;
+    };
+    const slow = settle(16);
+    const fast = settle(8);
+    expect(Math.abs(slow - fast)).toBeLessThanOrEqual(16);
+  });
+
+  it("gives up after the same stretch of time whatever the frame rate when the row never holds still", () => {
+    const chase = (ms: number) => {
+      const { scroller, resize } = transcript([300, 300, 300, 300]);
+      clock = 0;
+      restoreScroll(scroller, { top: 650, atBottom: false, anchor: { id: "r2", offset: 50 } });
+      let grown = 300;
+      for (let i = 0; i < 10_000 && pending(); i++) {
+        resize(0, (grown += 1));
+        frame(ms);
+      }
+      expect(pending()).toBe(0);
+      document.body.innerHTML = "";
+      return clock;
+    };
+    const slow = chase(16);
+    const fast = chase(8);
+    expect(Math.abs(slow - fast)).toBeLessThanOrEqual(16);
+  });
+
+  it("gives up after a bounded time when the row never holds still", () => {
     const { scroller, resize } = transcript([300, 300, 300, 300]);
     restoreScroll(scroller, { top: 650, atBottom: false, anchor: { id: "r2", offset: 50 } });
     let grown = 300;

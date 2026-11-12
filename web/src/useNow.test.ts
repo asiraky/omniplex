@@ -23,6 +23,15 @@ describe("useNow", () => {
     unmount();
   });
 
+  it("reads the real time on a render between ticks", () => {
+    const { result, rerender, unmount } = renderHook(() => useNow());
+    // New data re-renders the caller mid-minute; no tick has fired.
+    vi.setSystemTime(new Date("2026-11-11T10:00:50Z"));
+    rerender();
+    expect(result.current).toBe(Date.parse("2026-11-11T10:00:50Z"));
+    unmount();
+  });
+
   it("runs one timer however many read it, and none once they have gone", () => {
     const a = renderHook(() => useNow());
     const b = renderHook(() => useNow());

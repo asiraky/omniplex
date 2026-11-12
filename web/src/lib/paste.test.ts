@@ -96,6 +96,8 @@ describe("pasteTakesText", () => {
   it("attaches several copied files listed one name per line", () => {
     const files = [png("a.png"), new File(["x"], "notes.txt", { type: "text/plain" })];
     expect(pasteTakesText(clip(files, "a.png\r\nnotes.txt\n"))).toBe(false);
+    // macOS can separate the names with a lone carriage return.
+    expect(pasteTakesText(clip(files, "a.png\rnotes.txt"))).toBe(false);
   });
 
   it("takes the text when it names a file but says more than that", () => {

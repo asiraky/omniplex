@@ -11,15 +11,20 @@ import { useSyncExternalStore } from "react";
  * label shows, and catches up as the page comes back to the foreground: a
  * phone freezes timers in a background tab, and the first thing you see on
  * returning is exactly the label that went stale.
+ *
+ * The tick only decides when to re-render; what a render reads is the real
+ * time. A render driven by new data can land 59 seconds after the last tick,
+ * and a countdown worked from the tick would overstate by that much: a
+ * schedule made for five minutes from now would say "in 6 min".
  */
 const MINUTE = 60_000;
 
-let now = Date.now();
+let ticks = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
 
 function tick() {
-  now = Date.now();
+  ticks++;
   for (const l of listeners) l();
 }
 
@@ -39,8 +44,6 @@ function onVisibility() {
 
 function subscribe(l: () => void) {
   if (listeners.size === 0) {
-    // The clock stood still while nobody was reading it.
-    now = Date.now();
     schedule();
     document.addEventListener("visibilitychange", onVisibility);
   }
@@ -54,7 +57,8 @@ function subscribe(l: () => void) {
   };
 }
 
-/** The current time, to the minute, re-rendering the caller as it moves on. */
+/** The current time, re-rendering the caller as each minute begins. */
 export function useNow(): number {
-  return useSyncExternalStore(subscribe, () => now);
+  useSyncExternalStore(subscribe, () => ticks);
+  return Date.now();
 }
