@@ -166,14 +166,19 @@ describe("sending with images", () => {
     expect(onSend).toHaveBeenCalledWith("", { imageIds: ["img-1"], files: [] }, undefined);
   });
 
-  it("refuses to send while an image is still going up", () => {
+  it("sends while an image is still going up, leaving the wait to the thread", () => {
     const { onSend } = mount({
       draft: "look at this",
       attachments: [staged({ status: "uploading", id: undefined })],
     });
-    expect(sendButton()).toHaveProperty("disabled", true);
     fireEvent.click(sendButton());
-    expect(onSend).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("look at this", { imageIds: [], files: [] }, undefined);
+  });
+
+  it("sends a message that is nothing but an image still going up", () => {
+    const { onSend } = mount({ attachments: [staged({ status: "uploading", id: undefined })] });
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
   it("keeps send out of reach with neither text nor a ready image", () => {
@@ -212,14 +217,56 @@ describe("sending with images", () => {
     expect(onSend).toHaveBeenCalledWith("", { imageIds: [], files: [{ artefactId: "art-1" }] }, undefined);
   });
 
-  it("refuses to send while a file is still going up, and shows how far it has got", () => {
+  it("sends while a file is still going up, and shows how far it has got", () => {
     const { onSend } = mount({
       draft: "read this",
       attachments: [stagedFile({ status: "uploading", artefactId: undefined, progress: 0.4 })],
     });
     expect(screen.getByRole("progressbar", { name: "Uploading b.pdf" }).getAttribute("aria-valuenow")).toBe("40");
     fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["image", staged({ status: "error", id: undefined, error: "network down" })],
+    ["file", stagedFile({ status: "error", artefactId: undefined, error: "network down" })],
+  ])("retries a failed %s from its chip", (_, failed) => {
+    const onRetryAttachment = vi.fn();
+    const { onRemoveAttachment } = mount({ attachments: [failed], onRetryAttachment });
+    fireEvent.click(screen.getByRole("button", { name: `Retry ${failed.name}` }));
+    expect(onRetryAttachment).toHaveBeenCalledWith(failed.key);
+    // Removing it is still an option for a file that will never go.
+    fireEvent.click(screen.getByRole("button", { name: `Remove ${failed.name}` }));
+    expect(onRemoveAttachment).toHaveBeenCalledWith(failed.key);
+  });
+
+  it("offers no retry on a chip that has not failed, or with nowhere to retry it", () => {
+    const { rerender } = mount({
+      attachments: [staged({ status: "uploading", id: undefined }), stagedFile()],
+      onRetryAttachment: vi.fn(),
+    });
+    expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();
+    rerender({
+      attachments: [staged({ status: "error", id: undefined, error: "network down" })],
+      onRetryAttachment: undefined,
+    });
+    expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();
+  });
+
+  it("holds the next message back while one waits for its uploads, but keeps it writable", () => {
+    const onDraftChange = vi.fn();
+    const { onSend, rerender } = mount({ draft: "and another thing", waiting: true, onDraftChange });
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(sendButton()).toHaveProperty("disabled", true);
+    fireEvent.keyDown(box(), { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
+    fireEvent.change(box(), { target: { value: "and another thing too" } });
+    expect(onDraftChange).toHaveBeenCalledWith("and another thing too");
+
+    rerender({ draft: "and another thing", waiting: false });
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
   it("does not count a file that failed to upload as something to send", () => {
@@ -255,6 +302,32 @@ describe("sending with images", () => {
     const { onRemoveAttachment } = mount({ attachments: [staged()] });
     fireEvent.click(screen.getByRole("button", { name: "Remove shot.png" }));
     expect(onRemoveAttachment).toHaveBeenCalledWith("k1");
+  });
+});
+
+describe("a message that came back unsent", () => {
+  it("sends it again from the note", () => {
+    const onRetry = vi.fn();
+    mount({ failure: { reason: "offline", onRetry, onDismiss: vi.fn() } });
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no retry for one that cannot go again as it was, only dismissal", () => {
+    const onDismiss = vi.fn();
+    mount({ failure: { reason: "a file did not upload", onDismiss } });
+    const note = screen.getByRole("alert");
+    expect(within(note).queryByRole("button", { name: "Retry" })).toBeNull();
+    fireEvent.click(within(note).getByRole("button", { name: "Dismiss" }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("will not send it again while another message waits on its uploads", () => {
+    mount({ waiting: true, failure: { reason: "offline", onRetry: vi.fn(), onDismiss: vi.fn() } });
+    expect(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" })).toHaveProperty(
+      "disabled",
+      true,
+    );
   });
 });
 

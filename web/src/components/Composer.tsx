@@ -29,6 +29,7 @@ import { ComposerModelPicker } from "./composer/ComposerModelPicker";
 import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
 import { SendButtons } from "./composer/SendButtons";
 import { SendFailure } from "./composer/SendFailure";
+import { UploadWait } from "./composer/UploadWait";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerSend } from "./composer/useComposerSend";
@@ -80,6 +81,12 @@ interface ComposerProps {
       Anything that is not a file is left to the textarea. */
   onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
+  /** Puts a failed upload up again. Omitted, a failed chip offers only removal. */
+  onRetryAttachment?: (key: string) => void;
+  /** A message from this thread went with files still uploading and is held
+      until they land. Send waits too, or the next message would overtake it;
+      writing it does not. */
+  waiting?: boolean;
   disabledPlaceholder?: string;
   /** Every harness the server reports; the picker reads this thread's out. */
   harnesses?: HarnessMeta[];
@@ -114,8 +121,9 @@ interface ComposerProps {
       remember which skills this user actually reaches for. */
   onCommandUsed?: (insertText: string) => void;
   /** The last message came back unsent: why, shown over the composer, how to
-      send it again, and how to put the note away. */
-  failure?: { reason: string; onRetry: () => void; onDismiss: () => void };
+      send it again, and how to put the note away. No `onRetry` for one that
+      cannot go again as it was, such as a message whose file failed to upload. */
+  failure?: { reason: string; onRetry?: () => void; onDismiss: () => void };
   /** Extra controls in the toolbar, right after the model picker. */
   tools?: ReactNode;
   /** A drawer under the box, for context that is usually right already. */
@@ -173,6 +181,8 @@ export function Composer({
   attachments = NO_ATTACHMENTS,
   onAttachFiles,
   onRemoveAttachment,
+  onRetryAttachment,
+  waiting = false,
   disabledPlaceholder,
   harnesses = NO_HARNESSES,
   harness = "",
@@ -249,6 +259,7 @@ export function Composer({
     attachments,
     disabled,
     sendDisabled,
+    waiting,
     catalogueReady: catalogue.ready,
     items: menu.items,
     onSend,
@@ -394,15 +405,21 @@ export function Composer({
             Drop files to attach
           </div>
         )}
+        {waiting && <UploadWait />}
         {failure && (
           <SendFailure
             reason={failure.reason}
-            canRetry={!disabled && !sendDisabled}
+            canRetry={!disabled && !sendDisabled && !waiting}
             onRetry={failure.onRetry}
             onDismiss={failure.onDismiss}
           />
         )}
-        <AttachmentStrip attachments={attachments} tooMuch={tooMuch} onRemove={onRemoveAttachment} />
+        <AttachmentStrip
+          attachments={attachments}
+          tooMuch={tooMuch}
+          onRemove={onRemoveAttachment}
+          onRetry={onRetryAttachment}
+        />
         <CommandMenu
           open={menu.open}
           anchor={textarea}

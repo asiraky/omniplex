@@ -1,4 +1,5 @@
-import { XIcon } from "lucide-react";
+import { RotateCwIcon, XIcon } from "lucide-react";
+import { useId } from "react";
 
 import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { Spinner } from "~/components/ui/spinner";
@@ -11,22 +12,31 @@ import { cn } from "~/lib/utils";
  * visible, because there is no hover on a phone, and on touch its 24px circle
  * takes taps across 44px. Where that reaches the next tile, the tile wins: it
  * is later in the strip, so it sits on top, and it does nothing when tapped.
+ *
+ * A failed upload is retried by tapping the tile itself, which is the biggest
+ * target there is on a phone; the remove button stays on top of it.
  */
 export function AttachmentStrip({
   attachments,
   tooMuch,
   onRemove,
+  onRetry,
 }: {
   attachments: Attachment[];
   tooMuch: boolean;
   onRemove?: (key: string) => void;
+  onRetry?: (key: string) => void;
 }) {
   if (attachments.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-2 px-3 pt-3">
       {attachments.map((a) => (
         <div key={a.key} className={cn("relative", a.kind === "file" && "max-w-60 min-w-0")}>
-          {a.kind === "file" ? <FileChip attachment={a} /> : <ImageThumb attachment={a} />}
+          {a.kind === "file" ? (
+            <FileChip attachment={a} onRetry={onRetry} />
+          ) : (
+            <ImageThumb attachment={a} onRetry={onRetry} />
+          )}
           <button
             type="button"
             onClick={() => onRemove?.(a.key)}
@@ -46,7 +56,15 @@ export function AttachmentStrip({
   );
 }
 
-function ImageThumb({ attachment: a }: { attachment: Attachment }) {
+function ImageThumb({
+  attachment: a,
+  onRetry,
+}: {
+  attachment: Attachment;
+  onRetry?: (key: string) => void;
+}) {
+  const errorId = useId();
+  const error = a.error ?? "Upload failed";
   return (
     <>
       <img
@@ -62,23 +80,51 @@ function ImageThumb({ attachment: a }: { attachment: Attachment }) {
           <Spinner className="size-5" />
         </span>
       )}
-      {a.status === "error" && (
-        <span
-          title={a.error}
-          className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
-        >
-          {a.error ?? "Upload failed"}
-        </span>
-      )}
+      {a.status === "error" &&
+        (onRetry ? (
+          // The reason does not fit 64px legibly beside the action, so it is
+          // the tooltip and what a screen reader hears after the label.
+          <>
+            <button
+              type="button"
+              onClick={() => onRetry?.(a.key)}
+              aria-label={`Retry ${a.name}`}
+              aria-describedby={errorId}
+              title={error}
+              className="text-destructive bg-background/50 hover:bg-background/70 focus-visible:ring-ring absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] font-medium outline-none focus-visible:ring-2"
+            >
+              <RotateCwIcon className="size-4" />
+              Retry
+            </button>
+            <span id={errorId} className="sr-only">
+              {error}
+            </span>
+          </>
+        ) : (
+          <span
+            title={a.error}
+            className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
+          >
+            {error}
+          </span>
+        ))}
     </>
   );
 }
 
 /** A staged non-image file: its tile, with the upload's progress or failure
     in place of its size until it is ready. */
-function FileChip({ attachment: a }: { attachment: Attachment }) {
-  // A PDF goes to the attachment store in one request with nothing to count,
-  // so it has no progress to show; an artefact upload reports as it goes.
+function FileChip({
+  attachment: a,
+  onRetry,
+}: {
+  attachment: Attachment;
+  onRetry?: (key: string) => void;
+}) {
+  const retry = a.status === "error" && !!onRetry;
+  // Both routes report as they go, but only an artefact is staged at 0: a PDF
+  // starts with no progress, so it reads "Uploading…" until its first report
+  // lands and then shows the bar.
   const pct = a.progress === undefined ? undefined : Math.round(a.progress * 100);
   const detail =
     a.status === "uploading" ? (
@@ -100,8 +146,23 @@ function FileChip({ attachment: a }: { attachment: Attachment }) {
         mediaType={a.mediaType ?? "application/octet-stream"}
         size={a.size ?? 0}
         detail={detail}
-        className={cn("pr-4", a.status === "error" && "border-destructive/50")}
+        // Room on the right for the retry label laid over the tile.
+        className={cn("pr-4", a.status === "error" && "border-destructive/50", retry && "pr-16")}
       />
+      {retry && (
+        // Over the whole tile rather than inside its detail line, which clips
+        // what overflows it and would cut a 44px target down to a line of text.
+        <button
+          type="button"
+          onClick={() => onRetry?.(a.key)}
+          aria-label={`Retry ${a.name}`}
+          title={a.error}
+          className="text-destructive hover:bg-destructive/5 focus-visible:ring-ring absolute inset-0 flex items-center justify-end gap-1 rounded-xl pr-3 text-[11px] font-medium outline-none focus-visible:ring-2"
+        >
+          <RotateCwIcon className="size-3.5" />
+          Retry
+        </button>
+      )}
       {a.status === "uploading" && pct !== undefined && (
         <span
           role="progressbar"
