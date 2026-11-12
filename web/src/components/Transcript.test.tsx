@@ -647,9 +647,9 @@ describe("a turn that failed", () => {
         { id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" },
         { id: "notify:10", kind: "notice", noticeKind: "notify", level: "warning", text: "No API key for lint" },
       );
-      render(
+      attach(
+        s,
         <Transcript
-          state={s}
           {...props}
           onRetryTurn={() => {}}
           switchTargets={[{ id: "aaron", name: "Aaron" }]}
