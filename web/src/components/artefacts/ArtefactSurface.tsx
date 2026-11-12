@@ -58,6 +58,7 @@ import {
 import { useCopy } from "~/lib/clipboard";
 import { formatAge } from "~/lib/usageFormat";
 import { cn } from "~/lib/utils";
+import { useNow } from "~/useNow";
 
 // The browser chrome, its console and its device frames are only wanted once
 // an HTML artefact is on screen.
@@ -279,8 +280,9 @@ export function ArtefactSurface({ threadId, artefact: a }: { threadId: string; a
 
 /** The name, and when and why it was last shown. */
 function Title({ artefact: a }: { artefact: Artefact }) {
+  const now = useNow();
   const detail = [
-    formatAge(a.shownAt, Date.now()),
+    formatAge(a.shownAt, now),
     a.source === "upload" ? "uploaded" : "",
     a.files > 1 ? `${a.files} files` : "",
     a.note ?? "",
@@ -363,7 +365,7 @@ function SharePopover({ threadId, artefact: a }: { threadId: string; artefact: A
     }
   };
 
-  const now = Date.now();
+  const now = useNow();
   const live = link && link.expiresAt > now ? link : null;
   // Only as good as the last time the file was shown: an edit the agent has
   // not shown yet is not known here, which is why Update link is always there.

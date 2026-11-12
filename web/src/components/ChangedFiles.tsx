@@ -355,14 +355,19 @@ export function ChangedFiles({
         </div>
       ) : (
         latest && (
-          <div className="flex flex-wrap items-center gap-1 px-1 pb-1">
+          // The chips are 25px tall and grow to 44px of hit area on touch.
+          // Packed 4px apart, the grown areas would land on the summary
+          // line above and on each other, so a touch screen spaces the rows
+          // out to fit them instead: 10px under the summary, 20px between
+          // rows. The chips themselves stay the size they are.
+          <div className="flex flex-wrap items-center gap-1 px-1 pb-1 pointer-coarse:gap-y-5 pointer-coarse:pt-2.5">
             {preview.map((file) => (
               <button
                 key={file.path}
                 type="button"
                 title={file.path}
                 onClick={() => onOpenDiff(file.path)}
-                className="hover:bg-accent/60 focus-visible:ring-ring flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors outline-none focus-visible:ring-2"
+                className="hover:bg-accent/60 focus-visible:ring-ring hit-44 relative flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors outline-none focus-visible:ring-2"
               >
                 <span className={cn(STATUS_TONE[file.status])}>{STATUS_LABEL[file.status] ?? "M"}</span>
                 <span className="max-w-40 truncate">{fileName(file.path)}</span>
@@ -373,7 +378,7 @@ export function ChangedFiles({
               <button
                 type="button"
                 onClick={() => setExpanded(true)}
-                className="text-muted-foreground hover:text-foreground rounded-md px-2 py-1 text-[11px] transition-colors"
+                className="text-muted-foreground hover:text-foreground hit-44 relative rounded-md px-2 py-1 text-[11px] transition-colors"
               >
                 Show all {files.length} files
               </button>

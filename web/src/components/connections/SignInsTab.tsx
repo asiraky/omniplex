@@ -32,6 +32,7 @@ import {
 } from "~/lib/connections";
 import { formatAge } from "~/lib/usageFormat";
 import { cn, errorText } from "~/lib/utils";
+import { useNow } from "~/useNow";
 import type { Cli, CliAccount } from "~/protocol";
 
 import { CliFields, MarkChip } from "./parts";
@@ -196,13 +197,14 @@ function AccountRow({
   onSignIn: () => void;
   onRemove: () => void;
 }) {
+  const now = useNow();
   const problem = account.status !== "signed_in" ? account.detail : undefined;
   return (
     <li className="py-0.5">
       <ListRow
         title={account.name}
         markers={<MarkChip mark={accountMark(account.status)} />}
-        sub={account.checkedAt ? `Checked ${formatAge(Date.parse(account.checkedAt), Date.now())}` : undefined}
+        sub={account.checkedAt ? `Checked ${formatAge(Date.parse(account.checkedAt), now)}` : undefined}
         problem={problem}
         foldProblem
         problemTone={account.status === "failed" ? "bad" : "attention"}

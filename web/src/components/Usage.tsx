@@ -27,6 +27,7 @@ import {
 import { cn } from "~/lib/utils";
 import type { QuotaStatus, QuotaWindow, UsageReport } from "~/protocol";
 import { useHoverPopover } from "~/useHoverPopover";
+import { useNow } from "~/useNow";
 
 type View = "cost" | "tokens" | "limits";
 
@@ -473,13 +474,7 @@ function ModelBreakdown({
  */
 function LimitsView({ quotas, onRefresh }: { quotas: QuotaStatus[]; onRefresh: (instance: string) => Promise<QuotaStatus[]> }) {
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
-  const [now, setNow] = useState(() => Date.now());
-
-  // A slowly ticking clock keeps the countdowns honest without a render storm.
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(t);
-  }, []);
+  const now = useNow();
 
   const refresh = useCallback(
     (instance: string) => {

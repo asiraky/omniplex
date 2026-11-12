@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { isComposing } from "~/lib/ime";
 import { titleToSave } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
 
@@ -57,7 +58,10 @@ export function TitleEditor({
       spellCheck={false}
       onBlur={() => finish(true)}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+        // Enter and Escape mid-composition confirm or cancel the IME's
+        // candidate, not the edit.
+        if (isComposing(e)) return;
+        if (e.key === "Enter") {
           e.preventDefault();
           finish(true);
         } else if (e.key === "Escape") {

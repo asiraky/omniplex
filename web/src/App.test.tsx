@@ -449,7 +449,7 @@ describe("opening a thread from a notification", () => {
     localStorage.setItem("omniplex.lastThread", "a");
     sessionStorage.setItem(
       "omniplex.resume",
-      JSON.stringify({ build: "dev", state: state("a", "default"), scrollTop: 0, atBottom: true }),
+      JSON.stringify({ build: "dev", state: state("a", "default"), position: { top: 0, atBottom: true } }),
     );
     render(<App />);
     expect(prime).not.toHaveBeenCalled();
@@ -1103,7 +1103,7 @@ describe("resuming after a tab discard", () => {
     localStorage.setItem("omniplex.lastThread", id);
     sessionStorage.setItem(
       "omniplex.resume",
-      JSON.stringify({ build: "dev", state: state(id, "default"), scrollTop: 120, atBottom: false }),
+      JSON.stringify({ build: "dev", state: state(id, "default"), position: { top: 120, atBottom: false } }),
     );
   };
 
@@ -1146,7 +1146,7 @@ describe("resuming after a tab discard", () => {
     localStorage.setItem("omniplex.lastThread", "a");
     sessionStorage.setItem(
       "omniplex.resume",
-      JSON.stringify({ build: "other", state: state("a", "default"), scrollTop: 0, atBottom: true }),
+      JSON.stringify({ build: "other", state: state("a", "default"), position: { top: 0, atBottom: true } }),
     );
     render(<App />);
     expect(prime).not.toHaveBeenCalled();
@@ -1237,7 +1237,7 @@ describe("transcript scroll position", () => {
     localStorage.setItem("omniplex.lastThread", "a");
     sessionStorage.setItem(
       "omniplex.resume",
-      JSON.stringify({ build: "dev", state: state("a", "default"), scrollTop: 300, atBottom: false }),
+      JSON.stringify({ build: "dev", state: state("a", "default"), position: { top: 300, atBottom: false } }),
     );
     viewport("desktop");
     render(<App />);

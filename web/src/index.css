@@ -3,6 +3,15 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* A pointer that can hover, which is the only thing that can ever reveal a
+   control hidden until hovered. Width is the wrong question: an iPad is wide
+   and has no hover, a phone on its side clears `md`, and a narrow laptop
+   window still has a mouse. So hover-to-reveal lives under `mouse:` and the
+   control simply shows everywhere else. The extra parentheses keep the query
+   one condition, so `not-mouse:` negates the whole of it rather than
+   producing `not (hover: hover) and …`, which browsers reject outright. */
+@custom-variant mouse (@media ((hover: hover) and (pointer: fine)));
+
 /* Semantic roles only. Components never name a colour — they name what the
    colour is for — which is what makes a second theme a matter of redefining
    these eight or so variables rather than editing every file. */
@@ -226,6 +235,40 @@
 
   ::selection {
     background: color-mix(in oklch, var(--primary) 30%, transparent);
+  }
+}
+
+/* iOS zooms the page into any field it focuses whose text is under 16px, and
+   does not zoom back out. Deliberately outside every layer: unlayered rules
+   beat all of Tailwind's, whatever their specificity, so this holds for every
+   field at once — including a phone on its side, which is wider than `md` and
+   would otherwise pick up the desktop's `md:text-sm`. A finger is the
+   condition rather than a width, which also covers the iPad. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* A 44px hit area round a smaller control on a touch screen, without moving
+   a pixel of it: an invisible ::after centred on the control, never smaller
+   than the control itself. The element has to be positioned; this does not
+   set `position`, because `relative` would undo an `absolute` control.
+   Where the grown area would reach a neighbouring control, cap that axis
+   with `[--hit-w:…]` or `[--hit-h:…]` (0px keeps the control's own size). */
+@utility hit-44 {
+  @media (pointer: coarse) {
+    &::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: max(100%, var(--hit-w, 44px));
+      height: max(100%, var(--hit-h, 44px));
+      translate: -50% -50%;
+    }
   }
 }
 

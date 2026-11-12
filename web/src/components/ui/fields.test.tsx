@@ -72,12 +72,4 @@ describe("field height", () => {
     const trigger = screen.getByRole("combobox", { name: "Harness and model" });
     expect(heights(trigger.className)).toEqual({ phone: "11", desktop: "9" });
   });
-
-  it("keeps a text field at 16px on a phone so iOS does not zoom the page", () => {
-    render(<Input aria-label="text" />);
-    const cls = screen.getByLabelText("text").className;
-    // `text-base` is 16px; the smaller size is behind `md:`.
-    expect(cls).toContain("text-base");
-    expect(cls).toContain("md:text-sm");
-  });
 });

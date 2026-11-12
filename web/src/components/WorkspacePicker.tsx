@@ -5,6 +5,7 @@ import { Badge } from "~/components/ui/badge";
 import { Input } from "~/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
 import { branchTemplate } from "~/lib/branchTemplate";
+import { isComposing } from "~/lib/ime";
 import { cn } from "~/lib/utils";
 import type { Issue, UserConfig, Workspace } from "~/protocol";
 
@@ -128,6 +129,9 @@ export function WorkspacePicker({
   };
 
   const key = (e: React.KeyboardEvent) => {
+    // Enter and Escape mid-composition belong to the IME: they confirm or
+    // cancel a candidate, and must not pick a row or close the list.
+    if (isComposing(e)) return;
     if (e.key === "Escape") {
       // Consume it while the list is open, so it closes the list and not the
       // whole dialog around it.

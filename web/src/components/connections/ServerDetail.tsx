@@ -30,6 +30,7 @@ import {
 } from "~/lib/connections";
 import { formatAge } from "~/lib/usageFormat";
 import { cn, errorText } from "~/lib/utils";
+import { useNow } from "~/useNow";
 import type { McpHarness, McpServer, ThreadMcp } from "~/protocol";
 
 import { AgentSwitches, MarkChip, ServerFields } from "./parts";
@@ -109,6 +110,7 @@ export function ServerDetail({
   const queued = useRef(0);
   const confirmed = useRef<McpServer | null>(null);
   const projectOff = useProjectOff(command, (s) => onSaved(s));
+  const now = useNow();
 
   const kind = serverKind(server);
   const mark = serverMark(server);
@@ -218,7 +220,7 @@ export function ServerDetail({
               <span>{statusText(server)}</span>
               {server.checkedAt && (
                 <span className="text-muted-foreground text-[12px]">
-                  Checked {formatAge(Date.parse(server.checkedAt), Date.now())}
+                  Checked {formatAge(Date.parse(server.checkedAt), now)}
                 </span>
               )}
             </p>

@@ -311,7 +311,9 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="hover:bg-accent/40 focus-visible:ring-ring text-muted-foreground flex min-h-11 w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
+        // 44px tall on a phone, its content's height from md up; a touch
+        // screen that wide still gets the 44px, as hit area.
+        className="hover:bg-accent/40 focus-visible:ring-ring text-muted-foreground hit-44 relative flex min-h-11 w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
       >
         {live ? (
           <>
@@ -383,7 +385,9 @@ export function TurnFold({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="hover:text-foreground focus-visible:ring-ring text-muted-foreground flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2"
+        // A 24px line, grown on touch to a 40px target rather than 44: the
+        // opened work starts 8px below it, and the target stops short.
+        className="hover:text-foreground focus-visible:ring-ring text-muted-foreground hit-44 relative flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors [--hit-h:40px] outline-none focus-visible:ring-2"
       >
         <span>{continued ? summarise(items) || "More work" : foldLabel(turn)}</span>
         <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />

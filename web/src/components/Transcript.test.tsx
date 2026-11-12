@@ -188,6 +188,92 @@ describe("lifting a just-sent prompt", () => {
   });
 });
 
+// Leaving a thread and coming back, end to end through the component: the
+// position it reports as it unmounts is the one it is handed on remount.
+//
+// jsdom lays nothing out, so each row's body is given a height and stacked
+// with no gap, in a 400px window over the rows plus a 500px tail.
+describe("coming back to a thread", () => {
+  let sizes: Record<string, number>;
+  const topOf = (id: string) => {
+    const ids = Object.keys(sizes);
+    return ids.slice(0, ids.indexOf(id)).reduce((a, k) => a + sizes[k], 0);
+  };
+  const rowOf = (el: HTMLElement) => el.parentElement?.getAttribute("data-row-id") ?? undefined;
+  const scroller = () => document.querySelector<HTMLElement>("[data-transcript-scroller]")!;
+
+  beforeEach(() => {
+    sizes = { p1: 300, p2: 300, p3: 300, p4: 300 };
+    const height = () => Object.values(sizes).reduce((a, h) => a + h, 0) + 500;
+    let top = 0;
+    const isScroller = (el: HTMLElement) => el.hasAttribute("data-transcript-scroller");
+    vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+      const id = rowOf(this);
+      return id ? topOf(id) : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      const id = rowOf(this);
+      return id ? sizes[id] : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockReturnValue(null);
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      get() {
+        return isScroller(this) ? height() : 0;
+      },
+      configurable: true,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { value: 400, configurable: true });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      get() {
+        return isScroller(this) ? top : 0;
+      },
+      set(v: number) {
+        if (isScroller(this)) top = Math.max(0, Math.min(v, height() - 400));
+      },
+      configurable: true,
+    });
+    // The settle that follows a restore is scrollAnchor's to test; here the
+    // frames never come.
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+  });
+  afterEach(() => {
+    delete (HTMLElement.prototype as any).scrollHeight;
+    delete (HTMLElement.prototype as any).clientHeight;
+    delete (HTMLElement.prototype as any).scrollTop;
+  });
+
+  const mount = (props: { initialScroll?: any; onScrollChange?: any }) =>
+    render(
+      <Transcript
+        state={prompts(["p1", "p2", "p3", "p4"])}
+        onFinish={() => {}}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        {...props}
+      />,
+    );
+
+  it("returns to the row being read, though the rows above it have grown since", () => {
+    const onScrollChange = vi.fn();
+    const first = mount({ onScrollChange });
+    act(() => {
+      scroller().scrollTop = 450;
+      scroller().dispatchEvent(new Event("scroll"));
+    });
+    first.unmount();
+    const left = onScrollChange.mock.lastCall![1];
+
+    // Something above the reader rendered taller the second time round.
+    sizes.p1 = 500;
+    mount({ initialScroll: left });
+
+    expect(scroller().scrollTop).toBe(650);
+  });
+});
+
 // A worktree thread whose branch has landed is offered a way out of the
 // transcript it is being read in.
 function merged(pr: PullRequest | null, onFinish = () => {}) {

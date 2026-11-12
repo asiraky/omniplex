@@ -8,7 +8,9 @@ import { cn } from "~/lib/utils";
 /**
  * What is going out with the next message: pictures as thumbnails, anything
  * else as a file tile. Sized for a thumb: the remove button is always
- * visible, because there is no hover on a phone.
+ * visible, because there is no hover on a phone, and on touch its 24px circle
+ * takes taps across 44px. Where that reaches the next tile, the tile wins: it
+ * is later in the strip, so it sits on top, and it does nothing when tapped.
  */
 export function AttachmentStrip({
   attachments,
@@ -29,7 +31,7 @@ export function AttachmentStrip({
             type="button"
             onClick={() => onRemove?.(a.key)}
             aria-label={`Remove ${a.name}`}
-            className="bg-background text-muted-foreground hover:text-foreground absolute -top-2 -right-2 grid size-6 place-items-center rounded-full border shadow-sm"
+            className="bg-background text-muted-foreground hover:text-foreground hit-44 absolute -top-2 -right-2 grid size-6 place-items-center rounded-full border shadow-sm"
           >
             <XIcon className="size-3.5" />
           </button>

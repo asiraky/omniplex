@@ -113,6 +113,15 @@ describe("attaching images", () => {
     expect(onAttachFiles).toHaveBeenCalledWith([file]);
   });
 
+  it("pastes spreadsheet cells as their text, not the picture that came with them", () => {
+    const { onAttachFiles } = mount();
+    const cells = "Q1\t1200\nQ2\t1350";
+    const clipboardData = { ...text(cells), files: [png("image.png")], types: ["Files", "text/plain"] };
+    // Not handled: the textarea's own paste puts the text in.
+    expect(fireEvent.paste(box(), { clipboardData })).toBe(true);
+    expect(onAttachFiles).not.toHaveBeenCalled();
+  });
+
   it("takes any kind of file, however it arrives", () => {
     const { onAttachFiles } = mount();
     const picked = pdf("picked.pdf");

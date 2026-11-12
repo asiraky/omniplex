@@ -61,4 +61,22 @@ describe("TitleEditor", () => {
     expect(onSave).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
   });
+
+  it("does not finish on the Enter that Safari sends after composition ends", () => {
+    // Safari has cleared isComposing by then; keyCode 229 is all that is left.
+    const { field, onSave, onDone } = renderEditor();
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 229 });
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("keeps editing when Escape cancels an IME candidate", () => {
+    const { field, onSave, onDone } = renderEditor();
+    fireEvent.change(field, { target: { value: "New name" } });
+    fireEvent.keyDown(field, { key: "Escape", isComposing: true });
+    fireEvent.keyDown(field, { key: "Escape", keyCode: 229 });
+    expect(onDone).not.toHaveBeenCalled();
+    fireEvent.blur(field);
+    expect(onSave).toHaveBeenCalledWith("New name");
+  });
 });

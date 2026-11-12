@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 
+import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { ThreadMeta } from "~/protocol";
 import type { ResumeSnapshot } from "~/resume";
-
-export type ScrollPosition = { top: number; atBottom: boolean };
 
 /**
  * Where each thread's transcript was scrolled, kept above the Transcript for
@@ -18,16 +17,16 @@ export type ScrollPosition = { top: number; atBottom: boolean };
  */
 export function useScrollMemory(resume: ResumeSnapshot | null) {
   const positions = useRef<Record<string, ScrollPosition>>(
-    resume ? { [resume.state.threadId]: { top: resume.scrollTop, atBottom: resume.atBottom } } : {},
+    resume ? { [resume.state.threadId]: resume.position } : {},
   );
   // Threads the list has taken away. A deleted thread's transcript reports
   // one last position as it unmounts, and that unmount happens after the prune
   // below has already dropped it, so the id is refused outright rather than
   // being written straight back in.
   const goneThreads = useRef<Set<string>>(new Set());
-  const record = useCallback((id: string, top: number, atBottom: boolean) => {
+  const record = useCallback((id: string, position: ScrollPosition) => {
     if (goneThreads.current.has(id)) return;
-    positions.current[id] = { top, atBottom };
+    positions.current[id] = position;
   }, []);
   const positionOf = useCallback(
     (id: string): ScrollPosition | undefined => positions.current[id],
