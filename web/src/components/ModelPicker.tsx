@@ -131,9 +131,9 @@ export function ModelPicker({
   id?: string;
   className?: string;
   /**
-   * Below md the trigger names only the model: the logo and effort label go,
-   * so it can share a phone-width row with the composer's buttons. Both are
-   * still one tap away in the picker.
+   * The trigger names only the model: the logo, the effort, the chevron and
+   * the word "Fast" go, so the name keeps what width a narrow composer has.
+   * All of them are still one tap away in the picker.
    */
   compact?: boolean;
   /** Optional controlled state, used by composer actions such as /model. */
@@ -327,7 +327,7 @@ export function ModelPicker({
       className={cn("h-auto min-h-11 w-full justify-start gap-2 px-3 py-2 md:min-h-9", className)}
     >
       {selectedInstance && (
-        <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "max-md:hidden")} />
+        <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "hidden")} />
       )}
       <TriggerLabel
         model={selectedModel}
@@ -335,7 +335,7 @@ export function ModelPicker({
         fast={fast}
         compact={compact}
       />
-      <ChevronDownIcon className={cn("text-muted-foreground size-4 shrink-0", compact && "max-md:hidden")} />
+      <ChevronDownIcon className={cn("text-muted-foreground size-4 shrink-0", compact && "hidden")} />
     </Button>
   );
 
@@ -539,20 +539,20 @@ function TriggerLabel({
           <span className="text-muted-foreground ml-1.5 text-[11px]">{model.version}</span>
         )}
       </span>
-      {named && (
-        <span className={cn("text-muted-foreground shrink-0 text-[12px]", compact && "max-md:hidden")}>
+      {named && !compact && (
+        <span className="text-muted-foreground shrink-0 text-[12px]">
           <span aria-hidden className="mr-1.5 opacity-60">
             ·
           </span>
           {formatEffort(effort)}
         </span>
       )}
-      {/* On a phone the bolt says it alone, so the model's name keeps the
+      {/* Compact, the bolt says it alone, so the model's name keeps the
           width; the word is still there for a screen reader. */}
       {fast && (
         <span className="flex shrink-0 items-center gap-1 self-center text-[12px] text-amber-600 dark:text-amber-400">
           <ZapIcon aria-hidden className="size-3.5 fill-current" />
-          <span className={cn(compact && "max-md:sr-only")}>Fast</span>
+          <span className={cn(compact && "sr-only")}>Fast</span>
         </span>
       )}
     </span>

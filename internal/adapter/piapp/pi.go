@@ -321,6 +321,10 @@ type session struct {
 	// cancelled; each removes itself when its Elicit returns.
 	dialogs map[string]dialog
 	turnID  string
+	// ranTurn is the turn pi has started an agent run for (agent_start). A
+	// prompt pi acks without one ran no agent — an extension command, or an
+	// input handler that took it — and gets no agent_settled to close it.
+	ranTurn string
 	// editPaths holds the file each running edit call names, by item id.
 	// tool_execution_end carries the result but not the args, and the diff
 	// it becomes needs the path.
@@ -527,6 +531,7 @@ func (s *session) awaitPromptAck(turnID string, ack <-chan rpcResponse, release 
 	}
 	refusal := res.err()
 	if refusal == nil {
+		s.endIfNoRun(turnID)
 		return
 	}
 	// The prompt was refused, so no agent_settled will ever clear this turn
@@ -548,6 +553,28 @@ func (s *session) awaitPromptAck(turnID string, ack <-chan rpcResponse, release 
 		TurnID: turnID, StopReason: proto.StopError, Error: refusal.Error(),
 		Failure: adapter.FailureOf(refusal),
 	}))
+}
+
+// endIfNoRun closes a turn whose prompt pi acked without starting an agent run.
+// An extension command (/name) or an input handler can take the prompt whole;
+// pi acks it once the handler returns and sends neither agent_start nor
+// agent_settled, so nothing else would ever close the turn. A prompt that does
+// run is acked just before its run starts, which flips isStreaming at once, so
+// get_state, sent after the ack, tells the two apart. A run the handler sets
+// off later still arrives, as a harness-initiated turn (see ensureTurn). If
+// get_state fails the turn stays open, and Stop's kill timer ends it.
+func (s *session) endIfNoRun(turnID string) {
+	var state struct {
+		IsStreaming bool `json:"isStreaming"`
+	}
+	if err := s.call(context.Background(), map[string]any{"type": "get_state"}, &state); err != nil {
+		s.host.Logf("pi: get_state after a prompt ack: %v", err)
+		return
+	}
+	if state.IsStreaming {
+		return
+	}
+	s.closeUnrunTurn(turnID)
 }
 
 // clearTurn resets the active turn id if it is still ours. Guarded because the
@@ -700,7 +727,10 @@ func (u piUsage) contextTokens() int64 {
 func (s *session) handleEvent(typ string, raw json.RawMessage) {
 	switch typ {
 	case "agent_start":
-		s.ensureTurn()
+		turn := s.ensureTurn()
+		s.mu.Lock()
+		s.ranTurn = turn
+		s.mu.Unlock()
 
 	case "message_start":
 		var p struct {
@@ -826,10 +856,23 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 
 	case "extension_error":
 		var p struct {
+			Event string `json:"event"`
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &p)
 		s.host.Logf("pi extension error: %s", p.Error)
+		// A command whose handler threw is still acked as a success, and it
+		// ran nothing, so this is the only word of its failure. Pi sends it
+		// before the ack, while the command's turn is open, and the turn
+		// closes with it as its error. One from a command a run's extension
+		// called, mid-run, is the run's message_end's to overwrite.
+		if p.Event == "command" {
+			s.mu.Lock()
+			if s.turnID != "" {
+				s.lastStop, s.lastErr = "error", p.Error
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -994,10 +1037,32 @@ func (s *session) handleMessageEnd(raw json.RawMessage) {
 
 func (s *session) finishTurn() {
 	s.mu.Lock()
+	s.endTurnAndUnlock()
+}
+
+// closeUnrunTurn closes turnID on pi's behalf, for a prompt pi took without
+// running anything: only while it is still the open turn, and only if pi
+// never started a run for it, since a run settles its own turn. A command
+// that failed reports its error; one Stop was pressed on, cancelled.
+func (s *session) closeUnrunTurn(turnID string) {
+	s.mu.Lock()
+	if s.turnID != turnID || s.ranTurn == turnID {
+		s.mu.Unlock()
+		return
+	}
+	if s.aborted == turnID && s.lastStop == "" {
+		s.lastStop = "aborted"
+	}
+	s.endTurnAndUnlock()
+}
+
+// endTurnAndUnlock finishes the open turn with the stop reason pi left for it.
+// It is entered with mu held and releases it, so the emit happens unlocked.
+func (s *session) endTurnAndUnlock() {
 	turn := s.turnID
 	stop, errMsg := s.lastStop, s.lastErr
 	aborted := turn != "" && s.aborted == turn
-	s.turnID = ""
+	s.turnID, s.ranTurn = "", ""
 	s.lastStop, s.lastErr, s.aborted = "", "", ""
 	// An edit that never ended (pi died mid-call) has nothing left to claim
 	// its path: the next turn builds different item ids.

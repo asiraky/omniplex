@@ -24,6 +24,7 @@ import { GitChip } from "./threadDraft/GitChip";
 import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
 import { PinToggle } from "./threadDraft/PinToggle";
 import { FolderChip, ProjectChip } from "./threadDraft/ScopeChips";
+import { toolClass } from "./threadDraft/shared";
 import { useAgentChoice } from "./threadDraft/useAgentChoice";
 import { useDraftScope } from "./threadDraft/useDraftScope";
 import { useRememberedChoices } from "./threadDraft/useRememberedChoices";
@@ -340,28 +341,33 @@ export function ThreadDraft({
         <Composer
           key="new-thread"
           ref={composer}
-          tools={
-            <>
-              <AgentTools
-                harness={agent.selected}
-                modes={agent.modes}
-                modeId={agent.displayModeId}
-                supports1m={agent.supports1m}
-                want1m={agent.want1m}
-                onPickMode={(mode) => agent.remember({ mode })}
-                onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
-              />
-              <PinToggle pinned={pinned} onToggle={() => setPinChoice(!pinned)} />
-            </>
-          }
+          tools={(place) => {
+            // The toolbar's touch-height controls, or the drawer's chips.
+            const toolSize = place === "row" ? toolClass : undefined;
+            return (
+              <>
+                <AgentTools
+                  harness={agent.selected}
+                  modes={agent.modes}
+                  modeId={agent.displayModeId}
+                  supports1m={agent.supports1m}
+                  want1m={agent.want1m}
+                  onPickMode={(mode) => agent.remember({ mode })}
+                  onToggle1m={() => agent.remember({ want1m: !agent.want1m })}
+                  className={toolSize}
+                />
+                <PinToggle
+                  pinned={pinned}
+                  onToggle={() => setPinChoice(!pinned)}
+                  className={toolSize}
+                />
+              </>
+            );
+          }}
           footer={
             // Where the thread runs, under the box: quiet, since it is
             // usually right already.
-            <div
-              role="group"
-              aria-label="Thread options"
-              className="scroll-thin flex gap-0.5 overflow-x-auto py-0.5"
-            >
+            <>
               <ProjectChip
                 projects={projects}
                 project={project}
@@ -382,7 +388,7 @@ export function ThreadDraft({
               {gitScope && (
                 <GitChip folder={gitScope} git={git} userConfig={userConfig} />
               )}
-            </div>
+            </>
           }
           draft={draft}
           onDraftChange={onDraftChange}

@@ -2,10 +2,18 @@ import { PinIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
-import { chipClass, toolClass } from "./shared";
+import { chipClass } from "./shared";
 
 /** Whether the thread about to start lands in the sidebar's Pinned section. */
-export function PinToggle({ pinned, onToggle }: { pinned: boolean; onToggle: () => void }) {
+export function PinToggle({
+  pinned,
+  onToggle,
+  className,
+}: {
+  pinned: boolean;
+  onToggle: () => void;
+  className?: string;
+}) {
   return (
     <Button
       type="button"
@@ -15,7 +23,7 @@ export function PinToggle({ pinned, onToggle }: { pinned: boolean; onToggle: () 
       aria-pressed={pinned}
       title={pinned ? "Starts pinned" : "Starts unpinned"}
       onClick={onToggle}
-      className={cn(chipClass, toolClass, pinned && "text-foreground")}
+      className={cn(chipClass, className, pinned && "text-foreground")}
     >
       <PinIcon className={cn(pinned && "fill-current")} />
     </Button>
