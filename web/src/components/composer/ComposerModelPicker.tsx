@@ -30,6 +30,7 @@ export function ComposerModelPicker({
   contextWindow,
   anyHarness,
   disabled,
+  compact = false,
   open,
   onOpenChange,
   focusRequest,
@@ -48,6 +49,8 @@ export function ComposerModelPicker({
   contextWindow: number | undefined;
   anyHarness: boolean;
   disabled: boolean;
+  /** The composer is too narrow for more than the model's name. */
+  compact?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   focusRequest?: { target: PickerFocus } | null;
@@ -130,11 +133,12 @@ export function ComposerModelPicker({
       open={open}
       onOpenChange={onOpenChange}
       focusRequest={focusRequest}
-      compact
+      compact={compact}
       // shrink undoes Button's shrink-0: the picker is the one control
       // in this row that can give up width, so it must, or the send
-      // button is what gets pushed off a narrow screen.
-      className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent h-11 w-auto max-w-[55%] min-w-0 shrink border-0 bg-transparent px-2 shadow-none dark:bg-transparent md:h-8 md:min-h-8"
+      // button is what gets pushed off a narrow screen. Clipped, so what
+      // it gives up is cut at its edge rather than drawn over the meter.
+      className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent h-11 w-auto max-w-[55%] min-w-0 shrink overflow-hidden border-0 bg-transparent px-2 shadow-none dark:bg-transparent md:h-8 md:min-h-8"
     />
   );
 }

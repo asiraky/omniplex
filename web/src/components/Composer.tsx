@@ -31,9 +31,13 @@ import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
 import { SendButtons } from "./composer/SendButtons";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
+import { useComposerFit } from "./composer/useComposerFit";
 import { useComposerSend } from "./composer/useComposerSend";
 import { useDraftRef } from "./composer/useDraftRef";
 import { useFileDrop, usePasteIntake } from "./composer/useFileIntake";
+
+/** Where the composer put its extra tools: its toolbar, or the drawer under it. */
+export type ToolPlace = "row" | "drawer";
 
 /** What a message carries besides its text: the ready images by id, and the
     ready files by the artefact each became. */
@@ -123,8 +127,12 @@ interface ComposerProps {
       send it again, and how to put the note away. No `onRetry` for one that
       cannot go again as it was, such as a message whose file failed to upload. */
   failure?: { reason: string; onRetry?: () => void; onDismiss: () => void };
-  /** Extra controls in the toolbar, right after the model picker. */
-  tools?: ReactNode;
+  /**
+   * Extra controls, right after the model picker in the toolbar while there
+   * is room for them and the model's name both, and first in the drawer under
+   * the box once there is not. Told which, so each can size itself to it.
+   */
+  tools?: (place: ToolPlace) => ReactNode;
   /** A drawer under the box, for context that is usually right already. */
   footer?: ReactNode;
   /** Present when the server can transcribe (an ElevenLabs key is stored), and
@@ -206,6 +214,8 @@ export function Composer({
   dictation,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const fit = useComposerFit(boxRef);
   const isDesktop = useIsDesktop();
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   // Where a shortcut asked focus to go. Cleared on close, so opening by a
@@ -318,11 +328,15 @@ export function Composer({
           onSwitchServiceTier={onSwitchServiceTier}
           onSwitchAccount={onSwitchAccount}
           onPickInstance={onPickInstance}
+          compact={fit.compactTrigger}
         />
       )}
-      {tools}
+      {fit.toolsInRow && tools?.("row")}
     </>
   );
+  // Icons, mostly, so they go ahead of the drawer's long labels, where a
+  // phone-width drawer would otherwise scroll them out of sight.
+  const drawerTools = !fit.toolsInRow && tools?.("drawer");
   const meter = usage && (usage.contextUsed ?? 0) > 0 && <ContextMeter usage={usage} model={model} />;
   const noMic = (
     <>
@@ -392,6 +406,7 @@ export function Composer({
   return (
     <div className="mx-auto max-w-3xl px-4 pb-[calc(0.875rem+env(safe-area-inset-bottom))] md:px-5">
       <div
+        ref={boxRef}
         className={cn(
           "bg-card focus-within:border-ring focus-within:ring-ring/50 relative z-10 rounded-2xl border shadow-lg transition-[color,box-shadow] focus-within:ring-[3px]",
           drop.dragging && "border-primary ring-primary/50 ring-[3px]",
@@ -452,11 +467,18 @@ export function Composer({
           />
         </div>
       </div>
-      {footer && (
+      {(footer || drawerTools) && (
         // A drawer pulled out from under the box: narrower than it, tucked
         // behind its bottom edge, so it reads as part of the composer.
         <div className="bg-muted/50 mx-2.5 -mt-3 rounded-b-xl border border-t-0 pt-3">
-          {footer}
+          <div
+            role="group"
+            aria-label="Thread options"
+            className="scroll-thin flex gap-0.5 overflow-x-auto py-0.5"
+          >
+            {drawerTools}
+            {footer}
+          </div>
         </div>
       )}
     </div>

@@ -15,7 +15,7 @@ import { LEVELS } from "~/lib/permissions";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, PermissionModeMeta } from "~/protocol";
 import { Chip, Described } from "./parts";
-import { chipClass, toolClass } from "./shared";
+import { chipClass } from "./shared";
 
 /** How much the agent may do without asking. */
 function PermissionsMenu({
@@ -23,11 +23,13 @@ function PermissionsMenu({
   modes,
   modeId,
   onPick,
+  className,
 }: {
   harness: HarnessMeta | undefined;
   modes: PermissionModeMeta[];
   modeId: string;
   onPick: (mode: string) => void;
+  className?: string;
 }) {
   // The harness's own permission modes, folded away behind the levels.
   const [advanced, setAdvanced] = useState(false);
@@ -38,10 +40,9 @@ function PermissionsMenu({
       onOpenChange={(open) => open && setAdvanced(!!modeMeta && !modeMeta.level)}
     >
       <DropdownMenuTrigger asChild>
-        {/* A phone row has no room for both this label and the model's
-            once the mic is in it, so on a phone the shield stands alone; the
-            level is still in its name and its menu. */}
-        <Chip label="Permissions" icon={<ShieldIcon />} className={cn(toolClass, "max-md:[&>span]:hidden")}>
+        {/* On a phone the shield stands alone, in the toolbar or the drawer;
+            the level is still in its name and its menu. */}
+        <Chip label="Permissions" icon={<ShieldIcon />} className={cn(className, "max-md:[&>span]:hidden")}>
           {LEVELS.find((l) => l.id === modeMeta?.level)?.short ?? modeMeta?.label}
         </Chip>
       </DropdownMenuTrigger>
@@ -86,7 +87,11 @@ function PermissionsMenu({
   );
 }
 
-/** The composer's own row of agent settings: permissions, and the 1M window. */
+/**
+ * The draft's agent settings: permissions, and the 1M window. In the composer's
+ * toolbar, or its drawer when the toolbar is too narrow to hold them beside the
+ * model's name; `className` sizes them to whichever.
+ */
 export function AgentTools({
   harness,
   modes,
@@ -95,6 +100,7 @@ export function AgentTools({
   want1m,
   onPickMode,
   onToggle1m,
+  className,
 }: {
   harness: HarnessMeta | undefined;
   modes: PermissionModeMeta[];
@@ -103,11 +109,18 @@ export function AgentTools({
   want1m: boolean;
   onPickMode: (mode: string) => void;
   onToggle1m: () => void;
+  className?: string;
 }) {
   return (
     <>
       {modes.length > 0 && (
-        <PermissionsMenu harness={harness} modes={modes} modeId={modeId} onPick={onPickMode} />
+        <PermissionsMenu
+          harness={harness}
+          modes={modes}
+          modeId={modeId}
+          onPick={onPickMode}
+          className={className}
+        />
       )}
 
       {supports1m && (
@@ -119,7 +132,7 @@ export function AgentTools({
           aria-pressed={want1m}
           title={want1m ? "Larger window, higher cost" : "Standard window"}
           onClick={onToggle1m}
-          className={cn(chipClass, toolClass, want1m && "bg-accent text-foreground")}
+          className={cn(chipClass, className, want1m && "bg-accent text-foreground")}
         >
           1M
         </Button>
