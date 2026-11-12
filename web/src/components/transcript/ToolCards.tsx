@@ -42,9 +42,18 @@ function LoaderUnavailable() {
 const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ default: LoaderUnavailable })));
 
 // A diff shows only once its card is opened, so its renderer stays out of the
-// initial bundle.
-const loadToolDiff = () => import("./ToolDiff");
-const ToolDiff = lazy(() => loadToolDiff().then((m) => ({ default: m.ToolDiff })));
+// initial bundle. If its chunk fails to load, the patch shows as plain text
+// rather than taking the app down.
+type DiffView = ComponentType<{ patch: string }>;
+const PlainPatch: DiffView = ({ patch }) => <pre className={PRE}>{patch}</pre>;
+// The mount prefetch and the lazy render share one load.
+let toolDiff: Promise<{ default: DiffView }> | undefined;
+const loadToolDiff = () =>
+  (toolDiff ??= import("./ToolDiff").then(
+    (m): { default: DiffView } => ({ default: m.ToolDiff }),
+    () => ({ default: PlainPatch }),
+  ));
+const ToolDiff = lazy(loadToolDiff);
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.

@@ -1,12 +1,30 @@
 import { ImageOffIcon } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ComponentProps, type ComponentType } from "react";
 
 import type { ToolImage } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
 
 // Opens on a tap, never on first paint, so it stays out of the initial bundle.
-const loadViewer = () => import("~/components/ImageViewer");
-const ImageViewer = lazy(() => loadViewer().then((m) => ({ default: m.ImageViewer })));
+// With no error boundary above it, a chunk that fails to load on a bad link or
+// after a redeploy would take the app down, so the tap offers the original
+// instead.
+type Viewer = ComponentType<ComponentProps<typeof import("~/components/ImageViewer").ImageViewer>>;
+const ViewerUnavailable: Viewer = ({ image, href }) => (
+  <p role="alert" className="text-destructive shrink-0 self-center text-[12px]">
+    Could not open the viewer.{" "}
+    <a href={href ?? image} target="_blank" rel="noreferrer" className="underline">
+      Open the image
+    </a>
+  </p>
+);
+// The mount prefetch and the lazy render share one load.
+let viewer: Promise<{ default: Viewer }> | undefined;
+const loadViewer = () =>
+  (viewer ??= import("~/components/ImageViewer").then(
+    (m): { default: Viewer } => ({ default: m.ImageViewer }),
+    () => ({ default: ViewerUnavailable }),
+  ));
+const ImageViewer = lazy(loadViewer);
 
 // The box a thumbnail fits in. Small enough that a run of screenshots is one
 // strip on a phone, big enough to tell one screen from another.

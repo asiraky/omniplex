@@ -374,6 +374,22 @@ describe("an edit in a tool result", () => {
     expect(screen.getByText("+2")).toBeTruthy();
     expect(screen.getByText("−1")).toBeTruthy();
   });
+
+  it("shows where a capped preview cut the patch, and says truncated rather than counting the preview", async () => {
+    const patch = "@@ -1,9 +1,9 @@\n-a\n+b\n\n[… 9000 characters truncated …]\n\n-y\n+z\n";
+    const view = render(
+      <ToolCard
+        threadId="t1"
+        item={result([{ type: "diff", path: "a.ts", text: patch }], { title: "Edit a.ts", truncated: true })}
+      />,
+    );
+    expect(screen.getByText("truncated")).toBeTruthy();
+    expect(screen.queryByText("+2")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Edit a\.ts/ }));
+    const rows = await diffRows(view.container);
+    expect(rows).toContain("[… 9000 characters truncated …]");
+    expect(rows.filter((r) => r.includes("truncated"))).toHaveLength(1);
+  });
 });
 
 describe("text in a tool result", () => {
