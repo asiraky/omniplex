@@ -57,6 +57,7 @@ const claude: HarnessMeta = {
       models: [
         { id: "opus", label: "Opus", resolves: "claude-opus-5" },
         { id: "sonnet", label: "Sonnet" },
+        { id: "haiku", label: "Haiku" },
       ],
     },
   ],
@@ -68,15 +69,21 @@ function row(label: string): HTMLElement {
   return list.getByText(label).closest("[data-slot='command-item']") as HTMLElement;
 }
 
-function Picker({ onSwitchModel }: { onSwitchModel: (id: string) => void }) {
+function Picker({
+  onSwitchModel,
+  // What the harness reported, not the alias the row carries.
+  model = "claude-opus-5",
+}: {
+  onSwitchModel: (id: string) => void;
+  model?: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <ComposerModelPicker
       harnesses={[claude]}
       harness="claude"
       instance="claude"
-      // What the harness reported, not the alias the row carries.
-      model="claude-opus-5"
+      model={model}
       effort=""
       contextWindow={undefined}
       anyHarness={false}
@@ -90,14 +97,19 @@ function Picker({ onSwitchModel }: { onSwitchModel: (id: string) => void }) {
 
 function openPicker() {
   const onSwitchModel = vi.fn();
-  render(<Picker onSwitchModel={onSwitchModel} />);
+  const { rerender } = render(<Picker onSwitchModel={onSwitchModel} />);
   fireEvent.click(screen.getByRole("combobox"));
-  return onSwitchModel;
+  return { onSwitchModel, rerender };
+}
+
+/** A model with no efforts closes the menu on a pick. */
+function reopen() {
+  fireEvent.click(screen.getByRole("combobox"));
 }
 
 describe("ComposerModelPicker", () => {
   it("sends no switch for the row the thread is already running", () => {
-    const onSwitchModel = openPicker();
+    const { onSwitchModel } = openPicker();
 
     fireEvent.click(row("Opus"));
 
@@ -105,7 +117,7 @@ describe("ComposerModelPicker", () => {
   });
 
   it("switches to a different row by its own id", () => {
-    const onSwitchModel = openPicker();
+    const { onSwitchModel } = openPicker();
 
     fireEvent.click(row("Sonnet"));
 
@@ -114,14 +126,26 @@ describe("ComposerModelPicker", () => {
   });
 
   it("sends the running row again to undo a switch still in flight", () => {
-    const onSwitchModel = openPicker();
+    const { onSwitchModel } = openPicker();
 
     fireEvent.click(row("Sonnet"));
-    // A model with no efforts closes the menu on a pick, which drops the
-    // pending pick from the trigger; the switch is still on its way.
-    fireEvent.click(screen.getByRole("combobox"));
+    reopen();
     fireEvent.click(row("Opus"));
 
     expect(onSwitchModel.mock.calls).toEqual([["sonnet"], ["opus"]]);
+  });
+
+  it("keeps waiting on the last pick when an earlier one is echoed first", () => {
+    const { onSwitchModel, rerender } = openPicker();
+
+    fireEvent.click(row("Sonnet"));
+    reopen();
+    fireEvent.click(row("Haiku"));
+    // Sonnet lands; Haiku is still on its way.
+    rerender(<Picker onSwitchModel={onSwitchModel} model="sonnet" />);
+    reopen();
+    fireEvent.click(row("Sonnet"));
+
+    expect(onSwitchModel.mock.calls).toEqual([["sonnet"], ["haiku"], ["sonnet"]]);
   });
 });

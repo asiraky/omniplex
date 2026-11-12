@@ -190,8 +190,8 @@ function settings(state: ThreadState): TurnSettings {
   return { model: state.model, effort: state.effort };
 }
 
-function sameSettings(a: TurnSettings | undefined, b: TurnSettings): boolean {
-  return a?.model === b.model && a.effort === b.effort;
+function sameSettings(a: TurnSettings, b: TurnSettings): boolean {
+  return a.model === b.model && a.effort === b.effort;
 }
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
@@ -371,20 +371,23 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       return { ...s, cwd: p.cwd, harness: p.harness, model: p.model ?? "", mode: p.mode ?? "", effort: p.effort ?? "", title: p.title ?? "" };
 
     case "thread.config_changed": {
+      // A harness reporting its own settings as it (re)starts or takes a
+      // prompt names the bare model id for the alias that was picked: not a
+      // switch. One that lands while a switch waits for its turn can predate
+      // it, so it leaves the pick alone; otherwise it moves the baseline with
+      // it. Mirrors internal/projection/state.go.
+      const report = !!p.harnessSessionId;
+      const pending = !!s.ranWith && !sameSettings(s.ranWith, settings(s));
       const next: ThreadState = {
         ...s,
-        model: p.replaceSettings ? p.model ?? "" : p.model || s.model,
+        model: report && pending ? s.model : p.replaceSettings ? p.model ?? "" : p.model || s.model,
         mode: p.replaceSettings ? p.mode ?? "" : p.mode || s.mode,
         // "" is a value effort can be set to — the harness's own default —
         // so an event that carries it must win, which || would not let it.
         effort: p.effort ?? s.effort,
         title: p.title || s.title,
       };
-      // A harness reporting its own settings as it (re)starts names the bare
-      // model id for the alias that was picked: not a switch, so it moves the
-      // baseline with it, unless a switch is still waiting for its turn to be
-      // marked. Mirrors internal/projection/state.go.
-      if (p.harnessSessionId && sameSettings(s.ranWith, settings(s))) return { ...next, ranWith: settings(next) };
+      if (report && s.ranWith && !pending) return { ...next, ranWith: settings(next) };
       return next;
     }
 

@@ -11,17 +11,20 @@ export function NoticeCard({
   describeSettings,
 }: {
   item: Item;
-  /** Names a model and effort for a model notice; the raw id without it. */
+  /** Names a model and effort for a model notice, through the thread's
+      catalogue. Absent until the catalogue has loaded. */
   describeSettings?: (model: string, effort: string) => string;
 }) {
   if (item.noticeKind === "model") {
+    // Without the catalogue an alias and the id it resolves to read as two
+    // models; drawing nothing until it loads beats a line for no switch.
+    if (!describeSettings) return null;
     // Replies below this line came from these settings.
-    const describe = describeSettings ?? ((model: string, effort: string) => [model, effort].filter(Boolean).join(" · "));
-    const to = describe(item.model ?? "", item.effort ?? "");
+    const to = describeSettings(item.model ?? "", item.effort ?? "");
     // The log can name one model two ways, by an alias and by the id it
     // resolves to; read through the catalogue they say the same, and that
     // is no switch.
-    if (item.from && describe(item.from.model, item.from.effort) === to) return null;
+    if (item.from && describeSettings(item.from.model, item.from.effort) === to) return null;
     return (
       <div className="fade-in flex justify-center">
         <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 rounded-full border px-3 py-1 text-[12px]">

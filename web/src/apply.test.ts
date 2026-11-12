@@ -190,7 +190,19 @@ describe("applyEvent model notices", () => {
       applyEvent,
       s,
     );
-    expect(notices(s)).toEqual([["model:7", "claude-sonnet-5", ""]]);
+    expect(notices(s)).toEqual([["model:7", "sonnet", ""]]);
+  });
+
+  it("keeps a pick that a late report from the turn before names over", () => {
+    let s = replay(
+      ev(1, "thread.created", { model: "claude-opus-5" }),
+      turn(2, "t1"),
+      config(3, { model: "sonnet" }),
+      config(4, { model: "claude-opus-5", harnessSessionId: "h1" }),
+    );
+    expect(s.model).toBe("sonnet");
+    s = applyEvent(s, turn(5, "t2"));
+    expect(notices(s)).toEqual([["model:5", "sonnet", ""]]);
   });
 
   it("marks the next turn after a snapshot taken between a switch and it", () => {

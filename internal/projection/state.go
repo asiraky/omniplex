@@ -733,7 +733,16 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.ThreadConfigChangedPayload
 		decode(ev.Payload, &p)
 		prev := s.settings()
-		if p.ReplaceSettings || p.Model != "" {
+		// An event carrying a harness session id is the harness reporting its
+		// own settings as it (re)starts or takes a prompt, not anyone
+		// switching: it names the bare model id for the alias that was
+		// picked. One that lands while a switch is waiting for its turn can
+		// predate that switch (Claude reports a turn's settings seconds after
+		// the turn starts), so it leaves the pick alone; otherwise it moves the
+		// baseline with it.
+		report := p.HarnessSessionID != ""
+		pending := s.RanWith != nil && *s.RanWith != prev
+		if (p.ReplaceSettings || p.Model != "") && !(report && pending) {
 			s.Model = p.Model
 		}
 		if p.ReplaceSettings || p.Mode != "" {
@@ -751,11 +760,7 @@ func (s *State) Apply(ev proto.Event) {
 		if p.HarnessSessionID != "" {
 			s.HarnessSessionID = p.HarnessSessionID
 		}
-		// An event carrying a harness session id is the harness reporting its
-		// own settings as it (re)starts, not anyone switching: it names the
-		// bare model id for the alias that was picked. It moves the baseline
-		// with it, unless a switch is still waiting for its turn to be marked.
-		if p.HarnessSessionID != "" && s.RanWith != nil && *s.RanWith == prev {
+		if report && s.RanWith != nil && !pending {
 			now := s.settings()
 			s.RanWith = &now
 		}

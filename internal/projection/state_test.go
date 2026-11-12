@@ -947,9 +947,29 @@ func TestHarnessReportIsNotASwitch(t *testing.T) {
 	s.Apply(pickModel(t, 5, "sonnet"))
 	s.Apply(event(t, 6, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "claude-sonnet-5", HarnessSessionID: "h2"}))
 	s.Apply(startTurn(t, 7, "t3"))
-	want := [][3]string{{"model:7", "claude-sonnet-5", ""}}
+	want := [][3]string{{"model:7", "sonnet", ""}}
 	if got := noticeSettings(modelNotices(s)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after a switch and a restart: notices = %v, want %v", got, want)
+	}
+}
+
+// Claude reports a turn's settings seconds after the turn starts, so a pick
+// made in between can be followed by a report naming the model it replaced.
+// The pick still stands, and the next turn is marked. Mirrored by
+// web/src/apply.test.ts.
+func TestReportBehindAPickKeepsThePick(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "claude-opus-5"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(pickModel(t, 3, "sonnet"))
+	s.Apply(event(t, 4, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "claude-opus-5", HarnessSessionID: "h1"}))
+	if s.Model != "sonnet" {
+		t.Fatalf("model = %q, want the pick to stand", s.Model)
+	}
+	s.Apply(startTurn(t, 5, "t2"))
+	want := [][3]string{{"model:5", "sonnet", ""}}
+	if got := noticeSettings(modelNotices(s)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %v, want %v", got, want)
 	}
 }
 

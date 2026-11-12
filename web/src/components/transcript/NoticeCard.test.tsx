@@ -35,6 +35,13 @@ describe("NoticeCard model switch", () => {
     expect(container.textContent).toBe("");
   });
 
+  it("draws nothing until the catalogue has loaded", () => {
+    const { container } = render(
+      <NoticeCard item={notice({ model: "opus", effort: "high", from: { model: "claude-opus-5", effort: "high" } })} />,
+    );
+    expect(container.textContent).toBe("");
+  });
+
   it("still marks an effort change on the same model", () => {
     const { container } = render(
       <NoticeCard

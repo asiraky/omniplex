@@ -100,6 +100,7 @@ export function ThreadView({
   const instanceId = meta?.providerInstance ?? "";
   const describe = useMemo(() => {
     const instance = resolveInstance(pickerInstances(harnesses), instanceId, state.harness);
+    if (!instance) return undefined;
     return (model: string, effort: string) => describeSettings(instance, model, effort);
   }, [harnesses, instanceId, state.harness]);
   // A sign-in a saved card offers from its row in the transcript.
