@@ -19,7 +19,7 @@ const attach = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
 const setPresence = vi.fn();
-const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn(), success: vi.fn() }));
+const toast = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn(), success: vi.fn(), warning: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast }));
 const uploadStaged = vi.hoisted(() => vi.fn());
@@ -140,6 +140,7 @@ beforeEach(() => {
   setPresence.mockClear();
   toast.error.mockClear();
   toast.info.mockClear();
+  toast.warning.mockClear();
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -364,6 +365,56 @@ describe("thread actions on a phone", () => {
       ctrlKey: false,
     });
     expect(await screen.findByRole("menuitem", { name: "Terminal" })).toBeTruthy();
+  });
+});
+
+describe("harness extensions", () => {
+  const openThread = async (kind: "phone" | "desktop", extensionStatuses: unknown[] = []) => {
+    viewport(kind);
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a"), thread("b")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", { ...state("a", "default"), extensionStatuses });
+    });
+  };
+  const statuses = () => screen.queryByRole("list", { name: "Extension status" });
+
+  it.each(["phone", "desktop"] as const)("shows each status in the header on a %s, until cleared", async (kind) => {
+    await openThread(kind, [
+      { key: "git", text: "main*" },
+      { key: "tests", text: "3 failing" },
+    ]);
+    expect(within(statuses()!).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["main*", "3 failing"]);
+
+    await act(async () => events.onState("a", { ...state("a", "default"), extensionStatuses: [] }));
+    expect(statuses()).toBeNull();
+  });
+
+  it("shows no status line when no extension set one", async () => {
+    await openThread("phone");
+    expect(statuses()).toBeNull();
+  });
+
+  it("toasts what the open thread's extension says, at its level", async () => {
+    await openThread("desktop");
+    const notified = (threadId: string, seq: number, level: string, message: string) =>
+      events.onLiveEvent(threadId, { threadId, seq, timestamp: 0, type: "extension.notified", payload: { level, message } });
+
+    await act(async () => {
+      notified("a", 2, "warning", "No API key for lint");
+      notified("a", 3, "error", "Formatter crashed");
+      notified("a", 4, "info", "Ready");
+      notified("b", 5, "error", "Not on screen");
+      events.onLiveEvent("a", { threadId: "a", seq: 6, timestamp: 0, type: "plan.updated", payload: { entries: [] } });
+    });
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith("Ready"));
+    expect(toast.warning.mock.calls).toEqual([["No API key for lint"]]);
+    expect(toast.error.mock.calls).toEqual([["Formatter crashed"]]);
   });
 });
 

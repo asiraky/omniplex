@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Client, wsURL, type ConnectionStatus } from "~/client";
 import type {
   Access,
+  Event,
   HarnessMeta,
   Project,
   QuotaStatus,
@@ -13,6 +14,7 @@ import type {
   UserConfigReply,
 } from "~/protocol";
 import { threadIdFromPath } from "~/lib/threadLinks";
+import { toast } from "~/lib/toast";
 import { loadResume } from "~/resume";
 
 import { reuseThreads } from "./reuseThreads";
@@ -20,6 +22,17 @@ import { LAST_THREAD } from "./threadKeys";
 import { createThreadStore, useThread } from "./threadStore";
 
 export type Wire = ReturnType<typeof useWire>;
+
+/** Says out loud what an extension just said. Live events only: the replay on
+    every attach would otherwise repeat every toast the thread ever raised.
+    Warnings and errors also leave a notice in the transcript (apply.ts). */
+function announce(ev: Event) {
+  if (ev.type !== "extension.notified") return;
+  const { level, message } = ev.payload ?? {};
+  if (!message) return;
+  const show = level === "error" ? toast.error : level === "warning" ? toast.warning : toast.info;
+  show(message);
+}
 
 /**
  * The socket, and everything the server pushes down it: the thread list, the
@@ -111,6 +124,9 @@ export function useWire() {
       },
       onTurnStatus: (id, s) => setHeldStatus(s ? { threadId: id, status: s } : null),
       onAccess: setAccess,
+      onLiveEvent: (id, ev) => {
+        if (id === activeRef.current) announce(ev);
+      },
     });
     clientRef.current = client;
     // A resumed page attaches where it left off: the client carries the

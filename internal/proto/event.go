@@ -108,6 +108,24 @@ const (
 	// file stays where it is and is read live; showing the same path again
 	// is the same artefact, revised.
 	ArtefactShown = "artefact.shown"
+
+	// ExtensionNotified is a harness extension telling the user something
+	// (pi's ctx.ui.notify): a toast, and a transcript note when it is a
+	// warning or an error.
+	ExtensionNotified = "extension.notified"
+	// ExtensionStatus sets or clears one status line an extension keeps in
+	// the thread header (pi's ctx.ui.setStatus). It lives as long as the
+	// process that set it, so the thread clears it once it sees that process
+	// gone: on exit, on resume, on an account switch, on a Stop that kills
+	// it, and on close.
+	ExtensionStatus = "extension.status"
+)
+
+// Extension notification levels. Anything else a harness sends is info.
+const (
+	NotifyInfo    = "info"
+	NotifyWarning = "warning"
+	NotifyError   = "error"
 )
 
 // Stop reasons for turn.finished.
@@ -719,6 +737,20 @@ type TurnStatusPayload struct {
 	Max     int    `json:"max,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 	RetryAt int64  `json:"retryAt,omitempty"`
+}
+
+// ExtensionNotifiedPayload is one extension notification. Level is NotifyInfo,
+// NotifyWarning or NotifyError; the adapter normalises anything else to info.
+type ExtensionNotifiedPayload struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+// ExtensionStatusPayload sets the status line under Key, the extension's own
+// name for it. An empty Text clears the key.
+type ExtensionStatusPayload struct {
+	Key  string `json:"key"`
+	Text string `json:"text,omitempty"`
 }
 
 // JobUsage is what a job has cost so far.

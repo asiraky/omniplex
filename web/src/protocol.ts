@@ -92,13 +92,16 @@ export interface Item {
       /api/threads/{id}/items/{itemId}/content. */
   truncated?: boolean;
   // notice
-  noticeKind?: "compaction" | "account" | "model";
+  noticeKind?: "compaction" | "account" | "model" | "notify";
   /** For a model notice: the model and effort the thread switched to. */
   model?: string;
   effort?: string;
   /** For a model notice: what the turn before ran on. An alias and the id
       it resolves to can differ here and still be one model. */
   from?: TurnSettings;
+  /** For a notify notice: how bad it is. An extension's info never lands as an
+      item, only as a toast; `text` carries the message. */
+  level?: "warning" | "error";
   /** For a compaction notice: whether the harness ("auto") or a human triggered it. */
   trigger?: string;
   preTokens?: number;
@@ -475,6 +478,16 @@ export interface ThreadState {
   /** Everything the thread produced or was given, never windowed. Absent
       on states from before artefacts existed. */
   artefacts?: Artefact[];
+  /** Status lines harness extensions keep in the thread header, one per key,
+      in the order the keys first appeared. Absent on states cached by an
+      older page. */
+  extensionStatuses?: ExtensionStatus[];
+}
+
+/** One extension status line, under the extension's own key. */
+export interface ExtensionStatus {
+  key: string;
+  text: string;
 }
 
 export interface QueuedPrompt {

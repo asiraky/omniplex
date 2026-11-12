@@ -57,6 +57,9 @@ export interface ClientEvents {
   /** The attached thread's transient turn status; null clears it. */
   onTurnStatus(threadId: string, status: TurnStatus | null): void;
   onAccess(access: Access): void;
+  /** An event that happened just now, as opposed to one replayed to catch
+      up: for side effects (a toast) that must not repeat on every attach. */
+  onLiveEvent(threadId: string, event: Event): void;
 }
 
 // Reconnect ceilings in ms, not delays: each wait is drawn uniformly below its
@@ -746,6 +749,10 @@ export class Client {
         this.cursor = next.seq;
         this.events.onState(f.threadId, next);
         if (revivesUnheldJob(base, f.event)) void this.loadAllJobs();
+        // Catch-up comes in "replay" frames, so this one is news, unless it
+        // straggled in from an earlier attachment while a later one is still
+        // being answered.
+        if (!this.catchingUp()) this.events.onLiveEvent(f.threadId, f.event);
         break;
       }
 

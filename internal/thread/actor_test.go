@@ -51,6 +51,9 @@ type fakeAdapter struct {
 	modeHeld map[string]<-chan struct{}
 	// opts is what each CreateSession was asked for, oldest first.
 	opts []adapter.CreateOptions
+	// startup is what each new session emits as it starts, before anyone
+	// reads it — as pi's extensions do on session_start.
+	startup []proto.Emission
 }
 
 func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
@@ -287,6 +290,9 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
 		steerRefuse: f.steerRefuse, cancelGate: f.cancelGate, modeGate: f.modeGate, modeAsked: f.modeAsked, steerGate: f.steerGate,
 		modeHeld: f.modeHeld,
+	}
+	for _, em := range f.startup {
+		s.events <- em
 	}
 	f.mu.Lock()
 	f.last = s
@@ -1801,6 +1807,79 @@ func TestHarnessDeathInterruptsLiveJobs(t *testing.T) {
 				t.Fatalf("finished job was rewritten: %+v", j)
 			}
 		}
+	}
+}
+
+// Extension statuses are the live word of the process that set them. When the
+// harness dies they go with it, rather than claiming work that stopped.
+func TestHarnessDeathClearsExtensionStatuses(t *testing.T) {
+	actor, fa, st := newTestActor(t)
+	ctx := context.Background()
+
+	fa.thread().emit(proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "a", Text: "watching"}))
+	fa.thread().emit(proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "b", Text: "turn 3"}))
+	waitFor(t, func() bool {
+		state, err := actor.State(ctx)
+		return err == nil && len(state.ExtensionStatuses) == 2
+	})
+
+	_ = fa.thread().Close()
+
+	waitFor(t, func() bool {
+		state, _, err := loadState(ctx, st, actor.ID)
+		return err == nil && len(state.ExtensionStatuses) == 0
+	})
+}
+
+// Resuming a thread clears the statuses the old process left in the log, but
+// not the ones the new process sets as it starts — even though those can be
+// waiting before the clear is written.
+func TestResumeClearsStaleExtensionStatusesOnly(t *testing.T) {
+	for _, path := range []string{"activate", "resume"} {
+		t.Run(path, func(t *testing.T) {
+			st, err := store.Open(filepath.Join(t.TempDir(), "statuses.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			ctx := context.Background()
+			meta := store.ThreadMeta{ID: "th", Cwd: t.TempDir(), Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}
+			if err := st.CreateThread(ctx, meta); err != nil {
+				t.Fatal(err)
+			}
+			for _, em := range []proto.Emission{
+				proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness}),
+				proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "gone", Text: "old"}),
+				proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "kept", Text: "old"}),
+			} {
+				if _, err := st.Append(ctx, meta.ID, em); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fa := &fakeAdapter{startup: []proto.Emission{
+				proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "kept", Text: "new"}),
+			}}
+
+			var actor *Actor
+			if path == "activate" {
+				mgr := NewManager(st, func(string, ...any) {}, fa)
+				defer mgr.Shutdown()
+				if actor, err = mgr.Get(ctx, meta.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if actor, err = Resume(ctx, st, fa, meta, nil, func(string, ...any) {}); err != nil {
+					t.Fatal(err)
+				}
+				defer actor.Dispose("test")
+			}
+
+			want := []projection.ExtensionStatus{{Key: "kept", Text: "new"}}
+			waitFor(t, func() bool {
+				state, _, err := loadState(ctx, st, meta.ID)
+				return err == nil && len(state.ExtensionStatuses) == 1 && state.ExtensionStatuses[0] == want[0]
+			})
+		})
 	}
 }
 

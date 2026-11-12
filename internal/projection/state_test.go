@@ -1113,3 +1113,101 @@ func TestSwitchSurvivesASnapshot(t *testing.T) {
 		t.Fatalf("old snapshot notices = %+v, want none", got)
 	}
 }
+
+// Warnings and errors from an extension leave a turnless note in the
+// timeline; info is a toast only and leaves nothing behind.
+func TestExtensionNotifiedNoticeForWarningsAndErrors(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+	s.Apply(event(t, 2, proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyInfo, Message: "saved"}))
+	s.Apply(event(t, 3, proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyWarning, Message: "Command blocked"}))
+	s.Apply(event(t, 4, proto.ExtensionNotified, proto.ExtensionNotifiedPayload{Level: proto.NotifyError, Message: "Lint failed"}))
+
+	var notices []Item
+	for _, it := range s.Items {
+		if it.Kind == ItemNotice {
+			notices = append(notices, it)
+		}
+	}
+	if len(notices) != 2 {
+		t.Fatalf("notices = %+v, want warning and error only", notices)
+	}
+	want := []Item{
+		{ID: "notify:3", Kind: ItemNotice, ReceivedAt: 3000, NoticeKind: "notify", Level: proto.NotifyWarning, Text: "Command blocked"},
+		{ID: "notify:4", Kind: ItemNotice, ReceivedAt: 4000, NoticeKind: "notify", Level: proto.NotifyError, Text: "Lint failed"},
+	}
+	for i, w := range want {
+		got := notices[i]
+		if got.ID != w.ID || got.TurnID != "" || got.ReceivedAt != w.ReceivedAt ||
+			got.NoticeKind != w.NoticeKind || got.Level != w.Level || got.Text != w.Text {
+			t.Fatalf("notice %d = %+v, want %+v", i, got, w)
+		}
+	}
+	if s.Seq != 4 {
+		t.Fatalf("seq = %d, want 4", s.Seq)
+	}
+}
+
+// A status key keeps its place when its text changes, a new key goes on the
+// end, and empty text removes the key.
+func TestExtensionStatusSetUpdateClear(t *testing.T) {
+	s := New("s1")
+	set := func(seq int64, key, text string) {
+		s.Apply(event(t, seq, proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: key, Text: text}))
+	}
+	check := func(want ...ExtensionStatus) {
+		t.Helper()
+		if len(s.ExtensionStatuses) != len(want) {
+			t.Fatalf("statuses = %+v, want %+v", s.ExtensionStatuses, want)
+		}
+		for i := range want {
+			if s.ExtensionStatuses[i] != want[i] {
+				t.Fatalf("statuses = %+v, want %+v", s.ExtensionStatuses, want)
+			}
+		}
+	}
+
+	set(1, "a", "one")
+	set(2, "b", "two")
+	check(ExtensionStatus{"a", "one"}, ExtensionStatus{"b", "two"})
+
+	set(3, "a", "uno")
+	check(ExtensionStatus{"a", "uno"}, ExtensionStatus{"b", "two"})
+
+	set(4, "c", "")
+	check(ExtensionStatus{"a", "uno"}, ExtensionStatus{"b", "two"})
+
+	// The clone is taken before the clear, so it must keep both.
+	c := s.Clone()
+	set(5, "a", "")
+	check(ExtensionStatus{"b", "two"})
+	if len(c.ExtensionStatuses) != 2 || c.ExtensionStatuses[0] != (ExtensionStatus{"a", "uno"}) || c.ExtensionStatuses[1] != (ExtensionStatus{"b", "two"}) {
+		t.Fatalf("clone shares statuses: %+v", c.ExtensionStatuses)
+	}
+
+	set(6, "a", "back")
+	check(ExtensionStatus{"b", "two"}, ExtensionStatus{"a", "back"})
+}
+
+// A thread can close with no process live to clear its statuses, so closing
+// clears them.
+func TestThreadClosedClearsExtensionStatuses(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "a", Text: "watching"}))
+	s.Apply(event(t, 2, proto.ThreadClosed, proto.ThreadClosedPayload{Reason: "done"}))
+	if len(s.ExtensionStatuses) != 0 {
+		t.Fatalf("statuses after close = %+v, want none", s.ExtensionStatuses)
+	}
+}
+
+// A snapshot stored before statuses existed decodes to an empty list, not
+// null, so a client never has to guard for it.
+func TestFromSnapshotDefaultsExtensionStatuses(t *testing.T) {
+	s, err := FromSnapshot(json.RawMessage(`{"threadId":"s1","seq":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ExtensionStatuses == nil {
+		t.Fatal("extensionStatuses decoded as nil")
+	}
+}

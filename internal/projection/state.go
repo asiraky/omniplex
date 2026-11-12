@@ -184,7 +184,7 @@ type Item struct {
 	ChildrenBefore int `json:"childrenBefore,omitempty"`
 
 	// notice
-	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model
+	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model | notify
 	Model      string `json:"model,omitempty"`
 	Effort     string `json:"effort,omitempty"`
 	// From is what the turn before ran on. The log names models by whatever
@@ -195,6 +195,9 @@ type Item struct {
 	Trigger    string        `json:"trigger,omitempty"` // auto | manual
 	PreTokens  int64         `json:"preTokens,omitempty"`
 	PostTokens int64         `json:"postTokens,omitempty"`
+	// Level is a notify notice's severity, warning or error; Text is the
+	// extension's message.
+	Level string `json:"level,omitempty"`
 
 	// artefact: Title is its name. Enough to draw the tile without the
 	// artefact list.
@@ -219,6 +222,13 @@ type Item struct {
 func (it *Item) settle(status string) {
 	it.Status = status
 	it.Tail = ""
+}
+
+// ExtensionStatus is one status line a harness extension keeps in the thread
+// header, under the extension's own key.
+type ExtensionStatus struct {
+	Key  string `json:"key"`
+	Text string `json:"text"`
 }
 
 // Artefact is a file or folder the thread has shown, as it was the last time
@@ -447,6 +457,9 @@ type State struct {
 	// next turn is measured against to mark a switch. Nil until a turn has
 	// started, and on snapshots stored before it existed.
 	RanWith *TurnSettings `json:"ranWith,omitempty"`
+	// ExtensionStatuses are the status lines harness extensions keep in the
+	// thread header, in the order their keys first appeared. Never windowed.
+	ExtensionStatuses []ExtensionStatus `json:"extensionStatuses"`
 
 	itemIndex map[string]int `json:"-"`
 	jobIndex  map[string]int `json:"-"`
@@ -466,17 +479,18 @@ func (s *State) settings() TurnSettings { return TurnSettings{Model: s.Model, Ef
 
 func New(threadID string) *State {
 	return &State{
-		ThreadID:     threadID,
-		Phase:        "idle",
-		Items:        []Item{},
-		Turns:        []Turn{},
-		Jobs:         []Job{},
-		Pending:      []PendingPermission{},
-		Elicitations: []PendingElicitation{},
-		Queued:       []QueuedPrompt{},
-		Artefacts:    []Artefact{},
-		itemIndex:    map[string]int{},
-		jobIndex:     map[string]int{},
+		ThreadID:          threadID,
+		Phase:             "idle",
+		Items:             []Item{},
+		Turns:             []Turn{},
+		Jobs:              []Job{},
+		Pending:           []PendingPermission{},
+		Elicitations:      []PendingElicitation{},
+		Queued:            []QueuedPrompt{},
+		Artefacts:         []Artefact{},
+		ExtensionStatuses: []ExtensionStatus{},
+		itemIndex:         map[string]int{},
+		jobIndex:          map[string]int{},
 	}
 }
 
@@ -508,6 +522,9 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	}
 	if s.Artefacts == nil {
 		s.Artefacts = []Artefact{}
+	}
+	if s.ExtensionStatuses == nil {
+		s.ExtensionStatuses = []ExtensionStatus{}
 	}
 	// A snapshot from before tool content was capped holds it whole. Capping
 	// here shrinks it the first time it loads, and the next snapshot written
@@ -779,6 +796,10 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.ThreadClosed:
 		s.Closed = true
 		s.Phase = "closed"
+		// No process will run for this thread again, so nothing is keeping
+		// its extensions' statuses. A thread can close with no actor live to
+		// clear them first, so the close itself is what clears them.
+		s.ExtensionStatuses = []ExtensionStatus{}
 
 	case proto.WorkspaceRequested:
 		var p proto.WorkspaceRequestedPayload
@@ -1214,6 +1235,30 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		s.applyArtefact(p, ev)
 
+	case proto.ExtensionNotified:
+		var p proto.ExtensionNotifiedPayload
+		decode(ev.Payload, &p)
+		// Info is a toast and nothing more; a warning or an error is worth a
+		// line the user can find later. Turnless like a compaction: the
+		// extension speaks for itself, not as part of the agent's turn.
+		if p.Level != proto.NotifyWarning && p.Level != proto.NotifyError {
+			break
+		}
+		s.upsert("notify:"+strconv.FormatInt(ev.Seq, 10), func(it *Item) {
+			it.Kind = ItemNotice
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.NoticeKind = "notify"
+			it.Level = p.Level
+			it.Text = p.Message
+		})
+
+	case proto.ExtensionStatus:
+		var p proto.ExtensionStatusPayload
+		decode(ev.Payload, &p)
+		s.applyExtensionStatus(p)
+
 	case proto.ThreadAccountChanged:
 		var p proto.ThreadAccountChangedPayload
 		decode(ev.Payload, &p)
@@ -1435,6 +1480,25 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 	})
 }
 
+// applyExtensionStatus sets, updates in place, or (on empty text) removes one
+// key, so a chip that changes text does not jump along the header.
+func (s *State) applyExtensionStatus(p proto.ExtensionStatusPayload) {
+	for i := range s.ExtensionStatuses {
+		if s.ExtensionStatuses[i].Key != p.Key {
+			continue
+		}
+		if p.Text == "" {
+			s.ExtensionStatuses = append(s.ExtensionStatuses[:i], s.ExtensionStatuses[i+1:]...)
+		} else {
+			s.ExtensionStatuses[i].Text = p.Text
+		}
+		return
+	}
+	if p.Text != "" {
+		s.ExtensionStatuses = append(s.ExtensionStatuses, ExtensionStatus{Key: p.Key, Text: p.Text})
+	}
+}
+
 // Clone returns a deep copy safe to hand outside the actor goroutine. A
 // shallow copy would share the item and content slices with the live state,
 // which the actor keeps mutating.
@@ -1482,6 +1546,7 @@ func (s *State) cloneRest() *State {
 	out.Turns = make([]Turn, len(s.Turns))
 	copy(out.Turns, s.Turns)
 	out.Artefacts = append([]Artefact{}, s.Artefacts...)
+	out.ExtensionStatuses = append([]ExtensionStatus{}, s.ExtensionStatuses...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))
 	for i, p := range s.Pending {

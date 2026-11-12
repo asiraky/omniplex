@@ -20,7 +20,7 @@ const load = () =>
 type Args = Parameters<Toast["message"]>;
 
 const later =
-  (kind: "success" | "info" | "error") =>
+  (kind: "success" | "info" | "warning" | "error") =>
   (...args: Args) => {
     load().then((t) => t[kind](...args), () => {});
   };
@@ -28,5 +28,6 @@ const later =
 export const toast = {
   success: later("success"),
   info: later("info"),
+  warning: later("warning"),
   error: later("error"),
 };

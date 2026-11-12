@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/projection"
+	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
 	"github.com/asiraky/omniplex/internal/store"
 )
@@ -114,6 +115,31 @@ func TestSwitchAccountResumesUnderTheNewAccount(t *testing.T) {
 	state, _ := a.State(ctx)
 	if notices := accountNotices(state); len(notices) != 1 || notices[0] != "Fake Work" {
 		t.Errorf("account notices = %v, want one naming Fake Work", notices)
+	}
+}
+
+// The old process's exit is ignored as stale once the switch drops it, so the
+// switch itself clears the statuses that process's extensions were keeping.
+func TestSwitchAccountClearsExtensionStatuses(t *testing.T) {
+	mgr, fa, _ := switchTestManager(t)
+	ctx := context.Background()
+	a, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Dispose("test done")
+	fa.thread().emit(proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "a", Text: "watching"}))
+	waitFor(t, func() bool {
+		state, err := a.State(ctx)
+		return err == nil && len(state.ExtensionStatuses) == 1
+	})
+
+	if err := mgr.SwitchAccount(ctx, a.ID, "fake-work"); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := a.State(ctx)
+	if len(state.ExtensionStatuses) != 0 {
+		t.Fatalf("statuses after switch = %+v, want none", state.ExtensionStatuses)
 	}
 }
 
