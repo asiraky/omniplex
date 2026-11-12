@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/adapter/claudecode"
 	"github.com/asiraky/omniplex/internal/datalock"
 	"github.com/asiraky/omniplex/internal/store"
+	"github.com/asiraky/omniplex/internal/thread"
 	"github.com/asiraky/omniplex/internal/userconfig"
 )
 
@@ -111,5 +113,43 @@ func TestMigrateHomesAtStartupOnlyOnTheDefaultDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(transcript); err == nil {
 		t.Error("the conversation is still on ~/.claude")
+	}
+}
+
+func TestConfigureProvidersWithoutASecretStoreStillInstallsEveryAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("OMNIPLEX_CONFIG", "")
+	cfg := userconfig.Default()
+	cfg.Providers = []json.RawMessage{
+		json.RawMessage(`{"id":"plain","driver":"claude","displayName":"Plain","enabled":true,"env":[{"name":"CLAUDE_CONFIG_DIR","value":"` + filepath.Join(home, ".omniplex", "instances", "plain") + `"}]}`),
+		json.RawMessage(`{"id":"keyed","driver":"claude","displayName":"Keyed","enabled":true,"env":[{"name":"ANTHROPIC_API_KEY","sensitive":true}]}`),
+	}
+	if _, err := userconfig.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	mgr := thread.NewManager(openMigrateStore(t, filepath.Join(home, "omniplex.db")), t.Logf, claudecode.New(filepath.Join(home, "no-claude")))
+	t.Cleanup(mgr.Shutdown)
+
+	configureProviders(mgr, nil, t.Logf)
+
+	got := map[string]string{}
+	for _, h := range mgr.Harnesses(context.Background()) {
+		for _, inst := range h.Instances {
+			got[inst.ID] = inst.Availability.Reason
+		}
+	}
+	if _, ok := got["plain"]; !ok {
+		t.Errorf("the account with nothing secret was not installed: %v", got)
+	}
+	reason, ok := got["keyed"]
+	if !ok {
+		t.Fatalf("the account with a sensitive variable was not installed: %v", got)
+	}
+	if !strings.Contains(reason, "secret store") {
+		t.Errorf("the account with a sensitive variable is not refused for it: %q", reason)
+	}
+	if strings.Contains(got["plain"], "secret store") {
+		t.Errorf("the account with nothing secret is refused for the missing store: %q", got["plain"])
 	}
 }

@@ -376,17 +376,20 @@ func TestDisabledInstanceRefusesCreate(t *testing.T) {
 
 // Two accounts signed in to one login share one set of limits, which reads as
 // data mixing between them. Both listings say so; different logins do not.
+// Emails decide when both accounts have one, even if their account ids match
+// (a team's shared workspace); an account id decides only when one is missing.
 func TestAccountsOnTheSameLoginNameEachOther(t *testing.T) {
 	mgr, fa, _ := instTestManager(t)
-	emails := map[string]string{"/a": "me@example.com", "/b": "Me@Example.com", "/c": "other@example.com"}
+	emails := map[string]string{"/a": "me@example.com", "/b": "Me@Example.com", "/c": "other@example.com",
+		"/f": "one@team.com", "/g": "two@team.com", "/h": "h@example.com"}
 	fa.availFor = func(env map[string]string) adapter.Availability {
 		if e := emails[env["FAKE_HOME"]]; e != "" {
-			return adapter.Ready(map[string]string{"account": e})
+			return adapter.Ready(map[string]string{adapter.FactAccount: e})
 		}
 		return adapter.Ready(nil)
 	}
 	var insts []provider.Instance
-	for _, id := range []string{"a", "b", "c", "d", "e"} {
+	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
 		insts = append(insts, provider.Instance{ID: id, Driver: "fake", DisplayName: id, Enabled: true,
 			Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: "/" + id}}})
 	}
@@ -394,8 +397,14 @@ func TestAccountsOnTheSameLoginNameEachOther(t *testing.T) {
 	// d and e report no email, but their limits carry one account id.
 	mgr.reportQuota("fake", "d", adapter.QuotaSnapshot{AccountID: "acct-1"}, true)
 	mgr.reportQuota("fake", "e", adapter.QuotaSnapshot{AccountID: "acct-1"}, true)
+	// h has an email and d's account id: d has none, so the id decides.
+	mgr.reportQuota("fake", "h", adapter.QuotaSnapshot{AccountID: "acct-1"}, true)
+	// f and g are two people in one workspace.
+	mgr.reportQuota("fake", "f", adapter.QuotaSnapshot{AccountID: "ws-1"}, true)
+	mgr.reportQuota("fake", "g", adapter.QuotaSnapshot{AccountID: "ws-1"}, true)
 
-	want := map[string]string{"a": "[b]", "b": "[a]", "c": "[]", "d": "[e]", "e": "[d]", "fake": "[]"}
+	want := map[string]string{"a": "[b]", "b": "[a]", "c": "[]", "d": "[e h]", "e": "[d h]",
+		"f": "[]", "g": "[]", "h": "[d e]", "fake": "[]"}
 	got := map[string]string{}
 	for _, im := range mgr.Harnesses(context.Background())[0].Instances {
 		got[im.ID] = fmt.Sprint(im.SameLoginAs)

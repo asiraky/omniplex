@@ -65,6 +65,8 @@ func Resolve(home, value string) string {
 // For each entry:
 //   - shared missing, account has a real one: the account's is moved into
 //     shared (the first account to create a shared file makes it shared);
+//   - shared missing, account a link that resolves: shared becomes a link to
+//     the same place, so the account loses nothing when it is re-pointed;
 //   - shared missing otherwise: a folder is made in shared, a file is skipped;
 //   - account missing: linked to shared;
 //   - account a link whose literal target is not shared's path — elsewhere,
@@ -145,6 +147,16 @@ func link(src, dst string, dir bool) (conflict bool, err error) {
 			if err := adopt(dst, src, dir); err != nil {
 				return false, fmt.Errorf("share %s: %w", dst, err)
 			}
+		} else if target, ok := liveLink(dst, dir); ok {
+			// The account links somewhere real (straight at dotfiles, say)
+			// and shared has nothing: shared takes the account's link, so
+			// re-pointing the account below keeps what it saw.
+			if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+				return false, err
+			}
+			if err := os.Symlink(target, src); err != nil && !errors.Is(err, os.ErrExist) {
+				return false, fmt.Errorf("share %s: %w", dst, err)
+			}
 		} else if dir {
 			if err := os.MkdirAll(src, 0o755); err != nil {
 				return false, err
@@ -186,6 +198,23 @@ func link(src, dst string, dir bool) (conflict bool, err error) {
 func linksTo(dst, src string) bool {
 	target, err := os.Readlink(dst)
 	return err == nil && target == src
+}
+
+// liveLink reports dst's target when dst is a link that resolves to an entry
+// of the expected kind, made absolute so it means the same from shared's
+// folder as from the account's.
+func liveLink(dst string, dir bool) (string, bool) {
+	target, err := os.Readlink(dst)
+	if err != nil {
+		return "", false
+	}
+	if info, err := os.Stat(dst); err != nil || info.IsDir() != dir {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(dst), target)
+	}
+	return target, true
 }
 
 // adopt moves an account's own entry to the shared path without ever

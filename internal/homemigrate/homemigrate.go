@@ -132,7 +132,8 @@ type Account struct {
 	// entry exists.
 	Implicit bool `json:"implicit,omitempty"`
 	// CatchAll is an account already given its home by an earlier run: only
-	// conversations that were skipped then still move.
+	// conversations that run skipped as too recent, and that are still in the
+	// machine home, move now.
 	CatchAll bool `json:"catchAll,omitempty"`
 	// Before and After are the config entry as it was and as the run writes
 	// it. Before is null for an implicit account; After is null when the
@@ -145,7 +146,12 @@ type Account struct {
 	// ConfigWritten records that After is in the config, which is what
 	// Reverse undoes.
 	ConfigWritten bool `json:"configWritten,omitempty"`
-	Reversed      bool `json:"reversed,omitempty"`
+	// BareEntry records that an implicit account the run did not migrate was
+	// given a config entry with no home variable, so it keeps resolving and
+	// runs on the machine home. Reverse leaves it: it is what the account
+	// was before, written down.
+	BareEntry bool `json:"bareEntry,omitempty"`
+	Reversed  bool `json:"reversed,omitempty"`
 	// Gone are the account's threads whose conversation exists nowhere on
 	// disk (Claude's own cleanup deletes old transcripts). They do not hold
 	// the account back: there is nothing to move and nothing to lose.
@@ -153,6 +159,10 @@ type Account struct {
 
 	Moves   []*Conversation `json:"-"`
 	Skipped []*Conversation `json:"-"`
+
+	// pickup are the conversation ids a CatchAll account takes: those an
+	// earlier run skipped for it as too recent.
+	pickup map[string]bool
 }
 
 // work reports whether the account would change anything.
@@ -182,6 +192,9 @@ type Conversation struct {
 	Status   string `json:"status"`
 	Reason   string `json:"reason,omitempty"`
 	Reversed bool   `json:"reversed,omitempty"`
+	// Later marks a conversation skipped as too recent for an account being
+	// migrated: the one kind a later run's CatchAll picks up.
+	Later bool `json:"later,omitempty"`
 
 	modified time.Time
 }
@@ -258,8 +271,19 @@ type threadRef struct {
 }
 
 // PlanMigration works out what a run would do. It reads the user config, the
-// store and the machine homes, and writes nothing.
+// store, the machine homes and earlier runs' manifests, and writes nothing.
 func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
+	p, err := planMigration(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// planMigration is PlanMigration, returning with an error whatever plan it
+// had got to: once the accounts are known, Run still gives an implicit one a
+// config entry when the rest of the plan fails.
+func planMigration(ctx context.Context, opts Options) (*Plan, error) {
 	if opts.Home == "" {
 		return nil, errors.New("home folder is required")
 	}
@@ -279,7 +303,17 @@ func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
 		drivers[d.ID] = d
 	}
 	p := &Plan{Home: opts.Home, Kept: map[string]int{}}
-	p.Accounts, p.Notes = accountsToMigrate(opts.Home, cfg, drivers, refs)
+	hist := readHistory(filepath.Join(opts.Home, ".omniplex", "migrations"))
+	p.Notes = append(p.Notes, hist.notes...)
+	var notes []string
+	p.Accounts, notes = accountsToMigrate(opts.Home, cfg, drivers, refs, hist.pickup)
+	p.Notes = append(p.Notes, notes...)
+	for _, a := range p.Accounts {
+		if manifest, stuck := hist.verifyFailed[a.ID]; stuck {
+			a.Status = statusAborted
+			a.Reason = fmt.Sprintf("an earlier run's verify failed for it (manifest %s); no run migrates it until a person has checked its conversations and reversed that run (omniplex migrate-homes --reverse %s) or removed the manifest", manifest, manifest)
+		}
+	}
 	if len(p.Accounts) == 0 {
 		return p, nil
 	}
@@ -307,7 +341,7 @@ func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
 		d := drivers[a.Driver]
 		found, kept, err := scan(d.ID, d.DefaultHome)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", d.DefaultHome, err)
+			return p, fmt.Errorf("read %s: %w", d.DefaultHome, err)
 		}
 		scanned[d.ID] = found
 		scanOrder = append(scanOrder, d.ID)
@@ -319,7 +353,7 @@ func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
 			for _, r := range refsBySession[key{driver, c.ID}] {
 				c.Referenced = append(c.Referenced, r.thread)
 			}
-			owner, why := assign(c, driver, refsBySession[key{driver, c.ID}], byID)
+			owner, why := assign(c, driver, refsBySession[key{driver, c.ID}], byID, p.Accounts)
 			if owner == nil {
 				c.Status, c.Reason = statusSkipped, why
 				p.Stay = append(p.Stay, c)
@@ -327,8 +361,8 @@ func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
 			}
 			c.Account = owner.ID
 			c.rebase(owner.Shared, owner.Home)
-			if reason := skipReason(c, opts); reason != "" {
-				c.Status, c.Reason = statusSkipped, reason
+			if reason, later := skipReason(c, opts); reason != "" {
+				c.Status, c.Reason, c.Later = statusSkipped, reason, later
 				owner.Skipped = append(owner.Skipped, c)
 				continue
 			}
@@ -363,7 +397,7 @@ func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
 		}
 		if a.Status == statusAborted {
 			for _, c := range append(a.Moves, a.Skipped...) {
-				c.Status, c.Reason = statusSkipped, "account "+a.ID+" is not being migrated: "+a.Reason
+				c.Status, c.Reason, c.Later = statusSkipped, "account "+a.ID+" is not being migrated: "+a.Reason, false
 				p.Stay = append(p.Stay, c)
 			}
 			a.Moves, a.Skipped = nil, nil
@@ -441,10 +475,12 @@ func harnessSession(ctx context.Context, st Store, id string) (string, error) {
 }
 
 // accountsToMigrate finds the accounts on a machine home: config entries
-// whose home variable is unset or names the machine home, the implicit
-// default of a driver whose id threads use with no entry, and any default
-// already moved by an earlier run (a catch-all for what it skipped).
-func accountsToMigrate(home string, cfg userconfig.Config, drivers map[string]Driver, refs []threadRef) ([]*Account, []string) {
+// whose home variable is unset or names the machine home, and the implicit
+// default of a driver whose id threads use with no entry. An account an
+// earlier run already moved to its own home comes too, as a catch-all, but
+// only while a conversation that run skipped as too recent for it is still
+// in the machine home (pickup, by account id).
+func accountsToMigrate(home string, cfg userconfig.Config, drivers map[string]Driver, refs []threadRef, pickup map[string]map[string]bool) ([]*Account, []string) {
 	var accounts []*Account
 	var notes []string
 	entries := map[string]bool{}
@@ -481,8 +517,8 @@ func accountsToMigrate(home string, cfg userconfig.Config, drivers map[string]Dr
 				continue
 			}
 			a.After = after
-		case resolved == own && inst.ID == d.ID:
-			a.CatchAll = true
+		case resolved == own && len(pickup[inst.ID]) > 0:
+			a.CatchAll, a.pickup = true, pickup[inst.ID]
 		default:
 			continue
 		}
@@ -582,8 +618,11 @@ func compact(raw json.RawMessage) json.RawMessage {
 
 // assign is the account a conversation goes to: the account of the threads
 // that resume it, or the driver's own default for one no thread resumes. nil
-// leaves it where it is, with why.
-func assign(c *Conversation, driver string, refs []threadRef, accounts map[string]*Account) (*Account, string) {
+// leaves it where it is, with why. An account already on its own home takes
+// only what an earlier run skipped for it: anything else Omniplex-started in
+// the machine home since is another server's (a worktree's dev server, a
+// probe), and not this account's to sweep up.
+func assign(c *Conversation, driver string, refs []threadRef, byID map[string]*Account, accounts []*Account) (*Account, string) {
 	if len(refs) > 0 {
 		owners := map[string]bool{}
 		for _, r := range refs {
@@ -597,39 +636,51 @@ func assign(c *Conversation, driver string, refs []threadRef, accounts map[strin
 			sort.Strings(names)
 			return nil, "resumed by threads on accounts " + strings.Join(names, ", ")
 		}
-		owner := accounts[refs[0].account]
+		owner := byID[refs[0].account]
 		if owner == nil || owner.Driver != driver {
 			return nil, "its threads' account " + refs[0].account + " keeps its own home"
 		}
+		if owner.CatchAll && !owner.pickup[c.ID] {
+			return nil, "its threads' account " + owner.ID + " is already on its own home, and no earlier run left this conversation behind for it"
+		}
 		return owner, ""
 	}
-	if owner := accounts[driver]; owner != nil && owner.Driver == driver {
+	if owner := byID[driver]; owner != nil && owner.Driver == driver && !owner.CatchAll {
 		return owner, ""
+	}
+	for _, a := range accounts {
+		if a.CatchAll && a.Driver == driver && a.pickup[c.ID] {
+			return a, ""
+		}
+	}
+	if owner := byID[driver]; owner != nil && owner.Driver == driver {
+		return nil, "left alone: " + driver + " accounts are already on their own homes, and no earlier run left this conversation behind"
 	}
 	return nil, "no account takes it: no " + driver + " account is on the machine's home"
 }
 
 // skipReason is why a conversation assigned to an account does not move this
-// run, or "".
-func skipReason(c *Conversation, opts Options) string {
+// run, or "". later is a skip for being too recent, which a later run picks
+// up.
+func skipReason(c *Conversation, opts Options) (reason string, later bool) {
 	for _, f := range c.Files {
 		if credentialNames[filepath.Base(f.Src)] {
-			return "holds a credential file, " + f.Src
+			return "holds a credential file, " + f.Src, false
 		}
 	}
 	for _, e := range c.Entries {
 		if _, err := os.Lstat(e.Dst); err == nil {
-			return "destination exists, " + e.Dst
+			return "destination exists, " + e.Dst, false
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "cannot check the destination: " + err.Error()
+			return "cannot check the destination: " + err.Error(), false
 		}
 	}
 	if len(c.Referenced) == 0 && opts.MinAge > 0 {
 		if age := opts.Now.Sub(c.modified); age < opts.MinAge {
-			return fmt.Sprintf("modified %s ago, under %s", age.Round(time.Second), opts.MinAge)
+			return fmt.Sprintf("modified %s ago, under %s", age.Round(time.Second), opts.MinAge), true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // rebase points the conversation's destinations into home, keeping each
@@ -723,6 +774,10 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 		}
 	}
 	if atDest != "" {
+		if kind := irregular(atDest); kind != "" {
+			check.Status, check.Where = "at the destination as "+kind+", not a regular file", atDest
+			return check
+		}
 		check.OK, check.Status, check.Where = true, "at destination", atDest
 		for _, c := range a.Skipped {
 			if c.ID == r.session {
@@ -738,6 +793,10 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 		}
 	}
 	if path := locate(a.Driver, a.Shared, r.session); path != "" {
+		if kind := irregular(path); kind != "" {
+			check.Status, check.Where = "in the machine home as "+kind+", not a regular file, which does not move", path
+			return check
+		}
 		origin := "not started by Omniplex"
 		for _, c := range scanned {
 			if c.ID == r.session && c.Status == statusSkipped {

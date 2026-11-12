@@ -30,7 +30,7 @@ func (a *Adapter) Update(ctx context.Context, env map[string]string) (adapter.Up
 	if !ok {
 		return adapter.UpdateResult{}, errors.New("the Codex CLI was not found on this machine")
 	}
-	cmdEnv := adapter.HarnessEnv(codexHomeEnv, env)
+	cmdEnv := codexEnv(env)
 	version := func(ctx context.Context) string {
 		path, ok := a.Executable()
 		if !ok {

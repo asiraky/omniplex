@@ -326,7 +326,7 @@ func (m *Manager) AuthOverview(ctx context.Context, instanceID string) (Instance
 		status := adapter.AuthStatus{MethodID: TerminalAuthMethod, State: adapter.AuthDisconnected}
 		if avail.OK() {
 			status.State = adapter.AuthConnected
-			status.Account = avail.Facts["account"]
+			status.Account = avail.Facts[adapter.FactAccount]
 			status.Detail = avail.Facts["plan"]
 			if avail.Facts["auth"] != "" {
 				status.Source = adapter.SourceNative

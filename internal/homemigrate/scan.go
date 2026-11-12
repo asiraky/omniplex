@@ -227,6 +227,9 @@ func locateSidecar(driver, root, id string) string {
 }
 
 // locate finds conversation id in a config home, "" when it is not there.
+// Anything at the transcript's path counts, whatever it is: a symlink or a
+// folder there is the conversation found but not movable, never it being
+// gone.
 func locate(driver, root, id string) string {
 	if root == "" || id == "" {
 		return ""
@@ -235,7 +238,7 @@ func locate(driver, root, id string) string {
 	case DriverClaude:
 		matches, _ := filepath.Glob(filepath.Join(root, "projects", "*", id+".jsonl"))
 		for _, m := range matches {
-			if info, err := os.Lstat(m); err == nil && info.Mode().IsRegular() {
+			if _, err := os.Lstat(m); err == nil {
 				return m
 			}
 		}
@@ -246,7 +249,7 @@ func locate(driver, root, id string) string {
 				if err != nil || hit != "" {
 					return filepath.SkipDir
 				}
-				if d.Type().IsRegular() && isRollout(d.Name()) && strings.HasSuffix(d.Name(), "-"+id+".jsonl") {
+				if isRollout(d.Name()) && strings.HasSuffix(d.Name(), "-"+id+".jsonl") {
 					hit = path
 					return filepath.SkipAll
 				}
@@ -258,4 +261,21 @@ func locate(driver, root, id string) string {
 		}
 	}
 	return ""
+}
+
+// irregular names what is at path when it is not a regular file, "" when it
+// is one.
+func irregular(path string) string {
+	info, err := os.Lstat(path)
+	switch {
+	case err != nil:
+		return "something that cannot be read (" + err.Error() + ")"
+	case info.Mode().IsRegular():
+		return ""
+	case info.Mode()&fs.ModeSymlink != 0:
+		return "a symlink"
+	case info.IsDir():
+		return "a folder"
+	}
+	return "a " + info.Mode().Type().String() + " entry"
 }

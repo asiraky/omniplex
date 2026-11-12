@@ -108,7 +108,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, path, "--version")
-	probe.Env = withBinDir(path, adapter.HarnessEnv(agentDirEnv, env))
+	probe.Env = withBinDir(path, adapter.HarnessEnv(env, agentDirEnv))
 	out, err := probe.Output()
 	if err != nil {
 		return adapter.Unavailable(
@@ -214,7 +214,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: a per-account PI_CODING_AGENT_DIR isolates
 	// auth.json and settings.
-	cmd.Env = withBinDir(bin, adapter.HarnessEnv(agentDirEnv, o.Env))
+	cmd.Env = withBinDir(bin, adapter.HarnessEnv(o.Env, agentDirEnv))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

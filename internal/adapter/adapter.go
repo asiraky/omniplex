@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -334,15 +335,16 @@ func Unavailable(reason string, remedy ...Remedy) Availability {
 func (a Availability) OK() bool { return a.State == StateReady }
 
 // HarnessEnv is the environment a harness process runs under: the server's
-// own without homeVar (the harness's config-home variable), then the
-// instance's overlay. A home the server inherited, say from a harness session
-// it was started in, is some terminal's login and never an account's; an
-// overlay without the variable gets the harness's default home.
-func HarnessEnv(homeVar string, overlay map[string]string) []string {
+// own without the strip variables (the harness's config-home variable and the
+// credentials it signs in with), then the instance's overlay. A home or a
+// credential the server inherited, say from a harness session it was started
+// in or the service's own environment, is nobody's account: it would override
+// every account's login. Only an account's overlay sets them.
+func HarnessEnv(overlay map[string]string, strip ...string) []string {
 	base := os.Environ()
 	kept := make([]string, 0, len(base))
 	for _, kv := range base {
-		if key, _, _ := strings.Cut(kv, "="); key != homeVar {
+		if key, _, _ := strings.Cut(kv, "="); !slices.Contains(strip, key) {
 			kept = append(kept, kv)
 		}
 	}

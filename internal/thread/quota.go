@@ -88,8 +88,8 @@ func (m *Manager) Quotas() []QuotaStatus {
 type login struct{ id, driver, email, accountID string }
 
 // sameLogins maps each instance id to the other instances of its driver
-// signed in to the same login: an equal email (case aside) or an equal
-// account id. Blank never matches blank: unknown is not the same.
+// signed in to the same login (see sameLogin). Blank never matches blank:
+// unknown is not the same.
 func sameLogins(ls []login) map[string][]string {
 	out := map[string][]string{}
 	for i, a := range ls {
@@ -97,7 +97,7 @@ func sameLogins(ls []login) map[string][]string {
 			if i == j || a.driver != b.driver {
 				continue
 			}
-			if (a.email != "" && strings.EqualFold(a.email, b.email)) || (a.accountID != "" && a.accountID == b.accountID) {
+			if sameLogin(a, b) {
 				out[a.id] = append(out[a.id], b.id)
 			}
 		}
@@ -105,12 +105,23 @@ func sameLogins(ls []login) map[string][]string {
 	return out
 }
 
+// sameLogin reports whether two accounts are signed in as one login. Emails
+// decide when both sides have one: an account id can name something shared by
+// several logins (Codex's is the ChatGPT workspace, one for a whole team).
+// Only when an email is missing does a matching account id count.
+func sameLogin(a, b login) bool {
+	if a.email != "" && b.email != "" {
+		return strings.EqualFold(a.email, b.email)
+	}
+	return a.accountID != "" && a.accountID == b.accountID
+}
+
 // probedAccount is the account instance id's last probe answered as,
 // without probing again.
 func (m *Manager) probedAccount(id string) string {
 	m.probeMu.Lock()
 	defer m.probeMu.Unlock()
-	return m.probes[id].result.Facts["account"]
+	return m.probes[id].result.Facts[adapter.FactAccount]
 }
 
 // quotaAccount is the account id instance id's quota snapshot carries.

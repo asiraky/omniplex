@@ -40,17 +40,18 @@ func bunArgs(script string) []string {
 
 // claudeEnv is the environment Claude Code runs under: base without the
 // CLAUDECODE and CLAUDE_* variables a Claude Code session exports to whatever
-// it starts, then the instance's overlay. A server started from inside Claude
+// it starts, and without the credentials that pick who Claude Code is signed
+// in as, then the instance's overlay. A server started from inside Claude
 // Code would otherwise hand its threads that session's id, messaging socket
-// and token, effort, context window and config dir. The overlay is applied
-// after, so a CLAUDE_* variable the instance sets still wins. The config dir
-// in particular only ever comes from the overlay: an ambient one is some
-// terminal's login, not an account's.
+// and token, effort, context window and config dir. A credential in the
+// server's own environment would override every account's login, so the only
+// credential a session gets is one its account's overlay sets. The overlay is
+// applied after, so a CLAUDE_* variable the instance sets still wins.
 func claudeEnv(base []string, overlay map[string]string) []string {
 	kept := make([]string, 0, len(base))
 	for _, kv := range base {
 		key, _, _ := strings.Cut(kv, "=")
-		if (key == "CLAUDECODE" || strings.HasPrefix(key, "CLAUDE_")) && key != claudeTokenEnv {
+		if key == "CLAUDECODE" || strings.HasPrefix(key, "CLAUDE_") || claudeCredentialEnv[key] {
 			continue
 		}
 		kept = append(kept, kv)
@@ -58,10 +59,12 @@ func claudeEnv(base []string, overlay map[string]string) []string {
 	return adapter.MergeEnv(kept, overlay)
 }
 
-// claudeTokenEnv is the one CLAUDE_* variable kept from the server's
-// environment: a credential given to the server itself, which an account's
-// overlay replaces when it sets its own.
-const claudeTokenEnv = "CLAUDE_CODE_OAUTH_TOKEN"
+// claudeCredentialEnv is every non-CLAUDE_* variable Claude Code signs in
+// with. CLAUDE_CODE_OAUTH_TOKEN goes with the rest of CLAUDE_*.
+var claudeCredentialEnv = map[string]bool{
+	"ANTHROPIC_API_KEY":    true,
+	"ANTHROPIC_AUTH_TOKEN": true,
+}
 
 // command builds a bridge process: the config blob on argv, the ambient
 // environment under the instance's overlay plus extra, and the names of those

@@ -146,6 +146,9 @@ export function App() {
     startNew({ focus: true, projectId: meta?.projectId ?? nav.creating?.projectId });
   };
   const toggleSidebar = () => nav.setSidebarOpen((open) => !open);
+  // Setup and the new-thread draft both send a driver with no account here;
+  // null lets Providers ask which driver.
+  const addAccount = (harnessId: string | null) => screens.setSettings({ at: { kind: "providers", addFor: harnessId } });
   // Settings and the new-project dialog live in the main view's dialogs, so
   // a full-page screen steps aside for them.
   const openSettings = () => {
@@ -255,9 +258,7 @@ export function App() {
         <SetupScreen
           harnesses={harnesses}
           auth={auth}
-          onAddAccount={(harnessId) =>
-            screens.setSettings({ at: { kind: "providers", addFor: harnessId } })
-          }
+          onAddAccount={addAccount}
           onContinue={screens.leaveSetup}
         />
         <AppDialogs
@@ -413,9 +414,7 @@ export function App() {
               onRecheck={auth.recheck}
               onLogin={auth.openInstanceAuth}
               onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
-              onAddAccount={(harnessId) =>
-                screens.setSettings({ at: { kind: "providers", addFor: harnessId } })
-              }
+              onAddAccount={addAccount}
               dictate={wire.hasElevenLabsKey}
             />
           ) : (

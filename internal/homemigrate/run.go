@@ -47,16 +47,33 @@ type Result struct {
 // nothing more is moved until a person has looked.
 var errVerify = errors.New("verify failed")
 
+// beforeVerify runs, when set, between an account's moves and their verify.
+// Tests use it to make what is on disk disagree with the manifest.
+var beforeVerify func(*Account)
+
 // Run migrates every account the plan finds. An account that cannot be
 // migrated whole is left as it was; the rest go ahead. The error is for a
 // run that could not plan, could not write its manifest, or stopped on a
-// failed verify.
-func Run(ctx context.Context, opts Options) (*Result, error) {
-	p, err := PlanMigration(ctx, opts)
+// failed verify. However it ends, an implicit account it did not migrate is
+// given a config entry with no home, so its threads keep resolving and run
+// on the machine home as they did.
+func Run(ctx context.Context, opts Options) (res *Result, err error) {
+	var m *Manifest
+	p, err := planMigration(ctx, opts)
+	if p != nil {
+		defer func() { keepImplicit(p, m, opts) }()
+	}
 	if err != nil {
+		if p != nil {
+			for _, a := range p.Accounts {
+				if a.Status != statusAborted {
+					a.Status, a.Reason = statusAborted, "the plan failed: "+err.Error()
+				}
+			}
+		}
 		return nil, err
 	}
-	res := &Result{Plan: p}
+	res = &Result{Plan: p}
 	for _, n := range p.Notes {
 		opts.logf("home migration: %s", n)
 	}
@@ -95,7 +112,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	m := &Manifest{Version: 1, CreatedAt: opts.Now.UTC(), Home: p.Home, Accounts: p.Accounts, SameFS: p.SameFS}
+	m = &Manifest{Version: 1, CreatedAt: opts.Now.UTC(), Home: p.Home, Accounts: p.Accounts, SameFS: p.SameFS}
 	for _, a := range p.Accounts {
 		m.Conversations = append(m.Conversations, a.Moves...)
 		m.Conversations = append(m.Conversations, a.Skipped...)
@@ -103,6 +120,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	m.Conversations = append(m.Conversations, p.Stay...)
 	path, err := createManifest(filepath.Join(p.Home, ".omniplex", "migrations"), m)
 	if err != nil {
+		m = nil
+		for _, a := range p.Accounts {
+			if a.work() {
+				a.Status, a.Reason = statusAborted, "no manifest could be written"
+			}
+		}
 		return res, fmt.Errorf("write the migration manifest: %w", err)
 	}
 	res.Manifest = path
@@ -112,7 +135,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	for _, a := range p.Accounts {
+	for i, a := range p.Accounts {
 		if !a.work() {
 			continue
 		}
@@ -120,11 +143,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if saveErr := m.save(); saveErr != nil && err == nil {
 			err = fmt.Errorf("update the manifest: %w", saveErr)
 		}
+		if errors.Is(err, errVerify) {
+			opts.logf("HOME MIGRATION VERIFY FAILED for account %s (%s): %v; its config is unchanged, and no run migrates it again while manifest %s records this: check its conversations, then reverse that run (omniplex migrate-homes --reverse %s) or remove the manifest. The run stops here.", a.ID, a.Name, err, path, path)
+			for _, later := range p.Accounts[i+1:] {
+				if later.work() {
+					later.Status, later.Reason = statusAborted, "not run: the run stopped at account "+a.ID+"'s failed verify"
+				}
+			}
+			_ = m.save()
+			return res, err
+		}
 		if err != nil {
 			opts.logf("home migration: account %s (%s) NOT MIGRATED: %v; its config is unchanged (manifest %s)", a.ID, a.Name, err, path)
-			if errors.Is(err, errVerify) {
-				return res, err
-			}
 			continue
 		}
 		moved := 0
@@ -217,8 +247,27 @@ func migrateAccount(m *Manifest, a *Account, opts Options) error {
 		}
 	}
 
+	if beforeVerify != nil {
+		beforeVerify(a)
+	}
 	if err := verify(a, opts); err != nil {
-		return fail(statusVerifyFailed, fmt.Errorf("%w: %v", errVerify, err))
+		// Moved back, not fixed: the files are put where the account, whose
+		// config stays as it was, still reads them, and whatever cannot go
+		// back without replacing something stays where it is and is said.
+		rollbackAccount(a.Moves, opts)
+		var stuck []string
+		for _, c := range a.Moves {
+			for _, e := range c.Entries {
+				if e.Moved {
+					stuck = append(stuck, e.Dst)
+				}
+			}
+		}
+		undone := "this run's moves for it are undone"
+		if len(stuck) > 0 {
+			undone = fmt.Sprintf("this run's moves for it are undone except %s, which could not go back and are still at the destination", strings.Join(stuck, ", "))
+		}
+		return fail(statusVerifyFailed, fmt.Errorf("%w: %v; %s", errVerify, err, undone))
 	}
 	if a.After != nil {
 		if err := writeEntry(a.ID, a.Before, a.After); err != nil {
@@ -271,6 +320,8 @@ func rollbackAccount(done []*Conversation, opts Options) {
 			if e.Moved {
 				back = false
 				opts.logf("home migration: could not move %s back to %s; it is still at the destination", e.Dst, e.Src)
+			} else if e.Aside != "" {
+				opts.logf("home migration: %s is back; the original it was copied from is still beside it at %s", e.Src, e.Aside)
 			}
 		}
 		if back {
@@ -350,6 +401,106 @@ func verify(a *Account, opts Options) error {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// keepImplicit gives every implicit account the run did not migrate a config
+// entry of its own with no home variable: with no synthesised default any
+// more, an account with no entry is unknown, and its threads would fail
+// rather than keep running on the machine home. One that fails to write
+// does not stop the next.
+func keepImplicit(p *Plan, m *Manifest, opts Options) {
+	wrote := false
+	for _, a := range p.Accounts {
+		if !a.Implicit || a.Status == statusMigrated || a.BareEntry {
+			continue
+		}
+		entry, _ := json.Marshal(map[string]any{
+			"id":          a.ID,
+			"driver":      a.Driver,
+			"displayName": a.Name,
+			"enabled":     true,
+		})
+		added, err := addEntry(a.ID, entry)
+		if err != nil {
+			opts.logf("home migration: account %s (%s) has no config entry, and writing one failed: %v; its threads cannot start until it has one", a.ID, a.Name, err)
+			continue
+		}
+		if added {
+			a.BareEntry, wrote = true, true
+			opts.logf("home migration: account %s (%s) was not migrated; gave it a config entry with no home of its own, so it keeps running on %s", a.ID, a.Name, a.Shared)
+		}
+	}
+	if wrote && m != nil {
+		if err := m.save(); err != nil {
+			opts.logf("home migration: update the manifest %s: %v", m.path, err)
+		}
+	}
+}
+
+// addEntry appends entry unless the config already has one with id.
+func addEntry(id string, entry json.RawMessage) (added bool, err error) {
+	_, err = userconfig.Update(func(cfg *userconfig.Config) error {
+		if entryIndex(cfg.Providers, id) >= 0 {
+			return nil
+		}
+		cfg.Providers = append(cfg.Providers, entry)
+		added = true
+		return nil
+	})
+	return added, err
+}
+
+// history is what earlier runs' manifests say about this one: the accounts
+// whose verify failed in a run nobody has reversed, which no run migrates
+// again, and per migrated account the conversations skipped as too recent
+// that are still where they were.
+type history struct {
+	verifyFailed map[string]string
+	pickup       map[string]map[string]bool
+	notes        []string
+}
+
+func readHistory(dir string) history {
+	h := history{verifyFailed: map[string]string{}, pickup: map[string]map[string]bool{}}
+	paths, _ := filepath.Glob(filepath.Join(dir, "homes-*.json"))
+	for _, path := range paths {
+		b, err := os.ReadFile(path)
+		var m Manifest
+		if err == nil {
+			err = json.Unmarshal(b, &m)
+		}
+		if err != nil {
+			h.notes = append(h.notes, fmt.Sprintf("cannot read the earlier run's manifest %s: %v; what it records is not taken into account", path, err))
+			continue
+		}
+		if m.ReversedAt != nil {
+			continue
+		}
+		migrated := map[string]bool{}
+		for _, a := range m.Accounts {
+			switch a.Status {
+			case statusVerifyFailed:
+				if _, seen := h.verifyFailed[a.ID]; !seen {
+					h.verifyFailed[a.ID] = path
+				}
+			case statusMigrated:
+				migrated[a.ID] = true
+			}
+		}
+		for _, c := range m.Conversations {
+			if !c.Later || c.Status != statusSkipped || c.Reversed || !migrated[c.Account] || len(c.Entries) == 0 {
+				continue
+			}
+			if _, err := os.Lstat(c.Entries[len(c.Entries)-1].Src); err != nil {
+				continue
+			}
+			if h.pickup[c.Account] == nil {
+				h.pickup[c.Account] = map[string]bool{}
+			}
+			h.pickup[c.Account][c.ID] = true
+		}
+	}
+	return h
 }
 
 // writeEntry puts after in place of the entry with id, or adds it when the

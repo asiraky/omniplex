@@ -235,6 +235,42 @@ func TestALinkPastTheSharedEntryIsRepointedAtIt(t *testing.T) {
 	}
 }
 
+// The same account with no shared entry at all: shared takes the account's
+// link rather than a fresh empty folder, so the skills are still there after
+// the account is re-pointed. A relative link means the same from shared.
+func TestALinkWithNoSharedEntryBecomesTheSharedEntry(t *testing.T) {
+	shared, root := t.TempDir(), t.TempDir()
+	account, dotfiles := filepath.Join(root, "account"), filepath.Join(root, "dotfiles")
+	write(t, filepath.Join(dotfiles, "skills", "a", "SKILL.md"), "a")
+	write(t, filepath.Join(dotfiles, "settings.json"), "dot")
+	if err := os.MkdirAll(account, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "skills"), filepath.Join(account, "skills")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "dotfiles", "settings.json"), filepath.Join(account, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Link(shared, account, entries); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"skills", "settings.json"} {
+		if target, _ := os.Readlink(filepath.Join(account, name)); target != filepath.Join(shared, name) {
+			t.Fatalf("account %s -> %q, want the shared entry", name, target)
+		}
+		if target, _ := os.Readlink(filepath.Join(shared, name)); target != filepath.Join(dotfiles, name) {
+			t.Fatalf("shared %s -> %q, want the account's old target", name, target)
+		}
+	}
+	if got := read(t, filepath.Join(account, "skills", "a", "SKILL.md")); got != "a" {
+		t.Fatalf("skill = %q", got)
+	}
+	if got := read(t, filepath.Join(account, "settings.json")); got != "dot" {
+		t.Fatalf("settings = %q", got)
+	}
+}
+
 func TestALinkElsewhereOrDanglingIsRepointed(t *testing.T) {
 	shared, account, other := t.TempDir(), t.TempDir(), t.TempDir()
 	write(t, filepath.Join(shared, "skills", "a", "SKILL.md"), "a")

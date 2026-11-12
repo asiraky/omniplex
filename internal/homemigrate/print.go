@@ -34,6 +34,9 @@ func (p *Plan) Print(w io.Writer) {
 		fmt.Fprintf(w, "  %s (%s, %s): %s -> %s [%s]\n", a.ID, a.Name, a.Driver, a.Shared, a.Home, kind)
 		if a.Status == statusAborted {
 			fmt.Fprintf(w, "    NOT MIGRATED: %s\n", a.Reason)
+			if a.Implicit {
+				fmt.Fprintf(w, "    a config entry with no home of its own is written, so it keeps running on %s\n", a.Shared)
+			}
 			continue
 		}
 		files, size := 0, int64(0)

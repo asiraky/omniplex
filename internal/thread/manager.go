@@ -643,7 +643,7 @@ func (m *Manager) instancesOf(ctx context.Context, driver string) []InstanceMeta
 		binary := binaryIdentity(reg.ad)
 		im.Availability = m.availabilityOf(ctx, reg, binary)
 		im.Models = m.modelsOf(reg, im.Availability, binary)
-		im.Account = im.Availability.Facts["account"]
+		im.Account = im.Availability.Facts[adapter.FactAccount]
 		im.ConfigConflicts = m.configConflicts(reg.inst.ID)
 		out = append(out, im)
 	}
@@ -746,7 +746,7 @@ func (m *Manager) availabilityOf(ctx context.Context, reg registered, binary str
 // and the auth method count too: an API key and a subscription see
 // different catalogues even with no email to tell them apart.
 func accountOf(a adapter.Availability) string {
-	return strings.Join([]string{a.State, a.Facts["account"], a.Facts["auth"], a.Facts["plan"]}, "|")
+	return strings.Join([]string{a.State, a.Facts[adapter.FactAccount], a.Facts["auth"], a.Facts["plan"]}, "|")
 }
 
 // forgetModels drops one instance's cached listing so the next call asks

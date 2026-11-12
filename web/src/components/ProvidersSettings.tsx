@@ -16,6 +16,7 @@ import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import { describeHarnessUpdate } from "~/lib/harnessUpdate";
 import { buildInstanceSpec, deriveInstanceId, hasStoredSecret, initialFieldValues } from "~/lib/providerSpec";
+import { joinAnd, sameLoginNames as loginNames } from "~/lib/sameLogin";
 import type {
   HarnessMeta,
   ProviderConfigField,
@@ -65,21 +66,9 @@ function instanceSummary(harness: HarnessMeta, instance: ProviderInstanceMeta): 
   );
 }
 
-/**
- * The other accounts of this driver signed in to the same login, by display
- * name. Two such accounts share one set of limits and one history, which is
- * what made two rows on the Usage page look like mixed-up data.
- */
+/** The other accounts of this driver signed in to the same login, by display name. */
 function sameLoginNames(harness: HarnessMeta, instance: ProviderInstanceMeta): string[] {
-  return (instance.sameLoginAs ?? []).map(
-    (id) => (harness.instances ?? []).find((i) => i.id === id)?.displayName || id,
-  );
-}
-
-/** "a", "a and b", "a, b and c". */
-function joinAnd(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return loginNames(instance.sameLoginAs, (id) => (harness.instances ?? []).find((i) => i.id === id)?.displayName);
 }
 
 /** The signed-in login, the CLI's version and its last auto-update, under the detail heading. */

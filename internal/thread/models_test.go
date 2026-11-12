@@ -190,7 +190,7 @@ func TestAccountChangeDropsCachedModels(t *testing.T) {
 		if account == "unavailable" {
 			return adapter.Unavailable("not signed in")
 		}
-		return adapter.Ready(map[string]string{"account": account})
+		return adapter.Ready(map[string]string{adapter.FactAccount: account})
 	}
 
 	mgr.Harnesses(context.Background())

@@ -45,7 +45,7 @@ func (a *Adapter) Prompt(ctx context.Context, env map[string]string, req adapter
 	args = append(args, "-")
 	cmd := exec.CommandContext(ctx, a.Bin, args...)
 	cmd.Dir = dir
-	cmd.Env = adapter.HarnessEnv(codexHomeEnv, env)
+	cmd.Env = codexEnv(env)
 	input := req.Input
 	if req.Instructions != "" {
 		input = req.Instructions + "\n\n" + input

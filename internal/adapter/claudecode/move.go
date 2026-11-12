@@ -49,7 +49,7 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := move(file, destFile); err != nil {
+	if err := accounthome.MoveAndDiscardAside(file, destFile); err != nil {
 		return fmt.Errorf("move the Claude conversation: %w", err)
 	}
 	// Subagent transcripts are part of the conversation but not needed to
@@ -59,11 +59,11 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	if info, err := os.Lstat(side); err == nil && info.IsDir() {
 		destSide := filepath.Join(destDir, id)
 		if _, err := os.Lstat(destSide); err == nil {
-			_ = move(destFile, file)
+			_ = accounthome.MoveAndDiscardAside(destFile, file)
 			return fmt.Errorf("the other account already has Claude subagent transcripts for %s; not overwriting them", id)
 		}
-		if err := move(side, destSide); err != nil {
-			_ = move(destFile, file)
+		if err := accounthome.MoveAndDiscardAside(side, destSide); err != nil {
+			_ = accounthome.MoveAndDiscardAside(destFile, file)
 			return fmt.Errorf("move the Claude subagent transcripts: %w", err)
 		}
 	}
@@ -95,16 +95,3 @@ func findConversation(configDir, cwd, id string) (string, error) {
 
 // nonAlphanumeric is how Claude Code turns a cwd into its project key.
 var nonAlphanumeric = regexp.MustCompile(`[^a-zA-Z0-9]`)
-
-// move moves one entry of a conversation without ever replacing anything.
-// Across filesystems accounthome.Move copies and leaves the source aside under
-// a name Claude never reads; once the copy is whole the conversation has
-// moved, so the leftover goes and failing to delete it cannot split the
-// history.
-func move(src, dst string) error {
-	aside, err := accounthome.Move(src, dst)
-	if aside != "" {
-		_ = os.RemoveAll(aside)
-	}
-	return err
-}

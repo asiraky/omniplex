@@ -8,7 +8,8 @@ import (
 // A server started from inside a Claude Code session carries that session's
 // CLAUDECODE and CLAUDE_* variables; Claude threads must not inherit them,
 // its config dir included (only the instance's overlay picks the account's
-// home), but keep a server-wide OAuth token and anything the instance sets.
+// home). Nor may a credential the server was started with reach them: it would
+// override every account's login. Anything the instance sets is kept.
 func TestClaudeEnv(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin",
@@ -23,15 +24,18 @@ func TestClaudeEnv(t *testing.T) {
 		"CLAUDE_CODE_MESSAGING_TOKEN=parent-token",
 		"CLAUDE_CONFIG_DIR=/home/ambient/.claude",
 		"CLAUDE_CODE_OAUTH_TOKEN=ambient-oauth",
+		"ANTHROPIC_AUTH_TOKEN=ambient-bearer",
 	}
 	dropped := []string{
 		"CLAUDECODE",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+		"ANTHROPIC_AUTH_TOKEN",
 		"CLAUDE_CODE_DISABLE_1M_CONTEXT",
 		"CLAUDE_CODE_SESSION_ID",
 		"CLAUDE_CODE_MESSAGING_SOCKET",
 		"CLAUDE_CODE_MESSAGING_TOKEN",
 	}
-	unset := append([]string{"CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR"}, dropped...)
+	unset := append([]string{"CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"}, dropped...)
 
 	for _, tc := range []struct {
 		name    string
@@ -42,11 +46,9 @@ func TestClaudeEnv(t *testing.T) {
 		{
 			name: "nil overlay",
 			want: map[string]string{
-				"PATH":                    "/usr/bin",
-				"ANTHROPIC_API_KEY":       "sk-ambient",
-				"MY_CLAUDE_X":             "kept",
-				"CLAUDECODEX":             "kept",
-				"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth",
+				"PATH":        "/usr/bin",
+				"MY_CLAUDE_X": "kept",
+				"CLAUDECODEX": "kept",
 			},
 			absent: unset,
 		},
@@ -69,14 +71,20 @@ func TestClaudeEnv(t *testing.T) {
 				"OMNIPLEX_OVERLAY":  "yes",
 			},
 			want: map[string]string{
-				"PATH":                    "/usr/bin",
-				"CLAUDE_EFFORT":           "low",
-				"CLAUDE_CONFIG_DIR":       "/home/instance/.claude",
-				"ANTHROPIC_API_KEY":       "sk-instance",
-				"OMNIPLEX_OVERLAY":        "yes",
-				"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth",
+				"PATH":              "/usr/bin",
+				"CLAUDE_EFFORT":     "low",
+				"CLAUDE_CONFIG_DIR": "/home/instance/.claude",
+				"ANTHROPIC_API_KEY": "sk-instance",
+				"OMNIPLEX_OVERLAY":  "yes",
 			},
 			absent: dropped,
+		},
+		{
+			// The account's own token is the one credential that gets through.
+			name:    "account token",
+			overlay: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "account-oauth"},
+			want:    map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "account-oauth"},
+			absent:  []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -14,22 +14,27 @@ func envMap(env []string) map[string]string {
 	return out
 }
 
-// A server started inside a harness session inherits that session's home;
-// no harness process may get it, and an account's own home always reaches it.
-func TestHarnessEnvNeverPassesTheServersHome(t *testing.T) {
+// A server started inside a harness session, or from a service environment
+// that exports a credential, inherits a home and a login that are nobody's
+// account; no harness process may get them, and an account's own values
+// always reach it.
+func TestHarnessEnvNeverPassesTheServersHomeOrCredentials(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/terminal/.codex")
+	t.Setenv("OPENAI_API_KEY", "sk-server")
 	t.Setenv("OMNIPLEX_TEST_KEPT", "yes")
 
-	got := envMap(HarnessEnv("CODEX_HOME", nil))
-	if v, ok := got["CODEX_HOME"]; ok {
-		t.Errorf("CODEX_HOME=%q reached the harness from the server", v)
+	got := envMap(HarnessEnv(nil, "CODEX_HOME", "OPENAI_API_KEY"))
+	for _, k := range []string{"CODEX_HOME", "OPENAI_API_KEY"} {
+		if v, ok := got[k]; ok {
+			t.Errorf("%s=%q reached the harness from the server", k, v)
+		}
 	}
 	if got["OMNIPLEX_TEST_KEPT"] != "yes" {
 		t.Error("the rest of the server's environment was dropped")
 	}
 
-	got = envMap(HarnessEnv("CODEX_HOME", map[string]string{"CODEX_HOME": "/accounts/work"}))
-	if got["CODEX_HOME"] != "/accounts/work" {
-		t.Errorf("CODEX_HOME = %q, want the account's", got["CODEX_HOME"])
+	got = envMap(HarnessEnv(map[string]string{"CODEX_HOME": "/accounts/work", "OPENAI_API_KEY": "sk-account"}, "CODEX_HOME", "OPENAI_API_KEY"))
+	if got["CODEX_HOME"] != "/accounts/work" || got["OPENAI_API_KEY"] != "sk-account" {
+		t.Errorf("CODEX_HOME = %q, OPENAI_API_KEY = %q, want the account's", got["CODEX_HOME"], got["OPENAI_API_KEY"])
 	}
 }

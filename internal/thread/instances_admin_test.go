@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/accounthome"
@@ -499,6 +501,68 @@ func TestAnAccountsOwnCopyIsAConflictUntilItUsesTheShared(t *testing.T) {
 	}
 	if got := instanceMeta(t, mgr, "fake").ConfigConflicts; len(got) != 0 {
 		t.Fatalf("conflict still listed: %v", got)
+	}
+}
+
+// A home broken while the server was down is put right on startup, before
+// anything uses the account: a lost link comes back, an account's own copy is
+// listed as a conflict and left alone, and an account whose home cannot be
+// checked is logged without stopping the rest.
+func TestCheckAccountHomesRepairsEveryAccount(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	var mu sync.Mutex
+	var logs []string
+	mgr.logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".fake", "settings.json"), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Registered as on startup: nothing has used either account yet.
+	lost, own := filepath.Join(home, "accounts", "lost"), filepath.Join(home, "accounts", "own")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(own, "settings.json"), []byte("own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	account := func(id string, env ...provider.EnvVar) provider.Instance {
+		return provider.Instance{ID: id, Driver: "fake", DisplayName: id, Enabled: true, Env: env}
+	}
+	mgr.ConfigureInstances([]provider.Instance{
+		account("lost", provider.EnvVar{Name: "FAKE_HOME", Value: lost}),
+		account("own", provider.EnvVar{Name: "FAKE_HOME", Value: own}),
+		account("relative", provider.EnvVar{Name: "FAKE_HOME", Value: "accounts/relative"}),
+		account("nosecret", provider.EnvVar{Name: "FAKE_HOME", Value: filepath.Join(home, "accounts", "nosecret")},
+			provider.EnvVar{Name: "FAKE_KEY", Sensitive: true}),
+	}, mgr.secretStore())
+
+	mgr.CheckAccountHomes()
+
+	if target, _ := os.Readlink(filepath.Join(lost, "skills")); target != filepath.Join(home, ".fake", "skills") {
+		t.Errorf("lost skills -> %q, want the shared entry", target)
+	}
+	if got := mgr.configConflicts("own"); fmt.Sprint(got) != "[settings.json]" {
+		t.Errorf("own's conflicts = %v", got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(own, "settings.json")); string(b) != "own" {
+		t.Errorf("own's copy touched: %q", b)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range []string{"relative", "nosecret"} {
+		found := false
+		for _, l := range logs {
+			found = found || strings.Contains(l, "provider instance "+id+":")
+		}
+		if !found {
+			t.Errorf("no log for %s in %q", id, logs)
+		}
 	}
 }
 

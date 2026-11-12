@@ -100,7 +100,7 @@ func TestProbeReportsTheSignedInEmail(t *testing.T) {
 	writeAuth(t, ambient, map[string]any{"tokens": map[string]any{"id_token": fakeIDToken(t, map[string]any{"email": "ambient@example"})}})
 
 	got := New(fakeCodex(t, "Logged in using ChatGPT", 0)).Probe(context.Background(), map[string]string{"CODEX_HOME": account})
-	if !got.OK() || got.Facts["account"] != "me@work.example" {
+	if !got.OK() || got.Facts[adapter.FactAccount] != "me@work.example" {
 		t.Fatalf("probe = %+v, want the work account's email", got)
 	}
 	for k, v := range got.Facts {
@@ -109,8 +109,8 @@ func TestProbeReportsTheSignedInEmail(t *testing.T) {
 		}
 	}
 
-	if got := New(fakeCodex(t, "Logged in using ChatGPT", 0)).Probe(context.Background(), nil); got.Facts["account"] != "terminal@example" {
-		t.Errorf("no CODEX_HOME = %q, want ~/.codex's login", got.Facts["account"])
+	if got := New(fakeCodex(t, "Logged in using ChatGPT", 0)).Probe(context.Background(), nil); got.Facts[adapter.FactAccount] != "terminal@example" {
+		t.Errorf("no CODEX_HOME = %q, want ~/.codex's login", got.Facts[adapter.FactAccount])
 	}
 }
 

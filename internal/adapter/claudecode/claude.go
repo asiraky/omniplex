@@ -135,7 +135,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 		)
 	case st.known:
 		if st.email != "" {
-			avail.Facts["account"] = st.email
+			avail.Facts[adapter.FactAccount] = st.email
 		}
 		if st.subscription != "" {
 			avail.Facts["plan"] = st.subscription

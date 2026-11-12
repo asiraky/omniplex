@@ -102,9 +102,18 @@ way to emit a single-file executable carrying its own JS runtime, which is what
 the optional bundled build needs. Dependencies there are installed with npm like
 everywhere else. Nothing else in the repo requires Bun.
 
-Open the URL, click **New thread**, choose Claude or Codex, and prompt. The
-harness runs as a subprocess of the server and uses the auth you already have
-locally (`claude` and `codex` login state); Omniplex never sees a token.
+Open the URL, go to **Settings → Providers**, add an account and sign in
+there. A fresh install has no accounts, and none uses the login of a `claude`
+or `codex` in your terminal: each account has its own home under
+`~/.omniplex/instances/<id>`, with your skills and settings linked in from
+`~/.claude` (or `~/.codex`, `~/.pi/agent`). Then click **New thread**, choose
+the account, and prompt. The harness runs as a subprocess of the server and
+Omniplex never sees a token.
+
+An older install whose accounts used the terminal's home is migrated at
+startup: the account gets its own home, the conversations Omniplex started move
+with it, and you sign it in again. `omniplex migrate-homes --dry-run` shows the
+plan; `omniplex migrate-homes --reverse <manifest>` undoes a run.
 
 By default Omniplex binds loopback plus every private LAN and running overlay address
 it can safely identify. Open one of the printed URLs on another device and enter
@@ -225,8 +234,9 @@ involves a rebuild.
 
 ### 3. Run it as a user service
 
-Run Omniplex as your own user, not root. It drives `claude` and `codex` using
-the login state in your home directory, and a root service will not find it.
+Run Omniplex as your own user, not root. Account homes live under your
+`~/.omniplex/instances` and share config from your `~/.claude`, `~/.codex` and
+`~/.pi/agent`; a root service would look in root's home instead.
 
 `~/.config/systemd/user/omniplex.service`:
 

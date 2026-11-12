@@ -107,6 +107,7 @@ func runMigrateHomesCommand(ctx context.Context, args []string, out io.Writer) e
 // accounts from its own log. A failure is logged and the server starts.
 func migrateHomesAtStartup(ctx context.Context, st *store.Store, dbPath string, logf func(string, ...any)) {
 	if filepath.Clean(dbPath) != filepath.Clean(defaultDB()) {
+		logf("home migration skipped: the database %s (-db or OMNIPLEX_DB) is not the default %s", dbPath, defaultDB())
 		return
 	}
 	home, err := os.UserHomeDir()

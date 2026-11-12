@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 // InstanceHome is the config home Omniplex gives the account with this id:
@@ -37,16 +35,16 @@ func Move(src, dst string) (aside string, err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return "", err
 	}
-	err = unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
+	err = renameNoReplace(src, dst)
 	switch {
 	case err == nil:
 		return "", nil
-	case errors.Is(err, unix.EEXIST):
+	case errors.Is(err, syscall.EEXIST):
 		return "", fmt.Errorf("%s already exists; not overwriting it: %w", dst, fs.ErrExist)
-	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOSYS):
-		// A filesystem without RENAME_NOREPLACE: check, then rename. The
-		// window between the two is the only place an overwrite could slip
-		// in, and nothing else writes these paths.
+	case errors.Is(err, errNoReplaceUnsupported):
+		// A filesystem or OS without a no-replace rename: check, then
+		// rename. The window between the two is the only place an overwrite
+		// could slip in, and nothing else writes these paths.
 		if _, statErr := os.Lstat(dst); statErr == nil {
 			return "", fmt.Errorf("%s already exists; not overwriting it: %w", dst, fs.ErrExist)
 		}
@@ -57,7 +55,7 @@ func Move(src, dst string) (aside string, err error) {
 		if !errors.Is(err, syscall.EXDEV) {
 			return "", err
 		}
-	case !errors.Is(err, unix.EXDEV):
+	case !errors.Is(err, syscall.EXDEV):
 		return "", err
 	}
 
@@ -85,6 +83,21 @@ func Move(src, dst string) (aside string, err error) {
 	}
 	return aside, nil
 }
+
+// MoveAndDiscardAside is Move for a caller whose src is gone once dst is
+// whole: a cross-filesystem copy's aside is deleted rather than returned, and
+// failing to delete it is not an error, since the move itself is complete.
+func MoveAndDiscardAside(src, dst string) error {
+	aside, err := Move(src, dst)
+	if aside != "" {
+		_ = os.RemoveAll(aside)
+	}
+	return err
+}
+
+// errNoReplaceUnsupported is renameNoReplace saying this OS or filesystem
+// cannot rename without replacing; Move falls back to check-then-rename.
+var errNoReplaceUnsupported = errors.New("no-replace rename unsupported")
 
 // isRootExists reports whether err is copyTree failing to create dst itself.
 func isRootExists(err error, dst string) bool {

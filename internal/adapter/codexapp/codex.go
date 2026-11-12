@@ -43,6 +43,15 @@ func (a *Adapter) ID() string { return "codex" }
 // codexHomeEnv is the variable that points Codex at an account's home.
 const codexHomeEnv = "CODEX_HOME"
 
+// codexEnv is the environment every Codex process runs under. Besides the
+// home, the server's own API keys are dropped: Codex can authenticate with
+// them instead of the account's auth.json, so one exported in the service's
+// environment would make every account the same login. An account that bills
+// to an API key signs in with it into its own home.
+func codexEnv(overlay map[string]string) []string {
+	return adapter.HarnessEnv(overlay, codexHomeEnv, "OPENAI_API_KEY", "CODEX_API_KEY")
+}
+
 // ConfigFields declares how an instance of Codex is configured. CODEX_HOME is
 // the whole mechanism: it holds the login, so pointing a second instance at
 // its own directory is what makes it a second account. The user's
@@ -88,7 +97,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, path, "--version")
-	probe.Env = adapter.HarnessEnv(codexHomeEnv, env)
+	probe.Env = codexEnv(env)
 	out, err := probe.Output()
 	if err != nil {
 		return adapter.Unavailable(
@@ -112,7 +121,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 		adapter.FactVersion: adapter.VersionNumber(string(out)),
 	}
 	if email := signedInEmail(env); email != "" {
-		facts["account"] = email
+		facts[adapter.FactAccount] = email
 	}
 	return adapter.Ready(facts)
 }
@@ -125,7 +134,7 @@ func signedOut(ctx context.Context, path string, env map[string]string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "login", "status")
-	cmd.Env = adapter.HarnessEnv(codexHomeEnv, env)
+	cmd.Env = codexEnv(env)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return false
@@ -140,7 +149,7 @@ func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("the Codex CLI was not found on this machine")
 	}
-	return []string{path, "login"}, adapter.HarnessEnv(codexHomeEnv, overlay), nil
+	return []string{path, "login"}, codexEnv(overlay), nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
@@ -301,7 +310,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	for k, v := range secrets {
 		overlay[k] = v
 	}
-	cmd.Env = adapter.HarnessEnv(codexHomeEnv, overlay)
+	cmd.Env = codexEnv(overlay)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

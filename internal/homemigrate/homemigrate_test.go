@@ -580,18 +580,282 @@ func TestSecondRunIsANoOp(t *testing.T) {
 
 func TestLaterRunPicksUpConversationsLeftBehind(t *testing.T) {
 	f := newFixture(t)
+	// s2 is still being written when the account migrates.
+	if err := os.Chtimes(f.proj("s2.jsonl"), f.now, f.now); err != nil {
+		t.Fatal(err)
+	}
 	f.run()
-	// A dev server or probe wrote another Omniplex conversation into
+	if !exists(f.proj("s2.jsonl")) {
+		t.Fatal("the recent conversation moved")
+	}
+	// A dev server or probe writes another Omniplex conversation into
 	// ~/.claude after the migration.
 	f.write(f.proj("s9.jsonl"), claudeTranscript("sdk-ts", "s9"))
 	old := f.now.Add(-time.Hour)
 	_ = os.Chtimes(f.proj("s9.jsonl"), old, old)
-	res := f.run()
-	if exists(f.proj("s9.jsonl")) || !exists(f.newClaude("projects", projectKey, "s9.jsonl")) {
-		t.Error("the catch-all account did not take the new conversation")
+
+	later := f.opts(f.st)
+	later.Now = f.now.Add(time.Hour)
+	res, err := Run(context.Background(), later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(f.proj("s2.jsonl")) || !exists(f.newClaude("projects", projectKey, "s2.jsonl")) {
+		t.Error("the later run did not take the conversation the first one skipped")
 	}
 	if res.Manifest == "" {
 		t.Error("a run that moved something wrote no manifest")
+	}
+	if !exists(f.proj("s9.jsonl")) || exists(f.newClaude("projects", projectKey, "s9.jsonl")) {
+		t.Error("a conversation that appeared after the migration was swept into the account")
+	}
+
+	// With nothing left behind, a run after that moves nothing either.
+	again := f.opts(f.st)
+	again.Now = f.now.Add(2 * time.Hour)
+	res, err = Run(context.Background(), again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Manifest != "" || !exists(f.proj("s9.jsonl")) {
+		t.Errorf("a run with nothing left behind changed something (manifest %q)", res.Manifest)
+	}
+}
+
+func TestAccountAlreadyOnItsOwnHomeWithNoEarlierRunMovesNothing(t *testing.T) {
+	f := newFixture(t)
+	// A fresh install: the Claude account named after its driver is on its own
+	// home from the start, and ~/.claude holds Omniplex-started conversations
+	// that other servers wrote.
+	f.config(
+		`{"id":"claude","driver":"claude","displayName":"Claude","enabled":true,"env":[{"name":"CLAUDE_CONFIG_DIR","value":"`+f.newClaude()+`"}]}`,
+		`{"id":"codex","driver":"codex","displayName":"Codex","enabled":true,"env":[{"name":"CODEX_HOME","value":"`+f.newCodex()+`"}]}`,
+	)
+	before := tree(t, f.claud, f.codex)
+	res := f.run()
+	if res.Manifest != "" {
+		t.Errorf("wrote manifest %s", res.Manifest)
+	}
+	after := tree(t, f.claud, f.codex)
+	if len(after) != len(before) {
+		t.Errorf("%d entries before, %d after", len(before), len(after))
+	}
+	for path, content := range before {
+		if after[path] != content {
+			t.Errorf("%s moved or changed", path)
+		}
+	}
+}
+
+func TestImplicitAccountNotMigratedGetsAnEntryWithNoHome(t *testing.T) {
+	cases := map[string]func(t *testing.T, f *fixture){
+		// t5 on codex resumes a `codex exec` rollout, which does not move.
+		"thread check fails": func(t *testing.T, f *fixture) {
+			f.thread("t5", "codex", "", "e1")
+		},
+		// The machine's Claude home cannot be read, so there is no plan.
+		"plan fails": func(t *testing.T, f *fixture) {
+			if os.Geteuid() == 0 {
+				t.Skip("root reads through folder permissions")
+			}
+			locked := filepath.Join(f.claud, "projects", "-locked")
+			if err := os.MkdirAll(locked, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(locked, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(locked, 0o755) })
+		},
+		// claude, before codex, fails its verify and the run stops.
+		"an earlier account stops the run": func(t *testing.T, f *fixture) {
+			breakVerify(t, "claude", nil)
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			setup(t, f)
+			before := tree(t, f.codex)
+			_, _ = Run(context.Background(), f.opts(f.st))
+
+			codex, ok := providers(t)["codex"]
+			if !ok {
+				t.Fatal("the unmigrated implicit account has no config entry; its threads cannot resolve")
+			}
+			if codex.Driver != "codex" || codex.DisplayName != "Codex" || !codex.Enabled || envValue(codex, "CODEX_HOME") != "" {
+				t.Errorf("codex entry = %s", codex.Raw)
+			}
+			after := tree(t, f.codex)
+			for path, content := range before {
+				if after[path] != content {
+					t.Errorf("%s moved or changed", path)
+				}
+			}
+		})
+	}
+}
+
+// breakVerify makes account id's verify fail by changing one of its moved
+// files at the destination, then runs also, if set, after the moves.
+func breakVerify(t *testing.T, id string, also func(a *Account)) {
+	t.Helper()
+	beforeVerify = func(a *Account) {
+		if a.ID != id {
+			return
+		}
+		for _, c := range a.Moves {
+			if c.Status == statusMoved {
+				_ = os.WriteFile(c.Files[0].Dst, []byte("changed\n"), 0o644)
+				break
+			}
+		}
+		if also != nil {
+			also(a)
+		}
+	}
+	t.Cleanup(func() { beforeVerify = nil })
+}
+
+func TestVerifyFailureMovesTheAccountBackAndLaterRunsRefuseIt(t *testing.T) {
+	f := newFixture(t)
+	breakVerify(t, "claude", nil)
+	before := tree(t, f.claud)
+	cfgBefore := providers(t)["claude"]
+
+	res, err := Run(context.Background(), f.opts(f.st))
+	if !errors.Is(err, errVerify) {
+		t.Fatalf("err = %v, want a verify failure", err)
+	}
+	after := tree(t, f.claud)
+	if len(after) != len(before) {
+		t.Errorf("%d entries in ~/.claude before, %d after", len(before), len(after))
+	}
+	changed := 0
+	for path, content := range before {
+		got, ok := after[path]
+		if !ok {
+			t.Errorf("%s is not back", path)
+		} else if got != content {
+			// The file the test changed comes back as it is now: moved back,
+			// not fixed.
+			changed++
+		}
+	}
+	if changed != 1 {
+		t.Errorf("%d files differ, want only the one changed", changed)
+	}
+	if exists(f.newClaude("projects", projectKey)) && len(tree(t, f.newClaude("projects"))) > 0 {
+		t.Error("files of the failed account are still in its new home")
+	}
+	if got := providers(t)["claude"]; string(compact(got.Raw)) != string(compact(cfgBefore.Raw)) {
+		t.Errorf("claude config changed: %s", got.Raw)
+	}
+	b, _ := os.ReadFile(res.Manifest)
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range m.Accounts {
+		if a.ID == "claude" && a.Status != statusVerifyFailed {
+			t.Errorf("manifest records claude as %s", a.Status)
+		}
+	}
+
+	// Later runs, the dry run included, leave it alone while that manifest
+	// stands.
+	beforeVerify = nil
+	p, err := PlanMigration(context.Background(), f.opts(f.st))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range p.Accounts {
+		if a.ID == "claude" && (a.Status != statusAborted || !strings.Contains(a.Reason, res.Manifest)) {
+			t.Errorf("dry run plans claude as %s: %s", a.Status, a.Reason)
+		}
+	}
+	f.run()
+	if !exists(f.proj("s1.jsonl")) || envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR") != "" {
+		t.Error("a later run migrated the account whose verify failed")
+	}
+
+	// Reversing that run is what clears it.
+	if _, err := Reverse(res.Manifest, f.now, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	f.run()
+	if exists(f.proj("s1.jsonl")) || envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR") != f.newClaude() {
+		t.Error("the account did not migrate once the failed run was reversed")
+	}
+}
+
+func TestVerifyFailureNeverMovesBackOverAnything(t *testing.T) {
+	f := newFixture(t)
+	breakVerify(t, "claude", func(a *Account) {
+		// Something takes s2's old place while it is away.
+		f.write(f.proj("s2.jsonl"), "new terminal file\n")
+	})
+	res, err := Run(context.Background(), f.opts(f.st))
+	if !errors.Is(err, errVerify) || !strings.Contains(err.Error(), "could not go back") {
+		t.Fatalf("err = %v, want a verify failure that names what could not go back", err)
+	}
+	if b, _ := os.ReadFile(f.proj("s2.jsonl")); string(b) != "new terminal file\n" {
+		t.Error("moving back overwrote the file in the original place")
+	}
+	if !exists(f.newClaude("projects", projectKey, "s2.jsonl")) {
+		t.Error("the conversation that could not go back went away")
+	}
+	if !exists(f.proj("s1.jsonl")) {
+		t.Error("the conversation that could go back did not")
+	}
+	if res == nil || res.Manifest == "" {
+		t.Fatal("no manifest")
+	}
+}
+
+func TestLinkedTranscriptAbortsItsAccount(t *testing.T) {
+	cases := map[string]struct {
+		account, driver string
+		link            func(f *fixture) string
+		home            func(f *fixture) string
+	}{
+		"claude": {"claude", "claude", func(f *fixture) string { return f.proj("l1.jsonl") }, func(f *fixture) string { return f.newClaude() }},
+		"codex": {"codex", "codex", func(f *fixture) string {
+			return filepath.Join(f.codex, "sessions", "2026", "10", "02", "rollout-2026-10-02T00-00-00-l1.jsonl")
+		}, func(f *fixture) string { return f.newCodex() }},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			target := filepath.Join(f.home, "elsewhere", "l1.jsonl")
+			f.write(target, claudeTranscript("sdk-ts", "l1"))
+			link := tc.link(f)
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			f.thread("t8", tc.driver, "", "l1")
+			res := f.run()
+
+			for _, c := range res.Plan.Threads {
+				if c.Thread == "t8" && (c.OK || c.Gone) {
+					t.Errorf("t8 check = %+v", c)
+				}
+			}
+			if target, err := os.Readlink(link); err != nil || target == "" {
+				t.Errorf("the link changed: %v", err)
+			}
+			for _, a := range res.Plan.Accounts {
+				if a.ID == tc.account && a.Status != statusAborted {
+					t.Errorf("%s is %s, want aborted", a.ID, a.Status)
+				}
+			}
+			if exists(filepath.Join(tc.home(f), "projects")) || exists(filepath.Join(tc.home(f), "sessions")) {
+				t.Error("something of the aborted account moved")
+			}
+		})
 	}
 }
 

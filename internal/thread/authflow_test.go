@@ -219,7 +219,7 @@ func (t *termAdapter) LoginCommand(ctx context.Context, overlay map[string]strin
 }
 
 func (t *termAdapter) Probe(ctx context.Context, env map[string]string) adapter.Availability {
-	return adapter.Ready(map[string]string{"account": "me@example.com", "auth": "oauth"})
+	return adapter.Ready(map[string]string{adapter.FactAccount: "me@example.com", "auth": "oauth"})
 }
 
 func TestAuthOverviewSynthesisesTerminalMethod(t *testing.T) {

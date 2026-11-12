@@ -110,6 +110,22 @@ func (m *Manager) prepareHome(id string) {
 	}
 }
 
+// CheckAccountHomes runs the check every use of an account runs (envFor) on
+// every configured account: missing links restored, links of the wrong shape
+// re-pointed, an account's own copies recorded as conflicts for the listing.
+// The server calls it on startup, so a home broken while it was down is fixed
+// before anyone opens it. Problems are logged; none stops the rest.
+func (m *Manager) CheckAccountHomes() {
+	for _, reg := range m.orderedInstances() {
+		if reg.ad == nil {
+			continue
+		}
+		if _, err := m.envFor(reg.inst); err != nil {
+			m.logf("provider instance %s: checking its home: %v", reg.inst.ID, err)
+		}
+	}
+}
+
 // DeleteProviderInstance removes a configured instance and its secrets.
 // Threads that ran on it keep their history; resuming one reports the
 // missing instance legibly rather than falling through to another account.

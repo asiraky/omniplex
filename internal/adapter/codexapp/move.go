@@ -49,9 +49,9 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	}
 	var moved []string
 	for _, rel := range rollouts {
-		if err := move(filepath.Join(src, rel), filepath.Join(dst, rel)); err != nil {
+		if err := accounthome.MoveAndDiscardAside(filepath.Join(src, rel), filepath.Join(dst, rel)); err != nil {
 			for _, back := range moved {
-				_ = move(filepath.Join(dst, back), filepath.Join(src, back))
+				_ = accounthome.MoveAndDiscardAside(filepath.Join(dst, back), filepath.Join(src, back))
 			}
 			return fmt.Errorf("move the Codex rollout %s: %w", rel, err)
 		}
@@ -89,16 +89,4 @@ func findRollouts(home, id string) ([]string, error) {
 		}
 	}
 	return out, nil
-}
-
-// move moves one rollout without ever replacing anything. Across filesystems
-// accounthome.Move copies and leaves the source aside under a name Codex
-// never reads; once the copy is whole the rollout has moved, so the leftover
-// goes.
-func move(src, dst string) error {
-	aside, err := accounthome.Move(src, dst)
-	if aside != "" {
-		_ = os.RemoveAll(aside)
-	}
-	return err
 }

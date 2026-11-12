@@ -24,6 +24,7 @@ import {
   totalTokens,
   type RangeId,
 } from "~/lib/usageFormat";
+import { joinAnd, sameLoginNames } from "~/lib/sameLogin";
 import { cn } from "~/lib/utils";
 import type { QuotaStatus, QuotaWindow, UsageReport } from "~/protocol";
 import { useHoverPopover } from "~/useHoverPopover";
@@ -502,7 +503,7 @@ function LimitsView({ quotas, onRefresh }: { quotas: QuotaStatus[]; onRefresh: (
         <ProviderLimits
           key={q.instance}
           status={q}
-          sameLoginAs={(q.sameLoginAs ?? []).map((id) => quotas.find((o) => o.instance === id)?.displayName || id)}
+          sameLoginAs={sameLoginNames(q.sameLoginAs, (id) => quotas.find((o) => o.instance === id)?.displayName)}
           now={now}
           refreshing={refreshing.has(q.instance)}
           onRefresh={() => refresh(q.instance)}
@@ -560,7 +561,7 @@ function ProviderLimits({
         <p className="text-attention-foreground mt-2 flex items-start gap-1.5 rounded-md bg-attention-surface/70 px-2 py-1.5 text-[11px] leading-relaxed">
           <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
           <span>
-            Signed in to the same login as {sameLoginAs.join(", ")}, so these are the same limits.
+            Signed in to the same login as {joinAnd(sameLoginAs)}, so these are the same limits.
           </span>
         </p>
       )}
