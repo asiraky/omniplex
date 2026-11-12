@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,19 @@ type fakeAdapter struct {
 	listGate      chan struct{}
 	createGate    <-chan struct{}
 	createStarted chan<- struct{}
+	// cancelGate, modeGate and steerGate hold every thread's Cancel, SetMode
+	// and Steer until closed (or the call's deadline), for a harness that is
+	// slow to answer or never does.
+	cancelGate <-chan struct{}
+	modeGate   <-chan struct{}
+	steerGate  <-chan struct{}
+	// modeAsked hears each mode a thread is asked for, before modeGate.
+	modeAsked chan<- string
+	// modeHeld holds the answer to SetMode for a mode, once the thread has
+	// taken it: a harness that applied the change and is slow to say so.
+	modeHeld map[string]<-chan struct{}
+	// opts is what each CreateSession was asked for, oldest first.
+	opts []adapter.CreateOptions
 }
 
 func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
@@ -269,10 +283,12 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	s := &fakeThread{
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
-		steerRefuse: f.steerRefuse,
+		steerRefuse: f.steerRefuse, cancelGate: f.cancelGate, modeGate: f.modeGate, modeAsked: f.modeAsked, steerGate: f.steerGate,
+		modeHeld: f.modeHeld,
 	}
 	f.mu.Lock()
 	f.last = s
+	f.opts = append(f.opts, o)
 	f.mu.Unlock()
 	if f.steer {
 		return steerThread{s}, nil
@@ -286,9 +302,13 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 type steerThread struct{ *fakeThread }
 
 func (s steerThread) Steer(ctx context.Context, in adapter.PromptInput) error {
+	if err := gated(ctx, s.steerGate); err != nil {
+		return err
+	}
 	if s.steerRefuse != nil {
 		return s.steerRefuse
 	}
+	s.record("steer")
 	s.prompts <- in
 	return nil
 }
@@ -307,11 +327,34 @@ type fakeThread struct {
 	closeOnce    sync.Once
 	closeStarted chan struct{}
 	closeRelease <-chan struct{}
+	cancelGate   <-chan struct{}
+	modeGate     <-chan struct{}
+	steerGate    <-chan struct{}
+	modeAsked    chan<- string
+	modeHeld     map[string]<-chan struct{}
 
-	mu          sync.Mutex
-	mode        string
+	mu   sync.Mutex
+	mode string
+	// calls is the control calls the thread has taken, in the order it
+	// took them: "cancel" when asked, "steer" once it has the prompt.
+	calls       []string
 	refuse      error
 	steerRefuse error
+	closed      bool
+}
+
+// gated holds a fake's call until gate is closed, or fails it at the call's
+// deadline the way a harness that never answers does. A nil gate is open.
+func gated(ctx context.Context, gate <-chan struct{}) error {
+	if gate == nil {
+		return nil
+	}
+	select {
+	case <-gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *fakeThread) Prompt(ctx context.Context, in adapter.PromptInput) error {
@@ -324,19 +367,38 @@ func (s *fakeThread) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.prompts <- in
 	return nil
 }
-func (s *fakeThread) Cancel(ctx context.Context) error { return nil }
+func (s *fakeThread) Cancel(ctx context.Context) error {
+	s.record("cancel")
+	return gated(ctx, s.cancelGate)
+}
+func (s *fakeThread) record(call string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, call)
+}
+func (s *fakeThread) taken() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...)
+}
 func (s *fakeThread) RunComposerAction(ctx context.Context, in adapter.ComposerActionInput) (any, error) {
 	s.actions <- in
 	return map[string]any{}, nil
 }
 func (s *fakeThread) SetMode(ctx context.Context, mode string) error {
+	if s.modeAsked != nil {
+		s.modeAsked <- mode
+	}
+	if err := gated(ctx, s.modeGate); err != nil {
+		return err
+	}
 	if mode == "rejected" {
 		return errors.New("the harness refused this mode")
 	}
 	s.mu.Lock()
 	s.mode = mode
 	s.mu.Unlock()
-	return nil
+	return gated(ctx, s.modeHeld[mode])
 }
 func (s *fakeThread) currentMode() string {
 	s.mu.Lock()
@@ -345,6 +407,9 @@ func (s *fakeThread) currentMode() string {
 }
 func (s *fakeThread) Events() <-chan proto.Emission { return s.events }
 func (s *fakeThread) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	s.closeOnce.Do(func() {
 		if s.closeStarted != nil {
 			close(s.closeStarted)
@@ -357,6 +422,11 @@ func (s *fakeThread) Close() error {
 	return nil
 }
 func (s *fakeThread) emit(e proto.Emission) { s.events <- e }
+func (s *fakeThread) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
 
 func newTestActor(t *testing.T) (*Actor, *fakeAdapter, *store.Store) {
 	t.Helper()
@@ -450,14 +520,21 @@ func TestSetModeSwitchesHarnessAndRecordsEvent(t *testing.T) {
 
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	waitWithin(t, 5*time.Second, cond)
+}
+
+// waitWithin is waitFor with its own deadline, for a wait that stores enough
+// events to outrun 5s on a loaded machine under -race.
+func waitWithin(t *testing.T, within time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatal("condition not met within 5s")
+	t.Fatalf("condition not met within %s", within)
 }
 
 func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
@@ -623,9 +700,10 @@ func TestSeqIsGaplessAndMonotonic(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	sess := fa.thread()
 
+	// One block each: deltas to the same block would be merged.
 	for i := 0; i < 50; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			Role: "agent", Kind: "text", BlockID: "b1", Delta: "x",
+			Role: "agent", Kind: "text", BlockID: fmt.Sprintf("b%d", i), Delta: "x",
 		}))
 	}
 	waitFor(t, func() bool { return actor.Head() >= 51 })
@@ -654,12 +732,15 @@ func TestRebuildFromLogMatchesLiveState(t *testing.T) {
 	sess.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 		ToolCallID: "t1", Kind: proto.KindExecute, Title: "ls", Status: proto.StatusInProgress,
 	}))
-	waitFor(t, func() bool { return actor.Head() >= 22 })
-
-	live, err := actor.State(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	var live *projection.State
+	waitFor(t, func() bool {
+		var err error
+		if live, err = actor.State(context.Background()); err != nil {
+			return false
+		}
+		_, ok := live.ItemByID("t1")
+		return ok
+	})
 
 	rebuilt := projection.New(actor.ID)
 	evs, _ := st.ReadEvents(context.Background(), actor.ID, 0, 10000)
@@ -730,7 +811,7 @@ func TestAttachCompletenessUnderConcurrentAppends(t *testing.T) {
 	sub := actor.Subscribe()
 	defer actor.Unsubscribe(sub)
 
-	res, err := actor.Attach(context.Background(), 0, false)
+	res, err := actor.Attach(context.Background(), 0, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,15 +982,18 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 		}
 	}()
 
-	total := SubscriberQueue * 3
+	// One past the bound overflows the stalled queue. Every event is a SQLite
+	// write, which -race slows by an order of magnitude, so send no more.
+	// One block each: deltas to the same block would be merged.
+	total := SubscriberQueue + 1
 	for i := 0; i < total; i++ {
 		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
-			Role: "agent", Kind: "text", BlockID: "b1", Delta: "x",
+			Role: "agent", Kind: "text", BlockID: fmt.Sprintf("b%d", i), Delta: "x",
 		}))
 	}
 
 	// The actor kept making progress despite the stalled subscriber.
-	waitFor(t, func() bool { return actor.Head() >= int64(total) })
+	waitWithin(t, 30*time.Second, func() bool { return actor.Head() >= int64(total) })
 
 	select {
 	case <-slow.Resync:
@@ -1528,11 +1612,11 @@ func TestHarnessDeathClosesItsTurnRatherThanLookingLikeARestart(t *testing.T) {
 	_ = fa.thread().Close()
 
 	waitFor(t, func() bool {
-		state, err := loadState(ctx, st, actor.ID)
+		state, _, err := loadState(ctx, st, actor.ID)
 		return err == nil && len(state.Turns) > 0 && state.Turns[len(state.Turns)-1].Done
 	})
 
-	state, err := loadState(ctx, st, actor.ID)
+	state, _, err := loadState(ctx, st, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1588,11 +1672,11 @@ func TestARefusedPromptKeepsTheAdapterSClassification(t *testing.T) {
 	}
 
 	waitFor(t, func() bool {
-		state, err := loadState(ctx, st, actor.ID)
+		state, _, err := loadState(ctx, st, actor.ID)
 		return err == nil && len(state.Turns) > 0 && state.Turns[len(state.Turns)-1].Done
 	})
 
-	state, err := loadState(ctx, st, actor.ID)
+	state, _, err := loadState(ctx, st, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1624,10 +1708,10 @@ func TestHarnessDeathInterruptsLiveJobs(t *testing.T) {
 	_ = fa.thread().Close()
 
 	waitFor(t, func() bool {
-		state, err := loadState(ctx, st, actor.ID)
+		state, _, err := loadState(ctx, st, actor.ID)
 		return err == nil && !state.LiveJobs().Any()
 	})
-	state, err := loadState(ctx, st, actor.ID)
+	state, _, err := loadState(ctx, st, actor.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1998,4 +2082,143 @@ func TestSteerRefusedFallsBackToQueue(t *testing.T) {
 		return len(next.Queued) == 0 && len(next.Turns) == 2 && next.Turns[1].Prompt == "second"
 	})
 	_ = second
+}
+
+// A harness that withdraws a request cancels the adapter's ctx. The request is
+// resolved as cancelled in the log, so no presenter is left with a card the
+// harness has stopped waiting on.
+func TestWithdrawnRequestIsResolvedCancelled(t *testing.T) {
+	for _, kind := range []string{"permission", "elicitation"} {
+		t.Run(kind, func(t *testing.T) {
+			actor, fa, _ := newTestActor(t)
+			host := fa.thread().host
+			ctx, withdraw := context.WithCancel(context.Background())
+			returned := make(chan error, 1)
+			go func() {
+				var err error
+				if kind == "permission" {
+					var out adapter.PermissionOutcome
+					out, err = host.RequestPermission(ctx, adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+					if out.Outcome != proto.OutcomeCancelled {
+						t.Errorf("outcome = %q, want cancelled", out.Outcome)
+					}
+				} else {
+					var out adapter.ElicitationResult
+					out, err = host.Elicit(ctx, adapter.ElicitationRequest{TurnID: "t1", Prompt: "which?"})
+					if out.Action != "cancel" {
+						t.Errorf("action = %q, want cancel", out.Action)
+					}
+				}
+				returned <- err
+			}()
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Pending)+len(st.Elicitations) == 1
+			})
+
+			withdraw()
+			select {
+			case err := <-returned:
+				if err != context.Canceled {
+					t.Fatalf("asker returned %v, want context.Canceled", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("asker was not released by its ctx")
+			}
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Pending)+len(st.Elicitations) == 0 && st.Attention() == projection.AttentionNeedsPrompt
+			})
+
+			evs, _ := actor.store.ReadEvents(context.Background(), actor.ID, 0, 10000)
+			for _, ev := range evs {
+				switch ev.Type {
+				case proto.PermissionResolved:
+					var p proto.PermissionResolvedPayload
+					_ = json.Unmarshal(ev.Payload, &p)
+					if p.Outcome != proto.OutcomeCancelled {
+						t.Fatalf("resolved outcome = %q, want cancelled", p.Outcome)
+					}
+					return
+				case proto.ElicitationResolved:
+					var p proto.ElicitationResolvedPayload
+					_ = json.Unmarshal(ev.Payload, &p)
+					if p.Action != "cancel" {
+						t.Fatalf("resolved action = %q, want cancel", p.Action)
+					}
+					return
+				}
+			}
+			t.Fatal("no resolution was appended for the withdrawn request")
+		})
+	}
+}
+
+// A turn that ends while a request of its own is pending releases the adapter
+// waiting on it, even when the harness never said it withdrew the request.
+func TestTurnFinishedReleasesItsPendingRequest(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	sess := fa.thread()
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+
+	outcomes := make(chan adapter.PermissionOutcome, 1)
+	go func() {
+		out, _ := sess.host.RequestPermission(context.Background(), adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+		outcomes <- out
+	}()
+	waitFor(t, func() bool {
+		st, err := actor.State(context.Background())
+		return err == nil && st.Attention() == projection.AttentionNeedsPermission
+	})
+
+	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+	select {
+	case out := <-outcomes:
+		if out.Outcome != proto.OutcomeCancelled {
+			t.Fatalf("outcome = %q, want cancelled", out.Outcome)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the asker outlived its turn")
+	}
+	st, _ := actor.State(context.Background())
+	if got := st.Attention(); got != projection.AttentionNeedsPrompt {
+		t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
+	}
+}
+
+// An ask that reaches the actor after its turn's finish is answered cancelled
+// and never recorded: the finish that would have settled it has been folded
+// already, so a card raised now would stay up for ever.
+func TestAskAfterItsTurnFinishedIsCancelled(t *testing.T) {
+	for _, kind := range []string{"permission", "elicitation"} {
+		t.Run(kind, func(t *testing.T) {
+			actor, fa, _ := newTestActor(t)
+			sess := fa.thread()
+			sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+			sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Turns) == 1 && st.Turns[0].Done
+			})
+
+			if kind == "permission" {
+				out, err := sess.host.RequestPermission(context.Background(), adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+				if err != nil || out.Outcome != proto.OutcomeCancelled {
+					t.Fatalf("outcome = %q, %v; want cancelled", out.Outcome, err)
+				}
+			} else {
+				out, err := sess.host.Elicit(context.Background(), adapter.ElicitationRequest{TurnID: "t1", Prompt: "which?"})
+				if err != nil || out.Action != "cancel" {
+					t.Fatalf("action = %q, %v; want cancel", out.Action, err)
+				}
+			}
+			st, _ := actor.State(context.Background())
+			if len(st.Pending)+len(st.Elicitations) != 0 {
+				t.Fatalf("a late ask was recorded: pending=%+v elicitations=%+v", st.Pending, st.Elicitations)
+			}
+			if got := st.Attention(); got != projection.AttentionNeedsPrompt {
+				t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
+			}
+		})
+	}
 }

@@ -29,6 +29,11 @@ export function useScreens() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  // Drops the hash without a history entry, which fires no hashchange.
+  const leaveThemePreview = useCallback(() => {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setThemePreview(false);
+  }, []);
 
   // The first-run setup page at /setup: what this computer still needs before
   // a thread can start. The only screen with a path of its own, because the
@@ -46,9 +51,11 @@ export function useScreens() {
     setSetup(false);
   }, []);
 
+  // A full-page screen is up instead of the thread view, composer and all.
+  const fullPage = showUsage || !!tools || setup || themePreview;
   // Whether a full-page screen or Settings hides the thread view, so the
   // server knows the open thread is not actually being watched.
-  const covering = !!settings || showUsage || !!tools || setup || themePreview;
+  const covering = !!settings || fullPage;
   // Clear the screens a tapped notification should not open behind. Setup and
   // the theme sample are left alone: both are pages reached by URL.
   const uncover = useCallback(() => {
@@ -56,10 +63,19 @@ export function useScreens() {
     setShowUsage(false);
     setTools(null);
   }, []);
+  // Choosing a thread or starting one is going somewhere: every screen gives
+  // way, the URL ones too, since the user asked for it.
+  const leaveAll = () => {
+    uncover();
+    if (setup) leaveSetup();
+    if (themePreview) leaveThemePreview();
+  };
 
   return {
+    fullPage,
     covering,
     uncover,
+    leaveAll,
     settings,
     setSettings,
     newProject,
@@ -71,6 +87,7 @@ export function useScreens() {
     tools,
     setTools,
     themePreview,
+    leaveThemePreview,
     setup,
     leaveSetup,
   };

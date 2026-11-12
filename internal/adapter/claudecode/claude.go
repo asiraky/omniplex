@@ -10,7 +10,6 @@
 package claudecode
 
 import (
-	"bufio"
 	"context"
 	"embed"
 	"encoding/json"
@@ -148,12 +147,12 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 
 // LoginCommand starts Claude Code's own sign-in flow, which walks the user
 // through the browser and takes the code back on the terminal.
-func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
 	r, avail := a.resolve(ctx)
 	if !avail.OK() {
-		return nil, fmt.Errorf("%s", avail.Reason)
+		return nil, nil, fmt.Errorf("%s", avail.Reason)
 	}
-	return []string{r.claudePath, "auth", "login"}, nil
+	return []string{r.claudePath, "auth", "login"}, claudeEnv(os.Environ(), overlay), nil
 }
 
 // claudeAuth is what `claude auth status` reports. known is false when the
@@ -168,7 +167,7 @@ type claudeAuth struct {
 }
 
 func authStatus(ctx context.Context, claudePath string, env map[string]string) claudeAuth {
-	out := runBrieflyEnv(ctx, adapter.MergeEnv(os.Environ(), env), claudePath, "auth", "status")
+	out := runBrieflyEnv(ctx, claudeEnv(os.Environ(), env), claudePath, "auth", "status")
 	var raw struct {
 		LoggedIn         *bool  `json:"loggedIn"`
 		AuthMethod       string `json:"authMethod"`
@@ -398,10 +397,12 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	s := &session{
 		host:             host,
 		cmd:              cmd,
+		proc:             adapter.WatchProcess(cmd, stderr, host.Logf, "claude bridge"),
 		tree:             tree,
 		stdin:            stdin,
 		cwd:              o.Cwd,
 		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		taskRoot:         claudeTaskRoot(o.Cwd, o.Env),
 		commands:         &a.commands,
 		harnessSessionID: sessionID,
 		model:            o.Model,
@@ -416,9 +417,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		steers:  map[string]bool{},
 		done:    make(chan struct{}),
 	}
-	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
+	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
 
-	go s.drainStderr(stderr)
 	go s.watchExit()
 
 	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
@@ -448,6 +448,7 @@ type stream struct {
 type session struct {
 	host  adapter.HostServices
 	cmd   *exec.Cmd
+	proc  *adapter.Process
 	tree  procgroup.Group
 	conn  *jsonrpc.Conn
 	stdin io.WriteCloser
@@ -456,6 +457,13 @@ type session struct {
 	// received, so origin enrichment cannot accidentally inspect another
 	// Claude account's skills.
 	configDir string
+	// taskRoot is where the child writes task output files, resolved the
+	// same way; "" disables the live tail of foreground Bash (output.go).
+	// tailEvery and tailPatience override its poll interval and how long it
+	// looks for a file; zero means the defaults.
+	taskRoot     string
+	tailEvery    time.Duration
+	tailPatience time.Duration
 	// commands is the adapter's, shared by every session.
 	commands *commandCache
 
@@ -503,6 +511,14 @@ type session struct {
 	// an id that drops out without a terminal row of its own was reaped, and
 	// the job is finished here so it cannot spin forever.
 	background map[string]bool
+	// todos holds the ids of the main agent's TodoWrite calls, which go out
+	// as plan.updated rather than tool calls. The id is remembered from the
+	// stream until the tool result arrives, so neither the start nor the
+	// result grows a tool row for a call the transcript shows as a task list.
+	todos map[string]bool
+	// tails are the running foreground Bash calls being tailed, keyed by
+	// tool_use id.
+	tails map[string]*tail
 
 	// fatal is the last thing the bridge said before it died. The SDK reports
 	// a harness that refuses to start — an expired login above all — by
@@ -514,6 +530,11 @@ type session struct {
 	// limited is set when the turn's main thread was refused for a plan usage
 	// limit, and read and cleared by the result that ends the turn.
 	limited bool
+	// rejected maps each limit window currently refusing the account to when
+	// it reopens (epoch ms, 0 if the CLI did not say). Cleared with limited:
+	// a limit turn's reset time is the latest of these, so the server knows
+	// when continuing can succeed.
+	rejected map[string]int64
 
 	// usage carries both cost accounting and window occupancy; it is kept on
 	// the session and re-emitted whole so a result (accounting + fallback
@@ -630,6 +651,7 @@ func (s *session) Cancel(ctx context.Context) error {
 	if err := s.conn.Call(ctx, "interrupt", map[string]any{}, nil); err != nil {
 		return err
 	}
+	s.stopTails()
 	s.mu.Lock()
 	if s.turnID != turn {
 		s.mu.Unlock()
@@ -703,19 +725,23 @@ func (s *session) StopJob(ctx context.Context, jobID string) error {
 // a backstop for a wedged process.
 func (s *session) Close() error {
 	s.closed.Do(func() {
+		// done first: it releases any emit stuck on a full channel, and with
+		// it the tailers queued behind that emit, before Close waits on them.
 		close(s.done)
+		s.stopTails()
 		_ = s.stdin.Close()
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
 		s.tree.Kill()
-		_ = s.cmd.Wait()
+		_ = s.proc.Wait()
 	})
 	return nil
 }
 
 func (s *session) watchExit() {
 	<-s.conn.Done()
+	s.stopTails()
 
 	s.mu.Lock()
 	turn, saw := s.turnID, s.sawResult
@@ -744,9 +770,13 @@ func (s *session) exitReason() (message, failure string) {
 		return msg, proto.FailureAuth
 	}
 	if fatal != "" {
-		return "claude exited: " + briefly(fatal), ""
+		msg := "claude exited: " + briefly(fatal)
+		if tail := s.proc.Tail(); tail != "" {
+			msg += "\n" + tail
+		}
+		return msg, ""
 	}
-	return "claude bridge exited", ""
+	return s.proc.ExitReason(s.conn.Err()), ""
 }
 
 // authNeedles are what an unauthenticated Claude Code says on its way out. The
@@ -779,16 +809,6 @@ func loginRequired(fatal string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func (s *session) drainStderr(r io.ReadCloser) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			s.host.Logf("claude bridge: %s", line)
-		}
-	}
 }
 
 func (s *session) emit(e proto.Emission) {
@@ -876,6 +896,11 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 		RawInput: p.Input,
 		Options:  proto.DefaultPermissionOptions(),
 	})
+	if ctx.Err() != nil {
+		// Withdrawn by the bridge (permissionCancelled) or the stream ended:
+		// the response is never sent, so there is nothing to decide.
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		return map[string]any{"behavior": "deny", "message": "permission unavailable: " + err.Error()}, nil
 	}
@@ -975,6 +1000,9 @@ func (s *session) askUserQuestion(ctx context.Context, rawInput json.RawMessage)
 		Prompt: "The assistant needs your input to continue.",
 		Schema: schema,
 	})
+	if ctx.Err() != nil {
+		return nil, ctx.Err() // withdrawn, as in handleRequest
+	}
 	if err != nil || result.Action != "accept" {
 		return allow(map[string]string{})
 	}
@@ -1034,6 +1062,19 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		s.scopedLimit = scopedLimitName(p.Usage)
 		s.mu.Unlock()
 		s.reportQuota(snap)
+
+	case "permissionCancelled":
+		// The SDK aborted a permission request (or AskUserQuestion) it had
+		// asked us, and the bridge has already settled it. Cancelling the
+		// handler's ctx releases the host, which resolves the prompt as
+		// cancelled; no answer goes back.
+		var p struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(params, &p); err != nil || len(p.ID) == 0 {
+			return
+		}
+		s.conn.CancelInbound(p.ID)
 
 	case "fatal":
 		var p struct {
@@ -1095,6 +1136,19 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 		snap, ok := parseClaudeRateLimitEvent(msg["rate_limit_info"], scoped)
 		if ok {
 			s.reportQuota(snap)
+		}
+		// The quota snapshot drops events without utilization; a refusal
+		// still says when its window reopens, so it is tracked on its own.
+		var info rateLimitInfo
+		if json.Unmarshal(msg["rate_limit_info"], &info) == nil {
+			s.mu.Lock()
+			switch {
+			case info.blocked():
+				s.reject(info)
+			case info.Status == "allowed" || info.Status == "allowed_warning" || info.overage():
+				delete(s.rejected, info.window())
+			}
+			s.mu.Unlock()
 		}
 	}
 }
@@ -1182,6 +1236,7 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		}))
 	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
 		s.handleTask(msg)
+		s.followTask(msg)
 	case "compact_boundary":
 		var b struct {
 			Meta struct {
@@ -1320,16 +1375,21 @@ func (s *session) handleStreamEvent(msg map[string]json.RawMessage) {
 			s.streams[parent] = st
 		}
 		b := &block{kind: ev.ContentBlock.Type}
+		todo := false
 		switch ev.ContentBlock.Type {
 		case "text", "thinking":
 			b.blockID = fmt.Sprintf("%s:%d", st.messageID, ev.Index)
 		case "tool_use":
 			b.toolID, b.name = ev.ContentBlock.ID, ev.ContentBlock.Name
+			todo = isPlanTool(b.name, parent)
+			if todo {
+				s.markTodo(b.toolID)
+			}
 		}
 		st.blocks[ev.Index] = b
 		s.mu.Unlock()
 
-		if ev.ContentBlock.Type == "tool_use" {
+		if ev.ContentBlock.Type == "tool_use" && !todo {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID:           turn,
 				ToolCallID:       ev.ContentBlock.ID,
@@ -1372,7 +1432,14 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 		// into a synthetic assistant message. "rate_limit" is a plan usage
 		// limit: the message text says when it resets, and the turn's result
 		// that follows does not say it was a limit at all.
-		Error   string `json:"error"`
+		Error string `json:"error"`
+		// APIErrorParams is undeclared by the SDK, but the CLI repeats the
+		// refusing window on every blocked response, where rate_limit_event
+		// is throttled to changes. Raw, so a malformed one cannot cost the
+		// message its content.
+		APIErrorParams struct {
+			RateLimitInfo json.RawMessage `json:"rate_limit_info"`
+		} `json:"api_error_params"`
 		Message struct {
 			ID      string `json:"id"`
 			Content []struct {
@@ -1394,6 +1461,10 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 	if m.Error == "rate_limit" && str(msg["parent_tool_use_id"]) == "" {
 		s.mu.Lock()
 		s.limited = true
+		var info rateLimitInfo
+		if json.Unmarshal(m.APIErrorParams.RateLimitInfo, &info) == nil && info.blocked() {
+			s.reject(info)
+		}
 		s.mu.Unlock()
 	}
 
@@ -1433,7 +1504,32 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 		// lead with streaming text (the only other place a harness-initiated
 		// turn is opened), so open one here too — otherwise the session reads
 		// idle while the harness is invoking tools.
-		s.ensureTurn()
+		turn := s.ensureTurn()
+		if isPlanTool(c.Name, parent) {
+			if steps, ok := todoSteps(c.Input); ok {
+				s.mu.Lock()
+				s.markTodo(c.ID)
+				s.mu.Unlock()
+				// An empty list is the agent clearing its todos once the work
+				// is done: there is nothing to show, as with an empty codex
+				// plan. The call still goes nowhere — no tool row either.
+				if len(steps) > 0 {
+					s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
+						TurnID: turn, ToolCallID: c.ID, Steps: steps,
+					}))
+				}
+				continue
+			}
+			// Input that is not a todo list is shown as the plain tool call
+			// it is, so nothing vanishes. The stream swallowed its start, so
+			// that goes out first.
+			if s.takeTodo(c.ID) {
+				s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+					TurnID: turn, ToolCallID: c.ID, Kind: toolKind(c.Name), Title: c.Name,
+					Status: proto.StatusPending,
+				}))
+			}
+		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID:       c.ID,
 			Status:           proto.StatusInProgress,
@@ -1475,6 +1571,11 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		if c.Type != "tool_result" {
 			continue
 		}
+		if s.takeTodo(c.ToolUseID) {
+			// The list already went out as plan.updated; a result here would
+			// give the projection a tool row with nothing to show.
+			continue
+		}
 		status := proto.StatusCompleted
 		if c.IsError {
 			status = proto.StatusFailed
@@ -1484,6 +1585,8 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		if text != "" {
 			content = []proto.ToolContent{{Type: "text", Text: text}}
 		}
+		// Before the completion, so no live delta can trail it.
+		s.stopTail(c.ToolUseID)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID: c.ToolUseID, Status: status, Content: content,
 			ParentToolCallID: str(msg["parent_tool_use_id"]),
@@ -1614,7 +1717,12 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	// happened.
 	s.mu.Lock()
 	limited := s.limited
+	var resetAt int64
+	if limited {
+		resetAt = latestReset(s.rejected)
+	}
 	s.limited = false
+	s.rejected = nil
 	s.mu.Unlock()
 
 	var failure, failureKind string
@@ -1629,6 +1737,8 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		failure, failureKind = resultFailure(r.Result, strings.Join(r.Errors, "\n"), r.TerminalReason)
 	}
 
+	// Whatever is still being tailed belongs to the turn that just ended.
+	s.stopTails()
 	s.mu.Lock()
 	turn := s.turnID
 	s.sawResult = true
@@ -1645,8 +1755,65 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	}
 
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind,
+		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind, ResetAt: resetAt,
 	}))
+}
+
+// rateLimitInfo is the CLI's account of one limit window, as rate_limit_event
+// and a blocked assistant response both carry it. Type and reset are untyped
+// because the CLI does not promise them; anything unexpected reads as unknown.
+type rateLimitInfo struct {
+	Status         string `json:"status"`
+	RateLimitType  any    `json:"rateLimitType"`
+	ResetsAt       any    `json:"resetsAt"` // epoch seconds
+	OverageStatus  string `json:"overageStatus"`
+	IsUsingOverage bool   `json:"isUsingOverage"`
+	OverageInUse   bool   `json:"overageInUse"`
+}
+
+// overage reports whether extra usage is carrying the account past the
+// window, in which case a rejected window refuses nothing.
+func (i rateLimitInfo) overage() bool {
+	return i.OverageStatus == "allowed" || i.OverageStatus == "allowed_warning" ||
+		i.IsUsingOverage || i.OverageInUse
+}
+
+func (i rateLimitInfo) blocked() bool { return i.Status == "rejected" && !i.overage() }
+
+func (i rateLimitInfo) window() string {
+	if t, ok := i.RateLimitType.(string); ok && t != "" {
+		return t
+	}
+	return "unknown"
+}
+
+func (i rateLimitInfo) resetAt() int64 {
+	if secs, ok := i.ResetsAt.(float64); ok && secs > 0 && secs < 8.64e12 {
+		return int64(secs * 1000)
+	}
+	return 0
+}
+
+// reject records a window refusing the account. Callers hold s.mu.
+func (s *session) reject(info rateLimitInfo) {
+	if s.rejected == nil {
+		s.rejected = map[string]int64{}
+	}
+	s.rejected[info.window()] = info.resetAt()
+}
+
+// latestReset is when every refusing window has reopened: the latest reset,
+// or 0 if any window's reset is unknown — a guess there would continue into
+// another refusal.
+func latestReset(rejected map[string]int64) int64 {
+	var latest int64
+	for _, at := range rejected {
+		if at == 0 {
+			return 0
+		}
+		latest = max(latest, at)
+	}
+	return latest
 }
 
 // resultFailure turns the harness's last word on a failed turn into something
@@ -1986,6 +2153,56 @@ func remarshal(msg map[string]json.RawMessage, out any) {
 		return
 	}
 	_ = json.Unmarshal(b, out)
+}
+
+// isPlanTool reports whether a tool call is the main agent's task list. A
+// subagent's TodoWrite stays a plain tool call: its list is scratch work
+// inside the Task row, not the turn's plan.
+func isPlanTool(name, parent string) bool {
+	return name == "TodoWrite" && parent == ""
+}
+
+// markTodo records a TodoWrite call id. The caller holds s.mu.
+func (s *session) markTodo(id string) {
+	if s.todos == nil {
+		s.todos = map[string]bool{}
+	}
+	s.todos[id] = true
+}
+
+// takeTodo forgets a TodoWrite call id, reporting whether it was one.
+func (s *session) takeTodo(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	todo := s.todos[id]
+	delete(s.todos, id)
+	return todo
+}
+
+// todoSteps decodes TodoWrite's input into plan steps. ok is false when the
+// input carries no todo list at all; an empty list is a cleared one.
+func todoSteps(input json.RawMessage) ([]proto.PlanStep, bool) {
+	var in struct {
+		Todos *[]struct {
+			Content string `json:"content"`
+			Status  string `json:"status"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil || in.Todos == nil {
+		return nil, false
+	}
+	steps := make([]proto.PlanStep, 0, len(*in.Todos))
+	for _, t := range *in.Todos {
+		status := proto.PlanPending
+		switch t.Status {
+		case "in_progress":
+			status = proto.PlanRunning
+		case "completed":
+			status = proto.PlanCompleted
+		}
+		steps = append(steps, proto.PlanStep{Text: t.Content, Status: status})
+	}
+	return steps, true
 }
 
 func toolKind(name string) string {

@@ -2,8 +2,35 @@
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
+import type {
+  Artefact,
+  CardOutcome,
+  Event,
+  Item,
+  Job,
+  JobPayload,
+  ThreadState,
+  ToolContent,
+  TurnDiff,
+} from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
+import { isTodoPlan, planItemId } from "./lib/plans";
+import { appendTail } from "./lib/tail";
+
+/** Splices a page of older items in front of the window. A straggling event
+    for a trimmed item is dropped rather than applied, but belt and braces:
+    never prepend an id the window already holds — duplicate ids break
+    rendering outright. The page may have been read before the newest
+    TodoWrite list landed, and every list in it is older than any the window
+    holds: one here supersedes them all, as it did on the server. */
+export function prependItems(items: Item[], older: Item[]): Item[] {
+  const have = new Set(items.map((it) => it.id));
+  const newer = items.some(isTodoPlan);
+  const page = older
+    .filter((it) => !have.has(it.id))
+    .map((it) => (newer && isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it));
+  return [...page, ...items];
+}
 
 export function emptyState(threadId: string): ThreadState {
   return {
@@ -21,7 +48,6 @@ export function emptyState(threadId: string): ThreadState {
     items: [],
     turns: [],
     jobs: [],
-    plan: [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     pendingPermissions: [],
     pendingElicitations: [],
@@ -42,6 +68,100 @@ function upsert(state: ThreadState, id: string, mut: (it: Item) => void): Item[]
   mut(it);
   return [...state.items, it];
 }
+
+/** Whether a tool call's status is terminal: it has stopped running, one way
+    or another. Mirrors proto.ToolDone in internal/proto/event.go. */
+function toolDone(status: Item["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/** The tool calls standing for jobs still running. */
+function liveJobCalls(jobs: Job[]): Set<string> {
+  return new Set(jobs.flatMap((j) => (j.toolCallId && !jobDone(j.status) ? [j.toolCallId] : [])));
+}
+
+/** The call without its tail: absent rather than empty, as the server's
+    omitempty leaves it. */
+function dropTail(it: Item): Item {
+  const { tail: _tail, ...rest } = it;
+  return rest;
+}
+
+/** A tool call moved to a terminal status. The tail goes with it: it only
+    ever stands for output still arriving. */
+function settle(it: Item, status: Item["status"]): Item {
+  return { ...dropTail(it), status };
+}
+
+// The server keeps only a head and tail of each tool output in its projection
+// and serves the rest on demand (GET /api/threads/{id}/items/{itemId}/content).
+// Live events and replays arrive capped too, but the reducer caps what it
+// appends the same way regardless: entries accumulate across updates, and one
+// long session's tool output must not sit in the tab's memory. Mirrors
+// internal/projection. Go measures bytes and this measures UTF-16 units, so
+// the two can cut at slightly different points; that is fine, since a capped
+// preview is shorter than the cap in either unit and the full text is one
+// fetch away.
+export const TOOL_HEAD = 4096;
+export const TOOL_TAIL = 4096;
+export const TOOL_MAX_ENTRIES = 16;
+// How much text one item's content keeps in all: an entry is kept while the
+// entries before it hold less.
+export const TOOL_MAX_TEXT = 32 * 1024;
+const TOOL_SLACK = 128;
+// How far a cut may move to land on a line break.
+const TOOL_SNAP = 512;
+
+const highSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const lowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+/** The head and tail of a long string, or the string itself if it is short.
+    Idempotent: a capped string is under the threshold. */
+export function capToolText(s: string): string {
+  if (s.length <= TOOL_HEAD + TOOL_TAIL + TOOL_SLACK) return s;
+  // Each cut moves inward to a line break when one is near, so the preview
+  // never shows part of a line as if it were whole; failing that, past half a
+  // surrogate pair so no character is split.
+  let head = TOOL_HEAD;
+  const nl = s.lastIndexOf("\n", head - 1);
+  if (nl >= head - TOOL_SNAP) head = nl + 1;
+  else if (highSurrogate(s.charCodeAt(head - 1))) head--;
+  let tail = s.length - TOOL_TAIL;
+  const tnl = s.indexOf("\n", tail);
+  if (tnl >= 0 && tnl < tail + TOOL_SNAP) tail = tnl + 1;
+  else if (lowSurrogate(s.charCodeAt(tail))) tail++;
+  return `${s.slice(0, head)}\n\n[… ${tail - head} characters truncated …]\n\n${s.slice(tail)}`;
+}
+
+function appendToolContent(it: Item, add: ToolContent[]) {
+  const have = it.content ?? [];
+  const room = Math.max(0, TOOL_MAX_ENTRIES - have.length);
+  let cut = add.length > room;
+  let used = have.reduce((n, c) => n + contentText(c), 0);
+  const capped: ToolContent[] = [];
+  for (const c of add.slice(0, room)) {
+    if (used >= TOOL_MAX_TEXT) {
+      cut = true;
+      break;
+    }
+    const next = { ...c };
+    for (const key of ["text", "oldText", "newText"] as const) {
+      const v = next[key];
+      if (v === undefined) continue;
+      const short = capToolText(v);
+      if (short !== v) {
+        next[key] = short;
+        cut = true;
+      }
+    }
+    used += contentText(next);
+    capped.push(next);
+  }
+  if (capped.length) it.content = [...have, ...capped];
+  if (cut) it.truncated = true;
+}
+
+const contentText = (c: ToolContent) => (c.text?.length ?? 0) + (c.oldText?.length ?? 0) + (c.newText?.length ?? 0);
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
 // was known of it, and anything the agent showed gets a timeline item at the
@@ -71,13 +191,47 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
   };
 }
 
+// revivesUnheldJob says whether ev brings back to life a job the snapshot left
+// out: a Codex subagent reopened long after it finished. applyJob drops the
+// row like any straggler, so the caller fetches the whole list, which the
+// server has already folded the row into; otherwise the running agent would be
+// missing from the roster, and its Stop with it, until the next attach.
+export function revivesUnheldJob(s: ThreadState, ev: Event): boolean {
+  if (ev.type !== "job.updated" || !dropsJobRow(s, ev)) return false;
+  const p = (ev.payload ?? {}) as JobPayload;
+  return !!p.status && !jobDone(p.status);
+}
+
+// dropsJobRow says whether applyJob drops ev as a straggler for a job s left
+// out. A row dropped while the list is being fetched may postdate the
+// server's read of it, so the caller holds it for applyJobRow.
+export function dropsJobRow(s: ThreadState, ev: Event): boolean {
+  if (!ev.type.startsWith("job.") || ev.type === "job.started" || !(s.jobsBefore ?? 0)) return false;
+  const p = (ev.payload ?? {}) as JobPayload;
+  return !!p.jobId && !s.jobs.some((j) => j.id === p.jobId);
+}
+
+// applyJobRow folds a job row the state's cursor is already past: one
+// dropsJobRow dropped while the job list was on its way, applied over the
+// list. Never a start, which is never dropped.
+export function applyJobRow(s: ThreadState, ev: Event): ThreadState {
+  const row = ev.type === "job.finished" ? "finished" : "updated";
+  return applyJob(s, ev.timestamp, (ev.payload ?? {}) as JobPayload, row);
+}
+
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
-function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean): ThreadState {
+function applyJob(s: ThreadState, ts: number, p: JobPayload, row: "started" | "updated" | "finished"): ThreadState {
   if (!p.jobId) return s;
   const jobs = [...s.jobs];
   let i = jobs.findIndex((j) => j.id === p.jobId);
+  // A straggler for a job the snapshot left out — a finished one that was not
+  // among the latest. Creating it from this row would put a stub with no name
+  // or start in the roster, and fetching the full list would then hold the
+  // real one beside it. The server has folded this row, so the list fetch
+  // delivers it; here only the cursor moves. A start is always new work.
+  if (i < 0 && row !== "started" && (s.jobsBefore ?? 0) > 0) return s;
   if (i < 0) {
     const turnId = s.turns.reduce<string | undefined>((acc, t) => (t.done ? acc : t.id), undefined);
     jobs.push({
@@ -116,20 +270,33 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
   if (p.outputFile) j.outputFile = p.outputFile;
   if (p.backgrounded !== undefined) j.backgrounded = p.backgrounded;
   if (p.hidden) j.hidden = true;
-  if (p.status) j.status = p.status;
+  if (p.status) {
+    // A finished job reported running again was reopened (a Codex subagent
+    // taking a new turn): its elapsed clock runs again.
+    if (row !== "finished" && !jobDone(p.status)) j.finishedAt = undefined;
+    j.status = p.status;
+  }
   let items = s.items;
-  if (finished) {
+  if (row === "finished") {
     if (!jobDone(j.status)) j.status = "completed";
     j.finishedAt ??= ts;
     // The spawning tool call, if still waiting on this job, is settled by it.
+    // So is the job's own work left mid-flight (a stopped subagent's command):
+    // its parent's turn finishing spared it for the job, and the job is over.
+    // A real completion arriving later still lands. Mirrors
+    // internal/projection/state.go.
     if (j.toolCallId) {
+      const call = j.toolCallId;
       const settled =
         j.status === "failed" ? "failed" : j.status === "completed" ? "completed" : "cancelled";
-      items = s.items.map((it) =>
-        it.id === j.toolCallId && (it.status === "in_progress" || it.status === "pending")
-          ? { ...it, status: settled as Item["status"] }
-          : it,
-      );
+      // A live grandchild's spawn call is still its job's to settle.
+      const live = liveJobCalls(jobs);
+      items = s.items.map((it) => {
+        if (it.status !== "in_progress" && it.status !== "pending") return it;
+        if (it.id === call) return settle(it, settled);
+        if (it.kind === "tool" && it.parentId === call && !live.has(it.id)) return settle(it, "cancelled");
+        return it;
+      });
     }
   } else if (jobDone(j.status)) {
     j.finishedAt ??= ts;
@@ -144,6 +311,23 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
 function imageTitle(n: number): string {
   if (n === 0) return "";
   return n === 1 ? "1 image" : `${n} images`;
+}
+
+// The permissions and questions a finished turn was blocked on are dropped:
+// the harness stopped waiting once its turn was over. A request naming no turn
+// is left alone, and so are cards, which outlive the turn. Mirrors
+// internal/projection/state.go.
+function settleRequests(
+  s: ThreadState,
+  turnId: string | undefined,
+): Pick<ThreadState, "pendingPermissions" | "pendingElicitations"> {
+  const pendingPermissions = s.pendingPermissions;
+  const pendingElicitations = s.pendingElicitations ?? [];
+  if (!turnId) return { pendingPermissions, pendingElicitations };
+  return {
+    pendingPermissions: pendingPermissions.filter((x) => x.turnId !== turnId),
+    pendingElicitations: pendingElicitations.filter((x) => x.card || x.turnId !== turnId),
+  };
 }
 
 export function applyEvent(state: ThreadState, ev: Event): ThreadState {
@@ -228,7 +412,16 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "prompt.queued":
       return {
         ...s,
-        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp, sent: p.sent }],
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+      };
+
+    case "prompt.sent":
+      // The harness took a queued prompt mid-turn. One it already read has
+      // left the queue, and there is nothing to mark. Mirrors
+      // internal/projection/state.go.
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) => (q.queueId === p.queueId ? { ...q, sent: true } : q)),
       };
 
     case "prompt.injected": {
@@ -262,8 +455,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // internal/projection/state.go.
       const open = s.turns.reduce<string>((acc, t) => (t.done ? acc : t.id), "");
       const match = open === "" || p.turnId === open;
+      const live = liveJobCalls(s.jobs);
       return {
         ...s,
+        ...settleRequests(s, p.turnId),
         phase: match ? "idle" : s.phase,
         scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.turnId === p.turnId && p.stopReason === "error" ? {...q, status: "failed", error: p.error, revision: q.revision + 1} : q),
         turns: s.turns.map((t) =>
@@ -279,18 +474,19 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
             : t,
         ),
         // Any tool of this turn left mid-flight was interrupted, not broken:
-        // cancelled, never failed. A call standing for a live job is left
-        // alone — the job's own finish settles it. Tools of other turns are
-        // left alone too.
+        // cancelled, never failed. A call standing for a live job keeps its
+        // status — the job's own finish settles it — but not its tail, which
+        // nothing streams to past the turn's end. A live job's own work (a
+        // subagent's running command) is left alone entirely: it is still
+        // running. Tools of other turns are left alone too. Mirrors
+        // internal/projection/state.go.
         items: match
-          ? s.items.map((it) =>
-              it.kind === "tool" &&
-              (it.status === "in_progress" || it.status === "pending") &&
-              (it.turnId === p.turnId || !it.turnId) &&
-              !s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)
-                ? { ...it, status: "cancelled" as const }
-                : it,
-            )
+          ? s.items.map((it) => {
+              if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId)) return it;
+              if (it.parentId && live.has(it.parentId)) return it;
+              if (live.has(it.id)) return "tail" in it ? dropTail(it) : it;
+              return it.status === "in_progress" || it.status === "pending" ? settle(it, "cancelled") : it;
+            })
           : s.items,
       };
     }
@@ -309,8 +505,11 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         ...s,
         // Streaming while idle means a turn is running that the log did not
         // announce. Trusting the activity over the phase keeps a lifecycle
-        // desync from freezing the UI. Mirrors internal/projection/state.go.
-        phase: s.phase === "idle" ? "turn" : s.phase,
+        // desync from freezing the UI. A subagent's own output (parented to
+        // its job's call) is not: it streams on after the parent's turn
+        // ended, and the job surfaces carry it. Mirrors
+        // internal/projection/state.go.
+        phase: s.phase === "idle" && !p.parentToolCallId ? "turn" : s.phase,
         items: upsert(s, p.blockId, (it) => {
           it.kind = "message";
           it.receivedAt ??= ev.timestamp;
@@ -325,8 +524,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "tool_call.started":
       return {
         ...s,
-        // Same defence as message.chunk: a tool starting is a turn running.
-        phase: s.phase === "idle" ? "turn" : s.phase,
+        // Same defence as message.chunk: a tool starting is a turn running,
+        // unless it is a subagent's.
+        phase: s.phase === "idle" && !p.parentToolCallId ? "turn" : s.phase,
         items: upsert(s, p.toolCallId, (it) => {
           it.kind = "tool";
           it.receivedAt ??= ev.timestamp;
@@ -334,7 +534,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.toolKind = p.kind;
           it.title = p.title;
           it.status = p.status;
+          if (toolDone(it.status)) delete it.tail;
           it.input = p.rawInput;
+          // The server cut a long input string to a preview on the wire.
+          if (p.truncated) it.truncated = true;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
         }),
       };
@@ -346,35 +549,96 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // would then prepend the original under the same id. The server has
       // already folded this event, so the page fetch delivers the updated
       // item; here only the cursor moves.
-      if ((s.itemsBefore ?? 0) > 0 && !s.items.some((it) => it.id === p.toolCallId)) {
-        return s;
+      //
+      // The same goes for a subagent's call whose parent had its children
+      // left out of the snapshot: the parent is in the window, its children
+      // are not, and an upsert would add one child alone to a drill-down
+      // that fetches the rest.
+      if (!s.items.some((it) => it.id === p.toolCallId)) {
+        if ((s.itemsBefore ?? 0) > 0) return s;
+        const parent = p.parentToolCallId ? s.items.find((it) => it.id === p.parentToolCallId) : undefined;
+        if ((parent?.childrenBefore ?? 0) > 0) return s;
       }
       return {
         ...s,
         // Same defence as message.chunk, but only for a tool going active: a
         // background tool's result straggling in after the turn ended must
-        // not reopen "working". Mirrors internal/projection/state.go.
-        phase: s.phase === "idle" && p.status === "in_progress" ? "turn" : s.phase,
+        // not reopen "working". A subagent's tool is not the parent's turn
+        // either. Mirrors internal/projection/state.go.
+        phase:
+          s.phase === "idle" && p.status === "in_progress" && !p.parentToolCallId ? "turn" : s.phase,
         items: upsert(s, p.toolCallId, (it) => {
           it.kind = "tool";
           it.receivedAt ??= ev.timestamp;
           if (p.status) it.status = p.status;
           if (p.title) it.title = p.title;
           if (p.rawInput) it.input = p.rawInput;
+          if (p.truncated) it.truncated = true;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
-          if (p.content?.length) it.content = [...(it.content ?? []), ...p.content];
+          if (p.content?.length) appendToolContent(it, p.content);
+          // Output lands in the tail only while the call is running, judged
+          // after this update's own status: a finished call has its output
+          // in content, so its tail is dropped, and a delta straggling in
+          // after the finish with it. Mirrors internal/projection/state.go.
+          if (toolDone(it.status)) delete it.tail;
+          else if (p.outputDelta) it.tail = appendTail(it.tail ?? "", p.outputDelta);
         }),
       };
 
     case "job.started":
+      return applyJob(s, ev.timestamp, p as JobPayload, "started");
+
     case "job.updated":
-      return applyJob(s, ev.timestamp, p as JobPayload, false);
+      return applyJob(s, ev.timestamp, p as JobPayload, "updated");
 
     case "job.finished":
-      return applyJob(s, ev.timestamp, p as JobPayload, true);
+      return applyJob(s, ev.timestamp, p as JobPayload, "finished");
 
-    case "plan.updated":
-      return { ...s, plan: p.entries ?? [] };
+    case "plan.updated": {
+      // A TodoWrite call is a list of its own, keyed by the call; a codex
+      // plan is the turn's, revised in place. Each update carries every step,
+      // so steps are replaced outright. Codex gives its explanation only on
+      // the turn's first update, so a later one that omits it keeps it.
+      // Mirrors internal/projection/state.go.
+      // A plan anchored to nothing — the old shape, logged before plans had
+      // a turn — has nowhere in the transcript to go.
+      if (!p.turnId && !p.toolCallId) return s;
+      const id = planItemId(p.turnId, p.toolCallId);
+      const present = s.items.some((it) => it.id === id);
+      // A straggler for a plan whose turn was windowed out, as for
+      // tool_call.updated. The window keeps whole turns, so a turn with no
+      // items here that is no longer running lies above the window: the page
+      // fetch delivers the server's folded item. A running turn's first plan
+      // is new, not a straggler, and is created.
+      if (
+        !present &&
+        (s.itemsBefore ?? 0) > 0 &&
+        !s.items.some((it) => it.turnId === p.turnId) &&
+        !s.turns.some((t) => t.id === p.turnId && !t.done)
+      ) {
+        return s;
+      }
+      // A new TodoWrite list replaces every earlier one in this window.
+      const base =
+        p.toolCallId && !present
+          ? {
+              ...s,
+              items: s.items.map((it) =>
+                isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it,
+              ),
+            }
+          : s;
+      return {
+        ...s,
+        items: upsert(base, id, (it) => {
+          it.kind = "plan";
+          it.receivedAt ??= ev.timestamp;
+          it.turnId = p.turnId || undefined;
+          it.steps = p.steps ?? [];
+          if (p.explanation) it.explanation = p.explanation;
+        }),
+      };
+    }
 
     case "usage.updated":
       return { ...s, usage: p };
@@ -424,6 +688,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
             title: p.title,
             input: p.rawInput,
             options: p.options ?? [],
+            ...(p.turnId ? { turnId: p.turnId } : {}),
           },
         ],
       };
@@ -437,7 +702,13 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "elicitation.requested": {
       const pendingElicitations = [
         ...(s.pendingElicitations ?? []),
-        { requestId: p.requestId, prompt: p.prompt, schema: p.schema ?? {}, ...(p.card ? { card: p.card } : {}) },
+        {
+          requestId: p.requestId,
+          prompt: p.prompt,
+          schema: p.schema ?? {},
+          ...(p.turnId ? { turnId: p.turnId } : {}),
+          ...(p.card ? { card: p.card } : {}),
+        },
       ];
       if (!p.card) return { ...s, pendingElicitations };
       // A card is also a row in the transcript, where it stays once answered

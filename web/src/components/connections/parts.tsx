@@ -2,10 +2,11 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { useId } from "react";
 
 import { IconButton } from "~/components/IconButton";
-import { Marker, Segmented } from "~/components/tools/parts";
+import { Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Marker } from "~/components/ui/marker";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
 import { newRow, toggleOff, type CliForm, type Mark, type Row, type ServerForm } from "~/lib/connections";

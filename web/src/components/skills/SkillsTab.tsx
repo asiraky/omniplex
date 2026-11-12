@@ -6,11 +6,11 @@ import {
   ListToolbar,
   Loading,
   LoadError,
-  Marker,
   RowSwitch,
   Section,
   type PageCommand,
 } from "~/components/tools/parts";
+import { Marker } from "~/components/ui/marker";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import {

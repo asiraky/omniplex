@@ -208,6 +208,7 @@ func main() {
 	// a turn boundary, not its task.
 	mgr.ResumeInterrupted()
 	mgr.StartScheduler()
+	mgr.StartIdleEvictor()
 
 	// The skills Claude Code ships with are asked of the CLI in the
 	// background, once per version it updates itself to.

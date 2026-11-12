@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/attachment"
@@ -37,7 +39,7 @@ func TestSchedulesBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	fa := &scheduleBrowserAdapter{}
+	fa := &scheduleBrowserAdapter{limited: map[string]func(int64){}}
 	images := attachment.New(filepath.Join(dir, "images"))
 	var mgr *thread.Manager
 	start := func() http.Handler {
@@ -55,6 +57,19 @@ func TestSchedulesBrowser(t *testing.T) {
 	if err := st.SetTitle(context.Background(), a.ID, "Scheduled send E2E"); err != nil {
 		t.Fatal(err)
 	}
+	// Two more threads for the usage-limit flows: one waits out the reset and
+	// continues by itself, the other has its continuation cancelled.
+	var limitIDs []string
+	for _, title := range []string{"Limit continue E2E", "Limit cancel E2E"} {
+		l, err := mgr.Create(context.Background(), fa.ID(), "", dir, "test-model", "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetTitle(context.Background(), l.ID, title); err != nil {
+			t.Fatal(err)
+		}
+		limitIDs = append(limitIDs, l.ID)
+	}
 	var mu sync.RWMutex
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/__test/restart" && r.Method == "POST" {
@@ -62,6 +77,21 @@ func TestSchedulesBrowser(t *testing.T) {
 			defer mu.Unlock()
 			mgr.Shutdown()
 			handler = start()
+			w.WriteHeader(204)
+			return
+		}
+		// Ends the held "LIMIT …" turn at a usage limit resetting in ms.
+		if r.URL.Path == "/__test/limit" && r.Method == "POST" {
+			in, err := strconv.ParseInt(r.URL.Query().Get("in"), 10, 64)
+			fa.mu.Lock()
+			finish := fa.limited[r.URL.Query().Get("prompt")]
+			delete(fa.limited, r.URL.Query().Get("prompt"))
+			fa.mu.Unlock()
+			if err != nil || finish == nil {
+				http.Error(w, "no held turn", 404)
+				return
+			}
+			finish(time.Now().UnixMilli() + in)
 			w.WriteHeader(204)
 			return
 		}
@@ -77,7 +107,7 @@ func TestSchedulesBrowser(t *testing.T) {
 		h.ServeHTTP(w, r)
 	}))
 	defer ts.Close()
-	cmd := exec.Command("node", "scripts/test-scheduled-prompts.mjs", ts.URL, a.ID)
+	cmd := exec.Command("node", "scripts/test-scheduled-prompts.mjs", ts.URL, a.ID, limitIDs[0], limitIDs[1])
 	cmd.Dir = root
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
@@ -90,6 +120,9 @@ func TestSchedulesBrowser(t *testing.T) {
 type scheduleBrowserAdapter struct {
 	mu         sync.Mutex
 	deliveries []string
+	// A "LIMIT …" prompt's turn stays running, so prompts can queue behind
+	// it, until /__test/limit ends it at a usage limit through this.
+	limited map[string]func(resetAt int64)
 }
 
 func (*scheduleBrowserAdapter) ID() string { return "schedule-test" }
@@ -133,6 +166,16 @@ func (s *scheduleBrowserThread) Prompt(_ context.Context, p adapter.PromptInput)
 	s.owner.mu.Unlock()
 	if p.Text == "FAIL scheduled delivery" {
 		return errors.New("test provider is out of tokens")
+	}
+	if strings.HasPrefix(p.Text, "LIMIT ") {
+		s.owner.mu.Lock()
+		s.owner.limited[p.Text] = func(resetAt int64) {
+			msg := "You've hit your usage limit · resets " + time.UnixMilli(resetAt).UTC().Format("3:04pm") + " (UTC)"
+			s.events <- proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{TurnID: p.TurnID, Role: "agent", Kind: "text", BlockID: p.TurnID, Delta: msg})
+			s.events <- proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: p.TurnID, StopReason: proto.StopError, Error: msg, Failure: proto.FailureLimit, ResetAt: resetAt})
+		}
+		s.owner.mu.Unlock()
+		return nil
 	}
 	s.events <- proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{TurnID: p.TurnID, Role: "agent", Kind: "text", BlockID: p.TurnID, Delta: "Completed: " + p.Text})
 	s.events <- proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: p.TurnID, StopReason: proto.StopEndTurn})

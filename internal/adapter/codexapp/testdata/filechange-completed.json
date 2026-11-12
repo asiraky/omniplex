@@ -1,0 +1,42 @@
+{
+  "item": {
+    "type": "fileChange",
+    "id": "exec-3a0959d7-8ec1-4264-b7b3-22bfd07eb412",
+    "changes": [
+      {
+        "path": "/repo/a.txt",
+        "kind": {
+          "type": "update",
+          "move_path": null
+        },
+        "diff": "@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n"
+      },
+      {
+        "path": "/repo/c.txt",
+        "kind": {
+          "type": "add"
+        },
+        "diff": "hello\n"
+      },
+      {
+        "path": "/repo/gone.txt",
+        "kind": {
+          "type": "delete"
+        },
+        "diff": "doomed\n"
+      },
+      {
+        "path": "/repo/old.txt",
+        "kind": {
+          "type": "update",
+          "move_path": "/repo/new.txt"
+        },
+        "diff": "\n\nMoved to: /repo/new.txt"
+      }
+    ],
+    "status": "completed"
+  },
+  "threadId": "01a1c877-83de-77d0-9195-1fa3c7737974",
+  "turnId": "01a1c877-85e1-7d51-9409-b294ead285d3",
+  "completedAtMs": 1794364650815
+}

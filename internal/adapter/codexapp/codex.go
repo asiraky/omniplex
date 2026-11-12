@@ -7,14 +7,13 @@
 package codexapp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,12 +126,12 @@ func signedOut(ctx context.Context, path string, env map[string]string) bool {
 
 // LoginCommand starts Codex's own sign-in flow, which opens the browser and
 // waits for the callback on this machine.
-func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
 	path, err := exec.LookPath(a.Bin)
 	if err != nil {
-		return nil, fmt.Errorf("the Codex CLI was not found on this machine")
+		return nil, nil, fmt.Errorf("the Codex CLI was not found on this machine")
 	}
-	return []string{path, "login"}, nil
+	return []string{path, "login"}, adapter.MergeEnv(os.Environ(), overlay), nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
@@ -215,6 +214,22 @@ func trustArgs(cwd string) []string {
 	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
 }
 
+// sessionArgs turns on what a session needs that codex leaves off.
+//
+// update_plan has been opt-in since codex 0.152; without it the model never
+// plans, and turn/plan/updated — recorded as plan.updated — never arrives.
+//
+// Codex waits one second for optional MCP servers before the first turn and
+// runs it without any still starting. An npx or uvx server routinely takes
+// longer, so it would be missing from the turn the user just sent. Ten seconds
+// covers them; a server that is ready sooner ends the wait sooner.
+func sessionArgs() []string {
+	return []string{
+		"-c", "tools.update_plan.enabled=true",
+		"-c", "mcp_optional_startup_grace_ms=10000",
+	}
+}
+
 // writableRootsArgs lets a workspace-write sandbox write to folders outside
 // the cwd: the project's home folder, when the session works in a repo.
 func writableRootsArgs(dirs []string) []string {
@@ -236,7 +251,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
+	args := append([]string{"app-server"}, sessionArgs()...)
+	args = append(args, trustArgs(o.Cwd)...)
 	var native []string
 	if len(o.MCPServers) > 0 {
 		all, err := nativeServers(o.Env)
@@ -307,18 +323,17 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		mcpOurs:   mcpOurs,
 		host:      host,
 		cmd:       cmd,
+		proc:      adapter.WatchProcess(cmd, stderr, host.Logf, "codex"),
 		tree:      tree,
 		cwd:       o.Cwd,
 		events:    make(chan proto.Emission, 256),
 		streamed:  map[string]bool{},
-		subagents: map[string]string{},
 		done:      make(chan struct{}),
 		effort:    o.Effort,
 		extraDirs: o.ExtraDirs,
 	}
-	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
+	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
 
-	go s.drainStderr(stderr)
 	go s.watchExit()
 
 	var initRes struct {
@@ -328,6 +343,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		"clientInfo":   map[string]any{"name": "omniplex", "version": "0.1.0"},
 		"capabilities": map[string]any{},
 	}, &initRes); err != nil {
+		err = s.died(err)
 		_ = s.Close()
 		return nil, fmt.Errorf("codex initialize: %w", err)
 	}
@@ -380,8 +396,11 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 			Model string `json:"model"`
 		} `json:"thread"`
 	}
-	if err := s.conn.Call(ctx, method, startParams, &startRes); err != nil {
-		if o.HarnessSessionID == "" {
+	if err := s.died(s.conn.Call(ctx, method, startParams, &startRes)); err != nil {
+		// A rollout too large to read back is not a missing thread: starting
+		// a fresh one would quietly drop the whole conversation. Nor is a
+		// codex that died on the resume.
+		if o.HarnessSessionID == "" || jsonrpc.TooLarge(err) || s.gone() {
 			_ = s.Close()
 			return nil, fmt.Errorf("codex %s: %w", method, err)
 		}
@@ -389,7 +408,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		// to a fresh one rather than leaving the session unusable.
 		host.Logf("codex thread/resume failed, starting a new thread: %v", err)
 		delete(startParams, "threadId")
-		if err := s.conn.Call(ctx, "thread/start", startParams, &startRes); err != nil {
+		if err := s.died(s.conn.Call(ctx, "thread/start", startParams, &startRes)); err != nil {
 			_ = s.Close()
 			return nil, fmt.Errorf("codex thread/start: %w", err)
 		}
@@ -421,6 +440,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 type session struct {
 	host adapter.HostServices
 	cmd  *exec.Cmd
+	proc *adapter.Process
 	tree procgroup.Group
 	conn *jsonrpc.Conn
 	cwd  string
@@ -451,17 +471,86 @@ type session struct {
 	// the same value as turnID.
 	turnID       string
 	serverTurnID string
-	interrupting bool            // an interrupt for serverTurnID is already in flight
-	streamed     map[string]bool // item ids that arrived as deltas
-	// subagents maps a spawned thread's id to the turn of ours that was
-	// running when it first spoke — the turn that spawned it. Lazily filled;
-	// a session runs few enough subagents that it is never worth pruning.
-	subagents map[string]string
+	// runningTurnID is the id turn/started gave the open turn, which is the
+	// one turn/interrupt accepts. For most turns it is serverTurnID. A review
+	// is the exception: review/start answers with one turn, its items and its
+	// completion name that one, and codex runs — and will only interrupt — a
+	// second, named nowhere but turn/started.
+	runningTurnID string
+	interrupting  bool            // an interrupt for the open turn is already in flight
+	streamed      map[string]bool // item ids that arrived as deltas
+	// lastServerTurn is codex's id for the turn that most recently completed.
+	// A notification that straggles in after its turn ended still names it,
+	// and recording it as the next turn's id would aim the stop button at a
+	// finished turn and drop the real turn's completion as stale.
+	lastServerTurn string
+	// lastTurn is ours for that same turn: a spawn that completes after its
+	// turn ended names it by codex's id, and its child works for ours.
+	lastTurn string
+	// children are the subagent threads codex spawned from this one, or from
+	// each other, by thread id; each is a job. See subagents.go. Lazily
+	// filled; a session runs few enough subagents that it is never worth
+	// pruning, and the same goes for the other per-thread and per-turn maps.
+	children map[string]*child
+	// pending holds what a thread not yet known to be a child did before the
+	// spawn item naming it completed: codex can start, and even finish, the
+	// child's turn first, and stopping or settling it needs that turn.
+	pendingChildren map[string]*pendingChild
+	// unknownThreads is the threads already logged as dropped, so a stray
+	// thread's stream logs once rather than per delta.
+	unknownThreads map[string]bool
+	// stoppedTurns are the turns of ours Stop was pressed on. A child working
+	// for one is interrupted with it, and again if it starts a turn after the
+	// interrupt went out; and its result never wakes the session, since the
+	// human stopped that work.
+	stoppedTurns map[string]bool
+	// wakeQueue and wakeTimer batch finished children into one wake turn.
+	// wakeDelay overrides defaultWakeDelay (tests).
+	wakeQueue []string
+	wakeTimer *time.Timer
+	wakeDelay time.Duration
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
-	manualCompact  bool
-	lastCompaction string
+	manualCompact bool
+	compaction    compactionCount
+	// decodeWarned holds each notification method and decode error already
+	// logged, so a drifted codex that repeats a bad shape logs it once.
+	decodeWarned map[string]bool
+
+	// turnFailure is the running turn's last error notification that codex
+	// did not retry. It usually says more than the completion that follows.
+	turnFailure *codexFailure
+	// limits is the main allowance's rate-limit snapshot, merged from every
+	// update and read; limitsGen counts the merges, so a read can tell that an
+	// update overtook it.
+	limits    *codexLimitSnapshot
+	limitsGen int
+	// resetTurn is the last turn that finished on a limit with its reset
+	// unknown. The first merge that knows the reset back-fills it with
+	// turn.limit_reset; a turn starting first forgets it.
+	resetTurn string
+	// finishing counts turn.finished emissions deferred behind a rate-limit
+	// read. watchExit waits for them before it closes events.
+	finishing sync.WaitGroup
 }
+
+// compactionCount tracks the compactions one codex turn has reported, so the
+// two signals for the same compaction become one notice. A turn can compact
+// more than once, so the turn id alone cannot be the key.
+type compactionCount struct {
+	turn    string
+	items   int // contextCompaction items completed
+	notices int // deprecated thread/compacted notifications
+	emitted int // notices sent for this turn
+}
+
+// compactionSignal is which of codex's two reports of a compaction arrived.
+type compactionSignal int
+
+const (
+	compactionItem   compactionSignal = iota // a contextCompaction item
+	compactionNotice                         // a thread/compacted notification
+)
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
 
@@ -478,15 +567,30 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 		return errors.New("the harness resumed work on its own; wait for it to finish")
 	}
 	s.turnID = in.TurnID
+	s.resetTurn = ""
 	s.mu.Unlock()
 
-	params := map[string]any{
-		"threadId": s.threadID,
-		"input":    promptInput(in.Text, in.Images),
-	}
+	_, err := s.startTurn(ctx, in.TurnID, in.Text, in.Images)
+	return err
+}
+
+// startTurn sends turn/start for the turn of ours already claimed as id.
+// turn/start returns at once with codex's id for the turn (it does not block
+// until the turn finishes); recording it is what lets Cancel address the turn,
+// as turn/interrupt requires. A failed call releases the claim instead: no
+// turn/completed will ever close a turn that never started, and a claim left
+// set would make Prompt's collision guard refuse every later prompt. Either
+// happens only if id is still the running turn — the read loop may have
+// closed it (a very fast turn) or replaced it meanwhile — and ours reports
+// whether it was.
+func (s *session) startTurn(ctx context.Context, id, text string, images []proto.PromptImage) (ours bool, err error) {
 	// effort and model are both mutable mid-session (SetEffort/SetModel), so
 	// read them together under the lock.
 	s.mu.Lock()
+	params := map[string]any{
+		"threadId": s.threadID,
+		"input":    promptInput(text, images),
+	}
 	if s.effort != "" {
 		params["effort"] = s.effort
 	}
@@ -495,36 +599,24 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	}
 	s.mu.Unlock()
 
-	// turn/start returns immediately with the in-progress turn's id (it does not
-	// block until the turn finishes). Capture that id so Cancel can address the
-	// right turn — turn/interrupt requires it.
-	var startRes struct {
+	var res struct {
 		Turn struct {
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
-	if err := s.conn.Call(ctx, "turn/start", params, &startRes); err != nil {
-		// The turn never started, so no turn/completed will ever clear this
-		// id. Leaving it set would make the collision guard above reject every
-		// later prompt forever. Guarded: the read loop may have cleared or
-		// replaced it already.
-		s.mu.Lock()
-		if s.turnID == in.TurnID {
-			s.turnID = ""
-		}
-		s.mu.Unlock()
-		return err
-	}
-	// Only record the id if this turn is still the active one. turn/completed is
-	// handled on the read-loop goroutine and may have already cleared the turn
-	// (a very fast turn) between the response arriving and this line running;
-	// the guard keeps a completed turn's id from being resurrected as active.
+	err = s.died(s.conn.Call(ctx, "turn/start", params, &res))
 	s.mu.Lock()
-	if s.turnID == in.TurnID {
-		s.serverTurnID = startRes.Turn.ID
+	defer s.mu.Unlock()
+	if s.turnID != id {
+		return false, err
 	}
-	s.mu.Unlock()
-	return nil
+	if err != nil {
+		s.turnID = ""
+		s.serverTurnID, s.runningTurnID = "", ""
+	} else {
+		s.serverTurnID = res.Turn.ID
+	}
+	return true, err
 }
 
 // Steer hands codex a prompt while a turn is running. turn/start on a busy
@@ -549,7 +641,22 @@ func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 		"input":               promptInput(in.Text, in.Images),
 	}
 	var res json.RawMessage
-	return s.conn.Call(ctx, "turn/start", params, &res)
+	return s.died(s.conn.Call(ctx, "turn/start", params, &res))
+}
+
+// died swaps a call's error for the reason codex is gone, when it is.
+func (s *session) died(err error) error {
+	return s.proc.Explain(err, s.conn.Done(), s.conn.Err)
+}
+
+// gone reports whether codex's output has ended.
+func (s *session) gone() bool {
+	select {
+	case <-s.conn.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // promptInput is a turn's input items. Images lead, the way every chat UI
@@ -574,19 +681,49 @@ func promptInput(text string, attachments []proto.PromptImage) []map[string]any 
 // thread id and the specific turn id; omitting the turn id makes it a no-op,
 // which is why the stop button silently did nothing before.
 //
+// Interrupting this thread does not stop a subagent it spawned: each runs as
+// its own codex thread, and would keep working, and spending, with nobody
+// reading its output. So every subagent of the stopped turn that has a turn
+// running is interrupted alongside it. A subagent's refusal is logged rather
+// than returned: the stop the user asked for is this thread's, and that one
+// either went out or failed on its own.
+//
 // A second interrupt for a turn that is already being interrupted is coalesced:
-// codex leaves repeated interrupts of the same turn pending indefinitely, and
-// this call runs on the session actor goroutine, so a hung Call would wedge the
-// whole session (a double-clicked stop button).
+// codex leaves repeated interrupts of the same turn pending indefinitely, so each
+// extra press of the stop button would only add a Call that never returns, and a
+// caller blocked on it, until ctx gives up.
 func (s *session) Cancel(ctx context.Context) error {
 	s.mu.Lock()
-	turnID := s.serverTurnID
-	inFlight := s.interrupting
-	if turnID != "" {
+	turnID := s.interruptTargetLocked()
+	parent := turnID != "" && !s.interrupting
+	if parent {
 		s.interrupting = true
 	}
+	if s.turnID != "" {
+		s.markStoppedLocked(s.turnID)
+	}
+	children := s.runningChildrenLocked(s.turnID)
+	unnamed := s.runningUnnamedLocked(s.turnID)
 	s.mu.Unlock()
-	if turnID == "" || inFlight {
+
+	var wg sync.WaitGroup
+	for c, turn := range children {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.interruptChild(ctx, c, turn)
+		}()
+	}
+	for thread, turn := range unnamed {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.interruptUnnamed(ctx, thread, turn)
+		}()
+	}
+	defer wg.Wait()
+
+	if !parent {
 		return nil
 	}
 	err := s.conn.Call(ctx, "turn/interrupt", map[string]any{
@@ -599,11 +736,145 @@ func (s *session) Cancel(ctx context.Context) error {
 		// would coalesce — and so silently swallow — every later press of the
 		// stop button for the life of the session.
 		s.mu.Lock()
-		if s.serverTurnID == turnID {
+		if s.interruptTargetLocked() == turnID {
 			s.interrupting = false
 		}
 		s.mu.Unlock()
 	}
+	return err
+}
+
+// interruptTargetLocked is codex's id for the open turn as turn/interrupt
+// wants it, or "" if none is known. s.mu must be held.
+func (s *session) interruptTargetLocked() string {
+	if s.runningTurnID != "" {
+		return s.runningTurnID
+	}
+	return s.serverTurnID
+}
+
+// lateInterruptTimeout bounds an interrupt sent off the read loop, after the
+// Stop that asked for it has returned: nobody else is waiting on it.
+const lateInterruptTimeout = 10 * time.Second
+
+// noteRunningTurn records the id turn/started gave turn. Stop pressed before
+// it arrived went out under the id the turn was started with, which a review
+// refuses; this is the review's to stop, so it is interrupted now.
+func (s *session) noteRunningTurn(turn, running string) {
+	s.mu.Lock()
+	if running == "" || s.turnID != turn || running == s.lastServerTurn {
+		s.mu.Unlock()
+		return
+	}
+	missed := s.stoppedTurns[turn] && running != s.interruptTargetLocked()
+	s.runningTurnID = running
+	s.mu.Unlock()
+	if !missed {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), lateInterruptTimeout)
+		defer cancel()
+		if err := s.conn.Call(ctx, "turn/interrupt", map[string]any{"threadId": s.threadID, "turnId": running}, nil); err != nil {
+			s.host.Logf("codex: late interrupt of turn %s: %v", running, err)
+		}
+	}()
+}
+
+// markStoppedLocked records turn as stopped. s.mu must be held.
+func (s *session) markStoppedLocked(turn string) {
+	if s.stoppedTurns == nil {
+		s.stoppedTurns = map[string]bool{}
+	}
+	s.stoppedTurns[turn] = true
+}
+
+// runningChildrenLocked claims, for interrupting, every child whose current
+// work is owner's and that has a turn running, and returns each with that
+// turn. A child already being interrupted is left out, for the same reason
+// Cancel coalesces its own: codex never answers a repeated interrupt. s.mu
+// must be held.
+func (s *session) runningChildrenLocked(owner string) map[*child]string {
+	if owner == "" {
+		return nil
+	}
+	var out map[*child]string
+	for _, c := range s.children {
+		if c.workTurn != owner || c.serverTurn == "" || c.interrupting {
+			continue
+		}
+		c.interrupting = true
+		if out == nil {
+			out = map[*child]string{}
+		}
+		out[c] = c.serverTurn
+	}
+	return out
+}
+
+// runningUnnamedLocked is runningChildrenLocked for threads no spawn has
+// named yet: one whose turn started while owner was open is working for it,
+// even if the spawn that would name it was cut short. s.mu must be held.
+func (s *session) runningUnnamedLocked(owner string) map[string]string {
+	if owner == "" {
+		return nil
+	}
+	var out map[string]string
+	for thread, p := range s.pendingChildren {
+		if p.owner != owner || p.turn == "" || p.done != nil || p.interrupting {
+			continue
+		}
+		p.interrupting = true
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[thread] = p.turn
+	}
+	return out
+}
+
+// interruptThread sends turn/interrupt for a subagent thread's turn.
+func (s *session) interruptThread(ctx context.Context, thread, turn string) error {
+	err := s.conn.Call(ctx, "turn/interrupt", map[string]any{
+		"threadId": thread,
+		"turnId":   turn,
+	}, nil)
+	if err != nil {
+		s.host.Logf("codex: interrupting subagent %s turn %s: %v", thread, turn, err)
+	}
+	return err
+}
+
+// interruptChild stops one child's running turn, already claimed by setting
+// its interrupting flag. On failure the claim is released so a later stop can
+// try again, as Cancel does for its own turn.
+func (s *session) interruptChild(ctx context.Context, c *child, turn string) error {
+	err := s.interruptThread(ctx, c.jobID, turn)
+	if err == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if c.serverTurn == turn {
+		c.interrupting = false
+	}
+	s.mu.Unlock()
+	return err
+}
+
+// interruptUnnamed is interruptChild for a thread still unnamed, or named
+// since the claim, which carried over to its child.
+func (s *session) interruptUnnamed(ctx context.Context, thread, turn string) error {
+	err := s.interruptThread(ctx, thread, turn)
+	if err == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if p := s.pendingChildren[thread]; p != nil && p.turn == turn {
+		p.interrupting = false
+	} else if c := s.children[thread]; c != nil && c.serverTurn == turn {
+		c.interrupting = false
+	}
+	s.mu.Unlock()
 	return err
 }
 
@@ -646,42 +917,44 @@ func (s *session) SetEffort(ctx context.Context, effort string) error {
 
 func (s *session) Close() error {
 	s.closed.Do(func() {
+		s.mu.Lock()
+		if s.wakeTimer != nil {
+			s.wakeTimer.Stop()
+			s.wakeTimer = nil
+		}
+		s.wakeQueue = nil
+		s.mu.Unlock()
 		close(s.done)
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
 		s.tree.Kill()
-		_ = s.cmd.Wait()
+		_ = s.proc.Wait()
 	})
 	return nil
 }
 
 func (s *session) watchExit() {
 	<-s.conn.Done()
+	// A limited turn waiting on its reset read finishes before the stream
+	// closes. The read fails with the connection, so this does not hang.
+	s.finishing.Wait()
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
-	s.serverTurnID = ""
+	s.serverTurnID, s.runningTurnID = "", ""
 	s.interrupting = false
+	s.turnFailure = nil
 	s.mu.Unlock()
 	if turn != "" {
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: turn, StopReason: proto.StopError, Error: "harness exited",
+			TurnID: turn, StopReason: proto.StopError, Error: s.proc.ExitReason(s.conn.Err()),
 		}))
 	}
 	s.emitMu.Lock()
 	s.eventsClosed = true
 	close(s.events)
 	s.emitMu.Unlock()
-}
-
-func (s *session) drainStderr(r io.ReadCloser) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			s.host.Logf("codex stderr: %s", line)
-		}
-	}
 }
 
 func (s *session) emit(e proto.Emission) {
@@ -714,41 +987,78 @@ func (s *session) ensureTurn(serverTurn string) string {
 	s.mu.Lock()
 	if s.turnID != "" {
 		id := s.turnID
-		// Backfill the server id if the turn opened from a notification that
-		// did not carry one; Cancel needs it.
-		if s.serverTurnID == "" && serverTurn != "" {
-			s.serverTurnID = serverTurn
-		}
+		s.backfillServerTurnLocked(id, serverTurn)
 		s.mu.Unlock()
 		return id
 	}
 	id := uuid.NewString()
 	s.turnID = id
-	s.serverTurnID = serverTurn
+	if serverTurn != s.lastServerTurn {
+		s.serverTurnID = serverTurn
+	}
+	s.resetTurn = ""
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
 	return id
 }
 
+// endedTurn is ours for codex's turn id serverTurn when that is the turn
+// that just completed, else serverTurn itself: a spawn that straggles in
+// after its turn ended names it by codex's id, and stopping that turn must
+// still reach the child.
+func (s *session) endedTurn(serverTurn string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if serverTurn != "" && serverTurn == s.lastServerTurn && s.lastTurn != "" {
+		return s.lastTurn
+	}
+	return serverTurn
+}
+
+// workingTurn is the turn a notification that shows work running belongs to:
+// the open one, or a harness-initiated one opened for it (ensureTurn). Either
+// way it records codex's id for the turn if nothing has yet. That is the only
+// source for a /compact turn — thread/compact/start answers with nothing — and
+// a turn whose id is never learned cannot be stopped.
+func (s *session) workingTurn(turn, serverTurn string) string {
+	if turn == "" {
+		return s.ensureTurn(serverTurn)
+	}
+	s.mu.Lock()
+	s.backfillServerTurnLocked(turn, serverTurn)
+	s.mu.Unlock()
+	return turn
+}
+
+// backfillServerTurnLocked records serverTurn as codex's id for turn, if turn
+// is still the open one and no id is known yet. An id already recorded is not
+// replaced: it came from turn/start or turn/started, which name the turn
+// outright, while an item names whichever turn it belongs to — and the turn
+// that just completed is refused outright, since a straggler from it is the
+// one item that can arrive after the next turn has opened. s.mu must be held.
+func (s *session) backfillServerTurnLocked(turn, serverTurn string) {
+	if serverTurn == "" || s.turnID != turn || s.serverTurnID != "" || serverTurn == s.lastServerTurn {
+		return
+	}
+	s.serverTurnID = serverTurn
+}
+
 // ---- server → client requests (approvals) ----
 
 func (s *session) handleRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
-	case "item/commandExecution/requestApproval", "execCommandApproval":
+	case "item/commandExecution/requestApproval":
 		var p struct {
 			ItemID  string `json:"itemId"`
 			Command string `json:"command"`
-			Cwd     string `json:"cwd"`
-			Reason  string `json:"reason"`
 		}
 		_ = json.Unmarshal(params, &p)
-		return s.ask(ctx, p.ItemID, "shell", firstLine(p.Command), params)
+		return decisionResponse(s.ask(ctx, p.ItemID, "shell", firstLine(p.Command), params)), nil
 
-	case "item/fileChange/requestApproval", "applyPatchApproval":
+	case "item/fileChange/requestApproval":
 		var p struct {
 			ItemID    string `json:"itemId"`
-			Reason    string `json:"reason"`
 			GrantRoot string `json:"grantRoot"`
 		}
 		_ = json.Unmarshal(params, &p)
@@ -756,19 +1066,20 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 		if p.GrantRoot != "" {
 			title = "Apply file changes outside " + p.GrantRoot
 		}
-		return s.ask(ctx, p.ItemID, "apply_patch", title, params)
+		return decisionResponse(s.ask(ctx, p.ItemID, "apply_patch", title, params)), nil
 
 	case "item/permissions/requestApproval":
 		var p struct {
-			ItemID string `json:"itemId"`
-			Reason string `json:"reason"`
+			ItemID      string          `json:"itemId"`
+			Reason      string          `json:"reason"`
+			Permissions json.RawMessage `json:"permissions"`
 		}
 		_ = json.Unmarshal(params, &p)
 		title := "Grant additional permissions"
 		if p.Reason != "" {
 			title = p.Reason
 		}
-		return s.ask(ctx, p.ItemID, "permissions", title, params)
+		return permissionsResponse(s.ask(ctx, p.ItemID, "permissions", title, params), p.Permissions), nil
 
 	case "item/tool/requestUserInput":
 		return s.requestUserInput(ctx, params)
@@ -794,7 +1105,6 @@ type userInputQuestion struct {
 
 func (s *session) requestUserInput(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
-		TurnID    string              `json:"turnId"`
 		Questions []userInputQuestion `json:"questions"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -821,8 +1131,10 @@ func (s *session) requestUserInput(ctx context.Context, params json.RawMessage) 
 		required = append(required, q.ID)
 	}
 	schema := jsonOf(map[string]any{"type": "object", "properties": properties, "required": required})
+	// Omniplex's turn, not codex's: the projection settles a turn's pending
+	// requests by it when the turn ends.
 	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
-		TurnID: p.TurnID, Prompt: "Codex needs your input", Schema: schema,
+		TurnID: s.currentTurn(), Prompt: "Codex needs your input", Schema: schema,
 	})
 	if err != nil || result.Action != "accept" {
 		return map[string]any{"answers": map[string]any{}}, nil
@@ -838,7 +1150,6 @@ func (s *session) requestUserInput(ctx context.Context, params json.RawMessage) 
 
 func (s *session) requestMCPElicitation(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
-		TurnID          string          `json:"turnId"`
 		Message         string          `json:"message"`
 		Mode            string          `json:"mode"`
 		RequestedSchema json.RawMessage `json:"requestedSchema"`
@@ -854,7 +1165,7 @@ func (s *session) requestMCPElicitation(ctx context.Context, params json.RawMess
 		})
 	}
 	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
-		TurnID: p.TurnID, Prompt: p.Message, Schema: schema,
+		TurnID: s.currentTurn(), Prompt: p.Message, Schema: schema,
 	})
 	if err != nil {
 		return map[string]any{"action": "cancel"}, nil
@@ -890,9 +1201,9 @@ func stringValues(value any) []string {
 	}
 }
 
-// ask routes an approval to a human via the host and maps the answer onto
-// codex's decision vocabulary.
-func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.RawMessage) (any, error) {
+// ask routes an approval to a human via the host and returns the outcome
+// (proto.Outcome*). A host error reads as a rejection.
+func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.RawMessage) string {
 	outcome, err := s.host.RequestPermission(ctx, adapter.PermissionRequest{
 		TurnID:     s.currentTurn(),
 		ToolCallID: itemID,
@@ -906,11 +1217,16 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 		},
 	})
 	if err != nil {
-		return map[string]any{"decision": "decline"}, nil
+		return proto.OutcomeRejectOnce
 	}
+	return outcome.Outcome
+}
 
+// decisionResponse maps an outcome onto the {decision} reply that command and
+// file change approvals take.
+func decisionResponse(outcome string) map[string]any {
 	decision := "decline"
-	switch outcome.Outcome {
+	switch outcome {
 	case proto.OutcomeAllowOnce:
 		decision = "accept"
 	case proto.OutcomeAllowAlways:
@@ -918,7 +1234,25 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 	case proto.OutcomeCancelled:
 		decision = "cancel"
 	}
-	return map[string]any{"decision": decision}, nil
+	return map[string]any{"decision": decision}
+}
+
+// permissionsResponse builds a PermissionsRequestApprovalResponse. Codex grants
+// exactly the profile we send back, so allowing echoes the requested profile
+// and denying (or cancelling, which this reply has no word for) sends an
+// empty one.
+func permissionsResponse(outcome string, requested json.RawMessage) map[string]any {
+	granted, scope := json.RawMessage(`{}`), "turn"
+	switch outcome {
+	case proto.OutcomeAllowAlways:
+		scope = "session"
+		fallthrough
+	case proto.OutcomeAllowOnce:
+		if len(requested) > 0 && string(requested) != "null" {
+			granted = requested
+		}
+	}
+	return map[string]any{"permissions": granted, "scope": scope}
 }
 
 // ---- server → client notifications ----
@@ -936,18 +1270,35 @@ func parseDelta(params json.RawMessage) delta {
 	return p
 }
 
-func (s *session) emitMessageDelta(turn string, p delta) {
+// parent, on these, is the spawn tool call of the subagent the output came
+// from (handleItem's owner); empty for this session's own thread.
+func (s *session) emitMessageDelta(turn, parent string, p delta) {
 	s.mu.Lock()
 	s.streamed[p.ItemID] = true
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: "text", BlockID: p.ItemID, Delta: p.Delta,
+		ParentToolCallID: parent,
 	}))
 }
 
-func (s *session) emitReasoningDelta(turn string, p delta) {
+// emitOutputDelta streams what a running command has printed onto its tool
+// call. It carries no status, so the actor can merge a burst of them into one
+// write and an idle session is not read as working again. The completed item
+// still carries the aggregated output as content.
+func (s *session) emitOutputDelta(p delta) {
+	if p.ItemID == "" || p.Delta == "" {
+		return
+	}
+	s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
+		ToolCallID: p.ItemID, OutputDelta: p.Delta,
+	}))
+}
+
+func (s *session) emitReasoningDelta(turn, parent string, p delta) {
 	s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 		TurnID: turn, Role: "agent", Kind: "thought", BlockID: p.ItemID + ":reasoning", Delta: p.Delta,
+		ParentToolCallID: parent,
 	}))
 }
 
@@ -971,74 +1322,27 @@ func (s *session) foreignThread(params json.RawMessage) string {
 	return p.ThreadID
 }
 
-// spawningTurn returns the turn a subagent thread's output belongs in: the one
-// that was running the first time that thread spoke. Empty means nowhere —
-// either nothing of ours was running when it first appeared, or the turn that
-// spawned it has since ended and a subagent that outlives its turn must not
-// spill into whatever turn is running now.
-func (s *session) spawningTurn(thread, turn string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if owner, ok := s.subagents[thread]; ok {
-		if owner == turn {
-			return turn
+func (s *session) handleNotification(method string, params json.RawMessage) {
+	// Codex settled a request it asked us — its turn ended, or it was
+	// interrupted — and no longer wants an answer. Release the handler still
+	// waiting on a human; the host withdraws the prompt. This runs before
+	// subagent routing: request ids belong to the connection, not a thread,
+	// and a subagent's resolution would otherwise be dropped there.
+	// Mirrors t3code@13c7de296c.
+	if method == "serverRequest/resolved" {
+		var p struct {
+			RequestID json.RawMessage `json:"requestId"`
 		}
-		return ""
-	}
-	if turn == "" {
-		return ""
-	}
-	if s.subagents == nil {
-		s.subagents = map[string]string{}
-	}
-	s.subagents[thread] = turn
-	return turn
-}
-
-// handleSubagentNotification renders a spawned subagent's work inside the turn
-// that spawned it. Text, reasoning and tool calls are the whole of it:
-// everything else a thread reports — turn lifecycle, token usage, plan,
-// compaction — is about that thread, and applying it here would relabel this
-// session's turn, meter or plan with another thread's state.
-//
-// With no turn of ours to attach it to the output is dropped rather than
-// allowed to open one. That case is exactly the stop button: interrupting this
-// thread does not stop a subagent it spawned, so the subagent keeps talking
-// after the turn is cancelled. Opening a turn for it made the session look like
-// it had started the work over, and left a stop button that addressed another
-// thread's turn — which codex ignores, so the phantom turn could not be stopped
-// at all.
-func (s *session) handleSubagentNotification(method, thread, turn string, params json.RawMessage) {
-	turn = s.spawningTurn(thread, turn)
-	if turn == "" {
+		if json.Unmarshal(params, &p) == nil && len(p.RequestID) > 0 {
+			s.conn.CancelInbound(p.RequestID)
+		}
 		return
 	}
-	switch method {
-	case "item/started", "item/completed":
-		// A subagent compacting its own context says nothing about this
-		// session's, and the notice names this session's turn — drop it.
-		var p struct {
-			Item struct {
-				Type string `json:"type"`
-			} `json:"item"`
-		}
-		_ = json.Unmarshal(params, &p)
-		if p.Item.Type == "contextCompaction" {
-			return
-		}
-		s.handleItem(method == "item/completed", turn, params)
-	case "item/agentMessage/delta":
-		s.emitMessageDelta(turn, parseDelta(params))
-	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
-		s.emitReasoningDelta(turn, parseDelta(params))
-	}
-}
 
-func (s *session) handleNotification(method string, params json.RawMessage) {
 	turn := s.currentTurn()
 
 	if thread := s.foreignThread(params); thread != "" {
-		s.handleSubagentNotification(method, thread, turn, params)
+		s.handleChildNotification(method, thread, params)
 		return
 	}
 
@@ -1053,6 +1357,9 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// twin of what the CLI's /status prints, pushed as usage moves. It
 		// belongs to the account, not the transcript: it goes to the host's
 		// quota cache and never becomes a canonical event.
+		// The session keeps its own merge of the main allowance too: that is
+		// where a limited turn's reset time comes from.
+		s.mergeUpdate(params)
 		if snap, ok := parseCodexUpdate(params); ok {
 			s.reportQuota(snap)
 		}
@@ -1062,43 +1369,69 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			TurnID string `json:"turnId"`
 		}
 		_ = json.Unmarshal(params, &p)
-		s.emitContextCompacted(p.TurnID)
+		s.emitContextCompacted(p.TurnID, compactionNotice)
+
+	case "turn/started":
+		// Codex names the turn outright here, which is the one place a
+		// /compact turn's id arrives before its items do. A turn starting
+		// while the log says idle is harness-initiated work, as with an item.
+		var p struct {
+			Turn struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		_ = json.Unmarshal(params, &p)
+		s.noteRunningTurn(s.workingTurn(turn, p.Turn.ID), p.Turn.ID)
 
 	case "item/started", "item/completed":
 		// An item starting is work running: open a harness-initiated turn if
 		// the log says idle. An item completing is not — a straggling
-		// completion after the turn ended must not reopen it.
-		if method == "item/started" && turn == "" {
+		// completion after the turn ended must not reopen it, nor lend the
+		// open turn its id.
+		//
+		// Collaboration bookkeeping is not work either: codex posts a
+		// subagent's v2 "completed" activity on this thread, tagged with the
+		// turn that spawned it, after that turn has ended. No turn/completed
+		// follows, so a turn opened for it would read as working forever and
+		// hold off the wake the child's result is owed; nor does the turn it
+		// names say anything about the one open now. A spawn is work.
+		if method == "item/started" {
 			var p struct {
-				TurnID string `json:"turnId"`
+				TurnID string    `json:"turnId"`
+				Item   codexItem `json:"item"`
 			}
 			_ = json.Unmarshal(params, &p)
-			turn = s.ensureTurn(p.TurnID)
+			if !collabBookkeeping(p.Item) {
+				turn = s.workingTurn(turn, p.TurnID)
+			}
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method, turn, nil, params)
 
 	case "item/agentMessage/delta":
 		p := parseDelta(params)
-		// Streaming while idle is a harness-initiated turn; see ensureTurn.
-		if turn == "" {
-			turn = s.ensureTurn(p.TurnID)
-		}
-		s.emitMessageDelta(turn, p)
+		// Streaming while idle is a harness-initiated turn; see workingTurn.
+		turn = s.workingTurn(turn, p.TurnID)
+		s.emitMessageDelta(turn, "", p)
 
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
 		p := parseDelta(params)
-		// Streaming while idle is a harness-initiated turn; see ensureTurn.
-		if turn == "" {
-			turn = s.ensureTurn(p.TurnID)
-		}
-		s.emitReasoningDelta(turn, p)
+		// Streaming while idle is a harness-initiated turn; see workingTurn.
+		turn = s.workingTurn(turn, p.TurnID)
+		s.emitReasoningDelta(turn, "", p)
 
-	case "item/commandExecution/outputDelta", "command/exec/outputDelta":
-		// Streamed output is dropped; the completed item carries the
-		// aggregated output, which is what the timeline renders.
+	case "item/commandExecution/outputDelta":
+		s.emitOutputDelta(parseDelta(params))
 
-	case "turn/plan/updated", "item/plan/delta":
-		s.handlePlan(params)
+	case "command/exec/outputDelta":
+		// Output of a command/exec RPC — a client-initiated command, keyed by
+		// processId rather than a thread item. Omniplex never sends one, and it
+		// has no tool call to stream onto.
+
+	case "turn/plan/updated":
+		// item/plan/delta is deliberately absent: it streams the text of a
+		// plan-mode item, never a step list, and goes unhandled like any
+		// other method this switch does not name.
+		s.handlePlan(method, turn, params)
 
 	case "thread/tokenUsage/updated":
 		var p struct {
@@ -1119,6 +1452,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		}
 		_ = json.Unmarshal(params, &p)
 		t := p.TokenUsage.Total
+		// Codex's input includes the cached and cache-written share; the
+		// canonical input is the uncached remainder, as the usage scanner
+		// reads it from the rollout. Passing it through counted cached
+		// tokens twice wherever input and cache reads are summed.
+		input := max(0, t.InputTokens-t.CachedInputTokens-t.CacheWriteInputTokens)
 		var pct float64
 		window := p.TokenUsage.ModelContextWindow
 		used := p.TokenUsage.Last.TotalTokens
@@ -1129,7 +1467,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			pct = float64(used) / float64(window) * 100
 		}
 		s.emit(proto.Emit(proto.UsageUpdated, proto.UsageUpdatedPayload{
-			Input: t.InputTokens, Output: t.OutputTokens,
+			Input: input, Output: t.OutputTokens,
 			CacheRead: t.CachedInputTokens, CacheWrite: t.CacheWriteInputTokens,
 			ContextPct: pct, ContextUsed: used, ContextWindow: window,
 		}))
@@ -1137,11 +1475,9 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 	case "turn/completed", "turn/failed":
 		var p struct {
 			Turn struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-				Error  *struct {
-					Message string `json:"message"`
-				} `json:"error"`
+				ID     string          `json:"id"`
+				Status string          `json:"status"`
+				Error  *codexTurnError `json:"error"`
 			} `json:"turn"`
 		}
 		_ = json.Unmarshal(params, &p)
@@ -1159,10 +1495,10 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			return
 		}
 
-		stop, errMsg := proto.StopEndTurn, ""
+		stop := proto.StopEndTurn
 		switch {
 		case p.Turn.Error != nil:
-			stop, errMsg = proto.StopError, p.Turn.Error.Message
+			stop = proto.StopError
 		case p.Turn.Status == "cancelled" || p.Turn.Status == "interrupted":
 			stop = proto.StopCancelled
 		case p.Turn.Status == "failed":
@@ -1171,9 +1507,26 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 
 		s.mu.Lock()
 		done := s.turnID
+		// lastTurn and lastServerTurn name one turn or lastTurn is empty: a
+		// completion naming no codex id leaves lastServerTurn the turn before.
+		s.lastTurn = done
+		if finished := p.Turn.ID; finished != "" {
+			s.lastServerTurn = finished
+		} else if known != "" {
+			s.lastServerTurn = known
+		} else {
+			s.lastTurn = ""
+		}
+		remembered := s.turnFailure
 		s.turnID = ""
-		s.serverTurnID = ""
+		s.serverTurnID, s.runningTurnID = "", ""
 		s.interrupting = false
+		s.turnFailure = nil
+		// A turn that ended cancelled was stopped, whether or not the stop
+		// came through Cancel.
+		if done != "" && stop == proto.StopCancelled {
+			s.markStoppedLocked(done)
+		}
 		s.mu.Unlock()
 
 		// A completion for a turn that was never started — a compact or review
@@ -1186,9 +1539,29 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			return
 		}
 
-		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: done, StopReason: stop, Error: errMsg,
-		}))
+		fin := proto.TurnFinishedPayload{TurnID: done, StopReason: stop}
+		if stop == proto.StopError {
+			f := completionFailure(p.Turn.Error, remembered)
+			fin.Error = f.message
+			if f.limit {
+				fin.Failure = proto.FailureLimit
+				fin.ResetAt = s.limitResetAt()
+			}
+		}
+
+		// A turn can hit the limit before codex has pushed any snapshot that
+		// says when it reopens, so the account is asked. This handler runs on
+		// the read loop, which is what delivers the answer: the read and the
+		// turn.finished behind it go to a goroutine. The turn is already
+		// cleared, so the session reads as idle to everything but the actor,
+		// which waits for the turn.finished — at most the read's timeout.
+		if fin.Failure == proto.FailureLimit && fin.ResetAt == 0 {
+			s.finishing.Add(1)
+			go s.finishAfterLimitRead(fin)
+			return
+		}
+
+		s.emit(proto.Emit(proto.TurnFinished, fin))
 
 		// A finished turn is when the allowance moved, so the quota cache
 		// re-reads now — the notification the CLI pushes on its own covers the
@@ -1197,11 +1570,156 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 
 	case "error":
 		var p struct {
-			Message string `json:"message"`
+			Error     *codexTurnError `json:"error"`
+			TurnID    string          `json:"turnId"`
+			WillRetry bool            `json:"willRetry"`
+			Message   string          `json:"message"` // an older CLI's flat shape
 		}
 		_ = json.Unmarshal(params, &p)
-		s.host.Logf("codex error: %s", p.Message)
+		if p.Error == nil {
+			p.Error = &codexTurnError{Message: p.Message}
+		}
+		s.host.Logf("codex error: %s", p.Error.Message)
+		// An error codex is retrying is not the turn's failure yet. One it is
+		// not retrying is, and the completion that follows repeats it with
+		// less: remember it for that completion.
+		if p.WillRetry {
+			return
+		}
+		f := errorFailure(*p.Error)
+		s.mu.Lock()
+		if s.turnID != "" && (p.TurnID == "" || s.serverTurnID == "" || p.TurnID == s.serverTurnID) {
+			s.turnFailure = &f
+		}
+		s.mu.Unlock()
 	}
+}
+
+// finishAfterLimitRead reads the account's limits for a turn that failed on
+// one with no reset time known, then finishes the turn with whatever reset the
+// merged snapshot now says. A failed or slow read still finishes the turn —
+// as a limit, with the reset unknown until a later snapshot back-fills it.
+func (s *session) finishAfterLimitRead(fin proto.TurnFinishedPayload) {
+	defer s.finishing.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), limitReadTimeout)
+	defer cancel()
+	raw, err := s.readLimits(ctx)
+	if err != nil {
+		s.host.Logf("codex limit reset read: %v", err)
+	}
+	fin.ResetAt = s.limitResetAt()
+	s.emit(proto.Emit(proto.TurnFinished, fin))
+	// After the finish, so the back-fill never overtakes it.
+	if fin.ResetAt == 0 {
+		s.awaitReset(fin.TurnID)
+	}
+
+	// The read is the post-turn quota refresh too; there is no need for a
+	// second one.
+	if err == nil {
+		if snap, err := parseCodexRead(raw); err == nil {
+			s.reportQuota(snap)
+		}
+	}
+}
+
+// limitReadTimeout bounds the read a limited turn's turn.finished waits on.
+const limitReadTimeout = 10 * time.Second
+
+// codexTurnError is the TurnError codex reports on a failed turn and on the
+// error notification.
+type codexTurnError struct {
+	Message           string `json:"message"`
+	AdditionalDetails string `json:"additionalDetails"`
+	// CodexErrorInfo is a bare code ("usageLimitExceeded") or an object with
+	// one key naming the code ({"responseTooManyFailedAttempts": {...}}).
+	CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
+}
+
+// code is the error's codexErrorInfo code, whichever shape carried it.
+func (e codexTurnError) code() string {
+	var code string
+	if json.Unmarshal(e.CodexErrorInfo, &code) == nil {
+		return code
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(e.CodexErrorInfo, &obj) == nil && len(obj) == 1 {
+		for k := range obj {
+			return k
+		}
+	}
+	return ""
+}
+
+// exhaustionStatus is the last attempt's HTTP status when codex gave up
+// retrying, zero otherwise. Retry exhaustion says why only through it.
+func (e codexTurnError) exhaustionStatus() int {
+	var obj struct {
+		ResponseTooManyFailedAttempts *struct {
+			HTTPStatusCode *int `json:"httpStatusCode"`
+		} `json:"responseTooManyFailedAttempts"`
+	}
+	if json.Unmarshal(e.CodexErrorInfo, &obj) != nil || obj.ResponseTooManyFailedAttempts == nil ||
+		obj.ResponseTooManyFailedAttempts.HTTPStatusCode == nil {
+		return 0
+	}
+	return *obj.ResponseTooManyFailedAttempts.HTTPStatusCode
+}
+
+// usageLimit reports whether the error is the account running out of
+// allowance: the limit codes, or retries exhausted on a 429. Other exhaustion
+// statuses are provider or transport failures, which time does not fix.
+func (e codexTurnError) usageLimit() bool {
+	switch e.code() {
+	case "usageLimitExceeded", "rateLimitExceeded":
+		return true
+	}
+	return e.exhaustionStatus() == 429
+}
+
+// codexFailure is a turn's failure, classified.
+type codexFailure struct {
+	native  string // codex's own message, which a completion repeats
+	code    string
+	message string // what the human reads
+	limit   bool
+}
+
+func failureOf(e codexTurnError, message string) codexFailure {
+	return codexFailure{native: e.Message, code: e.code(), message: message, limit: e.usageLimit()}
+}
+
+// errorFailure classifies an error notification. Its additional details,
+// when it has them, are the readable account of what went wrong.
+func errorFailure(e codexTurnError) codexFailure {
+	message := strings.TrimSpace(e.AdditionalDetails)
+	if message == "" {
+		message = e.Message
+	}
+	return failureOf(e, message)
+}
+
+// completionFailure classifies a failed turn from its completion's error and
+// the error notification remembered for it. The notification wins when the
+// completion only repeats it — same message, same code — since it carries
+// the richer message; a completion that says something else is the newer
+// word. An explicit exhaustion status on the completion still decides
+// whether it is a limit; a missing one is not evidence.
+func completionFailure(completion *codexTurnError, remembered *codexFailure) codexFailure {
+	if completion == nil {
+		if remembered != nil {
+			return *remembered
+		}
+		return codexFailure{}
+	}
+	f := failureOf(*completion, completion.Message)
+	if remembered != nil &&
+		(f.native == "" || f.native == remembered.native) &&
+		(f.code == "" || f.code == remembered.code) &&
+		(completion.exhaustionStatus() == 0 || remembered.limit == f.limit) {
+		return *remembered
+	}
+	return f
 }
 
 // codexItem is the subset of the ThreadItem union this prototype renders.
@@ -1219,9 +1737,7 @@ type codexItem struct {
 	Phase string `json:"phase"`
 
 	// reasoning
-	Summary []struct {
-		Text string `json:"text"`
-	} `json:"summary"`
+	Summary []string `json:"summary"`
 
 	// commandExecution
 	Command          string `json:"command"`
@@ -1230,30 +1746,154 @@ type codexItem struct {
 	ExitCode         *int   `json:"exitCode"`
 
 	// fileChange
-	Changes []struct {
-		Path string `json:"path"`
-		Kind string `json:"kind"`
-		Diff string `json:"diff"`
-	} `json:"changes"`
+	Changes []codexChange `json:"changes"`
 
-	// mcpToolCall
-	Server string          `json:"server"`
-	Tool   string          `json:"tool"`
-	Result json.RawMessage `json:"result"`
+	// mcpToolCall; Tool is also collabAgentToolCall's ("spawnAgent", "wait", …)
+	Server string         `json:"server"`
+	Tool   string         `json:"tool"`
+	Result *mcpToolResult `json:"result"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 
 	// webSearch
-	Query string `json:"query"`
+	Query  string `json:"query"`
+	Action *struct {
+		Type    string   `json:"type"`
+		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
+		URL     string   `json:"url"`
+		Pattern string   `json:"pattern"`
+	} `json:"action"`
+
+	// collabAgentToolCall
+	Prompt            string   `json:"prompt"`
+	ReceiverThreadIDs []string `json:"receiverThreadIds"`
+
+	// subAgentActivity
+	Kind          string `json:"kind"`
+	AgentThreadID string `json:"agentThreadId"`
+	AgentPath     string `json:"agentPath"`
 }
 
-func (s *session) handleItem(completed bool, turn string, params json.RawMessage) {
+// mcpToolResult is an MCP CallToolResult as codex relays it.
+type mcpToolResult struct {
+	Content []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Data     string `json:"data"`
+		MimeType string `json:"mimeType"`
+		URI      string `json:"uri"`
+		Resource *struct {
+			URI  string `json:"uri"`
+			Text string `json:"text"`
+		} `json:"resource"`
+	} `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent"`
+}
+
+// codexChange is one file of a fileChange item. Kind is an object, not a
+// string; an update with a move_path renames Path to MovePath.
+type codexChange struct {
+	Path string `json:"path"`
+	Kind struct {
+		Type     string  `json:"type"` // add | delete | update
+		MovePath *string `json:"move_path"`
+	} `json:"kind"`
+	Diff string `json:"diff"`
+}
+
+// op names what the change does to its file: add, delete, update or move.
+func (c codexChange) op() string {
+	if c.Kind.Type == "update" && c.Kind.MovePath != nil && *c.Kind.MovePath != "" {
+		return "move"
+	}
+	return c.Kind.Type
+}
+
+// fileChangeCall renders a patch as one tool row: a title naming every file,
+// and a diff per file. A patch that only renames is a move and one that only
+// deletes is a delete; anything else is an edit.
+func fileChangeCall(changes []codexChange) (kind, title string, content []proto.ToolContent) {
+	ops := map[string]bool{}
+	names := make([]string, 0, len(changes))
+	for _, c := range changes {
+		op := c.op()
+		ops[op] = true
+		if op != "move" {
+			names = append(names, c.Path)
+			content = append(content, proto.ToolContent{Type: "diff", Path: c.Path, Text: c.Diff})
+			continue
+		}
+		to := *c.Kind.MovePath
+		names = append(names, c.Path+" → "+to)
+		// Codex marks a rename by appending this line to the diff; the
+		// content says it in its own words instead.
+		diff := strings.TrimSuffix(c.Diff, "\n\nMoved to: "+to)
+		content = append(content, proto.ToolContent{Type: "diff", Path: to, Text: "moved from " + c.Path + "\n" + diff})
+	}
+	kind, verb := proto.KindEdit, "Edit"
+	if len(ops) == 1 {
+		switch {
+		case ops["move"]:
+			kind, verb = proto.KindMove, "Move"
+		case ops["delete"]:
+			kind, verb = proto.KindDelete, "Delete"
+		case ops["add"]:
+			verb = "Add"
+		}
+	}
+	return kind, verb + " " + strings.Join(names, ", "), content
+}
+
+// decodeFailed logs a notification that would not decode, once per method
+// and error. Dropping it silently is how every fileChange item went missing.
+func (s *session) decodeFailed(method string, err error) {
+	key := method + "\n" + err.Error()
+	s.mu.Lock()
+	seen := s.decodeWarned[key]
+	if !seen {
+		if s.decodeWarned == nil {
+			s.decodeWarned = map[string]bool{}
+		}
+		s.decodeWarned[key] = true
+	}
+	s.mu.Unlock()
+	if !seen {
+		s.host.Logf("codex: dropped %s that failed to decode: %v", method, err)
+	}
+}
+
+// toolTitle is the one-line title of a tool-like item; empty for the rest.
+func toolTitle(it codexItem) string {
+	switch it.Type {
+	case "commandExecution":
+		return firstLine(it.Command)
+	case "fileChange":
+		_, title, _ := fileChangeCall(it.Changes)
+		return title
+	case "mcpToolCall":
+		return it.Server + "/" + it.Tool
+	case "webSearch":
+		return webSearchTitle(it)
+	}
+	return ""
+}
+
+// handleItem renders one item. owner is the subagent whose thread it came
+// from, nil for this session's own thread.
+func (s *session) handleItem(method, turn string, owner *child, params json.RawMessage) {
 	var p struct {
 		Item   codexItem `json:"item"`
 		TurnID string    `json:"turnId"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
+		s.decodeFailed(method, err)
 		return
 	}
+	completed := method == "item/completed"
 	it := p.Item
+	parent := owner.toolCall()
 	// open reports whether omniplex has this turn open; a completion arriving with
 	// no open turn is a straggler from after turn/completed. Labelling such
 	// events with codex's own turn id keeps the timeline coherent, but see the
@@ -1268,7 +1908,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !completed {
 			return
 		}
-		s.emitContextCompacted(p.TurnID)
+		s.emitContextCompacted(p.TurnID, compactionItem)
 
 	case "userMessage":
 		// The turn's own prompt is already in the log via turn.started. A
@@ -1298,6 +1938,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !streamed {
 			s.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{
 				TurnID: turn, Role: "agent", Kind: "text", BlockID: it.ID, Delta: it.Text,
+				ParentToolCallID: parent,
 			}))
 		}
 
@@ -1309,13 +1950,14 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindExecute,
-				Title: firstLine(it.Command), Status: proto.StatusInProgress,
-				RawInput: jsonOf(map[string]any{"command": it.Command, "cwd": it.Cwd}),
+				Title: toolTitle(it), Status: proto.StatusInProgress,
+				RawInput:         jsonOf(map[string]any{"command": it.Command, "cwd": it.Cwd}),
+				ParentToolCallID: parent,
 			}))
 			return
 		}
-		status := proto.StatusCompleted
-		if it.ExitCode != nil && *it.ExitCode != 0 {
+		status := itemStatus(it.Status)
+		if status == proto.StatusCompleted && it.ExitCode != nil && *it.ExitCode != 0 {
 			status = proto.StatusFailed
 		}
 		var content []proto.ToolContent
@@ -1323,71 +1965,191 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			content = []proto.ToolContent{{Type: "text", Text: it.AggregatedOutput}}
 		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: status, Content: content,
+			ToolCallID: it.ID, Status: status, Content: content, ParentToolCallID: parent,
 		}))
 
 	case "fileChange":
-		var content []proto.ToolContent
-		paths := make([]string, 0, len(it.Changes))
-		for _, c := range it.Changes {
-			paths = append(paths, c.Path)
-			content = append(content, proto.ToolContent{Type: "diff", Path: c.Path, Text: c.Diff})
-		}
-		title := "Edit " + strings.Join(paths, ", ")
+		kind, title, content := fileChangeCall(it.Changes)
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindEdit,
-				Title: title, Status: proto.StatusInProgress,
+				TurnID: turn, ToolCallID: it.ID, Kind: kind,
+				Title: title, Status: proto.StatusInProgress, ParentToolCallID: parent,
 			}))
 			return
 		}
-		status := proto.StatusCompleted
-		if it.Status == "failed" || it.Status == "declined" {
-			status = proto.StatusFailed
-		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: status, Title: title, Content: content,
+			ToolCallID: it.ID, Status: itemStatus(it.Status), Title: title, Content: content,
+			ParentToolCallID: parent,
 		}))
 
 	case "mcpToolCall":
-		title := it.Server + "/" + it.Tool
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindOther,
-				Title: title, Status: proto.StatusInProgress,
+				Title: toolTitle(it), Status: proto.StatusInProgress, ParentToolCallID: parent,
 			}))
 			return
 		}
+		status, content := mcpOutcome(it)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: proto.StatusCompleted,
-			Content: []proto.ToolContent{{Type: "text", Text: string(it.Result)}},
+			ToolCallID: it.ID, Status: status, Content: content, ParentToolCallID: parent,
 		}))
 
 	case "webSearch":
+		// The query is often empty when the search starts and filled in by
+		// the time it completes, so the completion re-titles the card.
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindFetch,
-				Title: "Search: " + it.Query, Status: proto.StatusInProgress,
+				Title: webSearchTitle(it), Status: proto.StatusInProgress, ParentToolCallID: parent,
 			}))
 			return
 		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: proto.StatusCompleted,
+			ToolCallID: it.ID, Status: proto.StatusCompleted, Title: webSearchTitle(it),
+			ParentToolCallID: parent,
 		}))
+
+	case "collabAgentToolCall", "subAgentActivity":
+		if !open {
+			turn = s.endedTurn(p.TurnID)
+		}
+		s.handleSpawnItem(completed, turn, owner, it)
 	}
+}
+
+// itemStatus maps a completed item's CommandExecutionStatus or
+// PatchApplyStatus onto the canonical one. A declined call never ran: it is
+// neither done nor broken.
+func itemStatus(status string) string {
+	switch status {
+	case "declined":
+		return proto.StatusDeclined
+	case "failed":
+		return proto.StatusFailed
+	}
+	return proto.StatusCompleted
+}
+
+// mcpOutcome is a completed MCP call's status and what the card shows. A
+// failure carries its error and no result; printing the absent result is what
+// rendered "null" under a green tick.
+func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
+	if it.Status == "failed" || it.Error != nil {
+		msg := "MCP call failed"
+		if it.Error != nil && it.Error.Message != "" {
+			msg = it.Error.Message
+		}
+		return proto.StatusFailed, []proto.ToolContent{{Type: "text", Text: msg}}
+	}
+	if it.Result == nil {
+		return proto.StatusCompleted, nil
+	}
+	var content []proto.ToolContent
+	for _, c := range it.Result.Content {
+		var text string
+		switch c.Type {
+		case "text":
+			text = c.Text
+		case "image", "audio":
+			// The bytes stay off the wire: base64 is unreadable as text and
+			// heavy on a phone. A placeholder says what was there (#287
+			// turns images into thumbnails).
+			text = fmt.Sprintf("[%s: %s, %s]", c.Type, c.MimeType, base64Size(c.Data))
+		case "resource_link":
+			text = c.URI
+		case "resource":
+			if c.Resource != nil {
+				text = c.Resource.Text
+				if text == "" {
+					text = "[resource: " + c.Resource.URI + "]"
+				}
+			}
+		}
+		if text != "" {
+			content = append(content, proto.ToolContent{Type: "text", Text: text})
+		}
+	}
+	// Structured output is often the data itself behind a one-line text
+	// summary, so it is kept unless a text block already carries it — MCP
+	// asks servers to mirror it as text, and printing it twice is noise.
+	if sc := it.Result.StructuredContent; len(sc) > 0 && string(sc) != "null" && !textCarries(content, sc) {
+		content = append(content, proto.ToolContent{Type: "text", Text: string(sc)})
+	}
+	return proto.StatusCompleted, content
+}
+
+// textCarries reports whether a text block holds the same JSON as raw.
+func textCarries(content []proto.ToolContent, raw json.RawMessage) bool {
+	var want any
+	if json.Unmarshal(raw, &want) != nil {
+		return false
+	}
+	for _, c := range content {
+		var got any
+		if json.Unmarshal([]byte(c.Text), &got) == nil && reflect.DeepEqual(got, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// base64Size is the decoded size of base64 data, for a human: "42 KB".
+func base64Size(data string) string {
+	n := len(strings.TrimRight(data, "=")) * 3 / 4
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%d KB", (n+512)/1024)
+}
+
+// webSearchTitle names a web search by what it looked for. Codex fills the
+// item's query for a plain search; the action carries the rest.
+func webSearchTitle(it codexItem) string {
+	if it.Query != "" {
+		return "Search: " + it.Query
+	}
+	if a := it.Action; a != nil {
+		switch {
+		case a.Query != "":
+			return "Search: " + a.Query
+		case len(a.Queries) > 0:
+			return "Search: " + strings.Join(a.Queries, ", ")
+		case a.Type == "openPage" && a.URL != "":
+			return "Open " + a.URL
+		case a.Type == "findInPage" && a.Pattern != "" && a.URL != "":
+			return "Find \"" + a.Pattern + "\" in " + a.URL
+		case a.Type == "findInPage" && a.Pattern != "":
+			return "Find \"" + a.Pattern + "\""
+		}
+	}
+	return "Web search"
 }
 
 // New app-servers emit a contextCompaction item; older ones emit the
 // thread/compacted notification, and transitional versions may emit both.
-func (s *session) emitContextCompacted(turnID string) {
+// Within a turn, the nth compaction is announced by whichever signal reports
+// it first, so both signals count but neither repeats the other.
+func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 	s.mu.Lock()
-	if turnID != "" && turnID == s.lastCompaction {
-		s.mu.Unlock()
-		return
+	if turnID != "" {
+		c := &s.compaction
+		if c.turn != turnID {
+			*c = compactionCount{turn: turnID}
+		}
+		if signal == compactionItem {
+			c.items++
+		} else {
+			c.notices++
+		}
+		if max(c.items, c.notices) <= c.emitted {
+			s.mu.Unlock()
+			return
+		}
+		c.emitted++
 	}
 	manual := s.manualCompact
 	s.manualCompact = false
-	s.lastCompaction = turnID
 	s.mu.Unlock()
 	trigger := "auto"
 	if manual {
@@ -1396,39 +2158,48 @@ func (s *session) emitContextCompacted(turnID string) {
 	s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: trigger}))
 }
 
-func (s *session) handlePlan(params json.RawMessage) {
+// handlePlan records codex's update_plan list: the whole plan as it stands,
+// sent again on every revision. It is stamped with the omniplex turn, not
+// codex's turnId — the projection keys plans by the turns it knows.
+func (s *session) handlePlan(method, turn string, params json.RawMessage) {
 	var p struct {
-		Plan []struct {
+		TurnID      string `json:"turnId"`
+		Explanation string `json:"explanation"` // null decodes to ""
+		Plan        []struct {
 			Step   string `json:"step"`
-			Text   string `json:"text"`
 			Status string `json:"status"`
 		} `json:"plan"`
-		Item struct {
-			Plan []struct {
-				Step   string `json:"step"`
-				Text   string `json:"text"`
-				Status string `json:"status"`
-			} `json:"plan"`
-		} `json:"item"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
+		s.decodeFailed(method, err)
 		return
 	}
-	steps := p.Plan
-	if len(steps) == 0 {
-		steps = p.Item.Plan
+	if len(p.Plan) == 0 {
+		return
 	}
-	entries := make([]proto.PlanEntry, 0, len(steps))
-	for _, st := range steps {
-		text := st.Step
-		if text == "" {
-			text = st.Text
-		}
-		entries = append(entries, proto.PlanEntry{Content: text, Status: st.Status})
+	steps := make([]proto.PlanStep, 0, len(p.Plan))
+	for _, st := range p.Plan {
+		steps = append(steps, proto.PlanStep{Text: st.Step, Status: planStatus(st.Status)})
 	}
-	if len(entries) > 0 {
-		s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{Entries: entries}))
+	// Planning while idle is a harness-initiated turn; see ensureTurn.
+	if turn == "" {
+		turn = s.ensureTurn(p.TurnID)
 	}
+	s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
+		TurnID: turn, Explanation: p.Explanation, Steps: steps,
+	}))
+}
+
+// planStatus maps codex's step status onto the canonical one. Anything it
+// does not recognise reads as pending: a step not yet known to be running.
+func planStatus(s string) string {
+	switch s {
+	case "inProgress":
+		return proto.PlanRunning
+	case "completed":
+		return proto.PlanCompleted
+	}
+	return proto.PlanPending
 }
 
 func jsonOf(v any) json.RawMessage {

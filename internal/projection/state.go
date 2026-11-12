@@ -6,6 +6,7 @@ package projection
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -113,6 +114,8 @@ func AttentionForPhase(phase string) string {
 		return AttentionFailed
 	case "turn", "creating", "provisioning", "cleaning":
 		return AttentionWorking
+	case "background":
+		return AttentionBackground
 	default:
 		return AttentionNeedsPrompt
 	}
@@ -134,6 +137,10 @@ const (
 	// where it raised it. Its Status is pending until answered, then the
 	// outcome's result: saved, declined or cancelled.
 	ItemCard = "card"
+	// ItemPlan is the agent's task list, where it set it. A Claude TodoWrite
+	// call is an item of its own, and the newest marks the earlier ones
+	// Superseded. A codex plan is one item per turn, revised in place.
+	ItemPlan = "plan"
 )
 
 // Item is one entry in the thread timeline, in the order it first appeared.
@@ -163,6 +170,18 @@ type Item struct {
 	Status   string              `json:"status,omitempty"`
 	Input    json.RawMessage     `json:"input,omitempty"`
 	Content  []proto.ToolContent `json:"content,omitempty"`
+	// Tail is the last lines a running call has printed, folded from its
+	// output deltas and bounded (see appendTail). It is cleared the moment the
+	// call finishes: from then on Content holds the output, capped to a preview
+	// when it is long (see Truncated).
+	Tail string `json:"tail,omitempty"`
+	// Truncated: some of Content was cut to a preview or dropped (see
+	// capText), or Input was capped on the way to a client. The event log
+	// still has it whole.
+	Truncated bool `json:"truncated,omitempty"`
+	// ChildrenBefore is how many of this item's child items a wire copy left
+	// out (see WireCopy). Zero on the actor's own state.
+	ChildrenBefore int `json:"childrenBefore,omitempty"`
 
 	// notice
 	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
@@ -180,6 +199,19 @@ type Item struct {
 	// is the outcome's result.
 	Card    json.RawMessage `json:"card,omitempty"`
 	Outcome json.RawMessage `json:"outcome,omitempty"`
+
+	// plan: the whole list as it stands, never a delta. Superseded is set on
+	// a TodoWrite list once a later one exists.
+	Steps       []proto.PlanStep `json:"steps,omitempty"`
+	Explanation string           `json:"explanation,omitempty"`
+	Superseded  bool             `json:"superseded,omitempty"`
+}
+
+// settle moves a tool call to a terminal status. The tail goes with it: it
+// only ever stands for output still arriving.
+func (it *Item) settle(status string) {
+	it.Status = status
+	it.Tail = ""
 }
 
 // Artefact is a file or folder the thread has shown, as it was the last time
@@ -266,6 +298,7 @@ type QueuedPrompt struct {
 // log, not in a connection, so any attached presenter can answer it.
 type PendingPermission struct {
 	RequestID  string                   `json:"requestId"`
+	TurnID     string                   `json:"turnId,omitempty"`
 	ToolCallID string                   `json:"toolCallId"`
 	ToolName   string                   `json:"toolName"`
 	Title      string                   `json:"title"`
@@ -275,6 +308,7 @@ type PendingPermission struct {
 
 type PendingElicitation struct {
 	RequestID string          `json:"requestId"`
+	TurnID    string          `json:"turnId,omitempty"`
 	Prompt    string          `json:"prompt"`
 	Schema    json.RawMessage `json:"schema"`
 	// Card is set on a proposal the agent raised through omniplex's tools.
@@ -298,8 +332,49 @@ func (s *State) Questions() int {
 	return n
 }
 
+// QueueHeld says queued prompts must wait: the last turn stopped at a usage
+// limit, and each would only hit it again. The next turn to start — the
+// server's continuation, or anything a human sends — lifts it, and so does
+// moving the thread to another account: the limit was the old one's.
+// Mirrored by web/src/components/transcript/useTranscriptModel.ts.
+func (s *State) QueueHeld() bool {
+	if len(s.Turns) == 0 {
+		return false
+	}
+	last := s.Turns[len(s.Turns)-1]
+	if !last.Done || last.Failure != proto.FailureLimit {
+		return false
+	}
+	for i := len(s.Items) - 1; i >= 0 && s.Items[i].ReceivedAt >= last.FinishedAt; i-- {
+		if it := s.Items[i]; it.Kind == ItemNotice && it.NoticeKind == "account" {
+			return false
+		}
+	}
+	return true
+}
+
+// HeldByLimit says whether a held queue holds q: it was queued before the
+// limit stopped the turn. One queued since is a prompt sent by hand that had
+// to wait on a settings change, and it is what lifts the hold.
+func (s *State) HeldByLimit(q QueuedPrompt) bool {
+	return s.QueueHeld() && q.QueuedAt <= s.Turns[len(s.Turns)-1].FinishedAt
+}
+
 // CardID is the timeline item id of the card a request raised.
 func CardID(requestID string) string { return "card:" + requestID }
+
+// TurnPlanID is the timeline item id of a turn's plan (codex), revised in
+// place as the turn goes.
+func TurnPlanID(turnID string) string { return "turn-plan:" + turnID }
+
+const todoPlanPrefix = "todo:"
+
+// TodoPlanID is the timeline item id of one TodoWrite call's list.
+func TodoPlanID(toolCallID string) string { return todoPlanPrefix + toolCallID }
+
+// isTodoPlan reports whether an item is a TodoWrite list: the kind of plan a
+// newer one supersedes.
+func isTodoPlan(it Item) bool { return it.Kind == ItemPlan && strings.HasPrefix(it.ID, todoPlanPrefix) }
 
 type WorkspaceState struct {
 	Phase              string         `json:"phase"`
@@ -338,14 +413,16 @@ type State struct {
 
 	Items []Item `json:"items"`
 	// ItemsBefore is how many items were trimmed from the front of Items when
-	// this state was windowed for the wire (see Window). Zero on the actor's
+	// this state was windowed for the wire (see WireCopy). Zero on the actor's
 	// own state and on stored snapshots: only copies sent to a client carry a
 	// window, and the count doubles as the client's cursor for paging older
 	// items back in.
-	ItemsBefore  int                       `json:"itemsBefore,omitempty"`
-	Turns        []Turn                    `json:"turns"`
-	Jobs         []Job                     `json:"jobs"`
-	Plan         []proto.PlanEntry         `json:"plan"`
+	ItemsBefore int    `json:"itemsBefore,omitempty"`
+	Turns       []Turn `json:"turns"`
+	Jobs        []Job  `json:"jobs"`
+	// JobsBefore is how many jobs a wire copy left out of Jobs (see
+	// WireCopy). Zero on the actor's own state and on stored snapshots.
+	JobsBefore   int                       `json:"jobsBefore,omitempty"`
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
@@ -355,6 +432,11 @@ type State struct {
 	Artefacts []Artefact `json:"artefacts"`
 
 	itemIndex map[string]int `json:"-"`
+	jobIndex  map[string]int `json:"-"`
+	// recapped is set by FromSnapshot when the stored snapshot held tool
+	// content over the cap: the row on disk is still the big one and wants
+	// rewriting.
+	recapped bool
 }
 
 func New(threadID string) *State {
@@ -364,22 +446,34 @@ func New(threadID string) *State {
 		Items:        []Item{},
 		Turns:        []Turn{},
 		Jobs:         []Job{},
-		Plan:         []proto.PlanEntry{},
 		Pending:      []PendingPermission{},
 		Elicitations: []PendingElicitation{},
 		Queued:       []QueuedPrompt{},
 		Artefacts:    []Artefact{},
 		itemIndex:    map[string]int{},
+		jobIndex:     map[string]int{},
 	}
 }
 
-// reindex rebuilds the id→position map, needed after a snapshot is decoded.
+// reindex rebuilds the id→position maps, needed after a snapshot is decoded.
 func (s *State) reindex() {
 	s.itemIndex = make(map[string]int, len(s.Items))
 	for i, it := range s.Items {
 		s.itemIndex[it.ID] = i
 	}
+	s.reindexJobs()
 }
+
+func (s *State) reindexJobs() {
+	s.jobIndex = make(map[string]int, len(s.Jobs))
+	for i, j := range s.Jobs {
+		s.jobIndex[j.ID] = i
+	}
+}
+
+// Recapped reports whether FromSnapshot had to cap tool content the stored
+// snapshot held whole, so the stored snapshot is worth replacing.
+func (s *State) Recapped() bool { return s.recapped }
 
 // FromSnapshot decodes a stored snapshot back into usable state.
 func FromSnapshot(blob json.RawMessage) (*State, error) {
@@ -390,12 +484,18 @@ func FromSnapshot(blob json.RawMessage) (*State, error) {
 	if s.Artefacts == nil {
 		s.Artefacts = []Artefact{}
 	}
+	// A snapshot from before tool content was capped holds it whole. Capping
+	// here shrinks it the first time it loads, and the next snapshot written
+	// persists the small form.
+	for i := range s.Items {
+		if capItem(&s.Items[i]) {
+			s.recapped = true
+		}
+	}
 	s.reindex()
 	return &s, nil
 }
 
-// jobIndex is a linear scan: a thread has a handful of jobs, not thousands,
-// and an index would be one more thing to rebuild after a snapshot.
 // ItemByID returns the timeline item with that id.
 func (s *State) ItemByID(id string) (Item, bool) {
 	if s.itemIndex == nil {
@@ -408,11 +508,15 @@ func (s *State) ItemByID(id string) (Item, bool) {
 	return s.Items[i], true
 }
 
+// job finds a job by id through jobIndex. A long orchestrator thread runs
+// thousands of jobs and folds a job.updated for every usage tick, so a scan
+// here made replay quadratic.
 func (s *State) job(id string) *Job {
-	for i := range s.Jobs {
-		if s.Jobs[i].ID == id {
-			return &s.Jobs[i]
-		}
+	if s.jobIndex == nil {
+		s.reindexJobs()
+	}
+	if i, ok := s.jobIndex[id]; ok {
+		return &s.Jobs[i]
 	}
 	return nil
 }
@@ -428,6 +532,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 	j := s.job(p.JobID)
 	if j == nil {
 		s.Jobs = append(s.Jobs, Job{ID: p.JobID, Status: proto.JobRunning, StartedAt: ev.Timestamp})
+		s.jobIndex[p.JobID] = len(s.Jobs) - 1
 		j = &s.Jobs[len(s.Jobs)-1]
 		// The turn that spawned it, for the transcript to pin its card to.
 		for i := range s.Turns {
@@ -495,6 +600,11 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		j.Hidden = true
 	}
 	if p.Status != "" {
+		// A finished job reported running again was reopened (a Codex
+		// subagent taking a new turn): its elapsed clock runs again.
+		if !finished && !proto.JobDone(p.Status) {
+			j.FinishedAt = 0
+		}
 		j.Status = p.Status
 	}
 	if finished {
@@ -506,24 +616,47 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		}
 		// The spawning tool call, if it was still waiting on this job, is
 		// settled by it: a stopped agent's Task row must not spin forever.
+		// So is the job's own work left mid-flight (a stopped subagent's
+		// command): its parent's turn finishing spared it for the job, and
+		// the job is over. A real completion arriving later still lands.
 		if j.ToolCallID != "" {
 			if i, ok := s.itemIndex[j.ToolCallID]; ok {
 				it := &s.Items[i]
-				if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+				if proto.ToolRunning(it.Status) {
 					switch j.Status {
 					case proto.JobFailed:
-						it.Status = proto.StatusFailed
+						it.settle(proto.StatusFailed)
 					case proto.JobCompleted:
-						it.Status = proto.StatusCompleted
+						it.settle(proto.StatusCompleted)
 					default:
-						it.Status = proto.StatusCancelled
+						it.settle(proto.StatusCancelled)
 					}
+				}
+			}
+			// A live grandchild's spawn call is still its job's to settle.
+			live := s.liveJobCalls()
+			for i := range s.Items {
+				it := &s.Items[i]
+				if it.Kind == ItemTool && it.ParentID == j.ToolCallID && !live[it.ID] &&
+					proto.ToolRunning(it.Status) {
+					it.settle(proto.StatusCancelled)
 				}
 			}
 		}
 	} else if proto.JobDone(j.Status) && j.FinishedAt == 0 {
 		j.FinishedAt = ev.Timestamp
 	}
+}
+
+// liveJobCalls is the tool calls standing for jobs still running.
+func (s *State) liveJobCalls() map[string]bool {
+	live := map[string]bool{}
+	for _, j := range s.Jobs {
+		if j.ToolCallID != "" && !proto.JobDone(j.Status) {
+			live[j.ToolCallID] = true
+		}
+	}
+	return live
 }
 
 func (s *State) upsert(id string, mut func(*Item)) {
@@ -700,7 +833,16 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PromptQueued:
 		var p proto.PromptQueuedPayload
 		decode(ev.Payload, &p)
-		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp, Sent: p.Sent})
+		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp})
+
+	case proto.PromptSent:
+		// The harness took a queued prompt mid-turn. One it already read, or
+		// started a turn with, has left the queue, and there is nothing to mark.
+		var p proto.PromptSentPayload
+		decode(ev.Payload, &p)
+		if q := s.queued(p.QueueID); q != nil {
+			q.Sent = true
+		}
 
 	case proto.PromptInjected:
 		// The harness read a prompt it was holding into the running turn.
@@ -770,6 +912,7 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 		match := open == "" || p.TurnID == open
+		s.settleRequests(p.TurnID)
 		for i := range s.Turns {
 			if s.Turns[i].ID == p.TurnID {
 				s.Turns[i].StopReason = p.StopReason
@@ -783,22 +926,26 @@ func (s *State) Apply(ev proto.Event) {
 			s.Phase = "idle"
 			// Any tool of this turn left mid-flight was interrupted, not
 			// broken: it is cancelled, never failed. A call that is standing
-			// for a live job is left alone — it outlived its turn on purpose,
-			// and the job's own finish will settle it. Tools of other turns
-			// are left alone too: a stray finish must not touch unrelated
-			// running work.
-			live := map[string]bool{}
-			for _, j := range s.Jobs {
-				if !proto.JobDone(j.Status) && j.ToolCallID != "" {
-					live[j.ToolCallID] = true
-				}
-			}
+			// for a live job keeps its status — it outlived its turn on
+			// purpose, and the job's own finish will settle it — but not its
+			// tail: nothing streams a call's own output past the end of its
+			// turn (the Claude adapter stops its tailers before it emits the
+			// finish; a Codex subagent's output goes to its own work), so the
+			// tail would sit there frozen. A live job's own work (a subagent's
+			// running command) is left alone entirely: it is still running.
+			// Tools of other turns are left alone too: a stray finish must
+			// not touch unrelated running work.
+			live := s.liveJobCalls()
 			for i := range s.Items {
 				it := &s.Items[i]
-				if it.Kind == ItemTool &&
-					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) &&
-					(it.TurnID == p.TurnID || it.TurnID == "") && !live[it.ID] {
-					it.Status = proto.StatusCancelled
+				if it.Kind != ItemTool || (it.TurnID != p.TurnID && it.TurnID != "") ||
+					(it.ParentID != "" && live[it.ParentID]) {
+					continue
+				}
+				if live[it.ID] {
+					it.Tail = ""
+				} else if proto.ToolRunning(it.Status) {
+					it.settle(proto.StatusCancelled)
 				}
 			}
 		}
@@ -808,8 +955,11 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		// Streaming while idle means a turn is running that the log did not
 		// announce. Trusting the activity over the phase keeps a lifecycle
-		// desync from freezing every attached UI. Mirrored in web/src/apply.ts.
-		if s.Phase == "idle" {
+		// desync from freezing every attached UI. A subagent's own output
+		// (parented to its job's call) is not: it streams on after the
+		// parent's turn ended, and the job surfaces carry it. Mirrored in
+		// web/src/apply.ts.
+		if s.Phase == "idle" && p.ParentToolCallID == "" {
 			s.Phase = "turn"
 		}
 		s.upsert(p.BlockID, func(it *Item) {
@@ -829,8 +979,9 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.ToolCallStarted:
 		var p proto.ToolCallStartedPayload
 		decode(ev.Payload, &p)
-		// Same defence as message.chunk: a tool starting is a turn running.
-		if s.Phase == "idle" {
+		// Same defence as message.chunk: a tool starting is a turn running,
+		// unless it is a subagent's.
+		if s.Phase == "idle" && p.ParentToolCallID == "" {
 			s.Phase = "turn"
 		}
 		s.upsert(p.ToolCallID, func(it *Item) {
@@ -842,6 +993,9 @@ func (s *State) Apply(ev proto.Event) {
 			it.ToolKind = p.Kind
 			it.Title = p.Title
 			it.Status = p.Status
+			if proto.ToolDone(it.Status) {
+				it.Tail = ""
+			}
 			it.Input = p.RawInput
 			if p.ParentToolCallID != "" {
 				it.ParentID = p.ParentToolCallID
@@ -854,8 +1008,8 @@ func (s *State) Apply(ev proto.Event) {
 		// Same defence as message.chunk, but only for a tool going active. A
 		// completion is not: a background tool's result straggling in after
 		// the turn ended must not reopen "working" with nothing left to close
-		// it.
-		if s.Phase == "idle" && p.Status == proto.StatusInProgress {
+		// it. A subagent's tool is not the parent's turn either.
+		if s.Phase == "idle" && p.Status == proto.StatusInProgress && p.ParentToolCallID == "" {
 			s.Phase = "turn"
 		}
 		s.upsert(p.ToolCallID, func(it *Item) {
@@ -876,7 +1030,20 @@ func (s *State) Apply(ev proto.Event) {
 				it.Input = p.RawInput
 			}
 			if len(p.Content) > 0 {
-				it.Content = append(it.Content, p.Content...)
+				appendToolContent(it, p.Content)
+			}
+			// Output lands in the tail only while the call is running, judged
+			// after this update's own status: a call that finished has its
+			// output in Content, so its tail is dropped, and a delta straggling
+			// in after the finish is dropped with it. Judging by the status
+			// before the update would be equally true to the events, but a
+			// coalesced in_progress-then-delta could then fold differently from
+			// the two apart on a call being reopened (see merge in
+			// internal/thread/coalesce.go).
+			if proto.ToolDone(it.Status) {
+				it.Tail = ""
+			} else if p.OutputDelta != "" {
+				it.Tail = appendTail(it.Tail, p.OutputDelta)
 			}
 		})
 
@@ -889,7 +1056,38 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PlanUpdated:
 		var p proto.PlanUpdatedPayload
 		decode(ev.Payload, &p)
-		s.Plan = p.Entries
+		// A plan anchored to nothing — the old shape, logged before plans
+		// had a turn — has nowhere in the transcript to go.
+		if p.TurnID == "" && p.ToolCallID == "" {
+			return
+		}
+		// A TodoWrite call is a list of its own, keyed by the call; a codex
+		// plan is the turn's, revised in place. Each update carries every
+		// step, so steps are replaced outright. Codex gives its explanation
+		// only on the turn's first update, so a later one that omits it keeps
+		// it. Mirrored in web/src/apply.ts.
+		id := TurnPlanID(p.TurnID)
+		if p.ToolCallID != "" {
+			id = TodoPlanID(p.ToolCallID)
+			if _, ok := s.ItemByID(id); !ok {
+				for i := range s.Items {
+					if isTodoPlan(s.Items[i]) {
+						s.Items[i].Superseded = true
+					}
+				}
+			}
+		}
+		s.upsert(id, func(it *Item) {
+			it.Kind = ItemPlan
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.TurnID = p.TurnID
+			it.Steps = p.Steps
+			if p.Explanation != "" {
+				it.Explanation = p.Explanation
+			}
+		})
 
 	case proto.UsageUpdated:
 		var p proto.UsageUpdatedPayload
@@ -941,6 +1139,7 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		s.Pending = append(s.Pending, PendingPermission{
 			RequestID:  p.RequestID,
+			TurnID:     p.TurnID,
 			ToolCallID: p.ToolCallID,
 			ToolName:   p.ToolName,
 			Title:      p.Title,
@@ -963,7 +1162,7 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.ElicitationRequestedPayload
 		decode(ev.Payload, &p)
 		s.Elicitations = append(s.Elicitations, PendingElicitation{
-			RequestID: p.RequestID, Prompt: p.Prompt, Schema: p.Schema, Card: p.Card,
+			RequestID: p.RequestID, TurnID: p.TurnID, Prompt: p.Prompt, Schema: p.Schema, Card: p.Card,
 		})
 		if len(p.Card) > 0 {
 			s.upsert(CardID(p.RequestID), func(it *Item) {
@@ -997,6 +1196,32 @@ func (s *State) Apply(ev proto.Event) {
 			}
 		}
 	}
+}
+
+// settleRequests drops the permissions and questions a finished turn was
+// blocked on. The harness has stopped waiting on them once its turn is over,
+// whether or not it said so, and a card left up would answer nothing. A
+// request that names no turn is left alone: nothing says this finish ended
+// it. Cards are omniplex's to hold and outlive the turn. Mirrored in
+// web/src/apply.ts.
+func (s *State) settleRequests(turnID string) {
+	if turnID == "" {
+		return
+	}
+	perms := s.Pending[:0]
+	for _, p := range s.Pending {
+		if p.TurnID != turnID {
+			perms = append(perms, p)
+		}
+	}
+	s.Pending = perms
+	elicits := s.Elicitations[:0]
+	for _, p := range s.Elicitations {
+		if p.IsCard() || p.TurnID != turnID {
+			elicits = append(elicits, p)
+		}
+	}
+	s.Elicitations = elicits
 }
 
 // Card statuses: pending until answered, then the outcome's result.
@@ -1117,33 +1342,48 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 // shallow copy would share the item and content slices with the live state,
 // which the actor keeps mutating.
 func (s *State) Clone() *State {
-	out := *s
-	out.itemIndex = nil
-
+	out := s.cloneRest()
 	out.Items = make([]Item, len(s.Items))
 	for i, it := range s.Items {
-		cp := it
-		if len(it.Content) > 0 {
-			cp.Content = append([]proto.ToolContent(nil), it.Content...)
-		}
-		if len(it.Input) > 0 {
-			cp.Input = append(json.RawMessage(nil), it.Input...)
-		}
-		if len(it.Card) > 0 {
-			cp.Card = append(json.RawMessage(nil), it.Card...)
-		}
-		if len(it.Outcome) > 0 {
-			cp.Outcome = append(json.RawMessage(nil), it.Outcome...)
-		}
-		out.Items[i] = cp
+		out.Items[i] = copyItem(it)
 	}
+	out.Jobs = make([]Job, len(s.Jobs))
+	copy(out.Jobs, s.Jobs)
+	return out
+}
+
+// copyItem deep-copies one item, so the copy shares no bytes with the live
+// state.
+func copyItem(it Item) Item {
+	if len(it.Content) > 0 {
+		it.Content = append([]proto.ToolContent(nil), it.Content...)
+	}
+	if len(it.Input) > 0 {
+		it.Input = append(json.RawMessage(nil), it.Input...)
+	}
+	if len(it.Card) > 0 {
+		it.Card = append(json.RawMessage(nil), it.Card...)
+	}
+	if len(it.Outcome) > 0 {
+		it.Outcome = append(json.RawMessage(nil), it.Outcome...)
+	}
+	if len(it.Steps) > 0 {
+		it.Steps = append([]proto.PlanStep(nil), it.Steps...)
+	}
+	return it
+}
+
+// cloneRest deep-copies everything but Items and Jobs, which Clone copies
+// whole and WireCopy windows.
+func (s *State) cloneRest() *State {
+	out := *s
+	out.itemIndex = nil
+	out.jobIndex = nil
+	out.Items = nil
+	out.Jobs = nil
 
 	out.Turns = make([]Turn, len(s.Turns))
 	copy(out.Turns, s.Turns)
-	out.Jobs = make([]Job, len(s.Jobs))
-	copy(out.Jobs, s.Jobs)
-	out.Plan = make([]proto.PlanEntry, len(s.Plan))
-	copy(out.Plan, s.Plan)
 	out.Artefacts = append([]Artefact{}, s.Artefacts...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))

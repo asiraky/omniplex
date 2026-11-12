@@ -18,10 +18,13 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "~/components/ui/context-menu";
+import { KbdChord } from "~/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import type { CommandId } from "~/lib/keybindings";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
 import { rowStatus, unread, type RowStatus } from "~/threadStatus";
+import { useShortcut } from "~/useShortcuts";
 
 import type { RowDrag } from "./SortableRows";
 
@@ -38,6 +41,7 @@ function TitleLine({
   s,
   isNew,
   reordering,
+  jumpHint,
 }: {
   s: ThreadMeta;
   /** Unread and stopped: the title steps up alongside the badge. */
@@ -45,7 +49,9 @@ function TitleLine({
   /** The row's controls are put away in reorder mode, so the line keeps its
       full width. */
   reordering: boolean;
+  jumpHint: CommandId | undefined;
 }) {
+  const jump = useShortcut(jumpHint);
   return (
     <span
       className={cn(
@@ -78,7 +84,17 @@ function TitleLine({
         </span>
       )}
       <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
-        {ago(s.updatedAt)}
+        {/* While ⌘ is held the timestamp's corner says which digit opens the
+            row instead. Chips a size down, so the line keeps its height. */}
+        {jump ? (
+          <KbdChord
+            shortcut={jump.shortcut}
+            platform={jump.platform}
+            className="[&_kbd]:h-4 [&_kbd]:min-w-4 [&_kbd]:text-[10px]"
+          />
+        ) : (
+          ago(s.updatedAt)
+        )}
       </span>
     </span>
   );
@@ -323,6 +339,7 @@ export function ThreadRow({
   onSetUnread,
   onRename,
   onDelete,
+  jumpHint,
 }: {
   s: ThreadMeta;
   showProject: boolean;
@@ -343,6 +360,8 @@ export function ThreadRow({
   onSetUnread: (threadId: string, unread: boolean) => void;
   onRename: (threadId: string, title: string) => void;
   onDelete: (s: ThreadMeta) => void;
+  /** The ⌘1–9 command that opens this row, shown while the modifier is held. */
+  jumpHint?: CommandId;
 }) {
   const [renaming, setRenaming] = useState(false);
   // Picking Rename from the context menu closes it, and a closing menu hands
@@ -450,6 +469,7 @@ export function ThreadRow({
                     s={s}
                     isNew={badge === "new"}
                     reordering={reordering}
+                    jumpHint={jumpHint}
                   />
                   <DetailLine
                     s={s}

@@ -12,12 +12,12 @@ import {
   ListToolbar,
   Loading,
   LoadError,
-  Marker,
   RowSwitch,
   Section,
   type PageCommand,
 } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
+import { Marker } from "~/components/ui/marker";
 import { Spinner } from "~/components/ui/spinner";
 import {
   foundByHarness,

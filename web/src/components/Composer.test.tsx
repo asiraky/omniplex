@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { createRef } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { render, wrap } from "~/test/harness";
-import { Composer } from "./Composer";
+import { Composer, type ComposerHandle } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
+import type { HarnessMeta } from "~/protocol";
 import type { ComposerCatalogue } from "./composer/useComposerItems";
 
 const png = (name = "shot.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
@@ -369,5 +371,138 @@ describe("the command catalogue", () => {
     await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(""));
     expect(onRunComposerAction).toHaveBeenCalledWith("compact", "now", "/compact now");
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+const claude = {
+  id: "claude",
+  name: "Claude Code",
+  models: [],
+  permissionModes: [],
+  availability: { state: "ready" },
+  instances: [
+    {
+      id: "claude",
+      driver: "claude",
+      displayName: "Claude Code",
+      enabled: true,
+      availability: { state: "ready" },
+      models: [
+        { id: "opus", label: "Opus", default: true, efforts: ["low", "high", "max"] },
+        { id: "sonnet", label: "Sonnet", efforts: ["low", "high"] },
+        { id: "haiku", label: "Haiku" },
+      ],
+    },
+  ],
+} as unknown as HarnessMeta;
+
+describe("the model picker mid-thread", () => {
+  beforeAll(() => {
+    const proto = window.HTMLElement.prototype;
+    proto.hasPointerCapture ??= () => false;
+    proto.setPointerCapture ??= () => {};
+    proto.releasePointerCapture ??= () => {};
+  });
+
+  // A running thread: the switches go to the server, and the props only move
+  // when it echoes them, which these tests do by hand.
+  const running = (over: Partial<React.ComponentProps<typeof Composer>> = {}) => {
+    const onSwitchModel = vi.fn();
+    const onSwitchEffort = vi.fn();
+    const ref = createRef<ComposerHandle>();
+    const view = mount({
+      ref,
+      harnesses: [claude],
+      harness: "claude",
+      instance: "claude",
+      model: "opus",
+      effort: "max",
+      onSwitchModel,
+      onSwitchEffort,
+      ...over,
+    });
+    return { ...view, ref, onSwitchModel, onSwitchEffort };
+  };
+  const trigger = () => screen.getByRole("combobox", { name: "Harness and model" });
+  const search = () => screen.queryByPlaceholderText(/Search models/);
+  const levels = () => within(screen.getByRole("radiogroup", { name: "Reasoning effort" }));
+  const choose = async (label: string) =>
+    fireEvent.click(await screen.findByRole("option", { name: new RegExp(label) }));
+
+  it("shows the pick before the server echoes it, then follows the server", async () => {
+    const { rerender, onSwitchModel, onSwitchEffort } = running();
+    fireEvent.click(trigger());
+    await choose("Sonnet");
+
+    expect(onSwitchModel).toHaveBeenCalledWith("sonnet");
+    // Sonnet has no Max, so the effort drops with it.
+    expect(onSwitchEffort).toHaveBeenCalledWith("high");
+    // Nothing echoed yet; the open picker already says what was asked for.
+    expect(trigger().textContent).toContain("Sonnet");
+    expect(levels().queryByRole("radio", { name: "Max" })).toBeNull();
+    expect(levels().getByRole("radio", { name: "High" }).getAttribute("aria-checked")).toBe("true");
+
+    rerender({ model: "sonnet" });
+    expect(trigger().textContent).toContain("Sonnet");
+    expect(trigger().textContent).toContain("High");
+    rerender({ model: "sonnet", effort: "high" });
+
+    // Caught up, the pick no longer has a say: a change from elsewhere shows.
+    rerender({ model: "opus", effort: "low" });
+    expect(trigger().textContent).toContain("Opus");
+    expect(trigger().textContent).toContain("Low");
+  });
+
+  it("goes back to what is running when the picker closes before the echo", async () => {
+    running();
+    fireEvent.click(trigger());
+    await choose("Sonnet");
+    fireEvent.keyDown(search()!, { key: "Escape" });
+
+    expect(search()).toBeNull();
+    expect(trigger().textContent).toContain("Opus");
+    expect(trigger().textContent).toContain("Max");
+  });
+
+  it("drops a pick the server refused while the picker stays open", async () => {
+    running({
+      onSwitchModel: vi.fn(() => Promise.resolve(false)),
+      onSwitchEffort: vi.fn(() => Promise.resolve(true)),
+    });
+    fireEvent.click(trigger());
+    await choose("Sonnet");
+
+    await waitFor(() => expect(trigger().textContent).toContain("Opus"));
+    expect(search()).not.toBeNull();
+    // Opus's own levels again, Max among them.
+    expect(levels().getByRole("radio", { name: "Max" })).toBeTruthy();
+  });
+
+  it("opens on the effort level when asked, and moves focus while open", async () => {
+    const { ref } = running({ effort: "high" });
+
+    act(() => ref.current!.openModelPicker("effort"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(levels().getByRole("radio", { name: "High" })),
+    );
+
+    act(() => ref.current!.openModelPicker("model"));
+    expect(document.activeElement).toBe(search());
+    act(() => ref.current!.openModelPicker("effort"));
+    expect(document.activeElement).toBe(levels().getByRole("radio", { name: "High" }));
+
+    // Closed and opened by hand, it starts at the search as it always did.
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(search()).toBeNull();
+    fireEvent.click(trigger());
+    await waitFor(() => expect(document.activeElement).toBe(search()));
+  });
+
+  it("opens on the search when asked for effort on a model with none", async () => {
+    const { ref } = running({ model: "haiku", effort: "" });
+
+    act(() => ref.current!.openModelPicker("effort"));
+
+    await waitFor(() => expect(document.activeElement).toBe(search()));
   });
 });

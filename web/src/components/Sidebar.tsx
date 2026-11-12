@@ -2,6 +2,7 @@ import {
   ActivityIcon,
   BlocksIcon,
   FolderPlusIcon,
+  SearchIcon,
   SettingsIcon,
   PanelLeftIcon,
   SquarePenIcon,
@@ -15,6 +16,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
+import { KEYBINDINGS_PASS } from "~/app/useKeybindings";
+import type { ProjectView } from "~/app/useProjectView";
 import type { ConnectionStatus } from "~/client";
 import {
   DeleteThreadDialog,
@@ -25,61 +28,29 @@ import { ThreadFilter } from "~/components/ThreadFilter";
 import { StatusDot } from "~/components/StatusDot";
 import { ThemeToggle } from "~/components/ThemeToggle";
 import { Button } from "~/components/ui/button";
+import { KbdChord } from "~/components/ui/kbd";
 import { Separator } from "~/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "~/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { jumpCommand, type CommandId } from "~/lib/keybindings";
 import { isTitleEditor } from "~/lib/threadTitle";
 import { cn } from "~/lib/utils";
-import { splitPinned } from "~/pinned";
-import { groupThreads, visibleByProject } from "~/projectGroups";
+import { visibleByProject } from "~/projectGroups";
 import { newCount } from "~/threadStatus";
 import type { Project, ThreadMeta } from "~/protocol";
+import { sectionRows, sidebarSections, type SidebarSection } from "~/sidebarOrder";
 import { useIsDesktop } from "~/useMediaQuery";
+import { useShortcut, useShowShortcuts } from "~/useShortcuts";
 import { Wordmark } from "./Logo";
 import { ProjectGroup } from "./sidebar/ProjectGroup";
 import { SortableRows, type RowDrag } from "./sidebar/SortableRows";
 import { ThreadRow } from "./sidebar/ThreadRow";
-import { useStoredFlag, useStoredKeys, withKey } from "./sidebar/useStoredKeys";
 
 // How long a row takes to fold away once it has left the list. Kept in step
 // with the duration on the row itself.
 const EXIT_MS = 260;
 
 const WIDTH_KEY = "omniplex.sidebarWidth";
-// Which projects this device is hiding, and which of the groups it is showing
-// are folded shut. Device-local like the width: the phone is usually narrowed
-// to the one thing being worked on and the desktop is not, and making that
-// travel would mean one of them is always wrong.
-const PROJECT_FILTER_KEY = "omniplex.projectFilter";
-const COLLAPSED_KEY = "omniplex.projectCollapsed";
-// The collapse keys of the two sections that are not projects: Pinned, and
-// the rest of the list under it when that is flat. Project keys are uuids or
-// `cwd:` paths, so neither can collide with one.
-const PINNED_KEY = "pinned";
-const UNPINNED_KEY = "unpinned";
-// Whether this device carves the list into project groups at all. Device-local
-// for the same reason again: a phone narrowed to one project has nothing to
-// group, and a desktop showing five may want the headers or may not.
-const GROUPED_KEY = "omniplex.groupByProject";
-
-/**
- * The project filter and the collapse state, threaded to the header and the
- * list together. They travel as one because they are one control surface: the
- * menu decides which groups exist and the headers decide which are open.
- */
-interface ProjectView {
-  /** Carve the list into project groups; off, it is one list in the user's order. */
-  grouped: boolean;
-  onToggleGrouped: (on: boolean) => void;
-  /** Project ids switched off in the header menu. */
-  hidden: Set<string>;
-  /** Group keys folded shut. Remembered across reloads, per device. */
-  collapsed: Set<string>;
-  onToggle: (id: string, show: boolean) => void;
-  onShowAll: () => void;
-  onHideAll: () => void;
-  onToggleCollapse: (key: string) => void;
-}
 const MIN_WIDTH = 208;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 288;
@@ -91,7 +62,19 @@ interface SidebarProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (id: string) => void;
+  /** New thread, pressed: opens the "New thread in…" step. */
+  onNewThreadIn: () => void;
+  /** New thread, shift-clicked: a draft in the active thread's project, no questions. */
   onNew: () => void;
+  /** Opens the command palette, which doubles as thread search. */
+  onOpenPalette: () => void;
+  /**
+   * The filter, the folds and the grouping, held by App so the thread
+   * shortcuts walk the order this list shows.
+   */
+  projectView: ProjectView;
+  /** ⌘ is held: the first nine rows show the digit that opens them. */
+  showJumpHints: boolean;
   /**
    * removeWorktree is the user's answer to the dialog's checkbox, never
    * inferred. The promise, if one is returned, only says the request was
@@ -226,8 +209,10 @@ function ThreadList({
   onRename,
   onReorder,
   reordering,
+  showJumpHints,
 }: Pick<
   SidebarProps,
+  | "showJumpHints"
   | "activeId"
   | "onSelect"
   | "accentOf"
@@ -245,16 +230,19 @@ function ThreadList({
 }) {
   const { rows, ask, deleting, exiting } = flow;
 
-  // The filter runs over the delete flow's rows — frozen order, exiting row
-  // and all — so a departing thread folds away in place instead of vanishing
-  // the instant the filter is recomputed. The pinned split and grouping run
-  // over the result for the same reason: neither reorders, so the row still
-  // leaves from exactly where it stood.
-  const shown = visibleByProject(rows, projects, projectView.hidden);
-  const { pinned, rest } = splitPinned(shown);
-  const groups = projectView.grouped ? groupThreads(rest, projects) : [];
-  // One group is not a grouping, however it came to be the only one.
-  const grouped = groups.length > 1;
+  // The sections are cut from the delete flow's rows — frozen order, exiting
+  // row and all — so a departing thread folds away in place instead of
+  // vanishing the instant the filter is recomputed. Nothing in the cut
+  // reorders, so the row still leaves from exactly where it stood. It is the
+  // same cut the thread shortcuts walk.
+  const sections = sidebarSections(rows, projects, projectView);
+  // The digit each of the first nine open rows answers to, while ⌘ is held.
+  const jumps = new Map<string, CommandId>();
+  if (showJumpHints) {
+    sectionRows(sections, projectView.collapsed)
+      .slice(0, 9)
+      .forEach((s, i) => jumps.set(s.id, jumpCommand(i)!));
+  }
   // A delete holds the list still for its exit animation, frozen order and
   // all; a drop computed against that order would land somewhere else.
   const sortable = !deleting && !exiting;
@@ -274,7 +262,7 @@ function ThreadList({
   // There are threads; the filter is the only reason none of them are here,
   // so the way out of that is the message rather than something to go hunting
   // for in the header.
-  if (shown.length === 0) {
+  if (sections.length === 0) {
     return (
       <div className="px-3 py-10 text-center">
         <p className="text-muted-foreground text-[13px]">
@@ -309,6 +297,7 @@ function ThreadList({
       onSetUnread={onSetUnread}
       onRename={onRename}
       onDelete={ask}
+      jumpHint={jumps.get(s.id)}
     />
   );
 
@@ -323,7 +312,7 @@ function ThreadList({
   );
 
   // A section folds like a project group and leaves with its last thread.
-  const section = (key: string, name: string, threads: ThreadMeta[], showProject: boolean) => (
+  const section = ({ key, name, threads, showProject }: SidebarSection & { key: string }) => (
     <ProjectGroup
       key={key}
       name={name}
@@ -340,43 +329,51 @@ function ThreadList({
     </ProjectGroup>
   );
 
-  // Pinned threads come from every project, so their rows name theirs, the
-  // way a flat list's do. Nothing pinned on screen is no section at all.
-  const top = pinned.length > 0 && section(PINNED_KEY, "Pinned", pinned, true);
+  // The bare list has no header: it is the only section there is.
+  const [first] = sections;
+  if (first.key === null) return run(first.threads, first.showProject);
+  return <>{sections.map((s) => s.key !== null && section({ ...s, key: s.key }))}</>;
+}
 
-  // One project on screen has nothing to group: the header would name the
-  // only thing there is, on every row, forever. Grouping switched off is the
-  // same flat list, and there the row naming its project is the point. Under
-  // Pinned the flat rest still needs a header of its own, or it would read
-  // as more of the pinned rows.
-  if (!grouped) {
-    if (!top) return run(rest, true);
-    return (
-      <>
-        {top}
-        {rest.length > 0 && section(UNPINNED_KEY, "Threads", rest, true)}
-      </>
-    );
-  }
-
+/**
+ * The way into the palette, which is also how a phone searches threads. A
+ * search-box shape that takes the row's spare width on desktop, with ⌘K in
+ * its corner where hints are shown; a thumb-sized icon on a phone, where the
+ * row has none to spare beside the other three.
+ */
+function PaletteButton({ onOpen }: { onOpen: () => void }) {
+  const chord = useShortcut("palette");
   return (
-    <>
-      {top}
-      {groups.map((g) => section(g.key, g.name, g.threads, false))}
-    </>
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="Search threads and commands"
+      // Shrinks before anything else in the row does: the chip clips at the
+      // narrowest sidebar rather than pushing the icons out of it.
+      className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent/50 focus-visible:ring-ring/50 flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md outline-none focus-visible:ring-[3px] md:h-8 md:w-auto md:min-w-0 md:flex-1 md:shrink md:justify-start md:gap-1.5 md:overflow-hidden md:px-2"
+    >
+      <SearchIcon aria-hidden className="size-4 shrink-0" />
+      <span className="hidden truncate text-[13px] md:inline">Search</span>
+      {chord && (
+        <KbdChord
+          shortcut={chord.shortcut}
+          platform={chord.platform}
+          className="ml-auto hidden shrink-0 md:inline-flex"
+        />
+      )}
+    </button>
   );
 }
 
 function SidebarPanel({
   showCollapse,
   flow,
-  projectView,
   ...props
 }: SidebarProps & {
   showCollapse: boolean;
   flow: DeleteFlow;
-  projectView: ProjectView;
 }) {
+  const { projectView } = props;
   // Reorder mode is this panel's alone: closing the sheet ends it, so the
   // next time the list opens its rows are for opening threads again.
   const [reordering, setReordering] = useState(false);
@@ -396,6 +393,7 @@ function SidebarPanel({
           {showCollapse && (
             <IconButton
               label="Hide threads"
+              shortcut="toggleSidebar"
               onClick={() => props.onOpenChange(false)}
               className="text-muted-foreground hover:text-foreground"
             >
@@ -407,7 +405,7 @@ function SidebarPanel({
         </div>
         <div className="flex items-center justify-end gap-1">
           {/* While reordering it is the only thing in this row — a phone-width
-              sheet has no room for a hint, a Done and three icons — and the
+              sheet has no room for a hint, a Done and four icons — and the
               way out is a word, not an icon, so it cannot be missed. */}
           {reordering ? (
             <>
@@ -425,9 +423,13 @@ function SidebarPanel({
             </>
           ) : (
             <>
+              <PaletteButton onOpen={props.onOpenPalette} />
+              {/* Asks where first; shift skips the question for a draft in
+                  the project already open. */}
               <IconButton
                 label="New thread"
-                onClick={props.onNew}
+                shortcut="newThreadIn"
+                onClick={(e) => (e.shiftKey ? props.onNew() : props.onNewThreadIn())}
                 className="text-muted-foreground hover:text-foreground"
               >
                 <SquarePenIcon />
@@ -473,6 +475,7 @@ function SidebarPanel({
           onRename={props.onRename}
           onReorder={props.onReorder}
           reordering={reordering}
+          showJumpHints={props.showJumpHints}
         />
       </nav>
 
@@ -525,7 +528,7 @@ function SidebarPanel({
           </TooltipTrigger>
           <TooltipContent>How to reach this server</TooltipContent>
         </Tooltip>
-        <IconButton label="Settings" onClick={props.onShowSettings}>
+        <IconButton label="Settings" shortcut="settings" onClick={props.onShowSettings}>
           <SettingsIcon />
         </IconButton>
         <ThemeToggle />
@@ -541,34 +544,9 @@ export function Sidebar(props: SidebarProps) {
   // reason: selecting a thread closes the sheet on a phone, and deleting one
   // selects it.
   const flow = useDeleteFlow(props);
-
-  // The project filter and the fold state of the groups it produces, above
-  // both shapes for the same reason as the delete flow. Only the user's own
-  // choices are stored, so a project added on a paired device arrives showing
-  // rather than pre-hidden.
-  const [hiddenProjects, setHiddenProjects] = useStoredKeys(PROJECT_FILTER_KEY);
-  const [collapsed, setCollapsed] = useStoredKeys(COLLAPSED_KEY);
-  const [grouped, setGrouped] = useStoredFlag(GROUPED_KEY, true);
-
-  const projectView: ProjectView = {
-    grouped,
-    onToggleGrouped: setGrouped,
-    hidden: hiddenProjects,
-    collapsed,
-    onToggle: useCallback(
-      (id: string, show: boolean) => setHiddenProjects((current) => withKey(current, id, !show)),
-      [setHiddenProjects],
-    ),
-    onShowAll: useCallback(() => setHiddenProjects(new Set()), [setHiddenProjects]),
-    onHideAll: useCallback(
-      () => setHiddenProjects(new Set(props.projects.map((p) => p.id))),
-      [props.projects, setHiddenProjects],
-    ),
-    onToggleCollapse: useCallback(
-      (key: string) => setCollapsed((current) => withKey(current, key, !current.has(key))),
-      [setCollapsed],
-    ),
-  };
+  // App only asks for the chips where the digits work; a phone or a tablet
+  // with no pointer gets none, like every other hint.
+  const showJumpHints = useShowShortcuts() && props.showJumpHints;
 
   // Below md the sidebar is a drawer over the transcript, which is a sheet's
   // whole job: overlay, focus trap, escape to close. At md it is the docked
@@ -579,6 +557,9 @@ export function Sidebar(props: SidebarProps) {
       <>
         <Sheet open={props.open} onOpenChange={props.onOpenChange}>
           <SheetContent
+            // A dialog to Radix, but the app's own chrome to the user: the
+            // shortcuts keep working while it is open.
+            {...KEYBINDINGS_PASS}
             side="left"
             tabIndex={-1}
             // Full-bleed on a phone. A 15% sliver of dimmed transcript is not
@@ -613,8 +594,8 @@ export function Sidebar(props: SidebarProps) {
             {/* Nothing behind the panel means nothing to collapse to. */}
             <SidebarPanel
               {...props}
+              showJumpHints={showJumpHints}
               flow={flow}
-              projectView={projectView}
               showCollapse={props.activeId !== null}
             />
           </SheetContent>
@@ -626,11 +607,7 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <>
-      <DockedSidebar
-        {...props}
-        flow={flow}
-        projectView={projectView}
-      />
+      <DockedSidebar {...props} showJumpHints={showJumpHints} flow={flow} />
       <DeleteThreadDialog flow={flow.thread} />
     </>
   );
@@ -638,11 +615,9 @@ export function Sidebar(props: SidebarProps) {
 
 function DockedSidebar({
   flow,
-  projectView,
   ...props
 }: SidebarProps & {
   flow: DeleteFlow;
-  projectView: ProjectView;
 }) {
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_KEY));
@@ -695,12 +670,7 @@ function DockedSidebar({
         !resizing && "transition-[margin] duration-200 motion-reduce:transition-none",
       )}
     >
-      <SidebarPanel
-        {...props}
-        flow={flow}
-        projectView={projectView}
-        showCollapse
-      />
+      <SidebarPanel {...props} flow={flow} showCollapse />
       <div
         role="separator"
         aria-orientation="vertical"

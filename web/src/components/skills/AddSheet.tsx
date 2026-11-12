@@ -6,6 +6,7 @@ import { Checkbox } from "~/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Marker } from "~/components/ui/marker";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
 import { defaultStagedTicks, normalizeStaged, retickStaged, sourceLabel } from "~/lib/skillFlows";
@@ -21,7 +22,7 @@ import {
 import { cn, errorText } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
-import { ErrorLine, Marker, ProblemText, type PageCommand } from "~/components/tools/parts";
+import { ErrorLine, ProblemText, type PageCommand } from "~/components/tools/parts";
 import { DestinationPicker } from "./parts";
 import { useStaging } from "./useStaging";
 

@@ -2,6 +2,7 @@ package projection
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/proto"
@@ -254,6 +255,154 @@ func TestJobOutlivesTurn(t *testing.T) {
 	}
 }
 
+// A subagent keeps working after the turn that spawned it has ended. Its own
+// output, parented to its job's call, is recorded against the job but does
+// not reopen the parent's turn, and its running command survives the turn's
+// finish while the parent's own stray tool is cancelled. Mirrored by
+// web/src/apply.test.ts.
+func TestSubagentWorkOutlivesParentTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindAgent, Title: "spawn", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 3, proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent"}))
+	s.Apply(event(t, 4, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "sub1", ParentToolCallID: "c1", Kind: proto.KindExecute, Title: "go test", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 5, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "own1", Kind: proto.KindExecute, Title: "ls", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 6, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+
+	if it, _ := s.ItemByID("sub1"); it.Status != proto.StatusInProgress {
+		t.Fatalf("subagent's tool after parent turn finished = %q, want in_progress", it.Status)
+	}
+	if it, _ := s.ItemByID("own1"); it.Status != proto.StatusCancelled {
+		t.Fatalf("parent's own tool after its turn finished = %q, want cancelled", it.Status)
+	}
+
+	s.Apply(event(t, 7, proto.MessageChunk, proto.MessageChunkPayload{
+		TurnID: "t1", Role: "agent", Kind: "text", BlockID: "b1", Delta: "found it", ParentToolCallID: "c1",
+	}))
+	s.Apply(event(t, 8, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "sub2", ParentToolCallID: "c1", Kind: proto.KindRead, Title: "read", Status: proto.StatusPending,
+	}))
+	s.Apply(event(t, 9, proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
+		ToolCallID: "sub2", ParentToolCallID: "c1", Status: proto.StatusInProgress,
+	}))
+	if s.Phase != "idle" {
+		t.Fatalf("phase after subagent output while idle = %q, want idle", s.Phase)
+	}
+	if it, ok := s.ItemByID("b1"); !ok || it.ParentID != "c1" || it.Text != "found it" {
+		t.Fatalf("subagent message = %+v, want recorded under c1", it)
+	}
+	if it, ok := s.ItemByID("sub2"); !ok || it.ParentID != "c1" || it.Status != proto.StatusInProgress {
+		t.Fatalf("subagent tool = %+v, want in_progress under c1", it)
+	}
+}
+
+// A subagent's running command keeps streaming after its parent's turn ends,
+// so the turn finishing leaves its tail; the job finishing settles the
+// command and drops the tail with it. Mirrored by web/src/apply.test.ts.
+func TestSubagentCommandTailOutlivesParentTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindAgent, Title: "spawn", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 3, proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent"}))
+	s.Apply(event(t, 4, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "sub1", ParentToolCallID: "c1", Kind: proto.KindExecute, Title: "go test", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 5, proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: "sub1", OutputDelta: "ok 1\n"}))
+	s.Apply(event(t, 6, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+
+	if it, _ := s.ItemByID("sub1"); it.Status != proto.StatusInProgress || it.Tail != "ok 1\n" {
+		t.Fatalf("subagent's command after parent turn finished = %q tail %q, want in_progress with its tail", it.Status, it.Tail)
+	}
+
+	s.Apply(event(t, 7, proto.JobFinished, proto.JobPayload{JobID: "j1", ToolCallID: "c1", Status: proto.JobStopped}))
+	if it, _ := s.ItemByID("sub1"); it.Status != proto.StatusCancelled || it.Tail != "" {
+		t.Fatalf("subagent's command after its job finished = %q tail %q, want cancelled with no tail", it.Status, it.Tail)
+	}
+}
+
+// A stopped subagent's command was spared by its parent's turn finishing, for
+// the job's sake; the job finishing leaves nobody to settle it, so it does.
+// Another job's work, and work already done, are untouched, and a completion
+// the harness sends later still lands. Mirrored by web/src/apply.test.ts.
+func TestFinishedJobCancelsItsUnfinishedWork(t *testing.T) {
+	s := New("s1")
+	var seq int64
+	apply := func(typ string, payload any) {
+		seq++
+		s.Apply(event(t, seq, typ, payload))
+	}
+	apply(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"})
+	for _, c := range []string{"c1", "c2"} {
+		apply(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+			TurnID: "t1", ToolCallID: c, Kind: proto.KindAgent, Title: "spawn", Status: proto.StatusInProgress,
+		})
+	}
+	apply(proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent"})
+	apply(proto.JobStarted, proto.JobPayload{JobID: "j2", ToolCallID: "c2", TaskType: "subagent"})
+	for _, tool := range []struct{ id, parent, status string }{
+		{"run1", "c1", proto.StatusInProgress},
+		{"wait1", "c1", proto.StatusPending},
+		{"done1", "c1", proto.StatusInProgress},
+		{"other", "c2", proto.StatusInProgress},
+		{"spawn3", "c1", proto.StatusInProgress},
+	} {
+		apply(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+			TurnID: "t1", ToolCallID: tool.id, ParentToolCallID: tool.parent, Kind: proto.KindExecute, Title: tool.id, Status: tool.status,
+		})
+	}
+	// j1's child spawned a grandchild that outlives it.
+	apply(proto.JobStarted, proto.JobPayload{JobID: "j3", ToolCallID: "spawn3", ParentJobID: "j1", TaskType: "subagent"})
+	apply(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: "done1", Status: proto.StatusCompleted})
+	apply(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn})
+	apply(proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobStopped})
+
+	for id, want := range map[string]string{
+		"c1": proto.StatusCancelled, "run1": proto.StatusCancelled, "wait1": proto.StatusCancelled,
+		"done1": proto.StatusCompleted, "other": proto.StatusInProgress, "spawn3": proto.StatusInProgress,
+	} {
+		if it, _ := s.ItemByID(id); it.Status != want {
+			t.Fatalf("%s after its job stopped = %q, want %q", id, it.Status, want)
+		}
+	}
+
+	apply(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: "run1", ParentToolCallID: "c1", Status: proto.StatusCompleted})
+	if it, _ := s.ItemByID("run1"); it.Status != proto.StatusCompleted {
+		t.Fatalf("late completion = %q, want completed", it.Status)
+	}
+}
+
+// A finished job reported running again was reopened: its finish time clears
+// so its elapsed clock runs, and the next finish stamps it afresh. Mirrored by
+// web/src/apply.test.ts.
+func TestReopenedJobClearsFinishedAt(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.JobStarted, proto.JobPayload{JobID: "j1", TaskType: "subagent"}))
+	s.Apply(event(t, 2, proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobCompleted}))
+	if got := s.job("j1").FinishedAt; got != 2000 {
+		t.Fatalf("finishedAt after finish = %d, want 2000", got)
+	}
+
+	s.Apply(event(t, 3, proto.JobUpdated, proto.JobPayload{JobID: "j1", Status: proto.JobRunning}))
+	if j := s.job("j1"); j.FinishedAt != 0 || j.Status != proto.JobRunning {
+		t.Fatalf("job after reopen = %+v, want running with no finish", j)
+	}
+
+	// An update that sets no status leaves a finished job finished.
+	s.Apply(event(t, 4, proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobCompleted}))
+	s.Apply(event(t, 5, proto.JobUpdated, proto.JobPayload{JobID: "j1", Activity: "done"}))
+	if j := s.job("j1"); j.FinishedAt != 4000 || j.Status != proto.JobCompleted {
+		t.Fatalf("job after second finish = %+v, want completed at 4000", j)
+	}
+}
+
 // A live shell alone is not work anyone waits on — a dev server started from
 // the thread runs for as long as it likes — so once the turn is over the thread
 // is the user's again. A subagent or a monitor still holds it in background.
@@ -285,11 +434,12 @@ func TestInjectedPromptJoinsTheTurn(t *testing.T) {
 	s := New("s1")
 	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
 	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Title: "ls"}))
-	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "also this", Images: []proto.PromptImage{{ID: "img"}}, Sent: true}))
+	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "also this", Images: []proto.PromptImage{{ID: "img"}}}))
+	s.Apply(event(t, 4, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
 	if len(s.Queued) != 1 || !s.Queued[0].Sent {
 		t.Fatalf("queued = %+v", s.Queued)
 	}
-	s.Apply(event(t, 4, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
+	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
 	if len(s.Queued) != 0 {
 		t.Fatalf("queue after injection = %+v", s.Queued)
 	}
@@ -302,9 +452,31 @@ func TestInjectedPromptJoinsTheTurn(t *testing.T) {
 	}
 	// Injecting something not in the queue is not an event.
 	before := len(s.Items)
-	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "nope", TurnID: "t1"}))
+	s.Apply(event(t, 6, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "nope", TurnID: "t1"}))
 	if len(s.Items) != before {
 		t.Fatalf("unknown injection added an item")
+	}
+}
+
+// TestSentMarksOnlyTheQueuedPrompt: prompt.sent marks the one entry it names.
+// The harness can read a prompt before its acknowledgement is recorded, so a
+// prompt.sent for an entry that already left the queue changes nothing.
+func TestSentMarksOnlyTheQueuedPrompt(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "one"}))
+	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "two"}))
+	if s.Queued[0].Sent || s.Queued[1].Sent {
+		t.Fatalf("queued before any hand-over = %+v", s.Queued)
+	}
+	s.Apply(event(t, 4, proto.PromptSent, proto.PromptSentPayload{QueueID: "q2"}))
+	if s.Queued[0].Sent || !s.Queued[1].Sent {
+		t.Fatalf("queued after q2 was sent = %+v", s.Queued)
+	}
+	s.Apply(event(t, 5, proto.PromptInjected, proto.PromptInjectedPayload{QueueID: "q1", TurnID: "t1"}))
+	s.Apply(event(t, 6, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
+	if len(s.Queued) != 1 || s.Queued[0].QueueID != "q2" {
+		t.Fatalf("a late prompt.sent brought an entry back: %+v", s.Queued)
 	}
 }
 
@@ -313,8 +485,9 @@ func TestInjectedPromptJoinsTheTurn(t *testing.T) {
 // images, and the title comes from the prompt as usual.
 func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
 	s := New("s1")
-	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "next", Images: []proto.PromptImage{{ID: "img"}}, Sent: true}))
-	s.Apply(event(t, 2, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", QueueID: "q1"}))
+	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "next", Images: []proto.PromptImage{{ID: "img"}}}))
+	s.Apply(event(t, 2, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
+	s.Apply(event(t, 3, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", QueueID: "q1"}))
 	if len(s.Queued) != 0 || len(s.Turns) != 1 {
 		t.Fatalf("queued=%+v turns=%+v", s.Queued, s.Turns)
 	}
@@ -365,5 +538,292 @@ func TestShowingAPathAgainRevisesOneArtefact(t *testing.T) {
 	show(4, 30, proto.ArtefactFromAgent)
 	if got, _ := c.ArtefactByID("a1"); got.Size != 20 {
 		t.Fatalf("clone shares artefacts: %+v", got)
+	}
+}
+
+func plans(s *State) []Item {
+	var out []Item
+	for _, it := range s.Items {
+		if it.Kind == ItemPlan {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func steps(texts ...string) []proto.PlanStep {
+	out := make([]proto.PlanStep, len(texts))
+	for i, t := range texts {
+		out[i] = proto.PlanStep{Text: t, Status: proto.PlanPending}
+	}
+	return out
+}
+
+// A codex plan is the turn's: every update within the turn revises one item
+// in place, wholesale, and the next turn's plan is a second item that leaves
+// the first alone. Mirrored by web/src/apply.test.ts.
+func TestCodexPlanRevisesOneItemPerTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PlanUpdated, proto.PlanUpdatedPayload{
+		TurnID: "t1", Explanation: "first cut", Steps: steps("read", "write"),
+	}))
+	s.Apply(event(t, 3, proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Title: "ls"}))
+	revised := steps("read", "write", "test")
+	revised[0].Status = proto.PlanCompleted
+	revised[1].Status = proto.PlanRunning
+	s.Apply(event(t, 4, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Steps: revised}))
+
+	ps := plans(s)
+	if len(ps) != 1 {
+		t.Fatalf("plan items = %+v, want one", ps)
+	}
+	p := ps[0]
+	if p.ID != "turn-plan:t1" || p.TurnID != "t1" || len(p.Steps) != 3 || p.Steps[1].Status != proto.PlanRunning {
+		t.Fatalf("plan item = %+v", p)
+	}
+	if p.Explanation != "first cut" {
+		t.Fatalf("explanation = %q, want kept: codex sends it on the first update only", p.Explanation)
+	}
+	if p.ReceivedAt != 2000 {
+		t.Fatalf("receivedAt = %d, want the first update's 2000", p.ReceivedAt)
+	}
+	if s.Items[1].ID != "turn-plan:t1" {
+		t.Fatalf("plan moved from where it first appeared: items = %+v", s.Items)
+	}
+
+	s.Apply(event(t, 5, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	s.Apply(event(t, 6, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "more"}))
+	s.Apply(event(t, 7, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t2", Explanation: "again", Steps: steps("ship")}))
+
+	ps = plans(s)
+	if len(ps) != 2 || ps[1].ID != "turn-plan:t2" || ps[1].Explanation != "again" || len(ps[1].Steps) != 1 {
+		t.Fatalf("plan items after second turn = %+v", ps)
+	}
+	if len(ps[0].Steps) != 3 || ps[0].Superseded || ps[0].Steps[0].Status != proto.PlanCompleted {
+		t.Fatalf("first turn's plan changed: %+v", ps[0])
+	}
+}
+
+// Each TodoWrite call is a list of its own; a new one marks every earlier
+// TodoWrite list superseded, and never touches a codex turn plan. Re-sending
+// the same call updates it without superseding anything. Mirrored by
+// web/src/apply.test.ts.
+func TestTodoWriteListsSupersedeEachOther(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Steps: steps("codex")}))
+	s.Apply(event(t, 3, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c1", Steps: steps("a")}))
+	s.Apply(event(t, 4, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c2", Steps: steps("a", "b")}))
+
+	ps := plans(s)
+	if len(ps) != 3 || ps[1].ID != "todo:c1" || ps[2].ID != "todo:c2" {
+		t.Fatalf("plan items = %+v", ps)
+	}
+	if ps[0].Superseded || !ps[1].Superseded || ps[2].Superseded {
+		t.Fatalf("superseded = %v/%v/%v, want false/true/false", ps[0].Superseded, ps[1].Superseded, ps[2].Superseded)
+	}
+
+	// Updating the newest list again is not a new list.
+	s.Apply(event(t, 5, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c2", Steps: steps("a", "b", "c")}))
+	ps = plans(s)
+	if len(ps) != 3 || ps[2].Superseded || len(ps[2].Steps) != 3 {
+		t.Fatalf("after re-send: %+v", ps)
+	}
+
+	// A later codex plan neither supersedes nor is superseded.
+	s.Apply(event(t, 6, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t2", Steps: steps("codex2")}))
+	s.Apply(event(t, 7, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t2", ToolCallID: "c3", Steps: steps("z")}))
+	for _, p := range plans(s) {
+		want := p.ID == "todo:c1" || p.ID == "todo:c2"
+		if p.Superseded != want {
+			t.Fatalf("%s superseded = %v, want %v", p.ID, p.Superseded, want)
+		}
+	}
+}
+
+// Superseding must work on a state that came from a snapshot or a clone,
+// whose item index is not yet built, and replaying the log must land the same
+// state as folding it live.
+func TestPlanItemsReplay(t *testing.T) {
+	evs := []proto.Event{
+		event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}),
+		event(t, 2, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c1", Steps: steps("a")}),
+		event(t, 3, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c1", Steps: steps("a", "b")}),
+		event(t, 4, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Explanation: "why", Steps: steps("x")}),
+	}
+	live := New("s1")
+	for _, ev := range evs {
+		live.Apply(ev)
+	}
+
+	resumed := New("s1")
+	resumed.Apply(evs[0])
+	resumed.Apply(evs[1])
+	resumed = resumed.Clone() // drops the item index, as a loaded snapshot has none
+	for _, ev := range evs[2:] {
+		resumed.Apply(ev)
+	}
+
+	a, _ := json.Marshal(live)
+	b, _ := json.Marshal(resumed)
+	if string(a) != string(b) {
+		t.Fatalf("resumed state differs:\nlive:    %s\nresumed: %s", a, b)
+	}
+	// Re-sending c1 after the resume is an update, not a new list: it must
+	// not supersede itself.
+	if resumed.Items[1].Superseded || len(resumed.Items[1].Steps) != 2 || resumed.Items[2].Explanation != "why" {
+		t.Fatalf("items = %+v", resumed.Items)
+	}
+}
+
+// A clone's plan steps are its own: the actor revising a plan in place must
+// not reach into a copy already handed out.
+func TestCloneDoesNotAliasPlanSteps(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Steps: steps("a")}))
+	c := s.Clone()
+	s.Items[0].Steps[0].Status = proto.PlanCompleted
+	if c.Items[0].Steps[0].Status != proto.PlanPending {
+		t.Fatalf("clone shares steps: %+v", c.Items[0].Steps)
+	}
+}
+
+// TestUnanchoredPlanIsDropped: a plan.updated logged in the old shape names
+// no turn and no call, so replaying it must not grow a blank row.
+func TestUnanchoredPlanIsDropped(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PlanUpdated, json.RawMessage(`{"entries":[{"content":"a","status":"pending"}]}`)))
+	if ps := plans(s); len(ps) != 0 {
+		t.Fatalf("plan items = %+v, want none", ps)
+	}
+}
+
+// A finished turn takes the requests it was blocked on with it: a harness
+// that stopped waiting must not leave a card up, or the thread waiting on the
+// user. Requests of other turns, untagged ones and cards stay. Mirrored by
+// web/src/apply.test.ts.
+func TestTurnFinishedSettlesItsRequests(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p1", TurnID: "t1", Title: "rm -rf"}))
+	s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-other", TurnID: "t0", Title: "ls"}))
+	s.Apply(event(t, 4, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-untagged", Title: "cat"}))
+	s.Apply(event(t, 5, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", TurnID: "t1", Prompt: "which?"}))
+	s.Apply(event(t, 6, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "card1", TurnID: "t1", Card: json.RawMessage(`{"kind":"mcp"}`)}))
+	if got := s.Attention(); got != AttentionNeedsPermission {
+		t.Fatalf("attention before stop = %q, want %q", got, AttentionNeedsPermission)
+	}
+
+	s.Apply(event(t, 7, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+
+	var perms []string
+	for _, p := range s.Pending {
+		perms = append(perms, p.RequestID)
+	}
+	if len(perms) != 2 || perms[0] != "p-other" || perms[1] != "p-untagged" {
+		t.Fatalf("pending after finish = %v, want [p-other p-untagged]", perms)
+	}
+	if len(s.Elicitations) != 1 || s.Elicitations[0].RequestID != "card1" {
+		t.Fatalf("elicitations after finish = %+v, want only the card", s.Elicitations)
+	}
+}
+
+func TestTurnFinishedNamingNoTurnSettlesNothing(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-untagged", Title: "cat"}))
+	s.Apply(event(t, 3, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q-untagged", Prompt: "which?"}))
+
+	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{StopReason: proto.StopCancelled}))
+
+	if len(s.Pending) != 1 || len(s.Elicitations) != 1 {
+		t.Fatalf("after a finish naming no turn: pending %+v, elicitations %+v; want both kept", s.Pending, s.Elicitations)
+	}
+}
+
+// A limit holds the queue until another turn starts, and only the newest
+// turn counts: an older limit the thread has moved past holds nothing.
+// The limit was the old account's, and a prompt queued after it was sent by
+// hand: neither waits on it.
+func TestQueueHoldSparesAnotherAccountAndLaterPrompts(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "before"}))
+	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopError, Failure: proto.FailureLimit}))
+	s.Apply(event(t, 4, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "by hand"}))
+	if !s.HeldByLimit(s.Queued[0]) {
+		t.Fatal("a prompt queued before the limit is not held")
+	}
+	if s.HeldByLimit(s.Queued[1]) {
+		t.Fatal("a prompt queued after the limit is held")
+	}
+	s.Apply(event(t, 5, proto.ThreadAccountChanged, proto.ThreadAccountChangedPayload{From: "a", To: "b"}))
+	if s.QueueHeld() || s.HeldByLimit(s.Queued[0]) {
+		t.Fatal("still held on another account")
+	}
+}
+
+func TestQueueHeldFollowsTheLastTurn(t *testing.T) {
+	s := New("s1")
+	if s.QueueHeld() {
+		t.Fatal("a thread with no turns is held")
+	}
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopError, Failure: proto.FailureLimit}))
+	if !s.QueueHeld() {
+		t.Fatal("not held after a limit")
+	}
+	s.Apply(event(t, 3, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "again"}))
+	if s.QueueHeld() {
+		t.Fatal("still held while the next turn runs")
+	}
+	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopError, Failure: proto.FailureAuth}))
+	if s.QueueHeld() {
+		t.Fatal("held after a failure that is not a limit")
+	}
+}
+
+// Jobs are found by id through an index. Updates land on the right job among
+// many, a snapshot round trip rebuilds the index so an update merges rather
+// than adding a second job, and a clone's index is its own.
+func TestJobsFoundByIDAcrossSnapshotAndClone(t *testing.T) {
+	s := New("s1")
+	seq := int64(0)
+	next := func() int64 { seq++; return seq }
+	const n = 500
+	for i := range n {
+		s.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "j" + strconv.Itoa(i), TaskType: "local_bash"}))
+	}
+	for i := range n {
+		s.Apply(event(t, next(), proto.JobUpdated, proto.JobPayload{JobID: "j" + strconv.Itoa(i), Usage: &proto.JobUsage{ToolUses: int64(i + 1)}}))
+	}
+	if len(s.Jobs) != n {
+		t.Fatalf("jobs = %d, want %d", len(s.Jobs), n)
+	}
+	for i := range n {
+		if j := s.job("j" + strconv.Itoa(i)); j == nil || j.Usage.ToolUses != int64(i+1) {
+			t.Fatalf("job j%d = %+v", i, j)
+		}
+	}
+
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back.Apply(event(t, next(), proto.JobUpdated, proto.JobPayload{JobID: "j7", Activity: "Read"}))
+	back.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "child", ParentJobID: "j7", TaskType: "local_bash"}))
+	if len(back.Jobs) != n+1 || back.job("j7").Activity != "Read" || back.job("child").Depth != 1 {
+		t.Fatalf("after snapshot: jobs=%d j7=%+v child=%+v", len(back.Jobs), back.job("j7"), back.job("child"))
+	}
+
+	c := back.Clone()
+	c.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "only-in-clone", TaskType: "local_bash"}))
+	if c.job("only-in-clone") == nil || back.job("only-in-clone") != nil {
+		t.Fatal("clone shares its job index with the original")
 	}
 }

@@ -2,13 +2,12 @@
 // canonical event model.
 //
 // Pi's RPC mode is typed commands with an optional echoed id, not JSON-RPC, so
-// this package carries its own line framing instead of internal/jsonrpc. The
-// TUI is never scraped. Verified against @earendil-works/pi-coding-agent
-// 0.84.4.
+// this package carries its own message framing and takes only the line reader
+// from internal/jsonrpc. The TUI is never scraped. Verified against
+// @earendil-works/pi-coding-agent 0.84.4.
 package piapp
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -26,6 +25,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/jsonrpc"
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -237,16 +237,17 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	s := &session{
 		host:    host,
 		cmd:     cmd,
+		proc:    adapter.WatchProcess(cmd, stderr, host.Logf, "pi"),
 		tree:    tree,
 		stdin:   stdin,
 		events:  make(chan proto.Emission, 256),
 		done:    make(chan struct{}),
 		rpcDone: make(chan struct{}),
 		pending: map[string]chan rpcResponse{},
+		dialogs: map[string]dialog{},
 	}
 
 	go s.readLoop(stdout)
-	go s.drainStderr(stderr)
 	go s.watchExit()
 
 	// get_state is the handshake: it proves the process actually reached RPC
@@ -288,6 +289,7 @@ type rpcResponse struct {
 type session struct {
 	host  adapter.HostServices
 	cmd   *exec.Cmd
+	proc  *adapter.Process
 	tree  procgroup.Group
 	stdin io.WriteCloser
 
@@ -295,8 +297,9 @@ type session struct {
 	done   chan struct{}
 	// rpcDone closes when the read loop ends — the process is gone or its
 	// stdout broke — so a call waiting for a response that will never come
-	// unblocks.
+	// unblocks. readErr is what broke it, if anything; set before the close.
 	rpcDone chan struct{}
+	readErr error
 	closed  sync.Once
 
 	// emitMu orders every send on events before the close in watchExit. The
@@ -310,6 +313,10 @@ type session struct {
 
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
+	// dialogs holds every extension dialog still waiting on a human, keyed
+	// by pi's request id. Cancelling one withdraws its card and answers pi
+	// cancelled; each removes itself when its Elicit returns.
+	dialogs map[string]dialog
 	turnID  string
 	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
@@ -321,14 +328,14 @@ type session struct {
 	// become the turn's stop reason.
 	lastStop string
 	lastErr  string
+	// aborted is the turn Cancel aborted. Pi reports a run aborted mid-tool
+	// (an open extension dialog, say) as an error, and the user pressed Stop.
+	aborted string
 	// Running totals for usage.updated. Pi reports usage per assistant
 	// message; the meter wants the session's cumulative spend.
 	totIn, totOut, totCacheR, totCacheW int64
 	totCost                             float64
 	contextWindow                       int64
-	// stderrTail keeps the last few stderr lines so an unexplained exit can at
-	// least quote the harness's dying words.
-	stderrTail []string
 }
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
@@ -349,25 +356,15 @@ func (s *session) send(cmd map[string]any) error {
 // call sends a command with a correlation id and waits for its response,
 // decoding data into out when non-nil.
 func (s *session) call(ctx context.Context, cmd map[string]any, out any) error {
-	id := uuid.NewString()
-	cmd["id"] = id
-	ch := make(chan rpcResponse, 1)
-	s.mu.Lock()
-	s.pending[id] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.pending, id)
-		s.mu.Unlock()
-	}()
-
-	if err := s.send(cmd); err != nil {
+	ch, release, err := s.request(cmd)
+	if err != nil {
 		return err
 	}
+	defer release()
 	select {
 	case res := <-ch:
-		if !res.Success {
-			return fmt.Errorf("%s: %s", res.Command, res.Error)
+		if err := res.err(); err != nil {
+			return err
 		}
 		if out != nil && len(res.Data) > 0 {
 			return json.Unmarshal(res.Data, out)
@@ -376,43 +373,84 @@ func (s *session) call(ctx context.Context, cmd map[string]any, out any) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-s.rpcDone:
-		return errors.New("pi exited before responding")
+		return s.died(errors.New("pi exited before responding"))
 	}
 }
 
+// request is the sending half of call: it registers a correlation id, writes
+// the command, and hands back the channel its response will arrive on. The
+// caller must call release once it stops waiting, or the pending entry leaks.
+// A write failure is returned here, so a dead pipe is still reported
+// synchronously even when the response is awaited elsewhere.
+func (s *session) request(cmd map[string]any) (<-chan rpcResponse, func(), error) {
+	id := uuid.NewString()
+	cmd["id"] = id
+	ch := make(chan rpcResponse, 1)
+	s.mu.Lock()
+	s.pending[id] = ch
+	s.mu.Unlock()
+	release := func() {
+		s.mu.Lock()
+		delete(s.pending, id)
+		s.mu.Unlock()
+	}
+	if err := s.send(cmd); err != nil {
+		release()
+		return nil, nil, s.died(err)
+	}
+	return ch, release, nil
+}
+
+// err is the response's refusal as an error, or nil when it succeeded.
+func (r rpcResponse) err() error {
+	if r.Success {
+		return nil
+	}
+	return fmt.Errorf("%s: %s", r.Command, r.Error)
+}
+
+// died swaps a command's error for the reason pi is gone, when it is.
+func (s *session) died(err error) error {
+	return s.proc.Explain(err, s.rpcDone, func() error { return s.readErr })
+}
+
+// maxLine is the longest event readLoop takes. A message_end can carry a
+// whole assistant message and a tool result a file, so it is generous; what
+// goes over it in practice is agent_end and turn_end, which repeat every
+// message of the run, screenshots and all, and which nothing here reads.
+const maxLine = 16 << 20
+
 func (s *session) readLoop(r io.Reader) {
 	defer close(s.rpcDone)
-	sc := bufio.NewScanner(r)
-	// A single message_end can carry a whole assistant message, and a tool
-	// result can carry a file; the default 64K token limit is far too small.
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var head struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-		}
-		if err := json.Unmarshal(line, &head); err != nil {
-			continue
-		}
-		if head.Type == "response" {
-			var res rpcResponse
-			if err := json.Unmarshal(line, &res); err != nil {
-				continue
-			}
-			s.mu.Lock()
-			ch := s.pending[head.ID]
-			s.mu.Unlock()
-			if ch != nil {
-				ch <- res
-			}
-			continue
-		}
-		s.handleEvent(head.Type, append([]byte(nil), line...))
+	s.readErr = jsonrpc.ReadLines(r, maxLine, s.handleLine, func(head []byte, size int) {
+		s.host.Logf("pi: skipped a %d-byte event over the %d-byte limit: %s", size, maxLine, jsonrpc.Brief(head))
+	})
+}
+
+func (s *session) handleLine(line []byte) {
+	var head struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
 	}
+	if err := json.Unmarshal(line, &head); err != nil {
+		s.host.Logf("pi: skipped a line that is not JSON: %s", jsonrpc.Brief(line))
+		return
+	}
+	if head.Type == "response" {
+		var res rpcResponse
+		if err := json.Unmarshal(line, &res); err != nil {
+			s.host.Logf("pi: skipped a response that does not parse: %v: %s", err, jsonrpc.Brief(line))
+			return
+		}
+		s.mu.Lock()
+		ch := s.pending[head.ID]
+		s.mu.Unlock()
+		if ch != nil {
+			ch <- res
+		}
+		return
+	}
+	s.handleEvent(head.Type, append([]byte(nil), line...))
 }
 
 func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
@@ -451,14 +489,58 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	if len(images) > 0 {
 		cmd["images"] = images
 	}
-	if err := s.call(ctx, cmd, nil); err != nil {
-		// The prompt was refused, so no agent_settled will ever clear this
-		// turn id; leaving it set would make the collision guard above reject
-		// every later prompt forever.
+	// Pi acks a prompt only after its preflight: extension commands and input
+	// handlers, the auth check, and possibly a full context compaction. That
+	// can take minutes, and an extension that opens a dialog during preflight
+	// needs the thread actor to answer it, so the actor calling Prompt must not
+	// wait for the ack. Only the write happens here; the ack is awaited on its
+	// own goroutine and a refusal closes the turn there.
+	ack, release, err := s.request(cmd)
+	if err != nil {
 		s.clearTurn(in.TurnID)
 		return s.classify(err)
 	}
+	go s.awaitPromptAck(in.TurnID, ack, release)
 	return nil
+}
+
+// awaitPromptAck waits out pi's prompt preflight and, if pi refuses the prompt,
+// finishes the turn with the refusal. It is bounded by the session rather than
+// the caller's context: the caller has long since returned. If pi exits first,
+// watchExit closes the turn instead.
+func (s *session) awaitPromptAck(turnID string, ack <-chan rpcResponse, release func()) {
+	defer release()
+	var res rpcResponse
+	select {
+	case res = <-ack:
+	case <-s.rpcDone:
+		return
+	case <-s.done:
+		return
+	}
+	refusal := res.err()
+	if refusal == nil {
+		return
+	}
+	// The prompt was refused, so no agent_settled will ever clear this turn
+	// id; leaving it set would make the collision guard in Prompt reject every
+	// later prompt forever. But only a turn that is still ours: if it already
+	// settled (an abort during preflight) or another turn has since opened,
+	// closing it here would finish work this prompt never started.
+	s.mu.Lock()
+	ours := s.turnID == turnID
+	if ours {
+		s.turnID = ""
+	}
+	s.mu.Unlock()
+	if !ours {
+		return
+	}
+	refusal = s.classify(refusal)
+	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: turnID, StopReason: proto.StopError, Error: refusal.Error(),
+		Failure: adapter.FailureOf(refusal),
+	}))
 }
 
 // clearTurn resets the active turn id if it is still ours. Guarded because the
@@ -474,9 +556,12 @@ func (s *session) clearTurn(turnID string) {
 // Cancel aborts the in-flight run. Pi's abort succeeds even when idle, so
 // there is no coalescing to do, but skipping the call when no turn is open
 // keeps a stray stop press from aborting a run that starts a moment later.
+// Open extension dialogs are withdrawn with it: stop means stop.
 func (s *session) Cancel(ctx context.Context) error {
+	s.cancelDialogs()
 	s.mu.Lock()
 	idle := s.turnID == ""
+	s.aborted = s.turnID
 	s.mu.Unlock()
 	if idle {
 		return nil
@@ -514,54 +599,36 @@ func (s *session) SetEffort(ctx context.Context, effort string) error {
 
 func (s *session) Close() error {
 	s.closed.Do(func() {
+		s.cancelDialogs()
 		close(s.done)
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
 		s.tree.Kill()
-		_ = s.cmd.Wait()
+		_ = s.proc.Wait()
 	})
 	return nil
 }
 
 func (s *session) watchExit() {
 	<-s.rpcDone
+	// Nobody is left to read a dialog's answer, and the read loop has
+	// registered its last one, so this catches them all.
+	s.cancelDialogs()
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
-	tail := strings.Join(s.stderrTail, "\n")
 	s.mu.Unlock()
 	if turn != "" {
-		msg := "harness exited"
-		if tail != "" {
-			msg = "harness exited: " + tail
-		}
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: turn, StopReason: proto.StopError, Error: msg,
-			Failure: failureKind(tail),
+			TurnID: turn, StopReason: proto.StopError, Error: s.proc.ExitReason(s.readErr),
+			Failure: failureKind(s.proc.Tail()),
 		}))
 	}
 	s.emitMu.Lock()
 	s.eventsClosed = true
 	close(s.events)
 	s.emitMu.Unlock()
-}
-
-func (s *session) drainStderr(r io.ReadCloser) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		s.host.Logf("pi stderr: %s", line)
-		s.mu.Lock()
-		s.stderrTail = append(s.stderrTail, line)
-		if len(s.stderrTail) > 5 {
-			s.stderrTail = s.stderrTail[1:]
-		}
-		s.mu.Unlock()
-	}
 }
 
 func (s *session) emit(e proto.Emission) {
@@ -665,8 +732,7 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 
 	case "tool_execution_update":
 		// Streamed partial results are dropped; tool_execution_end carries the
-		// aggregate, which is what the timeline renders. Same choice as codex's
-		// outputDelta.
+		// aggregate, which is what the timeline renders.
 
 	case "tool_execution_end":
 		var p struct {
@@ -839,15 +905,23 @@ func (s *session) finishTurn() {
 	s.mu.Lock()
 	turn := s.turnID
 	stop, errMsg := s.lastStop, s.lastErr
+	aborted := turn != "" && s.aborted == turn
 	s.turnID = ""
-	s.lastStop, s.lastErr = "", ""
+	s.lastStop, s.lastErr, s.aborted = "", "", ""
 	s.mu.Unlock()
 	// A settle with no open turn is a straggler (an abort raced the settle);
 	// emitting an empty turn id would confuse every projection downstream.
 	if turn == "" {
 		return
 	}
+	// Pi is done with the turn, so it is done with its dialogs, whether or
+	// not it said so: one raised as Stop was pressed lands after Cancel's
+	// sweep, and nothing else would take it down.
+	s.cancelTurnDialogs(turn)
 
+	if aborted && stop == "error" {
+		stop = "aborted"
+	}
 	reason, failure := proto.StopEndTurn, ""
 	switch stop {
 	case "aborted":
@@ -873,16 +947,7 @@ func (s *session) finishTurn() {
 // wedges the extension. Fire-and-forget methods (notify, setStatus, …) expect
 // no response.
 func (s *session) handleUIRequest(raw json.RawMessage) {
-	var p struct {
-		ID          string   `json:"id"`
-		Method      string   `json:"method"`
-		Title       string   `json:"title"`
-		Message     string   `json:"message"`
-		Placeholder string   `json:"placeholder"`
-		Prefill     string   `json:"prefill"`
-		Options     []string `json:"options"`
-		NotifyType  string   `json:"notifyType"`
-	}
+	var p uiRequest
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
@@ -896,30 +961,95 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 		return
 	case "select", "confirm", "input", "editor":
 		// Handled below. Elicit blocks on a human, so it must not run on the
-		// read loop: a dialog would freeze every event until answered.
-		go s.elicitUIRequest(p.ID, p.Method, p.Title, p.Message, p.Placeholder, p.Prefill, p.Options)
+		// read loop: a dialog would freeze every event until answered. It is
+		// registered here, not in the goroutine, so a Cancel, exit or turn
+		// end that follows this event always finds it, under the turn that
+		// was open when pi raised it.
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if p.Timeout > 0 {
+			ctx, cancel = context.WithTimeout(context.Background(), time.Duration(p.Timeout*float64(time.Millisecond)))
+		} else {
+			ctx, cancel = context.WithCancel(context.Background())
+		}
+		s.mu.Lock()
+		turn := s.turnID
+		s.dialogs[p.ID] = dialog{turn: turn, cancel: cancel}
+		s.mu.Unlock()
+		go func() {
+			defer func() {
+				cancel()
+				s.mu.Lock()
+				delete(s.dialogs, p.ID)
+				s.mu.Unlock()
+			}()
+			s.elicitUIRequest(ctx, turn, p)
+		}()
 	}
 }
 
-func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefill string, options []string) {
-	prompt := title
-	if message != "" {
-		prompt = strings.TrimSpace(title + "\n" + message)
+// uiRequest is pi's extension_ui_request.
+type uiRequest struct {
+	ID          string   `json:"id"`
+	Method      string   `json:"method"`
+	Title       string   `json:"title"`
+	Message     string   `json:"message"`
+	Placeholder string   `json:"placeholder"`
+	Prefill     string   `json:"prefill"`
+	Options     []string `json:"options"`
+	NotifyType  string   `json:"notifyType"`
+	// Timeout is in milliseconds. On expiry pi resolves the dialog to its
+	// default by itself and tells us nothing, so the card must go too.
+	Timeout float64 `json:"timeout"`
+}
+
+// dialog is an extension dialog waiting on a human, and the turn it was
+// raised in; empty when pi raised it outside one.
+type dialog struct {
+	turn   string
+	cancel context.CancelFunc
+}
+
+// cancelDialogs withdraws every open extension dialog. The host drops each
+// card when its ctx ends, and elicitUIRequest answers pi cancelled.
+func (s *session) cancelDialogs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.dialogs {
+		d.cancel()
+	}
+}
+
+// cancelTurnDialogs withdraws the open extension dialogs raised during turn.
+func (s *session) cancelTurnDialogs(turn string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.dialogs {
+		if d.turn == turn {
+			d.cancel()
+		}
+	}
+}
+
+func (s *session) elicitUIRequest(ctx context.Context, turn string, p uiRequest) {
+	prompt := p.Title
+	if p.Message != "" {
+		prompt = strings.TrimSpace(p.Title + "\n" + p.Message)
 	}
 
-	field := map[string]any{"type": "string", "title": title}
-	switch method {
+	field := map[string]any{"type": "string", "title": p.Title}
+	switch p.Method {
 	case "select":
-		field["enum"] = options
+		field["enum"] = p.Options
 	case "confirm":
 		field["enum"] = []string{"Yes", "No"}
 	case "input":
-		if placeholder != "" {
-			field["description"] = placeholder
+		if p.Placeholder != "" {
+			field["description"] = p.Placeholder
 		}
 	case "editor":
-		if prefill != "" {
-			field["default"] = prefill
+		if p.Prefill != "" {
+			field["default"] = p.Prefill
 		}
 	}
 	schema, _ := json.Marshal(map[string]any{
@@ -930,12 +1060,12 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 
 	respond := func(body map[string]any) {
 		body["type"] = "extension_ui_response"
-		body["id"] = id
+		body["id"] = p.ID
 		_ = s.send(body)
 	}
 
-	result, err := s.host.Elicit(context.Background(), adapter.ElicitationRequest{
-		TurnID: s.currentTurn(), Prompt: prompt, Schema: schema,
+	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
+		TurnID: turn, Prompt: prompt, Schema: schema,
 	})
 	if err != nil || result.Action != "accept" {
 		respond(map[string]any{"cancelled": true})
@@ -945,7 +1075,7 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 		Value string `json:"value"`
 	}
 	_ = json.Unmarshal(result.Value, &values)
-	if method == "confirm" {
+	if p.Method == "confirm" {
 		respond(map[string]any{"confirmed": values.Value == "Yes"})
 		return
 	}

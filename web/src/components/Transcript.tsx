@@ -1,17 +1,23 @@
 import { ChevronDownIcon } from "lucide-react";
-import { useLayoutEffect } from "react";
+import { lazy, Suspense, useLayoutEffect, type ComponentProps, type ComponentType } from "react";
 
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
 import { cn } from "~/lib/utils";
-import type { ComposerItem, Job, PullRequest, ThreadState, Turn } from "~/protocol";
+import type {
+  ComposerItem,
+  Job,
+  PullRequest,
+  ScheduledPrompt,
+  ThreadState,
+  Turn,
+} from "~/protocol";
 import { useAutoScroll } from "~/useAutoScroll";
 
 import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
-import { InterruptedCard } from "./transcript/InterruptedCard";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedCard } from "./transcript/QueuedCard";
 import { TranscriptRow } from "./transcript/TranscriptRow";
@@ -20,6 +26,23 @@ import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";
 import { useTranscriptModel } from "./transcript/useTranscriptModel";
 import { WorkspaceCard } from "./transcript/WorkspaceCard";
+
+// Only a turn that died shows it, which most loads of a thread never see, so
+// it loads on first use and stays out of the initial bundle. It is often
+// fetched just after a reconnect; with no error boundary above it, a fetch
+// that fails on a bad link would take the app down, so it says to reload.
+type Card = ComponentType<
+  ComponentProps<typeof import("./transcript/InterruptedCard").InterruptedCard>
+>;
+const CardUnavailable: Card = () => (
+  <p className="text-muted-foreground text-[13px]">This turn stopped. Reload to see why.</p>
+);
+const InterruptedCard = lazy(() =>
+  import("./transcript/InterruptedCard").then(
+    (m): { default: Card } => ({ default: m.InterruptedCard }),
+    () => ({ default: CardUnavailable }),
+  ),
+);
 
 // Room reserved beneath the transcript's tail: the overlay's measured height
 // (`--composer-h`, published by App from a ResizeObserver) plus a headroom band
@@ -71,6 +94,8 @@ type TranscriptProps = {
   /** Moves the thread to another account and re-sends the given turn;
       resolves false when the switch was refused or failed. */
   onSwitchAccount?: (instance: string, turn: Turn) => Promise<boolean>;
+  /** Cancels the continuation the server armed at a usage limit's reset. */
+  onCancelContinuation?: (p: ScheduledPrompt) => Promise<void>;
   onOpenDiff: (path?: string) => void;
   /** The thread's jobs, for the spawn cards to read live status from. */
   jobs?: Job[];
@@ -166,6 +191,8 @@ export function Transcript({
     turnDiffs,
     lastTurnID,
     recoveredTurns,
+    continuation,
+    heldFor,
   } = useTranscriptModel(state);
   usePromptAnchor(scrollerRef, state.threadId, lastPromptID, anchorTo);
 
@@ -252,7 +279,14 @@ export function Transcript({
             )}
 
           {interrupted && (
-            <InterruptedCard turn={interrupted} switchedTo={switchedTo} {...interruptedProps} />
+            <Suspense fallback={null}>
+              <InterruptedCard
+                turn={interrupted}
+                switchedTo={switchedTo}
+                continuation={continuation}
+                {...interruptedProps}
+              />
+            </Suspense>
           )}
 
           {(state.queuedPrompts ?? []).map((q) => (
@@ -261,6 +295,7 @@ export function Transcript({
               queued={q}
               threadId={state.threadId}
               artefacts={artefacts}
+              held={heldFor(q)}
               onDequeue={(id) => onDequeue?.(id)} />
           ))}
 
