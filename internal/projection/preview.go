@@ -1,6 +1,9 @@
 package projection
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -32,6 +35,17 @@ const (
 	// maxToolContent is how many content entries one item keeps. Past it a
 	// tool is streaming, and the log has the rest.
 	maxToolContent = 16
+	// maxToolText is how much text one item's content keeps in all. Each
+	// field is capped on its own, but sixteen capped diffs would still be a
+	// few hundred KB; past this, further entries are dropped.
+	maxToolText = 32 << 10
+	// maxInputText is how much string text one tool input keeps in all. Each
+	// string is capped on its own too, but an input of many middling strings
+	// (an edit list, a batch of files) would get through that whole.
+	maxInputText = 32 << 10
+	// inputKeep is how long a string may be and still be kept whole once an
+	// input's budget is spent: short fields are its names and flags.
+	inputKeep = 64
 )
 
 // capText returns s as a head/tail preview, and whether anything was cut.
@@ -58,9 +72,16 @@ func capText(s string) (string, bool) {
 			tailStart++
 		}
 	}
-	omitted := utf8.RuneCountInString(s[h:tailStart])
-	return s[:h] + "\n\n[… " + strconv.Itoa(omitted) + " characters truncated …]\n\n" + s[tailStart:], true
+	return s[:h] + "\n\n" + truncMarker(s[h:tailStart]) + "\n\n" + s[tailStart:], true
 }
+
+// truncMarker is what stands in for the text omitted, counted in characters.
+func truncMarker(omitted string) string {
+	return "[… " + strconv.Itoa(utf8.RuneCountInString(omitted)) + " characters truncated …]"
+}
+
+// contentText is how much text c holds, as maxToolText counts it.
+func contentText(c proto.ToolContent) int { return len(c.Text) + len(c.Old) + len(c.New) }
 
 // capToolContent caps the free-text fields of one content entry. Path is a
 // name, not output, and is left alone.
@@ -73,17 +94,28 @@ func capToolContent(c proto.ToolContent) (proto.ToolContent, bool) {
 }
 
 // appendToolContent adds a tool update's content to the item, capped, and
-// marks the item truncated if any of it was cut or dropped.
+// marks the item truncated if any of it was cut or dropped. An entry is kept
+// while the entries before it hold less than maxToolText, so what is kept is
+// the same however the content arrived.
 func appendToolContent(it *Item, add []proto.ToolContent) {
 	if room := maxToolContent - len(it.Content); len(add) > room {
 		add = add[:max(room, 0)]
 		it.Truncated = true
 	}
+	used := 0
+	for _, c := range it.Content {
+		used += contentText(c)
+	}
 	for _, c := range add {
+		if used >= maxToolText {
+			it.Truncated = true
+			return
+		}
 		c, cut := capToolContent(c)
 		if cut {
 			it.Truncated = true
 		}
+		used += contentText(c)
 		it.Content = append(it.Content, c)
 	}
 }
@@ -99,13 +131,112 @@ func capItem(it *Item) bool {
 		it.Truncated = true
 		changed = true
 	}
+	used := 0
 	for i := range it.Content {
+		if used >= maxToolText {
+			it.Content = append([]proto.ToolContent(nil), it.Content[:i]...)
+			it.Truncated = true
+			return true
+		}
 		c, cut := capToolContent(it.Content[i])
 		if cut {
 			it.Content[i] = c
 			it.Truncated = true
 			changed = true
 		}
+		used += contentText(it.Content[i])
 	}
 	return changed
+}
+
+// capJSONStrings caps every string in a JSON document with capText: a tool's
+// input is short fields around the odd long one, a file's whole text or a
+// script. Keys are names and are left alone, numbers are carried as written,
+// and keys keep their order. Once maxInputText of string text has been kept,
+// any later string longer than inputKeep is replaced by the marker alone. It
+// reports whether anything was cut; when nothing was, or raw is not valid
+// JSON, raw comes back as it was.
+func capJSONStrings(raw json.RawMessage) (json.RawMessage, bool) {
+	// Decoding never lengthens a string, so a document no longer than the
+	// threshold cannot hold one worth cutting.
+	if len(raw) <= previewHead+previewTail+previewSlack {
+		return raw, false
+	}
+	w := &jsonCapper{dec: json.NewDecoder(bytes.NewReader(raw)), left: maxInputText}
+	w.dec.UseNumber()
+	w.enc = json.NewEncoder(&w.buf)
+	w.enc.SetEscapeHTML(false)
+	if err := w.value(); err != nil || !w.cut {
+		return raw, false
+	}
+	if _, err := w.dec.Token(); err != io.EOF {
+		return raw, false
+	}
+	return json.RawMessage(w.buf.Bytes()), true
+}
+
+// jsonCapper re-emits a JSON document token by token, capping strings on the
+// way through.
+type jsonCapper struct {
+	dec *json.Decoder
+	enc *json.Encoder
+	buf bytes.Buffer
+	cut bool
+	// left is how much string text the document may still keep.
+	left int
+}
+
+func (w *jsonCapper) value() error {
+	tok, err := w.dec.Token()
+	if err != nil {
+		return err
+	}
+	switch v := tok.(type) {
+	case json.Delim:
+		w.buf.WriteByte(byte(v))
+		for first := true; w.dec.More(); first = false {
+			if !first {
+				w.buf.WriteByte(',')
+			}
+			if v == '{' {
+				k, err := w.dec.Token()
+				if err != nil {
+					return err
+				}
+				w.str(k.(string))
+				w.buf.WriteByte(':')
+			}
+			if err := w.value(); err != nil {
+				return err
+			}
+		}
+		end, err := w.dec.Token()
+		if err != nil {
+			return err
+		}
+		w.buf.WriteByte(byte(end.(json.Delim)))
+	case string:
+		s, cut := capText(v)
+		if len(s) > inputKeep && len(s) > w.left {
+			s, cut = truncMarker(v), true
+		} else {
+			w.left -= len(s)
+		}
+		w.cut = w.cut || cut
+		w.str(s)
+	case json.Number:
+		w.buf.WriteString(v.String())
+	case bool:
+		w.buf.WriteString(strconv.FormatBool(v))
+	case nil:
+		w.buf.WriteString("null")
+	}
+	return nil
+}
+
+// str writes s as a JSON string. The encoder ends every value with a newline,
+// which a string in the middle of a document must not have.
+func (w *jsonCapper) str(s string) {
+	_ = w.enc.Encode(s)
+	w.buf.Truncate(w.buf.Len() - 1)
 }

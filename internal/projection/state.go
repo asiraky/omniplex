@@ -176,8 +176,12 @@ type Item struct {
 	// when it is long (see Truncated).
 	Tail string `json:"tail,omitempty"`
 	// Truncated: some of Content was cut to a preview or dropped (see
-	// capText). The event log still has it whole.
+	// capText), or Input was capped on the way to a client. The event log
+	// still has it whole.
 	Truncated bool `json:"truncated,omitempty"`
+	// ChildrenBefore is how many of this item's child items a wire copy left
+	// out (see WireCopy). Zero on the actor's own state.
+	ChildrenBefore int `json:"childrenBefore,omitempty"`
 
 	// notice
 	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
@@ -409,13 +413,16 @@ type State struct {
 
 	Items []Item `json:"items"`
 	// ItemsBefore is how many items were trimmed from the front of Items when
-	// this state was windowed for the wire (see Window). Zero on the actor's
+	// this state was windowed for the wire (see WireCopy). Zero on the actor's
 	// own state and on stored snapshots: only copies sent to a client carry a
 	// window, and the count doubles as the client's cursor for paging older
 	// items back in.
-	ItemsBefore  int                       `json:"itemsBefore,omitempty"`
-	Turns        []Turn                    `json:"turns"`
-	Jobs         []Job                     `json:"jobs"`
+	ItemsBefore int    `json:"itemsBefore,omitempty"`
+	Turns       []Turn `json:"turns"`
+	Jobs        []Job  `json:"jobs"`
+	// JobsBefore is how many jobs a wire copy left out of Jobs (see
+	// WireCopy). Zero on the actor's own state and on stored snapshots.
+	JobsBefore   int                       `json:"jobsBefore,omitempty"`
 	Usage        proto.UsageUpdatedPayload `json:"usage"`
 	Pending      []PendingPermission       `json:"pendingPermissions"`
 	Elicitations []PendingElicitation      `json:"pendingElicitations"`
@@ -615,7 +622,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		if j.ToolCallID != "" {
 			if i, ok := s.itemIndex[j.ToolCallID]; ok {
 				it := &s.Items[i]
-				if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+				if proto.ToolRunning(it.Status) {
 					switch j.Status {
 					case proto.JobFailed:
 						it.settle(proto.StatusFailed)
@@ -631,7 +638,7 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 			for i := range s.Items {
 				it := &s.Items[i]
 				if it.Kind == ItemTool && it.ParentID == j.ToolCallID && !live[it.ID] &&
-					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) {
+					proto.ToolRunning(it.Status) {
 					it.settle(proto.StatusCancelled)
 				}
 			}
@@ -937,7 +944,7 @@ func (s *State) Apply(ev proto.Event) {
 				}
 				if live[it.ID] {
 					it.Tail = ""
-				} else if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+				} else if proto.ToolRunning(it.Status) {
 					it.settle(proto.StatusCancelled)
 				}
 			}
@@ -1335,35 +1342,48 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 // shallow copy would share the item and content slices with the live state,
 // which the actor keeps mutating.
 func (s *State) Clone() *State {
+	out := s.cloneRest()
+	out.Items = make([]Item, len(s.Items))
+	for i, it := range s.Items {
+		out.Items[i] = copyItem(it)
+	}
+	out.Jobs = make([]Job, len(s.Jobs))
+	copy(out.Jobs, s.Jobs)
+	return out
+}
+
+// copyItem deep-copies one item, so the copy shares no bytes with the live
+// state.
+func copyItem(it Item) Item {
+	if len(it.Content) > 0 {
+		it.Content = append([]proto.ToolContent(nil), it.Content...)
+	}
+	if len(it.Input) > 0 {
+		it.Input = append(json.RawMessage(nil), it.Input...)
+	}
+	if len(it.Card) > 0 {
+		it.Card = append(json.RawMessage(nil), it.Card...)
+	}
+	if len(it.Outcome) > 0 {
+		it.Outcome = append(json.RawMessage(nil), it.Outcome...)
+	}
+	if len(it.Steps) > 0 {
+		it.Steps = append([]proto.PlanStep(nil), it.Steps...)
+	}
+	return it
+}
+
+// cloneRest deep-copies everything but Items and Jobs, which Clone copies
+// whole and WireCopy windows.
+func (s *State) cloneRest() *State {
 	out := *s
 	out.itemIndex = nil
 	out.jobIndex = nil
-
-	out.Items = make([]Item, len(s.Items))
-	for i, it := range s.Items {
-		cp := it
-		if len(it.Content) > 0 {
-			cp.Content = append([]proto.ToolContent(nil), it.Content...)
-		}
-		if len(it.Input) > 0 {
-			cp.Input = append(json.RawMessage(nil), it.Input...)
-		}
-		if len(it.Card) > 0 {
-			cp.Card = append(json.RawMessage(nil), it.Card...)
-		}
-		if len(it.Outcome) > 0 {
-			cp.Outcome = append(json.RawMessage(nil), it.Outcome...)
-		}
-		if len(it.Steps) > 0 {
-			cp.Steps = append([]proto.PlanStep(nil), it.Steps...)
-		}
-		out.Items[i] = cp
-	}
+	out.Items = nil
+	out.Jobs = nil
 
 	out.Turns = make([]Turn, len(s.Turns))
 	copy(out.Turns, s.Turns)
-	out.Jobs = make([]Job, len(s.Jobs))
-	copy(out.Jobs, s.Jobs)
 	out.Artefacts = append([]Artefact{}, s.Artefacts...)
 
 	out.Pending = make([]PendingPermission, len(s.Pending))

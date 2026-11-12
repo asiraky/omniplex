@@ -95,15 +95,19 @@ function settle(it: Item, status: Item["status"]): Item {
 
 // The server keeps only a head and tail of each tool output in its projection
 // and serves the rest on demand (GET /api/threads/{id}/items/{itemId}/content).
-// Live events and afterSeq replays still carry the full text, so the reducer
-// caps what it appends the same way, or one long session's tool output would
-// sit in the tab's memory. Mirrors internal/projection. Go measures bytes and
-// this measures UTF-16 units, so the two can cut at slightly different points;
-// that is fine, since a capped preview is shorter than the cap in either unit
-// and the full text is one fetch away.
+// Live events and replays arrive capped too, but the reducer caps what it
+// appends the same way regardless: entries accumulate across updates, and one
+// long session's tool output must not sit in the tab's memory. Mirrors
+// internal/projection. Go measures bytes and this measures UTF-16 units, so
+// the two can cut at slightly different points; that is fine, since a capped
+// preview is shorter than the cap in either unit and the full text is one
+// fetch away.
 export const TOOL_HEAD = 4096;
 export const TOOL_TAIL = 4096;
 export const TOOL_MAX_ENTRIES = 16;
+// How much text one item's content keeps in all: an entry is kept while the
+// entries before it hold less.
+export const TOOL_MAX_TEXT = 32 * 1024;
 const TOOL_SLACK = 128;
 // How far a cut may move to land on a line break.
 const TOOL_SNAP = 512;
@@ -133,7 +137,13 @@ function appendToolContent(it: Item, add: ToolContent[]) {
   const have = it.content ?? [];
   const room = Math.max(0, TOOL_MAX_ENTRIES - have.length);
   let cut = add.length > room;
-  const capped = add.slice(0, room).map((c) => {
+  let used = have.reduce((n, c) => n + contentText(c), 0);
+  const capped: ToolContent[] = [];
+  for (const c of add.slice(0, room)) {
+    if (used >= TOOL_MAX_TEXT) {
+      cut = true;
+      break;
+    }
     const next = { ...c };
     for (const key of ["text", "oldText", "newText"] as const) {
       const v = next[key];
@@ -144,11 +154,14 @@ function appendToolContent(it: Item, add: ToolContent[]) {
         cut = true;
       }
     }
-    return next;
-  });
+    used += contentText(next);
+    capped.push(next);
+  }
   if (capped.length) it.content = [...have, ...capped];
   if (cut) it.truncated = true;
 }
+
+const contentText = (c: ToolContent) => (c.text?.length ?? 0) + (c.oldText?.length ?? 0) + (c.newText?.length ?? 0);
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
 // was known of it, and anything the agent showed gets a timeline item at the
@@ -178,13 +191,47 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
   };
 }
 
+// revivesUnheldJob says whether ev brings back to life a job the snapshot left
+// out: a Codex subagent reopened long after it finished. applyJob drops the
+// row like any straggler, so the caller fetches the whole list, which the
+// server has already folded the row into; otherwise the running agent would be
+// missing from the roster, and its Stop with it, until the next attach.
+export function revivesUnheldJob(s: ThreadState, ev: Event): boolean {
+  if (ev.type !== "job.updated" || !dropsJobRow(s, ev)) return false;
+  const p = (ev.payload ?? {}) as JobPayload;
+  return !!p.status && !jobDone(p.status);
+}
+
+// dropsJobRow says whether applyJob drops ev as a straggler for a job s left
+// out. A row dropped while the list is being fetched may postdate the
+// server's read of it, so the caller holds it for applyJobRow.
+export function dropsJobRow(s: ThreadState, ev: Event): boolean {
+  if (!ev.type.startsWith("job.") || ev.type === "job.started" || !(s.jobsBefore ?? 0)) return false;
+  const p = (ev.payload ?? {}) as JobPayload;
+  return !!p.jobId && !s.jobs.some((j) => j.id === p.jobId);
+}
+
+// applyJobRow folds a job row the state's cursor is already past: one
+// dropsJobRow dropped while the job list was on its way, applied over the
+// list. Never a start, which is never dropped.
+export function applyJobRow(s: ThreadState, ev: Event): ThreadState {
+  const row = ev.type === "job.finished" ? "finished" : "updated";
+  return applyJob(s, ev.timestamp, (ev.payload ?? {}) as JobPayload, row);
+}
+
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
-function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean): ThreadState {
+function applyJob(s: ThreadState, ts: number, p: JobPayload, row: "started" | "updated" | "finished"): ThreadState {
   if (!p.jobId) return s;
   const jobs = [...s.jobs];
   let i = jobs.findIndex((j) => j.id === p.jobId);
+  // A straggler for a job the snapshot left out — a finished one that was not
+  // among the latest. Creating it from this row would put a stub with no name
+  // or start in the roster, and fetching the full list would then hold the
+  // real one beside it. The server has folded this row, so the list fetch
+  // delivers it; here only the cursor moves. A start is always new work.
+  if (i < 0 && row !== "started" && (s.jobsBefore ?? 0) > 0) return s;
   if (i < 0) {
     const turnId = s.turns.reduce<string | undefined>((acc, t) => (t.done ? acc : t.id), undefined);
     jobs.push({
@@ -226,11 +273,11 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
   if (p.status) {
     // A finished job reported running again was reopened (a Codex subagent
     // taking a new turn): its elapsed clock runs again.
-    if (!finished && !jobDone(p.status)) j.finishedAt = undefined;
+    if (row !== "finished" && !jobDone(p.status)) j.finishedAt = undefined;
     j.status = p.status;
   }
   let items = s.items;
-  if (finished) {
+  if (row === "finished") {
     if (!jobDone(j.status)) j.status = "completed";
     j.finishedAt ??= ts;
     // The spawning tool call, if still waiting on this job, is settled by it.
@@ -489,6 +536,8 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.status = p.status;
           if (toolDone(it.status)) delete it.tail;
           it.input = p.rawInput;
+          // The server cut a long input string to a preview on the wire.
+          if (p.truncated) it.truncated = true;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
         }),
       };
@@ -500,8 +549,15 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // would then prepend the original under the same id. The server has
       // already folded this event, so the page fetch delivers the updated
       // item; here only the cursor moves.
-      if ((s.itemsBefore ?? 0) > 0 && !s.items.some((it) => it.id === p.toolCallId)) {
-        return s;
+      //
+      // The same goes for a subagent's call whose parent had its children
+      // left out of the snapshot: the parent is in the window, its children
+      // are not, and an upsert would add one child alone to a drill-down
+      // that fetches the rest.
+      if (!s.items.some((it) => it.id === p.toolCallId)) {
+        if ((s.itemsBefore ?? 0) > 0) return s;
+        const parent = p.parentToolCallId ? s.items.find((it) => it.id === p.parentToolCallId) : undefined;
+        if ((parent?.childrenBefore ?? 0) > 0) return s;
       }
       return {
         ...s,
@@ -517,6 +573,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           if (p.status) it.status = p.status;
           if (p.title) it.title = p.title;
           if (p.rawInput) it.input = p.rawInput;
+          if (p.truncated) it.truncated = true;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
           if (p.content?.length) appendToolContent(it, p.content);
           // Output lands in the tail only while the call is running, judged
@@ -529,11 +586,13 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       };
 
     case "job.started":
+      return applyJob(s, ev.timestamp, p as JobPayload, "started");
+
     case "job.updated":
-      return applyJob(s, ev.timestamp, p as JobPayload, false);
+      return applyJob(s, ev.timestamp, p as JobPayload, "updated");
 
     case "job.finished":
-      return applyJob(s, ev.timestamp, p as JobPayload, true);
+      return applyJob(s, ev.timestamp, p as JobPayload, "finished");
 
     case "plan.updated": {
       // A TodoWrite call is a list of its own, keyed by the call; a codex

@@ -30,8 +30,9 @@ const items: Item[] = [
 ];
 
 /** The play buttons load in their own chunk. */
+// The first lazy import of PlayButton can outrun findAll's 1s on a loaded machine.
 async function playButtonsLoaded() {
-  await screen.findAllByRole("button", { name: /aloud/ });
+  await screen.findAllByRole("button", { name: /aloud/ }, { timeout: 10_000 });
 }
 
 async function transcript(on = true) {

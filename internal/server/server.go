@@ -26,7 +26,6 @@ import (
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/overlay"
-	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/push"
 	"github.com/asiraky/omniplex/internal/setup"
 	"github.com/asiraky/omniplex/internal/skills"
@@ -285,31 +284,23 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		state, err := actor.State(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 		// The tail is what a presenter needs on screen; the rest arrives via
-		// /items as the reader scrolls up. ?items=all is the escape hatch for
-		// a caller that really wants the whole timeline in one response.
-		if r.URL.Query().Get("items") != "all" {
-			state.Window(SnapshotItems)
-		}
-		payload, err := json.Marshal(state)
+		// /items as the reader scrolls up, and /children and /jobs fill in
+		// what the copy trimmed.
+		state, err := actor.WireState(r.Context(), SnapshotItems)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(payload)
-		s.logf("thread_snapshot thread=%s duration_ms=%d payload_bytes=%d turns=%d items=%d items_before=%d",
-			r.PathValue("id"), time.Since(started).Milliseconds(), len(payload), len(state.Turns), len(state.Items), state.ItemsBefore)
+		n := writeSized(w, state)
+		s.logf("thread_snapshot thread=%s duration_ms=%d payload_bytes=%d turns=%d items=%d items_before=%d jobs=%d jobs_before=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), n, len(state.Turns), len(state.Items), state.ItemsBefore, len(state.Jobs), state.JobsBefore)
 	})
 
 	// The page of timeline items older than the client's window. `before` is
 	// the cursor the last response handed back (ItemsBefore); the reply's
 	// itemsBefore is the next one, zero meaning the top has been reached.
+	// count=all is everything above the cursor in one go.
 	mux.HandleFunc("GET /api/threads/{id}/items", func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		before, err := strconv.Atoi(r.URL.Query().Get("before"))
@@ -322,19 +313,58 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		state, err := actor.State(r.Context())
+		count := PageItems
+		if r.URL.Query().Get("count") == "all" {
+			// No more top-level items than items sit above the cursor.
+			count = before
+		}
+		items, start, jobs, err := actor.ItemsPage(r.Context(), before, count)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		count := PageItems
-		if r.URL.Query().Get("count") == "all" {
-			count = len(state.Items)
+		n := writeSized(w, map[string]any{"items": orEmpty(items), "itemsBefore": start, "jobs": orEmpty(jobs)})
+		s.logf("thread_items thread=%s duration_ms=%d before=%d items=%d items_before=%d jobs=%d payload_bytes=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), before, len(items), start, len(jobs), n)
+	})
+
+	// Every child item of one parent: a wire copy keeps only the tail of a
+	// running parent's children and none of a settled one's, so they are
+	// fetched when the reader opens it.
+	mux.HandleFunc("GET /api/threads/{id}/items/{itemId}/children", func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
 		}
-		page, start := projection.WindowBefore(state.Items, before, count)
-		writeJSON(w, map[string]any{"items": page, "itemsBefore": start})
-		s.logf("thread_items thread=%s duration_ms=%d before=%d items=%d items_before=%d",
-			r.PathValue("id"), time.Since(started).Milliseconds(), before, len(page), start)
+		items, err := actor.Children(r.Context(), r.PathValue("itemId"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		n := writeSized(w, map[string]any{"items": orEmpty(items)})
+		s.logf("thread_children thread=%s item=%s duration_ms=%d items=%d payload_bytes=%d",
+			r.PathValue("id"), r.PathValue("itemId"), time.Since(started).Milliseconds(), len(items), n)
+	})
+
+	// Every job, for the reader who opens the full list: a wire copy keeps
+	// the running ones and the latest finished.
+	mux.HandleFunc("GET /api/threads/{id}/jobs", func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		jobs, err := actor.Jobs(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		n := writeSized(w, map[string]any{"jobs": orEmpty(jobs)})
+		s.logf("thread_jobs thread=%s duration_ms=%d jobs=%d payload_bytes=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), len(jobs), n)
 	})
 
 	// One tool call's whole output; the timeline holds a preview of it.
@@ -593,6 +623,27 @@ func withCORS(h http.Handler, allowAny bool) http.Handler {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeSized is writeJSON for a response whose size is worth logging: it
+// returns how many bytes went out.
+func writeSized(w http.ResponseWriter, v any) int {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return 0
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(payload)
+	return len(payload)
+}
+
+// orEmpty keeps an empty list a list on the wire rather than null.
+func orEmpty[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 // access builds the endpoint list. It is nil when no builder was supplied,

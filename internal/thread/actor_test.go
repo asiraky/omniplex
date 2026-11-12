@@ -520,14 +520,21 @@ func TestSetModeSwitchesHarnessAndRecordsEvent(t *testing.T) {
 
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	waitWithin(t, 5*time.Second, cond)
+}
+
+// waitWithin is waitFor with its own deadline, for a wait that stores enough
+// events to outrun 5s on a loaded machine under -race.
+func waitWithin(t *testing.T, within time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatal("condition not met within 5s")
+	t.Fatalf("condition not met within %s", within)
 }
 
 func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
@@ -804,7 +811,7 @@ func TestAttachCompletenessUnderConcurrentAppends(t *testing.T) {
 	sub := actor.Subscribe()
 	defer actor.Unsubscribe(sub)
 
-	res, err := actor.Attach(context.Background(), 0, false)
+	res, err := actor.Attach(context.Background(), 0, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -986,7 +993,7 @@ func TestSlowConsumerIsDroppedAndResynced(t *testing.T) {
 	}
 
 	// The actor kept making progress despite the stalled subscriber.
-	waitFor(t, func() bool { return actor.Head() >= int64(total) })
+	waitWithin(t, 30*time.Second, func() bool { return actor.Head() >= int64(total) })
 
 	select {
 	case <-slow.Resync:

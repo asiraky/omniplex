@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"regexp"
@@ -161,6 +162,44 @@ func TestToolContentEntriesAreBounded(t *testing.T) {
 	}
 }
 
+// keptUnder is how many entries of size bytes each fit the text budget: one is
+// kept while those before it hold less than maxToolText.
+func keptUnder(size int) int { return (maxToolText + size - 1) / size }
+
+// An item's content keeps a bounded amount of text: past it further entries
+// are dropped, however the content arrived, and loading a snapshot that held
+// more drops the same ones.
+func TestToolContentTextIsBounded(t *testing.T) {
+	entry := proto.ToolContent{Type: "diff", Path: "a.go", Old: strings.Repeat("o", 3000), New: strings.Repeat("n", 3000)}
+	batch := make([]proto.ToolContent, 10)
+	for i := range batch {
+		batch[i] = entry
+	}
+	// Each entry is under the field cap, so only the budget cuts: an entry is
+	// kept while those before it hold less than maxToolText.
+	want := keptUnder(6000)
+
+	whole := New("s1")
+	whole.Apply(toolUpdate(t, 1, "c1", batch...))
+	split := New("s1")
+	split.Apply(toolUpdate(t, 1, "c1", batch[:2]...))
+	split.Apply(toolUpdate(t, 2, "c1", batch[2:]...))
+	for name, s := range map[string]*State{"one update": whole, "two updates": split} {
+		it, _ := s.ItemByID("c1")
+		if !it.Truncated || len(it.Content) != want {
+			t.Fatalf("%s: truncated=%v entries=%d, want true/%d", name, it.Truncated, len(it.Content), want)
+		}
+	}
+
+	old := Item{ID: "c1", Kind: ItemTool, Content: batch}
+	if !capItem(&old) || !old.Truncated || len(old.Content) != want {
+		t.Fatalf("capItem: truncated=%v entries=%d, want true/%d", old.Truncated, len(old.Content), want)
+	}
+	if capItem(&old) {
+		t.Fatal("capping capped content cut it again")
+	}
+}
+
 // A snapshot written before the cap holds results whole. Loading it caps them,
 // so the next snapshot written is small.
 func TestFromSnapshotCapsAnOldSnapshot(t *testing.T) {
@@ -184,8 +223,9 @@ func TestFromSnapshotCapsAnOldSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	c1, _ := s.ItemByID("c1")
-	if !c1.Truncated || len(c1.Content) != maxToolContent {
-		t.Fatalf("c1 truncated=%v entries=%d", c1.Truncated, len(c1.Content))
+	// Every entry capped alike, so the text budget is what stops it.
+	if n := len(c1.Content); !c1.Truncated || n == 0 || n != keptUnder(len(c1.Content[0].Text)) {
+		t.Fatalf("c1 truncated=%v entries=%d", c1.Truncated, n)
 	}
 	for _, c := range c1.Content {
 		if _, n, _ := splitPreview(t, c.Text); n == 0 {
@@ -223,5 +263,101 @@ func TestPreviewCutsBetweenLines(t *testing.T) {
 	}
 	if head != text[:len(head)] || len(head)+n+len(tail) != len(text) {
 		t.Fatal("preview is not the original's head and tail")
+	}
+}
+
+// Every string leaf in a JSON document is capped, at any depth, while keys,
+// numbers as written, literals and key order come through untouched.
+func TestCapJSONStringsCapsLeavesOnly(t *testing.T) {
+	long := strings.Repeat("h", 6000) + strings.Repeat("m", 10000) + strings.Repeat("t", 6000)
+	key := strings.Repeat("k", 9000)
+	raw := json.RawMessage(`{"z":"` + long + `","a":[1.50,12345678901234567890,true,null,{"` + key + `":"` + long + `"}],"m":"<b>&"}`)
+
+	got, cut := capJSONStrings(raw)
+	if !cut {
+		t.Fatal("not cut")
+	}
+	if !json.Valid(got) {
+		t.Fatalf("capped input is not valid JSON")
+	}
+	// Order and numbers as written, read straight off the bytes.
+	if !strings.HasPrefix(string(got), `{"z":"`) || !strings.Contains(string(got), `"a":[1.50,12345678901234567890,true,null,{"`+key+`":"`) ||
+		!strings.HasSuffix(string(got), `,"m":"<b>&"}`) {
+		t.Fatalf("structure changed: %.200s … %.200s", got, got[len(got)-200:])
+	}
+	var v struct {
+		Z string `json:"z"`
+		A []json.RawMessage
+	}
+	if err := json.Unmarshal(got, &v); err != nil {
+		t.Fatal(err)
+	}
+	var nested map[string]string
+	if err := json.Unmarshal(v.A[4], &nested); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{v.Z, nested[key]} {
+		head, n, tail := splitPreview(t, s)
+		if head != long[:len(head)] || tail != long[len(long)-len(tail):] || len(head)+n+len(tail) != len(long) {
+			t.Fatal("string is not the original's head and tail")
+		}
+	}
+
+	again, cut := capJSONStrings(got)
+	if cut || !bytes.Equal(again, got) {
+		t.Fatal("capping capped input cut it again")
+	}
+}
+
+// The budget is across the whole input: once it is spent, later long strings
+// are reduced to the marker, while short ones — paths, flags — stay whole.
+func TestCapJSONStringsBudgetsTheWholeInput(t *testing.T) {
+	middling := strings.Repeat("m", 6000) // under the per-string cap
+	fields := make([]string, 12)
+	for i := range fields {
+		fields[i] = `"f` + strconv.Itoa(i) + `":"` + middling + `"`
+	}
+	raw := json.RawMessage(`{` + strings.Join(fields, ",") + `,"path":"/a/b.go"}`)
+
+	got, cut := capJSONStrings(raw)
+	if !cut {
+		t.Fatal("not cut")
+	}
+	var v map[string]string
+	if err := json.Unmarshal(got, &v); err != nil {
+		t.Fatal(err)
+	}
+	kept := 0
+	for i := range fields {
+		switch f := v["f"+strconv.Itoa(i)]; {
+		case f == middling:
+			kept++
+		case !strings.Contains(f, "6000 characters truncated"):
+			t.Fatalf("f%d is neither whole nor the marker: %.80s", i, f)
+		}
+	}
+	if kept != maxInputText/len(middling) {
+		t.Fatalf("kept %d whole, want %d", kept, maxInputText/len(middling))
+	}
+	if v["path"] != "/a/b.go" {
+		t.Fatalf("short field = %q", v["path"])
+	}
+}
+
+// Input with nothing to cut comes back as the same bytes, not a re-encoding;
+// so does input that is not JSON at all.
+func TestCapJSONStringsLeavesUncutInputAlone(t *testing.T) {
+	many := make([]string, 2000)
+	for i := range many {
+		many[i] = strconv.Quote("short " + strconv.Itoa(i))
+	}
+	bigButFine := json.RawMessage(`{ "list" : [` + strings.Join(many, ", ") + `] }`)
+	broken := json.RawMessage(`{"a":"` + strings.Repeat("x", 20000) + `"`)
+	trailing := json.RawMessage(`{"a":"` + strings.Repeat("x", 20000) + `"} {}`)
+	for _, raw := range []json.RawMessage{bigButFine, broken, trailing, json.RawMessage(`"hi"`), nil} {
+		got, cut := capJSONStrings(raw)
+		if cut || len(got) != len(raw) || (len(raw) > 0 && &got[0] != &raw[0]) {
+			t.Fatalf("%.40s…: cut=%v, or not the original bytes", raw, cut)
+		}
 	}
 }
