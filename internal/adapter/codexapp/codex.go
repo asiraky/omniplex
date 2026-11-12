@@ -757,20 +757,17 @@ func (s *session) ensureTurn(serverTurn string) string {
 
 func (s *session) handleRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
-	case "item/commandExecution/requestApproval", "execCommandApproval":
+	case "item/commandExecution/requestApproval":
 		var p struct {
 			ItemID  string `json:"itemId"`
 			Command string `json:"command"`
-			Cwd     string `json:"cwd"`
-			Reason  string `json:"reason"`
 		}
 		_ = json.Unmarshal(params, &p)
-		return s.ask(ctx, p.ItemID, "shell", firstLine(p.Command), params)
+		return decisionResponse(s.ask(ctx, p.ItemID, "shell", firstLine(p.Command), params)), nil
 
-	case "item/fileChange/requestApproval", "applyPatchApproval":
+	case "item/fileChange/requestApproval":
 		var p struct {
 			ItemID    string `json:"itemId"`
-			Reason    string `json:"reason"`
 			GrantRoot string `json:"grantRoot"`
 		}
 		_ = json.Unmarshal(params, &p)
@@ -778,19 +775,20 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 		if p.GrantRoot != "" {
 			title = "Apply file changes outside " + p.GrantRoot
 		}
-		return s.ask(ctx, p.ItemID, "apply_patch", title, params)
+		return decisionResponse(s.ask(ctx, p.ItemID, "apply_patch", title, params)), nil
 
 	case "item/permissions/requestApproval":
 		var p struct {
-			ItemID string `json:"itemId"`
-			Reason string `json:"reason"`
+			ItemID      string          `json:"itemId"`
+			Reason      string          `json:"reason"`
+			Permissions json.RawMessage `json:"permissions"`
 		}
 		_ = json.Unmarshal(params, &p)
 		title := "Grant additional permissions"
 		if p.Reason != "" {
 			title = p.Reason
 		}
-		return s.ask(ctx, p.ItemID, "permissions", title, params)
+		return permissionsResponse(s.ask(ctx, p.ItemID, "permissions", title, params), p.Permissions), nil
 
 	case "item/tool/requestUserInput":
 		return s.requestUserInput(ctx, params)
@@ -912,9 +910,9 @@ func stringValues(value any) []string {
 	}
 }
 
-// ask routes an approval to a human via the host and maps the answer onto
-// codex's decision vocabulary.
-func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.RawMessage) (any, error) {
+// ask routes an approval to a human via the host and returns the outcome
+// (proto.Outcome*). A host error reads as a rejection.
+func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.RawMessage) string {
 	outcome, err := s.host.RequestPermission(ctx, adapter.PermissionRequest{
 		TurnID:     s.currentTurn(),
 		ToolCallID: itemID,
@@ -928,11 +926,16 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 		},
 	})
 	if err != nil {
-		return map[string]any{"decision": "decline"}, nil
+		return proto.OutcomeRejectOnce
 	}
+	return outcome.Outcome
+}
 
+// decisionResponse maps an outcome onto the {decision} reply that command and
+// file change approvals take.
+func decisionResponse(outcome string) map[string]any {
 	decision := "decline"
-	switch outcome.Outcome {
+	switch outcome {
 	case proto.OutcomeAllowOnce:
 		decision = "accept"
 	case proto.OutcomeAllowAlways:
@@ -940,7 +943,25 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 	case proto.OutcomeCancelled:
 		decision = "cancel"
 	}
-	return map[string]any{"decision": decision}, nil
+	return map[string]any{"decision": decision}
+}
+
+// permissionsResponse builds a PermissionsRequestApprovalResponse. Codex grants
+// exactly the profile we send back, so allowing echoes the requested profile
+// and denying (or cancelling, which this reply has no word for) sends an
+// empty one.
+func permissionsResponse(outcome string, requested json.RawMessage) map[string]any {
+	granted, scope := json.RawMessage(`{}`), "turn"
+	switch outcome {
+	case proto.OutcomeAllowAlways:
+		scope = "session"
+		fallthrough
+	case proto.OutcomeAllowOnce:
+		if len(requested) > 0 && string(requested) != "null" {
+			granted = requested
+		}
+	}
+	return map[string]any{"permissions": granted, "scope": scope}
 }
 
 // ---- server → client notifications ----
