@@ -299,6 +299,9 @@ type QueuedPrompt struct {
 	// Sent means the harness holds it and reads it at its next step; it
 	// cannot be taken back.
 	Sent bool `json:"sent,omitempty"`
+	// Held means it waits for a human to resume the queue rather than for
+	// the thread to go idle.
+	Held bool `json:"held,omitempty"`
 }
 
 // PendingPermission is a permission request awaiting a human. It lives in the
@@ -890,15 +893,44 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.PromptQueued:
 		var p proto.PromptQueuedPayload
 		decode(ev.Payload, &p)
-		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp})
+		s.Queued = append(s.Queued, QueuedPrompt{QueueID: p.QueueID, Prompt: p.Prompt, Images: p.Images, QueuedAt: ev.Timestamp, Held: p.Held})
 
 	case proto.PromptSent:
 		// The harness took a queued prompt mid-turn. One it already read, or
 		// started a turn with, has left the queue, and there is nothing to mark.
+		// One the harness has is no longer the server's to hold.
 		var p proto.PromptSentPayload
 		decode(ev.Payload, &p)
 		if q := s.queued(p.QueueID); q != nil {
-			q.Sent = true
+			q.Sent, q.Held = true, false
+		}
+
+	case proto.PromptEdited:
+		var p proto.PromptEditedPayload
+		decode(ev.Payload, &p)
+		if q := s.queued(p.QueueID); q != nil {
+			q.Prompt, q.Images = p.Prompt, p.Images
+		}
+
+	case proto.PromptHeld:
+		// A held prompt is the server's to send, never the harness's. A
+		// restart took with it the process that might have had a sent one,
+		// and a refused start holds only what the harness was never handed.
+		var p proto.PromptHeldPayload
+		decode(ev.Payload, &p)
+		for _, id := range p.QueueIDs {
+			if q := s.queued(id); q != nil {
+				q.Held, q.Sent = true, false
+			}
+		}
+
+	case proto.PromptReleased:
+		var p proto.PromptReleasedPayload
+		decode(ev.Payload, &p)
+		for _, id := range p.QueueIDs {
+			if q := s.queued(id); q != nil {
+				q.Held = false
+			}
 		}
 
 	case proto.PromptInjected:

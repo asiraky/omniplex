@@ -505,21 +505,14 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		var images []proto.PromptImage
-		if len(a.ImageIDs) > 0 {
-			if c.srv.attachments == nil {
-				return nil, errors.New("this server does not store attachments")
-			}
-			if len(a.ImageIDs) > attachment.MaxPerPrompt {
-				return nil, fmt.Errorf("a message may carry at most %d attachments", attachment.MaxPerPrompt)
-			}
-			metas, paths, resolveErr := c.srv.attachments.Resolve(a.ThreadID, a.ImageIDs)
-			if resolveErr != nil {
-				return nil, resolveErr
-			}
-			for i, m := range metas {
-				images = append(images, proto.PromptImage{ID: m.ID, MediaType: m.MediaType, Path: paths[i]})
-			}
+		switch a.Delivery {
+		case proto.DeliveryDefault, proto.DeliverySteer, proto.DeliveryQueue:
+		default:
+			return nil, fmt.Errorf("unknown delivery %q", a.Delivery)
+		}
+		images, err := c.promptImages(a.ThreadID, a.ImageIDs)
+		if err != nil {
+			return nil, err
 		}
 		if len(a.Files) > 0 {
 			trailer, err := c.srv.attachedFiles(ctx, actor, a.Files)
@@ -536,15 +529,12 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			c.srv.mgr.NotifyList()
 			return map[string]any{"scheduleId": a.ID}, nil
 		}
-		res, err := actor.Prompt(ctx, a.Text, images)
+		res, err := actor.PromptWith(ctx, a.Text, images, a.Delivery)
 		if err != nil {
 			return nil, err
 		}
 		c.srv.mgr.NotifyList()
-		if res.Queued() {
-			return map[string]any{"queueId": res.QueueID}, nil
-		}
-		return map[string]any{"turnId": res.TurnID}, nil
+		return promptResult(res), nil
 
 	case "cancel_schedule", "send_schedule":
 		var a struct {
@@ -582,6 +572,63 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"status": "removed"}, nil
+
+	case "edit_queued_prompt":
+		var a editQueuedArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		// View, for the same reason as dequeue_prompt: activating would start
+		// the head of the queue before the edit could reach it.
+		actor, err := c.srv.mgr.View(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		var images *[]proto.PromptImage
+		if a.ImageIDs != nil {
+			resolved, err := c.promptImages(a.ThreadID, *a.ImageIDs)
+			if err != nil {
+				return nil, err
+			}
+			images = &resolved
+		}
+		if err := actor.EditQueuedPrompt(ctx, a.QueueID, a.Text, images); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "edited"}, nil
+
+	case "send_queued_prompt":
+		var a struct {
+			ThreadID string `json:"threadId"`
+			QueueID  string `json:"queueId"`
+		}
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		res, err := actor.SendQueuedPrompt(ctx, a.QueueID)
+		if err != nil {
+			return nil, err
+		}
+		c.srv.mgr.NotifyList()
+		return promptResult(res), nil
+
+	case "resume_queue":
+		var a threadArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if err := actor.ResumeQueue(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "resumed"}, nil
 
 	case "continue_thread":
 		var a threadArgs
@@ -1252,6 +1299,38 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown command %q", f.Command)
 	}
+}
+
+// promptImages turns uploaded image ids into what the harness reads, in the
+// order given. No ids is no images.
+func (c *conn) promptImages(threadID string, ids []string) ([]proto.PromptImage, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if c.srv.attachments == nil {
+		return nil, errors.New("this server does not store attachments")
+	}
+	if len(ids) > attachment.MaxPerPrompt {
+		return nil, fmt.Errorf("a message may carry at most %d attachments", attachment.MaxPerPrompt)
+	}
+	metas, paths, err := c.srv.attachments.Resolve(threadID, ids)
+	if err != nil {
+		return nil, err
+	}
+	images := make([]proto.PromptImage, len(metas))
+	for i, m := range metas {
+		images[i] = proto.PromptImage{ID: m.ID, MediaType: m.MediaType, Path: paths[i]}
+	}
+	return images, nil
+}
+
+// promptResult is the ack for anything that sends a prompt: the queue entry
+// it became, or the turn it started.
+func promptResult(res thread.PromptResult) map[string]any {
+	if res.Queued() {
+		return map[string]any{"queueId": res.QueueID}
+	}
+	return map[string]any{"turnId": res.TurnID}
 }
 
 func normaliseOutcome(o string) string {

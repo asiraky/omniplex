@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createRef } from "react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { render, wrap } from "~/test/harness";
 import { Composer, type ComposerHandle } from "./Composer";
@@ -154,7 +154,7 @@ describe("sending with images", () => {
   it("sends a message that is nothing but pictures", () => {
     const { onSend } = mount({ attachments: [staged()] });
     fireEvent.click(sendButton());
-    expect(onSend).toHaveBeenCalledWith("", { imageIds: ["img-1"], files: [] });
+    expect(onSend).toHaveBeenCalledWith("", { imageIds: ["img-1"], files: [] }, undefined);
   });
 
   it("refuses to send while an image is still going up", () => {
@@ -194,13 +194,13 @@ describe("sending with images", () => {
     expect(onSend).toHaveBeenCalledWith("see attached", {
       imageIds: ["img-1"],
       files: [{ artefactId: "art-1" }],
-    });
+    }, undefined);
   });
 
   it("sends a message that is nothing but a file", () => {
     const { onSend } = mount({ attachments: [stagedFile()] });
     fireEvent.click(sendButton());
-    expect(onSend).toHaveBeenCalledWith("", { imageIds: [], files: [{ artefactId: "art-1" }] });
+    expect(onSend).toHaveBeenCalledWith("", { imageIds: [], files: [{ artefactId: "art-1" }] }, undefined);
   });
 
   it("refuses to send while a file is still going up, and shows how far it has got", () => {
@@ -257,7 +257,7 @@ describe("the send button's options", () => {
     const { onSend } = mount({ draft: "ship it", onSchedule: vi.fn() });
     openOptions();
     fireEvent.click(await screen.findByRole("menuitem", { name: "Send now" }));
-    expect(onSend).toHaveBeenCalledWith("ship it", { imageIds: [], files: [] });
+    expect(onSend).toHaveBeenCalledWith("ship it", { imageIds: [], files: [] }, undefined);
   });
 
   it("schedules from the menu without sending", async () => {
@@ -287,6 +287,81 @@ describe("the send button's options", () => {
   it("holds the options back with nothing to send", () => {
     mount({ draft: "", onSchedule: vi.fn() });
     expect(screen.getByRole("button", { name: "More send options" })).toHaveProperty("disabled", true);
+  });
+});
+
+describe("steering or queueing a message sent mid-turn", () => {
+  const sent = { imageIds: [], files: [] };
+  const steerButton = () => screen.getByRole("button", { name: "Steer the running turn" });
+  const hold = (el: HTMLElement) => {
+    fireEvent.pointerDown(el, { button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(el);
+    // The click a real release sends after the hold.
+    fireEvent.click(el);
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("steers by default, leaving the way to the server", () => {
+    const { onSend } = mount({ draft: "use the other table", busy: true, steers: true });
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("use the other table", sent, undefined);
+  });
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])("queues on mod+Enter (%o)", (mod) => {
+    const { onSend } = mount({ draft: "then write the docs", busy: true, steers: true });
+    fireEvent.keyDown(box(), { key: "Enter", ...mod });
+    expect(onSend).toHaveBeenCalledWith("then write the docs", sent, "queue");
+  });
+
+  it("treats mod+Enter as Enter for a harness that can only queue", () => {
+    const { onSend } = mount({ draft: "next", busy: true, steers: false });
+    fireEvent.keyDown(box(), { key: "Enter", ctrlKey: true });
+    expect(onSend).toHaveBeenCalledWith("next", sent, undefined);
+  });
+
+  it("treats mod+Enter as Enter when no turn is running", () => {
+    const { onSend } = mount({ draft: "start", steers: true });
+    fireEvent.keyDown(box(), { key: "Enter", ctrlKey: true });
+    expect(onSend).toHaveBeenCalledWith("start", sent, undefined);
+  });
+
+  it("opens the choice on a held Send without sending, and queues from it", () => {
+    vi.useFakeTimers();
+    const { onSend } = mount({ draft: "after this", busy: true, steers: true });
+    hold(steerButton());
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Queue/ }));
+    expect(onSend).toHaveBeenCalledWith("after this", sent, "queue");
+  });
+
+  it("sends the default on a tap", () => {
+    vi.useFakeTimers();
+    const { onSend } = mount({ draft: "now", busy: true, steers: true });
+    fireEvent.pointerDown(steerButton(), { button: 0 });
+    fireEvent.pointerUp(steerButton());
+    fireEvent.click(steerButton());
+    act(() => vi.advanceTimersByTime(1000));
+    expect(onSend).toHaveBeenCalledWith("now", sent, undefined);
+    expect(screen.queryByRole("menuitem")).toBeNull();
+  });
+
+  it("does not open the choice on a held Send for a harness that can only queue", () => {
+    vi.useFakeTimers();
+    const { onSend } = mount({ draft: "later", busy: true, steers: false });
+    hold(screen.getByRole("button", { name: "Queue after the running turn" }));
+    expect(screen.queryByRole("menuitem")).toBeNull();
+    expect(onSend).toHaveBeenCalledWith("later", sent, undefined);
+  });
+
+  it("offers the same choice in the send options", async () => {
+    const { onSend } = mount({ draft: "go on", busy: true, steers: true });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Steer/ }));
+    expect(onSend).toHaveBeenCalledWith("go on", sent, undefined);
   });
 });
 

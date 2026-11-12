@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,9 +51,13 @@ type Actor struct {
 	// sent meanwhile waits in the queue, which is what lets the first message
 	// create the thread: it is there for the agent the moment it starts.
 	preparing bool
-	ID        string
-	Harness   string
-	Cwd       string
+	// restored is true for an actor rebuilt from the log until its harness
+	// first starts. Whatever is queued then was written before the server
+	// went down, so that first start holds it; see cmdActivate.
+	restored bool
+	ID       string
+	Harness  string
+	Cwd      string
 
 	store   *store.Store
 	adapter adapter.Adapter
@@ -186,6 +191,8 @@ type command struct {
 	effort       string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
 	plan         *recoveryPlan       // prompt: the restart continuation Recover is sending
+	delivery     string              // prompt: proto.DeliverySteer, proto.DeliveryQueue, or the default
+	keepImages   bool                // edit_queued_prompt: leave the entry's attachments as they are
 	// from is the harness process a harness event or exit came from. A
 	// process replaced by an account switch, or killed by Stop, still drains
 	// its last events and its exit; those are about a process this actor no
@@ -255,6 +262,9 @@ const (
 	cmdContinue      = "continue"
 	cmdStopJob       = "stop_job"
 	cmdDequeue       = "dequeue_prompt"
+	cmdEditQueued    = "edit_queued_prompt"
+	cmdSendQueued    = "send_queued_prompt"
+	cmdResumeQueue   = "resume_queue"
 	cmdQuota         = "quota"
 	cmdSwitchAccount = "switch_account"
 	cmdMCP           = "mcp"
@@ -278,6 +288,14 @@ var ErrAlreadySent = errors.New("the harness already has that prompt")
 // ErrNotQueued is returned when asked to remove a queued prompt that is not
 // waiting — it already started, or was removed by someone else.
 var ErrNotQueued = errors.New("that prompt is no longer queued")
+
+// ErrEmptyPrompt is returned when an edit would leave a queued prompt with
+// nothing to send.
+var ErrEmptyPrompt = errors.New("a message needs text or an attachment")
+
+// ErrCannotSteer is returned when asked to hand a queued prompt to a running
+// turn on a harness that only reads messages between turns.
+var ErrCannotSteer = errors.New("this harness cannot take a message mid-turn")
 
 // ErrClosed is returned when a command tries to mutate a closed transcript.
 var ErrClosed = errors.New("thread is closed")
@@ -437,7 +455,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 		store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}),
 		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
 		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
-		lastSnapAt: snapAt, evictable: true, lastUsed: time.Now(),
+		lastSnapAt: snapAt, evictable: true, lastUsed: time.Now(), restored: true,
 	}
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
 	a.holdRowOnlyIfAsked(meta.Phase)
@@ -484,7 +502,7 @@ func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, me
 	if err != nil {
 		return nil, err
 	}
-	a := &Actor{ID: meta.ID, Harness: meta.Harness, Cwd: meta.Cwd, store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}), state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{}, pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf}
+	a := &Actor{ID: meta.ID, Harness: meta.Harness, Cwd: meta.Cwd, store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}), state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{}, pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf, restored: true}
 	a.wg.Add(1)
 	go a.run()
 	return a, nil
@@ -683,7 +701,14 @@ func (r PromptResult) Queued() bool { return r.QueueID != "" }
 // already stored on this host; each carries the path the harness reads it
 // from.
 func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptImage) (PromptResult, error) {
-	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text, images: images})
+	return a.PromptWith(ctx, text, images, proto.DeliveryDefault)
+}
+
+// PromptWith is Prompt with the sender's say on what happens mid-turn:
+// proto.DeliveryQueue waits for the turn to end even on a harness that could
+// read the message now. It changes nothing when the thread is idle.
+func (a *Actor) PromptWith(ctx context.Context, text string, images []proto.PromptImage, delivery string) (PromptResult, error) {
+	v, err := a.call(ctx, command{kind: cmdPrompt, prompt: text, images: images, delivery: delivery})
 	if err != nil {
 		return PromptResult{}, err
 	}
@@ -693,6 +718,35 @@ func (a *Actor) Prompt(ctx context.Context, text string, images []proto.PromptIm
 // DequeuePrompt takes back a prompt that is still waiting its turn.
 func (a *Actor) DequeuePrompt(ctx context.Context, queueID string) error {
 	_, err := a.call(ctx, command{kind: cmdDequeue, reqID: queueID})
+	return err
+}
+
+// EditQueuedPrompt rewrites a prompt that is still waiting its turn. Nil
+// images keeps the attachments it has; anything else, empty included,
+// replaces them.
+func (a *Actor) EditQueuedPrompt(ctx context.Context, queueID, text string, images *[]proto.PromptImage) error {
+	c := command{kind: cmdEditQueued, reqID: queueID, prompt: text, keepImages: images == nil}
+	if images != nil {
+		c.images = *images
+	}
+	_, err := a.call(ctx, c)
+	return err
+}
+
+// SendQueuedPrompt sends a waiting prompt now rather than in its turn: into
+// the running turn when there is one, otherwise as a turn of its own.
+func (a *Actor) SendQueuedPrompt(ctx context.Context, queueID string) (PromptResult, error) {
+	v, err := a.call(ctx, command{kind: cmdSendQueued, reqID: queueID})
+	if err != nil {
+		return PromptResult{}, err
+	}
+	return v.(PromptResult), nil
+}
+
+// ResumeQueue lets held prompts run again. The head starts as soon as the
+// thread is idle.
+func (a *Actor) ResumeQueue(ctx context.Context) error {
+	_, err := a.call(ctx, command{kind: cmdResumeQueue})
 	return err
 }
 
@@ -1121,6 +1175,18 @@ func (a *Actor) handle(c command) (stop bool) {
 				a.append(em)
 			}
 		}
+		// Whatever was queued was written before the server went down, and
+		// may be stale by the time anyone looks. It waits for a human to
+		// resume it rather than firing on its own once the thread is idle.
+		// That goes for a thread caught provisioning as much as one caught
+		// mid-turn, which is why it keys on the rebuild and not on resume:
+		// a provision retried after a restart starts the harness fresh. The
+		// continuation of interrupted work is not held: that is the server
+		// finishing what it was asked to do.
+		if a.restored {
+			a.restored = false
+			a.holdQueued()
+		}
 		c.reply <- cmdResult{}
 
 	case cmdStopJob:
@@ -1328,24 +1394,30 @@ func (a *Actor) handle(c command) (stop bool) {
 			// take a message mid-turn gets it now and reads it at its next
 			// step, the way the terminal does; otherwise it starts its own
 			// turn when this one ends. A steer that fails on the way out is
-			// simply queued the old way.
+			// simply queued the old way. A sender who asked to queue gets
+			// that even on a harness that could steer.
 			queueID := uuid.NewString()
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
 			// Nor while a Stop is open: it would reach the harness behind the
 			// interrupt and start the turn over. It starts once the turn ends.
-			st, ok := a.sess.(adapter.Steerer)
-			if !ok || a.stopping != nil {
+			st, steers := a.sess.(adapter.Steerer)
+			steer := steers && a.stopping == nil && c.delivery != proto.DeliveryQueue
+			// Behind a held prompt, a new one is held too: it would otherwise
+			// be the first thing to run once the turn ends, jumping a queue
+			// someone has yet to look at. A steer goes to the running turn,
+			// not the queue.
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Held: !steer && a.holding()}))
+			if !steer {
 				c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 				return false
 			}
-			a.steer(st, queueID, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images}, c.reply)
+			a.steer(st, queueID, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images}, c.reply, false)
 			return false
 		}
 		// A prompt cannot overtake a control call still on its way, so while one
 		// is it waits in the queue, which starts it once the call has answered.
 		if (a.sess == nil && a.preparing || a.sess != nil && a.controlPending > 0) && c.recovery == nil {
 			queueID := uuid.NewString()
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Held: a.holding()}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
@@ -1378,6 +1450,12 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
+		// Someone sending a message is someone paying attention, so what
+		// was held for a human waits no longer: it runs after this turn.
+		// The server's own continuation is not anyone looking.
+		if c.recovery == nil {
+			a.releaseHolds()
+		}
 		c.reply <- cmdResult{value: PromptResult{TurnID: turnID}}
 
 	case cmdDropRecovery:
@@ -1389,7 +1467,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: ErrClosed}
 			return false
 		}
-		if !a.isQueued(c.reqID) {
+		if a.queuedEntry(c.reqID) == nil {
 			c.reply <- cmdResult{err: ErrNotQueued}
 			return false
 		}
@@ -1398,6 +1476,44 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: c.reqID, Reason: proto.DequeueRemoved}))
+		c.reply <- cmdResult{}
+
+	case cmdEditQueued:
+		if a.state.Closed {
+			c.reply <- cmdResult{err: ErrClosed}
+			return false
+		}
+		q := a.queuedEntry(c.reqID)
+		if q == nil {
+			c.reply <- cmdResult{err: ErrNotQueued}
+			return false
+		}
+		if a.sent[c.reqID] {
+			c.reply <- cmdResult{err: ErrAlreadySent}
+			return false
+		}
+		images := c.images
+		if c.keepImages {
+			images = q.Images
+		}
+		if strings.TrimSpace(c.prompt) == "" && len(images) == 0 {
+			c.reply <- cmdResult{err: ErrEmptyPrompt}
+			return false
+		}
+		a.append(proto.Emit(proto.PromptEdited, proto.PromptEditedPayload{QueueID: c.reqID, Prompt: c.prompt, Images: images}))
+		c.reply <- cmdResult{}
+
+	case cmdSendQueued:
+		a.sendQueued(ctx, c.reqID, c.reply)
+
+	case cmdResumeQueue:
+		if a.state.Closed {
+			c.reply <- cmdResult{err: ErrClosed}
+			return false
+		}
+		// Only the holds go here; the run loop starts the head once this
+		// returns, the same way it picks up any other queued prompt.
+		a.releaseHolds()
 		c.reply <- cmdResult{}
 
 	case cmdCancel:
@@ -1711,18 +1827,9 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 	return turnID, nil
 }
 
-func (a *Actor) isQueued(queueID string) bool {
-	for _, q := range a.state.Queued {
-		if q.QueueID == queueID {
-			return true
-		}
-	}
-	return false
-}
-
 // dispatchQueued starts the oldest queued prompt if the thread is idle and
 // able to run one. A prompt that fails on the way out ends as an errored turn
-// like any other; the rest of the queue stays, each to be tried in its turn.
+// like any other, and the rest of the queue is held behind it.
 func (a *Actor) dispatchQueued(ctx context.Context) {
 	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed || a.controlPending > 0 {
 		return
@@ -1744,14 +1851,27 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	}
 	// A prompt the harness already holds is its to run: it starts a turn
 	// with it itself, or reads it into one. Only what nobody has is started
-	// here. Nor what a usage limit holds: that waits for the next turn to
-	// start rather than walking into the limit one prompt at a time.
+	// here. A held prompt stops the line: everything behind it was queued
+	// after it, and was held with it. What a usage limit holds is passed
+	// over: it waits for the next turn to start rather than walking into the
+	// limit one prompt at a time.
 	for _, next := range a.state.Queued {
+		if next.Held {
+			return
+		}
 		if a.sent[next.QueueID] || a.state.HeldByLimit(next) {
 			continue
 		}
 		if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
 			a.logf("queued prompt on %s: %v", a.ID, err)
+			// A harness that refused one prompt — a login that expired, a
+			// checkout that went away — refuses the next for the same
+			// reason, and every command would burn another. The rest wait
+			// for a human who has seen the error. A usage limit holds them
+			// itself, until its continuation.
+			if !a.state.QueueHeld() {
+				a.holdQueued()
+			}
 		}
 		return
 	}
@@ -1819,6 +1939,133 @@ func (a *Actor) writePhase(prev string) {
 		if err := a.store.SetPhase(context.Background(), a.ID, phase); err != nil {
 			a.logf("set phase %s on %s: %v", phase, a.ID, err)
 		}
+	}
+}
+
+// sendQueued sends a waiting prompt ahead of its turn. Mid-turn it is
+// steered where it sits, and is sent once the harness has taken it; a steer
+// that fails leaves it queued as it was. Idle, it starts its own turn the way
+// dispatch would.
+func (a *Actor) sendQueued(ctx context.Context, queueID string, reply chan cmdResult) {
+	if a.state.Closed {
+		reply <- cmdResult{err: ErrClosed}
+		return
+	}
+	entry := a.queuedEntry(queueID)
+	if entry == nil {
+		reply <- cmdResult{err: ErrNotQueued}
+		return
+	}
+	if a.sent[queueID] {
+		reply <- cmdResult{err: ErrAlreadySent}
+		return
+	}
+	if a.sess == nil {
+		reply <- cmdResult{err: ErrNotReady}
+		return
+	}
+	// A copy: appending moves the queue under the pointer.
+	q := *entry
+	if a.turnActive != "" {
+		st, ok := a.sess.(adapter.Steerer)
+		if !ok {
+			reply <- cmdResult{err: ErrCannotSteer}
+			return
+		}
+		// Behind a Stop it would reach the harness after the interrupt and
+		// start the turn over.
+		if a.stopping != nil {
+			reply <- cmdResult{err: ErrBusy}
+			return
+		}
+		a.steer(st, queueID, adapter.PromptInput{QueueID: queueID, Text: q.Prompt, Images: a.resolveImages(q.Images)}, reply, true)
+		return
+	}
+	// The continuation of interrupted work goes first, here as in dispatch:
+	// sending now jumps the queue, not the server finishing what it started.
+	a.mu.Lock()
+	recovering := a.recovery != nil
+	a.mu.Unlock()
+	if recovering {
+		reply <- cmdResult{err: ErrBusy}
+		return
+	}
+	// As with any message a human sends into an idle thread, what was held
+	// waits no longer.
+	a.releaseHolds()
+	// A control call still on its way goes first; dispatch starts this, at
+	// the head of what is no longer held, once it has answered.
+	if a.controlPending > 0 {
+		reply <- cmdResult{value: PromptResult{QueueID: queueID}}
+		return
+	}
+	turnID, err := a.startTurn(ctx, q.Prompt, a.resolveImages(q.Images), nil, queueID)
+	if err != nil {
+		reply <- cmdResult{err: err}
+		return
+	}
+	reply <- cmdResult{value: PromptResult{TurnID: turnID}}
+}
+
+func (a *Actor) queuedEntry(queueID string) *projection.QueuedPrompt {
+	for i := range a.state.Queued {
+		if a.state.Queued[i].QueueID == queueID {
+			return &a.state.Queued[i]
+		}
+	}
+	return nil
+}
+
+// heldIDs names the queued prompts waiting for a human, in order.
+func (a *Actor) heldIDs() []string {
+	var ids []string
+	for _, q := range a.state.Queued {
+		if q.Held {
+			ids = append(ids, q.QueueID)
+		}
+	}
+	return ids
+}
+
+// holding reports whether any queued prompt is waiting for a human.
+func (a *Actor) holding() bool {
+	for _, q := range a.state.Queued {
+		if q.Held {
+			return true
+		}
+	}
+	return false
+}
+
+// holdQueued holds every queued prompt that is not held already, in one
+// event. One the running harness was handed is left alone: it is that
+// process's to run, and holding it would hand it out a second time on
+// resume. After a restart nothing is with the harness, so that is all of
+// them.
+func (a *Actor) holdQueued() {
+	var ids []string
+	for _, q := range a.state.Queued {
+		if !q.Held && !a.sent[q.QueueID] {
+			ids = append(ids, q.QueueID)
+		}
+	}
+	if len(ids) > 0 {
+		a.append(proto.Emit(proto.PromptHeld, proto.PromptHeldPayload{QueueIDs: ids}))
+	}
+}
+
+// holdBehind holds a prompt whose steer failed when the queue it fell back
+// into is held: it was written after what waits there, and goes after it.
+func (a *Actor) holdBehind(queueID string) {
+	if q := a.queuedEntry(queueID); q != nil && !q.Held && a.holding() {
+		a.append(proto.Emit(proto.PromptHeld, proto.PromptHeldPayload{QueueIDs: []string{queueID}}))
+	}
+}
+
+// releaseHolds lets every held prompt run again, in one event.
+func (a *Actor) releaseHolds() {
+	if ids := a.heldIDs(); len(ids) > 0 {
+		a.append(proto.Emit(proto.PromptReleased, proto.PromptReleasedPayload{QueueIDs: ids}))
 	}
 }
 
@@ -1967,6 +2214,12 @@ func (a *Actor) write(em proto.Emission) error {
 	}
 	if p, ok := em.Payload.(proto.PromptDequeuedPayload); ok {
 		delete(a.sent, p.QueueID)
+	}
+	// A held prompt is the server's again, whatever a process had of it.
+	if p, ok := em.Payload.(proto.PromptHeldPayload); ok {
+		for _, id := range p.QueueIDs {
+			delete(a.sent, id)
+		}
 	}
 	if em.Type == proto.TurnFinished {
 		// Only the finish of the turn that is actually active may clear it. A

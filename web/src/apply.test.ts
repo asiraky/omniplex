@@ -352,6 +352,52 @@ describe("queued prompts", () => {
     s = applyEvent(s, ev(4, "prompt.dequeued", { queueId: "q1", reason: "removed" }));
     expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q2"]);
   });
+
+  it("replaces an entry's text and pictures on prompt.edited, in place", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "first", images: [{ id: "img" }] }, 2000));
+    s = applyEvent(s, ev(2, "prompt.queued", { queueId: "q2", prompt: "second" }));
+    s = applyEvent(s, ev(3, "prompt.edited", { queueId: "q1", prompt: "first, reworded" }));
+    expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q1", "q2"]);
+    // No images on the edit means the entry has none now.
+    expect(s.queuedPrompts[0]).toMatchObject({ prompt: "first, reworded", images: undefined, queuedAt: 2000 });
+    s = applyEvent(s, ev(4, "prompt.edited", { queueId: "q2", prompt: "second", images: [{ id: "new" }] }));
+    expect(s.queuedPrompts[1].images).toEqual([{ id: "new" }]);
+  });
+
+  it("ignores an edit to an entry it does not have", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "first" }));
+    const before = s.queuedPrompts;
+    s = applyEvent(s, ev(2, "prompt.edited", { queueId: "nope", prompt: "x" }));
+    expect(s.queuedPrompts).toEqual(before);
+  });
+
+  it("holds the named entries, taking them back from the harness, and releases them", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "a" }));
+    s = applyEvent(s, ev(2, "prompt.sent", { queueId: "q1" }));
+    s = applyEvent(s, ev(3, "prompt.queued", { queueId: "q2", prompt: "b" }));
+    s = applyEvent(s, ev(4, "prompt.queued", { queueId: "q3", prompt: "c", held: true }));
+    expect(s.queuedPrompts[2].held).toBe(true);
+    s = applyEvent(s, ev(5, "prompt.held", { queueIds: ["q1", "q2"] }));
+    expect(s.queuedPrompts.map((q) => [q.held, !!q.sent])).toEqual([
+      [true, false],
+      [true, false],
+      [true, false],
+    ]);
+    s = applyEvent(s, ev(6, "prompt.released", { queueIds: ["q1", "q3"] }));
+    expect(s.queuedPrompts.map((q) => q.held)).toEqual([false, true, false]);
+  });
+});
+
+describe("a held prompt the harness takes", () => {
+  it("is sent and no longer held", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "prompt.queued", { queueId: "q1", prompt: "a", held: true }));
+    s = applyEvent(s, ev(2, "prompt.sent", { queueId: "q1" }));
+    expect(s.queuedPrompts[0]).toMatchObject({ sent: true, held: false });
+  });
 });
 
 describe("a queued prompt starting", () => {

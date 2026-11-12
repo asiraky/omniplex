@@ -455,17 +455,47 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "prompt.queued":
       return {
         ...s,
-        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp, held: p.held }],
       };
 
     case "prompt.sent":
-      // The harness took a queued prompt mid-turn. One it already read has
-      // left the queue, and there is nothing to mark. Mirrors
-      // internal/projection/state.go.
+      // The harness took a queued prompt mid-turn, so nothing holds it any
+      // more. One it already read has left the queue, and there is nothing to
+      // mark. Mirrors internal/projection/state.go.
       return {
         ...s,
-        queuedPrompts: (s.queuedPrompts ?? []).map((q) => (q.queueId === p.queueId ? { ...q, sent: true } : q)),
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) =>
+          q.queueId === p.queueId ? { ...q, sent: true, held: false } : q,
+        ),
       };
+
+    case "prompt.edited":
+      // The new text and pictures replace the old outright: no images in the
+      // edit means it has none now. Mirrors internal/projection/state.go.
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) =>
+          q.queueId === p.queueId ? { ...q, prompt: p.prompt, images: p.images } : q,
+        ),
+      };
+
+    case "prompt.held": {
+      // A held prompt waits on the server for the person to resume the
+      // queue, so the harness no longer has it, whatever it had before.
+      const ids = new Set<string>(p.queueIds ?? []);
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) => (ids.has(q.queueId) ? { ...q, held: true, sent: false } : q)),
+      };
+    }
+
+    case "prompt.released": {
+      const ids = new Set<string>(p.queueIds ?? []);
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) => (ids.has(q.queueId) ? { ...q, held: false } : q)),
+      };
+    }
 
     case "prompt.injected": {
       // The harness read a prompt it was holding into the running turn: it

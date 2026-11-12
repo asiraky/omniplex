@@ -1862,16 +1862,118 @@ func TestCancelDropsQueuedPrompts(t *testing.T) {
 }
 
 // TestQueuedPromptWaitsForRestartRecovery: a restart mid-turn resumes the
-// interrupted work first. A prompt queued behind that work runs after the
-// continuation, not instead of it.
+// interrupted work first. A prompt queued behind that work is held: it does
+// not run after the continuation until a human resumes the queue, and a
+// prompt queued behind it waits with it.
 func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
+	r := restartWithQueue(t, &fakeAdapter{})
+	ctx := context.Background()
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || !s.Queued[0].Held {
+		t.Fatalf("queue after restart = %+v, want the queued prompt held", s.Queued)
+	}
+
+	behind, err := r.actor.Prompt(ctx, "behind", nil)
+	if err != nil || !behind.Queued() {
+		t.Fatalf("prompt during the continuation = %+v, %v", behind, err)
+	}
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: r.continuation, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		s, _ := r.actor.State(ctx)
+		return s.Phase == "idle"
+	})
+	noPrompt(t, r.fa.thread().prompts, 50*time.Millisecond)
+	s, _ := r.actor.State(ctx)
+	if len(s.Queued) != 2 || !s.Queued[0].Held || !s.Queued[1].Held {
+		t.Fatalf("queue after the continuation = %+v, want both held", s.Queued)
+	}
+
+	if err := r.actor.ResumeQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	next := nextInput(t, r.fa.thread())
+	if next.Text != "after" {
+		t.Fatalf("prompt after resume = %q, want the head of the queue", next.Text)
+	}
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: next.TurnID, StopReason: proto.StopEndTurn}))
+	if last := nextInput(t, r.fa.thread()); last.Text != "behind" {
+		t.Fatalf("prompt after the head = %q, want the one queued behind it", last.Text)
+	}
+}
+
+// TestNewMessageReleasesHeldQueue: a human sending a message into an idle
+// thread is a human paying attention. Their message runs, and the held queue
+// runs after it.
+func TestNewMessageReleasesHeldQueue(t *testing.T) {
+	r := restartWithQueue(t, &fakeAdapter{})
+	ctx := context.Background()
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: r.continuation, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		s, _ := r.actor.State(ctx)
+		return s.Phase == "idle"
+	})
+
+	fresh, err := r.actor.Prompt(ctx, "fresh", nil)
+	if err != nil || fresh.Queued() {
+		t.Fatalf("prompt into an idle thread = %+v, %v", fresh, err)
+	}
+	if in := nextInput(t, r.fa.thread()); in.Text != "fresh" {
+		t.Fatalf("first prompt = %q, want the new message", in.Text)
+	}
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || s.Queued[0].Held {
+		t.Fatalf("queue after a new message = %+v, want it released", s.Queued)
+	}
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: fresh.TurnID, StopReason: proto.StopEndTurn}))
+	if in := nextInput(t, r.fa.thread()); in.Text != "after" {
+		t.Fatalf("prompt after the new message = %q, want the released queue", in.Text)
+	}
+}
+
+// TestSendQueuedPromptStartsTurnWhenIdle: sending a held prompt now starts
+// its turn, takes it out of the queue, and lets the rest of the queue run
+// behind it.
+func TestSendQueuedPromptStartsTurnWhenIdle(t *testing.T) {
+	r := restartWithQueue(t, &fakeAdapter{})
+	ctx := context.Background()
+	behind, _ := r.actor.Prompt(ctx, "behind", nil)
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: r.continuation, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		s, _ := r.actor.State(ctx)
+		return s.Phase == "idle"
+	})
+
+	res, err := r.actor.SendQueuedPrompt(ctx, behind.QueueID)
+	if err != nil || res.TurnID == "" {
+		t.Fatalf("send now = %+v, %v; want a turn", res, err)
+	}
+	if in := nextInput(t, r.fa.thread()); in.Text != "behind" || in.TurnID != res.TurnID {
+		t.Fatalf("sent prompt = %+v", in)
+	}
+	s, _ := r.actor.State(ctx)
+	if len(s.Queued) != 1 || s.Queued[0].Prompt != "after" || s.Queued[0].Held {
+		t.Fatalf("queue after send now = %+v, want the other entry, released", s.Queued)
+	}
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: res.TurnID, StopReason: proto.StopEndTurn}))
+	if in := nextInput(t, r.fa.thread()); in.Text != "after" {
+		t.Fatalf("prompt after send now = %q", in.Text)
+	}
+}
+
+// restarted is a thread brought back by a restart that caught it mid-turn
+// with "after" queued: the continuation is running and the queue is held.
+type restarted struct {
+	actor        *Actor
+	fa           *fakeAdapter
+	continuation string
+}
+
+func restartWithQueue(t *testing.T, fa *fakeAdapter) restarted {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "queued.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { st.Close() })
 
-	fa := &fakeAdapter{}
 	mgr := NewManager(st, func(string, ...any) {}, fa)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {
@@ -1881,29 +1983,34 @@ func TestQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 	if _, err := actor.Prompt(context.Background(), "start", nil); err != nil {
 		t.Fatal(err)
 	}
-	<-fa.thread().prompts
-	if res, err := actor.Prompt(context.Background(), "after", nil); err != nil || !res.Queued() {
+	nextInput(t, fa.thread())
+	if res, err := actor.PromptWith(context.Background(), "after", nil, proto.DeliveryQueue); err != nil || !res.Queued() {
 		t.Fatalf("queued prompt = %+v, %v", res, err)
 	}
 	id := actor.ID
 	mgr.Shutdown()
 
 	m := NewManager(st, func(string, ...any) {}, fa)
-	defer m.Shutdown()
+	t.Cleanup(m.Shutdown)
 	a, err := m.Get(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := <-fa.thread().prompts
+	first := nextInput(t, fa.thread())
 	if first.Text != restartPrompt {
 		t.Fatalf("first prompt after restart = %q, want the continuation", first.Text)
 	}
-	if s, _ := a.State(context.Background()); len(s.Queued) != 1 {
-		t.Fatalf("queue after restart = %+v, want the queued prompt still waiting", s.Queued)
-	}
-	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
-	if next := <-fa.thread().prompts; next.Text != "after" {
-		t.Fatalf("prompt after continuation = %q, want the queued one", next.Text)
+	return restarted{actor: a, fa: fa, continuation: first.TurnID}
+}
+
+func nextInput(t *testing.T, s *fakeThread) adapter.PromptInput {
+	t.Helper()
+	select {
+	case in := <-s.prompts:
+		return in
+	case <-time.After(5 * time.Second):
+		t.Fatal("no prompt reached the harness within 5s")
+		return adapter.PromptInput{}
 	}
 }
 
@@ -2220,5 +2327,359 @@ func TestAskAfterItsTurnFinishedIsCancelled(t *testing.T) {
 				t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
 			}
 		})
+	}
+}
+
+// TestEditQueuedPrompt: a waiting prompt can be reworded before it runs.
+// Leaving the attachments out keeps them; giving a set replaces it. An edit
+// that would leave nothing to send, or reaches a prompt that is gone, is
+// refused, and the edited text is what the harness gets.
+func TestEditQueuedPrompt(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	queued, err := actor.Prompt(ctx, "later", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}})
+	if err != nil || !queued.Queued() {
+		t.Fatalf("queued = %+v, %v", queued, err)
+	}
+
+	if err := actor.EditQueuedPrompt(ctx, queued.QueueID, "later, reworded", nil); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := actor.State(ctx)
+	if q := s.Queued[0]; q.Prompt != "later, reworded" || len(q.Images) != 1 || q.Images[0].ID != "img" {
+		t.Fatalf("after a text edit = %+v, want the attachment kept", q)
+	}
+
+	none := []proto.PromptImage{}
+	if err := actor.EditQueuedPrompt(ctx, queued.QueueID, "  ", &none); !errors.Is(err, ErrEmptyPrompt) {
+		t.Fatalf("edit to nothing err = %v, want ErrEmptyPrompt", err)
+	}
+	if err := actor.EditQueuedPrompt(ctx, queued.QueueID, "", nil); err != nil {
+		t.Fatalf("clearing the text of a prompt with an attachment: %v", err)
+	}
+	replaced := []proto.PromptImage{{ID: "other", MediaType: "image/png", Path: "/tmp/y.png"}}
+	if err := actor.EditQueuedPrompt(ctx, queued.QueueID, "look at this", &replaced); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = actor.State(ctx)
+	if q := s.Queued[0]; q.Prompt != "look at this" || len(q.Images) != 1 || q.Images[0].ID != "other" {
+		t.Fatalf("after replacing attachments = %+v", q)
+	}
+	if err := actor.EditQueuedPrompt(ctx, "gone", "x", nil); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("edit of an unknown prompt err = %v, want ErrNotQueued", err)
+	}
+
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	if in := nextInput(t, fa.thread()); in.Text != "look at this" || len(in.Images) != 1 || in.Images[0].ID != "other" {
+		t.Fatalf("dispatched = %+v, want the edited prompt", in)
+	}
+	if err := actor.EditQueuedPrompt(ctx, queued.QueueID, "too late", nil); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("edit of a started prompt err = %v, want ErrNotQueued", err)
+	}
+}
+
+// TestEditRefusesSentPrompt: once the harness holds a prompt, rewording it
+// on the server would change nothing the model reads.
+func TestEditRefusesSentPrompt(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+	actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	steered, _ := actor.Prompt(ctx, "steered", nil)
+	nextInput(t, fa.thread())
+	if err := actor.EditQueuedPrompt(ctx, steered.QueueID, "changed", nil); !errors.Is(err, ErrAlreadySent) {
+		t.Fatalf("edit of a sent prompt err = %v, want ErrAlreadySent", err)
+	}
+}
+
+// TestQueueDeliveryDoesNotSteer: on a harness that could take the message
+// mid-turn, asking to queue waits for the turn to end; the default steers.
+func TestQueueDeliveryDoesNotSteer(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	first, _ := actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	waiting, err := actor.PromptWith(ctx, "wait", nil, proto.DeliveryQueue)
+	if err != nil || !waiting.Queued() {
+		t.Fatalf("queued = %+v, %v", waiting, err)
+	}
+	noPrompt(t, fa.thread().prompts, 50*time.Millisecond)
+	steered, _ := actor.PromptWith(ctx, "now", nil, proto.DeliveryDefault)
+	if in := nextInput(t, fa.thread()); in.QueueID != steered.QueueID || in.TurnID != "" {
+		t.Fatalf("default delivery = %+v, want a steer", in)
+	}
+	s, _ := actor.State(ctx)
+	if len(s.Queued) != 2 || s.Queued[0].Sent || !s.Queued[1].Sent {
+		t.Fatalf("queue = %+v, want the queued one unsent and the steered one sent", s.Queued)
+	}
+
+	fa.thread().emit(proto.Emit(proto.PromptInjected, proto.PromptInjectedPayload{QueueID: steered.QueueID, TurnID: first.TurnID}))
+	fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	if in := nextInput(t, fa.thread()); in.Text != "wait" || in.TurnID == "" {
+		t.Fatalf("after the turn = %+v, want the queued prompt as its own turn", in)
+	}
+}
+
+// TestSendQueuedPromptSteersWhileBusy: sending a queued prompt now hands it
+// to the running turn where it sits, under its own queue id, and it is sent
+// once the harness has taken it. A held one the harness takes is no longer
+// held.
+func TestSendQueuedPromptSteersWhileBusy(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+
+	actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	queued, _ := actor.PromptWith(ctx, "later", []proto.PromptImage{{ID: "img", MediaType: "image/png", Path: "/tmp/x.png"}}, proto.DeliveryQueue)
+	behind, _ := actor.PromptWith(ctx, "behind", nil, proto.DeliveryQueue)
+
+	res, err := actor.SendQueuedPrompt(ctx, queued.QueueID)
+	if err != nil || res.QueueID != queued.QueueID {
+		t.Fatalf("send now = %+v, %v; want the entry's own queue id", res, err)
+	}
+	if in := nextInput(t, fa.thread()); in.QueueID != queued.QueueID || in.TurnID != "" || in.Text != "later" || len(in.Images) != 1 {
+		t.Fatalf("steered = %+v", in)
+	}
+	s, _ := actor.State(ctx)
+	if len(s.Queued) != 2 || s.Queued[0].QueueID != queued.QueueID || !s.Queued[0].Sent || len(s.Queued[0].Images) != 1 || s.Queued[1].QueueID != behind.QueueID || s.Queued[1].Sent {
+		t.Fatalf("queue after send now = %+v, want the entry sent where it was", s.Queued)
+	}
+	if _, err := actor.SendQueuedPrompt(ctx, queued.QueueID); !errors.Is(err, ErrAlreadySent) {
+		t.Fatalf("sending a sent prompt again err = %v, want ErrAlreadySent", err)
+	}
+}
+
+// TestSteerPastAHeldQueue: a held prompt steered by hand is the harness's
+// once it takes it, and no longer held.
+func TestSteerPastAHeldQueue(t *testing.T) {
+	r := restartWithQueue(t, &fakeAdapter{steer: true})
+	ctx := context.Background()
+	s, _ := r.actor.State(ctx)
+	if len(s.Queued) != 1 || !s.Queued[0].Held {
+		t.Fatalf("queue after the restart = %+v, want it held", s.Queued)
+	}
+	held := s.Queued[0].QueueID
+	if _, err := r.actor.SendQueuedPrompt(ctx, held); err != nil {
+		t.Fatal(err)
+	}
+	if in := nextInput(t, r.fa.thread()); in.QueueID != held || in.Text != "after" {
+		t.Fatalf("steered = %+v", in)
+	}
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || !s.Queued[0].Sent || s.Queued[0].Held {
+		t.Fatalf("queue after steering the held prompt = %+v, want it sent and not held", s.Queued)
+	}
+}
+
+// TestRefusedSteerFallsInBehindAHold: a prompt sent mid-turn goes to the
+// harness past a held queue, but one the harness refuses joins the queue
+// behind the hold, held with it.
+func TestRefusedSteerFallsInBehindAHold(t *testing.T) {
+	r := restartWithQueue(t, &fakeAdapter{steer: true, steerRefuse: errors.New("pipe closed")})
+	ctx := context.Background()
+	res, err := r.actor.Prompt(ctx, "steer me", nil)
+	if err != nil || !res.Queued() {
+		t.Fatalf("prompt mid-turn = %+v, %v", res, err)
+	}
+	s, _ := r.actor.State(ctx)
+	if len(s.Queued) != 2 || s.Queued[1].QueueID != res.QueueID || !s.Queued[1].Held || s.Queued[1].Sent {
+		t.Fatalf("queue after a refused steer = %+v, want it held behind the hold", s.Queued)
+	}
+	if _, err := r.actor.SendQueuedPrompt(ctx, res.QueueID); err == nil {
+		t.Fatal("a refused steer by hand reported success")
+	}
+}
+
+func TestSendQueuedPromptKeepsEntryWhenSteerFails(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true, steerRefuse: errors.New("pipe closed")})
+	ctx := context.Background()
+	actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	queued, _ := actor.Prompt(ctx, "later", nil)
+	if _, err := actor.SendQueuedPrompt(ctx, queued.QueueID); err == nil {
+		t.Fatal("a refused steer reported success")
+	}
+	if s, _ := actor.State(ctx); len(s.Queued) != 1 || s.Queued[0].QueueID != queued.QueueID || s.Queued[0].Sent {
+		t.Fatalf("queue after a refused steer = %+v, want the entry untouched", s.Queued)
+	}
+}
+
+// TestSendQueuedPromptNeedsSteerWhileBusy: a harness that reads messages only
+// between turns cannot be handed one now; the prompt keeps its place.
+func TestSendQueuedPromptNeedsSteerWhileBusy(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+	actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	queued, _ := actor.Prompt(ctx, "later", nil)
+	if _, err := actor.SendQueuedPrompt(ctx, queued.QueueID); !errors.Is(err, ErrCannotSteer) {
+		t.Fatalf("send now on a non-steering harness err = %v, want ErrCannotSteer", err)
+	}
+	if s, _ := actor.State(ctx); len(s.Queued) != 1 {
+		t.Fatalf("queue = %+v, want the entry kept", s.Queued)
+	}
+}
+
+// TestFirstMessageRunsWhenProvisioningFinishes: the message that creates a
+// thread waits while its workspace is prepared, then runs by itself the
+// moment the harness starts. Nobody needs to resume it.
+func TestFirstMessageRunsWhenProvisioningFinishes(t *testing.T) {
+	st, fa, meta := provisioningThread(t)
+	ctx := context.Background()
+	a := StartPending(st, fa, meta, nil, func(string, ...any) {})
+	t.Cleanup(func() { a.Dispose("test done") })
+	waitFor(t, func() bool { return a.Head() >= 1 })
+
+	if res, err := a.Prompt(ctx, "first message", nil); err != nil || !res.Queued() {
+		t.Fatalf("prompt while provisioning = %+v, %v", res, err)
+	}
+	if err := a.Activate(ctx, meta.Cwd, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if in := nextInput(t, fa.thread()); in.Text != "first message" {
+		t.Fatalf("prompt after provisioning = %q, want the first message", in.Text)
+	}
+}
+
+// TestProvisioningQueueHeldAfterRestart: a restart while a thread is being
+// provisioned leaves its first message in the log. Provisioning retried in
+// the new process starts the harness fresh, not as a resume, and the message
+// is held all the same: it was written before the server went down.
+func TestProvisioningQueueHeldAfterRestart(t *testing.T) {
+	st, fa, meta := provisioningThread(t)
+	ctx := context.Background()
+	live := StartPending(st, fa, meta, nil, func(string, ...any) {})
+	waitFor(t, func() bool { return live.Head() >= 1 })
+	if _, err := live.Prompt(ctx, "first message", nil); err != nil {
+		t.Fatal(err)
+	}
+	live.Dispose("server stopped")
+
+	a, err := RestorePending(ctx, st, fa, meta, nil, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Dispose("test done") })
+	if err := a.Activate(ctx, meta.Cwd, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.State(ctx)
+	if len(s.Queued) != 1 || !s.Queued[0].Held {
+		t.Fatalf("queue after a restarted provision = %+v, want the message held", s.Queued)
+	}
+	noPrompt(t, fa.thread().prompts, 50*time.Millisecond)
+
+	if err := a.ResumeQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if in := nextInput(t, fa.thread()); in.Text != "first message" {
+		t.Fatalf("prompt after resume = %q, want the held message", in.Text)
+	}
+}
+
+// provisioningThread is a thread row caught mid-provisioning, with no actor.
+func provisioningThread(t *testing.T) (*store.Store, *fakeAdapter, store.ThreadMeta) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "pending.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	meta := store.ThreadMeta{ID: "provisioning-1", Cwd: t.TempDir(), Harness: "fake", Phase: "provisioning",
+		CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis()}
+	if err := st.CreateThread(context.Background(), meta); err != nil {
+		t.Fatal(err)
+	}
+	return st, &fakeAdapter{}, meta
+}
+
+// TestRefusedQueuedStartHoldsTheRest: a harness that refuses the head of the
+// queue ends it as an errored turn, and holds what is behind it rather than
+// spending each on the same refusal, one per command. A human resuming the
+// queue sends the rest.
+func TestRefusedQueuedStartHoldsTheRest(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	ctx := context.Background()
+	first, _ := actor.Prompt(ctx, "first", nil)
+	nextInput(t, fa.thread())
+	actor.Prompt(ctx, "a", nil)
+	actor.Prompt(ctx, "b", nil)
+	actor.Prompt(ctx, "c", nil)
+
+	sess := fa.thread()
+	sess.mu.Lock()
+	sess.refuse = &adapter.FailureError{Kind: proto.FailureAuth, Err: errors.New("claude needs you to sign in again")}
+	sess.mu.Unlock()
+	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: first.TurnID, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool {
+		s, _ := actor.State(ctx)
+		return len(s.Turns) == 2 && s.Turns[1].Done
+	})
+
+	// Every state read is a command, and each is followed by a dispatch.
+	actor.State(ctx)
+	s, _ := actor.State(ctx)
+	if len(s.Turns) != 2 || s.Turns[1].Prompt != "a" || s.Turns[1].Failure != proto.FailureAuth {
+		t.Fatalf("turns = %+v, want the refused head as the only errored turn", s.Turns)
+	}
+	if len(s.Queued) != 2 || s.Queued[0].Prompt != "b" || !s.Queued[0].Held || !s.Queued[1].Held {
+		t.Fatalf("queue after a refused start = %+v, want the rest held", s.Queued)
+	}
+
+	sess.mu.Lock()
+	sess.refuse = nil
+	sess.mu.Unlock()
+	if err := actor.ResumeQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if in := nextInput(t, sess); in.Text != "b" {
+		t.Fatalf("prompt after resume = %q, want the next in line", in.Text)
+	}
+}
+
+// TestSendQueuedPromptWaitsForRestartRecovery: between the harness coming
+// back after a restart and the continuation going out, the thread looks
+// idle. Sending a queued prompt then would start it ahead of the work the
+// server is about to continue, so it is refused.
+func TestSendQueuedPromptWaitsForRestartRecovery(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "queued.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fa := &fakeAdapter{}
+	ctx := context.Background()
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	actor, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return actor.Head() >= 1 })
+	actor.Prompt(ctx, "start", nil)
+	nextInput(t, fa.thread())
+	queued, err := actor.Prompt(ctx, "after", nil)
+	if err != nil || !queued.Queued() {
+		t.Fatalf("queued = %+v, %v", queued, err)
+	}
+	mgr.Shutdown()
+
+	m := NewManager(st, func(string, ...any) {}, fa)
+	t.Cleanup(m.Shutdown)
+	a, err := m.View(ctx, actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ActivateResume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SendQueuedPrompt(ctx, queued.QueueID); !errors.Is(err, ErrBusy) {
+		t.Fatalf("send now before the continuation err = %v, want ErrBusy", err)
+	}
+	noPrompt(t, fa.thread().prompts, 50*time.Millisecond)
+	if s, _ := a.State(ctx); len(s.Queued) != 1 || s.Queued[0].QueueID != queued.QueueID {
+		t.Fatalf("queue = %+v, want the entry kept", s.Queued)
 	}
 }
