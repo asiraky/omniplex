@@ -48,20 +48,10 @@ export function StatusMark({ status }: { status?: ToolStatus }) {
     return <XIcon aria-label="Failed" className="text-destructive size-3.5" />;
   // Stopped on purpose, not broken: muted, not red.
   if (status === "cancelled")
-    return (
-      <CircleSlashIcon
-        aria-label="Cancelled"
-        className="text-muted-foreground size-3.5"
-      />
-    );
+    return <CircleSlashIcon aria-label="Cancelled" className="text-muted-foreground size-3.5" />;
   // Refused by the user, so it never ran: neither done nor broken.
   if (status === "declined")
-    return (
-      <ShieldXIcon
-        aria-label="Declined"
-        className="text-muted-foreground size-3.5"
-      />
-    );
+    return <ShieldXIcon aria-label="Declined" className="text-muted-foreground size-3.5" />;
   return <CheckIcon aria-label="Done" className="text-success size-3.5" />;
 }
 
@@ -70,9 +60,7 @@ const running = (item: Item | undefined) =>
 
 function joinOutput(content: ToolContent[] | undefined) {
   return (content ?? [])
-    .map((c) =>
-      c.type === "diff" ? `--- ${c.path}\n${c.text ?? ""}` : (c.text ?? ""),
-    )
+    .map((c) => (c.type === "diff" ? `--- ${c.path}\n${c.text ?? ""}` : (c.text ?? "")))
     .join("\n")
     .trim();
 }
@@ -101,25 +89,14 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
         </span>
         {/* A shield alone reads as nothing much; the word says it never ran. */}
         {item.status === "declined" && (
-          <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
-            declined
-          </span>
+          <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
         )}
         <StatusMark status={item.status as ToolStatus | undefined} />
         {output && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
             {/* A preview's line count is the preview's, not the output's. */}
-            {open
-              ? "hide"
-              : truncated
-                ? "truncated"
-                : `${output.split("\n").length} lines`}
-            <ChevronDownIcon
-              className={cn(
-                "size-3 transition-transform",
-                open && "rotate-180",
-              )}
-            />
+            {open ? "hide" : truncated ? "truncated" : `${output.split("\n").length} lines`}
+            <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
           </span>
         )}
       </button>
@@ -152,11 +129,7 @@ const textButton =
   "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-11 items-center gap-1.5 rounded-sm px-1 text-[12px] transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none md:min-h-0";
 
 /** The way from a truncated preview to the whole output, and back after 4G drops it. */
-function LoadFullOutput({
-  full,
-}: {
-  full: FullContent & { load: () => void };
-}) {
+function LoadFullOutput({ full }: { full: FullContent & { load: () => void } }) {
   if (full.status === "error") {
     return (
       <div className="flex flex-wrap items-center gap-x-2">
@@ -171,12 +144,7 @@ function LoadFullOutput({
   }
   const loading = full.status === "loading";
   return (
-    <button
-      type="button"
-      onClick={full.load}
-      disabled={loading}
-      className={textButton}
-    >
+    <button type="button" onClick={full.load} disabled={loading} className={textButton}>
       {loading && <Spinner className="text-primary size-3" />}
       {loading ? "Loading full output…" : "Load full output"}
     </button>
@@ -187,13 +155,7 @@ function LoadFullOutput({
 // stands in for. Everything renders the way it would in the open — the same
 // content shown two different ways in one transcript is a seam the reader has
 // to notice.
-function ExpandedItems({
-  threadId,
-  items,
-}: {
-  threadId: string;
-  items: Item[];
-}) {
+function ExpandedItems({ threadId, items }: { threadId: string; items: Item[] }) {
   return (
     <div className="mt-2 space-y-2 border-l pl-3">
       {items.map((item) =>
@@ -205,9 +167,7 @@ function ExpandedItems({
             text={item.text ?? ""}
             className={cn(
               "text-[13px] leading-relaxed break-words",
-              item.contentKind === "thought"
-                ? "text-thought italic"
-                : "text-muted-foreground",
+              item.contentKind === "thought" ? "text-thought italic" : "text-muted-foreground",
             )}
           />
         ),
@@ -222,15 +182,7 @@ function ExpandedItems({
 // Either way it expands to the cards, and either way the row never leaves —
 // the fix this design carries: nothing at the tail of a working transcript
 // disappears out from under the reader.
-export function ToolRun({
-  threadId,
-  items,
-  live,
-}: {
-  threadId: string;
-  items: Item[];
-  live: boolean;
-}) {
+export function ToolRun({ threadId, items, live }: { threadId: string; items: Item[]; live: boolean }) {
   const [open, setOpen] = useState(false);
   const active = items.filter(running).pop() ?? items[items.length - 1];
   const failed = items.some((i) => i.status === "failed");
@@ -257,26 +209,14 @@ export function ToolRun({
         ) : (
           <>
             <span className="flex shrink-0 items-center gap-1">
-              {failed && (
-                <XIcon
-                  aria-label="A call failed"
-                  className="text-destructive size-3.5"
-                />
-              )}
-              {declined && (
-                <ShieldXIcon
-                  aria-label="A call was declined"
-                  className="size-3.5"
-                />
-              )}
+              {failed && <XIcon aria-label="A call failed" className="text-destructive size-3.5" />}
+              {declined && <ShieldXIcon aria-label="A call was declined" className="size-3.5" />}
               {kinds.slice(0, 4).map((k) => {
                 const Icon = TOOL_ICON[k] ?? CircleIcon;
                 return <Icon key={k} className="size-3.5" />;
               })}
             </span>
-            <span className="min-w-0 flex-1 truncate text-[12px]">
-              {summarise(items)}
-            </span>
+            <span className="min-w-0 flex-1 truncate text-[12px]">{summarise(items)}</span>
           </>
         )}
         {/* `leading-none`, or this span is 12px tall (just the chevron) while the
@@ -284,9 +224,7 @@ export function ToolRun({
             call — and the row centres, so the chevron twitches up 1.5px. */}
         <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none">
           {open ? "hide" : items.length === 1 ? "" : `${items.length} calls`}
-          <ChevronDownIcon
-            className={cn("size-3 transition-transform", open && "rotate-180")}
-          />
+          <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
         </span>
       </button>
 
@@ -305,6 +243,8 @@ export function ToolRun({
 // A finished turn's work, behind one quiet line. What the reader keeps is the
 // prompt above and the answer below; "Worked for 34s" is the receipt for
 // everything in between, and opens to all of it — thoughts, calls, failures.
+// A piece after the first, when a plan or spawn batch split the turn, says
+// what it holds instead: the duration is the whole turn's, and is said once.
 export function TurnFold({
   threadId,
   turn,
@@ -326,12 +266,8 @@ export function TurnFold({
         aria-expanded={open}
         className="hover:text-foreground focus-visible:ring-ring text-muted-foreground flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2"
       >
-        <span>
-          {continued ? summarise(items) || "More work" : foldLabel(turn)}
-        </span>
-        <ChevronDownIcon
-          className={cn("size-3.5 transition-transform", !open && "-rotate-90")}
-        />
+        <span>{continued ? summarise(items) || "More work" : foldLabel(turn)}</span>
+        <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
       </button>
 
       {open && <ExpandedItems threadId={threadId} items={items} />}
