@@ -272,7 +272,8 @@ func Open(path string) (*Store, error) {
 	// A claim with no result belongs to a command that was running when the
 	// last process died. Nothing else would ever free it, and every retry of
 	// that id would wait on it and fail: a prompt caught by a restart could
-	// never be sent again under its id.
+	// never be sent again under its id. The cost: a command the dead process
+	// had already started runs again if it is retried, which beats never.
 	if _, err := db.Exec(`DELETE FROM commands WHERE result IS NULL`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("free unfinished commands: %w", err)
