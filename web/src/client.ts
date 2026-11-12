@@ -4,7 +4,20 @@
 
 import { applyEvent, applyJobRow, dropsJobRow, emptyState, prependItems, revivesUnheldJob } from "./apply";
 import { checkBuild } from "./boot";
-import type { Access, AuthFlowEvent, Event, HarnessMeta, Item, Job, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
+import type {
+  Access,
+  AuthFlowEvent,
+  Event,
+  HarnessMeta,
+  Item,
+  Job,
+  Project,
+  QuotaStatus,
+  ServerFrame,
+  ThreadMeta,
+  ThreadState,
+  TurnStatus,
+} from "./protocol";
 import { ThreadCache } from "./threadCache";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
@@ -41,6 +54,8 @@ export interface ClientEvents {
   onProjects(projects: Project[]): void;
   onQuotas(quotas: QuotaStatus[]): void;
   onState(threadId: string, state: ThreadState): void;
+  /** The attached thread's transient turn status; null clears it. */
+  onTurnStatus(threadId: string, status: TurnStatus | null): void;
   onAccess(access: Access): void;
 }
 
@@ -511,6 +526,7 @@ export class Client {
   private leave() {
     this.snapshotRequest?.abort();
     this.snapshotRequest = null;
+    this.clearTurnStatus();
     if (this.threadId) this.raw({ type: "detach", threadId: this.threadId });
     if (this.state && this.state.threadId === this.threadId) this.recentThreads.put(this.state);
     this.jobsInFlight?.controller.abort();
@@ -520,6 +536,7 @@ export class Client {
 
   /** Ask for the thread's history after afterSeq, or all of it when absent. */
   private sendAttach(threadId: string, afterSeq?: number) {
+    this.clearTurnStatus();
     const sent = this.raw({ type: "attach", threadId, afterSeq });
     if (sent) this.attachesInFlight.set(threadId, (this.attachesInFlight.get(threadId) ?? 0) + 1);
   }
@@ -609,6 +626,14 @@ export class Client {
     }
   }
 
+  // A turn status is only ever as good as the attachment that carried it. The
+  // server re-sends the live one after `synchronized` on every attach, so
+  // dropping ours whenever we leave, (re)attach or take a snapshot means a
+  // status the server has since cleared can never stick.
+  private clearTurnStatus() {
+    if (this.threadId) this.events.onTurnStatus(this.threadId, null);
+  }
+
   private raw(frame: Record<string, unknown>): boolean {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify(frame));
@@ -662,6 +687,14 @@ export class Client {
         if (f.threadId === this.threadId) this.events.onComposerItemsChanged(f.threadId);
         break;
 
+      // Why the running turn has gone quiet. Transient, so it bypasses the
+      // reducer: it is never logged and never part of thread state. No status,
+      // or one with no state, clears it.
+      case "turn_status":
+        if (f.threadId !== this.threadId) return;
+        this.events.onTurnStatus(f.threadId, f.turnStatus?.state ? f.turnStatus : null);
+        break;
+
       // A snapshot and a replay are both followed by `synchronized`, which
       // publishes. Holding off until then renders a reconnect or a return to
       // a cached thread once, not once per event of the gap — on a phone that
@@ -676,6 +709,7 @@ export class Client {
         this.cursor = f.state.seq;
         // The snapshot is newer than any row held for a jobs fetch.
         this.droppedJobRows = [];
+        this.clearTurnStatus();
         break;
 
       case "replay": {

@@ -118,6 +118,12 @@ elicitation.resolved  { requestId, value }
 ```
 `outcome` ∈ `allow_once | allow_always | reject_once | reject_always | selected | cancelled`
 
+**Transient** (never logged, never folded)
+```
+turn.status { state?: retrying|compacting, attempt?, max?, reason?, retryAt? }
+```
+Why a running turn has gone quiet. The actor holds only the latest one in memory and pushes it to attached clients as `turn_status`. An empty `state` clears it; so does the running turn's `turn.finished` (a stale finish for another turn does not), `context.compacted` or `thread.closed`, and any top-level `message.chunk` or `tool_call.started` (a subagent's output does not count). One that arrives while no turn is running is dropped. It takes no seq, so it sits outside invariants 2 and 7 on purpose: a restart kills the turn it described.
+
 Every event carries `{ sessionId, seq, timestamp }`. `seq` is a per-session monotonic integer assigned at append. There is no global sequence — sessions are independent streams, which keeps append contention per-session and makes sharding trivial later.
 
 Generate the Go types from ACP's published JSON schema rather than hand-writing them. Hand-maintained enums drift.
@@ -207,6 +213,7 @@ Transport-agnostic; JSON over WebSocket to start.
 ← event    { sessionId, seq, event }        // live and replayed, same shape
 ← synchronized { sessionId, seq }           // caught up marker
 ← resync   { sessionId }                    // server dropped your queue; reattach
+← turn_status { sessionId, turnStatus? }    // transient; absent turnStatus = cleared
 
 → command  { commandId, sessionId, ... }
 ← ack      { commandId, result | error }
@@ -218,7 +225,7 @@ Transport-agnostic; JSON over WebSocket to start.
 2. Compute `gap = head_seq - afterSeq`.
 3. If `afterSeq` is absent, `gap < 0`, or `gap > MaxReplayEvents` (128) → send `snapshot`, built from the actor's state.
 4. Otherwise read events `(afterSeq, head]` from the log, capped for the wire. If they come to more than `MaxReplayBytes` (1 MiB), send `snapshot` instead; else send them in one `replay` frame. The client applies them without rendering and renders once on `synchronized`.
-5. Send `synchronized`, then drain the buffered queue.
+5. Send `synchronized`, then — if a turn status is held — one `turn_status`, then drain the buffered queue.
 
 Subscribing before reading closes the window where an event lands between the read and the subscription. The gap bound is not an optimisation — unbounded replay from a months-old cursor reads an entire session into memory, and that has OOM-killed real servers.
 

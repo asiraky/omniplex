@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -764,6 +765,14 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 			ToolCallID: toolItemID(s.currentTurn(), p.ToolCallID), Status: status, Content: content,
 		}))
 
+	case "compaction_start":
+		// No ensureTurn: automatic compaction runs inside a run pi has already
+		// opened (prompt preflight after Prompt set the turn id, inside the
+		// loop, or after agent_end but before agent_settled), and manual
+		// compaction has no agent_settled to close a turn opened for it. One
+		// arriving with no turn open is dropped by the actor, as it should be.
+		s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnCompacting}))
+
 	case "compaction_end":
 		var p struct {
 			Reason  string `json:"reason"` // manual | threshold | overflow
@@ -774,6 +783,7 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 			} `json:"result"`
 		}
 		_ = json.Unmarshal(raw, &p)
+		s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
 		// A null result is an aborted or failed compaction: nothing changed,
 		// so there is no boundary to record.
 		if p.Aborted || p.Result == nil {
@@ -797,13 +807,36 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		s.handleUIRequest(raw)
 
 	case "auto_retry_start":
-		var p struct {
-			Attempt      int    `json:"attempt"`
-			MaxAttempts  int    `json:"maxAttempts"`
-			ErrorMessage string `json:"errorMessage"`
-		}
+		var p piRetry
 		_ = json.Unmarshal(raw, &p)
 		s.host.Logf("pi auto-retry %d/%d after: %s", p.Attempt, p.MaxAttempts, p.ErrorMessage)
+		s.emitRetrying(p)
+
+	case "auto_retry_end":
+		s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
+
+	case "summarization_retry_scheduled":
+		// The compaction (or branch summary) model call failed and pi is
+		// backing off before the next attempt.
+		var p piRetry
+		_ = json.Unmarshal(raw, &p)
+		s.emitRetrying(p)
+
+	case "summarization_retry_attempt_start":
+		// The backoff is over. A compaction retry is compacting again; a
+		// branch summary was never a compaction, so it just clears.
+		var p struct {
+			Source string `json:"source"`
+		}
+		_ = json.Unmarshal(raw, &p)
+		var status proto.TurnStatusPayload
+		if p.Source == "compaction" {
+			status.State = proto.TurnCompacting
+		}
+		s.emit(proto.Emit(proto.TurnStatus, status))
+
+	// summarization_retry_finished is not mapped: for compaction it is always
+	// followed by compaction_end, which clears.
 
 	case "extension_error":
 		var p struct {
@@ -1171,6 +1204,57 @@ func failureKind(msg string) string {
 		}
 	}
 	return ""
+}
+
+// piRetry is a scheduled retry, as both auto_retry_start and
+// summarization_retry_scheduled report it.
+type piRetry struct {
+	Attempt      int    `json:"attempt"`
+	MaxAttempts  int    `json:"maxAttempts"`
+	DelayMs      int64  `json:"delayMs"`
+	ErrorMessage string `json:"errorMessage"`
+}
+
+// emitRetrying reports a scheduled retry. Pi gives the backoff as a delay, so
+// the due time is taken from the moment the event is read.
+func (s *session) emitRetrying(r piRetry) {
+	status := proto.TurnStatusPayload{
+		State: proto.TurnRetrying, Attempt: r.Attempt, Max: r.MaxAttempts, Reason: retryReason(r.ErrorMessage),
+	}
+	if r.DelayMs > 0 {
+		status.RetryAt = time.Now().UnixMilli() + r.DelayMs
+	}
+	s.emit(proto.Emit(proto.TurnStatus, status))
+}
+
+// retryCauses names the transient failures pi retries, checked in order: pi
+// passes the provider's raw error through ("529 {"type":"error",...}"), which
+// is no good on a phone-width status line. 529 is Anthropic's overloaded code,
+// so it is matched before the generic 5xx.
+var retryCauses = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	{regexp.MustCompile(`(?i)overloaded|\b529\b`), "overloaded"},
+	{regexp.MustCompile(`(?i)rate.?limit|too many requests|\b429\b|resourceexhausted`), "rate limit"},
+	{regexp.MustCompile(`(?i)timed? ?out`), "timeout"},
+	{regexp.MustCompile(`(?i)\b5\d\d\b|service.?unavailable|server.?error|internal.?error|bad gateway`), "server error"},
+	{regexp.MustCompile(`(?i)network|connection|fetch failed|socket|econnreset|enotfound|eai_again|terminated|stream ended|ended without`), "connection lost"},
+}
+
+// retryReason shortens a provider error to a few words: a known cause, else
+// the first line cut to 60 characters.
+func retryReason(msg string) string {
+	for _, c := range retryCauses {
+		if c.re.MatchString(msg) {
+			return c.reason
+		}
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(msg), "\n")
+	if r := []rune(line); len(r) > 60 {
+		return strings.TrimSpace(string(r[:59])) + "…"
+	}
+	return line
 }
 
 // classify wraps an error whose text says the harness needs credentials, so

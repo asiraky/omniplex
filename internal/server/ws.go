@@ -227,6 +227,11 @@ func (c *conn) attach(f clientFrame) {
 		}
 	}
 	payloadBytes += c.send(serverFrame{Type: "synchronized", ThreadID: f.ThreadID, Seq: res.Seq})
+	// A turn status is not in the log, so the catch-up above cannot carry
+	// it: a phone joining mid-retry would otherwise see a turn that looks hung.
+	if st := actor.TurnStatus(); st != nil {
+		payloadBytes += c.send(serverFrame{Type: "turn_status", ThreadID: f.ThreadID, TurnStatus: st})
+	}
 	c.srv.logf("thread_attach thread=%s duration_ms=%d restore_ms=%d payload_bytes=%d kind=%s seq=%d events=%d",
 		f.ThreadID, time.Since(started).Milliseconds(), restoreDuration.Milliseconds(), payloadBytes, res.Kind, res.Seq, len(res.Events))
 
@@ -251,6 +256,8 @@ func (c *conn) attach(f clientFrame) {
 				return
 			case <-sub.ComposerChanged:
 				c.send(serverFrame{Type: "composer_items_changed", ThreadID: f.ThreadID})
+			case <-sub.StatusChanged:
+				c.send(serverFrame{Type: "turn_status", ThreadID: f.ThreadID, TurnStatus: actor.TurnStatus()})
 			case ev, ok := <-sub.Ch:
 				if !ok {
 					return

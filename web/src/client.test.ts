@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { emptyState } from "./apply";
 import { Client, CommandTimeout, type ClientEvents, type ConnectionStatus } from "./client";
-import type { Event, Job, ThreadState } from "./protocol";
+import type { Event, Job, ThreadState, TurnStatus } from "./protocol";
 
 // A socket the test opens and closes by hand, recording what the client sends.
 class FakeSocket {
@@ -44,6 +44,7 @@ const events: ClientEvents = {
   onProjects() {},
   onQuotas() {},
   onState() {},
+  onTurnStatus() {},
   onAccess() {},
 };
 
@@ -682,5 +683,99 @@ describe("thread cache", () => {
     deliver({ type: "event", threadId: "a", event: event(7, "after a hole") });
     expect(rendered).toEqual([]);
     expect(attaches().at(-1)).toEqual({ type: "attach", threadId: "a", afterSeq: 5 });
+  });
+});
+
+describe("turn status", () => {
+  const RETRYING: TurnStatus = { state: "retrying", attempt: 2, max: 10, reason: "overloaded", retryAt: 1 };
+
+  // A client attached to thread "a" over a live socket, recording every
+  // status it reports. The recording starts after the attach, which clears.
+  function watching() {
+    const seen: [string, TurnStatus | null][] = [];
+    const client = new Client("ws://test", {
+      ...events,
+      onTurnStatus: (id, s) => seen.push([id, s]),
+    });
+    client.prime({ ...emptyState("a"), seq: 3 });
+    client.connect();
+    latest().open();
+    seen.length = 0;
+    const send = (frame: Record<string, unknown>) =>
+      latest().onmessage?.({ data: JSON.stringify(frame) });
+    return { client, seen, send };
+  }
+
+  it("hands the attached thread's status straight through", () => {
+    const { seen, send } = watching();
+    send({ type: "turn_status", threadId: "a", turnStatus: RETRYING });
+    send({ type: "turn_status", threadId: "a", turnStatus: { state: "compacting" } });
+    expect(seen).toEqual([
+      ["a", RETRYING],
+      ["a", { state: "compacting" }],
+    ]);
+  });
+
+  it("clears when the frame carries no status, or one with no state", () => {
+    const { seen, send } = watching();
+    send({ type: "turn_status", threadId: "a" });
+    send({ type: "turn_status", threadId: "a", turnStatus: {} });
+    expect(seen).toEqual([
+      ["a", null],
+      ["a", null],
+    ]);
+  });
+
+  it("ignores a status for a thread it is not attached to", () => {
+    const { seen, send } = watching();
+    send({ type: "turn_status", threadId: "b", turnStatus: RETRYING });
+    expect(seen).toEqual([]);
+  });
+
+  it("clears on reconnect, before the server re-sends the live one", () => {
+    const { seen } = watching();
+    latest().close();
+    vi.runOnlyPendingTimers();
+    latest().open();
+    expect(seen).toEqual([["a", null]]);
+    expect(latest().sent.map((f) => f.type)).toContain("attach");
+  });
+
+  it("clears on a snapshot", () => {
+    const { seen, send } = watching();
+    send({ type: "snapshot", threadId: "a", state: { ...emptyState("a"), seq: 9 } });
+    expect(seen).toEqual([["a", null]]);
+  });
+
+  it("clears when leaving for another thread", () => {
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    const { client, seen, send } = watching();
+    send({ type: "turn_status", threadId: "a", turnStatus: RETRYING });
+    client.attach("b");
+    expect(seen.at(-1)).toEqual(["a", null]);
+  });
+
+  it("clears when returning to a cached thread, before the server re-sends the live one", () => {
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    const { client, seen } = watching();
+    client.attach("b");
+    seen.length = 0;
+    client.attach("a"); // cached when we left it: no fetch, straight to attach
+    expect(seen.at(-1)).toEqual(["a", null]);
+    expect(latest().sent.at(-1)).toEqual({ type: "attach", threadId: "a", afterSeq: 3 });
+  });
+
+  // Status frames and events travel separately, so the next turn's retry can
+  // overtake the last turn's finish. The server owns the clear; a late
+  // turn.finished must not wipe a status that is newer than it.
+  it("keeps a status that overtook the previous turn's finish", () => {
+    const { seen, send } = watching();
+    send({ type: "turn_status", threadId: "a", turnStatus: RETRYING });
+    send({
+      type: "event",
+      threadId: "a",
+      event: { threadId: "a", seq: 4, timestamp: 1, type: "turn.finished", payload: { turnId: "t1", status: "done" } },
+    });
+    expect(seen).toEqual([["a", RETRYING]]);
   });
 });

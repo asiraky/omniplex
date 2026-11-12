@@ -14,6 +14,7 @@ import type {
   ScheduledPrompt,
   ThreadState,
   Turn,
+  TurnStatus,
 } from "~/protocol";
 import { useAutoScroll } from "~/useAutoScroll";
 
@@ -22,6 +23,7 @@ import { EmptyTranscript } from "./transcript/EmptyTranscript";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import { TranscriptRow } from "./transcript/TranscriptRow";
+import { TurnStatusLine } from "./transcript/TurnStatusLine";
 import { useOlderPages } from "./transcript/useOlderPages";
 import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";
@@ -133,6 +135,8 @@ type TranscriptProps = {
   onCardSignIn?: (target: CardSignIn) => void;
   /** Names a model and effort, for the line where the thread switched. */
   describeSettings?: (model: string, effort: string) => string;
+  /** Why the running turn has gone quiet (retrying, compacting), if it has. */
+  turnStatus?: TurnStatus | null;
 };
 
 // Anchored to the scroller rather than to the content, so it sits in
@@ -189,6 +193,7 @@ export function Transcript({
   steers = false,
   onCardSignIn,
   describeSettings,
+  turnStatus,
   ...interruptedProps
 }: TranscriptProps) {
   // Follow the tail unless the reader has scrolled up; the button below is
@@ -299,6 +304,9 @@ export function Transcript({
                 <Spinner className="text-primary size-3.5" /> thinking…
               </div>
             )}
+          {/* Shown whatever else the tail is doing: a retry or a compaction is
+              exactly when a live tool line or half-streamed text looks hung. */}
+          <TurnStatusLine status={turnStatus} running={state.phase === "turn"} />
 
           {interrupted && (
             <Suspense fallback={null}>

@@ -16,7 +16,14 @@ import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
-import type { HarnessMeta, PendingElicitation, PullRequest, ThreadMeta, ThreadState } from "~/protocol";
+import type {
+  HarnessMeta,
+  PendingElicitation,
+  PullRequest,
+  ThreadMeta,
+  ThreadState,
+  TurnStatus,
+} from "~/protocol";
 
 import type { AuthWires } from "./AuthFlowDialog";
 import { Composer } from "./Composer";
@@ -65,6 +72,7 @@ export function ThreadView({
   onFinish,
   readAloud,
   status,
+  turnStatus,
 }: {
   state: ThreadState;
   activeId: string | null;
@@ -89,6 +97,8 @@ export function ThreadView({
       composer a mic. */
   readAloud: boolean;
   status: ConnectionStatus;
+  /** Why the running turn has gone quiet, while the harness says so. */
+  turnStatus: TurnStatus | null;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
   const title = threadTitle(meta, state);
@@ -151,6 +161,7 @@ export function ThreadView({
             steers={steers}
             onCardSignIn={setSignIn}
             describeSettings={describe}
+            turnStatus={turnStatus}
           />
         </ReadAloudContext.Provider>
       </OpenPathContext.Provider>
