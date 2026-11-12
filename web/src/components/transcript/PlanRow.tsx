@@ -1,18 +1,9 @@
 import { ChevronDownIcon, ListTodoIcon } from "lucide-react";
 import { useState } from "react";
 
+import { planSummary } from "~/lib/plans";
 import { cn } from "~/lib/utils";
 import type { Item, PlanStep } from "~/protocol";
-
-/** "Tasks 2/5 · Writing tests": how far along the plan is, and the step it is
-    on — the running one, else the next one waiting. A plan with nothing left
-    names no step. */
-export function planSummary(steps: PlanStep[]): { label: string; current?: PlanStep } {
-  const done = steps.filter((s) => s.status === "completed").length;
-  const current = steps.find((s) => s.status === "running") ?? steps.find((s) => s.status === "pending");
-  const label = `Tasks ${done}/${steps.length}${current ? ` · ${current.text}` : ""}`;
-  return { label, current };
-}
 
 const GLYPH: Record<PlanStep["status"], string> = { completed: "✓", running: "◉", pending: "○" };
 
@@ -22,7 +13,7 @@ const GLYPH: Record<PlanStep["status"], string> = { completed: "✓", running: "
 export function PlanRow({ item }: { item: Item }) {
   const [open, setOpen] = useState(false);
   const steps = item.steps ?? [];
-  const { label } = planSummary(steps);
+  const label = planSummary(steps);
 
   return (
     <div className={cn("fade-in", item.superseded && "opacity-60")}>
@@ -50,7 +41,7 @@ export function PlanRow({ item }: { item: Item }) {
                 )}
               >
                 <span aria-hidden className="w-3 shrink-0 text-center">
-                  {GLYPH[step.status] ?? GLYPH.pending}
+                  {GLYPH[step.status]}
                 </span>
                 <span className="min-w-0 break-words">{step.text}</span>
               </li>

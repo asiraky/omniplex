@@ -5,28 +5,9 @@ import { describe, expect, it } from "vitest";
 import { render } from "~/test/harness";
 import type { Item, PlanStep } from "~/protocol";
 
-import { PlanRow, planSummary } from "./PlanRow";
+import { PlanRow } from "./PlanRow";
 
 const step = (text: string, status: PlanStep["status"]): PlanStep => ({ text, status });
-
-describe("planSummary", () => {
-  it("names the running step over an earlier pending one", () => {
-    const s = planSummary([step("a", "completed"), step("b", "pending"), step("c", "running")]);
-    expect(s.current?.text).toBe("c");
-    expect(s.label).toBe("Tasks 1/3 · c");
-  });
-
-  it("names the first pending step when nothing is running", () => {
-    const s = planSummary([step("a", "completed"), step("b", "pending"), step("c", "pending")]);
-    expect(s.current?.text).toBe("b");
-  });
-
-  it("names no step once every step is done", () => {
-    const s = planSummary([step("a", "completed"), step("b", "completed")]);
-    expect(s.current).toBeUndefined();
-    expect(s.label).toBe("Tasks 2/2");
-  });
-});
 
 describe("a plan's row in the transcript", () => {
   it("opens to its explanation and steps", () => {

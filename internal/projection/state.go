@@ -312,6 +312,17 @@ func (s *State) Questions() int {
 // CardID is the timeline item id of the card a request raised.
 func CardID(requestID string) string { return "card:" + requestID }
 
+// TurnPlanID is the timeline item id of a turn's plan (codex), revised in
+// place as the turn goes.
+func TurnPlanID(turnID string) string { return "turn-plan:" + turnID }
+
+// TodoPlanID is the timeline item id of one TodoWrite call's list.
+func TodoPlanID(toolCallID string) string { return "todo:" + toolCallID }
+
+// isTodoPlan reports whether an item is a TodoWrite list: the kind of plan a
+// newer one supersedes.
+func isTodoPlan(it Item) bool { return it.Kind == ItemPlan && strings.HasPrefix(it.ID, "todo:") }
+
 type WorkspaceState struct {
 	Phase              string         `json:"phase"`
 	ProjectID          string         `json:"projectId,omitempty"`
@@ -907,15 +918,12 @@ func (s *State) Apply(ev proto.Event) {
 		// plan is the turn's, revised in place. Each update is the whole
 		// plan, so steps and explanation are replaced outright — an empty
 		// explanation clears the last one. Mirrored in web/src/apply.ts.
-		id := "turn-plan:" + p.TurnID
+		id := TurnPlanID(p.TurnID)
 		if p.ToolCallID != "" {
-			id = "todo:" + p.ToolCallID
-			if s.itemIndex == nil {
-				s.reindex()
-			}
-			if _, ok := s.itemIndex[id]; !ok {
+			id = TodoPlanID(p.ToolCallID)
+			if _, ok := s.ItemByID(id); !ok {
 				for i := range s.Items {
-					if s.Items[i].Kind == ItemPlan && strings.HasPrefix(s.Items[i].ID, "todo:") {
+					if isTodoPlan(s.Items[i]) {
 						s.Items[i].Superseded = true
 					}
 				}

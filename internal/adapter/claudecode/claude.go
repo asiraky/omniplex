@@ -1331,7 +1331,8 @@ func (s *session) handleStreamEvent(msg map[string]json.RawMessage) {
 			b.blockID = fmt.Sprintf("%s:%d", st.messageID, ev.Index)
 		case "tool_use":
 			b.toolID, b.name = ev.ContentBlock.ID, ev.ContentBlock.Name
-			if todo = isPlanTool(b.name, parent); todo {
+			todo = isPlanTool(b.name, parent)
+			if todo {
 				s.markTodo(b.toolID)
 			}
 		}
@@ -1448,19 +1449,20 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 				s.mu.Lock()
 				s.markTodo(c.ID)
 				s.mu.Unlock()
-				s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
-					TurnID: turn, ToolCallID: c.ID, Steps: steps,
-				}))
+				// An empty list is the agent clearing its todos once the work
+				// is done: there is nothing to show, as with an empty codex
+				// plan. The call still goes nowhere — no tool row either.
+				if len(steps) > 0 {
+					s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
+						TurnID: turn, ToolCallID: c.ID, Steps: steps,
+					}))
+				}
 				continue
 			}
 			// Input that is not a todo list is shown as the plain tool call
 			// it is, so nothing vanishes. The stream swallowed its start, so
 			// that goes out first.
-			s.mu.Lock()
-			swallowed := s.todos[c.ID]
-			delete(s.todos, c.ID)
-			s.mu.Unlock()
-			if swallowed {
+			if s.takeTodo(c.ID) {
 				s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 					TurnID: turn, ToolCallID: c.ID, Kind: toolKind(c.Name), Title: c.Name,
 					Status: proto.StatusPending,
@@ -1508,11 +1510,7 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 		if c.Type != "tool_result" {
 			continue
 		}
-		s.mu.Lock()
-		todo := s.todos[c.ToolUseID]
-		delete(s.todos, c.ToolUseID)
-		s.mu.Unlock()
-		if todo {
+		if s.takeTodo(c.ToolUseID) {
 			// The list already went out as plan.updated; a result here would
 			// give the projection a tool row with nothing to show.
 			continue
@@ -2045,8 +2043,17 @@ func (s *session) markTodo(id string) {
 	s.todos[id] = true
 }
 
+// takeTodo forgets a TodoWrite call id, reporting whether it was one.
+func (s *session) takeTodo(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	todo := s.todos[id]
+	delete(s.todos, id)
+	return todo
+}
+
 // todoSteps decodes TodoWrite's input into plan steps. ok is false when the
-// input carries no todo list at all; an empty list is a cleared plan.
+// input carries no todo list at all; an empty list is a cleared one.
 func todoSteps(input json.RawMessage) ([]proto.PlanStep, bool) {
 	var in struct {
 		Todos *[]struct {

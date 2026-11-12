@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, emptyState } from "./apply";
-import type { Event } from "./protocol";
+import { applyEvent, emptyState, prependItems } from "./apply";
+import type { Event, Item } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
   return { threadId: "s1", seq, timestamp, type, payload } as Event;
@@ -286,6 +286,20 @@ describe("cards", () => {
 describe("plans", () => {
   const step = (text: string, status = "pending") => ({ text, status });
   const plans = (s: ReturnType<typeof emptyState>) => s.items.filter((it) => it.kind === "plan");
+
+  it("supersedes a TodoWrite list in an older page read before a newer list landed", () => {
+    const todo = (id: string, superseded?: boolean): Item => ({ id: `todo:${id}`, kind: "plan", steps: [], superseded });
+    const page = [todo("a"), { id: "x", kind: "message" } as Item, todo("b")];
+    const items = prependItems([todo("b"), todo("c")], page);
+    expect(items.map((it) => [it.id, !!it.superseded])).toEqual([
+      ["todo:a", true],
+      ["x", false],
+      ["todo:b", false],
+      ["todo:c", false],
+    ]);
+    // A window with no TodoWrite list of its own leaves the page as it came.
+    expect(prependItems([], [todo("a")])[0].superseded).toBeUndefined();
+  });
 
   it("drops a plan in the old shape, which names no turn and no call", () => {
     const s = applyEvent(emptyState("s1"), ev(1, "plan.updated", { entries: [{ content: "a", status: "pending" }] }));

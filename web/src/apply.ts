@@ -4,6 +4,22 @@
 
 import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
+import { isTodoPlan } from "./lib/plans";
+
+/** Splices a page of older items in front of the window. A straggling event
+    for a trimmed item is dropped rather than applied, but belt and braces:
+    never prepend an id the window already holds — duplicate ids break
+    rendering outright. The page may have been read before the newest
+    TodoWrite list landed, and every list in it is older than any the window
+    holds: one here supersedes them all, as it did on the server. */
+export function prependItems(items: Item[], older: Item[]): Item[] {
+  const have = new Set(items.map((it) => it.id));
+  const newer = items.some(isTodoPlan);
+  const page = older
+    .filter((it) => !have.has(it.id))
+    .map((it) => (newer && isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it));
+  return [...page, ...items];
+}
 
 export function emptyState(threadId: string): ThreadState {
   return {
@@ -401,7 +417,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           ? {
               ...s,
               items: s.items.map((it) =>
-                it.kind === "plan" && it.id.startsWith("todo:") && !it.superseded ? { ...it, superseded: true } : it,
+                isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it,
               ),
             }
           : s;

@@ -6,18 +6,6 @@ import (
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
-func drain(s *session) []proto.Emission {
-	var out []proto.Emission
-	for {
-		select {
-		case e := <-s.events:
-			out = append(out, e)
-		default:
-			return out
-		}
-	}
-}
-
 // todoWrite feeds one TodoWrite call through the SDK the way the CLI sends
 // it: the stream's tool_use start, the full assistant message, then the
 // tool result. withStream false is the CLI sending no stream events.
@@ -96,7 +84,7 @@ func TestRootTodoWriteIsAPlanNotAToolCall(t *testing.T) {
 			[2]string{"Test", "pending"},
 			[2]string{"Ship", "blocked"},
 		), withStream)
-		es := drain(s)
+		es := drainEvents(s)
 
 		if tc := toolEvents(es); len(tc) != 0 {
 			t.Fatalf("stream=%v: tool events leaked: %+v", withStream, tc)
@@ -133,7 +121,7 @@ func TestSubagentTodoWriteStaysAToolCall(t *testing.T) {
 	s := newTestSession()
 	s.turnID = "turn-1"
 	todoWrite(t, s, "tu-sub", "task-1", todos([2]string{"Look", "pending"}), true)
-	es := drain(s)
+	es := drainEvents(s)
 
 	if ps := plans(es); len(ps) != 0 {
 		t.Fatalf("subagent todo became a plan: %+v", ps)
@@ -150,12 +138,23 @@ func TestSubagentTodoWriteStaysAToolCall(t *testing.T) {
 	}
 }
 
+// TestEmptyTodoWriteShowsNothing: clearing the list once the work is done
+// is neither a plan row nor a tool row.
+func TestEmptyTodoWriteShowsNothing(t *testing.T) {
+	s := newTestSession()
+	s.turnID = "turn-1"
+	todoWrite(t, s, "tu-1", "", map[string]any{"todos": []any{}}, true)
+	if es := drainEvents(s); len(es) != 0 {
+		t.Fatalf("empty todo list emitted %+v", es)
+	}
+}
+
 func TestEachTodoWriteIsItsOwnPlan(t *testing.T) {
 	s := newTestSession()
 	s.turnID = "turn-1"
 	todoWrite(t, s, "tu-1", "", todos([2]string{"A", "in_progress"}), true)
 	todoWrite(t, s, "tu-2", "", todos([2]string{"A", "completed"}), true)
-	ps := plans(drain(s))
+	ps := plans(drainEvents(s))
 
 	if len(ps) != 2 || ps[0].ToolCallID != "tu-1" || ps[1].ToolCallID != "tu-2" {
 		t.Fatalf("want plans for tu-1 then tu-2, got %+v", ps)
@@ -171,7 +170,7 @@ func TestUndecodableTodoWriteFallsBackToAToolCall(t *testing.T) {
 	s := newTestSession()
 	s.turnID = "turn-1"
 	todoWrite(t, s, "tu-1", "", map[string]any{"items": "nope"}, true)
-	es := drain(s)
+	es := drainEvents(s)
 
 	if ps := plans(es); len(ps) != 0 {
 		t.Fatalf("plan from bad input: %+v", ps)
