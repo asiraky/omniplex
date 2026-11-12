@@ -280,6 +280,10 @@ func TestPutToolImageStoresAThumbnailOfALargeImage(t *testing.T) {
 	}{
 		{"landscape", 2560, 1600, ThumbBound, 300},
 		{"portrait", 600, 1200, 240, ThumbBound},
+		// Cut to its top 1280x2560 first, as the UI's box crops it.
+		{"full-page screenshot", 1280, 20000, 240, ThumbBound},
+		// Cut to 400x100, already under the bound, and not blown up.
+		{"panorama", 10000, 100, 400, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Transparent, so the thumbnail has to lay it on something.

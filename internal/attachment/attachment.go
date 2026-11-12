@@ -263,12 +263,27 @@ const ThumbBound = 480
 // to be far larger than any screen: past this the original stands in.
 const maxThumbPixels = 50_000_000
 
+// thumbCrop is the top-left part of a w×h image a thumbnail shows. The UI's
+// box (ToolImages.tsx) is no taller than 1:2 and no wider than 4:1, and crops
+// an image past those to its top left. Cutting the thumbnail the same way
+// spends its pixels on what is shown: shrunk whole, a full-page screenshot is
+// a 31 px wide strip, blurred to fill the box.
+func thumbCrop(w, h int) (int, int) {
+	if h > 2*w {
+		return w, 2 * w
+	}
+	if w > 4*h {
+		return 4 * h, h
+	}
+	return w, h
+}
+
 // thumbQuality is the JPEG quality of a thumbnail: no visible artefacts at
 // thumbnail size, a fraction of the bytes of a lossless one.
 const thumbQuality = 80
 
-// putThumb stores a JPEG of the image shrunk to ThumbBound on its long edge,
-// and returns its id.
+// putThumb stores a JPEG of the image cut to thumbCrop and shrunk to
+// ThumbBound on its long edge, and returns its id.
 func putThumb(dir string, data []byte, w, h int) (string, error) {
 	if int64(w)*int64(h) > maxThumbPixels {
 		return "", ErrTooLarge
@@ -277,17 +292,19 @@ func putThumb(dir string, data []byte, w, h int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tw, th := ThumbBound, ThumbBound
-	if w >= h {
-		th = max(1, (h*ThumbBound+w/2)/w)
-	} else {
-		tw = max(1, (w*ThumbBound+h/2)/h)
+	cw, ch := thumbCrop(w, h)
+	tw, th := cw, ch
+	if cw >= ch && cw > ThumbBound {
+		tw, th = ThumbBound, max(1, (ch*ThumbBound+cw/2)/cw)
+	} else if ch > cw && ch > ThumbBound {
+		tw, th = max(1, (cw*ThumbBound+ch/2)/ch), ThumbBound
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
 	// JPEG has no alpha: a transparent screenshot is laid on white, which is
 	// what a browser shows behind it on a light page anyway.
 	draw.Draw(dst, dst.Bounds(), image.White, image.Point{}, draw.Src)
-	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+	crop := image.Rect(0, 0, cw, ch).Add(src.Bounds().Min)
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, crop, draw.Over, nil)
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: thumbQuality}); err != nil {

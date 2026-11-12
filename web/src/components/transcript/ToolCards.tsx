@@ -115,8 +115,9 @@ type Block =
 
 // A preview of a long patch is cut in the middle (capToolText). The marker it
 // leaves becomes a patch note, so it reads as a gap rather than a line of the
-// file.
-const PREVIEW_CUT = /\n\n(\[… \d+ characters truncated …\])\n\n/;
+// file. A cut that landed on a line break leaves that break before the marker
+// too, which would otherwise read as an empty line.
+const PREVIEW_CUT = /\n\n\n?(\[… \d+ characters truncated …\])\n\n/;
 
 function blocks(content: ToolContent[]): Block[] {
   const out: Block[] = [];
