@@ -172,7 +172,8 @@ type Item struct {
 	Content  []proto.ToolContent `json:"content,omitempty"`
 	// Tail is the last lines a running call has printed, folded from its
 	// output deltas and bounded (see appendTail). It is cleared the moment the
-	// call finishes: from then on Content holds the whole output.
+	// call finishes: from then on Content holds the output, capped to a preview
+	// when it is long (see Truncated).
 	Tail string `json:"tail,omitempty"`
 	// Truncated: some of Content was cut to a preview or dropped (see
 	// capText). The event log still has it whole.

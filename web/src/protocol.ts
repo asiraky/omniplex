@@ -69,7 +69,7 @@ export interface Item {
   input?: unknown;
   content?: ToolContent[];
   /** The last lines a running tool has printed, until it finishes and
-      `content` carries the whole output. */
+      `content` carries the output (a preview when `truncated`). */
   tail?: string;
   /** A tool's content is a head/tail preview: some text, or whole entries,
       were cut. The full content is at /api/threads/{id}/items/{itemId}/content. */

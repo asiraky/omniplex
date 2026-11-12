@@ -65,14 +65,28 @@ function joinOutput(content: ToolContent[] | undefined) {
     .trim();
 }
 
+// What a tool card shows: the full output once fetched, standing in for the
+// preview, else the preview. The full output is held by the hook only, so it
+// goes when the card does.
+function useToolOutput(threadId: string, item: Item) {
+  const full = useFullToolContent(threadId, item.id);
+  const loaded = full.status === "ready";
+  return {
+    full,
+    output: joinOutput(loaded ? full.content : item.content),
+    truncated: !!item.truncated && !loaded,
+  };
+}
+
+// A preview's line count is the preview's, not the output's.
+function outputLabel(open: boolean, truncated: boolean, output: string) {
+  if (open) return "hide";
+  return truncated ? "truncated" : `${output.split("\n").length} lines`;
+}
+
 export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const [open, setOpen] = useState(false);
-  const full = useFullToolContent(threadId, item.id);
-  // The full output, once fetched, stands in for the preview. It is held by
-  // the hook only, so it goes when the card does.
-  const shown = full.status === "ready";
-  const output = joinOutput(shown ? full.content : item.content);
-  const truncated = item.truncated && !shown;
+  const { full, output, truncated } = useToolOutput(threadId, item);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
   return (
@@ -94,8 +108,7 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
         <StatusMark status={item.status as ToolStatus | undefined} />
         {output && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
-            {/* A preview's line count is the preview's, not the output's. */}
-            {open ? "hide" : truncated ? "truncated" : `${output.split("\n").length} lines`}
+            {outputLabel(open, truncated, output)}
             <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
           </span>
         )}

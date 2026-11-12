@@ -2,8 +2,8 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Item } from "~/protocol";
 import { render } from "~/test/harness";
+import type { Item } from "~/protocol";
 
 import { ToolCard, ToolRun } from "./ToolCards";
 
