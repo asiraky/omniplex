@@ -1791,6 +1791,7 @@ type mcpToolResult struct {
 		} `json:"resource"`
 	} `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent"`
+	IsError           bool            `json:"isError"`
 }
 
 // codexChange is one file of a fileChange item. Kind is an object, not a
@@ -1991,7 +1992,7 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 			}))
 			return
 		}
-		status, content := mcpOutcome(it)
+		status, content := s.mcpOutcome(it)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID: it.ID, Status: status, Content: content, ParentToolCallID: parent,
 		}))
@@ -2034,8 +2035,9 @@ func itemStatus(status string) string {
 
 // mcpOutcome is a completed MCP call's status and what the card shows. A
 // failure carries its error and no result; printing the absent result is what
-// rendered "null" under a green tick.
-func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
+// rendered "null" under a green tick. A result the tool itself flagged with
+// isError is a failure too, shown with its content.
+func (s *session) mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 	if it.Status == "failed" || it.Error != nil {
 		msg := "MCP call failed"
 		if it.Error != nil && it.Error.Message != "" {
@@ -2046,16 +2048,22 @@ func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 	if it.Result == nil {
 		return proto.StatusCompleted, nil
 	}
+	status := proto.StatusCompleted
+	if it.Result.IsError {
+		status = proto.StatusFailed
+	}
 	var content []proto.ToolContent
 	for _, c := range it.Result.Content {
 		var text string
 		switch c.Type {
 		case "text":
 			text = c.Text
-		case "image", "audio":
+		case "image":
+			// The host keeps the bytes and the card names them by URL.
+			content = append(content, adapter.ToolImage(s.host, c.Data))
+		case "audio":
 			// The bytes stay off the wire: base64 is unreadable as text and
-			// heavy on a phone. A placeholder says what was there (#287
-			// turns images into thumbnails).
+			// heavy on a phone. A placeholder says what was there.
 			text = fmt.Sprintf("[%s: %s, %s]", c.Type, c.MimeType, base64Size(c.Data))
 		case "resource_link":
 			text = c.URI
@@ -2077,7 +2085,7 @@ func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 	if sc := it.Result.StructuredContent; len(sc) > 0 && string(sc) != "null" && !textCarries(content, sc) {
 		content = append(content, proto.ToolContent{Type: "text", Text: string(sc)})
 	}
-	return proto.StatusCompleted, content
+	return status, content
 }
 
 // textCarries reports whether a text block holds the same JSON as raw.

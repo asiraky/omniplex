@@ -772,14 +772,16 @@ describe("applyEvent tool output cap", () => {
     expect(s.items[0].truncated).toBe(true);
   });
 
-  it("drops entries past the text budget, however they arrive", () => {
+  it("drops text entries past the text budget, however they arrive, and keeps an image after them", () => {
     const entry = { type: "diff", path: "a.go", oldText: "o".repeat(3000), newText: "n".repeat(3000) };
-    const want = Math.ceil(TOOL_MAX_TEXT / 6000);
-    const whole = applyEvent(emptyState("s1"), output(1, Array(10).fill(entry)));
+    const image = { type: "image", url: "/api/threads/t/attachments/a.png" };
+    const want = Math.ceil(TOOL_MAX_TEXT / 6000) + 1;
+    const whole = applyEvent(emptyState("s1"), output(1, [...Array(10).fill(entry), image]));
     let split = applyEvent(emptyState("s1"), output(1, Array(2).fill(entry)));
-    split = applyEvent(split, output(2, Array(8).fill(entry)));
+    split = applyEvent(split, output(2, [...Array(8).fill(entry), image]));
     for (const s of [whole, split]) {
       expect(s.items[0].content).toHaveLength(want);
+      expect(s.items[0].content?.at(-1)).toEqual(image);
       expect(s.items[0].truncated).toBe(true);
     }
   });

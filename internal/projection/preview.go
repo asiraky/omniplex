@@ -96,7 +96,9 @@ func capToolContent(c proto.ToolContent) (proto.ToolContent, bool) {
 // appendToolContent adds a tool update's content to the item, capped, and
 // marks the item truncated if any of it was cut or dropped. An entry is kept
 // while the entries before it hold less than maxToolText, so what is kept is
-// the same however the content arrived.
+// the same however the content arrived. An entry with no text, an image, is
+// kept past the budget: it is a URL, and a closed fold's thumbnail strip shows
+// only what the preview kept.
 func appendToolContent(it *Item, add []proto.ToolContent) {
 	if room := maxToolContent - len(it.Content); len(add) > room {
 		add = add[:max(room, 0)]
@@ -107,9 +109,9 @@ func appendToolContent(it *Item, add []proto.ToolContent) {
 		used += contentText(c)
 	}
 	for _, c := range add {
-		if used >= maxToolText {
+		if used >= maxToolText && contentText(c) > 0 {
 			it.Truncated = true
-			return
+			continue
 		}
 		c, cut := capToolContent(c)
 		if cut {
@@ -134,7 +136,16 @@ func capItem(it *Item) bool {
 	used := 0
 	for i := range it.Content {
 		if used >= maxToolText {
-			it.Content = append([]proto.ToolContent(nil), it.Content[:i]...)
+			kept := append([]proto.ToolContent(nil), it.Content[:i]...)
+			for _, c := range it.Content[i:] {
+				if contentText(c) == 0 {
+					kept = append(kept, c)
+				}
+			}
+			if len(kept) == len(it.Content) {
+				return changed
+			}
+			it.Content = kept
 			it.Truncated = true
 			return true
 		}
