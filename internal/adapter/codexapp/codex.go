@@ -1583,8 +1583,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			p.Error = &codexTurnError{Message: p.Message}
 		}
 		s.host.Logf("codex error: %s", p.Error.Message)
+		// Before turn/start answers, codex's id for the open turn is unknown,
+		// but it is not the one that just completed.
 		s.mu.Lock()
-		current := s.turnID != "" && (p.TurnID == "" || s.serverTurnID == "" || p.TurnID == s.serverTurnID)
+		current := s.turnID != "" && (p.TurnID == "" || p.TurnID == s.serverTurnID ||
+			(s.serverTurnID == "" && p.TurnID != s.lastServerTurn))
 		s.mu.Unlock()
 		if !current {
 			return

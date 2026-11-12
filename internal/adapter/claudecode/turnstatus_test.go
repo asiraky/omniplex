@@ -118,6 +118,24 @@ func TestNullStatusLeavesARetryStanding(t *testing.T) {
 	}
 }
 
+// A compaction the boundary already ended leaves nothing for a later null to
+// clear, so a retry that starts after it stands.
+func TestBoundaryEndsTheCompaction(t *testing.T) {
+	s := newTestSession()
+	s.handleSDKMessage(rawSDK(t, statusMsg("compacting")))
+	s.handleSDKMessage(rawSDK(t, map[string]any{
+		"type": "system", "subtype": "compact_boundary", "session_id": "conv",
+		"compact_metadata": map[string]any{"trigger": "auto", "pre_tokens": 1000},
+	}))
+	s.handleSDKMessage(rawSDK(t, apiRetry(1, 10, 2000, 529, "overloaded")))
+	s.handleSDKMessage(rawSDK(t, statusMsg(nil)))
+
+	got := turnStatuses(t, s)
+	if len(got) != 2 || got[0].State != proto.TurnCompacting || got[1].State != proto.TurnRetrying {
+		t.Fatalf("statuses = %+v, want compacting then the retry", got)
+	}
+}
+
 // "requesting" goes out before the retried request too, so it must leave the
 // retry standing: the line stays until the model answers.
 func TestRequestingLeavesARetryStanding(t *testing.T) {

@@ -73,6 +73,9 @@ func TestErrorWithoutStatus(t *testing.T) {
 	cases := []struct {
 		name   string
 		params string
+		// pending is a turn whose turn/start has not answered yet, so
+		// codex's id for it is unknown.
+		pending bool
 	}{
 		{
 			name: "will not retry",
@@ -86,6 +89,12 @@ func TestErrorWithoutStatus(t *testing.T) {
 				"willRetry":true,"threadId":"thread-1","turnId":"codex-turn-6"}`,
 		},
 		{
+			name: "the completed turn's retry, before turn/start answers",
+			params: `{"error":{"message":"Reconnecting... 2/5","codexErrorInfo":"serverOverloaded","additionalDetails":null,"misalignment":null},
+				"willRetry":true,"threadId":"thread-1","turnId":"codex-turn-6"}`,
+			pending: true,
+		},
+		{
 			name: "foreign thread",
 			params: `{"error":{"message":"Reconnecting... 2/5","codexErrorInfo":"serverOverloaded","additionalDetails":null,"misalignment":null},
 				"willRetry":true,"threadId":"subagent-9","turnId":"subagent-turn"}`,
@@ -95,6 +104,9 @@ func TestErrorWithoutStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := subagentSession(t)
 			s.turnID, s.serverTurnID = "omniplex-turn", "codex-turn-7"
+			if tc.pending {
+				s.serverTurnID, s.lastServerTurn = "", "codex-turn-6"
+			}
 			s.handleNotification("error", json.RawMessage(tc.params))
 			if got := drain(s); len(got) != 0 {
 				t.Fatalf("emissions = %+v, want none", got)

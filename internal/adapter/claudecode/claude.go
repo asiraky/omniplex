@@ -1278,6 +1278,10 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 			} `json:"compact_metadata"`
 		}
 		remarshal(msg, &b)
+		// The boundary ends the compaction and clears the line itself.
+		s.mu.Lock()
+		s.compacting = false
+		s.mu.Unlock()
 		s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{
 			Trigger:    b.Meta.Trigger,
 			PreTokens:  b.Meta.PreTokens,
