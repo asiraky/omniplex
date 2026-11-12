@@ -316,12 +316,14 @@ func CardID(requestID string) string { return "card:" + requestID }
 // place as the turn goes.
 func TurnPlanID(turnID string) string { return "turn-plan:" + turnID }
 
+const todoPlanPrefix = "todo:"
+
 // TodoPlanID is the timeline item id of one TodoWrite call's list.
-func TodoPlanID(toolCallID string) string { return "todo:" + toolCallID }
+func TodoPlanID(toolCallID string) string { return todoPlanPrefix + toolCallID }
 
 // isTodoPlan reports whether an item is a TodoWrite list: the kind of plan a
 // newer one supersedes.
-func isTodoPlan(it Item) bool { return it.Kind == ItemPlan && strings.HasPrefix(it.ID, "todo:") }
+func isTodoPlan(it Item) bool { return it.Kind == ItemPlan && strings.HasPrefix(it.ID, todoPlanPrefix) }
 
 type WorkspaceState struct {
 	Phase              string         `json:"phase"`

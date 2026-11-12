@@ -4,7 +4,7 @@
 
 import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
-import { isTodoPlan } from "./lib/plans";
+import { isTodoPlan, planItemId } from "./lib/plans";
 
 /** Splices a page of older items in front of the window. A straggling event
     for a trimmed item is dropped rather than applied, but belt and braces:
@@ -396,7 +396,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // A plan anchored to nothing — the old shape, logged before plans had
       // a turn — has nowhere in the transcript to go.
       if (!p.turnId && !p.toolCallId) return s;
-      const id = p.toolCallId ? `todo:${p.toolCallId}` : `turn-plan:${p.turnId}`;
+      const id = planItemId(p.turnId, p.toolCallId);
       const present = s.items.some((it) => it.id === id);
       // A straggler for a plan whose turn was windowed out, as for
       // tool_call.updated. The window keeps whole turns, so a turn with no
