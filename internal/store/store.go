@@ -725,15 +725,31 @@ func (s *Store) PutSnapshot(ctx context.Context, threadID string, seq int64, sta
 	if err != nil {
 		return err
 	}
+	return s.PutSnapshotBlob(ctx, threadID, seq, blob)
+}
+
+// PutSnapshotBlob stores an already-encoded snapshot and drops the older ones,
+// in one transaction so a snapshot costs one commit. A thread deleted before
+// the write lands gets no row: the actor writes snapshots off its own
+// goroutine, and one must not outlive the thread it belongs to.
+func (s *Store) PutSnapshotBlob(ctx context.Context, threadID string, seq int64, blob []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO snapshots (thread_id, seq, state) VALUES (?,?,?)`, threadID, seq, blob); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO snapshots (thread_id, seq, state)
+		 SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM threads WHERE id = ?)`, threadID, seq, blob, threadID); err != nil {
 		return err
 	}
 	// Keep only the newest snapshot per thread.
-	_, err = s.db.ExecContext(ctx, `DELETE FROM snapshots WHERE thread_id = ? AND seq < ?`, threadID, seq)
-	return err
+	if _, err := tx.ExecContext(ctx, `DELETE FROM snapshots WHERE thread_id = ? AND seq < ?`, threadID, seq); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // LatestSnapshot returns the newest snapshot, or (0, nil, nil) if none exists.
