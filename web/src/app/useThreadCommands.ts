@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 
 import { CommandTimeout, uuid, type Client } from "~/client";
 import type { ComposerAttachments } from "~/components/Composer";
-import { sendPayload } from "~/lib/attachments";
+import { sendPayload, type Attachment } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
 import type { CardEdits, CardOutcome, ComposerItem, Delivery, ThreadState } from "~/protocol";
 
@@ -57,6 +57,7 @@ export function useThreadCommands({
     outbox,
     restoreFailedSend,
     withdrawFailedSend,
+    uploadOf,
   } = store;
 
   // The prompt waits in the outbox until the server acks it. If it fails, or
@@ -124,34 +125,110 @@ export function useThreadCommands({
   // attachments it sends are the staged ones held here; delivery, when the
   // person picked one, overrides the harness's default for a prompt sent
   // mid-turn.
+  //
+  // A message may go while some of its files are still uploading: it leaves
+  // the composer at once, with them, and waits in the outbox until they are
+  // all up, then goes. If any of them fails it never goes, and comes back to
+  // the composer with every file it carried, the failed ones marked for a
+  // retry. A file that had already failed when it was sent does not go with
+  // it, and stays in the composer for the person to retry or remove: it must
+  // not vanish without a word.
   const send = useCallback(
     (text: string, _attached?: ComposerAttachments, delivery?: Delivery) => {
       if (!activeId) return;
       const threadId = activeId;
+      // A second message would overtake the one waiting on its uploads. The
+      // composer holds its send while one is, so this is only a backstop;
+      // the composer empties itself once this returns, so the text goes back
+      // after that rather than being lost.
+      if (outbox.get().some((e) => e.threadId === threadId && e.status === "uploading")) {
+        queueMicrotask(() => setDrafts((d) => prependDraft(d, threadId, text)));
+        return;
+      }
       const staged = attachments[threadId] ?? [];
-      const sent = staged.filter((a) => a.status === "ready");
-      // Whatever failed before is superseded by this send: its text was in
-      // the composer, and this is what the composer now holds. Sent unchanged
-      // it is a retry, under the same id, so the server's command ledger
-      // replays the first one's result if that did arrive after all.
-      const payload = sendPayload(sent);
-      const retry = outbox
-        .takeFailed(threadId)
-        .find((e) => e.text === text && samePayload(sendPayload(e.attachments), payload));
-      dispatch({
-        commandId: retry?.commandId ?? uuid(),
+      const sent = staged.filter((a) => a.status === "ready" || a.status === "uploading");
+      const uploading = sent.filter((a) => a.status === "uploading");
+      // Cleared optimistically, like the draft: the message is on its way, and
+      // the transcript is about to show the same pictures back from the server.
+      const leaving = new Set(sent.map((a) => a.key));
+      const leave = () =>
+        setAttachments((all) => {
+          const list = all[threadId];
+          const kept = list?.filter((a) => !leaving.has(a.key));
+          return list && kept && kept.length !== list.length ? { ...all, [threadId]: kept } : all;
+        });
+
+      if (uploading.length === 0) {
+        // Whatever failed before is superseded by this send: its text was in
+        // the composer, and this is what the composer now holds. Sent
+        // unchanged it is a retry, under the same id, so the server's command
+        // ledger replays the first one's result if that did arrive after all.
+        const payload = sendPayload(sent);
+        const retry = outbox
+          .takeFailed(threadId)
+          .find((e) => e.text === text && samePayload(sendPayload(e.attachments), payload));
+        dispatch({
+          commandId: retry?.commandId ?? uuid(),
+          threadId,
+          text,
+          attachments: sent,
+          ...(delivery ? { delivery } : {}),
+        });
+        leave();
+        return;
+      }
+
+      // Not a retry: a send that waits has files the earlier one never had.
+      outbox.takeFailed(threadId);
+      const waiting: OutboxSend = {
+        commandId: uuid(),
         threadId,
         text,
         attachments: sent,
         ...(delivery ? { delivery } : {}),
+      };
+      outbox.wait(waiting);
+      leave();
+      // The chips have left the composer, so the uploads' own marks land on
+      // nothing; what each one came to is read from its promise instead.
+      void Promise.allSettled(
+        uploading.map(
+          (a) => uploadOf(a.key) ?? Promise.reject(new Error("the upload was lost")),
+        ),
+      ).then((results) => {
+        // Gone with its thread while it waited.
+        const entry = outbox.get().find((e) => e.commandId === waiting.commandId);
+        if (entry?.status !== "uploading") return;
+        const outcome = new Map(uploading.map((a, i) => [a.key, results[i]]));
+        const settled = sent.map((a): Attachment => {
+          const r = outcome.get(a.key);
+          if (!r) return a;
+          if (r.status === "fulfilled") return { ...a, ...r.value };
+          return { ...a, status: "error", error: messageOf(r.reason) };
+        });
+        const failed = settled.find((a) => a.status === "error");
+        if (!failed) {
+          dispatch({ ...waiting, attachments: settled });
+          return;
+        }
+        const reason = `${failed.name} did not upload${failed.error ? `: ${failed.error}` : ""}`;
+        const back = outbox.fail(waiting.commandId, reason, {
+          uploadFailed: true,
+          attachments: settled,
+        });
+        if (back) restoreFailedSend(back);
       });
-      // Cleared optimistically, like the draft: the message is on its way, and
-      // the transcript is about to show the same pictures back from the server.
-      // A failed upload does not go with it, so it has nothing to come back to.
-      for (const a of staged) if (a.status !== "ready" && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-      setAttachments((all) => (all[threadId]?.length ? { ...all, [threadId]: [] } : all));
     },
-    [activeId, attachments, dispatch, outbox, setAttachments],
+    [
+      activeId,
+      attachments,
+      dispatch,
+      outbox,
+      restoreFailedSend,
+      setAttachments,
+      setDrafts,
+      uploadOf,
+    ],
   );
 
   // The note's Retry: the failed message exactly as it went, under its own id,
@@ -385,6 +462,10 @@ function statusLine(state: ThreadState) {
     state.mode || "Default approvals",
     used !== undefined ? `${used.toLocaleString()} context tokens` : "Token usage unavailable",
   ].join(" · ");
+}
+
+function messageOf(e: unknown) {
+  return e instanceof Error ? e.message : e === undefined ? "" : String(e);
 }
 
 function samePayload(a: ReturnType<typeof sendPayload>, b: ReturnType<typeof sendPayload>) {

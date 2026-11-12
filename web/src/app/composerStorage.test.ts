@@ -316,6 +316,44 @@ describe("outbox", () => {
     });
   });
 
+  it("lapses a send left waiting on its uploads, since the files it waited on are gone", () => {
+    const outbox = createOutbox();
+    persistOutbox(outbox);
+    outbox.wait(entry("c1", { attachments: [ready(), ready({ key: "k2", status: "uploading", id: undefined })] }));
+
+    const { entries, lapsed } = loadOutbox();
+    expect(lapsed).toEqual(entries);
+    expect(entries).toMatchObject([
+      {
+        commandId: "c1",
+        status: "failed",
+        reason: "the page closed before its files finished uploading",
+        uploadFailed: true,
+        text: "text of c1",
+      },
+    ]);
+    // Only what had finished comes back to the composer.
+    expect(entries[0].attachments.map((a) => a.key)).toEqual(["k1"]);
+
+    // And stays an upload failure across the next reload.
+    persistOutbox(createOutbox(entries));
+    expect(loadOutbox().entries).toMatchObject([{ status: "failed", uploadFailed: true }]);
+  });
+
+  it("leaves alone a send another live tab is waiting on the uploads of", () => {
+    // This tab has an id of its own before the other one writes.
+    loadOutbox();
+    inAnotherTab(() => {
+      const theirs = createOutbox();
+      persistOutbox(theirs);
+      theirs.wait(entry("c1"));
+    });
+
+    expect(loadOutbox()).toEqual({ entries: [], lapsed: [] });
+    vi.advanceTimersByTime(60_000);
+    expect(loadOutbox().lapsed).toMatchObject([{ commandId: "c1", uploadFailed: true }]);
+  });
+
   it("shares a failed send with another tab, so a retry from there is still a retry", () => {
     const outbox = createOutbox();
     persistOutbox(outbox);

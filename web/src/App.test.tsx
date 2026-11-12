@@ -1935,6 +1935,126 @@ describe("a new thread's first message", () => {
   });
 });
 
+describe("sending while files upload", () => {
+  const boot = async () => {
+    viewport("desktop");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Thread a"));
+      events.onState("a", state("a", "default"));
+    });
+  };
+  const composer = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
+  const pick = (file: File) =>
+    act(async () => {
+      fireEvent.change(document.querySelector('input[type="file"]')!, {
+        target: { files: [file] },
+      });
+    });
+  const send = async (text: string) => {
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: text } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(composer(), { key: "Enter" });
+    });
+  };
+  const report = new File(["numbers"], "report.txt", { type: "text/plain" });
+  const uploaded = (artefactId: string) => ({ kind: "file", status: "ready", artefactId, progress: 1 });
+
+  // Each upload waits for the test to say how it ends.
+  let uploads: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[];
+  beforeEach(() => {
+    uploads = [];
+    uploadStaged.mockReset();
+    uploadStaged.mockImplementation(
+      () => new Promise((resolve, reject) => uploads.push({ resolve, reject })),
+    );
+    command.mockReset();
+    command.mockImplementation(async () => ({}) as any);
+  });
+
+  it("empties the composer at once and sends the message once its file is up", async () => {
+    await boot();
+    await pick(report);
+    await send("read this");
+
+    expect(composer().value).toBe("");
+    expect(screen.queryByRole("button", { name: "Remove report.txt" })).toBeNull();
+    expect(screen.getByText(/Sending once the uploads finish/)).toBeTruthy();
+    expect(promptsSent()).toEqual([]);
+
+    await act(async () => uploads[0].resolve(uploaded("art-1")));
+
+    await waitFor(() =>
+      expect(promptsSent()).toEqual([
+        ["prompt", { threadId: "a", text: "read this", files: [{ artefactId: "art-1" }] }, expect.any(String)],
+      ]),
+    );
+    expect(screen.queryByText(/Sending once the uploads finish/)).toBeNull();
+  });
+
+  it("brings the message back with its file when the upload fails, and sends it once the file is retried", async () => {
+    await boot();
+    await pick(report);
+    await send("read this");
+    await act(async () => uploads[0].reject(new Error("disk full")));
+
+    await waitFor(() => expect(composer().value).toBe("read this"));
+    expect(promptsSent()).toEqual([]);
+    const note = screen.getByRole("alert");
+    expect(note.textContent).toContain("Not sent: report.txt did not upload: disk full.");
+    // Retrying the message as it stands would send it without the file.
+    expect(within(note).queryByRole("button", { name: "Retry" })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry report.txt" }));
+    });
+    expect(uploadStaged).toHaveBeenCalledTimes(2);
+    expect(uploadStaged).toHaveBeenLastCalledWith("a", report, expect.anything());
+    await act(async () => uploads[1].resolve(uploaded("art-2")));
+    expect(screen.queryByRole("button", { name: "Retry report.txt" })).toBeNull();
+
+    await act(async () => {
+      fireEvent.keyDown(composer(), { key: "Enter" });
+    });
+    expect(promptsSent()).toEqual([
+      ["prompt", { threadId: "a", text: "read this", files: [{ artefactId: "art-2" }] }, expect.any(String)],
+    ]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps a file that failed in the composer when a message goes without it", async () => {
+    await boot();
+    await pick(report);
+    await act(async () => uploads[0].reject(new Error("disk full")));
+
+    await send("something else");
+
+    expect(promptsSent()).toEqual([
+      ["prompt", { threadId: "a", text: "something else" }, expect.any(String)],
+    ]);
+    expect(screen.getByRole("button", { name: "Retry report.txt" })).toBeTruthy();
+  });
+
+  it("marks a stalled upload failed, for a retry, rather than dropping it", async () => {
+    await boot();
+    await pick(report);
+    const stalled = Object.assign(new Error("The upload stopped making progress."), {
+      name: "UploadStalled",
+    });
+    await act(async () => uploads[0].reject(stalled));
+
+    expect(screen.getByRole("button", { name: "Retry report.txt" })).toBeTruthy();
+    expect(screen.getByText("The upload stopped making progress.")).toBeTruthy();
+  });
+});
+
 describe("the setup page", () => {
   const setupReport = {
     platform: "darwin",
