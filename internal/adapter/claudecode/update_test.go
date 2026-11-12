@@ -8,6 +8,7 @@ import (
 )
 
 func TestUpdateRunsClaudeUpdateUnderTheInstanceEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
 	dir := t.TempDir()
 	state := filepath.Join(dir, "version")
 	if err := os.WriteFile(state, []byte("2.1.300"), 0o644); err != nil {
@@ -16,7 +17,7 @@ func TestUpdateRunsClaudeUpdateUnderTheInstanceEnv(t *testing.T) {
 	bin := filepath.Join(dir, "claude")
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = --version ]; then echo \"$(cat '" + state + "') (Claude Code)\"; exit 0; fi\n" +
-		"if [ \"$1\" = update ]; then printf '%s' \"$CLAUDE_CONFIG_DIR\" > '" + dir + "/config'; printf 2.1.301 > '" + state + "'; fi\n"
+		"if [ \"$1\" = update ]; then printf '%s' \"$CLAUDE_CONFIG_DIR\" > '" + dir + "/config'; printf '%s' \"$CLAUDE_CODE_SESSION_ID\" > '" + dir + "/session'; printf 2.1.301 > '" + state + "'; fi\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +31,9 @@ func TestUpdateRunsClaudeUpdateUnderTheInstanceEnv(t *testing.T) {
 	}
 	if seen, _ := os.ReadFile(filepath.Join(dir, "config")); string(seen) != "/accounts/two" {
 		t.Errorf("update ran with CLAUDE_CONFIG_DIR=%q; want the instance's", seen)
+	}
+	if seen, _ := os.ReadFile(filepath.Join(dir, "session")); string(seen) != "" {
+		t.Errorf("update inherited CLAUDE_CODE_SESSION_ID=%q from the server's environment", seen)
 	}
 }
 
