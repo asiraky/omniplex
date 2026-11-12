@@ -16,8 +16,13 @@ func TestPutSnapshotBlobKeepsOnlyTheNewest(t *testing.T) {
 	if err := st.CreateThread(ctx, ThreadMeta{ID: "t", Cwd: "/x", Harness: "fake", CreatedAt: 1, UpdatedAt: 1, Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	for seq, blob := range map[int64]string{5: `"five"`, 9: `"nine"`} {
-		if err := st.PutSnapshotBlob(ctx, "t", seq, []byte(blob)); err != nil {
+	// In order, as the actor writes them: a map would range in random order,
+	// and writing 9 before 5 leaves both rows.
+	for _, s := range []struct {
+		seq  int64
+		blob string
+	}{{5, `"five"`}, {9, `"nine"`}} {
+		if err := st.PutSnapshotBlob(ctx, "t", s.seq, []byte(s.blob)); err != nil {
 			t.Fatal(err)
 		}
 	}
