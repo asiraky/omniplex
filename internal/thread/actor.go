@@ -1335,17 +1335,11 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: "cancelling"}
 
 	case cmdAskPerm:
-		if c.process != a.process {
-			// From a process Stop killed or an account switch replaced, asked
-			// on its way out. Nobody could answer it for that process, and
-			// recorded it would wait in the log for ever.
-			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
-			return false
-		}
-		if a.turnOver(c.perm.req.TurnID) {
-			// Asked as its turn ended, and overtaken by the finish: the
-			// harness is not waiting on it, and the finish that would have
-			// settled it has already been folded.
+		// From a process Stop killed or an account switch replaced, asked on
+		// its way out, or asked as its turn ended and overtaken by the
+		// finish. Nobody is waiting on it, and recorded it would wait in the
+		// log for ever.
+		if c.process != a.process || a.turnOver(c.perm.req.TurnID) {
 			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
 			return false
 		}
@@ -1384,12 +1378,8 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: "resolved"}
 
 	case cmdAskElicit:
-		if c.process != a.process {
+		if c.process != a.process || a.turnOver(c.elicit.req.TurnID) {
 			// As for a permission.
-			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
-			return false
-		}
-		if a.turnOver(c.elicit.req.TurnID) {
 			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
 			return false
 		}
