@@ -139,12 +139,16 @@ func TestCommandOutputStreamsOntoItsToolCall(t *testing.T) {
 	assertStreamedCommand(t, drain(s), "omniplex-turn")
 }
 
-// A subagent's commands are rendered as tool calls in the spawning turn, so
-// what they print streams onto those calls the same way.
+// A subagent's commands are rendered as tool calls under its spawn, so what
+// they print streams onto those calls the same way, and keeps streaming after
+// the turn that spawned it has ended.
 func TestSubagentCommandOutputStreamsOntoItsToolCall(t *testing.T) {
 	s := subagentSession(t)
 	s.turnID, s.serverTurnID = "omniplex-turn", "codex-turn-42"
 	const sub = "subagent-9"
+	spawn(s, "spawn-1", "look around", sub)
+	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-turn-42","status":"completed"}}`)
+	drain(s)
 
 	s.handleNotification("item/started", recordedItemFrame(t, sub, false))
 	for _, d := range recordedDeltas {
@@ -152,16 +156,24 @@ func TestSubagentCommandOutputStreamsOntoItsToolCall(t *testing.T) {
 	}
 	s.handleNotification("item/completed", recordedItemFrame(t, sub, true))
 
-	assertStreamedCommand(t, drain(s), "omniplex-turn")
+	var calls []proto.Emission
+	for _, e := range drain(s) {
+		if e.Type == proto.ToolCallStarted || e.Type == proto.ToolCallUpdated {
+			calls = append(calls, e)
+		}
+	}
+	assertStreamedCommand(t, calls, "omniplex-turn")
+	if p := calls[0].Payload.(proto.ToolCallStartedPayload); p.ParentToolCallID != "spawn-1" {
+		t.Fatalf("subagent's command parented on %q, want its spawn", p.ParentToolCallID)
+	}
 }
 
-// A subagent still talking after its turn ended has no tool call of ours to
-// stream onto; its output goes the way of the rest of its work.
-func TestOrphanedSubagentCommandOutputIsDropped(t *testing.T) {
+// A thread no spawn named is not a job; what it prints goes nowhere.
+func TestUnknownThreadCommandOutputIsDropped(t *testing.T) {
 	s := subagentSession(t)
 	s.handleNotification("item/commandExecution/outputDelta", onThread(t, recordedDeltas[0], "subagent-9"))
 	if got := drain(s); len(got) != 0 {
-		t.Fatalf("orphaned subagent output emitted %+v", got)
+		t.Fatalf("unknown thread's output emitted %+v", got)
 	}
 }
 

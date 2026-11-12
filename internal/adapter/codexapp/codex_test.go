@@ -62,6 +62,19 @@ func (r *recorder) interrupts(t *testing.T) map[string]string {
 	return out
 }
 
+// sent is the params of the last request for method. Unlike last, it holds
+// when a background request (the quota read after a turn) lands in between.
+func (r *recorder) sent(method string) json.RawMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.calls) - 1; i >= 0; i-- {
+		if r.calls[i].method == method {
+			return r.calls[i].params
+		}
+	}
+	return nil
+}
+
 func (r *recorder) last() (string, json.RawMessage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -424,9 +437,12 @@ func drain(s *session) []proto.Emission {
 
 func subagentSession(t *testing.T) *session {
 	t.Helper()
+	// A connection, because a turn of ours ending reads the quota off it.
+	conn, _ := pairedConn(t, nil)
 	return &session{
+		conn:     conn,
 		threadID: "thread-1",
-		events:   make(chan proto.Emission, 16),
+		events:   make(chan proto.Emission, 256),
 		done:     make(chan struct{}),
 		streamed: map[string]bool{},
 		host:     &elicitHost{},
@@ -437,7 +453,8 @@ func subagentSession(t *testing.T) *session {
 // thread does not stop a subagent it spawned, so the subagent's stream arrives
 // after the turn is cancelled. Opening a turn for it made the session look like
 // it had restarted the work, and that turn could not be stopped because its
-// codex turn id belongs to another thread.
+// codex turn id belongs to another thread. A thread no spawn named is not a
+// job either, so its output goes nowhere.
 func TestSubagentStreamDoesNotOpenATurn(t *testing.T) {
 	s := subagentSession(t)
 	s.handleNotification("item/agentMessage/delta", json.RawMessage(
@@ -446,50 +463,33 @@ func TestSubagentStreamDoesNotOpenATurn(t *testing.T) {
 		`{"threadId":"subagent-9","turnId":"subagent-turn","item":{"type":"commandExecution","id":"c1","command":"ls"}}`))
 
 	if got := drain(s); len(got) != 0 {
-		t.Fatalf("subagent output while idle emitted %d events, want none: %+v", len(got), got)
+		t.Fatalf("unregistered thread output emitted %d events, want none: %+v", len(got), got)
 	}
 	if s.turnID != "" || s.serverTurnID != "" {
 		t.Fatalf("subagent opened a turn: turnID=%q serverTurnID=%q", s.turnID, s.serverTurnID)
 	}
 }
 
-// TestSubagentStreamJoinsTheOpenTurn keeps the useful half: while this thread
-// is working, a subagent it spawned is its work, and its output belongs in the
-// turn that spawned it.
-func TestSubagentStreamJoinsTheOpenTurn(t *testing.T) {
-	s := subagentSession(t)
-	s.turnID, s.serverTurnID = "omniplex-turn", "codex-turn-42"
-	s.handleNotification("item/agentMessage/delta", json.RawMessage(
-		`{"threadId":"subagent-9","turnId":"subagent-turn","itemId":"msg-1","delta":"working"}`))
-
-	got := drain(s)
-	if len(got) != 1 || got[0].Type != proto.MessageChunk {
-		t.Fatalf("emissions = %+v, want one message chunk", got)
-	}
-	payload := got[0].Payload.(proto.MessageChunkPayload)
-	if payload.TurnID != "omniplex-turn" {
-		t.Fatalf("chunk labelled turn %q, want the spawning turn", payload.TurnID)
-	}
-	if s.serverTurnID != "codex-turn-42" {
-		t.Fatalf("serverTurnID overwritten with the subagent's: %q", s.serverTurnID)
-	}
-}
-
 // TestSubagentTurnCompletionDoesNotCloseOurTurn: a subagent finishing is not
-// this session finishing, and the stop button lives on the difference.
+// this session finishing, and the stop button lives on the difference. Its
+// token meter is its job's, not this session's.
 func TestSubagentTurnCompletionDoesNotCloseOurTurn(t *testing.T) {
 	s := subagentSession(t)
 	s.turnID, s.serverTurnID = "omniplex-turn", "codex-turn-42"
+	spawn(s, "spawn-1", "look around", "subagent-9")
+	drain(s)
 	s.handleNotification("turn/completed", json.RawMessage(
 		`{"threadId":"subagent-9","turn":{"id":"subagent-turn","status":"completed"}}`))
 	s.handleNotification("thread/tokenUsage/updated", json.RawMessage(
 		`{"threadId":"subagent-9","tokenUsage":{"total":{"inputTokens":10},"last":{"inputTokens":10},"contextWindow":100}}`))
 
-	if got := drain(s); len(got) != 0 {
-		t.Fatalf("subagent thread state leaked into this session: %+v", got)
+	for _, e := range drain(s) {
+		if e.Type == proto.TurnFinished || e.Type == proto.UsageUpdated {
+			t.Fatalf("subagent thread state leaked into this session: %+v", e)
+		}
 	}
-	if s.turnID != "omniplex-turn" {
-		t.Fatalf("our turn was closed by the subagent's completion: %q", s.turnID)
+	if s.turnID != "omniplex-turn" || s.serverTurnID != "codex-turn-42" {
+		t.Fatalf("our turn was touched by the subagent: %q / %q", s.turnID, s.serverTurnID)
 	}
 }
 
@@ -510,29 +510,6 @@ func TestFailedInterruptDoesNotWedgeTheStopButton(t *testing.T) {
 	}
 	if n := rec.count("turn/interrupt"); n != 2 {
 		t.Fatalf("turn/interrupt sent %d times, want 2", n)
-	}
-}
-
-// TestSubagentOutlivingItsTurnStaysOutOfTheNextOne: stopping a turn does not
-// stop a subagent it spawned, so its stream can still be arriving when the next
-// prompt opens a turn. That work belongs to the turn that spawned it, not to
-// whatever is running now.
-func TestSubagentOutlivingItsTurnStaysOutOfTheNextOne(t *testing.T) {
-	s := subagentSession(t)
-	s.turnID, s.serverTurnID = "turn-a", "codex-turn-a"
-	s.handleNotification("item/agentMessage/delta", json.RawMessage(
-		`{"threadId":"subagent-9","turnId":"subagent-turn","itemId":"msg-1","delta":"during A"}`))
-	if got := drain(s); len(got) != 1 {
-		t.Fatalf("subagent output during its own turn = %+v, want one chunk", got)
-	}
-
-	// Turn A is stopped and turn B starts while the subagent keeps talking.
-	s.turnID, s.serverTurnID = "turn-b", "codex-turn-b"
-	s.handleNotification("item/agentMessage/delta", json.RawMessage(
-		`{"threadId":"subagent-9","turnId":"subagent-turn","itemId":"msg-1","delta":"after A"}`))
-
-	if got := drain(s); len(got) != 0 {
-		t.Fatalf("orphaned subagent output leaked into turn B: %+v", got)
 	}
 }
 
@@ -932,20 +909,25 @@ func TestStragglerDoesNotLendItsTurnID(t *testing.T) {
 	}
 }
 
-// Stop ends the subagents the stopped turn spawned, not just the thread that
-// spawned them. A subagent of an earlier turn, and one whose turn has already
-// finished, are left alone.
+// Stop ends the subagents working for the stopped turn, not just the thread
+// that spawned them. A subagent of an earlier turn, and one whose turn has
+// already finished, are left alone.
 func TestCancelInterruptsTheTurnsRunningSubagents(t *testing.T) {
 	s, rec := stopSession(t, nil)
 	s.turnID = "turn-0"
-	notify(s, "turn/started", `{"threadId":"sub-old","turn":{"id":"sub-old-turn"}}`)
+	spawn(s, "spawn-0", "old", "sub-old")
+	childTurn(s, "sub-old", "sub-old-turn")
 
 	s.turnID, s.serverTurnID = "turn-a", "codex-a"
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-turn"}}`)
-	// A subagent first heard from mid-turn, through an item.
+	// Its turn heard about before the spawn naming it.
+	childTurn(s, "sub-1", "sub-1-turn")
+	spawn(s, "spawn-1", "one", "sub-1")
+	// Its turn heard about only through an item.
+	spawn(s, "spawn-2", "two", "sub-2")
 	notify(s, "item/started", `{"threadId":"sub-2","turnId":"sub-2-turn","item":{"type":"commandExecution","id":"c1","command":"ls"}}`)
-	notify(s, "turn/started", `{"threadId":"sub-3","turn":{"id":"sub-3-turn"}}`)
-	notify(s, "turn/completed", `{"threadId":"sub-3","turn":{"id":"sub-3-turn","status":"completed"}}`)
+	spawn(s, "spawn-3", "three", "sub-3")
+	childTurn(s, "sub-3", "sub-3-turn")
+	childDone(s, "sub-3", "sub-3-turn", "completed")
 	// A straggler from sub-3's finished turn does not mark it running again.
 	notify(s, "item/completed", `{"threadId":"sub-3","turnId":"sub-3-turn","item":{"type":"agentMessage","id":"m1","text":"done"}}`)
 
@@ -977,7 +959,8 @@ func TestSubagentInterruptFailureDoesNotFailCancel(t *testing.T) {
 		},
 	})
 	s.turnID, s.serverTurnID = "turn-a", "codex-a"
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-turn"}}`)
+	spawn(s, "spawn-1", "one", "sub-1")
+	childTurn(s, "sub-1", "sub-1-turn")
 
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel failed with the subagent's refusal: %v", err)
@@ -985,7 +968,7 @@ func TestSubagentInterruptFailureDoesNotFailCancel(t *testing.T) {
 	if got := rec.interrupts(t); got["thread-1"] != "codex-a" || got["sub-1"] != "sub-1-turn" {
 		t.Fatalf("interrupts = %v", got)
 	}
-	if s.subagents["sub-1"].interrupting {
+	if s.children["sub-1"].interrupting {
 		t.Fatal("refused subagent interrupt left claimed; a later stop could not retry it")
 	}
 }
@@ -995,7 +978,9 @@ func TestSubagentInterruptFailureDoesNotFailCancel(t *testing.T) {
 func TestCancelWithoutServerTurnStillStopsSubagents(t *testing.T) {
 	s, rec := stopSession(t, nil)
 	s.turnID = "turn-a"
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-turn"}}`)
+	spawn(s, "spawn-1", "one", "sub-1")
+	childTurn(s, "sub-1", "sub-1-turn")
+	s.serverTurnID = "" // the spawn item named it
 
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -1011,8 +996,9 @@ func TestCancelWithoutServerTurnStillStopsSubagents(t *testing.T) {
 func TestSubagentTurnStartingAfterStopIsInterrupted(t *testing.T) {
 	s, rec := stopSession(t, nil)
 	s.turnID, s.serverTurnID = "turn-a", "codex-a"
-	notify(s, "item/completed", `{"threadId":"sub-1","turnId":"sub-1-first","item":{"type":"agentMessage","id":"m1","text":"hi"}}`)
-	notify(s, "turn/completed", `{"threadId":"sub-1","turn":{"id":"sub-1-first","status":"completed"}}`)
+	spawn(s, "spawn-1", "one", "sub-1")
+	childTurn(s, "sub-1", "sub-1-first")
+	childDone(s, "sub-1", "sub-1-first", "completed")
 
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -1022,36 +1008,50 @@ func TestSubagentTurnStartingAfterStopIsInterrupted(t *testing.T) {
 	}
 	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-a","status":"interrupted"}}`)
 
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-late"}}`)
+	childTurn(s, "sub-1", "sub-1-late")
 	waitFor(t, "the late subagent interrupt", func() bool { return rec.interrupts(t)["sub-1"] == "sub-1-late" })
 
 	// The next turn of ours may reuse the subagent; that is not stopped.
-	notify(s, "turn/completed", `{"threadId":"sub-1","turn":{"id":"sub-1-late","status":"interrupted"}}`)
+	childDone(s, "sub-1", "sub-1-late", "interrupted")
 	s.turnID, s.serverTurnID = "turn-b", "codex-b"
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-reused"}}`)
+	childTurn(s, "sub-1", "sub-1-reused")
 	time.Sleep(50 * time.Millisecond)
 	if got := rec.interrupts(t)["sub-1"]; got != "sub-1-late" {
 		t.Fatalf("subagent's turn in the next turn of ours was interrupted: %s", got)
 	}
 }
 
+// A child whose turn started before the spawn naming it arrived, after its
+// turn was already stopped, missed Cancel; registering it stops it.
+func TestSubagentRegisteredAfterStopIsInterrupted(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	childTurn(s, "sub-1", "sub-1-turn")
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	spawn(s, "spawn-1", "one", "sub-1")
+	waitFor(t, "the late subagent interrupt", func() bool { return rec.interrupts(t)["sub-1"] == "sub-1-turn" })
+}
+
 // Codex reuses a subagent across turns of ours. One spawned in turn A and
-// handed new work in turn B is B's work: its output lands in B, and Stop during
-// B ends it rather than leaving it spending after B is gone.
+// handed new work in turn B is B's work: Stop during B ends it rather than
+// leaving it spending after B is gone. Its output stays under its job.
 func TestReusedSubagentIsStoppedWithTheTurnReusingIt(t *testing.T) {
 	s, rec := stopSession(t, nil)
 	s.turnID, s.serverTurnID = "turn-a", "codex-a"
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-first"}}`)
-	notify(s, "turn/completed", `{"threadId":"sub-1","turn":{"id":"sub-1-first","status":"completed"}}`)
+	spawn(s, "spawn-1", "one", "sub-1")
+	childTurn(s, "sub-1", "sub-1-first")
+	childDone(s, "sub-1", "sub-1-first", "completed")
 	notify(s, "turn/completed", `{"threadId":"thread-1","turn":{"id":"codex-a","status":"completed"}}`)
 	drain(s)
 
 	s.turnID, s.serverTurnID = "turn-b", "codex-b"
-	notify(s, "turn/started", `{"threadId":"sub-1","turn":{"id":"sub-1-reused"}}`)
+	childTurn(s, "sub-1", "sub-1-reused")
 	notify(s, "item/agentMessage/delta", `{"threadId":"sub-1","turnId":"sub-1-reused","itemId":"m2","delta":"on it"}`)
-	got := drain(s)
-	if len(got) != 1 || got[0].Payload.(proto.MessageChunkPayload).TurnID != "turn-b" {
-		t.Fatalf("reused subagent's output = %+v, want one chunk in turn-b", got)
+	chunks := ofType(drain(s), proto.MessageChunk)
+	if len(chunks) != 1 || chunks[0].Payload.(proto.MessageChunkPayload).ParentToolCallID != "spawn-1" {
+		t.Fatalf("reused subagent's output = %+v, want one chunk under its spawn", chunks)
 	}
 
 	if err := s.Cancel(context.Background()); err != nil {

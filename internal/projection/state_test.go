@@ -254,6 +254,154 @@ func TestJobOutlivesTurn(t *testing.T) {
 	}
 }
 
+// A subagent keeps working after the turn that spawned it has ended. Its own
+// output, parented to its job's call, is recorded against the job but does
+// not reopen the parent's turn, and its running command survives the turn's
+// finish while the parent's own stray tool is cancelled. Mirrored by
+// web/src/apply.test.ts.
+func TestSubagentWorkOutlivesParentTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindAgent, Title: "spawn", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 3, proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent"}))
+	s.Apply(event(t, 4, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "sub1", ParentToolCallID: "c1", Kind: proto.KindExecute, Title: "go test", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 5, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "own1", Kind: proto.KindExecute, Title: "ls", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 6, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+
+	if it, _ := s.ItemByID("sub1"); it.Status != proto.StatusInProgress {
+		t.Fatalf("subagent's tool after parent turn finished = %q, want in_progress", it.Status)
+	}
+	if it, _ := s.ItemByID("own1"); it.Status != proto.StatusCancelled {
+		t.Fatalf("parent's own tool after its turn finished = %q, want cancelled", it.Status)
+	}
+
+	s.Apply(event(t, 7, proto.MessageChunk, proto.MessageChunkPayload{
+		TurnID: "t1", Role: "agent", Kind: "text", BlockID: "b1", Delta: "found it", ParentToolCallID: "c1",
+	}))
+	s.Apply(event(t, 8, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "sub2", ParentToolCallID: "c1", Kind: proto.KindRead, Title: "read", Status: proto.StatusPending,
+	}))
+	s.Apply(event(t, 9, proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
+		ToolCallID: "sub2", ParentToolCallID: "c1", Status: proto.StatusInProgress,
+	}))
+	if s.Phase != "idle" {
+		t.Fatalf("phase after subagent output while idle = %q, want idle", s.Phase)
+	}
+	if it, ok := s.ItemByID("b1"); !ok || it.ParentID != "c1" || it.Text != "found it" {
+		t.Fatalf("subagent message = %+v, want recorded under c1", it)
+	}
+	if it, ok := s.ItemByID("sub2"); !ok || it.ParentID != "c1" || it.Status != proto.StatusInProgress {
+		t.Fatalf("subagent tool = %+v, want in_progress under c1", it)
+	}
+}
+
+// A subagent's running command keeps streaming after its parent's turn ends,
+// so the turn finishing leaves its tail; the job finishing settles the
+// command and drops the tail with it. Mirrored by web/src/apply.test.ts.
+func TestSubagentCommandTailOutlivesParentTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindAgent, Title: "spawn", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 3, proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent"}))
+	s.Apply(event(t, 4, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "sub1", ParentToolCallID: "c1", Kind: proto.KindExecute, Title: "go test", Status: proto.StatusInProgress,
+	}))
+	s.Apply(event(t, 5, proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: "sub1", OutputDelta: "ok 1\n"}))
+	s.Apply(event(t, 6, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+
+	if it, _ := s.ItemByID("sub1"); it.Status != proto.StatusInProgress || it.Tail != "ok 1\n" {
+		t.Fatalf("subagent's command after parent turn finished = %q tail %q, want in_progress with its tail", it.Status, it.Tail)
+	}
+
+	s.Apply(event(t, 7, proto.JobFinished, proto.JobPayload{JobID: "j1", ToolCallID: "c1", Status: proto.JobStopped}))
+	if it, _ := s.ItemByID("sub1"); it.Status != proto.StatusCancelled || it.Tail != "" {
+		t.Fatalf("subagent's command after its job finished = %q tail %q, want cancelled with no tail", it.Status, it.Tail)
+	}
+}
+
+// A stopped subagent's command was spared by its parent's turn finishing, for
+// the job's sake; the job finishing leaves nobody to settle it, so it does.
+// Another job's work, and work already done, are untouched, and a completion
+// the harness sends later still lands. Mirrored by web/src/apply.test.ts.
+func TestFinishedJobCancelsItsUnfinishedWork(t *testing.T) {
+	s := New("s1")
+	var seq int64
+	apply := func(typ string, payload any) {
+		seq++
+		s.Apply(event(t, seq, typ, payload))
+	}
+	apply(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"})
+	for _, c := range []string{"c1", "c2"} {
+		apply(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+			TurnID: "t1", ToolCallID: c, Kind: proto.KindAgent, Title: "spawn", Status: proto.StatusInProgress,
+		})
+	}
+	apply(proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "subagent"})
+	apply(proto.JobStarted, proto.JobPayload{JobID: "j2", ToolCallID: "c2", TaskType: "subagent"})
+	for _, tool := range []struct{ id, parent, status string }{
+		{"run1", "c1", proto.StatusInProgress},
+		{"wait1", "c1", proto.StatusPending},
+		{"done1", "c1", proto.StatusInProgress},
+		{"other", "c2", proto.StatusInProgress},
+		{"spawn3", "c1", proto.StatusInProgress},
+	} {
+		apply(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+			TurnID: "t1", ToolCallID: tool.id, ParentToolCallID: tool.parent, Kind: proto.KindExecute, Title: tool.id, Status: tool.status,
+		})
+	}
+	// j1's child spawned a grandchild that outlives it.
+	apply(proto.JobStarted, proto.JobPayload{JobID: "j3", ToolCallID: "spawn3", ParentJobID: "j1", TaskType: "subagent"})
+	apply(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: "done1", Status: proto.StatusCompleted})
+	apply(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn})
+	apply(proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobStopped})
+
+	for id, want := range map[string]string{
+		"c1": proto.StatusCancelled, "run1": proto.StatusCancelled, "wait1": proto.StatusCancelled,
+		"done1": proto.StatusCompleted, "other": proto.StatusInProgress, "spawn3": proto.StatusInProgress,
+	} {
+		if it, _ := s.ItemByID(id); it.Status != want {
+			t.Fatalf("%s after its job stopped = %q, want %q", id, it.Status, want)
+		}
+	}
+
+	apply(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: "run1", ParentToolCallID: "c1", Status: proto.StatusCompleted})
+	if it, _ := s.ItemByID("run1"); it.Status != proto.StatusCompleted {
+		t.Fatalf("late completion = %q, want completed", it.Status)
+	}
+}
+
+// A finished job reported running again was reopened: its finish time clears
+// so its elapsed clock runs, and the next finish stamps it afresh. Mirrored by
+// web/src/apply.test.ts.
+func TestReopenedJobClearsFinishedAt(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.JobStarted, proto.JobPayload{JobID: "j1", TaskType: "subagent"}))
+	s.Apply(event(t, 2, proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobCompleted}))
+	if got := s.job("j1").FinishedAt; got != 2000 {
+		t.Fatalf("finishedAt after finish = %d, want 2000", got)
+	}
+
+	s.Apply(event(t, 3, proto.JobUpdated, proto.JobPayload{JobID: "j1", Status: proto.JobRunning}))
+	if j := s.job("j1"); j.FinishedAt != 0 || j.Status != proto.JobRunning {
+		t.Fatalf("job after reopen = %+v, want running with no finish", j)
+	}
+
+	// An update that sets no status leaves a finished job finished.
+	s.Apply(event(t, 4, proto.JobFinished, proto.JobPayload{JobID: "j1", Status: proto.JobCompleted}))
+	s.Apply(event(t, 5, proto.JobUpdated, proto.JobPayload{JobID: "j1", Activity: "done"}))
+	if j := s.job("j1"); j.FinishedAt != 4000 || j.Status != proto.JobCompleted {
+		t.Fatalf("job after second finish = %+v, want completed at 4000", j)
+	}
+}
+
 // A live shell alone is not work anyone waits on — a dev server started from
 // the thread runs for as long as it likes — so once the turn is over the thread
 // is the user's again. A subagent or a monitor still holds it in background.

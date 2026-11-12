@@ -65,6 +65,11 @@ function toolDone(status: Item["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+/** The tool calls standing for jobs still running. */
+function liveJobCalls(jobs: Job[]): Set<string> {
+  return new Set(jobs.flatMap((j) => (j.toolCallId && !jobDone(j.status) ? [j.toolCallId] : [])));
+}
+
 /** The call without its tail: absent rather than empty, as the server's
     omitempty leaves it. */
 function dropTail(it: Item): Item {
@@ -151,20 +156,33 @@ function applyJob(s: ThreadState, ts: number, p: JobPayload, finished: boolean):
   if (p.outputFile) j.outputFile = p.outputFile;
   if (p.backgrounded !== undefined) j.backgrounded = p.backgrounded;
   if (p.hidden) j.hidden = true;
-  if (p.status) j.status = p.status;
+  if (p.status) {
+    // A finished job reported running again was reopened (a Codex subagent
+    // taking a new turn): its elapsed clock runs again.
+    if (!finished && !jobDone(p.status)) j.finishedAt = undefined;
+    j.status = p.status;
+  }
   let items = s.items;
   if (finished) {
     if (!jobDone(j.status)) j.status = "completed";
     j.finishedAt ??= ts;
     // The spawning tool call, if still waiting on this job, is settled by it.
+    // So is the job's own work left mid-flight (a stopped subagent's command):
+    // its parent's turn finishing spared it for the job, and the job is over.
+    // A real completion arriving later still lands. Mirrors
+    // internal/projection/state.go.
     if (j.toolCallId) {
+      const call = j.toolCallId;
       const settled =
         j.status === "failed" ? "failed" : j.status === "completed" ? "completed" : "cancelled";
-      items = s.items.map((it) =>
-        it.id === j.toolCallId && (it.status === "in_progress" || it.status === "pending")
-          ? settle(it, settled)
-          : it,
-      );
+      // A live grandchild's spawn call is still its job's to settle.
+      const live = liveJobCalls(jobs);
+      items = s.items.map((it) => {
+        if (it.status !== "in_progress" && it.status !== "pending") return it;
+        if (it.id === call) return settle(it, settled);
+        if (it.kind === "tool" && it.parentId === call && !live.has(it.id)) return settle(it, "cancelled");
+        return it;
+      });
     }
   } else if (jobDone(j.status)) {
     j.finishedAt ??= ts;
@@ -323,6 +341,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       // internal/projection/state.go.
       const open = s.turns.reduce<string>((acc, t) => (t.done ? acc : t.id), "");
       const match = open === "" || p.turnId === open;
+      const live = liveJobCalls(s.jobs);
       return {
         ...s,
         ...settleRequests(s, p.turnId),
@@ -343,14 +362,15 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         // Any tool of this turn left mid-flight was interrupted, not broken:
         // cancelled, never failed. A call standing for a live job keeps its
         // status — the job's own finish settles it — but not its tail, which
-        // nothing streams to past the turn's end. Tools of other turns are
-        // left alone too. Mirrors internal/projection/state.go.
+        // nothing streams to past the turn's end. A live job's own work (a
+        // subagent's running command) is left alone entirely: it is still
+        // running. Tools of other turns are left alone too. Mirrors
+        // internal/projection/state.go.
         items: match
           ? s.items.map((it) => {
               if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId)) return it;
-              if (s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)) {
-                return "tail" in it ? dropTail(it) : it;
-              }
+              if (it.parentId && live.has(it.parentId)) return it;
+              if (live.has(it.id)) return "tail" in it ? dropTail(it) : it;
               return it.status === "in_progress" || it.status === "pending" ? settle(it, "cancelled") : it;
             })
           : s.items,
@@ -371,8 +391,11 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         ...s,
         // Streaming while idle means a turn is running that the log did not
         // announce. Trusting the activity over the phase keeps a lifecycle
-        // desync from freezing the UI. Mirrors internal/projection/state.go.
-        phase: s.phase === "idle" ? "turn" : s.phase,
+        // desync from freezing the UI. A subagent's own output (parented to
+        // its job's call) is not: it streams on after the parent's turn
+        // ended, and the job surfaces carry it. Mirrors
+        // internal/projection/state.go.
+        phase: s.phase === "idle" && !p.parentToolCallId ? "turn" : s.phase,
         items: upsert(s, p.blockId, (it) => {
           it.kind = "message";
           it.receivedAt ??= ev.timestamp;
@@ -387,8 +410,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "tool_call.started":
       return {
         ...s,
-        // Same defence as message.chunk: a tool starting is a turn running.
-        phase: s.phase === "idle" ? "turn" : s.phase,
+        // Same defence as message.chunk: a tool starting is a turn running,
+        // unless it is a subagent's.
+        phase: s.phase === "idle" && !p.parentToolCallId ? "turn" : s.phase,
         items: upsert(s, p.toolCallId, (it) => {
           it.kind = "tool";
           it.receivedAt ??= ev.timestamp;
@@ -416,8 +440,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         ...s,
         // Same defence as message.chunk, but only for a tool going active: a
         // background tool's result straggling in after the turn ended must
-        // not reopen "working". Mirrors internal/projection/state.go.
-        phase: s.phase === "idle" && p.status === "in_progress" ? "turn" : s.phase,
+        // not reopen "working". A subagent's tool is not the parent's turn
+        // either. Mirrors internal/projection/state.go.
+        phase:
+          s.phase === "idle" && p.status === "in_progress" && !p.parentToolCallId ? "turn" : s.phase,
         items: upsert(s, p.toolCallId, (it) => {
           it.kind = "tool";
           it.receivedAt ??= ev.timestamp;
