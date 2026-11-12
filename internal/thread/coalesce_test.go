@@ -559,6 +559,35 @@ func TestActorStoresOnlyTheOutputATailCanShow(t *testing.T) {
 	}
 }
 
+// Output joined to the update that finishes its call is not stored: the
+// finish drops the tail it would have fed, and the result carries it.
+func TestActorDropsOutputJoinedToTheFinish(t *testing.T) {
+	actor, fa, st := newTestActor(t)
+	ctx := context.Background()
+	sess := fa.thread()
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+	sess.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: proto.KindExecute, Title: "make", Status: proto.StatusInProgress,
+	}))
+	// As the coalescer joins a last delta to the finish that follows it.
+	sess.emit(toolUpdate(proto.ToolCallUpdatedPayload{
+		ToolCallID: "c1", Status: proto.StatusCompleted, OutputDelta: "compiling a\n",
+		Content: []proto.ToolContent{textContent("compiling a\n")},
+	}))
+
+	var evs []proto.Event
+	waitFor(t, func() bool {
+		evs, _ = st.ReadEvents(ctx, actor.ID, 0, 100)
+		it, ok := rebuild(actor.ID, evs).ItemByID("c1")
+		return ok && it.Status == proto.StatusCompleted
+	})
+	for _, em := range decodeEvents(t, evs) {
+		if p, ok := em.Payload.(proto.ToolCallUpdatedPayload); ok && p.OutputDelta != "" {
+			t.Fatalf("stored output %q on %+v", p.OutputDelta, p)
+		}
+	}
+}
+
 func TestActorFlushesHeldDeltasBeforeOtherEvents(t *testing.T) {
 	actor, fa, st := newTestActor(t)
 	ctx := context.Background()
