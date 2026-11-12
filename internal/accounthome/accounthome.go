@@ -59,18 +59,6 @@ func Resolve(home, value string) string {
 	return filepath.Clean(v)
 }
 
-// ConflictError is an account home holding its own copy of an entry that the
-// shared home also has. Nothing is merged or removed: the account keeps its
-// copy until someone moves it aside.
-type ConflictError struct {
-	Path   string // the account's own entry
-	Shared string // what it would link to
-}
-
-func (e *ConflictError) Error() string {
-	return fmt.Sprintf("%s is this account's own copy; move it aside so the account shares %s", e.Path, e.Shared)
-}
-
 // Link makes account present every entry of shared. It is idempotent and
 // cheap enough to run before every session.
 //
@@ -79,72 +67,125 @@ func (e *ConflictError) Error() string {
 //     shared (the first account to create a shared file makes it shared);
 //   - shared missing otherwise: a folder is made in shared, a file is skipped;
 //   - account missing: linked to shared;
-//   - account a link anywhere else, or dangling: re-pointed at shared;
-//   - account a real entry while shared has one too: a *ConflictError, left
-//     as it is.
+//   - account a link whose literal target is not shared's path — elsewhere,
+//     dangling, or straight at whatever shared itself links to: re-pointed at
+//     shared, so every account has the same shape;
+//   - account a real entry while shared has one too: left as it is, and its
+//     name returned in conflicts. Nothing an account owns is ever replaced;
+//     UseShared is the explicit way to give it up.
 //
-// When account is shared itself (the machine's own account) there is nothing
-// to do. Errors are joined; one bad entry does not stop the rest.
-func Link(shared, account string, entries []Entry) error {
+// When account is shared itself there is nothing to do. Errors are joined;
+// one bad entry does not stop the rest.
+func Link(shared, account string, entries []Entry) (conflicts []string, err error) {
 	if shared == "" || account == "" || samePath(shared, account) {
-		return nil
+		return nil, nil
 	}
 	linking.Lock()
 	defer linking.Unlock()
 	if err := os.MkdirAll(account, 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	var errs []error
 	for _, e := range entries {
-		if err := link(filepath.Join(shared, e.Name), filepath.Join(account, e.Name), e.Dir); err != nil {
+		conflict, err := link(filepath.Join(shared, e.Name), filepath.Join(account, e.Name), e.Dir)
+		if conflict {
+			conflicts = append(conflicts, e.Name)
+		}
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return conflicts, errors.Join(errs...)
 }
 
-func link(src, dst string, dir bool) error {
+// BackupSuffix is appended to an account's own copy of a shared entry when
+// UseShared moves it aside.
+const BackupSuffix = ".account-backup"
+
+// UseShared gives up the account's own copy of one shared entry: the copy is
+// moved aside to <name>.account-backup (numbered if that is taken; nothing is
+// overwritten or deleted) and the entry linked to shared. backup is where the
+// copy went, "" when there was none to move.
+func UseShared(shared, account string, e Entry) (backup string, err error) {
+	if shared == "" || account == "" || samePath(shared, account) {
+		return "", nil
+	}
+	linking.Lock()
+	defer linking.Unlock()
+	dst := filepath.Join(account, e.Name)
+	if info, err := os.Lstat(dst); err == nil && info.Mode()&os.ModeSymlink == 0 {
+		for i := 1; ; i++ {
+			backup = dst + BackupSuffix
+			if i > 1 {
+				backup = fmt.Sprintf("%s%s-%d", dst, BackupSuffix, i)
+			}
+			if _, err := Move(dst, backup); err == nil {
+				break
+			} else if !errors.Is(err, os.ErrExist) || i >= 100 {
+				return "", fmt.Errorf("move %s aside: %w", dst, err)
+			}
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if _, err := link(filepath.Join(shared, e.Name), dst, e.Dir); err != nil {
+		return backup, err
+	}
+	return backup, nil
+}
+
+// link presents src at dst; conflict reports dst being the account's own
+// real entry while src exists.
+func link(src, dst string, dir bool) (conflict bool, err error) {
 	if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
 		if info, err := os.Lstat(dst); err == nil && info.Mode()&os.ModeSymlink == 0 && info.IsDir() == dir {
 			if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
-				return err
+				return false, err
 			}
-			if err := os.Rename(dst, src); err != nil {
-				return fmt.Errorf("share %s: %w", dst, err)
+			if err := adopt(dst, src, dir); err != nil {
+				return false, fmt.Errorf("share %s: %w", dst, err)
 			}
 		} else if dir {
 			if err := os.MkdirAll(src, 0o755); err != nil {
-				return err
+				return false, err
 			}
 		} else {
-			return nil
+			return false, nil
 		}
 	} else if err != nil {
-		return err
+		return false, err
 	}
 
 	info, err := os.Lstat(dst)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
-		return err
+		return false, err
 	case info.Mode()&os.ModeSymlink == 0:
-		return &ConflictError{Path: dst, Shared: src}
-	case samePath(dst, src):
-		return nil
+		return true, nil
+	case linksTo(dst, src):
+		return false, nil
 	default:
 		if err := os.Remove(dst); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := os.Symlink(src, dst); err != nil {
 		// Another session preparing the same account got there first.
-		if errors.Is(err, os.ErrExist) && samePath(dst, src) {
-			return nil
+		if errors.Is(err, os.ErrExist) && linksTo(dst, src) {
+			return false, nil
 		}
-		return err
+		return false, err
 	}
-	return nil
+	return false, nil
+}
+
+// linksTo reports whether dst is a link whose literal target is src. Where it
+// resolves to does not matter: a link straight at the final file has a
+// different shape from every other account's, and is re-pointed.
+func linksTo(dst, src string) bool {
+	target, err := os.Readlink(dst)
+	return err == nil && target == src
 }
 
 // adopt moves an account's own entry to the shared path without ever
