@@ -115,7 +115,6 @@ const state = (id: string, mode: string): any => ({
   items: [],
   turns: [],
   jobs: [],
-  plan: [],
   usage: {},
   pendingPermissions: [],
   pendingElicitations: [],

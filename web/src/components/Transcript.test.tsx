@@ -20,7 +20,6 @@ const state = (text: string): any => ({
   workspace: { phase: "ready", projectId: "p1", projectRoot: "/tmp/repo" },
   items: [{ id: "m1", kind: "message", role: "agent", contentKind: "text", text, receivedAt: 1 }],
   turns: [{ id: "t1", status: "done" }],
-  plan: [],
   usage: {},
   pendingPermissions: [],
   pendingElicitations: [],

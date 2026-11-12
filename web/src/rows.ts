@@ -126,6 +126,13 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
           rows.push({ kind: "item", item: it });
           continue;
         }
+        // The agent's task list stays where it wrote it, splitting the fold:
+        // it is the turn's outline, not part of the work it outlines.
+        if (it.kind === "plan") {
+          flush();
+          rows.push({ kind: "item", item: it });
+          continue;
+        }
         // A spawn batch stays out of the fold, splitting it in two if it must.
         if (isSpawn(it)) {
           flush();

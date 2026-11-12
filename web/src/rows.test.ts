@@ -23,6 +23,7 @@ const shape = (rows: Row[]) =>
     if (r.kind === "jobs") return `jobs(${r.items.length})`;
     if (r.kind === "artefacts") return `artefacts(${r.items.map((i) => i.id.replace("artefact:", "")).join(",")})`;
     if (r.kind === "run") return r.live ? `live(${r.items.length})` : `run(${r.items.length})`;
+    if (r.item.kind === "plan") return "plan";
     return `${r.item.kind}:${r.item.role ?? "tool"}`;
   });
 
@@ -246,5 +247,32 @@ describe("buildRows with cards", () => {
 
   it("belongs to its turn, for the changed-files card", () => {
     expect(rowTurnID({ kind: "item", item: card() })).toBe("turn1");
+  });
+});
+
+describe("buildRows with plans", () => {
+  function plan(over: Partial<Item> = {}): Item {
+    return { id: `todo:c${n++}`, kind: "plan", steps: [{ text: "a", status: "pending" }], turnId: "turn1", ...over };
+  }
+
+  it("keeps a finished turn's plan in place, splitting the fold around it", () => {
+    const p = plan();
+    const rows = buildRows([prompt("go"), tool(), p, tool(), tool(), msg("Done.")], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "fold(1)", "plan", "fold(2)", "message:agent"]);
+    expect(rows[2]).toEqual({ kind: "item", item: p });
+  });
+
+  it("keeps every plan of a finished turn, in order", () => {
+    const a = plan();
+    const b = plan();
+    const rows = buildRows([prompt("go"), a, tool(), b, msg("Done.")], [turn("turn1")], "idle");
+    expect(shape(rows)).toEqual(["message:user", "plan", "fold(1)", "plan", "message:agent"]);
+    expect(rows[1]).toEqual({ kind: "item", item: a });
+    expect(rows[3]).toEqual({ kind: "item", item: b });
+  });
+
+  it("breaks a running turn's tool run", () => {
+    const rows = buildRows([prompt("go"), tool(), tool(), plan(), tool()], [turn("turn1", { done: false })], "turn");
+    expect(shape(rows)).toEqual(["message:user", "run(2)", "plan", "live(1)"]);
   });
 });

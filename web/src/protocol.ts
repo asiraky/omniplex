@@ -51,7 +51,7 @@ export interface PromptImage {
 
 export interface Item {
   id: string;
-  kind: "message" | "tool" | "notice" | "artefact" | "card";
+  kind: "message" | "tool" | "notice" | "artefact" | "card" | "plan";
   turnId?: string;
   /** The Task/Agent tool call this item's work happened inside, for subagents. */
   parentId?: string;
@@ -81,6 +81,17 @@ export interface Item {
   // card: what the agent proposed, and once answered, what happened
   card?: Card;
   outcome?: CardOutcome;
+  // plan: the whole task list as it stands, never a delta
+  steps?: PlanStep[];
+  explanation?: string;
+  /** A TodoWrite list a later one replaced. Codex turn plans never are. */
+  superseded?: boolean;
+}
+
+/** One task in an agent's plan. */
+export interface PlanStep {
+  text: string;
+  status: "pending" | "running" | "completed";
 }
 
 /** One file the thread changed, aggregated across the whole thread. */
@@ -384,12 +395,6 @@ export interface Usage {
   contextCategories?: { name: string; tokens: number }[];
 }
 
-export interface PlanEntry {
-  content: string;
-  status: string;
-  priority?: string;
-}
-
 export interface ThreadState {
   threadId: string;
   seq: number;
@@ -410,7 +415,6 @@ export interface ThreadState {
   itemsBefore?: number;
   turns: Turn[];
   jobs: Job[];
-  plan: PlanEntry[];
   usage: Usage;
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];

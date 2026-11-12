@@ -21,7 +21,6 @@ export function emptyState(threadId: string): ThreadState {
     items: [],
     turns: [],
     jobs: [],
-    plan: [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     pendingPermissions: [],
     pendingElicitations: [],
@@ -373,8 +372,50 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "job.finished":
       return applyJob(s, ev.timestamp, p as JobPayload, true);
 
-    case "plan.updated":
-      return { ...s, plan: p.entries ?? [] };
+    case "plan.updated": {
+      // A TodoWrite call is a list of its own, keyed by the call; a codex
+      // plan is the turn's, revised in place. Each update is the whole plan,
+      // so steps and explanation are replaced outright — a missing
+      // explanation clears the last one. Mirrors internal/projection/state.go.
+      // A plan anchored to nothing — the old shape, logged before plans had
+      // a turn — has nowhere in the transcript to go.
+      if (!p.turnId && !p.toolCallId) return s;
+      const id = p.toolCallId ? `todo:${p.toolCallId}` : `turn-plan:${p.turnId}`;
+      const present = s.items.some((it) => it.id === id);
+      // A straggler for a plan whose turn was windowed out, as for
+      // tool_call.updated. The window keeps whole turns, so a turn with no
+      // items here that is no longer running lies above the window: the page
+      // fetch delivers the server's folded item. A running turn's first plan
+      // is new, not a straggler, and is created.
+      if (
+        !present &&
+        (s.itemsBefore ?? 0) > 0 &&
+        !s.items.some((it) => it.turnId === p.turnId) &&
+        !s.turns.some((t) => t.id === p.turnId && !t.done)
+      ) {
+        return s;
+      }
+      // A new TodoWrite list replaces every earlier one in this window.
+      const base =
+        p.toolCallId && !present
+          ? {
+              ...s,
+              items: s.items.map((it) =>
+                it.kind === "plan" && it.id.startsWith("todo:") && !it.superseded ? { ...it, superseded: true } : it,
+              ),
+            }
+          : s;
+      return {
+        ...s,
+        items: upsert(base, id, (it) => {
+          it.kind = "plan";
+          it.receivedAt ??= ev.timestamp;
+          it.turnId = p.turnId || undefined;
+          it.steps = p.steps ?? [];
+          it.explanation = p.explanation || undefined;
+        }),
+      };
+    }
 
     case "usage.updated":
       return { ...s, usage: p };
