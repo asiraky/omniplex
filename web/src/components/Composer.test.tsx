@@ -777,3 +777,76 @@ describe("Fast across a model switch", () => {
     await waitFor(() => expect(fastSwitch().getAttribute("aria-checked")).toBe("false"));
   });
 });
+
+describe("fitting the toolbar to the composer's width", () => {
+  const codex = {
+    id: "codex",
+    name: "Codex",
+    permissionModes: [],
+    availability: { state: "ready" },
+    models: [],
+    instances: [
+      {
+        id: "codex",
+        driver: "codex",
+        displayName: "Codex",
+        enabled: true,
+        availability: { state: "ready" },
+        models: [{ id: "sol", label: "Sol", default: true, efforts: ["low", "high"], fastTier: "priority" }],
+      },
+    ],
+  } as unknown as HarnessMeta;
+
+  // jsdom lays nothing out, so every box is as wide as this says.
+  const boxWidth = (px: number) => vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(px);
+  afterEach(() => vi.restoreAllMocks());
+
+  const mountAt = (px: number) => {
+    boxWidth(px);
+    mount({
+      harnesses: [codex],
+      harness: "codex",
+      instance: "codex",
+      model: "sol",
+      effort: "high",
+      serviceTier: "priority",
+      tools: (place) => <button type="button">{`tool in ${place}`}</button>,
+    });
+    return screen.getByRole("combobox", { name: "Harness and model" });
+  };
+
+  it("names only the model, and moves the tools under the box, at phone width", () => {
+    const trigger = mountAt(358);
+    expect(trigger.textContent).toContain("Sol");
+    expect(trigger.textContent).not.toContain("High");
+    const drawer = screen.getByRole("group", { name: "Thread options" });
+    expect(within(drawer).getByRole("button", { name: "tool in drawer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "tool in row" })).toBeNull();
+  });
+
+  it("gives the model its whole name on a line of its own when the box is too narrow to share one", () => {
+    const trigger = mountAt(236);
+    expect(trigger.textContent).toContain("Sol");
+    expect(trigger.textContent).toContain("High");
+    expect(screen.getByRole("button", { name: "tool in drawer" })).toBeTruthy();
+  });
+
+  it("names the effort again once there is room, with the tools still under the box", () => {
+    const trigger = mountAt(480);
+    expect(trigger.textContent).toContain("High");
+    expect(screen.getByRole("button", { name: "tool in drawer" })).toBeTruthy();
+  });
+
+  it("keeps everything in the toolbar when there is room", () => {
+    const trigger = mountAt(700);
+    expect(trigger.textContent).toContain("High");
+    expect(screen.getByRole("button", { name: "tool in row" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Thread options" })).toBeNull();
+  });
+
+  it("assumes room for everything before the box has been measured", () => {
+    const trigger = mountAt(0);
+    expect(trigger.textContent).toContain("High");
+    expect(screen.getByRole("button", { name: "tool in row" })).toBeTruthy();
+  });
+});
