@@ -1,5 +1,5 @@
 import { ChevronDownIcon } from "lucide-react";
-import { lazy, Suspense, useLayoutEffect } from "react";
+import { lazy, Suspense, useLayoutEffect, type ComponentProps, type ComponentType } from "react";
 
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
@@ -28,9 +28,19 @@ import { useTranscriptModel } from "./transcript/useTranscriptModel";
 import { WorkspaceCard } from "./transcript/WorkspaceCard";
 
 // Only a turn that died shows it, which most loads of a thread never see, so
-// it loads on first use and stays out of the initial bundle.
+// it loads on first use and stays out of the initial bundle. It is often
+// fetched just after a reconnect; with no error boundary above it, a fetch
+// that fails on a bad link would take the app down, so it says to reload.
+const CardUnavailable = () => (
+  <p className="text-muted-foreground text-[13px]">This turn stopped. Reload to see why.</p>
+);
 const InterruptedCard = lazy(() =>
-  import("./transcript/InterruptedCard").then((m) => ({ default: m.InterruptedCard })),
+  import("./transcript/InterruptedCard").then(
+    (m): { default: ComponentType<ComponentProps<typeof m.InterruptedCard>> } => ({
+      default: m.InterruptedCard,
+    }),
+    () => ({ default: CardUnavailable }),
+  ),
 );
 
 // Room reserved beneath the transcript's tail: the overlay's measured height
