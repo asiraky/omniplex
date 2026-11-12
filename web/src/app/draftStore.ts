@@ -13,8 +13,8 @@ export type DraftStore = ReturnType<typeof createDraftStore>;
  * subscriber reads one thread's string, so typing rerenders the composer that
  * shows it and nothing else.
  */
-export function createDraftStore() {
-  let drafts: Drafts = {};
+export function createDraftStore(initial: Drafts = {}) {
+  let drafts: Drafts = initial;
   const listeners = new Set<() => void>();
 
   const update = (fn: (all: Drafts) => Drafts) => {
@@ -27,6 +27,7 @@ export function createDraftStore() {
 
   return {
     get: (id: string) => drafts[id] ?? "",
+    all: () => drafts,
     set: (id: string, text: string) =>
       update((all) => ((all[id] ?? "") === text ? all : { ...all, [id]: text })),
     update,

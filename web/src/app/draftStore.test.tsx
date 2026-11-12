@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ThreadMeta } from "~/protocol";
 
@@ -8,6 +8,7 @@ import { createDraftStore, useDraft, type DraftStore } from "./draftStore";
 import { useComposerDrafts } from "./useComposerDrafts";
 
 afterEach(cleanup);
+beforeEach(() => localStorage.clear());
 
 const thread = (id: string) => ({ id }) as ThreadMeta;
 
@@ -109,5 +110,32 @@ describe("useComposerDrafts", () => {
     expect(getDraft("a")).toBe("");
     expect(getDraft("b")).toBe("for b");
     expect(getDraft("c")).toBe("for c");
+  });
+
+  it("takes a prompt about to go again out of a draft the last page left it in", () => {
+    localStorage.setItem(
+      "omniplex.outbox.v2:c1",
+      JSON.stringify({ commandId: "c1", threadId: "a", text: "sent", attachments: [], status: "pending", sentAt: 0 }),
+    );
+    // The page died after the send but before the cleared draft was written.
+    localStorage.setItem("omniplex.draft.v1:a", "sent\n\ntyped after");
+
+    const page = renderHook(() => useComposerDrafts([thread("a")], "a")).result.current;
+    expect(page.getDraft("a")).toBe("typed after");
+    expect(page.outbox.get()).toMatchObject([{ commandId: "c1", status: "pending" }]);
+  });
+
+  it("forgets what a thread deleted while the page was away left behind", () => {
+    localStorage.setItem("omniplex.draft.v1:gone", "orphan");
+    localStorage.setItem("omniplex.draft.v1:new-thread", "first message");
+    const hook = renderHook(({ threads }) => useComposerDrafts(threads, null), {
+      initialProps: { threads: [] as ThreadMeta[] },
+    });
+    // The list has not arrived yet: nothing is known to be gone.
+    expect(hook.result.current.getDraft("gone")).toBe("orphan");
+
+    hook.rerender({ threads: [thread("a")] });
+    expect(hook.result.current.getDraft("gone")).toBe("");
+    expect(hook.result.current.getDraft("new-thread")).toBe("first message");
   });
 });
