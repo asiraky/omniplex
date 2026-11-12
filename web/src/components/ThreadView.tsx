@@ -105,6 +105,7 @@ export function ThreadView({
   }, [harnesses, instanceId, state.harness]);
   // A sign-in a saved card offers from its row in the transcript.
   const [signIn, setSignIn] = useState<CardSignIn | null>(null);
+  const steers = harnessSteers(harnesses, state);
 
   return (
     <div ref={layoutRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -143,6 +144,11 @@ export function ThreadView({
             recentsSeeded={recents.seeded}
             onPickRecent={recents.pick}
             onDequeue={commands.dequeue}
+            onEditQueued={commands.editQueued}
+            onSendQueued={commands.sendQueued}
+            onResumeQueue={commands.resumeQueue}
+            onQueuedEditLost={commands.keepLostEdit}
+            steers={steers}
             onCardSignIn={setSignIn}
             describeSettings={describe}
           />
@@ -200,6 +206,12 @@ export function ThreadView({
       </div>
     </div>
   );
+}
+
+// Whether the thread's harness can take a message into a running turn, which
+// is what a queued prompt's "Steer now" and the composer's steer both need.
+function harnessSteers(harnesses: HarnessMeta[], state: ThreadState) {
+  return harnesses.find((h) => h.id === state.harness)?.steers ?? false;
 }
 
 function hasCard(e: PendingElicitation): e is PendingElicitation & { card: NonNullable<PendingElicitation["card"]> } {
@@ -370,6 +382,7 @@ function ThreadComposer({
       disabled={state.closed || workspace.cleaning || workspace.failed}
       disabledPlaceholder={workspace.placeholder}
       busy={state.phase === "turn"}
+      steers={harnessSteers(harnesses, state)}
       onSend={commands.send}
       onSchedule={() => activeId && schedule.openFromComposer(activeId)}
       onCancel={commands.cancel}

@@ -645,7 +645,14 @@ func TestUnaskedPlanDoesNotHoldTheQueue(t *testing.T) {
 
 	m := NewManager(st, func(string, ...any) {}, sa)
 	defer m.Shutdown()
-	if _, err := m.Get(context.Background(), id); err != nil {
+	a, err := m.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The restart holds what was queued; once a human resumes it, it goes
+	// first.
+	noPrompt(t, sa.thread().prompts, 50*time.Millisecond)
+	if err := a.ResumeQueue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if in := recvPrompt(t, sa.thread().prompts); in.Text != "after" {
@@ -676,7 +683,12 @@ func TestTransientRefusalIsRetriedThenDroppedForTheQueue(t *testing.T) {
 	}
 
 	// Once the tries are spent the continuation is dropped, and the queue it
-	// was holding back runs.
+	// was holding back runs once a human resumes it: the restart held it.
+	waitFor(t, func() bool { return sa.callsWhere(isRestartContinuation) == 1+len(m.recoveryRetries) })
+	noPrompt(t, sa.thread().prompts, 50*time.Millisecond)
+	if err := a.ResumeQueue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if in := recvPrompt(t, sa.thread().prompts); in.Text != "after" {
 		t.Fatalf("first prompt the harness accepted = %q; want the queued one", in.Text)
 	}
@@ -779,6 +791,12 @@ func TestLimitedContinuationHandsItsNoteToTheLimitContinuation(t *testing.T) {
 		t.Fatalf("limit continuation sent as %q; want the dead-work note in front of it", in.Text)
 	}
 	sa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: in.TurnID, StopReason: proto.StopEndTurn}))
+	// The restart's hold outlasts the limit's: the queue waits for a human.
+	waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
+	noPrompt(t, sa.thread().prompts, 50*time.Millisecond)
+	if err := a.ResumeQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if in := recvPrompt(t, sa.thread().prompts); in.Text != "after" {
 		t.Fatalf("queued prompt sent as %q; want it as written", in.Text)
 	}

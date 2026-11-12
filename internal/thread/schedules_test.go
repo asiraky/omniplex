@@ -275,7 +275,7 @@ func TestScheduledBusyWaitSurvivesHarnessExit(t *testing.T) {
 	}
 }
 
-func TestScheduledRestoreClearsStaleRequestsAndDrainsQueue(t *testing.T) {
+func TestScheduledRestoreClearsStaleRequestsAndSkipsHeldQueue(t *testing.T) {
 	for _, kind := range []string{"permission", "elicitation", "queue"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
@@ -320,21 +320,6 @@ func TestScheduledRestoreClearsStaleRequestsAndDrainsQueue(t *testing.T) {
 			if fa.thread() == nil {
 				t.Fatal("stale request prevented activation")
 			}
-			if kind == "queue" {
-				select {
-				case got := <-fa.thread().prompts:
-					if got.Text != "ordinary queued work" {
-						t.Fatal(got)
-					}
-					fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: got.TurnID, StopReason: proto.StopEndTurn}))
-				case <-time.After(time.Second):
-					t.Fatal("queue never drained")
-				}
-				waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
-				if err := a.scheduleTick(ctx, p.DueAt+1); err != nil {
-					t.Fatal(err)
-				}
-			}
 			select {
 			case got := <-fa.thread().prompts:
 				if got.Text != p.Prompt {
@@ -342,6 +327,14 @@ func TestScheduledRestoreClearsStaleRequestsAndDrainsQueue(t *testing.T) {
 				}
 			case <-time.After(time.Second):
 				t.Fatal("stale request blocked delivery")
+			}
+			// The restart held the queue for a human. The schedule did not
+			// wait on it, and it did not run behind the schedule either.
+			if kind == "queue" {
+				s, _ := a.State(ctx)
+				if len(s.Queued) != 1 || !s.Queued[0].Held {
+					t.Fatalf("queue after the schedule = %+v, want it still held", s.Queued)
+				}
 			}
 		})
 	}

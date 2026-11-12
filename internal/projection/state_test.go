@@ -501,6 +501,62 @@ func TestHeldPromptTurnFillsFromTheQueue(t *testing.T) {
 	}
 }
 
+// TestEditedPromptReplacesTheEntry: an edit carries the whole result, so the
+// entry takes its text and attachments wholesale, keeping its place in line.
+// An edit of something no longer queued changes nothing.
+func TestEditedPromptReplacesTheEntry(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "first", Images: []proto.PromptImage{{ID: "a"}, {ID: "b"}}}))
+	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "second"}))
+	s.Apply(event(t, 3, proto.PromptEdited, proto.PromptEditedPayload{QueueID: "q1", Prompt: "first, reworded", Images: []proto.PromptImage{{ID: "c"}}}))
+	if len(s.Queued) != 2 || s.Queued[0].QueueID != "q1" || s.Queued[0].Prompt != "first, reworded" {
+		t.Fatalf("queued after edit = %+v", s.Queued)
+	}
+	if imgs := s.Queued[0].Images; len(imgs) != 1 || imgs[0].ID != "c" {
+		t.Fatalf("images after edit = %+v, want only the new set", imgs)
+	}
+	s.Apply(event(t, 4, proto.PromptEdited, proto.PromptEditedPayload{QueueID: "q1", Prompt: "no attachments"}))
+	if len(s.Queued[0].Images) != 0 {
+		t.Fatalf("an edit with no images left %+v", s.Queued[0].Images)
+	}
+	s.Apply(event(t, 5, proto.PromptEdited, proto.PromptEditedPayload{QueueID: "gone", Prompt: "x"}))
+	if len(s.Queued) != 2 || s.Queued[1].Prompt != "second" {
+		t.Fatalf("edit of an unknown id changed the queue: %+v", s.Queued)
+	}
+}
+
+// TestHeldPromptsWaitUntilReleased: holding pauses the named entries and
+// takes back any claim the harness had on them; release clears only the hold.
+// A prompt queued behind a hold arrives held.
+func TestHeldPromptsWaitUntilReleased(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "sent"}))
+	s.Apply(event(t, 2, proto.PromptSent, proto.PromptSentPayload{QueueID: "q1"}))
+	s.Apply(event(t, 3, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "waiting"}))
+	s.Apply(event(t, 4, proto.PromptHeld, proto.PromptHeldPayload{QueueIDs: []string{"q1", "q2", "gone"}}))
+	for _, q := range s.Queued {
+		if !q.Held || q.Sent {
+			t.Fatalf("held entry = %+v, want held and not sent", q)
+		}
+	}
+	s.Apply(event(t, 5, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q3", Prompt: "behind", Held: true}))
+	if len(s.Queued) != 3 || !s.Queued[2].Held {
+		t.Fatalf("queued behind a hold = %+v", s.Queued)
+	}
+	s.Apply(event(t, 6, proto.PromptReleased, proto.PromptReleasedPayload{QueueIDs: []string{"q1", "q3"}}))
+	if s.Queued[0].Held || !s.Queued[1].Held || s.Queued[2].Held {
+		t.Fatalf("after release = %+v, want only q2 still held", s.Queued)
+	}
+	if s.Queued[0].Sent {
+		t.Fatalf("release marked a prompt sent again: %+v", s.Queued[0])
+	}
+	// One the harness took after all is its own, not held.
+	s.Apply(event(t, 7, proto.PromptSent, proto.PromptSentPayload{QueueID: "q2"}))
+	if q := s.Queued[1]; q.Held || !q.Sent {
+		t.Fatalf("held entry the harness took = %+v, want sent and not held", q)
+	}
+}
+
 func TestShowingAPathAgainRevisesOneArtefact(t *testing.T) {
 	s := New("s")
 	show := func(seq int64, size int64, src string) {

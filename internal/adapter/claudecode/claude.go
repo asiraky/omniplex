@@ -93,6 +93,7 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 		Name:    "Claude Code",
 		Accent:  "oklch(0.72 0.13 48)",
 		DocsURL: docsURL,
+		Steers:  true,
 	}
 }
 

@@ -2,7 +2,7 @@ import type { RefObject } from "react";
 
 import { overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
 import { submittedComposerAction } from "~/lib/composerItems";
-import type { ComposerItem } from "~/protocol";
+import type { ComposerItem, Delivery } from "~/protocol";
 
 import type { ComposerAttachments } from "../Composer";
 
@@ -32,7 +32,7 @@ export function useComposerSend({
   sendDisabled: boolean;
   catalogueReady: boolean;
   items: ComposerItem[];
-  onSend: (text: string, attached: ComposerAttachments) => void;
+  onSend: (text: string, attached: ComposerAttachments, delivery?: Delivery) => void;
   onCommandUsed?: (insertText: string) => void;
   runClientAction: (action: string) => void;
   onRunComposerAction?: (action: string, args: string, invocation: string) => Promise<void>;
@@ -52,7 +52,8 @@ export function useComposerSend({
     tooMuch ||
     (!draft.trim() && sendableAttachments === 0);
 
-  const send = async () => {
+  // `delivery` reaches only a prompt: a command runs now or not at all.
+  const send = async (delivery?: Delivery) => {
     const t = draft.trim();
     // A message may be nothing but attachments: "what is this?" is often the
     // whole question, and the picture or the file is the rest of it.
@@ -88,7 +89,7 @@ export function useComposerSend({
       }
       return;
     }
-    onSend(t, sendPayload(attachments));
+    onSend(t, sendPayload(attachments), delivery);
     changeDraft("");
   };
 

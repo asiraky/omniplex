@@ -1,9 +1,10 @@
 import { useCallback, useMemo, type RefObject } from "react";
 
 import type { Client } from "~/client";
+import type { ComposerAttachments } from "~/components/Composer";
 import { sendPayload } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
-import type { CardEdits, CardOutcome, ComposerItem, ThreadState } from "~/protocol";
+import type { CardEdits, CardOutcome, ComposerItem, Delivery, ThreadState } from "~/protocol";
 
 import type { ComposerDrafts } from "./useComposerDrafts";
 import type { Wire } from "./useWire";
@@ -44,8 +45,12 @@ export function useThreadCommands({
   const { clientRef, state, composerRevision } = wire;
   const { drafts, setDraft, setDrafts, attachments, setAttachments } = store;
 
+  // The composer passes what it was handed alongside the text, but the
+  // attachments it sends are the staged ones held here; delivery, when the
+  // person picked one, overrides the harness's default for a prompt sent
+  // mid-turn.
   const send = useCallback(
-    (text: string) => {
+    (text: string, _attached?: ComposerAttachments, delivery?: Delivery) => {
       if (!activeId) return;
       const staged = attachments[activeId] ?? [];
       const { imageIds, files } = sendPayload(staged);
@@ -56,6 +61,7 @@ export function useThreadCommands({
         text,
         ...(imageIds.length ? { imageIds } : {}),
         ...(files.length ? { files } : {}),
+        ...(delivery ? { delivery } : {}),
       };
       clientRef.current?.command("prompt", args).catch((e) => {
         toast.error("Could not send that prompt", { description: e.message });
@@ -90,19 +96,65 @@ export function useThreadCommands({
       const text = state?.queuedPrompts?.find((q) => q.queueId === queueId)?.prompt ?? "";
       clientRef.current?.command("dequeue_prompt", { threadId: activeId, queueId }).then(
         () => {
-          if (!text) return;
           // Against the draft as it is when the reply lands, not as it was
           // when the request left: on a slow link that is seconds apart.
-          setDrafts((d) => ({
-            ...d,
-            [activeId]: [text, d[activeId] ?? ""].filter(Boolean).join("\n\n"),
-          }));
+          if (text) setDrafts((d) => prependDraft(d, activeId, text));
         },
         (e) => toast.error("Could not remove that prompt", { description: e.message }),
       );
     },
     [activeId, clientRef, setDrafts, state],
   );
+
+  // An edit whose prompt started before it was saved: the words go to the
+  // composer as a removed prompt's do, so they can still be sent.
+  const keepLostEdit = useCallback(
+    (text: string) => {
+      if (!activeId) return;
+      setDrafts((d) => prependDraft(d, activeId, text));
+      toast.info("That prompt already went out", { description: "Your edit is in the composer." });
+    },
+    [activeId, setDrafts],
+  );
+
+  // Text only: leaving imageIds out keeps the pictures the prompt already
+  // has. Resolves false on failure so the card stays open with the edit in it
+  // rather than dropping what was typed.
+  const editQueued = useCallback(
+    async (queueId: string, text: string) => {
+      if (!activeId || !clientRef.current) return false;
+      try {
+        await clientRef.current.command("edit_queued_prompt", { threadId: activeId, queueId, text });
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        toast.error("Could not edit that prompt", { description: message });
+        return false;
+      }
+    },
+    [activeId, clientRef],
+  );
+
+  // Steers it into the running turn, or starts a turn with it when the
+  // thread is idle; the server decides which from the thread's phase.
+  const sendQueued = useCallback(
+    (queueId: string) => {
+      if (!activeId) return;
+      clientRef.current?.command("send_queued_prompt", { threadId: activeId, queueId }).catch((e) => {
+        const message = e instanceof Error ? e.message : String(e);
+        toast.error("Could not send that prompt", { description: message });
+      });
+    },
+    [activeId, clientRef],
+  );
+
+  const resumeQueue = useCallback(() => {
+    if (!activeId) return;
+    clientRef.current?.command("resume_queue", { threadId: activeId }).catch((e) => {
+      const message = e instanceof Error ? e.message : String(e);
+      toast.error("Could not resume the queue", { description: message });
+    });
+  }, [activeId, clientRef]);
 
   const resolvePermission = useCallback(
     (requestId: string, outcome: string, optionId: string) => {
@@ -216,6 +268,10 @@ export function useThreadCommands({
     send,
     cancel,
     dequeue,
+    editQueued,
+    keepLostEdit,
+    sendQueued,
+    resumeQueue,
     resolvePermission,
     resolveElicitation,
     resolveCard,
@@ -235,4 +291,9 @@ function statusLine(state: ThreadState) {
     state.mode || "Default approvals",
     used !== undefined ? `${used.toLocaleString()} context tokens` : "Token usage unavailable",
   ].join(" · ");
+}
+
+// Words given back to a thread's composer, in front of anything already typed.
+function prependDraft(drafts: Record<string, string>, threadId: string, text: string) {
+  return { ...drafts, [threadId]: [text, drafts[threadId] ?? ""].filter(Boolean).join("\n\n") };
 }
