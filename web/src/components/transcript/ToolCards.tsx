@@ -10,17 +10,33 @@ import {
   FileTextIcon,
   PencilIcon,
   SearchIcon,
+  ShieldXIcon,
   TerminalIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useState, type ComponentType } from "react";
+import { lazy, Suspense, useState, type ComponentType } from "react";
 
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
-import type { Item, ToolStatus, Turn } from "~/protocol";
+import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
+
+import { LiveTail } from "./LiveTail";
+import type { FullToolBody } from "./LoadFullOutput";
+
+// Few cards are truncated, so the loader arrives on first open. On a dropped
+// connection or after a redeploy its chunk can fail to load, and with no error
+// boundary above it that would take the app down; the card says so instead.
+function LoaderUnavailable() {
+  return (
+    <p role="alert" className="text-destructive text-[12px]">
+      Could not load the full output. Reload the page to try again.
+    </p>
+  );
+}
+const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ default: LoaderUnavailable })));
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -45,15 +61,53 @@ export function StatusMark({ status }: { status?: ToolStatus }) {
   // Stopped on purpose, not broken: muted, not red.
   if (status === "cancelled")
     return <CircleSlashIcon aria-label="Cancelled" className="text-muted-foreground size-3.5" />;
+  // Refused by the user, so it never ran: neither done nor broken.
+  if (status === "declined")
+    return <ShieldXIcon aria-label="Declined" className="text-muted-foreground size-3.5" />;
   return <CheckIcon aria-label="Done" className="text-success size-3.5" />;
 }
 
-export function ToolCard({ item }: { item: Item }) {
-  const [open, setOpen] = useState(false);
-  const output = (item.content ?? [])
+const running = (item: Item | undefined) =>
+  item?.status === "in_progress" || item?.status === "pending";
+
+function joinOutput(content: ToolContent[] | undefined) {
+  return (content ?? [])
     .map((c) => (c.type === "diff" ? `--- ${c.path}\n${c.text ?? ""}` : (c.text ?? "")))
     .join("\n")
     .trim();
+}
+
+// What a tool card shows: the full output and input once fetched, standing in
+// for the previews, else the previews. The full body is held by the card only,
+// so it goes when the card does. It is the call as it stood when loaded: once
+// more output lands (a call still running) it is stale, and the previews and
+// the load come back.
+function useToolOutput(item: Item) {
+  const [full, setFull] = useState<FullToolBody>();
+  const [loadedOver, setLoadedOver] = useState(item.content);
+  if (loadedOver !== item.content) {
+    setLoadedOver(item.content);
+    setFull(undefined);
+  }
+  return {
+    setFull,
+    output: joinOutput(full ? full.content : item.content),
+    input: full && full.input !== undefined ? full.input : item.input,
+    truncated: !!item.truncated && !full,
+  };
+}
+
+// A preview's line count is the preview's, not the output's.
+function outputLabel(open: boolean, truncated: boolean, output: string) {
+  if (open) return "hide";
+  if (truncated) return "truncated";
+  const lines = output.split("\n").length;
+  return `${lines} ${lines === 1 ? "line" : "lines"}`;
+}
+
+export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
+  const [open, setOpen] = useState(false);
+  const { setFull, output, input, truncated } = useToolOutput(item);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
   return (
@@ -68,26 +122,48 @@ export function ToolCard({ item }: { item: Item }) {
         <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">
           {item.title || "tool"}
         </span>
+        {/* A shield alone reads as nothing much; the word says it never ran. */}
+        {item.status === "declined" && (
+          <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
+        )}
         <StatusMark status={item.status as ToolStatus | undefined} />
-        {output && (
+        {/* A cut input alone still has a body worth opening for. */}
+        {(output || truncated) && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
-            {open ? "hide" : `${output.split("\n").length} lines`}
+            {outputLabel(open, truncated, output)}
             <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
           </span>
         )}
       </button>
 
+      {/* Outside the expander: the point of a tail is that it shows without
+          a tap. It only exists while the call runs, so a finished card is
+          unchanged. */}
+      {running(item) && <LiveTail tail={item.tail} className="mx-3 mb-2" />}
+
       {open && (
         <div className="space-y-2 border-t px-3 py-2">
-          {item.input != null && (
-            <pre className="scroll-thin bg-muted/60 text-muted-foreground max-h-40 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed">
-              {JSON.stringify(item.input, null, 2)}
+          {input != null && (
+            <pre className="scroll-thin bg-muted/60 text-muted-foreground max-h-40 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
+              {JSON.stringify(input, null, 2)}
             </pre>
           )}
           {output && (
             <pre className="scroll-thin bg-muted/60 max-h-80 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
               {output}
             </pre>
+          )}
+          {truncated && (
+            <Suspense fallback={<Spinner className="text-primary size-3" />}>
+              {/* Keyed on the output it was asked over: more landing mid-request
+                  remounts it, dropping a body that predates the new output. */}
+              <LoadFullOutput
+                key={item.content?.length ?? 0}
+                threadId={threadId}
+                itemId={item.id}
+                onLoad={setFull}
+              />
+            </Suspense>
           )}
         </div>
       )}
@@ -99,12 +175,12 @@ export function ToolCard({ item }: { item: Item }) {
 // stands in for. Everything renders the way it would in the open — the same
 // content shown two different ways in one transcript is a seam the reader has
 // to notice.
-function ExpandedItems({ items }: { items: Item[] }) {
+function ExpandedItems({ threadId, items }: { threadId: string; items: Item[] }) {
   return (
     <div className="mt-2 space-y-2 border-l pl-3">
       {items.map((item) =>
         item.kind === "tool" ? (
-          <ToolCard key={item.id} item={item} />
+          <ToolCard key={item.id} threadId={threadId} item={item} />
         ) : (
           <Markdown
             key={item.id}
@@ -126,12 +202,11 @@ function ExpandedItems({ items }: { items: Item[] }) {
 // Either way it expands to the cards, and either way the row never leaves —
 // the fix this design carries: nothing at the tail of a working transcript
 // disappears out from under the reader.
-export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
+export function ToolRun({ threadId, items, live }: { threadId: string; items: Item[]; live: boolean }) {
   const [open, setOpen] = useState(false);
-  const active =
-    items.filter((i) => i.status === "in_progress" || i.status === "pending").pop() ??
-    items[items.length - 1];
+  const active = items.filter(running).pop() ?? items[items.length - 1];
   const failed = items.some((i) => i.status === "failed");
+  const declined = items.some((i) => i.status === "declined");
   const kinds = Array.from(new Set(items.map((i) => i.toolKind ?? "other")));
   const ActiveIcon = TOOL_ICON[active?.toolKind ?? "other"] ?? CircleIcon;
 
@@ -155,6 +230,7 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
           <>
             <span className="flex shrink-0 items-center gap-1">
               {failed && <XIcon aria-label="A call failed" className="text-destructive size-3.5" />}
+              {declined && <ShieldXIcon aria-label="A call was declined" className="size-3.5" />}
               {kinds.slice(0, 4).map((k) => {
                 const Icon = TOOL_ICON[k] ?? CircleIcon;
                 return <Icon key={k} className="size-3.5" />;
@@ -172,7 +248,14 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
         </span>
       </button>
 
-      {open && <ExpandedItems items={items} />}
+      {/* The tail of the call the row names, under it. Opened, the run's own
+          card for that call shows the same tail, so this one steps aside
+          rather than print it twice. */}
+      {live && !open && running(active) && (
+        <LiveTail tail={active?.tail} className="mt-1 ml-1.5" />
+      )}
+
+      {open && <ExpandedItems threadId={threadId} items={items} />}
     </div>
   );
 }
@@ -180,7 +263,19 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
 // A finished turn's work, behind one quiet line. What the reader keeps is the
 // prompt above and the answer below; "Worked for 34s" is the receipt for
 // everything in between, and opens to all of it — thoughts, calls, failures.
-export function TurnFold({ turn, items }: { turn: Turn; items: Item[] }) {
+// A piece after the first, when a plan or spawn batch split the turn, says
+// what it holds instead: the duration is the whole turn's, and is said once.
+export function TurnFold({
+  threadId,
+  turn,
+  items,
+  continued,
+}: {
+  threadId: string;
+  turn: Turn;
+  items: Item[];
+  continued?: boolean;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -191,11 +286,11 @@ export function TurnFold({ turn, items }: { turn: Turn; items: Item[] }) {
         aria-expanded={open}
         className="hover:text-foreground focus-visible:ring-ring text-muted-foreground flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2"
       >
-        <span>{foldLabel(turn)}</span>
+        <span>{continued ? summarise(items) || "More work" : foldLabel(turn)}</span>
         <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
       </button>
 
-      {open && <ExpandedItems items={items} />}
+      {open && <ExpandedItems threadId={threadId} items={items} />}
     </div>
   );
 }

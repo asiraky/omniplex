@@ -6,9 +6,11 @@ package thread
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -23,9 +25,10 @@ import (
 
 // Tunables named by the spec's invariants.
 const (
-	MaxReplayGap    = 1000 // no attach reads more events than this
-	SubscriberQueue = 256  // bounded per-connection outbound queue
-	SnapshotEvery   = 200  // snapshot cadence, a latency cache only
+	MaxReplayEvents = 128     // a longer catch-up is sent as a snapshot
+	MaxReplayBytes  = 1 << 20 // so is one whose wire payloads outweigh this
+	SubscriberQueue = 256     // bounded per-connection outbound queue
+	SnapshotEvery   = 200     // snapshot cadence, a latency cache only
 )
 
 // Subscriber receives live events for one thread. Ch is closed when the
@@ -69,12 +72,31 @@ type Actor struct {
 	pendingPerm   map[string]chan adapter.PermissionOutcome
 	pendingElicit map[string]chan adapter.ElicitationResult
 	turnActive    string
+	// stoppedTurn is the last turn a human stopped. It never gets a usage
+	// limit continuation, however late its finish says it hit one.
+	stoppedTurn string
 	// sent holds the queue ids the running harness process has been handed
 	// (adapter.Steerer) and not yet reported reading. Those are the harness's
 	// to run; dispatchQueued skips them. It is knowledge about this process,
 	// so it is not in the log: a restart starts a new harness that knows
 	// nothing, and the log's queue is dispatched afresh.
 	sent map[string]bool
+	// stopping is the Stop in progress: the turn it was asked to end, and the
+	// timer that kills the harness if that turn has not ended in time.
+	stopping *stopRequest
+	// controlTail is closed once the last control call handed to inOrder has
+	// posted its result; the next one waits on it. Nil for a process that
+	// has had none.
+	controlTail chan struct{}
+	// controlPending counts the control calls handed to inOrder whose result
+	// has not come back. A prompt waits behind them, so a model change made
+	// just before sending is the model the prompt runs on.
+	controlPending int
+	// process numbers the harness processes this actor has run. It moves on
+	// whenever one is started or dropped, and the host services handed to a
+	// process carry the number it was started under, so a question from one
+	// this actor no longer runs can be told from the current one's.
+	process uint64
 
 	mu   sync.Mutex // guards subs and headSeq for readers outside the loop
 	subs map[string]*Subscriber
@@ -92,8 +114,13 @@ type Actor struct {
 	onPhase func()
 
 	// recovery is set by Resume when the log shows a turn the server died in
-	// the middle of. Recover consumes it; see recovery.go.
-	recovery *proto.TurnRecovery
+	// the middle of, or background work the agent was waiting on. Recover
+	// consumes it; see recovery.go.
+	recovery *recoveryPlan
+	// heldNote is dead work the agent is owed news of that did not warrant a
+	// turn of its own: shells a restart killed on an idle thread. The next
+	// prompt a human sends carries it. Actor-loop only.
+	heldNote string
 
 	// cardLive says whether the server still holds a card, so resuming the
 	// harness leaves it answerable. Set by the manager at adopt time; nil
@@ -121,7 +148,22 @@ type Actor struct {
 	// compared against a picture of the checkout from the wrong moment.
 	measuring string
 
+	// deltas holds a streamed delta for up to deltaWindow, and deltaFlush
+	// fires when the window closes. deltaFlush is nil when nothing is held.
+	deltas     coalescer
+	deltaFlush *time.Timer
+
 	logf func(string, ...any)
+
+	// evictable marks an actor restored only to be looked at (RestoreIdle,
+	// RestoreClosed). Such an actor holds a whole projection and nothing
+	// else, so the manager may drop it once nobody has used it for a while;
+	// see evict.go. Set before the loop starts and never changed.
+	evictable bool
+	// lastUsed is when a caller last reached this actor: a command, a
+	// subscription coming or going, or the manager handing it out. Guarded
+	// by mu.
+	lastUsed time.Time
 }
 
 type command struct {
@@ -143,14 +185,27 @@ type command struct {
 	mode         string
 	effort       string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
+	plan         *recoveryPlan       // prompt: the restart continuation Recover is sending
 	// from is the harness process a harness event or exit came from. A
-	// process replaced by an account switch still drains its last events and
-	// its exit; those are about a process this actor no longer runs.
-	from    adapter.Session
+	// process replaced by an account switch, or killed by Stop, still drains
+	// its last events and its exit; those are about a process this actor no
+	// longer runs. A reply is not filtered by it: whoever asked is waiting on
+	// the answer, and each reply's onReply checks what it acts on itself.
+	from adapter.Session
+	// process is the generation of the harness process a question came from
+	// (Actor.process).
+	process uint64
+	// onReply is what a harness reply does once it is back on the loop.
+	onReply func()
+	stop    *stopRequest
 	account *accountSwitch
 	show    *Show
 	mcp     func(context.Context, adapter.MCPControl) (any, error)
 	card    *cardCmd
+	// evict commits an eviction with the manager; see Actor.evict.
+	evict func() (idle time.Duration, ok bool)
+	// read runs against the live projection inside the loop; see Actor.read.
+	read func(*projection.State) any
 }
 
 // accountSwitch is what the manager hands the actor to move the thread to
@@ -205,6 +260,11 @@ const (
 	cmdMCP           = "mcp"
 	cmdRaiseCard     = "raise_card"
 	cmdResolveCard   = "resolve_card"
+	cmdHarnessReply  = "harness_reply"
+	cmdStopExpired   = "stop_expired"
+	cmdDropRecovery  = "drop_recovery"
+	cmdEvict         = "evict"
+	cmdRead          = "read"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -247,7 +307,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	}
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
+	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
 	}))
 	if err != nil {
@@ -284,7 +344,7 @@ func StartPending(st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, en
 // Resume rebuilds an actor for an existing thread id, replaying its log into
 // the projection before starting a fresh harness process.
 func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, _, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -311,10 +371,11 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	// below stops the UI lying about what is running, but it does not finish
 	// the work — that is what Recover is for, and this is the evidence it
 	// needs.
-	a.recovery = planRecovery(state)
+	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
+	a.holdRowOnlyIfAsked(meta.Phase)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
+	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
 		Model:            state.Model,
@@ -367,7 +428,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 // provider process. It is used by read-only attachment; ActivateResume pays
 // the process cost only when a later command actually needs the harness.
 func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, snapAt, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -376,8 +437,10 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 		store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}),
 		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
 		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
-		recovery: planRecovery(state),
+		lastSnapAt: snapAt, evictable: true, lastUsed: time.Now(),
 	}
+	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
+	a.holdRowOnlyIfAsked(meta.Phase)
 	for _, turn := range state.Turns {
 		if !turn.Done {
 			a.turnActive = turn.ID
@@ -392,7 +455,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 // harness process, but retains the same attach/state/fanout surface so closed
 // threads remain inspectable by presenters.
 func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, snapAt, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -409,6 +472,7 @@ func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, 
 		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
 		pendingElicit: map[string]chan adapter.ElicitationResult{},
 		subs:          map[string]*Subscriber{}, logf: logf,
+		lastSnapAt: snapAt, evictable: true, lastUsed: time.Now(),
 	}
 	a.wg.Add(1)
 	go a.run()
@@ -416,7 +480,7 @@ func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, 
 }
 
 func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, _, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -426,22 +490,31 @@ func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, me
 	return a, nil
 }
 
-// loadState folds the whole log, using the newest snapshot as a starting point.
-func loadState(ctx context.Context, st *store.Store, id string) (*projection.State, error) {
+// loadState folds the whole log, using the newest snapshot as a starting
+// point, and says which seq that snapshot was taken at, zero for none or for
+// one worth rewriting. An actor that knows it is not asked to write the same
+// snapshot again.
+func loadState(ctx context.Context, st *store.Store, id string) (*projection.State, int64, error) {
 	state := projection.New(id)
+	var snapAt int64
 	if seq, blob, err := st.LatestSnapshot(ctx, id); err == nil && blob != nil {
 		if s, err := projection.FromSnapshot(blob); err == nil {
 			state = s
 			state.Seq = seq
+			// A snapshot from before tool output was capped loads small but
+			// is still big on disk; leaving snapAt at zero gets it rewritten.
+			if !s.Recapped() {
+				snapAt = seq
+			}
 		}
 	}
 	for {
 		evs, err := st.ReadEvents(ctx, id, state.Seq, 1000)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if len(evs) == 0 {
-			return state, nil
+			return state, snapAt, nil
 		}
 		for _, ev := range evs {
 			state.Apply(ev)
@@ -474,6 +547,63 @@ func (a *Actor) State(ctx context.Context) (*projection.State, error) {
 	return v.(*projection.State), nil
 }
 
+// read runs fn on the live projection inside the actor loop and returns what
+// it made. fn may refresh the state's indexes, and must copy whatever it
+// returns: the state goes on changing the moment it returns.
+func (a *Actor) read(ctx context.Context, fn func(*projection.State) any) (any, error) {
+	return a.call(ctx, command{kind: cmdRead, read: fn})
+}
+
+// WireState is the projection as a client should get it: windowed to maxTop
+// top-level items, with tool input capped (see projection.State.WireCopy).
+// Made from the live state, so only what is kept is ever copied.
+func (a *Actor) WireState(ctx context.Context, maxTop int) (*projection.State, error) {
+	v, err := a.read(ctx, func(s *projection.State) any { return s.WireCopy(maxTop) })
+	if err != nil {
+		return nil, err
+	}
+	return v.(*projection.State), nil
+}
+
+// ItemsPage is the page of at most maxTop top-level items ending before index
+// `before`, the index it starts at, and the jobs its items spawned. See
+// projection.State.WirePage.
+func (a *Actor) ItemsPage(ctx context.Context, before, maxTop int) ([]projection.Item, int, []projection.Job, error) {
+	type page struct {
+		items []projection.Item
+		start int
+		jobs  []projection.Job
+	}
+	v, err := a.read(ctx, func(s *projection.State) any {
+		items, start, jobs := s.WirePage(before, maxTop)
+		return page{items, start, jobs}
+	})
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	p := v.(page)
+	return p.items, p.start, p.jobs, nil
+}
+
+// Children is every child item of one parent, which a wire copy leaves out
+// or trims. See projection.State.WireChildren.
+func (a *Actor) Children(ctx context.Context, parentID string) ([]projection.Item, error) {
+	v, err := a.read(ctx, func(s *projection.State) any { return s.WireChildren(parentID) })
+	if err != nil {
+		return nil, err
+	}
+	return v.([]projection.Item), nil
+}
+
+// Jobs is every job, which a wire copy windows.
+func (a *Actor) Jobs(ctx context.Context) ([]projection.Job, error) {
+	v, err := a.read(ctx, func(s *projection.State) any { return s.WireJobs() })
+	if err != nil {
+		return nil, err
+	}
+	return v.([]projection.Job), nil
+}
+
 // Subscribe registers a live listener. Callers must Unsubscribe.
 //
 // Subscribing happens before the caller reads history, which closes the window
@@ -494,6 +624,7 @@ func (a *Actor) Subscribe() *Subscriber {
 	default:
 		a.subs[sub.ID] = sub
 	}
+	a.lastUsed = time.Now()
 	a.mu.Unlock()
 	return sub
 }
@@ -501,12 +632,15 @@ func (a *Actor) Subscribe() *Subscriber {
 func (a *Actor) Unsubscribe(sub *Subscriber) {
 	a.mu.Lock()
 	delete(a.subs, sub.ID)
+	// Idle is counted from the last viewer leaving, not from when they came.
+	a.lastUsed = time.Now()
 	a.mu.Unlock()
 }
 
 // ---- commands from presenters ----
 
 func (a *Actor) call(ctx context.Context, c command) (any, error) {
+	a.touch()
 	c.reply = make(chan cmdResult, 1)
 	select {
 	case a.inbox <- c:
@@ -790,6 +924,10 @@ func (a *Actor) run() {
 	a.attention = a.state.Attention()
 	a.mu.Unlock()
 	for {
+		var flush <-chan time.Time
+		if a.deltaFlush != nil {
+			flush = a.deltaFlush.C
+		}
 		select {
 		case c := <-a.inbox:
 			if a.handle(c) {
@@ -797,14 +935,24 @@ func (a *Actor) run() {
 			}
 			// Every command that can end a turn — a harness event, a cancel,
 			// a resume closing an interrupted turn — comes through here, so
-			// this is the one place a queued prompt needs to be picked up.
+			// this is the one place a Stop learns its turn is over and a
+			// queued prompt needs to be picked up.
+			a.settleStop()
 			a.dispatchQueued(context.Background())
+		case <-flush:
+			a.flushDeltas()
 		}
 	}
 }
 
 func (a *Actor) handle(c command) (stop bool) {
 	ctx := context.Background()
+
+	// Whatever a command reads or decides, it does so on a projection with
+	// every held delta in it. Only another harness event may leave them held.
+	if c.kind != cmdHarnessEvent {
+		a.flushDeltas()
+	}
 
 	// Continuing is a prompt the server writes, so it is turned into one here
 	// where the projection can say which turn is being continued.
@@ -834,6 +982,8 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{err: a.handleSchedule(c)}
 	case "state":
 		c.reply <- cmdResult{value: a.state.Clone()}
+	case cmdRead:
+		c.reply <- cmdResult{value: c.read(a.state)}
 
 	case cmdShowArtefact:
 		v, err := a.handleShow(c.show)
@@ -856,12 +1006,22 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.from != a.sess {
 			return false
 		}
-		a.append(*c.emission)
+		a.appendStreamed(*c.emission)
+
+	case cmdHarnessReply:
+		c.onReply()
+
+	case cmdStopExpired:
+		// The turn Stop was asked to end is still running: the harness did
+		// not, or could not, do as it was told.
+		if a.stopping == c.stop && a.turnActive == c.stop.turnID {
+			a.forceStop()
+		}
 
 	case cmdHarnessExit:
 		if c.from != a.sess {
-			// The process an account switch replaced. Its going is expected
-			// and says nothing about this thread.
+			// The process an account switch replaced, or one Stop killed. Its
+			// going is expected and says nothing about this thread.
 			return false
 		}
 		// A harness that dies without closing its turn leaves the log saying
@@ -911,13 +1071,32 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.resume {
 			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
 		}
+		// A resumed thread's worktree can be deleted or moved while the
+		// server is down. A harness started there fails later with an error
+		// that never names the directory, so refuse here, where we can.
+		if cwd != "" {
+			info, statErr := os.Stat(cwd)
+			var unusable error
+			switch {
+			case errors.Is(statErr, fs.ErrNotExist):
+				unusable = fmt.Errorf("this thread's workspace %s no longer exists, so it was probably deleted or moved; restore the directory to continue, or start a new thread", cwd)
+			case statErr != nil:
+				unusable = fmt.Errorf("this thread's workspace %s cannot be opened: %w", cwd, statErr)
+			case !info.IsDir():
+				unusable = fmt.Errorf("this thread's workspace %s is no longer a directory; restore it to continue, or start a new thread", cwd)
+			}
+			if unusable != nil {
+				c.reply <- cmdResult{err: unusable}
+				return false
+			}
+		}
 		meta, err := a.store.Thread(ctx, a.ID)
 		if err != nil {
 			c.reply <- cmdResult{err: err}
 			return false
 		}
 		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
-		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
+		sess, err := a.adapter.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
 		}))
@@ -932,18 +1111,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			// Server death ends anything that was waiting in the old process.
 			// Do this only when the harness is actually resumed: viewing the
 			// durable transcript is read-only and must not rewrite its history.
-			for _, pending := range append([]projection.PendingPermission(nil), a.state.Pending...) {
-				a.append(proto.Emit(proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: pending.RequestID, Outcome: proto.OutcomeCancelled}))
-			}
-			// A card the server still holds is not the old process's: it
-			// stays answerable. One the server lost is cancelled with the
-			// rest.
-			for _, pending := range append([]projection.PendingElicitation(nil), a.state.Elicitations...) {
-				if pending.IsCard() && a.liveCard(pending.RequestID) {
-					continue
-				}
-				a.append(proto.Emit(proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: pending.RequestID, Action: "cancel"}))
-			}
+			a.cancelProcessAsks()
 			for _, turn := range append([]projection.Turn(nil), a.state.Turns...) {
 				if !turn.Done {
 					a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn", Failure: proto.FailureRestart}))
@@ -969,10 +1137,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot stop a job")}
 			return false
 		}
-		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := stopper.StopJob(stopCtx, c.reqID)
-		cancel()
-		c.reply <- cmdResult{err: err}
+		a.inOrder(30*time.Second, func(ctx context.Context) (any, error) {
+			return nil, stopper.StopJob(ctx, c.reqID)
+		}, func(_ any, err error) {
+			c.reply <- cmdResult{err: err}
+		})
 
 	case cmdQuota:
 		// An account-level read, not a turn: the harness is asked out-of-band
@@ -987,14 +1156,15 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness does not report usage limits")}
 			return false
 		}
-		quotaCtx, cancel := context.WithTimeout(ctx, quotaTimeout)
-		snap, err := reader.Quota(quotaCtx)
-		cancel()
-		c.reply <- cmdResult{value: snap, err: err}
+		a.offLoop(quotaTimeout, func(ctx context.Context) (any, error) {
+			return reader.Quota(ctx)
+		}, func(snap any, err error) {
+			c.reply <- cmdResult{value: snap, err: err}
+		})
 
 	case cmdMCP:
 		// A read or a reconnect through the harness's own control path, like
-		// the quota read; bounded so a wedged harness cannot stall the loop.
+		// the quota read; bounded so a wedged harness cannot strand the caller.
 		if a.sess == nil {
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
@@ -1004,10 +1174,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: adapter.ErrMCPUnsupported}
 			return false
 		}
-		mcpCtx, cancel := context.WithTimeout(ctx, mcpTimeout)
-		v, err := c.mcp(mcpCtx, ctl)
-		cancel()
-		c.reply <- cmdResult{value: v, err: err}
+		a.offLoop(mcpTimeout, func(ctx context.Context) (any, error) {
+			return c.mcp(ctx, ctl)
+		}, func(v any, err error) {
+			c.reply <- cmdResult{value: v, err: err}
+		})
 
 	case cmdSetMode:
 		if a.state.Closed {
@@ -1023,19 +1194,10 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot change permission mode mid-thread")}
 			return false
 		}
-		// Bounded: this is a round-trip to the harness from inside the actor
-		// loop, and a wedged process must not stall the loop forever.
-		modeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := switcher.SetMode(modeCtx, c.mode)
-		cancel()
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
 		// Durable and fanned out, so the change lands in the log and every
 		// connected presenter follows — same requirement as permission.resolved.
-		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Mode: c.mode}))
-		c.reply <- cmdResult{}
+		a.setting(func(ctx context.Context) error { return switcher.SetMode(ctx, c.mode) },
+			proto.ThreadConfigChangedPayload{Mode: c.mode}, c.reply)
 
 	case cmdSwitchAccount:
 		c.reply <- cmdResult{err: a.switchAccount(c.account)}
@@ -1054,17 +1216,8 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot change model mid-thread")}
 			return false
 		}
-		// Bounded for the same reason as cmdSetMode: a wedged harness must
-		// not stall the actor loop forever.
-		modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := switcher.SetModel(modelCtx, c.model)
-		cancel()
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
-		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: c.model}))
-		c.reply <- cmdResult{}
+		a.setting(func(ctx context.Context) error { return switcher.SetModel(ctx, c.model) },
+			proto.ThreadConfigChangedPayload{Model: c.model}, c.reply)
 
 	case cmdSetEffort:
 		if a.state.Closed {
@@ -1080,17 +1233,8 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot change reasoning effort mid-thread")}
 			return false
 		}
-		// Bounded for the same reason as cmdSetModel: a wedged harness must
-		// not stall the actor loop forever.
-		effortCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := switcher.SetEffort(effortCtx, c.effort)
-		cancel()
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
-		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &c.effort}))
-		c.reply <- cmdResult{}
+		a.setting(func(ctx context.Context) error { return switcher.SetEffort(ctx, c.effort) },
+			proto.ThreadConfigChangedPayload{Effort: &c.effort}, c.reply)
 
 	case cmdListComposer:
 		if a.state.Closed {
@@ -1106,10 +1250,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{value: []adapter.ComposerItem{}}
 			return false
 		}
-		listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		items, err := catalogue.ComposerItems(listCtx)
-		cancel()
-		c.reply <- cmdResult{value: items, err: err}
+		a.offLoop(30*time.Second, func(ctx context.Context) (any, error) {
+			return catalogue.ComposerItems(ctx)
+		}, func(items any, err error) {
+			c.reply <- cmdResult{value: items, err: err}
+		})
 
 	case cmdRunComposer:
 		if a.state.Closed {
@@ -1129,44 +1274,53 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot run composer actions")}
 			return false
 		}
+		// The turn is reserved here, on the loop, so nothing else can start
+		// one while the harness is being asked; the asking happens off it.
 		turnID := uuid.NewString()
 		a.turnActive = turnID
 		a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: c.model}))
-		actionCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		value, err := runner.RunComposerAction(actionCtx, adapter.ComposerActionInput{
-			TurnID: turnID,
-			Action: c.mode,
-			Args:   c.prompt,
-		})
-		cancel()
-		if err != nil {
+		in := adapter.ComposerActionInput{TurnID: turnID, Action: c.mode, Args: c.prompt}
+		a.inOrder(60*time.Second, func(ctx context.Context) (any, error) {
+			return runner.RunComposerAction(ctx, in)
+		}, func(value any, err error) {
 			// The adapter may already know what kind of failure this is —
 			// a harness that needs a login says so when it refuses the
 			// prompt — and dropping that leaves the turn looking generic
-			// enough to be offered a continue button it cannot use.
-			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
-				Failure: adapter.FailureOf(err),
-			}))
-		}
-		c.reply <- cmdResult{value: value, err: err}
+			// enough to be offered a continue button it cannot use. A turn
+			// that already ended meanwhile, by Stop or by the harness, is
+			// not closed a second time.
+			if err != nil && a.turnActive == turnID {
+				a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+					TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+					Failure: adapter.FailureOf(err),
+				}))
+			}
+			c.reply <- cmdResult{value: value, err: err}
+		})
 
 	case cmdPrompt:
 		if a.state.Closed {
 			c.reply <- cmdResult{err: ErrClosed}
 			return false
 		}
-		if c.recovery != nil {
-			// The continuation is being taken now, whatever becomes of it;
-			// a second Recover racing this one has nothing left to send.
+		if c.plan != nil {
 			a.mu.Lock()
-			a.recovery = nil
+			current := a.recovery
 			a.mu.Unlock()
+			if current != c.plan {
+				// Taken by a second Recover racing this one, or superseded
+				// by a human prompt: either way there is nothing left to
+				// send.
+				c.reply <- cmdResult{}
+				return false
+			}
+			c.prompt, c.recovery = c.plan.prompt, &c.plan.rec
 		}
 		if a.turnActive != "" {
-			if c.recovery != nil {
+			if c.plan != nil {
 				// The server's own continuation does not wait in line: if
 				// work is already running there is nothing to continue.
+				a.abandonRecovery()
 				c.reply <- cmdResult{err: ErrBusy}
 				return false
 			}
@@ -1176,39 +1330,59 @@ func (a *Actor) handle(c command) (stop bool) {
 			// turn when this one ends. A steer that fails on the way out is
 			// simply queued the old way.
 			queueID := uuid.NewString()
-			sent := false
-			if st, ok := a.sess.(adapter.Steerer); ok {
-				// Bounded like the other harness RPCs made from this goroutine.
-				steerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				err := st.Steer(steerCtx, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images})
-				cancel()
-				if err != nil {
-					a.logf("steer on %s: %v", a.ID, err)
-				} else {
-					sent = true
-					a.markSent(queueID)
-				}
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			// Nor while a Stop is open: it would reach the harness behind the
+			// interrupt and start the turn over. It starts once the turn ends.
+			st, ok := a.sess.(adapter.Steerer)
+			if !ok || a.stopping != nil {
+				c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
+				return false
 			}
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Sent: sent}))
-			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
+			a.steer(st, queueID, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images}, c.reply)
 			return false
 		}
-		if a.sess == nil && a.preparing && c.recovery == nil {
+		// A prompt cannot overtake a control call still on its way, so while one
+		// is it waits in the queue, which starts it once the call has answered.
+		if (a.sess == nil && a.preparing || a.sess != nil && a.controlPending > 0) && c.recovery == nil {
 			queueID := uuid.NewString()
 			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
 		if a.sess == nil {
+			// The plan is left in place: the harness is not up yet, and the
+			// continuation is still owed once it is.
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
 		}
+		if c.plan != nil {
+			// The continuation is being taken now; a retry, if it comes to
+			// one, puts it back.
+			a.setRecovery(nil)
+		}
 		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery, "")
 		if err != nil {
+			// A usage limit takes the continuation over: whatever turn goes
+			// next past the held queue carries the note (followLimit).
+			if c.plan != nil && !a.state.QueueHeld() {
+				// Put back for a retry, or for its note to ride on the
+				// next human prompt: either way the agent still has to hear
+				// what died.
+				prev := a.wantedPhase()
+				a.setRecovery(c.plan)
+				if !retryableRecovery(err) {
+					a.abandonRecovery()
+				}
+				a.writePhase(prev)
+			}
 			c.reply <- cmdResult{err: err}
 			return false
 		}
 		c.reply <- cmdResult{value: PromptResult{TurnID: turnID}}
+
+	case cmdDropRecovery:
+		a.abandonRecovery()
+		c.reply <- cmdResult{}
 
 	case cmdDequeue:
 		if a.state.Closed {
@@ -1229,7 +1403,17 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdCancel:
 		// Stop means stop: a prompt queued behind the interrupted turn would
 		// otherwise start the moment the interrupt landed. The web puts the
-		// text back in the composer before it asks.
+		// text back in the composer before it asks. A continuation armed for
+		// a usage limit is the same thing, only later; so is one for the
+		// turn being stopped, which a late limit finish would otherwise arm.
+		// With no turn running, the one Stop is aimed at is the limit just
+		// reached: Codex may still back-fill its reset.
+		a.disarmLimit()
+		if a.turnActive != "" {
+			a.stoppedTurn = a.turnActive
+		} else if last := a.lastTurn(); last != nil && a.state.QueueHeld() {
+			a.stoppedTurn = last.ID
+		}
 		if a.turnActive == "" {
 			a.dropQueue()
 			c.reply <- cmdResult{value: "idle"}
@@ -1238,9 +1422,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		if a.sess == nil {
 			// A read-only restore may expose the interrupted turn before the
 			// recovery worker activates its process. Stop means do not recover it.
-			a.mu.Lock()
-			a.recovery = nil
-			a.mu.Unlock()
+			a.abandonRecovery()
 			a.dropQueue()
 			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 				TurnID: a.turnActive, StopReason: proto.StopCancelled,
@@ -1248,22 +1430,28 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{value: "idle"}
 			return false
 		}
-		// Bounded for the same reason as the settings RPCs above: Cancel runs on
-		// the actor goroutine, so an interrupt promise the harness never settles
-		// must not wedge every later command for this thread.
-		cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := a.sess.Cancel(cancelCtx)
-		cancel()
-		// The queue goes after the harness has been told, not before: a steer
-		// it read in the moment between would otherwise vanish from the log
-		// although the model saw it. Nothing from the harness is processed
-		// while Cancel runs, so nothing queued can start in between.
-		a.dropQueue()
-		c.reply <- cmdResult{value: "cancelling", err: err}
+		if a.stopping != nil && a.stopping.turnID == a.turnActive {
+			// Asked twice: whoever is asking has seen the first Stop not
+			// work, and waiting out the rest of the grace would be the
+			// server knowing better.
+			a.forceStop()
+			c.reply <- cmdResult{value: "idle"}
+			return false
+		}
+		a.requestStop()
+		c.reply <- cmdResult{value: "cancelling"}
 
 	case cmdAskPerm:
+		// From a process Stop killed or an account switch replaced, asked on
+		// its way out, or asked as its turn ended and overtaken by the
+		// finish. Nobody is waiting on it, and recorded it would wait in the
+		// log for ever.
+		if c.process != a.process || a.turnOver(c.perm.req.TurnID) {
+			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
+			return false
+		}
 		req := c.perm.req
-		requestID := uuid.NewString()
+		requestID := c.reqID
 		a.pendingPerm[requestID] = c.perm.ch
 		opts := req.Options
 		if len(opts) == 0 {
@@ -1297,7 +1485,12 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: "resolved"}
 
 	case cmdAskElicit:
-		requestID := uuid.NewString()
+		if c.process != a.process || a.turnOver(c.elicit.req.TurnID) {
+			// As for a permission.
+			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
+			return false
+		}
+		requestID := c.reqID
 		a.pendingElicit[requestID] = c.elicit.ch
 		a.append(proto.Emit(proto.ElicitationRequested, proto.ElicitationRequestedPayload{
 			RequestID: requestID, TurnID: c.elicit.req.TurnID,
@@ -1330,6 +1523,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		a.shutdown(c.hard)
 		return true
+
+	case cmdEvict:
+		return a.evict(c.evict)
 	}
 	return false
 }
@@ -1348,10 +1544,9 @@ func (a *Actor) switchAccount(sw *accountSwitch) error {
 		return errors.New("answer the waiting question before switching account")
 	}
 	// The harness writes its conversation as it goes, so it has to be gone
-	// before its files are moved. Dropping a.sess first is what marks its
-	// exit, still on its way through the inbox, as stale.
-	if old := a.sess; old != nil {
-		a.sess, a.sent = nil, nil
+	// before its files are moved. Dropping the process first is what marks
+	// its exit, still on its way through the inbox, as stale.
+	if old := a.dropProcess(); old != nil {
 		_ = old.Close()
 	}
 	id := a.state.HarnessSessionID
@@ -1382,24 +1577,27 @@ func (a *Actor) shutdown(hard bool) {
 		// would erase the only cheap evidence that work was in flight. A kill
 		// -9 leaves the same value behind, so both deaths look alike.
 		phase = "turn"
+	case a.state.LiveJobs().Working():
+		// Idle, but a subagent or a monitor the agent is waiting on dies
+		// with this process. The next start has to tell the agent, or it
+		// waits for a result that never comes.
+		phase = "background"
+	default:
+		// A continuation that was never sent dies with this process too.
+		if owed := a.owedPhase(); owed != "" {
+			phase = owed
+		}
 	}
 	_ = a.store.SetPhase(ctx, a.ID, phase)
+	a.stop(phase == "closed")
+}
 
-	// Unblock every adapter goroutine waiting on a human.
-	for id, ch := range a.pendingPerm {
-		select {
-		case ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}:
-		default:
-		}
-		delete(a.pendingPerm, id)
-	}
-	for id, ch := range a.pendingElicit {
-		select {
-		case ch <- adapter.ElicitationResult{Action: "cancel"}:
-		default:
-		}
-		delete(a.pendingElicit, id)
-	}
+// stop ends the actor without touching the stored phase: it releases whatever
+// is waiting on it, closes the harness, and ends every subscription. drop
+// discards the checkout snapshots too, for a thread that is done with them.
+func (a *Actor) stop(drop bool) {
+	a.releaseAsks()
+	a.clearStopping()
 
 	if a.sess != nil {
 		_ = a.sess.Close()
@@ -1408,7 +1606,7 @@ func (a *Actor) shutdown(hard bool) {
 	// snapshots are the baseline the next turn needs. Only a thread closed for
 	// good is done with them.
 	a.checkpoints.stop()
-	if phase == "closed" {
+	if drop {
 		a.checkpoints.drop()
 	}
 	close(a.quit)
@@ -1475,7 +1673,28 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 		_ = a.store.SetTitle(ctx, a.ID, title)
 	}
 
-	if err := a.sess.Prompt(ctx, adapter.PromptInput{TurnID: turnID, Text: prompt, Images: images}); err != nil {
+	// A turn a human asked for — a prompt, or a continue — is the agent's
+	// next chance to hear about work a restart killed. One that gets in ahead
+	// of the continuation supersedes it — the human has picked the thread up
+	// — and carries its news instead.
+	text, note := prompt, ""
+	if recovery == nil || recovery.Cause == proto.RecoveryContinue {
+		a.abandonRecovery()
+		note, a.heldNote = a.heldNote, ""
+		text = withNote(note, prompt)
+	}
+
+	// This one call to the harness is made on the loop, so a harness that
+	// never takes the prompt must not hold the thread for ever. Every adapter
+	// returns once the prompt is written or the turn acknowledged.
+	promptCtx, cancelPrompt := context.WithTimeout(ctx, 30*time.Second)
+	err := a.sess.Prompt(promptCtx, adapter.PromptInput{TurnID: turnID, Text: text, Images: images})
+	cancelPrompt()
+	if err != nil {
+		// A refused prompt delivered nothing, so its note waits for the next.
+		if note != "" {
+			a.heldNote = withNote(note, a.heldNote)
+		}
 		// turnActive is left for append to clear: a prompt that failed on
 		// the way out may still have reached the harness, and the closing
 		// snapshot is the only way to find out what it did.
@@ -1505,7 +1724,13 @@ func (a *Actor) isQueued(queueID string) bool {
 // able to run one. A prompt that fails on the way out ends as an errored turn
 // like any other; the rest of the queue stays, each to be tried in its turn.
 func (a *Actor) dispatchQueued(ctx context.Context) {
-	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed {
+	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed || a.controlPending > 0 {
+		return
+	}
+	// Stop means stop. The stopped turn can end before the harness answers
+	// the interrupt; settleStop drops what was queued behind it the moment
+	// it does, and nothing queued may start while a Stop is still open.
+	if a.stopping != nil {
 		return
 	}
 	// A restart interrupted a turn and the continuation has not been sent
@@ -1519,15 +1744,81 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	}
 	// A prompt the harness already holds is its to run: it starts a turn
 	// with it itself, or reads it into one. Only what nobody has is started
-	// here.
+	// here. Nor what a usage limit holds: that waits for the next turn to
+	// start rather than walking into the limit one prompt at a time.
 	for _, next := range a.state.Queued {
-		if a.sent[next.QueueID] {
+		if a.sent[next.QueueID] || a.state.HeldByLimit(next) {
 			continue
 		}
 		if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
 			a.logf("queued prompt on %s: %v", a.ID, err)
 		}
 		return
+	}
+}
+
+// setRecovery replaces the pending continuation. Recover reads it from
+// outside the loop, so it is written under mu.
+func (a *Actor) setRecovery(plan *recoveryPlan) {
+	a.mu.Lock()
+	a.recovery = plan
+	a.mu.Unlock()
+}
+
+// abandonRecovery gives up the pending continuation. Its note is held for the
+// next human prompt: whether or not the thread wakes, the agent should not be
+// left waiting on work that died.
+func (a *Actor) abandonRecovery() {
+	prev := a.wantedPhase()
+	a.mu.Lock()
+	if a.recovery != nil {
+		a.heldNote = withNote(a.heldNote, a.recovery.note)
+		a.recovery = nil
+	}
+	a.mu.Unlock()
+	a.writePhase(prev)
+}
+
+// holdRowOnlyIfAsked keeps the pending continuation only when the thread's
+// row is what asked for it: nothing else sends it, and a plan left pending
+// holds the queue back. A thread nobody is recovering — its last chain given
+// up on, a harness that exited, a row from before rows said "background" —
+// keeps only the note, for its next prompt.
+func (a *Actor) holdRowOnlyIfAsked(rowPhase string) {
+	if a.recovery != nil && !interruptedPhase(rowPhase) {
+		a.heldNote = withNote(a.heldNote, a.recovery.note)
+		a.recovery = nil
+	}
+}
+
+// owedPhase is the phase a pending continuation holds the row at, or empty.
+func (a *Actor) owedPhase() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.recovery == nil {
+		return ""
+	}
+	return a.recovery.phase
+}
+
+// wantedPhase is what the thread's row should say: the projection's phase,
+// except that an idle thread still owed a continuation keeps the phase that
+// will find it again after another restart.
+func (a *Actor) wantedPhase() string {
+	phase := storedPhase(a.state)
+	if owed := a.owedPhase(); phase == "idle" && owed != "" {
+		return owed
+	}
+	return phase
+}
+
+// writePhase syncs the row's phase column after a change that may have moved
+// it from prev.
+func (a *Actor) writePhase(prev string) {
+	if phase := a.wantedPhase(); phase != prev && phase != "" {
+		if err := a.store.SetPhase(context.Background(), a.ID, phase); err != nil {
+			a.logf("set phase %s on %s: %v", phase, a.ID, err)
+		}
 	}
 }
 
@@ -1574,11 +1865,75 @@ func (a *Actor) dropQueue() {
 	a.sent = nil
 }
 
-// append writes the event, folds it into the projection, and fans it out.
-// This is the only place any of those three happen.
+// appendStreamed appends an event from the harness, holding it for the
+// delta window when it is a delta that can be merged with the ones after it.
+func (a *Actor) appendStreamed(em proto.Emission) {
+	known := func(id string) bool {
+		_, ok := a.state.ItemByID(id)
+		return ok
+	}
+	flushed, held := a.deltas.add(em, known)
+	if len(flushed) > 0 {
+		a.stopDeltaFlush()
+	}
+	for _, f := range flushed {
+		a.write(f)
+	}
+	if !held {
+		a.write(em)
+		return
+	}
+	if a.deltaFlush == nil {
+		a.deltaFlush = time.NewTimer(deltaWindow)
+	}
+}
+
+// trimOutput cuts a tool call's output delta to what its tail can still
+// show. The projection keeps only that much, and the call's result carries
+// the whole output once it finishes; the rest of a noisy build would only
+// make the log and every client's connection pay for it twice. On an update
+// that finishes the call — output the coalescer joined to its result — the
+// tail is dropped anyway, so none of it is kept.
+func trimOutput(em proto.Emission) proto.Emission {
+	if p, ok := em.Payload.(proto.ToolCallUpdatedPayload); ok && p.OutputDelta != "" {
+		if proto.ToolDone(p.Status) {
+			p.OutputDelta = ""
+		} else {
+			p.OutputDelta = projection.TrimOutputDelta(p.OutputDelta)
+		}
+		em.Payload = p
+	}
+	return em
+}
+
+func (a *Actor) stopDeltaFlush() {
+	if a.deltaFlush != nil {
+		a.deltaFlush.Stop()
+		a.deltaFlush = nil
+	}
+}
+
+// flushDeltas writes the held delta, if any, and closes the window.
+func (a *Actor) flushDeltas() {
+	a.stopDeltaFlush()
+	for _, em := range a.deltas.take() {
+		a.write(em)
+	}
+}
+
+// append writes the event after any deltas still held, so the log keeps the
+// order the events happened in.
 func (a *Actor) append(em proto.Emission) error {
+	a.flushDeltas()
+	return a.write(em)
+}
+
+// write stores the event, folds it into the projection, and fans it out.
+// This is the only place any of those three happen.
+func (a *Actor) write(em proto.Emission) error {
 	ctx := context.Background()
 	em = a.redact(em)
+	em = trimOutput(em)
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {
@@ -1586,7 +1941,7 @@ func (a *Actor) append(em proto.Emission) error {
 		return err
 	}
 
-	prevPhase := a.state.Phase
+	prevPhase := a.wantedPhase()
 	a.state.Apply(ev)
 
 	a.mu.Lock()
@@ -1632,22 +1987,22 @@ func (a *Actor) append(em proto.Emission) error {
 			a.measuring = ""
 			a.turnActive = ""
 		}
+		a.releaseSettled()
 	}
 
 	// The stored phase column is a cache of the projection, kept for the
 	// thread list and for restart recovery, which scans rows without folding
 	// logs. Syncing it on every turn-shaped transition — not just on turn
 	// events — is what lets activity-promoted turns (streaming or a tool
-	// going active while the log said idle) survive a restart. Workspace
-	// events are excluded: the lifecycle runner owns those writes, and its
-	// vocabulary (ready, provisioning, …) is wider than the projection's.
+	// going active while the log said idle) survive a restart, and syncing
+	// it on job events is what lets a kill -9 leave a waiting subagent as
+	// much evidence as a clean shutdown does. Workspace events are excluded:
+	// the lifecycle runner owns those writes, and its vocabulary (ready,
+	// provisioning, …) is wider than the projection's.
 	switch em.Type {
-	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.ThreadClosed:
-		if phase := a.state.Phase; phase != prevPhase && (phase == "turn" || phase == "idle" || phase == "closed") {
-			if err := a.store.SetPhase(ctx, a.ID, phase); err != nil {
-				a.logf("set phase %s on %s: %v", phase, a.ID, err)
-			}
-		}
+	case proto.TurnStarted, proto.TurnFinished, proto.MessageChunk, proto.ToolCallStarted, proto.ToolCallUpdated, proto.ThreadClosed,
+		proto.JobStarted, proto.JobUpdated, proto.JobFinished:
+		a.writePhase(prevPhase)
 	}
 
 	// Attention is the derived whose-turn-is-it signal. Any event that moves
@@ -1679,7 +2034,28 @@ func (a *Actor) append(em proto.Emission) error {
 			a.logf("snapshot %s: %v", a.ID, err)
 		}
 	}
+	// Last, so whatever it appends follows this event everywhere it went.
+	a.followLimit(ev)
 	return nil
+}
+
+// storedPhase is what the thread row records for a projection: idle, turn or
+// closed as the projection has it, and background for an idle thread whose
+// subagents or monitors are still running — work the agent is waiting on, so
+// a restart has to wake it. Empty for a workspace phase, which is the
+// lifecycle runner's to record.
+func storedPhase(s *projection.State) string {
+	switch {
+	case s.Closed || s.Phase == "closed":
+		return "closed"
+	case s.Phase == "turn":
+		return "turn"
+	case s.Phase == "idle" && s.LiveJobs().Working():
+		return "background"
+	case s.Phase == "idle":
+		return "idle"
+	}
+	return ""
 }
 
 // fanout delivers to every subscriber without blocking. On a full queue the
@@ -1703,17 +2079,55 @@ func (a *Actor) fanout(ev proto.Event) {
 	}
 }
 
+// turnOver reports whether the log has already finished turn. An ask that
+// names no turn is never over.
+func (a *Actor) turnOver(turn string) bool {
+	if turn == "" {
+		return false
+	}
+	for _, t := range a.state.Turns {
+		if t.ID == turn {
+			return t.Done
+		}
+	}
+	return false
+}
+
+// releaseSettled unblocks the asker of every request the projection no longer
+// holds open. A finished turn takes its requests with it, whether or not the
+// harness said it withdrew them, and the adapter goroutine waiting on one
+// must not wait forever.
+func (a *Actor) releaseSettled() {
+	open := map[string]bool{}
+	for _, p := range a.state.Pending {
+		open[p.RequestID] = true
+	}
+	for _, p := range a.state.Elicitations {
+		open[p.RequestID] = true
+	}
+	a.releaseAsksExcept(open)
+}
+
 // ---- host services exposed to adapters ----
 
-type hostServices struct{ a *Actor }
+// hostServices is what one harness process is given to reach the actor.
+// process is the generation it was started under (Actor.process).
+type hostServices struct {
+	a       *Actor
+	process uint64
+}
 
 // RequestPermission appends a durable permission.requested event and blocks
 // until any presenter resolves it. Nothing about this lives in a connection.
+// An adapter cancels ctx when the harness withdraws the request; the request
+// is then resolved as cancelled, so no presenter is left holding a card the
+// harness has stopped waiting on.
 func (h hostServices) RequestPermission(ctx context.Context, req adapter.PermissionRequest) (adapter.PermissionOutcome, error) {
 	ch := make(chan adapter.PermissionOutcome, 1)
+	requestID := uuid.NewString()
 
 	select {
-	case h.a.inbox <- command{kind: cmdAskPerm, perm: permAsk{req: req, ch: ch}}:
+	case h.a.inbox <- command{kind: cmdAskPerm, process: h.process, reqID: requestID, perm: permAsk{req: req, ch: ch}}:
 	case <-h.a.quit:
 		return adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}, nil
 	case <-ctx.Done():
@@ -1726,14 +2140,18 @@ func (h hostServices) RequestPermission(ctx context.Context, req adapter.Permiss
 	case <-h.a.quit:
 		return adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}, nil
 	case <-ctx.Done():
-		return adapter.PermissionOutcome{}, ctx.Err()
+		cancelled := adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
+		h.withdraw(command{kind: cmdResolvePerm, reqID: requestID, outcome: cancelled})
+		return cancelled, ctx.Err()
 	}
 }
 
+// Elicit is RequestPermission's twin for a question, withdrawn the same way.
 func (h hostServices) Elicit(ctx context.Context, req adapter.ElicitationRequest) (adapter.ElicitationResult, error) {
 	ch := make(chan adapter.ElicitationResult, 1)
+	requestID := uuid.NewString()
 	select {
-	case h.a.inbox <- command{kind: cmdAskElicit, elicit: elicitAsk{req: req, ch: ch}}:
+	case h.a.inbox <- command{kind: cmdAskElicit, process: h.process, reqID: requestID, elicit: elicitAsk{req: req, ch: ch}}:
 	case <-h.a.quit:
 		return adapter.ElicitationResult{Action: "cancel"}, nil
 	case <-ctx.Done():
@@ -1745,7 +2163,20 @@ func (h hostServices) Elicit(ctx context.Context, req adapter.ElicitationRequest
 	case <-h.a.quit:
 		return adapter.ElicitationResult{Action: "cancel"}, nil
 	case <-ctx.Done():
-		return adapter.ElicitationResult{}, ctx.Err()
+		cancelled := adapter.ElicitationResult{Action: "cancel"}
+		h.withdraw(command{kind: cmdResolveElicit, reqID: requestID, elicitResult: cancelled})
+		return cancelled, ctx.Err()
+	}
+}
+
+// withdraw resolves a request whose asker stopped waiting. It does not wait
+// for the actor: a human answer that got there first wins, and the asker has
+// nothing left to do with either.
+func (h hostServices) withdraw(c command) {
+	c.reply = make(chan cmdResult, 1)
+	select {
+	case h.a.inbox <- c:
+	case <-h.a.quit:
 	}
 }
 
@@ -1783,7 +2214,8 @@ const (
 	AttachReplay   = "replay"
 )
 
-// AttachResult is what a presenter needs to reconstruct state exactly.
+// AttachResult is what a presenter needs to reconstruct state exactly. Events
+// are the wire copies, capped like live delivery; Snapshot is windowed.
 type AttachResult struct {
 	Kind     string
 	Snapshot *projection.State
@@ -1791,29 +2223,63 @@ type AttachResult struct {
 	Seq      int64
 }
 
-// Attach computes the catch-up payload for a cursor. The caller must already
-// have subscribed.
-func (a *Actor) Attach(ctx context.Context, afterSeq int64, hasCursor bool) (AttachResult, error) {
-	head := a.Head()
-	gap := head - afterSeq
-
-	if !hasCursor || gap < 0 || gap > MaxReplayGap {
-		state, err := a.State(ctx)
+// Attach computes the catch-up payload for a cursor: the events since it, or
+// a snapshot of the newest snapshotItems top-level items when there is no
+// cursor or the catch-up would not fit the replay budget. The caller must
+// already have subscribed.
+func (a *Actor) Attach(ctx context.Context, afterSeq int64, hasCursor bool, snapshotItems int) (AttachResult, error) {
+	if hasCursor && replayable(a.Head()-afterSeq) {
+		evs, err := a.store.ReadEvents(ctx, a.ID, afterSeq, MaxReplayEvents)
 		if err != nil {
 			return AttachResult{}, err
 		}
-		return AttachResult{Kind: AttachSnapshot, Snapshot: state, Seq: state.Seq}, nil
+		if wire, ok := wireReplay(evs); ok {
+			seq := afterSeq
+			if len(evs) > 0 {
+				seq = evs[len(evs)-1].Seq
+			}
+			return AttachResult{Kind: AttachReplay, Events: wire, Seq: seq}, nil
+		}
 	}
-
-	evs, err := a.store.ReadEvents(ctx, a.ID, afterSeq, MaxReplayGap)
+	state, err := a.WireState(ctx, snapshotItems)
 	if err != nil {
 		return AttachResult{}, err
 	}
-	seq := afterSeq
-	if len(evs) > 0 {
-		seq = evs[len(evs)-1].Seq
+	return AttachResult{Kind: AttachSnapshot, Snapshot: state, Seq: state.Seq}, nil
+}
+
+// replayable reports whether a cursor gap events behind head is worth reading
+// at all. A negative gap is a cursor from some other history.
+func replayable(gap int64) bool {
+	return gap >= 0 && gap <= MaxReplayEvents
+}
+
+// wireReplay is evs as a client should see them, or ok=false when they are
+// more than a replay should carry — past MaxReplayEvents, or past
+// MaxReplayBytes once capped and encoded — and one snapshot is the cheaper
+// answer. T3 Code's budget, for the same reason: a client back from a long
+// absence on a phone should not download every chunk it missed.
+func wireReplay(evs []proto.Event) (wire []proto.Event, ok bool) {
+	if len(evs) > MaxReplayEvents {
+		return nil, false
 	}
-	return AttachResult{Kind: AttachReplay, Events: evs, Seq: seq}, nil
+	wire = make([]proto.Event, 0, len(evs))
+	size := 0
+	for _, ev := range evs {
+		w := projection.WireEvent(ev)
+		// The event as it is encoded in the frame, envelope and all: the
+		// budget is what goes over the wire, not the payloads alone.
+		b, err := json.Marshal(w)
+		if err != nil {
+			return nil, false
+		}
+		size += len(b)
+		if size > MaxReplayBytes {
+			return nil, false
+		}
+		wire = append(wire, w)
+	}
+	return wire, true
 }
 
 func truncate(s string, n int) string {

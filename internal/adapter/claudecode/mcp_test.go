@@ -175,7 +175,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() })
 
 	s := &session{}
-	s.conn = jsonrpc.NewConn(stdout, stdin, func(context.Context, string, json.RawMessage) (any, error) { return nil, nil }, func(string, json.RawMessage) {})
+	s.conn = jsonrpc.NewConn(stdout, stdin, func(context.Context, string, json.RawMessage) (any, error) { return nil, nil }, func(string, json.RawMessage) {}, nil)
 
 	requests := func(subtype string) []map[string]any {
 		data, _ := os.ReadFile(record)

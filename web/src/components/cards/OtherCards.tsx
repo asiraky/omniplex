@@ -1,8 +1,8 @@
 import { useId, useState } from "react";
 
-import { Marker } from "~/components/tools/parts";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Marker } from "~/components/ui/marker";
 import { Textarea } from "~/components/ui/textarea";
 import { accountEdits, cliDraft, scopeText, signInEdits, type CliDraft } from "~/lib/cards";
 import { cn } from "~/lib/utils";

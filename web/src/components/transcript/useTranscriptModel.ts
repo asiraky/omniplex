@@ -1,7 +1,9 @@
 import { useMemo } from "react";
 
-import type { Item, ThreadState } from "~/protocol";
+import type { Item, QueuedPrompt, ThreadState } from "~/protocol";
 import { buildRows } from "~/rows";
+
+import type { Recovered } from "./Message";
 
 function newestAgentText(items: Item[]): Item | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -17,6 +19,30 @@ function newestPrompt(items: Item[]): string | undefined {
     if (it.kind === "message" && it.role === "user") return it.id;
   }
   return undefined;
+}
+
+/**
+ * A turn stopped at a usage limit holds the queue on the server until a new
+ * turn starts, and arms a continuation for when the limit resets. The hold is
+ * for what was queued before the limit, and lifts once the thread moves to
+ * another account: the limit was the old one's. Mirrors the server's
+ * projection.State.QueueHeld and HeldByLimit.
+ */
+export function limitHold(state: ThreadState) {
+  const continuation = state.scheduledPrompts?.find(
+    (p) => p.kind === "limit" && (p.status === "pending" || p.status === "ready"),
+  );
+  const last = state.turns[state.turns.length - 1];
+  const finishedAt = last?.finishedAt ?? 0;
+  let holding = last?.done === true && last.failure === "limit";
+  for (let i = state.items.length - 1; holding && i >= 0; i--) {
+    const it = state.items[i];
+    if ((it.receivedAt ?? 0) < finishedAt) break;
+    if (it.kind === "notice" && it.noticeKind === "account") holding = false;
+  }
+  const held: "reset" | "send" | undefined = holding ? (continuation ? "reset" : "send") : undefined;
+  const heldFor = (q: QueuedPrompt) => ((q.queuedAt ?? 0) <= finishedAt ? held : undefined);
+  return { continuation, heldFor };
 }
 
 /** What the transcript derives from the thread's state before it draws a row. */
@@ -83,18 +109,23 @@ export function useTranscriptModel(state: ThreadState) {
 
   // Keyed by cause, not merely by "this was recovered": the note the reader
   // gets is a claim about what happened to their work, and only a restart is
-  // allowed to claim one.
-  const recoveredTurns = useMemo(
-    () =>
-      new Map(
-        state.turns
-          .filter((t) => t.recovery)
-          .map((t) => [t.id, t.recovery!.cause ?? "restart"] as const),
-      ),
-    [state.turns],
-  );
+  // allowed to claim one. The continuation armed at a usage limit is the
+  // server's prompt too; the schedule that sent it names its turn.
+  const recoveredTurns = useMemo(() => {
+    const causes = new Map<string, Recovered>(
+      state.turns.filter((t) => t.recovery).map((t) => [t.id, t.recovery!.cause ?? "restart"]),
+    );
+    for (const p of state.scheduledPrompts ?? []) {
+      if (p.kind === "limit" && p.status === "sent" && p.turnId) causes.set(p.turnId, "limit");
+    }
+    return causes;
+  }, [state.turns, state.scheduledPrompts]);
+
+  const { continuation, heldFor } = limitHold(state);
 
   return {
+    continuation,
+    heldFor,
     empty,
     liveAgentId,
     lastPromptID,

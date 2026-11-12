@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -38,6 +37,11 @@ type Manager struct {
 	schedulerWG     sync.WaitGroup
 	scheduleReady   sync.Map
 	store           *store.Store
+	// The idle-actor sweeper; see evict.go. idleEvictAfter is how long a
+	// view-only actor may sit unused before it is dropped.
+	evictorCancel  context.CancelFunc
+	evictorWG      sync.WaitGroup
+	idleEvictAfter time.Duration
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
@@ -132,6 +136,14 @@ type Manager struct {
 	// usageScan reads the account-level Usage page out of the harnesses'
 	// transcripts, keeping what it parsed between reports.
 	usageScan *usage.Scanner
+
+	// recoverCtx bounds the continuations a restart owes its threads: one
+	// still waiting to retry when the server shuts down is abandoned, not
+	// started against a store being closed. recoveryRetries is the wait
+	// before each retry; see recovery.go.
+	recoverCtx      context.Context
+	recoverStop     context.CancelFunc
+	recoveryRetries []time.Duration
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -177,7 +189,10 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		quotaSub:        map[string]chan struct{}{},
 		authFlows:       map[string]*authFlow{},
 		usageScan:       usage.NewScanner(),
+		recoveryRetries: recoveryRetries,
+		idleEvictAfter:  idleEvictAfter,
 	}
+	m.recoverCtx, m.recoverStop = context.WithCancel(context.Background())
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
 		m.driverOrder = append(m.driverOrder, ad.ID())
@@ -593,7 +608,7 @@ func (m *Manager) LoginCommand(ctx context.Context, instanceID string) (argv []s
 	if err != nil {
 		return nil, nil, err
 	}
-	argv, err = auth.LoginCommand(ctx)
+	argv, env, err = auth.LoginCommand(ctx, overlay)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -602,7 +617,7 @@ func (m *Manager) LoginCommand(ctx context.Context, instanceID string) (argv []s
 	m.probeMu.Lock()
 	delete(m.probes, instanceID)
 	m.probeMu.Unlock()
-	return argv, adapter.MergeEnv(os.Environ(), overlay), nil
+	return argv, env, nil
 }
 
 // RecheckHarnesses drops cached probes so the next listing re-examines the
@@ -1144,8 +1159,11 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		locked = false
 	}
 
+	// The touch is made under mu, with the lookup: the evictor re-checks
+	// idleness under the same lock before it forgets an actor, so one handed
+	// out here cannot be evicted from under its caller.
 	m.mu.RLock()
-	a, ok := m.actors[id]
+	a, ok := m.liveActor(id)
 	m.mu.RUnlock()
 	if ok {
 		meta, err := m.store.Thread(ctx, id)
@@ -1161,7 +1179,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		return nil, err
 	}
 	m.mu.Lock()
-	if a, ok := m.actors[id]; ok { // another caller won the race
+	if a, ok := m.liveActor(id); ok { // another caller won the race
 		m.mu.Unlock()
 		return a, nil
 	}
@@ -1215,7 +1233,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 }
 
 func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.ThreadMeta, activate bool) (*Actor, error) {
-	if !activate || (meta.Phase != "idle" && meta.Phase != "turn") {
+	if !activate || (meta.Phase != "idle" && !interruptedPhase(meta.Phase)) {
 		return a, nil
 	}
 	// Process startup is intentionally outside the global lifecycle lock. The
@@ -1224,16 +1242,10 @@ func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.ThreadMeta
 	if err := a.ActivateResume(ctx); err != nil {
 		return nil, err
 	}
-	if meta.Phase == "turn" {
+	if interruptedPhase(meta.Phase) {
 		go m.recoverActor(a)
 	}
 	return a, nil
-}
-
-func (m *Manager) recoverActor(a *Actor) {
-	if err := a.Recover(context.Background()); err != nil {
-		m.logf("continue interrupted turn on %s: %v", a.ID, err)
-	}
 }
 
 // Peek returns the live actor if one exists, without starting a harness.
@@ -1241,7 +1253,28 @@ func (m *Manager) Peek(id string) (*Actor, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	a, ok := m.actors[id]
+	if ok {
+		a.touch()
+	}
 	return a, ok
+}
+
+// liveActor is the map's actor for id, unless it has already stopped: one
+// whose loop has ended but whose onExit has not yet removed it is as good as
+// absent, and handing it out would strand the caller on ErrClosed and a
+// subscription that closes at once. Touches what it returns. Caller holds mu.
+func (m *Manager) liveActor(id string) (*Actor, bool) {
+	a, ok := m.actors[id]
+	if !ok {
+		return nil, false
+	}
+	select {
+	case <-a.quit:
+		return nil, false
+	default:
+	}
+	a.touch()
+	return a, true
 }
 
 // adopt registers a live actor and arranges for it to be forgotten when its
@@ -1538,9 +1571,14 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 // Shutdown tears down every harness process. Threads are left resumable: the
 // log is the thread, and a restart reattaches to it.
 func (m *Manager) Shutdown() {
+	m.recoverStop()
 	if m.schedulerCancel != nil {
 		m.schedulerCancel()
 		m.schedulerWG.Wait()
+	}
+	if m.evictorCancel != nil {
+		m.evictorCancel()
+		m.evictorWG.Wait()
 	}
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()

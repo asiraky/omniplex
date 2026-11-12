@@ -15,6 +15,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/jsonrpc"
+	"github.com/asiraky/omniplex/internal/proto"
 )
 
 // Window-duration thresholds, in minutes, that turn a window's width into a
@@ -74,6 +75,10 @@ func kindLabel(kind string) string {
 		return "Session"
 	}
 }
+
+// mainLimitID is the limitId of the account's main allowance. Every other
+// limit is model-specific.
+const mainLimitID = "codex"
 
 // codexLimitSnapshot is one limit's snapshot — the main "codex" allowance or
 // a model-specific one (GPT-5.3-Codex-Spark and friends), which report the
@@ -154,7 +159,7 @@ func parseCodexRead(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
 	for _, id := range ids {
 		s := byID[id]
 		snap.Windows = append(snap.Windows, s.windows()...)
-		if s != nil && s.PlanType != "" && (snap.Plan == "" || id == "codex") {
+		if s != nil && s.PlanType != "" && (snap.Plan == "" || id == mainLimitID) {
 			snap.Plan = s.PlanType
 		}
 	}
@@ -190,20 +195,9 @@ func parseCodexRead(raw json.RawMessage) (adapter.QuotaSnapshot, error) {
 // The observed shape is the snapshot itself; a wrapper naming rateLimits is
 // accepted too, so either generation of the CLI lands on one path.
 func parseCodexUpdate(params json.RawMessage) (adapter.QuotaSnapshot, bool) {
-	var wrapper struct {
-		RateLimits json.RawMessage `json:"rateLimits"`
-	}
-	_ = json.Unmarshal(params, &wrapper)
-	raw := params
-	if len(wrapper.RateLimits) > 0 {
-		raw = wrapper.RateLimits
-	}
-	var s codexLimitSnapshot
-	if err := json.Unmarshal(raw, &s); err != nil {
+	s, ok := updateSnapshot(params)
+	if !ok {
 		return adapter.QuotaSnapshot{}, false
-	}
-	if s.LimitID == "" {
-		s.LimitID = "codex" // an older CLI that omits it
 	}
 	windows := s.windows()
 	for i := range windows {
@@ -226,6 +220,153 @@ func parseCodexUpdate(params json.RawMessage) (adapter.QuotaSnapshot, bool) {
 	return adapter.QuotaSnapshot{CheckedAt: time.Now().UnixMilli(), Plan: s.PlanType, Windows: windows}, true
 }
 
+// updateSnapshot decodes the one limit an account/rateLimits/updated
+// notification carries, in either of its shapes.
+func updateSnapshot(params json.RawMessage) (*codexLimitSnapshot, bool) {
+	var wrapper struct {
+		RateLimits json.RawMessage `json:"rateLimits"`
+	}
+	_ = json.Unmarshal(params, &wrapper)
+	raw := params
+	if len(wrapper.RateLimits) > 0 {
+		raw = wrapper.RateLimits
+	}
+	var s codexLimitSnapshot
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, false
+	}
+	if s.LimitID == "" {
+		s.LimitID = mainLimitID // an older CLI that omits it
+	}
+	return &s, true
+}
+
+// mergeLimits folds an update or a read onto the session's snapshot of the
+// main allowance, and reports whether it did. A model-specific limit is never
+// merged: the reset a limited turn waits for is the main allowance's. A window
+// the update names replaces the old one whole — a reset carried over from an
+// earlier window would name a time that has already passed.
+func mergeLimits(prev, update *codexLimitSnapshot) (*codexLimitSnapshot, bool) {
+	if update == nil || (update.LimitID != "" && update.LimitID != mainLimitID) {
+		return prev, false
+	}
+	if prev == nil {
+		next := *update
+		return &next, true
+	}
+	next := *prev
+	if update.LimitID != "" {
+		next.LimitID = update.LimitID
+	}
+	if update.PlanType != "" {
+		next.PlanType = update.PlanType
+	}
+	if update.RateLimitReachedType != "" {
+		next.RateLimitReachedType = update.RateLimitReachedType
+	}
+	if update.Primary != nil {
+		next.Primary = update.Primary
+	}
+	if update.Secondary != nil {
+		next.Secondary = update.Secondary
+	}
+	return &next, true
+}
+
+// resetAt is when a limited turn can run again, in epoch ms: the latest reset
+// among the exhausted windows, since every one of them must reopen first.
+// Zero when nothing is exhausted, or when an exhausted window does not say
+// when it resets — a guess from the others would wake the turn into the same
+// limit.
+func (s *codexLimitSnapshot) resetAt() int64 {
+	if s == nil {
+		return 0
+	}
+	var latest int64
+	exhausted := false
+	for _, w := range []*codexLimitWindow{s.Primary, s.Secondary} {
+		if w == nil || w.UsedPercent == nil || *w.UsedPercent < 100 {
+			continue
+		}
+		exhausted = true
+		if w.ResetsAt == nil || *w.ResetsAt <= 0 {
+			return 0
+		}
+		latest = max(latest, *w.ResetsAt*1000)
+	}
+	if !exhausted {
+		return 0
+	}
+	return latest
+}
+
+// mergeUpdate folds a rateLimits/updated notification onto the session's
+// snapshot.
+func (s *session) mergeUpdate(params json.RawMessage) {
+	update, ok := updateSnapshot(params)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	s.applyLimitsLocked(update)
+	fill := s.takeResetLocked()
+	s.mu.Unlock()
+	s.emitReset(fill)
+}
+
+// applyLimitsLocked merges a snapshot under s.mu. Only a merge that applied
+// counts as one: a model-specific update changes nothing a read in flight
+// would overwrite, so it must not make that read yield.
+func (s *session) applyLimitsLocked(update *codexLimitSnapshot) {
+	if next, ok := mergeLimits(s.limits, update); ok {
+		s.limits = next
+		s.limitsGen++
+	}
+}
+
+// awaitReset remembers a turn that finished on a limit with its reset
+// unknown, so the first snapshot that says when it reopens can back-fill it.
+// The snapshot may already say: an update can land between the turn's finish
+// reading it and this.
+func (s *session) awaitReset(turn string) {
+	s.mu.Lock()
+	// A turn that has since started makes the old one's reset moot.
+	if s.turnID == "" {
+		s.resetTurn = turn
+	}
+	fill := s.takeResetLocked()
+	s.mu.Unlock()
+	s.emitReset(fill)
+}
+
+// takeResetLocked hands over the remembered turn's back-fill, under s.mu,
+// once the snapshot knows its reset. Once only: the turn is forgotten.
+func (s *session) takeResetLocked() proto.TurnLimitResetPayload {
+	if s.resetTurn == "" {
+		return proto.TurnLimitResetPayload{}
+	}
+	reset := s.limits.resetAt()
+	if reset == 0 {
+		return proto.TurnLimitResetPayload{}
+	}
+	fill := proto.TurnLimitResetPayload{TurnID: s.resetTurn, ResetAt: reset}
+	s.resetTurn = ""
+	return fill
+}
+
+func (s *session) emitReset(fill proto.TurnLimitResetPayload) {
+	if fill.TurnID != "" {
+		s.emit(proto.Emit(proto.TurnLimitReset, fill))
+	}
+}
+
+// limitResetAt is resetAt over the session's current snapshot.
+func (s *session) limitResetAt() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.limits.resetAt()
+}
+
 // reportQuota pushes a snapshot at the host's quota cache, when the host
 // implements the optional reporter.
 func (s *session) reportQuota(snap adapter.QuotaSnapshot) {
@@ -237,11 +378,39 @@ func (s *session) reportQuota(snap adapter.QuotaSnapshot) {
 // Quota asks the running app-server for the account's rate limits — the
 // structured twin of the CLI's /status — over the live connection.
 func (s *session) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
-	var raw json.RawMessage
-	if err := s.conn.Call(ctx, "account/rateLimits/read", map[string]any{}, &raw); err != nil {
-		return adapter.QuotaSnapshot{}, fmt.Errorf("codex rate limits: %w", err)
+	raw, err := s.readLimits(ctx)
+	if err != nil {
+		return adapter.QuotaSnapshot{}, err
 	}
 	return parseCodexRead(raw)
+}
+
+// readLimits calls account/rateLimits/read and merges the main allowance onto
+// the session's snapshot. An update that landed while the read was in flight
+// is newer than the read, so the read then yields to it.
+func (s *session) readLimits(ctx context.Context) (json.RawMessage, error) {
+	s.mu.Lock()
+	gen := s.limitsGen
+	s.mu.Unlock()
+	var raw json.RawMessage
+	if err := s.conn.Call(ctx, "account/rateLimits/read", map[string]any{}, &raw); err != nil {
+		return nil, fmt.Errorf("codex rate limits: %w", err)
+	}
+	var res codexRateLimitsRead
+	if json.Unmarshal(raw, &res) == nil {
+		read := res.RateLimitsByLimitID[mainLimitID]
+		if read == nil {
+			read = res.RateLimits
+		}
+		s.mu.Lock()
+		if s.limitsGen == gen {
+			s.applyLimitsLocked(read)
+		}
+		fill := s.takeResetLocked()
+		s.mu.Unlock()
+		s.emitReset(fill)
+	}
+	return raw, nil
 }
 
 // pushQuota reads the account's limits off the live process and hands them to
@@ -292,6 +461,7 @@ func (a *Adapter) ReadQuota(ctx context.Context, env map[string]string) (adapter
 			return nil, fmt.Errorf("this connection only reads usage limits")
 		},
 		func(string, json.RawMessage) {},
+		nil,
 	)
 
 	if err := conn.Call(ctx, "initialize", map[string]any{

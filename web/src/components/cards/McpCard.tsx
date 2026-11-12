@@ -1,9 +1,10 @@
 import { useId, useState } from "react";
 
-import { Marker, Segmented } from "~/components/tools/parts";
+import { Segmented } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Marker } from "~/components/ui/marker";
 import { canPickScope, EVERYWHERE, mcpEdits, PROJECT_SCOPE, startScope } from "~/lib/cards";
 import type { Card, CardScope, CardSecret } from "~/protocol";
 

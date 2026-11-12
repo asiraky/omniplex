@@ -70,6 +70,8 @@ export interface PanelProps {
   state: ThreadState;
   /** A ws command, for stopping a job and tailing a shell's output. */
   command: (command: string, args: unknown) => Promise<any>;
+  /** The jobs the snapshot left out, for the jobs surface. */
+  loadAllJobs?: () => Promise<ThreadState | null>;
   open: boolean;
   onClose: () => void;
   /** One click to the full content width, one click back. No in-between. */
@@ -180,6 +182,7 @@ function PanelBody({
   threadId,
   state,
   command,
+  loadAllJobs,
   open,
   onClose,
   expanded: panelExpanded,
@@ -467,7 +470,9 @@ function PanelBody({
             loadFile={loadFile}
           />
         )}
-        {active?.kind === "jobs" && <JobsSurface threadId={threadId} state={state} command={command} />}
+        {active?.kind === "jobs" && (
+          <JobsSurface threadId={threadId} state={state} command={command} loadAllJobs={loadAllJobs} />
+        )}
         {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
         {active?.kind === "artefact" &&
           (shownArtefact ? (

@@ -184,6 +184,7 @@ func (s *session) RunComposerAction(ctx context.Context, in adapter.ComposerActi
 		return nil, errors.New("the harness resumed work on its own; wait for it to finish")
 	}
 	s.turnID = in.TurnID
+	s.resetTurn = ""
 	s.mu.Unlock()
 	if in.Action == "compact" {
 		s.mu.Lock()
@@ -205,7 +206,25 @@ func (s *session) RunComposerAction(ctx context.Context, in adapter.ComposerActi
 		s.mu.Unlock()
 		return nil, err
 	}
+	// review/start answers with the review's turn, as turn/start does: its
+	// items and its completion carry this id. Stop wants the one turn/started
+	// names (runningTurnID). /compact's answer carries none; its id comes
+	// from the turn/started that follows (see workingTurn). Recorded under
+	// Prompt's guard, and never over an id already set.
+	if id := responseTurnID(response); id != "" {
+		s.mu.Lock()
+		s.backfillServerTurnLocked(in.TurnID, id)
+		s.mu.Unlock()
+	}
 	return response, nil
+}
+
+// responseTurnID reads turn.id from an app-server response, or "" if there is
+// none.
+func responseTurnID(response map[string]any) string {
+	turn, _ := response["turn"].(map[string]any)
+	id, _ := turn["id"].(string)
+	return id
 }
 
 func codexComposerActionRequest(threadID, action, args string) (string, map[string]any, error) {

@@ -1,6 +1,7 @@
 import { useId } from "react";
 
-import { Marker, ProblemText } from "~/components/tools/parts";
+import { ProblemText } from "~/components/tools/parts";
+import { Marker } from "~/components/ui/marker";
 import { MODE_LABEL, NOT_COMMITTED, type Destination, type SkillMode } from "~/lib/skills";
 import { cn } from "~/lib/utils";
 

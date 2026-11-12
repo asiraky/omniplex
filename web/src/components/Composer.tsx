@@ -4,6 +4,7 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Rea
 import { ContextMeter } from "~/components/ContextMeter";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
+import type { PickerFocus } from "~/components/ModelPicker";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import type { HarnessMeta, Usage } from "~/protocol";
@@ -27,10 +28,12 @@ export interface ComposerAttachments {
   files: ArtefactRef[];
 }
 
-/** What the transcript's recent-skills list needs from the composer. */
+/** What the transcript's recent-skills list and the app's shortcuts need from the composer. */
 export interface ComposerHandle {
   /** Focuses the input and parks the cursor at `cursor`, or at the end. */
   focusEnd: (cursor?: number) => void;
+  /** Opens the model picker; "effort" puts focus on the effort control. Already open: moves focus there. */
+  openModelPicker: (focus?: PickerFocus) => void;
 }
 
 interface ComposerProps {
@@ -68,8 +71,9 @@ interface ComposerProps {
   instance?: string;
   model?: string;
   effort?: string;
-  onSwitchModel?: (id: string) => void;
-  onSwitchEffort?: (effort: string) => void;
+  /** Mid-thread these resolve to whether the server took the change. */
+  onSwitchModel?: (id: string) => void | Promise<boolean>;
+  onSwitchEffort?: (effort: string) => void | Promise<boolean>;
   /** Moves the thread to another account of its harness, then runs `model`
       there. Omitted, the picker still offers other accounts but choosing one
       does nothing. */
@@ -141,6 +145,13 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDesktop = useIsDesktop();
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // Where a shortcut asked focus to go. Cleared on close, so opening by a
+  // plain click afterwards lands on the search as usual.
+  const [pickerFocus, setPickerFocus] = useState<{ target: PickerFocus } | null>(null);
+  const changeModelPickerOpen = useCallback((next: boolean) => {
+    setModelPickerOpen(next);
+    if (!next) setPickerFocus(null);
+  }, []);
   const { draftRef, changeDraft } = useDraftRef(draft, onDraftChange);
 
   const attach = useCallback(
@@ -209,12 +220,19 @@ export function Composer({
   }, [draft]);
 
   const { focusAt } = menu;
+  const hasPicker = harnesses.length > 0 && !disabled;
   useImperativeHandle(
     ref,
     () => ({
       focusEnd: (nextCursor?: number) => focusAt(nextCursor ?? draftRef.current.length),
+      openModelPicker: (focus: PickerFocus = "model") => {
+        if (!hasPicker) return;
+        // A fresh object each time, so asking again while open moves focus.
+        setPickerFocus({ target: focus });
+        setModelPickerOpen(true);
+      },
     }),
-    [draftRef, focusAt],
+    [draftRef, focusAt, hasPicker],
   );
 
   const textarea = (
@@ -224,6 +242,7 @@ export function Composer({
       value={draft}
       disabled={disabled}
       aria-label="Message"
+      data-composer-input=""
       placeholder={placeholderFor(disabled || sendDisabled, disabledPlaceholder, isDesktop)}
       onChange={(e) => {
         changeDraft(e.target.value);
@@ -295,7 +314,8 @@ export function Composer({
               anyHarness={anyHarness}
               disabled={disabled}
               open={modelPickerOpen}
-              onOpenChange={setModelPickerOpen}
+              onOpenChange={changeModelPickerOpen}
+              focusRequest={pickerFocus}
               onSwitchModel={onSwitchModel}
               onSwitchEffort={onSwitchEffort}
               onSwitchAccount={onSwitchAccount}

@@ -51,3 +51,26 @@ export function validateSchedule(at: number, now: number): string | undefined {
   if (!Number.isFinite(at) || at <= now || at - now > day)
     return "Choose a time in the next 24 hours.";
 }
+// Whether two instants fall on the same calendar day on the reader's clock.
+export function sameDay(a: number, b: number): boolean {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+// A time on the reader's own clock, the way people say it: "3:40pm" today,
+// "Thu 3:40pm" on any other day. The locale is for tests; the app passes none
+// and gets the browser's.
+export function shortTime(at: number, now = Date.now(), locale?: string): string {
+  const parts = new Intl.DateTimeFormat(locale, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).formatToParts(at);
+  const time = parts
+    .filter(
+      (p, i) =>
+        !(p.type === "literal" && !p.value.trim() && parts[i + 1]?.type === "dayPeriod"),
+    )
+    .map((p) => (p.type === "dayPeriod" ? p.value.toLowerCase() : p.value))
+    .join("");
+  if (sameDay(at, now)) return time;
+  const weekday = new Intl.DateTimeFormat(locale, { weekday: "short" }).format(at);
+  return `${weekday} ${time}`;
+}

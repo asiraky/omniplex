@@ -11,6 +11,9 @@ import type { OpenArtefact } from "./Attachments";
 import { MessageMeta } from "./MessageMeta";
 import { UserMessage } from "./UserMessage";
 
+/** Why the server wrote a turn's prompt: what the note in its place says. */
+export type Recovered = "restart" | "continue" | "limit";
+
 export function Message({
   item,
   threadId,
@@ -22,7 +25,7 @@ export function Message({
   item: Item;
   threadId: string;
   streaming: boolean;
-  recovered?: "restart" | "continue";
+  recovered?: Recovered;
   artefacts: Artefact[];
   onOpenArtefact?: OpenArtefact;
 }) {
@@ -43,7 +46,9 @@ export function Message({
         <div className="text-muted-foreground rounded-full border px-3 py-1 text-[12px]">
           {recovered === "restart"
             ? "Server restarted — the agent was asked to pick the work back up"
-            : "Asked the agent to pick the work back up"}
+            : recovered === "limit"
+              ? "Usage limit reset — the agent was asked to pick the work back up"
+              : "Asked the agent to pick the work back up"}
         </div>
       </div>
     );

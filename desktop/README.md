@@ -15,12 +15,15 @@ src/shellPath.ts     login-shell PATH (macOS/Linux) merged with known tool dirs
 src/restart.ts       restart backoff policy
 src/routing.ts       first-run routing (/setup vs /) and navigation policy
 src/window.ts        the one BrowserWindow (hardened; external links go to the browser)
+src/preload.ts       exposes window.omniplexDesktop ({ platform }) so the web UI knows it is the app
+src/menu.ts          application menu: edit, hide/quit, zoom, devtools; no close (Cmd/Ctrl+W
+                     belongs to the web UI) and no reload
 src/tray.ts          tray menu
 src/updater.ts       electron-updater against GitHub Releases (packaged builds only)
 src/pages.ts         built-in loading and error pages
 src/log.ts           log file (the server's stdout/stderr go there too)
 src/state.ts         desktop-state.json in userData
-scripts/build.mjs    esbuild bundle of src/main.ts into dist/main.cjs
+scripts/build.mjs    esbuild bundles of src/main.ts and src/preload.ts into dist/
 scripts/icons.mjs    regenerates build/ and resources/icons/ from web/public/favicon.svg
 build/               packaging inputs (app icons, mac entitlements)
 resources/icons/     window and tray icons shipped in the app
