@@ -354,6 +354,7 @@ export function App() {
             onForceDelete={deletion.forceDelete}
             onFinish={deletion.deleteFlow.ask}
             readAloud={wire.hasElevenLabsKey}
+            status={wire.status}
           />
         ) : nav.creating ? (
           <ThreadDraft

@@ -1,6 +1,6 @@
 // The connection supervisor. Everything hard about being a presenter lives
-// here: backoff, cursor tracking, reattach with afterSeq, resync handling, and
-// command idempotency across reconnects.
+// here: backoff, liveness probing, cursor tracking, reattach with afterSeq,
+// resync handling, and command idempotency across reconnects.
 
 import { applyEvent, applyJobRow, dropsJobRow, emptyState, prependItems, revivesUnheldJob } from "./apply";
 import { checkBuild } from "./boot";
@@ -14,6 +14,22 @@ interface Pending {
   // Retained so the same commandId is retried after a reconnect rather than a
   // new one being minted, which would risk sending a prompt twice.
   frame: Record<string, unknown>;
+  timer: number;
+}
+
+/**
+ * A command the server never answered: the socket was down, or proved dead,
+ * when its deadline came. It may still have run — a retry should carry the
+ * same commandId so the server's ledger dedupes it.
+ */
+export class CommandTimeout extends Error {
+  constructor(
+    readonly command: string,
+    readonly commandId: string,
+  ) {
+    super("No answer from the server. Check the connection and try again.");
+    this.name = "CommandTimeout";
+  }
 }
 
 export interface ClientEvents {
@@ -27,14 +43,40 @@ export interface ClientEvents {
   onAccess(access: Access): void;
 }
 
-/** Reconnect delays in ms. The terminal socket climbs the same ladder. */
+// Reconnect ceilings in ms, not delays: each wait is drawn uniformly below its
+// step (full jitter), so a server restart does not bring every tab back in
+// lockstep. The terminal socket climbs the same ladder.
 export const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
+
+// A woken phone often holds a socket that looks open and is dead, and the OS
+// can take minutes to say so. Any frame within PROBE_TIMEOUT of a ping proves
+// it alive; silence drops it and reconnects at once, which afterSeq makes
+// cheap. HEARTBEAT is how often a visible page asks.
+const PROBE_TIMEOUT = 3_000;
+const HEARTBEAT = 25_000;
+
+// How long a command waits before the connection is asked whether it is still
+// there. A live one keeps it waiting — the server bounds its own work and
+// always acks — so only a socket that is down or dead fails a command.
+const COMMAND_TIMEOUT = 15_000;
+
+// The HTTP snapshot that opens a thread. Past this, attach over the socket
+// instead, which carries the same state.
+const SNAPSHOT_TIMEOUT = 10_000;
 
 export class Client {
   private ws: WebSocket | null = null;
   private attempt = 0;
   private closedByUs = false;
   private stableTimer: number | null = null;
+  private retryTimer: number | null = null;
+
+  private probeTimer: number | null = null;
+  private probeWaiters: ((alive: boolean) => void)[] = [];
+  private heartbeat: number | null = null;
+  private watching = false;
+  private lastHeard = 0;
+  private openedAt = 0;
 
   private pending = new Map<string, Pending>();
 
@@ -63,6 +105,13 @@ export class Client {
 
   connect() {
     this.closedByUs = false;
+    this.watch();
+    this.open();
+  }
+
+  private open() {
+    this.retryTimer = null;
+    this.openedAt = Date.now();
     this.events.onStatus("connecting");
 
     const ws = new WebSocket(this.url);
@@ -73,7 +122,6 @@ export class Client {
       // leave the socket open with no hello sent — the client looked connected
       // and waited forever for a welcome that could not come.
       try {
-        this.events.onStatus("online");
         this.raw({ type: "hello", protocolVersion: 1, clientId: clientId() });
 
         // Re-attach where we left off; the server sends only what we missed.
@@ -93,24 +141,147 @@ export class Client {
       }
     };
 
-    ws.onmessage = (e) => this.handle(JSON.parse(e.data as string) as ServerFrame);
-
-    ws.onclose = () => {
-      if (this.stableTimer) window.clearTimeout(this.stableTimer);
-      this.ws = null;
-      if (this.closedByUs) return;
-      this.dropAuthFlows();
-      this.events.onStatus("offline");
-      const delay = BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)];
-      window.setTimeout(() => this.connect(), delay);
+    ws.onmessage = (e) => {
+      this.heard();
+      this.handle(JSON.parse(e.data as string) as ServerFrame);
     };
+
+    ws.onclose = () => this.lost(this.backoff());
 
     ws.onerror = () => ws.close();
   }
 
   close() {
     this.closedByUs = true;
+    this.unwatch();
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    // Their deadlines would only fail them into a page that has moved on.
+    for (const [, p] of this.pending) window.clearTimeout(p.timer);
     this.ws?.close();
+  }
+
+  private backoff(): number {
+    return Math.random() * BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)];
+  }
+
+  /** The socket is gone: settle what waited on it and, unless we closed it, retry after `delay` (0: now). */
+  private lost(delay: number) {
+    if (this.stableTimer) window.clearTimeout(this.stableTimer);
+    this.stableTimer = null;
+    this.ws = null;
+    // A probe of the old socket must not fire against its replacement.
+    this.clearProbe();
+    this.settleProbe(false);
+    if (this.closedByUs) return;
+    this.dropAuthFlows();
+    this.events.onStatus("offline");
+    if (delay === 0) this.open();
+    else this.retryTimer = window.setTimeout(() => this.open(), delay);
+  }
+
+  /**
+   * Abandon a socket that has stopped answering and reconnect now. Its
+   * handlers come off first: closing a dead socket waits on a close handshake
+   * that will never come, and its onclose could land long after the
+   * replacement is up.
+   */
+  private drop() {
+    const ws = this.ws;
+    if (!ws) return;
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    ws.close();
+    this.lost(0);
+  }
+
+  // Wake signals. A page coming back to the screen, the network coming back,
+  // or the page being restored from the back-forward cache are exactly when a
+  // socket is most likely dead without knowing it.
+  private readonly wake = () => {
+    if (document.visibilityState !== "visible") {
+      this.stopHeartbeat();
+      return;
+    }
+    this.startHeartbeat();
+    if (this.retryTimer !== null) {
+      // Waiting out a backoff step that was sized for a server that was down,
+      // not for a phone that was asleep. Try now.
+      window.clearTimeout(this.retryTimer);
+      this.open();
+    } else if (this.ws?.readyState === WebSocket.CONNECTING) {
+      // An attempt begun before the network changed can hang on the old one
+      // until the browser gives up on it. One that has had a probe's worth of
+      // time is replaced rather than waited on.
+      if (Date.now() - this.openedAt > PROBE_TIMEOUT) this.drop();
+    } else {
+      this.probe();
+    }
+  };
+
+  private watch() {
+    if (this.watching) return;
+    this.watching = true;
+    document.addEventListener("visibilitychange", this.wake);
+    window.addEventListener("online", this.wake);
+    window.addEventListener("pageshow", this.wake);
+    if (document.visibilityState === "visible") this.startHeartbeat();
+  }
+
+  private unwatch() {
+    this.watching = false;
+    document.removeEventListener("visibilitychange", this.wake);
+    window.removeEventListener("online", this.wake);
+    window.removeEventListener("pageshow", this.wake);
+    this.stopHeartbeat();
+    this.clearProbe();
+  }
+
+  private startHeartbeat() {
+    if (this.heartbeat === null) this.heartbeat = window.setInterval(() => this.probe(), HEARTBEAT);
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeat !== null) window.clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  /**
+   * Ask the server for any sign of life. `then` hears whether one came: true on
+   * the next frame, false if the socket is not open or stayed silent past
+   * PROBE_TIMEOUT — in which case it has already been dropped for a fresh one.
+   * Concurrent asks share one ping.
+   */
+  private probe(then?: (alive: boolean) => void) {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      then?.(false);
+      return;
+    }
+    if (then) this.probeWaiters.push(then);
+    if (this.probeTimer !== null) return;
+    this.raw({ type: "ping" });
+    this.probeTimer = window.setTimeout(() => {
+      this.probeTimer = null;
+      this.drop();
+    }, PROBE_TIMEOUT);
+  }
+
+  // Any frame answers a probe, not just the pong: on a slow link the pong can
+  // sit behind a replay, and the replay arriving says the same thing.
+  private heard() {
+    this.lastHeard = Date.now();
+    this.clearProbe();
+    this.settleProbe(true);
+  }
+
+  private clearProbe() {
+    if (this.probeTimer !== null) window.clearTimeout(this.probeTimer);
+    this.probeTimer = null;
+  }
+
+  private settleProbe(alive: boolean) {
+    const waiters = this.probeWaiters;
+    this.probeWaiters = [];
+    for (const w of waiters) w(alive);
   }
 
   /**
@@ -139,6 +310,13 @@ export class Client {
     const request = new AbortController();
     this.snapshotRequest = request;
     const started = performance.now();
+    // Aborted either way, so the flag is what tells a stall (fall back to the
+    // socket) from being superseded (do nothing).
+    let stalled = false;
+    const deadline = window.setTimeout(() => {
+      stalled = true;
+      request.abort();
+    }, SNAPSHOT_TIMEOUT);
     fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
       signal: request.signal,
     })
@@ -155,11 +333,12 @@ export class Client {
         this.raw({ type: "attach", threadId, afterSeq: state.seq });
       })
       .catch((error) => {
-        if (request.signal.aborted || this.threadId !== threadId) return;
+        if ((request.signal.aborted && !stalled) || this.threadId !== threadId) return;
         console.warn("HTTP snapshot failed; falling back to WebSocket", error);
         this.raw({ type: "attach", threadId });
       })
       .finally(() => {
+        window.clearTimeout(deadline);
         if (this.snapshotRequest === request) this.snapshotRequest = null;
       });
   }
@@ -307,13 +486,34 @@ export class Client {
     this.raw({ type: "presence", visible, threadId });
   }
 
-  /** Send a command, resolving with its ack result. Safe to retry. */
-  command(command: string, args: unknown): Promise<any> {
-    const commandId = uuid();
+  /**
+   * Send a command, resolving with its ack result. Safe to retry: passing a
+   * failed command's id back runs it at most once. Rejects with
+   * CommandTimeout if, COMMAND_TIMEOUT after sending (and every such interval
+   * after), the connection is down or fails a probe.
+   */
+  command(command: string, args: unknown, commandId = uuid()): Promise<any> {
     const frame = { type: "command", commandId, command, args };
     return new Promise((resolve, reject) => {
-      this.pending.set(commandId, { resolve, reject, frame });
+      const p: Pending = { resolve, reject, frame, timer: 0 };
+      const arm = () => {
+        p.timer = window.setTimeout(
+          () =>
+            this.probe((alive) => {
+              if (this.pending.get(commandId) !== p) return;
+              if (alive) return arm();
+              this.pending.delete(commandId);
+              reject(new CommandTimeout(command, commandId));
+            }),
+          COMMAND_TIMEOUT,
+        );
+      };
+      arm();
+      this.pending.set(commandId, p);
       this.raw(frame);
+      // Gone quiet, so the socket may be dead: find out now rather than at the
+      // deadline. A dead one is replaced and the command resent on it.
+      if (Date.now() - this.lastHeard > PROBE_TIMEOUT) this.probe();
     });
   }
 
@@ -360,6 +560,9 @@ export class Client {
         // Checked first: if this page is running a bundle the server has
         // replaced, nothing else it reports is worth acting on.
         checkBuild(f.build);
+        // Online once the server has answered, not when the socket opened: on
+        // a slow link the gap is seconds, and "Reconnecting…" should last it.
+        this.events.onStatus("online");
         this.events.onThreads(f.threads ?? []);
         this.events.onHarnesses(f.harnesses ?? []);
         this.events.onProjects(f.projects ?? []);
@@ -457,6 +660,7 @@ export class Client {
         const p = f.commandId ? this.pending.get(f.commandId) : undefined;
         if (!p) return;
         this.pending.delete(f.commandId!);
+        window.clearTimeout(p.timer);
         if (f.error) p.reject(new Error(f.error));
         else p.resolve(f.result);
         break;

@@ -8,6 +8,7 @@ import type { ScheduleEditor } from "~/app/useScheduleEditor";
 import type { ScrollPosition } from "~/app/useScrollMemory";
 import type { ThreadCommands } from "~/app/useThreadCommands";
 import type { ThreadHarness } from "~/app/useThreadHarness";
+import type { ConnectionStatus } from "~/client";
 import type { CardSignIn } from "~/lib/cards";
 import { liveJobCount } from "~/lib/jobs";
 import { OpenPathContext } from "~/lib/openPath";
@@ -18,6 +19,7 @@ import type { HarnessMeta, PendingElicitation, PullRequest, ThreadMeta, ThreadSt
 
 import type { AuthWires } from "./AuthFlowDialog";
 import { Composer } from "./Composer";
+import { ConnectionStrip } from "./ConnectionStrip";
 import { useComposerItems } from "./composer/useComposerItems";
 import { JobsStrip } from "./JobsStrip";
 import { PermissionPrompt } from "./PermissionPrompt";
@@ -61,6 +63,7 @@ export function ThreadView({
   onForceDelete,
   onFinish,
   readAloud,
+  status,
 }: {
   state: ThreadState;
   activeId: string | null;
@@ -83,6 +86,7 @@ export function ThreadView({
   onFinish: (meta: ThreadMeta) => void;
   /** An ElevenLabs key is stored, so messages get a play button. */
   readAloud: boolean;
+  status: ConnectionStatus;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
   const title = threadTitle(meta, state);
@@ -99,6 +103,7 @@ export function ThreadView({
       {/* Content scrolling up dissolves into the header rather than
           being cut by a border. */}
       <div className="from-background to-background/0 pointer-events-none absolute top-0 right-(--scrollbar-w,0px) left-0 z-10 h-8 bg-gradient-to-b" />
+      <ConnectionStrip status={status} />
 
       <OpenPathContext.Provider value={panel.openPath}>
         <ReadAloudContext.Provider value={speech}>
