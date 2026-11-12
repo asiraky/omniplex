@@ -116,8 +116,9 @@ func (a *Actor) setting(call func(context.Context) error, changed proto.ThreadCo
 // the moment it is on its way: the queue must not start it, nor a human take
 // it back, while the harness may be reading it. If the hand-over fails it is
 // an ordinary queued prompt again, which the queue starts once the thread is
-// idle.
-func (a *Actor) steer(st adapter.Steerer, queueID string, in adapter.PromptInput, reply chan cmdResult) {
+// idle. A new prompt is answered as queued either way; one sent ahead of its
+// turn by hand (refuse) hears why it was not.
+func (a *Actor) steer(st adapter.Steerer, queueID string, in adapter.PromptInput, reply chan cmdResult, refuse bool) {
 	sess := a.sess
 	a.markSent(queueID)
 	a.inOrder(30*time.Second, func(ctx context.Context) (any, error) {
@@ -127,13 +128,20 @@ func (a *Actor) steer(st adapter.Steerer, queueID string, in adapter.PromptInput
 		case err != nil:
 			delete(a.sent, queueID)
 			a.logf("steer on %s: %v", a.ID, err)
+			a.holdBehind(queueID)
 		case sess != a.sess:
 			// The process that took it is gone, and the next one never saw
 			// it.
+			err = errHarnessRestarted
 			delete(a.sent, queueID)
 			a.logf("steer on %s: the harness was replaced before it read the prompt", a.ID)
-		case a.isQueued(queueID):
+			a.holdBehind(queueID)
+		case a.queuedEntry(queueID) != nil:
 			a.append(proto.Emit(proto.PromptSent, proto.PromptSentPayload{QueueID: queueID}))
+		}
+		if err != nil && refuse {
+			reply <- cmdResult{err: err}
+			return
 		}
 		reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 	})
@@ -186,7 +194,7 @@ func (a *Actor) settleStop() {
 // The harness discards whatever of them it was holding (adapter.Steerer).
 func (a *Actor) dropStopped(req *stopRequest) {
 	for _, id := range req.queued {
-		if a.isQueued(id) {
+		if a.queuedEntry(id) != nil {
 			a.append(proto.Emit(proto.PromptDequeued, proto.PromptDequeuedPayload{QueueID: id, Reason: proto.DequeueCancelled}))
 		}
 		delete(a.sent, id)

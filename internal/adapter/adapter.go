@@ -197,6 +197,10 @@ type HarnessMeta struct {
 	Accent string `json:"accent"`
 	// DocsURL points at the harness's own documentation, for install hints.
 	DocsURL string `json:"docsUrl,omitempty"`
+	// Steers says the harness's sessions are Steerers, so a message sent
+	// mid-turn can reach the running turn. A UI offers steer or queue only
+	// when there is a choice to make.
+	Steers bool `json:"steers,omitempty"`
 }
 
 // ModelMeta is a selectable model, as the harness itself describes it.

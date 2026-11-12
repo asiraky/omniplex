@@ -62,6 +62,7 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 		Name:    "Codex",
 		Accent:  "oklch(0.76 0.13 165)",
 		DocsURL: "https://developers.openai.com/codex",
+		Steers:  true,
 	}
 }
 

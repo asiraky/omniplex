@@ -90,6 +90,10 @@ type Manager struct {
 
 	mu     sync.RWMutex
 	actors map[string]*Actor
+	// adopted holds every thread an actor has been adopted for since the
+	// server started. Only the first is rebuilt after a restart; a later one
+	// follows a harness that exited, and its queue is not held for it.
+	adopted sync.Map
 	// cardLive says whether the server still holds a card; see SetCardLive.
 	// Guarded by mu.
 	cardLive func(requestID string) bool
@@ -1444,7 +1448,11 @@ func (m *Manager) adopt(a *Actor) {
 	m.mu.Lock()
 	m.actors[a.ID] = a
 	m.mu.Unlock()
+	_, again := m.adopted.LoadOrStore(a.ID, true)
 	a.mu.Lock()
+	if again {
+		a.restored = false
+	}
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
 	a.imagePath = m.imagePath

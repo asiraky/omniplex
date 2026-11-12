@@ -306,9 +306,7 @@ try {
   );
   await until(async () => {
     const sent = await deliveries();
-    return [due.prompt, continuation.prompt, continueQueued].every((p) =>
-      sent?.includes(p),
-    );
+    return [due.prompt, continuation.prompt].every((p) => sent?.includes(p));
   }, 90_000);
   assert.ok(Date.now() >= due.dueAt, "delivered early");
   assert.equal((await deliveries()).filter((p) => p === due.prompt).length, 1);
@@ -321,16 +319,24 @@ try {
   await page.getByText(`Completed: ${due.prompt}`, { exact: true }).waitFor();
   assert.equal(await page.locator("[data-schedule-id]").count(), 0);
   await context.close();
-  // The continuation went out after the reset, through the restart, jumped
-  // the held queue, and the queue then drained behind it.
-  let sent = await deliveries();
+  // The continuation went out after the reset, through the restart, and
+  // jumped the held queue. The restart held that queue for a human, so it
+  // waits for Resume queue and then drains behind the continuation.
   assert.ok(Date.now() >= continuation.dueAt, "continued early");
+  desktop = await open(1440, limitId);
+  mobile = await open(390, limitId);
+  await until(async () => (await state(limitId)).phase === "idle", 30_000);
+  assert.ok(
+    !(await deliveries()).includes(continueQueued),
+    "queue held by the restart ran by itself",
+  );
+  await mobile.page.getByRole("button", { name: "Resume queue" }).click();
+  await until(async () => (await deliveries()).includes(continueQueued));
+  let sent = await deliveries();
   assert.ok(
     sent.indexOf(continuation.prompt) < sent.indexOf(continueQueued),
     "held queue ran before the continuation",
   );
-  desktop = await open(1440, limitId);
-  mobile = await open(390, limitId);
   for (const page of [desktop.page, mobile.page]) {
     await page
       .getByText(`Completed: ${continueQueued}`, { exact: true })

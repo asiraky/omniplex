@@ -1,7 +1,8 @@
 import { GitBranchIcon } from "lucide-react";
+import { lazy, Suspense, type ComponentProps } from "react";
 
-import { WorkspacePicker } from "~/components/WorkspacePicker";
 import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import {
@@ -21,6 +22,22 @@ import type { WorkspaceChoiceState } from "./useWorkspaceChoice";
 const BASE_DEFAULT = "default base";
 
 const linkClass = "h-8 px-0 text-[12px]";
+
+// The picker only shows once the Git popover is open and a worktree is being
+// named or attached, so it stays out of the initial bundle. Opening the
+// popover fetches it, so it is there by the time a field needs it.
+const loadWorkspacePicker = () => import("~/components/WorkspacePicker");
+const LazyWorkspacePicker = lazy(() =>
+  loadWorkspacePicker().then((m) => ({ default: m.WorkspacePicker })),
+);
+
+function WorkspacePicker(props: ComponentProps<typeof LazyWorkspacePicker>) {
+  return (
+    <Suspense fallback={<Input id={props.id} placeholder={props.placeholder} disabled />}>
+      <LazyWorkspacePicker {...props} />
+    </Suspense>
+  );
+}
 
 /** The main checkout, or a worktree. Continuing an existing worktree is a worktree too. */
 function KindChoice({ folder, git }: { folder: Folder; git: WorkspaceChoiceState }) {
@@ -203,7 +220,7 @@ export function GitChip({
   userConfig: UserConfig | null;
 }) {
   return (
-    <Popover>
+    <Popover onOpenChange={(open) => open && void loadWorkspacePicker()}>
       <PopoverTrigger asChild>
         <Chip label="Git" icon={<GitBranchIcon />}>
           {git.label}

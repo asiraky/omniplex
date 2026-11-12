@@ -45,6 +45,18 @@ const (
 	// PromptInjected is a sent prompt the harness read inside the running
 	// turn. From here on it is part of that turn's transcript.
 	PromptInjected = "prompt.injected"
+	// PromptEdited rewrites a queued prompt that is still waiting. It carries
+	// the whole resulting text and attachment set, so folding it needs nothing
+	// from the edit that asked for it.
+	PromptEdited = "prompt.edited"
+	// PromptHeld pauses queued prompts so they wait for a human rather than
+	// the thread going idle. A restart holds whatever was queued: a prompt
+	// written before the server went down may no longer be what anyone
+	// wants sent. So does a queued prompt the harness refused to start: the
+	// rest would be refused for the same reason. PromptReleased lets them
+	// run again.
+	PromptHeld     = "prompt.held"
+	PromptReleased = "prompt.released"
 	// TurnDiff reports what one turn changed on disk. It arrives after
 	// turn.finished, because it is measured by snapshotting the checkout once
 	// the harness has stopped writing to it.
@@ -385,11 +397,37 @@ type PromptQueuedPayload struct {
 	QueueID string        `json:"queueId"`
 	Prompt  string        `json:"prompt"`
 	Images  []PromptImage `json:"images,omitempty"`
+	// Held means it waits for a human to resume the queue, because it was
+	// queued behind a prompt that is held.
+	Held bool `json:"held,omitempty"`
 }
 
 type PromptSentPayload struct {
 	QueueID string `json:"queueId"`
 }
+
+type PromptEditedPayload struct {
+	QueueID string        `json:"queueId"`
+	Prompt  string        `json:"prompt"`
+	Images  []PromptImage `json:"images,omitempty"`
+}
+
+type PromptHeldPayload struct {
+	QueueIDs []string `json:"queueIds"`
+}
+
+type PromptReleasedPayload struct {
+	QueueIDs []string `json:"queueIds"`
+}
+
+// Deliveries a prompt sent mid-turn may ask for. The default steers when the
+// harness can take a message mid-turn and queues when it cannot; queue waits
+// for the turn to end even on a harness that could steer.
+const (
+	DeliveryDefault = ""
+	DeliverySteer   = "steer"
+	DeliveryQueue   = "queue"
+)
 
 type PromptInjectedPayload struct {
 	QueueID string `json:"queueId"`

@@ -142,15 +142,15 @@ func (a *Actor) dispatchScheduled(now int64) error {
 				return a.failSchedule(p, result.err)
 			}
 		}
-		// A queue goes ahead of a schedule, except what a usage limit holds:
-		// that waits for the next turn to start. The continuation is
-		// the turn it waits for. A human's schedule goes past it only while
-		// none is armed — with the reset unknown it is the way round the
-		// limit; with one armed it waits, queue or not, since starting first
-		// would call the continuation off.
-		held := a.state.QueueHeld()
-		behindContinuation := held && p.Kind != proto.ScheduleLimit && a.limitArmed()
-		queued := slices.ContainsFunc(a.state.Queued, func(q projection.QueuedPrompt) bool { return !a.state.HeldByLimit(q) })
+		// A queue goes ahead of a schedule, except what is held. A prompt a
+		// human holds waits for someone who may not come for hours. What a
+		// usage limit holds waits for the next turn to start, and the
+		// continuation is the turn it waits for. A human's schedule goes past
+		// it only while none is armed — with the reset unknown it is the way
+		// round the limit; with one armed it waits, queue or not, since
+		// starting first would call the continuation off.
+		behindContinuation := a.state.QueueHeld() && p.Kind != proto.ScheduleLimit && a.limitArmed()
+		queued := slices.ContainsFunc(a.state.Queued, func(q projection.QueuedPrompt) bool { return !q.Held && !a.state.HeldByLimit(q) })
 		if a.turnActive != "" || len(a.state.Pending) > 0 || a.state.Questions() > 0 || queued || behindContinuation {
 			continue
 		}

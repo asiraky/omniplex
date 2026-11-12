@@ -15,15 +15,17 @@ import { ContextMeter } from "~/components/ContextMeter";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
+import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
-import type { HarnessMeta, Usage } from "~/protocol";
+import type { Delivery, HarnessMeta, Usage } from "~/protocol";
 import { useIsDesktop } from "~/useMediaQuery";
 
 import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
+import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
 import { SendButtons } from "./composer/SendButtons";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
@@ -61,7 +63,11 @@ interface ComposerProps {
       hold it back until there is something to send it to. */
   sendDisabled?: boolean;
   busy: boolean;
-  onSend: (text: string, attached: ComposerAttachments) => void;
+  /** The thread's harness can take a message mid-turn. While a turn runs a
+      send steers it by default, and ⌘↵ or holding Send queues instead. */
+  steers?: boolean;
+  /** `delivery` is set only for a send the other way from the default. */
+  onSend: (text: string, attached: ComposerAttachments, delivery?: Delivery) => void;
   onSchedule?: () => void;
   onCancel: () => void;
   /** Images and files staged for the next message. Owned by the parent for
@@ -131,10 +137,18 @@ const NO_ATTACHMENTS: Attachment[] = [];
 // the textarea, which has to stay a literal for Tailwind to see it.
 const COMPOSER_MAX_PX = 200;
 
-function placeholderFor(blocked: boolean, disabledPlaceholder: string | undefined, isDesktop: boolean) {
+function placeholderFor(
+  blocked: boolean,
+  disabledPlaceholder: string | undefined,
+  isDesktop: boolean,
+  choice: boolean,
+) {
   if (blocked) return disabledPlaceholder ?? "Thread closed";
   // There is no ⇧↵ worth advertising on a phone, so keep the hint to desktop.
-  return isDesktop ? "Ask anything…  (↵ to send · ⇧↵ for newline)" : "Ask anything…";
+  if (!isDesktop) return "Ask anything…";
+  if (!choice) return "Ask anything…  (↵ to send · ⇧↵ for newline)";
+  const name = (d: Delivery) => DELIVERY_LABEL[d].name.toLowerCase();
+  return `Ask anything…  (↵ to ${name("steer")} · ${formatShortcut({ key: "enter", mod: true }, currentPlatform())} to ${name("queue")} · ⇧↵ for newline)`;
 }
 
 export function Composer({
@@ -144,6 +158,7 @@ export function Composer({
   disabled,
   sendDisabled = false,
   busy,
+  steers = false,
   onSend,
   onSchedule,
   onCancel,
@@ -316,7 +331,12 @@ export function Composer({
       disabled={disabled}
       aria-label="Message"
       data-composer-input=""
-      placeholder={placeholderFor(disabled || sendDisabled, disabledPlaceholder, isDesktop)}
+      placeholder={placeholderFor(
+        disabled || sendDisabled,
+        disabledPlaceholder,
+        isDesktop,
+        offersChoice(busy, steers),
+      )}
       onChange={(e) => {
         changeDraft(e.target.value);
         menu.setCursor(e.target.selectionStart);
@@ -337,7 +357,8 @@ export function Composer({
         // Shift+Enter is the newline; let the textarea handle it.
         if (e.shiftKey) return;
         e.preventDefault();
-        void send();
+        // ⌘↵ (Ctrl↵ off a Mac) sends the other way from the default.
+        void send(deliveryFor({ steers, inverted: e.metaKey || e.ctrlKey }));
       }}
       // 16px on a phone: anything smaller makes iOS zoom the viewport on
       // focus, which breaks the layout the dvh handling just fixed.
@@ -397,10 +418,11 @@ export function Composer({
 
           <SendButtons
             busy={busy}
+            steers={steers}
             hasContent={!!draft.trim() || sendableAttachments > 0}
             cannotSend={cannotSend}
             carriesFiles={carriesFiles}
-            onSend={() => void send()}
+            onSend={(delivery) => void send(delivery)}
             onSchedule={onSchedule}
             onCancel={onCancel}
           />
