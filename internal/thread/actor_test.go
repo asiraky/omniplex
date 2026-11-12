@@ -2805,3 +2805,17 @@ func TestContinueReleasesTheHolds(t *testing.T) {
 		t.Fatalf("queue after Continue = %+v, want \"after\" released", s.Queued)
 	}
 }
+
+// TestQueueIntoAnIdleThreadStartsATurn: a client that has yet to hear a turn
+// start asks to queue on what it thinks is a busy thread. With nothing
+// running there is nothing to wait behind, so the prompt starts a turn.
+func TestQueueIntoAnIdleThreadStartsATurn(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{steer: true})
+	res, err := actor.PromptWith(context.Background(), "go", nil, proto.DeliveryQueue)
+	if err != nil || res.TurnID == "" {
+		t.Fatalf("queue into an idle thread = %+v, %v, want a turn", res, err)
+	}
+	if in := nextInput(t, fa.thread()); in.Text != "go" {
+		t.Fatalf("harness got %q", in.Text)
+	}
+}

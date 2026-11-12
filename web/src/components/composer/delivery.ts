@@ -10,20 +10,20 @@ export function offersChoice(busy: boolean, steers: boolean): boolean {
 /**
  * The delivery to send with, or undefined for the server's default. The
  * default is never spelled out, so the server stays the one place that
- * decides it; only a send the other way says so. Inverting with no choice to
- * make — idle, where a send starts a turn, or a harness that only queues — is
- * an ordinary send.
+ * decides it; only a send the other way says so. That holds even when this
+ * client thinks the thread idle: a turn it has just started may not have
+ * reached it yet, and the server, which knows, starts a turn with a queued
+ * send into an idle thread anyway. A harness that only queues has no other
+ * way to send.
  */
 export function deliveryFor({
-  busy,
   steers,
   inverted,
 }: {
-  busy: boolean;
   steers: boolean;
   inverted: boolean;
 }): Delivery | undefined {
-  return inverted && offersChoice(busy, steers) ? "queue" : undefined;
+  return inverted && steers ? "queue" : undefined;
 }
 
 export const DELIVERY_LABEL: Record<Delivery, { name: string; detail: string }> = {

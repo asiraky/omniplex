@@ -323,10 +323,12 @@ describe("steering or queueing a message sent mid-turn", () => {
     expect(onSend).toHaveBeenCalledWith("next", sent, undefined);
   });
 
-  it("treats mod+Enter as Enter when no turn is running", () => {
+  // A turn just started may not have reached this client yet; the server
+  // knows, and starts a turn with the send if none is running.
+  it("asks to queue on mod+Enter even when no turn looks to be running", () => {
     const { onSend } = mount({ draft: "start", steers: true });
     fireEvent.keyDown(box(), { key: "Enter", ctrlKey: true });
-    expect(onSend).toHaveBeenCalledWith("start", sent, undefined);
+    expect(onSend).toHaveBeenCalledWith("start", sent, "queue");
   });
 
   it("opens the choice on a held Send without sending, and queues from it", () => {

@@ -358,7 +358,7 @@ export function Composer({
         if (e.shiftKey) return;
         e.preventDefault();
         // ⌘↵ (Ctrl↵ off a Mac) sends the other way from the default.
-        void send(deliveryFor({ busy, steers, inverted: e.metaKey || e.ctrlKey }));
+        void send(deliveryFor({ steers, inverted: e.metaKey || e.ctrlKey }));
       }}
       // 16px on a phone: anything smaller makes iOS zoom the viewport on
       // focus, which breaks the layout the dvh handling just fixed.
