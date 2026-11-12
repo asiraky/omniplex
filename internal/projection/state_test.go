@@ -409,8 +409,8 @@ func TestCodexPlanRevisesOneItemPerTurn(t *testing.T) {
 	if p.ID != "turn-plan:t1" || p.TurnID != "t1" || len(p.Steps) != 3 || p.Steps[1].Status != proto.PlanRunning {
 		t.Fatalf("plan item = %+v", p)
 	}
-	if p.Explanation != "" {
-		t.Fatalf("explanation = %q, want cleared: each update is the whole plan", p.Explanation)
+	if p.Explanation != "first cut" {
+		t.Fatalf("explanation = %q, want kept: codex sends it on the first update only", p.Explanation)
 	}
 	if p.ReceivedAt != 2000 {
 		t.Fatalf("receivedAt = %d, want the first update's 2000", p.ReceivedAt)

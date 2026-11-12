@@ -390,9 +390,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
 
     case "plan.updated": {
       // A TodoWrite call is a list of its own, keyed by the call; a codex
-      // plan is the turn's, revised in place. Each update is the whole plan,
-      // so steps and explanation are replaced outright — a missing
-      // explanation clears the last one. Mirrors internal/projection/state.go.
+      // plan is the turn's, revised in place. Each update carries every step,
+      // so steps are replaced outright. Codex gives its explanation only on
+      // the turn's first update, so a later one that omits it keeps it.
+      // Mirrors internal/projection/state.go.
       // A plan anchored to nothing — the old shape, logged before plans had
       // a turn — has nowhere in the transcript to go.
       if (!p.turnId && !p.toolCallId) return s;
@@ -428,7 +429,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           it.receivedAt ??= ev.timestamp;
           it.turnId = p.turnId || undefined;
           it.steps = p.steps ?? [];
-          it.explanation = p.explanation || undefined;
+          if (p.explanation) it.explanation = p.explanation;
         }),
       };
     }

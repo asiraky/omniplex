@@ -917,9 +917,10 @@ func (s *State) Apply(ev proto.Event) {
 			return
 		}
 		// A TodoWrite call is a list of its own, keyed by the call; a codex
-		// plan is the turn's, revised in place. Each update is the whole
-		// plan, so steps and explanation are replaced outright — an empty
-		// explanation clears the last one. Mirrored in web/src/apply.ts.
+		// plan is the turn's, revised in place. Each update carries every
+		// step, so steps are replaced outright. Codex gives its explanation
+		// only on the turn's first update, so a later one that omits it keeps
+		// it. Mirrored in web/src/apply.ts.
 		id := TurnPlanID(p.TurnID)
 		if p.ToolCallID != "" {
 			id = TodoPlanID(p.ToolCallID)
@@ -938,7 +939,9 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			it.TurnID = p.TurnID
 			it.Steps = p.Steps
-			it.Explanation = p.Explanation
+			if p.Explanation != "" {
+				it.Explanation = p.Explanation
+			}
 		})
 
 	case proto.UsageUpdated:

@@ -325,12 +325,14 @@ describe("plans", () => {
     expect(plans(s)[0].steps).toEqual([step("a", "completed"), step("b", "running")]);
   });
 
-  it("clears a codex plan's explanation when an update leaves it out", () => {
+  it("keeps a codex plan's explanation when a later update leaves it out", () => {
     let s = emptyState("s1");
     s = applyEvent(s, ev(1, "plan.updated", { turnId: "t1", explanation: "why", steps: [step("a")] }));
     expect(plans(s)[0].explanation).toBe("why");
     s = applyEvent(s, ev(2, "plan.updated", { turnId: "t1", steps: [step("a", "completed")] }));
-    expect(plans(s)[0].explanation).toBeUndefined();
+    expect(plans(s)[0].explanation).toBe("why");
+    s = applyEvent(s, ev(3, "plan.updated", { turnId: "t1", explanation: "why not", steps: [step("a", "completed")] }));
+    expect(plans(s)[0].explanation).toBe("why not");
   });
 
   it("supersedes earlier TodoWrite lists when a new one is written, never codex plans", () => {
