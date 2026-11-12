@@ -71,6 +71,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "migrate-homes" {
+		if err := runMigrateHomesCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("migrate homes: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "relocate" {
 		if err := runRelocateCommand(context.Background(), os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("relocate project: %v", err)
@@ -148,6 +154,11 @@ func main() {
 				float64(l.PerTree)/(1<<30), float64(l.AllTrees)/(1<<30))
 		}
 	}
+
+	// Accounts still on a machine harness home get their own, with the
+	// conversations Omniplex started, before any session or provider reads
+	// the config.
+	migrateHomesAtStartup(context.Background(), st, *dbPath, logf)
 
 	claude := claudecode.New(*claudePath)
 	mgr := thread.NewManager(st, logf,
