@@ -68,6 +68,19 @@ func nextPrompt(t *testing.T, th *fakeThread) string {
 	}
 }
 
+// The continuation runs on the thread as it is when it fires, but it is listed
+// with the settings it was armed under, Fast included.
+func TestLimitContinuationListsTheServiceTier(t *testing.T) {
+	a, fa, _ := newTestActorWith(t, &fakeAdapter{tier: true})
+	if err := a.SetServiceTier(context.Background(), "priority"); err != nil {
+		t.Fatal(err)
+	}
+	turn := hitLimit(t, a, fa.thread(), time.Now().Add(time.Hour).UnixMilli(), "")
+	if got := scheduled(t, a, limitScheduleID(turn)); got.ServiceTier != "priority" {
+		t.Fatalf("continuation tier = %q, want priority", got.ServiceTier)
+	}
+}
+
 // A weekly limit resets days out; the continuation is armed for a minute
 // after it all the same, in the due index the scheduler reads.
 func TestLimitArmsContinuationAfterReset(t *testing.T) {

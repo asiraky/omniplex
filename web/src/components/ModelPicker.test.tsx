@@ -481,3 +481,78 @@ describe("ModelPicker effort", () => {
     expect(screen.queryByRole("radiogroup", { name: "Reasoning effort" })).toBeNull();
   });
 });
+
+describe("ModelPicker Fast", () => {
+  const base = {
+    harnesses: [claude],
+    lockDriver: true,
+    value: { harness: "claude", instance: "claude", model: "sonnet" },
+    onChange: () => {},
+  };
+
+  it("offers Fast only for a model with a fast tier, to a caller that can switch it", () => {
+    const { unmount } = render(
+      <ModelPicker {...base} fastTier="priority" onServiceTierChange={() => {}} />,
+    );
+    fireEvent.click(screen.getByLabelText("Harness and model"));
+    expect(screen.getByRole("switch", { name: "Fast mode" })).toBeTruthy();
+    unmount();
+
+    const { unmount: unmountNoTier } = render(
+      <ModelPicker {...base} fastTier="" onServiceTierChange={() => {}} />,
+    );
+    fireEvent.click(screen.getByLabelText("Harness and model"));
+    expect(screen.queryByRole("switch", { name: "Fast mode" })).toBeNull();
+    unmountNoTier();
+
+    render(<ModelPicker {...base} fastTier="priority" />);
+    fireEvent.click(screen.getByLabelText("Harness and model"));
+    expect(screen.queryByRole("switch", { name: "Fast mode" })).toBeNull();
+  });
+
+  it("turns Fast on as the model's tier and off as the default, leaving the menu open", () => {
+    const onServiceTierChange = vi.fn();
+    const { rerender } = render(
+      <ModelPicker {...base} fastTier="priority" serviceTier="" onServiceTierChange={onServiceTierChange} />,
+    );
+    fireEvent.click(screen.getByLabelText("Harness and model"));
+    fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
+    expect(onServiceTierChange).toHaveBeenLastCalledWith("priority");
+    expect(document.querySelector("[cmdk-list]")).not.toBeNull();
+
+    rerender(
+      <ModelPicker {...base} fastTier="priority" serviceTier="priority" onServiceTierChange={onServiceTierChange} />,
+    );
+    const toggle = screen.getByRole("switch", { name: "Fast mode" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(toggle);
+    expect(onServiceTierChange).toHaveBeenLastCalledWith("");
+    expect(onServiceTierChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the row while a tier the model does not offer is still set, so it can be turned off", () => {
+    const onServiceTierChange = vi.fn();
+    render(<ModelPicker {...base} fastTier="" serviceTier="priority" onServiceTierChange={onServiceTierChange} />);
+    fireEvent.click(screen.getByLabelText("Harness and model"));
+    fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
+    expect(onServiceTierChange).toHaveBeenCalledWith("");
+  });
+
+  it("toggles from anywhere on the row, so a thumb need not find the switch", () => {
+    const onServiceTierChange = vi.fn();
+    render(<ModelPicker {...base} fastTier="priority" onServiceTierChange={onServiceTierChange} />);
+    fireEvent.click(screen.getByLabelText("Harness and model"));
+    const row = screen.getByRole("switch", { name: "Fast mode" }).closest("label");
+    fireEvent.click(row!);
+    expect(onServiceTierChange).toHaveBeenCalledTimes(1);
+    expect(onServiceTierChange).toHaveBeenCalledWith("priority");
+  });
+
+  it("says Fast on the trigger only while it is on", () => {
+    const { rerender } = render(<ModelPicker {...base} fastTier="priority" serviceTier="" />);
+    expect(screen.getByLabelText("Harness and model").textContent).not.toContain("Fast");
+
+    rerender(<ModelPicker {...base} fastTier="priority" serviceTier="priority" />);
+    expect(screen.getByLabelText("Harness and model").textContent).toContain("Fast");
+  });
+});

@@ -45,6 +45,8 @@ export interface NewThreadInput {
   model: string;
   mode: string;
   effort: string;
+  /** The service tier, "" for standard speed; set only when Fast is on and the model has one. */
+  serviceTier: string;
   /** Empty agent fields are deliberate harness defaults, not omitted values. */
   agentSettingsExplicit: boolean;
   branch: string;
@@ -252,6 +254,7 @@ export function ThreadDraft({
           model: agent.effectiveModel,
           mode: agent.mode,
           effort: agent.effort,
+          serviceTier: agent.serviceTier,
           agentSettingsExplicit: true,
           ...git.sent,
           text,
@@ -388,8 +391,10 @@ export function ThreadDraft({
           instance={agent.instance?.id ?? ""}
           model={agent.model}
           effort={agent.effort}
+          serviceTier={agent.serviceTier}
           onSwitchModel={agent.switchModel}
           onSwitchEffort={(effort) => agent.remember({ effort })}
+          onSwitchServiceTier={(tier) => agent.remember({ fast: tier !== "" })}
           onPickInstance={agent.pickInstance}
           onSwitchAccount={agent.switchAccount}
         />

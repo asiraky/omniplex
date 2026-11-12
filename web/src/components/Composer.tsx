@@ -88,9 +88,12 @@ interface ComposerProps {
   instance?: string;
   model?: string;
   effort?: string;
+  /** The thread's service tier; "" is standard speed. */
+  serviceTier?: string;
   /** Mid-thread these resolve to whether the server took the change. */
   onSwitchModel?: (id: string) => void | Promise<boolean>;
   onSwitchEffort?: (effort: string) => void | Promise<boolean>;
+  onSwitchServiceTier?: (serviceTier: string) => void | Promise<boolean>;
   /** Moves the thread to another account of its harness, then runs `model`
       there. Omitted, the picker still offers other accounts but choosing one
       does nothing. */
@@ -172,8 +175,10 @@ export function Composer({
   instance = "",
   model = "",
   effort = "",
+  serviceTier = "",
   onSwitchModel,
   onSwitchEffort,
+  onSwitchServiceTier,
   onSwitchAccount,
   anyHarness = false,
   onPickInstance,
@@ -286,6 +291,7 @@ export function Composer({
           instance={instance}
           model={model}
           effort={effort}
+          serviceTier={serviceTier}
           contextWindow={usage?.contextWindow}
           anyHarness={anyHarness}
           disabled={disabled}
@@ -294,6 +300,7 @@ export function Composer({
           focusRequest={pickerFocus}
           onSwitchModel={onSwitchModel}
           onSwitchEffort={onSwitchEffort}
+          onSwitchServiceTier={onSwitchServiceTier}
           onSwitchAccount={onSwitchAccount}
           onPickInstance={onPickInstance}
         />

@@ -443,6 +443,8 @@ export interface ThreadState {
   model: string;
   mode: string;
   effort: string;
+  /** The harness's service tier: "" is standard speed, otherwise a tier id such as Codex's "priority". */
+  serviceTier: string;
   title: string;
   phase: "creating" | "provisioning" | "provision_failed" | "idle" | "turn" | "cleaning" | "cleanup_failed" | "closed";
   closed: boolean;
@@ -785,6 +787,11 @@ export interface ModelMeta {
    * the larger window rather than guessing from the model's name.
    */
   supports1m?: boolean;
+  /**
+   * The service tier that runs this model faster ("priority" on Codex).
+   * Absent when the model has none, which is what hides the Fast toggle.
+   */
+  fastTier?: string;
 }
 
 /** The group id for models kept for continuity rather than offered first. */
@@ -1241,6 +1248,7 @@ export interface ScheduledPrompt {
  model: string;
  mode: string;
  effort: string;
+ serviceTier: string;
  status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
  error?: string;
  turnId?: string;

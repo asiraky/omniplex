@@ -394,8 +394,10 @@ function ThreadComposer({
       instance={meta?.providerInstance ?? ""}
       model={state.model}
       effort={state.effort}
+      serviceTier={state.serviceTier}
       onSwitchModel={harness.switchModel}
       onSwitchEffort={harness.switchEffort}
+      onSwitchServiceTier={harness.switchServiceTier}
       onSwitchAccount={(instance, model) =>
         void harness.switchAccount(instance, { model, confirm: true })
       }

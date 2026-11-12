@@ -1,6 +1,7 @@
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, ZapIcon } from "lucide-react";
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -22,6 +23,7 @@ import {
 } from "~/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
+import { Switch } from "~/components/ui/switch";
 import {
   isLegacy,
   pickerInstances,
@@ -67,6 +69,10 @@ const NO_EFFORTS: string[] = [];
  * Picking a model leaves the menu open when there is an effort still to
  * choose, so changing both is one visit; picking the effort, the last choice,
  * closes it.
+ *
+ * Fast is the third axis, and the smallest: an on/off switch beside effort for
+ * a model whose harness can run it on a faster service tier. The trigger
+ * carries a bolt while it is on, since it costs more of the plan per turn.
  */
 export function ModelPicker({
   harnesses,
@@ -79,6 +85,9 @@ export function ModelPicker({
   effort = "",
   contextLabel = "",
   onEffortChange,
+  fastTier = "",
+  serviceTier = "",
+  onServiceTierChange,
   id,
   className,
   compact = false,
@@ -110,6 +119,15 @@ export function ModelPicker({
   /** The running model's context window, already formatted ("1M"), or "". */
   contextLabel?: string;
   onEffortChange?: (effort: string) => void;
+  /**
+   * The service tier that runs the selected model faster, or "" when it has
+   * none — and then, as with efforts, the Fast row does not appear, unless a
+   * tier is still set and the row is needed to turn it off.
+   */
+  fastTier?: string;
+  /** The active service tier: "" for standard speed. */
+  serviceTier?: string;
+  onServiceTierChange?: (serviceTier: string) => void;
   id?: string;
   className?: string;
   /**
@@ -179,6 +197,13 @@ export function ModelPicker({
   // what this control is naming — so the trigger says it, and only the row
   // that switches it goes away.
   const namesEffort = showEffort || !!effort;
+  // Named on the trigger whenever the thread runs on a tier, for the same
+  // reason as effort: a model that cannot switch it still ran on it.
+  const fast = !!serviceTier;
+  // A thread can be left on a tier its model does not offer (an account
+  // switch moves the model without asking), so the row stays while one is
+  // set: it is the only way back off.
+  const showFast = (!!fastTier || fast) && !!onServiceTierChange;
 
   const choose = (instance: PickerInstance, model: ModelMeta) => {
     // A model with levels to pick leaves the effort row still to choose. One
@@ -272,24 +297,20 @@ export function ModelPicker({
     </Command>
   );
 
-  // Deliberately outside the Command above. cmdk claims arrows and Enter for
-  // the whole of its root, so a button nested in it cannot be operated from
-  // the keyboard: Enter would select the highlighted model instead.
-  const footer = (showEffort || contextLabel) && (
-    <div className="border-t">
-      {showEffort && (
-        <EffortLevels
-          groupRef={effortRef}
-          efforts={efforts}
-          value={effort}
-          onChoose={(next) => {
-            setOpen(false);
-            if (next !== effort) onEffortChange?.(next);
-          }}
-        />
-      )}
-      {contextLabel && <ContextNote label={contextLabel} />}
-    </div>
+  const footer = (showEffort || showFast || contextLabel) && (
+    <PickerFooter
+      effortRef={effortRef}
+      efforts={showEffort ? efforts : NO_EFFORTS}
+      effort={effort}
+      onChooseEffort={(next) => {
+        setOpen(false);
+        if (next !== effort) onEffortChange?.(next);
+      }}
+      showFast={showFast}
+      fast={fast}
+      onFastChange={(on) => onServiceTierChange?.(on ? fastTier : "")}
+      contextLabel={contextLabel}
+    />
   );
 
   const trigger = (
@@ -308,27 +329,12 @@ export function ModelPicker({
       {selectedInstance && (
         <ProviderLogo provider={selectedInstance.driver} className={cn(compact && "max-md:hidden")} />
       )}
-      {/* Baseline-aligned: the effort is set smaller, and centring the two
-          boxes left its text sitting higher than the model's. */}
-      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className="min-w-0 flex-1 truncate text-left text-[13px]">
-          {selectedModel?.label ?? "No model"}
-        {/* The generation and the effort compete for one line, and only one of
-            them is a knob: when effort is on show, the generation stays in the
-            list, where the row that names it also explains it. */}
-        {!namesEffort && selectedModel?.version && selectedModel.version !== selectedModel.label && (
-          <span className="text-muted-foreground ml-1.5 text-[11px]">{selectedModel.version}</span>
-        )}
-      </span>
-      {namesEffort && (
-        <span className={cn("text-muted-foreground shrink-0 text-[12px]", compact && "max-md:hidden")}>
-          <span aria-hidden className="mr-1.5 opacity-60">
-            ·
-          </span>
-          {formatEffort(effort)}
-        </span>
-      )}
-      </span>
+      <TriggerLabel
+        model={selectedModel}
+        effort={namesEffort ? effort : undefined}
+        fast={fast}
+        compact={compact}
+      />
       <ChevronDownIcon className={cn("text-muted-foreground size-4 shrink-0", compact && "max-md:hidden")} />
     </Button>
   );
@@ -366,6 +372,51 @@ export function ModelPicker({
         {footer}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * The foot of the menu: effort, Fast, and the context window, each only when
+ * there is one to show.
+ *
+ * Deliberately outside the model list's Command. cmdk claims arrows and Enter
+ * for the whole of its root, so a button nested in it cannot be operated from
+ * the keyboard: Enter would select the highlighted model instead.
+ */
+function PickerFooter({
+  effortRef,
+  efforts,
+  effort,
+  onChooseEffort,
+  showFast,
+  fast,
+  onFastChange,
+  contextLabel,
+}: {
+  effortRef: RefObject<HTMLDivElement | null>;
+  /** The levels to offer; none leaves the effort row out. */
+  efforts: string[];
+  effort: string;
+  onChooseEffort: (effort: string) => void;
+  showFast: boolean;
+  fast: boolean;
+  onFastChange: (on: boolean) => void;
+  contextLabel: string | undefined;
+}) {
+  return (
+    <div className="border-t">
+      {efforts.length > 0 && (
+        <EffortLevels groupRef={effortRef} efforts={efforts} value={effort} onChoose={onChooseEffort} />
+      )}
+      {/* Unlike effort, this leaves the menu open: a switch reads as settled
+          once it has moved, and closing would hide that it did. */}
+      {showFast && (
+        <div className="p-1">
+          <FastRow on={fast} onChange={onFastChange} />
+        </div>
+      )}
+      {contextLabel && <ContextNote label={contextLabel} />}
+    </div>
   );
 }
 
@@ -458,6 +509,57 @@ function EffortLevels({
 }
 
 /**
+ * What the trigger says: the model, then the effort it runs at when there is
+ * one to name, then a bolt while it runs Fast.
+ */
+function TriggerLabel({
+  model,
+  effort,
+  fast,
+  compact,
+}: {
+  model: ModelMeta | undefined;
+  /** The effort to name, or undefined when there is none to name. */
+  effort: string | undefined;
+  fast: boolean;
+  compact: boolean;
+}) {
+  const named = effort !== undefined;
+  return (
+    // Baseline-aligned: the effort is set smaller, and centring the two boxes
+    // left its text sitting higher than the model's.
+    <span className="flex min-w-0 flex-1 items-baseline gap-2">
+      <span className="min-w-0 flex-1 truncate text-left text-[13px]">
+        {model?.label ?? "No model"}
+        {/* The generation competes for one line with the effort and the bolt,
+            and is the only one of them that is not a knob: when either is on
+            show, the generation stays in the list, where the row that names
+            it also explains it. */}
+        {!named && !fast && model?.version && model.version !== model.label && (
+          <span className="text-muted-foreground ml-1.5 text-[11px]">{model.version}</span>
+        )}
+      </span>
+      {named && (
+        <span className={cn("text-muted-foreground shrink-0 text-[12px]", compact && "max-md:hidden")}>
+          <span aria-hidden className="mr-1.5 opacity-60">
+            ·
+          </span>
+          {formatEffort(effort)}
+        </span>
+      )}
+      {/* On a phone the bolt says it alone, so the model's name keeps the
+          width; the word is still there for a screen reader. */}
+      {fast && (
+        <span className="flex shrink-0 items-center gap-1 self-center text-[12px] text-amber-600 dark:text-amber-400">
+          <ZapIcon aria-hidden className="size-3.5 fill-current" />
+          <span className={cn(compact && "max-md:sr-only")}>Fast</span>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
  * The running model's context window, stated where the model is chosen. It is
  * a fact of the model rather than a knob — the harness fixes the window per
  * model — so it is said, never offered.
@@ -468,6 +570,28 @@ function ContextNote({ label }: { label: string }) {
       Context window: <span className="text-foreground">{label}</span>
       <span className="block text-[10px]">Set by the model — not adjustable.</span>
     </div>
+  );
+}
+
+/**
+ * The Fast switch. The whole row is its label, so a phone gets a full-width
+ * target rather than a 32px switch.
+ */
+function FastRow({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  const id = useId();
+  return (
+    <label
+      htmlFor={id}
+      className="hover:bg-accent hover:text-accent-foreground flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors md:min-h-9"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block">Fast</span>
+        <span className="text-muted-foreground block text-[11px]">
+          Faster responses, uses more of your plan
+        </span>
+      </span>
+      <Switch id={id} aria-label="Fast mode" checked={on} onCheckedChange={onChange} />
+    </label>
   );
 }
 
