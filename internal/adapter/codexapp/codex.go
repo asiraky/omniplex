@@ -1583,6 +1583,12 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			p.Error = &codexTurnError{Message: p.Message}
 		}
 		s.host.Logf("codex error: %s", p.Error.Message)
+		s.mu.Lock()
+		current := s.turnID != "" && (p.TurnID == "" || s.serverTurnID == "" || p.TurnID == s.serverTurnID)
+		s.mu.Unlock()
+		if !current {
+			return
+		}
 		// An error codex is retrying is not the turn's failure yet, only a
 		// retrying status. One it is not retrying is, and the completion that
 		// follows repeats it with less: remember it for that completion.
@@ -1592,9 +1598,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		}
 		f := errorFailure(*p.Error)
 		s.mu.Lock()
-		if s.turnID != "" && (p.TurnID == "" || s.serverTurnID == "" || p.TurnID == s.serverTurnID) {
-			s.turnFailure = &f
-		}
+		s.turnFailure = &f
 		s.mu.Unlock()
 	}
 }

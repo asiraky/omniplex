@@ -18,7 +18,7 @@ func TestRetryingErrorBecomesTurnStatus(t *testing.T) {
 		{
 			name: "no code, cause in the message's brackets",
 			params: `{"error":{"message":"Reconnecting... 4/5 (stream disconnected before completion: idle timeout waiting for SSE)",
-				"codexErrorInfo":null,"additionalDetails":null,"misalignment":null},"willRetry":true,"threadId":"thread-1","turnId":"codex-turn-42"}`,
+				"codexErrorInfo":null,"additionalDetails":null,"misalignment":null},"willRetry":true,"threadId":"thread-1","turnId":"codex-turn-7"}`,
 			want: proto.TurnStatusPayload{State: proto.TurnRetrying, Attempt: 4, Max: 5, Reason: "stream disconnected before completion"},
 		},
 		{
@@ -67,7 +67,8 @@ func TestRetryingErrorBecomesTurnStatus(t *testing.T) {
 }
 
 // TestErrorWithoutStatus: an error codex will not retry ends the turn through
-// turn/completed, and a subagent's retry is not this thread's.
+// turn/completed, and neither an earlier turn's retry nor a subagent's is
+// this turn's.
 func TestErrorWithoutStatus(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -78,6 +79,11 @@ func TestErrorWithoutStatus(t *testing.T) {
 			params: `{"error":{"message":"exceeded retry limit, last status: 429 Too Many Requests",
 				"codexErrorInfo":{"responseTooManyFailedAttempts":{"httpStatusCode":429}},"additionalDetails":null,"misalignment":null},
 				"willRetry":false,"threadId":"thread-1","turnId":"codex-turn-7"}`,
+		},
+		{
+			name: "an earlier turn's retry",
+			params: `{"error":{"message":"Reconnecting... 2/5","codexErrorInfo":"serverOverloaded","additionalDetails":null,"misalignment":null},
+				"willRetry":true,"threadId":"thread-1","turnId":"codex-turn-6"}`,
 		},
 		{
 			name: "foreign thread",

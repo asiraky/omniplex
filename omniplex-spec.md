@@ -124,7 +124,7 @@ turn.status { state?: retrying|compacting, attempt?, max?, reason?, retryAt? }
 ```
 Why a running turn has gone quiet. The actor holds only the latest one in memory and pushes it to attached clients as `turn_status`. An empty `state` clears it; so does the running turn's `turn.finished` (a stale finish for another turn does not), `context.compacted` or `thread.closed`, and any top-level `message.chunk` or `tool_call.started` (a subagent's output does not count). One that arrives while no turn is running is dropped. It takes no seq, so it sits outside invariants 2 and 7 on purpose: a restart kills the turn it described.
 
-Every event carries `{ sessionId, seq, timestamp }`. `seq` is a per-session monotonic integer assigned at append. There is no global sequence — sessions are independent streams, which keeps append contention per-session and makes sharding trivial later.
+Every logged event carries `{ sessionId, seq, timestamp }`. `seq` is a per-session monotonic integer assigned at append. There is no global sequence — sessions are independent streams, which keeps append contention per-session and makes sharding trivial later.
 
 Generate the Go types from ACP's published JSON schema rather than hand-writing them. Hand-maintained enums drift.
 
