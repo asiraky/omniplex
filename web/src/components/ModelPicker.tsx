@@ -329,7 +329,7 @@ export function ModelPicker({
         </span>
       )}
       </span>
-      <ChevronDownIcon className="text-muted-foreground size-4 shrink-0" />
+      <ChevronDownIcon className={cn("text-muted-foreground size-4 shrink-0", compact && "max-md:hidden")} />
     </Button>
   );
 

@@ -382,6 +382,7 @@ export function App() {
             onRecheck={auth.recheck}
             onLogin={auth.openInstanceAuth}
             onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
+            dictate={wire.hasElevenLabsKey}
           />
         ) : (
           <EmptyState

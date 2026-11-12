@@ -385,21 +385,22 @@ func parseByteRange(h string) (first, last int64, kind rangeKind) {
 	return first, last, rangeClosed
 }
 
-// ttsRecorder records what one /api/tts request was answered with.
-type ttsRecorder struct {
+// statusRecorder records what one request was answered with, for its log
+// line.
+type statusRecorder struct {
 	http.ResponseWriter
 	status int
 	sent   int64
 }
 
-func (rec *ttsRecorder) WriteHeader(code int) {
+func (rec *statusRecorder) WriteHeader(code int) {
 	if rec.status == 0 {
 		rec.status = code
 	}
 	rec.ResponseWriter.WriteHeader(code)
 }
 
-func (rec *ttsRecorder) Write(b []byte) (int, error) {
+func (rec *statusRecorder) Write(b []byte) (int, error) {
 	if rec.status == 0 {
 		rec.status = http.StatusOK
 	}
@@ -409,7 +410,7 @@ func (rec *ttsRecorder) Write(b []byte) (int, error) {
 }
 
 // Unwrap lets http.ResponseController reach the flusher underneath.
-func (rec *ttsRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
+func (rec *statusRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
 // userAgentSummary names the client in a word or two: enough to tell the
 // phone's media loader from a desktop browser in the log.

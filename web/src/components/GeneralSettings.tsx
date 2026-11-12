@@ -156,29 +156,34 @@ function ElevenLabsKeyField({
       ) : (
         <p className="text-muted-foreground text-[11px]">
           {hasKey
-            ? "Messages get a play button. Stored on this machine and never shown again."
-            : "Turns on reading messages aloud. Saved as soon as ElevenLabs accepts it."}
+            ? "Messages get a play button and the composer a mic. Stored on this machine and never shown again."
+            : "Turns on reading messages aloud and dictation. Saved as soon as ElevenLabs accepts it."}
         </p>
       )}
     </div>
   );
 }
 
-/** The ElevenLabs key, and once there is one, the voice messages are read in. */
-function ReadAloudSettings({
+/** The ElevenLabs key, and once there is one, the voice messages are read in
+    and how dictation comes back. */
+function VoiceSettings({
   hasKey,
   onSetKey,
   voice,
   onVoice,
+  cleanup,
+  onCleanup,
 }: {
   hasKey: boolean;
   onSetKey: (key: string) => Promise<void>;
   voice: string;
   onVoice: (voice: string) => void;
+  cleanup: boolean;
+  onCleanup: (on: boolean) => void;
 }) {
   return (
     <div className="space-y-3">
-      <h3 className="text-[12px] font-medium">Read aloud</h3>
+      <h3 className="text-[12px] font-medium">Read aloud and dictation</h3>
       <ElevenLabsKeyField hasKey={hasKey} onSet={onSetKey} />
       {hasKey && (
         <div className="space-y-1.5">
@@ -189,6 +194,22 @@ function ReadAloudSettings({
               ? "What messages are read in, unless a project picks its own."
               : "Pick one to read messages aloud."}
           </p>
+        </div>
+      )}
+      {hasKey && (
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Label htmlFor="settings-dictation-cleanup">Clean up dictation</Label>
+            <p className="text-muted-foreground text-[11px]">
+              Fixes punctuation and drops filler words before the text lands. Uses the thread's
+              model and adds a second or two; a new thread's first message is left as heard.
+            </p>
+          </div>
+          <Switch
+            id="settings-dictation-cleanup"
+            checked={cleanup}
+            onCheckedChange={onCleanup}
+          />
         </div>
       )}
     </div>
@@ -361,11 +382,13 @@ export function GeneralSettings({
 
       <Separator />
 
-      <ReadAloudSettings
+      <VoiceSettings
         hasKey={hasElevenLabsKey}
         onSetKey={onSetElevenLabsKey}
         voice={cfg.voice ?? ""}
         onVoice={(voice) => patch({ voice })}
+        cleanup={cfg.dictationCleanup === true}
+        onCleanup={(on) => patch({ dictationCleanup: on })}
       />
     </SettingsPane>
   );

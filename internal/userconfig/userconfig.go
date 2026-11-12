@@ -66,6 +66,11 @@ type Config struct {
 	// self-update in the background. Nil means on; off is for pinning a CLI
 	// version while debugging.
 	AutoUpdateHarnesses *bool `json:"autoUpdateHarnesses,omitempty"`
+	// DictationCleanup is whether a dictated message is tidied by a small
+	// model before it lands in the composer: punctuation fixed, filler words
+	// dropped. Off by default, because it adds seconds and Scribe's own
+	// punctuation is usually good enough.
+	DictationCleanup bool `json:"dictationCleanup,omitempty"`
 }
 
 // ProjectsDirOrDefault is the folder project home folders go in.

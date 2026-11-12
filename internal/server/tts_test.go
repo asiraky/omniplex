@@ -164,12 +164,13 @@ func errorMessage(t *testing.T, res *http.Response) string {
 	return body.Error
 }
 
-// fakeEleven answers the key check and voice list, and hands synthesis to
-// speak with the voice id it was asked for.
+// fakeEleven answers the key check and voice list, hands synthesis to speak
+// with the voice id it was asked for, and speech-to-text to transcribe.
 type fakeEleven struct {
-	mu     sync.Mutex
-	voices []string
-	speak  func(w http.ResponseWriter, r *http.Request)
+	mu         sync.Mutex
+	voices     []string
+	speak      func(w http.ResponseWriter, r *http.Request)
+	transcribe func(w http.ResponseWriter, r *http.Request)
 }
 
 func (f *fakeEleven) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +181,14 @@ func (f *fakeEleven) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/v2/voices") {
 		_, _ = io.WriteString(w, `{"voices":[{"voice_id":"v2","name":"zed"},{"voice_id":"v1","name":"Alice"}],"has_more":false}`)
+		return
+	}
+	if r.URL.Path == "/v1/speech-to-text" {
+		if f.transcribe != nil {
+			f.transcribe(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"text":""}`)
 		return
 	}
 	voice := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/text-to-speech/"), "/stream")

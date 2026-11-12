@@ -71,7 +71,7 @@ func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
 // is how a media loader's range requests are told apart from taps on play.
 func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	lw := &ttsRecorder{ResponseWriter: w}
+	lw := &statusRecorder{ResponseWriter: w}
 	w = lw
 	source, clip := "-", "-"
 	defer func() {
@@ -298,7 +298,8 @@ func (s *Server) speechVoice(ctx context.Context, threadID string) (string, erro
 // speechErrorReply is the status and message for a failure before any audio
 // went out. The client cannot read an <audio> element's error body, so it
 // asks the same URL again (HEAD, then GET only if that fails) to show the
-// message; it has to be one a person can act on.
+// message; it has to be one a person can act on. Dictation answers its
+// failures the same way.
 func speechErrorReply(err error) (int, string) {
 	var up *tts.UpstreamError
 	switch {

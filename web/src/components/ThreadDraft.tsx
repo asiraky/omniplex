@@ -32,6 +32,9 @@ import {
 
 export type { IssueListing };
 
+// No thread exists yet; the server transcribes without one.
+const NO_THREAD = {};
+
 export interface NewThreadInput {
   projectId: string;
   /** The folder the thread works in; empty means the whole project. */
@@ -110,6 +113,7 @@ export function ThreadDraft({
   onManageProviders,
   preset,
   composerRef,
+  dictate = false,
 }: {
   projects: Project[];
   activeProjectId?: string;
@@ -155,6 +159,8 @@ export function ThreadDraft({
    */
   preset?: DraftPreset;
   composerRef?: RefObject<ComposerHandle | null>;
+  /** An ElevenLabs key is stored, so the composer gets a mic. */
+  dictate?: boolean;
 }) {
   const remembered = useRememberedChoices();
   const presetProject = preset?.projectId ?? activeProjectId;
@@ -375,6 +381,7 @@ export function ThreadDraft({
           onAttachFiles={onAttachFiles}
           onRemoveAttachment={onRemoveAttachment}
           onCancel={() => {}}
+          dictation={dictate ? NO_THREAD : undefined}
           harnesses={harnesses}
           anyHarness
           harness={agent.harnessId}
