@@ -26,6 +26,8 @@ type RowContext = {
   recoveredTurns: Map<string, Recovered>;
   /** Opens the sign-in a saved card offers. */
   onCardSignIn?: (target: CardSignIn) => void;
+  /** Names a model and effort, for the line where the thread switched. */
+  describeSettings?: (model: string, effort: string) => string;
 };
 
 function RowBody({
@@ -38,6 +40,7 @@ function RowBody({
   onOpenJobs,
   recoveredTurns,
   onCardSignIn,
+  describeSettings,
 }: RowContext & { row: Row }) {
   if (row.kind === "fold")
     return <TurnFold threadId={threadId} turn={row.turn} items={row.items} continued={row.continued} />;
@@ -46,7 +49,7 @@ function RowBody({
   if (row.kind === "artefacts")
     return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
   if (row.item.kind === "tool") return <ToolCard threadId={threadId} item={row.item} />;
-  if (row.item.kind === "notice") return <NoticeCard item={row.item} />;
+  if (row.item.kind === "notice") return <NoticeCard item={row.item} describeSettings={describeSettings} />;
   if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;
   if (row.item.kind === "plan") return <PlanRow item={row.item} />;
   return (

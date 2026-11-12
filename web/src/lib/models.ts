@@ -1,6 +1,8 @@
 import type { Availability, HarnessMeta, ModelMeta } from "~/protocol";
 import { LEGACY_GROUP } from "~/protocol";
 
+import { formatEffort } from "./efforts";
+
 /**
  * One provider instance, flattened out of the harness list.
  *
@@ -91,6 +93,22 @@ export function resolveModel(
     instance.models.find((m) => stripContextTag(m.resolves ?? "") === bare) ??
     instance.models.find((m) => stripContextTag(m.id) === bare) ?? { id: modelId, label: modelId }
   );
+}
+
+/**
+ * Names the settings a thread switched to: the model, then its effort. An
+ * empty effort reads "Auto" only for a model that has levels to choose from;
+ * for one that has none it is not a setting.
+ */
+export function describeSettings(
+  instance: PickerInstance | undefined,
+  modelId: string,
+  effort: string,
+): string {
+  const model = resolveModel(instance, modelId);
+  const name = model?.label ?? modelId;
+  if (!effort && !model?.efforts?.length) return name;
+  return `${name} · ${formatEffort(effort)}`;
 }
 
 /** Drops a trailing context-window tag like "[1m]" from a model id. */

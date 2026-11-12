@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { defaultModel, pickerInstances, resolveInstance, resolveModel } from "./models";
+import { defaultModel, describeSettings, pickerInstances, resolveInstance, resolveModel } from "./models";
 import type { HarnessMeta } from "~/protocol";
 
 const ready = { state: "ready" };
@@ -153,5 +153,41 @@ describe("resolveInstance", () => {
 
   it("falls back to something usable when the named instance is gone", () => {
     expect(resolveInstance(instances, "codex_deleted", "nope")?.id).toBe("codex");
+  });
+});
+
+describe("describeSettings", () => {
+  const instance = pickerInstances([
+    harness({
+      instances: [
+        {
+          id: "codex",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          availability: ready,
+          models: [
+            { id: "gpt-5.6-sol", label: "GPT-5.6-Sol", efforts: ["low", "high", "xhigh"] },
+            { id: "gpt-mini", label: "GPT Mini" },
+          ],
+        },
+      ],
+    } as Partial<HarnessMeta>),
+  ])[0];
+
+  it("names the model by its label and the effort by its display name", () => {
+    expect(describeSettings(instance, "gpt-5.6-sol", "xhigh")).toBe("GPT-5.6-Sol · Extra high");
+  });
+
+  it("calls an unset effort Auto when the model has levels", () => {
+    expect(describeSettings(instance, "gpt-5.6-sol", "")).toBe("GPT-5.6-Sol · Auto");
+  });
+
+  it("leaves the effort out for a model with no levels", () => {
+    expect(describeSettings(instance, "gpt-mini", "")).toBe("GPT Mini");
+  });
+
+  it("falls back to the raw id for a model the catalogue has dropped", () => {
+    expect(describeSettings(instance, "gpt-4", "high")).toBe("gpt-4 · High");
   });
 });

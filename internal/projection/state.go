@@ -126,8 +126,8 @@ const (
 	ItemMessage = "message"
 	ItemTool    = "tool"
 	// ItemNotice is a system event worth a line in the timeline that is
-	// neither a message nor a tool call: a context compaction, or a switch to
-	// another account.
+	// neither a message nor a tool call: a context compaction, a switch to
+	// another account, or a change of model or effort mid-thread.
 	ItemNotice = "notice"
 	// ItemArtefact is an artefact the agent showed, at the point in the
 	// conversation it showed it. Uploads get no item: they show on the
@@ -184,10 +184,17 @@ type Item struct {
 	ChildrenBefore int `json:"childrenBefore,omitempty"`
 
 	// notice
-	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
-	Trigger    string `json:"trigger,omitempty"`    // auto | manual
-	PreTokens  int64  `json:"preTokens,omitempty"`
-	PostTokens int64  `json:"postTokens,omitempty"`
+	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account | model
+	Model      string `json:"model,omitempty"`
+	Effort     string `json:"effort,omitempty"`
+	// From is what the turn before ran on. The log names models by whatever
+	// id it was handed, so an alias and the id it resolves to can differ
+	// here and still be one model; a presenter that knows the catalogue can
+	// tell, and leaves such a line out.
+	From       *TurnSettings `json:"from,omitempty"`
+	Trigger    string        `json:"trigger,omitempty"` // auto | manual
+	PreTokens  int64         `json:"preTokens,omitempty"`
+	PostTokens int64         `json:"postTokens,omitempty"`
 
 	// artefact: Title is its name. Enough to draw the tile without the
 	// artefact list.
@@ -430,6 +437,10 @@ type State struct {
 	// Artefacts is never windowed: it is small, and the list has to be whole
 	// for the artefacts surface to be.
 	Artefacts []Artefact `json:"artefacts"`
+	// RanWith is the model and effort the latest turn started on, which the
+	// next turn is measured against to mark a switch. Nil until a turn has
+	// started, and on snapshots stored before it existed.
+	RanWith *TurnSettings `json:"ranWith,omitempty"`
 
 	itemIndex map[string]int `json:"-"`
 	jobIndex  map[string]int `json:"-"`
@@ -438,6 +449,14 @@ type State struct {
 	// rewriting.
 	recapped bool
 }
+
+// TurnSettings is the model and effort a turn runs on.
+type TurnSettings struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+}
+
+func (s *State) settings() TurnSettings { return TurnSettings{Model: s.Model, Effort: s.Effort} }
 
 func New(threadID string) *State {
 	return &State{
@@ -659,6 +678,29 @@ func (s *State) liveJobCalls() map[string]bool {
 	return live
 }
 
+// markSettings puts a line in the timeline where a turn starts on a model or
+// effort other than the last turn's, so every reply reads under the settings
+// that produced it. It is drawn at the turn rather than at the switch: a
+// harness may take a switch made mid-turn only at the next one, picking
+// through the menu is one change rather than five, and switching away and
+// back again is no change at all. Anchored to the sequence like a compaction
+// so replays land the same item.
+func (s *State) markSettings(ev proto.Event) {
+	now := s.settings()
+	if was := s.RanWith; was != nil && *was != now {
+		s.upsert("model:"+strconv.FormatInt(ev.Seq, 10), func(it *Item) {
+			it.Kind = ItemNotice
+			if it.ReceivedAt == 0 {
+				it.ReceivedAt = ev.Timestamp
+			}
+			it.NoticeKind = "model"
+			it.Model, it.Effort = now.Model, now.Effort
+			it.From = was
+		})
+	}
+	s.RanWith = &now
+}
+
 func (s *State) upsert(id string, mut func(*Item)) {
 	if s.itemIndex == nil {
 		s.reindex()
@@ -690,7 +732,16 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.ThreadConfigChanged:
 		var p proto.ThreadConfigChangedPayload
 		decode(ev.Payload, &p)
-		if p.ReplaceSettings || p.Model != "" {
+		// An event carrying a harness session id is the harness reporting its
+		// own settings as it (re)starts or takes a prompt, not anyone
+		// switching: it names the bare model id for the alias that was
+		// picked. One that lands while a model switch is waiting for its turn
+		// can predate that switch (Claude reports a turn's settings seconds
+		// after the turn starts), so it leaves the pick alone; otherwise it
+		// moves the baseline's model with it.
+		report := p.HarnessSessionID != ""
+		pending := s.RanWith != nil && s.RanWith.Model != s.Model
+		if (p.ReplaceSettings || p.Model != "") && !(report && pending) {
 			s.Model = p.Model
 		}
 		if p.ReplaceSettings || p.Mode != "" {
@@ -707,6 +758,11 @@ func (s *State) Apply(ev proto.Event) {
 		}
 		if p.HarnessSessionID != "" {
 			s.HarnessSessionID = p.HarnessSessionID
+		}
+		if report && s.RanWith != nil && !pending {
+			ran := *s.RanWith
+			ran.Model = s.Model
+			s.RanWith = &ran
 		}
 
 	case proto.ThreadClosed:
@@ -798,6 +854,7 @@ func (s *State) Apply(ev proto.Event) {
 				s.Title = proto.AttachmentTitle(p.Images)
 			}
 		}
+		s.markSettings(ev)
 		// The prompt itself is a timeline item so the UI shows what was asked.
 		// A harness-initiated turn has no prompt — nobody asked anything — so
 		// there is no item to add.

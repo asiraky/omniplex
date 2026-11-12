@@ -56,6 +56,12 @@ export function ComposerModelPicker({
   // it, drops it: the trigger goes back to saying what is actually running.
   // A draft's choices are local and agree at once, so this is a no-op there.
   const [pending, setPending] = useState<{ model?: string; effort?: string }>({});
+  // The last model sent and not yet echoed back. Unlike the pending pick it
+  // outlives the menu closing: the switch is still on its way regardless.
+  const [inFlight, setInFlight] = useState<string>();
+  /** The catalogue row a model id names: the thread records the id the
+      harness reported ("claude-opus-5"), the row its alias ("opus"). */
+  const rowFor = (id: string) => resolveModel(resolveInstance(pickerInstances(harnesses), instance, harness), id)?.id;
   const [synced, setSynced] = useState({ open, harness, instance, model, effort });
   if (
     synced.open !== open ||
@@ -65,6 +71,10 @@ export function ComposerModelPicker({
     synced.effort !== effort
   ) {
     setSynced({ open, harness, instance, model, effort });
+    // Cleared by the echo of the model sent, not by any echo: an earlier
+    // pick, or the harness naming the id for an alias, can land before it.
+    if (synced.instance !== instance) setInFlight(undefined);
+    else if (inFlight !== undefined && (model === inFlight || rowFor(model) === inFlight)) setInFlight(undefined);
     if (!open || synced.harness !== harness || synced.instance !== instance) setPending({});
     else
       setPending((p) => ({
@@ -72,11 +82,14 @@ export function ComposerModelPicker({
         effort: p.effort === effort ? undefined : p.effort,
       }));
   }
-  // A switch the server refused is never echoed back: stop showing it.
+  // A switch the server refused is never echoed back: stop showing it, and
+  // stop waiting for it.
   const settle = (field: "model" | "effort", value: string, sent: void | Promise<boolean>) => {
     if (!(sent instanceof Promise)) return;
     void sent.then((ok) => {
-      if (!ok) setPending((p) => (p[field] === value ? { ...p, [field]: undefined } : p));
+      if (ok) return;
+      setPending((p) => (p[field] === value ? { ...p, [field]: undefined } : p));
+      if (field === "model") setInFlight((f) => (f === value ? undefined : f));
     });
   };
   const shownModel = pending.model ?? model;
@@ -109,13 +122,18 @@ export function ComposerModelPicker({
       onEffortChange={onSwitchEffort && switchEffort}
       value={{ harness, instance, model: shownModel }}
       onChange={(next) => {
-        const current = resolveInstance(pickerInstances(harnesses), instance, harness)?.id;
-        if (next.instance !== current) {
+        const current = resolveInstance(pickerInstances(harnesses), instance, harness);
+        if (next.instance !== current?.id) {
           onSwitchAccount?.(next.instance, next.model);
           return;
         }
+        // Picking the row already running is no switch, and sending it would
+        // mark one in the transcript. Unless a pick away from it is still in
+        // flight: then this one undoes it.
+        if (inFlight === undefined && rowFor(model) === next.model) return;
         if (onSwitchModel) {
           setPending((p) => ({ ...p, model: next.model === model ? undefined : next.model }));
+          setInFlight(next.model);
           settle("model", next.model, onSwitchModel(next.model));
         }
         // Effort is per model: a level the old model allowed (Codex's

@@ -11,6 +11,7 @@ import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { ConnectionStatus } from "~/client";
 import type { CardSignIn } from "~/lib/cards";
 import { liveJobCount } from "~/lib/jobs";
+import { describeSettings, pickerInstances, resolveInstance } from "~/lib/models";
 import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
 import { threadTitle } from "~/lib/threadTitle";
@@ -96,6 +97,12 @@ export function ThreadView({
     [readAloud, activeId, title],
   );
   const provider = harness.activeProviderInstance;
+  const instanceId = meta?.providerInstance ?? "";
+  const describe = useMemo(() => {
+    const instance = resolveInstance(pickerInstances(harnesses), instanceId, state.harness);
+    if (!instance) return undefined;
+    return (model: string, effort: string) => describeSettings(instance, model, effort);
+  }, [harnesses, instanceId, state.harness]);
   // A sign-in a saved card offers from its row in the transcript.
   const [signIn, setSignIn] = useState<CardSignIn | null>(null);
 
@@ -137,6 +144,7 @@ export function ThreadView({
             onPickRecent={recents.pick}
             onDequeue={commands.dequeue}
             onCardSignIn={setSignIn}
+            describeSettings={describe}
           />
         </ReadAloudContext.Provider>
       </OpenPathContext.Provider>

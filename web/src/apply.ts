@@ -12,6 +12,7 @@ import type {
   ThreadState,
   ToolContent,
   TurnDiff,
+  TurnSettings,
 } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 import { isTodoPlan, planItemId } from "./lib/plans";
@@ -162,6 +163,36 @@ function appendToolContent(it: Item, add: ToolContent[]) {
 }
 
 const contentText = (c: ToolContent) => (c.text?.length ?? 0) + (c.oldText?.length ?? 0) + (c.newText?.length ?? 0);
+
+// markSettings draws the line where a turn starts on a model or effort other
+// than the last turn's. It is drawn at the turn rather than at the switch, so
+// a switch the harness takes only at the next turn, a run of switches, and a
+// switch undone all read right. Mirrors internal/projection/state.go.
+function markSettings(state: ThreadState, ev: Event): ThreadState {
+  const now = settings(state);
+  const was = state.ranWith;
+  if (!was || sameSettings(was, now)) return { ...state, ranWith: now };
+  return {
+    ...state,
+    ranWith: now,
+    items: upsert(state, `model:${ev.seq}`, (it) => {
+      it.kind = "notice";
+      it.receivedAt ??= ev.timestamp;
+      it.noticeKind = "model";
+      it.model = now.model;
+      it.effort = now.effort;
+      it.from = was;
+    }),
+  };
+}
+
+function settings(state: ThreadState): TurnSettings {
+  return { model: state.model, effort: state.effort };
+}
+
+function sameSettings(a: TurnSettings, b: TurnSettings): boolean {
+  return a.model === b.model && a.effort === b.effort;
+}
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
 // was known of it, and anything the agent showed gets a timeline item at the
@@ -339,16 +370,27 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "thread.created":
       return { ...s, cwd: p.cwd, harness: p.harness, model: p.model ?? "", mode: p.mode ?? "", effort: p.effort ?? "", title: p.title ?? "" };
 
-    case "thread.config_changed":
-      return {
+    case "thread.config_changed": {
+      // A harness reporting its own settings as it (re)starts or takes a
+      // prompt names the bare model id for the alias that was picked: not a
+      // switch. One that lands while a model switch waits for its turn can
+      // predate it, so it leaves the pick alone; otherwise it moves the
+      // baseline's model with it. Mirrors internal/projection/state.go.
+      const report = !!p.harnessSessionId;
+      const pending = !!s.ranWith && s.ranWith.model !== s.model;
+      const model = p.replaceSettings ? p.model ?? "" : p.model || s.model;
+      const next: ThreadState = {
         ...s,
-        model: p.replaceSettings ? p.model ?? "" : p.model || s.model,
+        model: report && pending ? s.model : model,
         mode: p.replaceSettings ? p.mode ?? "" : p.mode || s.mode,
         // "" is a value effort can be set to — the harness's own default —
         // so an event that carries it must win, which || would not let it.
         effort: p.effort ?? s.effort,
         title: p.title || s.title,
       };
+      if (report && s.ranWith && !pending) return { ...next, ranWith: { ...s.ranWith, model: next.model } };
+      return next;
+    }
 
     case "thread.closed":
       return { ...s, closed: true, phase: "closed" };
@@ -374,27 +416,28 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       return { ...s, workspace: { ...s.workspace, phase: "released" } };
 
     case "turn.started": {
+      const marked = markSettings(s, ev);
       // A turn the harness started from a prompt it was holding names the
       // queue entry but not what it carried: the entry has the text and
       // the images, the event may have only the text.
-      const held = p.queueId ? (s.queuedPrompts ?? []).find((q) => q.queueId === p.queueId) : undefined;
+      const held = p.queueId ? (marked.queuedPrompts ?? []).find((q) => q.queueId === p.queueId) : undefined;
       const prompt: string = p.prompt || held?.prompt || "";
       const images = p.images?.length ? p.images : held?.images;
       return {
-        ...s,
+        ...marked,
         phase: "turn",
         // A recovery prompt is the server talking to itself, so it never
         // names the thread.
-        title: s.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
-        turns: [...s.turns, { id: p.turnId, prompt, images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
+        title: marked.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
+        turns: [...marked.turns, { id: p.turnId, prompt, images, done: false, recovery: p.recovery, startedAt: ev.timestamp }],
         // Starting is what takes a prompt out of the queue.
-        scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.id === p.queueId ? {...q, status: "sent", turnId: p.turnId, revision: q.revision + 1} : q),
-        queuedPrompts: p.queueId ? (s.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : s.queuedPrompts,
+        scheduledPrompts: (marked.scheduledPrompts ?? []).map(q => q.id === p.queueId ? {...q, status: "sent", turnId: p.turnId, revision: q.revision + 1} : q),
+        queuedPrompts: p.queueId ? (marked.queuedPrompts ?? []).filter((q) => q.queueId !== p.queueId) : marked.queuedPrompts,
         // A harness-initiated turn has no prompt — nobody asked anything —
         // so there is no prompt item to add. A prompt that is nothing but
         // pictures still has one.
         items: prompt || images?.length
-          ? upsert(s, `prompt:${p.turnId}`, (it) => {
+          ? upsert(marked, `prompt:${p.turnId}`, (it) => {
               it.kind = "message";
               it.receivedAt ??= ev.timestamp;
               it.role = "user";
@@ -403,7 +446,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
               it.images = images;
               it.turnId = p.turnId;
             })
-          : s.items,
+          : marked.items,
       };
     }
 
