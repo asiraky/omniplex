@@ -408,7 +408,7 @@ func TestHumanScheduleWaitsWhileAContinuationIsArmed(t *testing.T) {
 		if err := a.scheduleTick(ctx, p.DueAt); err != nil {
 			t.Fatal(err)
 		}
-		noPrompt(t, th, "human schedule went ahead of the armed continuation")
+		nothingSent(t, th, "human schedule went ahead of the armed continuation")
 		cont := scheduled(t, a, limitScheduleID(turn))
 		if cont.Status != "pending" {
 			t.Fatalf("queue %q: continuation = %s, want it still armed", queue, cont.Status)
