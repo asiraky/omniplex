@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/proto"
 )
 
@@ -268,6 +269,7 @@ func (nopWriteCloser) Close() error { return nil }
 func TestCloseStopsAllTails(t *testing.T) {
 	s := newTailSession(t)
 	s.cmd, s.tree, s.stdin = &exec.Cmd{}, nopGroup{}, nopWriteCloser{io.Discard}
+	s.proc = adapter.WatchProcess(s.cmd, strings.NewReader(""), t.Logf, "claude")
 	s.handleSDKMessage(frame(t, frameTaskStarted))
 	tl := runningTail(t, s, tailTool)
 	_ = s.Close()
@@ -282,6 +284,7 @@ func TestCloseStopsAllTails(t *testing.T) {
 func TestCloseIsNotHeldByATailerBehindAFullChannel(t *testing.T) {
 	s := newTailSession(t)
 	s.cmd, s.tree, s.stdin = &exec.Cmd{}, nopGroup{}, nopWriteCloser{io.Discard}
+	s.proc = adapter.WatchProcess(s.cmd, strings.NewReader(""), t.Logf, "claude")
 	path := taskOutput(t, s.taskRoot, tailSession, tailTask)
 	s.handleSDKMessage(frame(t, frameTaskStarted))
 	tl := runningTail(t, s, tailTool)

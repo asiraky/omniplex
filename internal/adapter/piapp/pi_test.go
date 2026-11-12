@@ -769,3 +769,97 @@ func TestTurnEndWithdrawsDialogRaisedDuringStop(t *testing.T) {
 		t.Fatalf("released with %v, want canceled", err)
 	}
 }
+
+// pi's agent_end repeats every message of the run, screenshots and all, and
+// can run past any line limit. Skipping it must leave the session reading, so
+// the turn still settles.
+func TestOversizedEventDoesNotEndSession(t *testing.T) {
+	dir := t.TempDir()
+	huge := `{"type":"agent_end","messages":"` + strings.Repeat("a", maxLine+1) + `"}`
+	events := strings.Join([]string{
+		`{"type":"agent_start"}`,
+		`{"type":"message_start","message":{"role":"assistant"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"done"}}`,
+		`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{}}}`,
+		huge,
+		`{"type":"agent_settled"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "events"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if final.TurnID != "t1" || final.StopReason != proto.StopEndTurn || final.Error != "" {
+		t.Fatalf("turn after an oversized event: %+v", final)
+	}
+}
+
+// dyingPi is a pi that answers the handshake, then on prompt runs onPrompt
+// and dies of a heap overflow.
+func dyingPi(t *testing.T, onPrompt string) adapter.Session {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"get_state"'*)
+      printf '%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"sessionId\":\"h\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
+      ;;
+    *'"type":"prompt"'*)
+      ` + onPrompt + `
+      echo "FATAL ERROR: Reached heap limit" >&2
+      echo "    at Allocation failed - JavaScript heap out of memory" >&2
+      exit 134
+      ;;
+  esac
+done
+`
+	bin := filepath.Join(dir, "pi")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(bin).CreateSession(context.Background(), fakeHost{}, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+const heapDeath = "pi exited (exit status 134)\nFATAL ERROR: Reached heap limit\n    at Allocation failed - JavaScript heap out of memory"
+
+// A pi that dies mid-turn must finish the turn with why: its exit status and
+// what it said on stderr on the way out, indentation and all.
+func TestHarnessDeathExplainsTurn(t *testing.T) {
+	s := dyingPi(t, `printf '%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"prompt\",\"success\":true}"
+      printf '%s\n' '{"type":"agent_start"}'`)
+
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if final.TurnID != "t1" || final.StopReason != proto.StopError || final.Error != heapDeath {
+		t.Fatalf("turn after pi died: %+v\nwant error:\n%s", final, heapDeath)
+	}
+}
+
+// A pi that dies before acknowledging the prompt leaves the ack unanswered;
+// the turn it opened must still finish with why.
+func TestHarnessDeathBeforePromptAckExplainsTurn(t *testing.T) {
+	s := dyingPi(t, `:`)
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if final.TurnID != "t1" || final.StopReason != proto.StopError || final.Error != heapDeath {
+		t.Fatalf("turn after pi died: %+v\nwant error:\n%s", final, heapDeath)
+	}
+}

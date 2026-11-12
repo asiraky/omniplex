@@ -10,7 +10,6 @@
 package claudecode
 
 import (
-	"bufio"
 	"context"
 	"embed"
 	"encoding/json"
@@ -398,6 +397,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	s := &session{
 		host:             host,
 		cmd:              cmd,
+		proc:             adapter.WatchProcess(cmd, stderr, host.Logf, "claude bridge"),
 		tree:             tree,
 		stdin:            stdin,
 		cwd:              o.Cwd,
@@ -417,9 +417,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		steers:  map[string]bool{},
 		done:    make(chan struct{}),
 	}
-	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
+	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
 
-	go s.drainStderr(stderr)
 	go s.watchExit()
 
 	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
@@ -449,6 +448,7 @@ type stream struct {
 type session struct {
 	host  adapter.HostServices
 	cmd   *exec.Cmd
+	proc  *adapter.Process
 	tree  procgroup.Group
 	conn  *jsonrpc.Conn
 	stdin io.WriteCloser
@@ -734,7 +734,7 @@ func (s *session) Close() error {
 			_ = s.cmd.Process.Kill()
 		}
 		s.tree.Kill()
-		_ = s.cmd.Wait()
+		_ = s.proc.Wait()
 	})
 	return nil
 }
@@ -770,9 +770,13 @@ func (s *session) exitReason() (message, failure string) {
 		return msg, proto.FailureAuth
 	}
 	if fatal != "" {
-		return "claude exited: " + briefly(fatal), ""
+		msg := "claude exited: " + briefly(fatal)
+		if tail := s.proc.Tail(); tail != "" {
+			msg += "\n" + tail
+		}
+		return msg, ""
 	}
-	return "claude bridge exited", ""
+	return s.proc.ExitReason(s.conn.Err()), ""
 }
 
 // authNeedles are what an unauthenticated Claude Code says on its way out. The
@@ -805,16 +809,6 @@ func loginRequired(fatal string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func (s *session) drainStderr(r io.ReadCloser) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			s.host.Logf("claude bridge: %s", line)
-		}
-	}
 }
 
 func (s *session) emit(e proto.Emission) {

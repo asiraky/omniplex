@@ -297,8 +297,12 @@ function ErrorCard({
           ? "The server restarted and this turn was interrupted before it finished."
           : "This turn ended with an error before it finished."}
       </p>
+      {/* A dead harness's message ends with the last lines of its stderr, one
+          per line. */}
       {error && !restarted && (
-        <p className="text-destructive mt-1.5 font-mono text-[11px] break-words">{error}</p>
+        <p className="text-destructive mt-1.5 font-mono text-[11px] break-words whitespace-pre-wrap">
+          {error}
+        </p>
       )}
       <p className="text-muted-foreground mt-1.5 text-[12px]">{recoveryNote(turn)}</p>
       <Button

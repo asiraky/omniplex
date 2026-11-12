@@ -64,7 +64,7 @@ func TestPermissionCancelledReleasesHost(t *testing.T) {
 			bridgeRead, serverWrite := io.Pipe()
 			host := &withdrawHost{entered: make(chan string, 1), released: make(chan string, 1)}
 			s := &session{host: host, streams: map[string]*stream{}}
-			s.conn = jsonrpc.NewConn(serverRead, serverWrite, s.handleRequest, s.handleNotification)
+			s.conn = jsonrpc.NewConn(serverRead, serverWrite, s.handleRequest, s.handleNotification, nil)
 			t.Cleanup(func() {
 				_ = bridgeWrite.Close()
 				_ = serverWrite.Close()

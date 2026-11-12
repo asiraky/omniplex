@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -42,13 +43,24 @@ func TestLoginFailureIsNamed(t *testing.T) {
 func newBridgeSession(t *testing.T) (*session, *io.PipeWriter) {
 	t.Helper()
 	pr, pw := io.Pipe()
+	// A real, already-finished process stands in for the bridge's, so a death
+	// with no fatal of its own still has an exit status to report.
+	cmd := exec.Command("true")
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
 	s := &session{
+		proc:    adapter.WatchProcess(cmd, stderr, func(string, ...any) {}, "claude bridge"),
 		host:    &fakeHost{},
 		events:  make(chan proto.Emission, 16),
 		done:    make(chan struct{}),
 		streams: map[string]*stream{},
 	}
-	s.conn = jsonrpc.NewConn(pr, io.Discard, s.handleRequest, s.handleNotification)
+	s.conn = jsonrpc.NewConn(pr, io.Discard, s.handleRequest, s.handleNotification, nil)
 	go s.watchExit()
 	t.Cleanup(func() { _ = pw.Close() })
 	return s, pw
@@ -241,5 +253,28 @@ func TestErrorResultReadsTheDiagnosticsArray(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("the failed turn never finished")
 		}
+	}
+}
+
+// A bridge that dies with a fatal that is not a login keeps what it said on
+// stderr under the fatal, which on its own is often just "exited with code 1".
+func TestFatalBridgeQuotesStderr(t *testing.T) {
+	cmd := exec.Command("sh", "-c", `echo "spawn claude ENOENT" >&2; exit 1`)
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	s := &session{
+		proc:  adapter.WatchProcess(cmd, stderr, func(string, ...any) {}, "claude bridge"),
+		fatal: "Error: Claude Code process exited with code 1",
+	}
+	_ = s.proc.Wait()
+
+	msg, kind := s.exitReason()
+	if want := "claude exited: Error: Claude Code process exited with code 1\nspawn claude ENOENT"; msg != want || kind != "" {
+		t.Fatalf("exitReason = %q, %q\nwant %q", msg, kind, want)
 	}
 }

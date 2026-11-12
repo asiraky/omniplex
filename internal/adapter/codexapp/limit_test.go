@@ -196,10 +196,10 @@ func wiredSession(t *testing.T, reply map[string]any) (*session, *jsonrpc.Conn, 
 			return r, nil
 		}
 		return map[string]any{}, nil
-	}, nil)
+	}, nil, nil)
 	s := subagentSession(t)
 	s.turnID, s.serverTurnID = "omniplex-turn", "codex-turn-1"
-	s.conn = jsonrpc.NewConn(cr, cw, nil, s.handleNotification)
+	s.conn = jsonrpc.NewConn(cr, cw, nil, s.handleNotification, nil)
 	t.Cleanup(func() { _ = cw.Close(); _ = sw.Close() })
 	return s, server, rec
 }
@@ -337,8 +337,8 @@ func TestModelLimitUpdateDoesNotVoidARead(t *testing.T) {
 		// Merged before the reply is written: deterministically mid-read.
 		s.mergeUpdate(json.RawMessage(`{"rateLimits":{"limitId":"codex_bengalfox","primary":{"usedPercent":100,"resetsAt":1789900000}}}`))
 		return json.RawMessage(`{"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":100,"resetsAt":1789000000}}}}`), nil
-	}, nil)
-	s.conn = jsonrpc.NewConn(cr, cw, nil, nil)
+	}, nil, nil)
+	s.conn = jsonrpc.NewConn(cr, cw, nil, nil, nil)
 	t.Cleanup(func() { _ = cw.Close(); _ = sw.Close() })
 
 	if _, err := s.readLimits(context.Background()); err != nil {

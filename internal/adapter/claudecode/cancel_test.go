@@ -25,8 +25,8 @@ func TestCancelFinishesTurnWhenBridgeConfirmsInterrupt(t *testing.T) {
 			t.Fatalf("bridge received %q, want interrupt", method)
 		}
 		return map[string]any{}, nil
-	}, nil)
-	client := jsonrpc.NewConn(clientRead, clientWrite, nil, nil)
+	}, nil, nil)
+	client := jsonrpc.NewConn(clientRead, clientWrite, nil, nil, nil)
 	t.Cleanup(func() {
 		_ = clientWrite.Close()
 		_ = serverWrite.Close()

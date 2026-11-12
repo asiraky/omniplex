@@ -7,12 +7,10 @@
 package codexapp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"reflect"
@@ -325,6 +323,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		mcpOurs:   mcpOurs,
 		host:      host,
 		cmd:       cmd,
+		proc:      adapter.WatchProcess(cmd, stderr, host.Logf, "codex"),
 		tree:      tree,
 		cwd:       o.Cwd,
 		events:    make(chan proto.Emission, 256),
@@ -333,9 +332,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		effort:    o.Effort,
 		extraDirs: o.ExtraDirs,
 	}
-	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification)
+	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
 
-	go s.drainStderr(stderr)
 	go s.watchExit()
 
 	var initRes struct {
@@ -345,6 +343,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		"clientInfo":   map[string]any{"name": "omniplex", "version": "0.1.0"},
 		"capabilities": map[string]any{},
 	}, &initRes); err != nil {
+		err = s.died(err)
 		_ = s.Close()
 		return nil, fmt.Errorf("codex initialize: %w", err)
 	}
@@ -398,7 +397,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		} `json:"thread"`
 	}
 	if err := s.conn.Call(ctx, method, startParams, &startRes); err != nil {
-		if o.HarnessSessionID == "" {
+		// A rollout too large to read back is not a missing thread: starting
+		// a fresh one would quietly drop the whole conversation.
+		if o.HarnessSessionID == "" || jsonrpc.TooLarge(err) {
 			_ = s.Close()
 			return nil, fmt.Errorf("codex %s: %w", method, err)
 		}
@@ -438,6 +439,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 type session struct {
 	host adapter.HostServices
 	cmd  *exec.Cmd
+	proc *adapter.Process
 	tree procgroup.Group
 	conn *jsonrpc.Conn
 	cwd  string
@@ -601,7 +603,7 @@ func (s *session) startTurn(ctx context.Context, id, text string, images []proto
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
-	err = s.conn.Call(ctx, "turn/start", params, &res)
+	err = s.died(s.conn.Call(ctx, "turn/start", params, &res))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.turnID != id {
@@ -638,7 +640,23 @@ func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 		"input":               promptInput(in.Text, in.Images),
 	}
 	var res json.RawMessage
-	return s.conn.Call(ctx, "turn/start", params, &res)
+	return s.died(s.conn.Call(ctx, "turn/start", params, &res))
+}
+
+// died swaps a call's error for the reason codex is gone, when it is. A codex
+// that dies on a call fails it, and that error can be the first or only word
+// anyone gets: initialize has no turn, and turn/start's error races
+// watchExit's.
+func (s *session) died(err error) error {
+	if err == nil {
+		return nil
+	}
+	select {
+	case <-s.conn.Done():
+		return errors.New(s.proc.ExitReason(s.conn.Err()))
+	default:
+		return err
+	}
 }
 
 // promptInput is a turn's input items. Images lead, the way every chat UI
@@ -911,7 +929,7 @@ func (s *session) Close() error {
 			_ = s.cmd.Process.Kill()
 		}
 		s.tree.Kill()
-		_ = s.cmd.Wait()
+		_ = s.proc.Wait()
 	})
 	return nil
 }
@@ -930,22 +948,13 @@ func (s *session) watchExit() {
 	s.mu.Unlock()
 	if turn != "" {
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: turn, StopReason: proto.StopError, Error: "harness exited",
+			TurnID: turn, StopReason: proto.StopError, Error: s.proc.ExitReason(s.conn.Err()),
 		}))
 	}
 	s.emitMu.Lock()
 	s.eventsClosed = true
 	close(s.events)
 	s.emitMu.Unlock()
-}
-
-func (s *session) drainStderr(r io.ReadCloser) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			s.host.Logf("codex stderr: %s", line)
-		}
-	}
 }
 
 func (s *session) emit(e proto.Emission) {
