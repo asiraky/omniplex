@@ -19,10 +19,6 @@ import (
 )
 
 const schema = `
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
-PRAGMA synchronous=NORMAL;
-
 CREATE TABLE IF NOT EXISTS threads (
   id            TEXT PRIMARY KEY,
   cwd           TEXT NOT NULL,
@@ -71,6 +67,21 @@ CREATE INDEX IF NOT EXISTS events_type_time ON events(type, created_at);
 
 ` + toolCallIndexDDL + `
 `
+
+// dsnPragmas go in the DSN rather than through db.Exec because a pragma is
+// per connection: one Exec reaches whichever pooled connection ran it, and
+// every other connection keeps the defaults — a full fsync on each commit,
+// in synchronous's case. journal_size_limit is what lets the WAL shrink back
+// after a checkpoint instead of keeping its high-water mark on disk.
+//
+// auto_vacuum is not here: it lives in the file header, not the connection,
+// and setting it on an incremental database writes that header, so each
+// new connection would open a write transaction just to connect. It is set
+// once, by convertToIncrementalVacuum.
+const dsnPragmas = "?_pragma=busy_timeout(5000)" +
+	"&_pragma=journal_mode(WAL)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=journal_size_limit(67108864)"
 
 // toolCallKey is the expression events_tool_body is built on, and ToolBody
 // must say it the same way or the planner will not match it to the index. The
@@ -158,10 +169,11 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err := sql.Open("sqlite", path+dsnPragmas)
 	if err != nil {
 		return nil, err
 	}
+	convertToIncrementalVacuum(db)
 	if err := renameSessionsToThreads(db, path); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("rename sessions to threads: %w", err)

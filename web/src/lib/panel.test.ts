@@ -1,7 +1,17 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { artefactSurface, closeSurface, defaultPanel, fileSurface, loadPanel, openSurface, putSurface, savePanel } from "./panel";
+import {
+  artefactSurface,
+  closeSurface,
+  defaultPanel,
+  fileSurface,
+  loadPanel,
+  newTerminalSurface,
+  openSurface,
+  putSurface,
+  savePanel,
+} from "./panel";
 
 describe("panel surfaces", () => {
   it("reuses a singleton and a repeated file path", () => {
@@ -70,5 +80,41 @@ describe("panel persistence", () => {
   it("falls back cleanly on garbage", () => {
     localStorage.setItem("omniplex.panel.v1:s3", "not json");
     expect(loadPanel("s3")).toEqual(defaultPanel());
+  });
+});
+
+describe("terminal tabs", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("each get their own shell id", () => {
+    const a = newTerminalSurface(defaultPanel());
+    const p = openSurface(defaultPanel(), a);
+    const b = newTerminalSurface(p);
+    expect(a.termId).toBeTruthy();
+    expect(b.termId).toBeTruthy();
+    expect(b.termId).not.toBe(a.termId);
+  });
+
+  it("keep their shell id across a reload", () => {
+    const p = openSurface(defaultPanel(), newTerminalSurface(defaultPanel()));
+    savePanel("t1", p);
+    expect(loadPanel("t1")).toEqual(p);
+  });
+
+  it("saved without a shell id get a fresh one each", () => {
+    localStorage.setItem(
+      "omniplex.panel.v1:t2",
+      JSON.stringify({
+        surfaces: [
+          { id: "terminal:1", kind: "terminal" },
+          { id: "terminal:2", kind: "terminal" },
+        ],
+        active: "terminal:1",
+      }),
+    );
+    const [a, b] = loadPanel("t2").surfaces;
+    expect(a.termId).toBeTruthy();
+    expect(b.termId).toBeTruthy();
+    expect(a.termId).not.toBe(b.termId);
   });
 });

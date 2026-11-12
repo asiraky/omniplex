@@ -97,10 +97,14 @@ type Server struct {
 	liveMu sync.Mutex
 	live   map[*conn]struct{}
 
-	// termLive tracks open terminal sockets by device, for the same reason —
-	// a revoked phone must not keep an interactive shell.
-	termMu   sync.Mutex
-	termLive map[*websocket.Conn]string
+	// terms are the live terminals, keyed by device and the client's id. They
+	// outlive their sockets for termTTL; a test shortens it.
+	termMu  sync.Mutex
+	terms   map[string]*termSession
+	termTTL time.Duration
+	// termClosed are ids DELETE ended, with when, so a spawn that was still
+	// resolving its command when the tab closed does not start a shell.
+	termClosed map[string]time.Time
 }
 
 type Options struct {
@@ -146,7 +150,9 @@ type Options struct {
 func New(o Options) *Server {
 	s := &Server{
 		live:          map[*conn]struct{}{},
-		termLive:      map[*websocket.Conn]string{},
+		terms:         map[string]*termSession{},
+		termTTL:       termIdleTTL,
+		termClosed:    map[string]time.Time{},
 		id:            uuid.NewString(),
 		mgr:           o.Manager,
 		store:         o.Store,
@@ -431,6 +437,7 @@ func (s *Server) Handler() http.Handler {
 	// A pty per open terminal tab, scoped to the thread's checkout. Behind
 	// the gate like everything else: private by default.
 	mux.HandleFunc("/api/term", s.serveTerm)
+	mux.HandleFunc("DELETE /api/term", s.handleDeleteTerm)
 
 	// In development the bundle on disk is stale or absent, so Vite is the
 	// source of truth for everything that is not the API.
@@ -590,18 +597,8 @@ func (s *Server) closeDevice(id string) {
 		_ = c.ws.Close(websocket.StatusPolicyViolation, "device revoked")
 	}
 
-	s.termMu.Lock()
-	var doomedTerms []*websocket.Conn
-	for ws, device := range s.termLive {
-		if device == id {
-			doomedTerms = append(doomedTerms, ws)
-		}
-	}
-	s.termMu.Unlock()
-
-	for _, ws := range doomedTerms {
-		_ = ws.Close(websocket.StatusPolicyViolation, "device revoked")
-	}
+	// A revoked phone must not keep an interactive shell, attached or not.
+	s.termEndDevice(id)
 }
 
 func withCORS(h http.Handler, allowAny bool) http.Handler {

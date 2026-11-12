@@ -43,9 +43,10 @@ export interface ClientEvents {
   onAccess(access: Access): void;
 }
 
-// Ceilings, not delays: each wait is drawn uniformly below its step (full
-// jitter), so a server restart does not bring every tab back in lockstep.
-const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
+// Reconnect ceilings in ms, not delays: each wait is drawn uniformly below its
+// step (full jitter), so a server restart does not bring every tab back in
+// lockstep. The terminal socket climbs the same ladder.
+export const BACKOFF = [300, 1000, 2000, 4000, 8000, 16000];
 
 // A woken phone often holds a socket that looks open and is dead, and the OS
 // can take minutes to say so. Any frame within PROBE_TIMEOUT of a ping proves

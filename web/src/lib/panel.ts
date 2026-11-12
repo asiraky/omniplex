@@ -3,6 +3,8 @@
 // of `file:<path>`, `artefact:<id>` and `terminal:<n>` tabs — persisted per thread, so the panel a thread was left
 // with is the panel it reopens to.
 
+import { uuid } from "~/client";
+
 export type SurfaceKind = "diff" | "files" | "jobs" | "file" | "terminal" | "artefacts" | "artefact";
 
 // A saved panel naming a kind that is gone (the MCP tab moved to the Skills
@@ -17,6 +19,11 @@ export interface Surface {
   path?: string;
   /** artefact surfaces: which artefact. */
   artefactId?: string;
+  /**
+   * terminal surfaces: the server's id for the shell. Persisted with the
+   * panel, so a reload or a return to the thread reattaches to the same shell.
+   */
+  termId?: string;
 }
 
 export interface PanelState {
@@ -46,7 +53,10 @@ export function loadPanel(threadId: string): PanelState {
           KINDS.includes(s.kind) &&
           (s.kind !== "file" || typeof s.path === "string") &&
           (s.kind !== "artefact" || typeof s.artefactId === "string"),
-      );
+      )
+      // A terminal saved before terminals had ids gets one: its old shell is
+      // long gone, so a fresh id spawns a fresh one.
+      .map((s) => (s.kind === "terminal" && typeof s.termId !== "string" ? { ...s, termId: uuid() } : s));
     if (surfaces.length === 0) return defaultPanel();
     const active = surfaces.some((s) => s.id === parsed.active) ? parsed.active : surfaces[0].id;
     return { surfaces, active };
@@ -89,7 +99,7 @@ export function newTerminalSurface(state: PanelState): Surface {
   // cheaper than persisting a counter.
   let n = ++terminalSeq;
   while (state.surfaces.some((s) => s.id === `terminal:${n}`)) n = ++terminalSeq;
-  return { id: `terminal:${n}`, kind: "terminal" };
+  return { id: `terminal:${n}`, kind: "terminal", termId: uuid() };
 }
 
 export function fileSurface(path: string): Surface {
