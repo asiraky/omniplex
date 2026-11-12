@@ -503,6 +503,11 @@ type session struct {
 	// an id that drops out without a terminal row of its own was reaped, and
 	// the job is finished here so it cannot spin forever.
 	background map[string]bool
+	// todos holds the ids of the main agent's TodoWrite calls, which go out
+	// as plan.updated rather than tool calls. The id is remembered from the
+	// stream until the tool result arrives, so neither the start nor the
+	// result grows a tool row for a call the transcript shows as a task list.
+	todos map[string]bool
 
 	// fatal is the last thing the bridge said before it died. The SDK reports
 	// a harness that refuses to start — an expired login above all — by
@@ -1320,16 +1325,20 @@ func (s *session) handleStreamEvent(msg map[string]json.RawMessage) {
 			s.streams[parent] = st
 		}
 		b := &block{kind: ev.ContentBlock.Type}
+		todo := false
 		switch ev.ContentBlock.Type {
 		case "text", "thinking":
 			b.blockID = fmt.Sprintf("%s:%d", st.messageID, ev.Index)
 		case "tool_use":
 			b.toolID, b.name = ev.ContentBlock.ID, ev.ContentBlock.Name
+			if todo = isPlanTool(b.name, parent); todo {
+				s.markTodo(b.toolID)
+			}
 		}
 		st.blocks[ev.Index] = b
 		s.mu.Unlock()
 
-		if ev.ContentBlock.Type == "tool_use" {
+		if ev.ContentBlock.Type == "tool_use" && !todo {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID:           turn,
 				ToolCallID:       ev.ContentBlock.ID,
@@ -1433,7 +1442,31 @@ func (s *session) handleAssistant(msg map[string]json.RawMessage) {
 		// lead with streaming text (the only other place a harness-initiated
 		// turn is opened), so open one here too — otherwise the session reads
 		// idle while the harness is invoking tools.
-		s.ensureTurn()
+		turn := s.ensureTurn()
+		if isPlanTool(c.Name, parent) {
+			if steps, ok := todoSteps(c.Input); ok {
+				s.mu.Lock()
+				s.markTodo(c.ID)
+				s.mu.Unlock()
+				s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
+					TurnID: turn, ToolCallID: c.ID, Steps: steps,
+				}))
+				continue
+			}
+			// Input that is not a todo list is shown as the plain tool call
+			// it is, so nothing vanishes. The stream swallowed its start, so
+			// that goes out first.
+			s.mu.Lock()
+			swallowed := s.todos[c.ID]
+			delete(s.todos, c.ID)
+			s.mu.Unlock()
+			if swallowed {
+				s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
+					TurnID: turn, ToolCallID: c.ID, Kind: toolKind(c.Name), Title: c.Name,
+					Status: proto.StatusPending,
+				}))
+			}
+		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID:       c.ID,
 			Status:           proto.StatusInProgress,
@@ -1473,6 +1506,15 @@ func (s *session) handleUser(msg map[string]json.RawMessage) {
 
 	for _, c := range m.Message.Content {
 		if c.Type != "tool_result" {
+			continue
+		}
+		s.mu.Lock()
+		todo := s.todos[c.ToolUseID]
+		delete(s.todos, c.ToolUseID)
+		s.mu.Unlock()
+		if todo {
+			// The list already went out as plan.updated; a result here would
+			// give the projection a tool row with nothing to show.
 			continue
 		}
 		status := proto.StatusCompleted
@@ -1986,6 +2028,47 @@ func remarshal(msg map[string]json.RawMessage, out any) {
 		return
 	}
 	_ = json.Unmarshal(b, out)
+}
+
+// isPlanTool reports whether a tool call is the main agent's task list. A
+// subagent's TodoWrite stays a plain tool call: its list is scratch work
+// inside the Task row, not the turn's plan.
+func isPlanTool(name, parent string) bool {
+	return name == "TodoWrite" && parent == ""
+}
+
+// markTodo records a TodoWrite call id. The caller holds s.mu.
+func (s *session) markTodo(id string) {
+	if s.todos == nil {
+		s.todos = map[string]bool{}
+	}
+	s.todos[id] = true
+}
+
+// todoSteps decodes TodoWrite's input into plan steps. ok is false when the
+// input carries no todo list at all; an empty list is a cleared plan.
+func todoSteps(input json.RawMessage) ([]proto.PlanStep, bool) {
+	var in struct {
+		Todos *[]struct {
+			Content string `json:"content"`
+			Status  string `json:"status"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil || in.Todos == nil {
+		return nil, false
+	}
+	steps := make([]proto.PlanStep, 0, len(*in.Todos))
+	for _, t := range *in.Todos {
+		status := proto.PlanPending
+		switch t.Status {
+		case "in_progress":
+			status = proto.PlanRunning
+		case "completed":
+			status = proto.PlanCompleted
+		}
+		steps = append(steps, proto.PlanStep{Text: t.Content, Status: status})
+	}
+	return steps, true
 }
 
 func toolKind(name string) string {
