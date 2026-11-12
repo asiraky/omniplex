@@ -696,6 +696,56 @@ func TestProjectProvisionBlocksHarnessAndStreamsOutput(t *testing.T) {
 	}
 }
 
+// TestFirstTurnRunsInAProvisionedWorkspace: the message a new thread is
+// created with waits out the provision hook, and its turn then reads as
+// running, in the projection and in the stored phase the thread list shows.
+// The end of provisioning must not land on top of it.
+func TestFirstTurnRunsInAProvisionedWorkspace(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	script := "#!/bin/sh\nsleep 0.2\nprintf '{\"cwd\":\"%s\"}' \"$OMNIPLEX_PROJECT_ROOT\" > \"$OMNIPLEX_RESULT_FILE\"\n"
+	if err := os.WriteFile(filepath.Join(root, "provision"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	now := proto.NowMillis()
+	p := project.Project{ID: "p1", Name: "p1", Defaults: project.NormalizeDefaults(project.Defaults{}), Folders: []project.Folder{project.NewFolder("f-p1", root)}, CreatedAt: now, UpdatedAt: now}
+	p.Defaults.Harness = "fake"
+	p.Defaults.Workspace = "managed"
+	p.Folders[0].Provision = "provision"
+	if err := putProject(ctx, st, p); err != nil {
+		t.Fatal(err)
+	}
+	fa := &fakeAdapter{}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	defer mgr.Shutdown()
+	a, err := mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: p.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := a.Prompt(ctx, "first message", nil); err != nil || !res.Queued() {
+		t.Fatalf("prompt while provisioning = %+v, %v", res, err)
+	}
+	waitFor(t, func() bool { return fa.thread() != nil })
+	if in := nextInput(t, fa.thread()); in.Text != "first message" {
+		t.Fatalf("prompt after provisioning = %q, want the first message", in.Text)
+	}
+	waitFor(t, func() bool {
+		s, _ := a.State(ctx)
+		return len(s.Turns) == 1 && s.Workspace.Phase == "ready"
+	})
+	if s, _ := a.State(ctx); s.Phase != "turn" {
+		t.Fatalf("phase = %q, want the first turn running", s.Phase)
+	}
+	if meta, _ := st.Thread(ctx, a.ID); meta.Phase != "turn" {
+		t.Fatalf("stored phase = %q, want turn", meta.Phase)
+	}
+}
+
 func TestClawdCompatibilityHookGetsBranchAndNeedsNoResultFile(t *testing.T) {
 	root := t.TempDir()
 	for _, args := range [][]string{{"init"}, {"config", "user.email", "omniplex@test.invalid"}, {"config", "user.name", "omniplex test"}, {"commit", "--allow-empty", "-m", "initial"}} {
@@ -2709,8 +2759,8 @@ func TestFirstMessageRunsWhenProvisioningFinishes(t *testing.T) {
 	}
 }
 
-func workspaceReady(meta store.ThreadMeta) proto.Emission {
-	return proto.Emit(proto.WorkspaceReady, proto.WorkspaceReadyPayload{Cwd: meta.Cwd})
+func workspaceReady(meta store.ThreadMeta) proto.WorkspaceReadyPayload {
+	return proto.WorkspaceReadyPayload{Cwd: meta.Cwd}
 }
 
 // TestProvisioningQueueHeldAfterRestart: a restart while a thread is being

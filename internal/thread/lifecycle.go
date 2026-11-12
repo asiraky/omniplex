@@ -94,7 +94,7 @@ func (m *Manager) provision(meta store.ThreadMeta, f project.Folder, a *Actor) {
 		return
 	}
 	a.Cwd = result.Cwd
-	ready := proto.Emit(proto.WorkspaceReady, proto.WorkspaceReadyPayload{Cwd: result.Cwd, Branch: result.Branch, Resources: result.Resources})
+	ready := proto.WorkspaceReadyPayload{Cwd: result.Cwd, Branch: result.Branch, Resources: result.Resources}
 	if err := a.Activate(ctx, result.Cwd, meta.Model, meta.Mode, meta.Effort, meta.ServiceTier, ready); err != nil {
 		m.provisionFailed(meta.ID, a, fmt.Errorf("start harness: %w", err))
 		return
