@@ -29,8 +29,9 @@ func (fakeHost) Logf(format string, args ...any) {}
 // fakePi writes a shell script that speaks just enough of pi's RPC protocol
 // for one test: it records argv and every stdin line under dir, answers
 // get_state (streaming while a streaming file exists), and on prompt/abort
-// replays the events files the test staged. An ack_gate file holds the
-// prompt's response until ack_open appears, standing in for pi's preflight.
+// replays the events files the test staged: pre_events before the prompt's
+// ack, events after it. An ack_gate file holds the prompt's response until
+// ack_open appears, standing in for pi's preflight.
 func fakePi(t *testing.T, dir string, promptResponse string) string {
 	t.Helper()
 	if promptResponse == "" {
@@ -52,9 +53,11 @@ while IFS= read -r line; do
       if [ -f "$DIR/ack_gate" ]; then
         # Pi's preflight: the ack waits, but the loop keeps reading stdin.
         ( while [ ! -f "$DIR/ack_open" ]; do sleep 0.02; done
+          [ -f "$DIR/pre_events" ] && cat "$DIR/pre_events"
           printf '%%s\n' "%s"
           [ -f "$DIR/events" ] && cat "$DIR/events" ) &
       else
+        [ -f "$DIR/pre_events" ] && cat "$DIR/pre_events"
         printf '%%s\n' "%s"
         [ -f "$DIR/events" ] && cat "$DIR/events"
       fi
@@ -387,9 +390,7 @@ func TestPromptAuthRefusal(t *testing.T) {
 
 // Pi acks a prompt only after its preflight, which can run a whole compaction
 // or wait on an extension's dialog. Prompt must return without that ack, and
-// a Stop while it is outstanding must end the turn: pi's abort does not reach
-// a preflight, and if it never runs anything nothing else would end it. A run
-// the preflight goes on to start is still shown, as pi's own turn.
+// the session must still take a Stop while it is outstanding.
 func TestPromptReturnsBeforeAck(t *testing.T) {
 	dir := t.TempDir()
 	events := []string{
@@ -399,9 +400,11 @@ func TestPromptReturnsBeforeAck(t *testing.T) {
 		`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{}}}`,
 		`{"type":"agent_settled"}`,
 	}
+	// The prompt runs, so pi is streaming from its ack on.
 	for name, body := range map[string]string{
-		"events":   strings.Join(events, "\n") + "\n",
-		"ack_gate": "",
+		"events":    strings.Join(events, "\n") + "\n",
+		"ack_gate":  "",
+		"streaming": "",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -422,28 +425,20 @@ func TestPromptReturnsBeforeAck(t *testing.T) {
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel while the ack is outstanding: %v", err)
 	}
-	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
-	if final := got[len(got)-1].Payload.(proto.TurnFinishedPayload); final.TurnID != "t1" || final.StopReason != proto.StopCancelled {
-		t.Fatalf("stopped turn wrong: %+v", final)
-	}
 
 	if err := os.WriteFile(filepath.Join(dir, "ack_open"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got = drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
-	started, ok := got[0].Payload.(proto.TurnStartedPayload)
-	if !ok || started.TurnID == "t1" {
-		t.Fatalf("late run did not open a turn of its own: %+v", got[0])
-	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
 	var text string
 	for _, e := range got {
-		if p, ok := e.Payload.(proto.MessageChunkPayload); ok && p.TurnID == started.TurnID {
+		if p, ok := e.Payload.(proto.MessageChunkPayload); ok && p.TurnID == "t1" {
 			text += p.Delta
 		}
 	}
 	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
-	if text != "late" || final.TurnID != started.TurnID || final.StopReason != proto.StopEndTurn {
-		t.Fatalf("late run wrong: text=%q final=%+v", text, final)
+	if text != "late" || final.TurnID != "t1" || final.StopReason != proto.StopEndTurn {
+		t.Fatalf("turn after a delayed ack wrong: text=%q final=%+v", text, final)
 	}
 }
 
@@ -484,8 +479,7 @@ func TestPromptPiRanNothingEndsTurn(t *testing.T) {
 
 // A prompt that runs is acked just before its run starts, so pi already
 // reports itself streaming when the ack lands and its agent_start is still in
-// flight. That turn is left for agent_settled; a Stop pressed before
-// agent_start arrives still ends it.
+// flight. That turn is left for agent_settled.
 func TestPromptAckedWhileStreamingStaysOpen(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "streaming"), nil, 0o644); err != nil {
@@ -496,44 +490,81 @@ func TestPromptAckedWhileStreamingStaysOpen(t *testing.T) {
 		t.Fatalf("Prompt: %v", err)
 	}
 	stillOpen(t, s)
-	if err := s.Cancel(context.Background()); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
-	if final := got[len(got)-1].Payload.(proto.TurnFinishedPayload); final.TurnID != "t1" || final.StopReason != proto.StopCancelled {
-		t.Fatalf("stopped turn wrong: %+v", final)
-	}
 }
 
-// Pi answers abort only once idle, so a run that has started but is still
-// going after the answer is a new one, begun after the abort. Stop leaves it
-// to settle rather than end a turn whose work carries on under its id.
-func TestCancelLeavesRunStartedAfterAbort(t *testing.T) {
+// Pi's abort does not reach a command's handler, but Stop withdraws its
+// dialogs, and the handler returning is the ack. The turn ends as the Stop
+// the user pressed, not as a command that finished.
+func TestStoppedCommandEndsCancelled(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "events"), []byte(`{"type":"agent_start"}`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ack_gate"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
-	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "go"}); err != nil {
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "/uitest"}); err != nil {
 		t.Fatalf("Prompt: %v", err)
-	}
-	// Prompt returns before the ack, so wait for pi's get_state, sent once
-	// the ack and agent_start are in, before pressing Stop.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		lines, _ := os.ReadFile(filepath.Join(dir, "lines"))
-		if strings.Count(string(lines), `"type":"get_state"`) >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no get_state after the ack; pi saw:\n%s", lines)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	if err := s.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 	stillOpen(t, s)
+	if err := os.WriteFile(filepath.Join(dir, "ack_open"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	if final := got[len(got)-1].Payload.(proto.TurnFinishedPayload); final.TurnID != "t1" || final.StopReason != proto.StopCancelled {
+		t.Fatalf("stopped command turn wrong: %+v", final)
+	}
+}
+
+// A command whose handler throws is still acked as a success: pi reports the
+// throw only as an extension_error, just before the ack. The turn ends with
+// that error rather than as a command that worked.
+func TestFailedCommandEndsWithError(t *testing.T) {
+	dir := t.TempDir()
+	pre := `{"type":"extension_error","extensionPath":"command:uitest","event":"command","error":"uitest: no fixture"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "pre_events"), []byte(pre), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "/uitest"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.TurnFinished) })
+	final := got[len(got)-1].Payload.(proto.TurnFinishedPayload)
+	if final.TurnID != "t1" || final.StopReason != proto.StopError || final.Error != "uitest: no fixture" {
+		t.Fatalf("failed command turn wrong: %+v", final)
+	}
+}
+
+// pi's settle clears isStreaming before agent_settled goes out, so a
+// get_state answered in between reads idle for a run that is ending. That
+// turn is the settle's to close, with the run's own stop reason.
+func TestUnrunCloseLeavesARunToItsSettle(t *testing.T) {
+	s := &session{
+		host:      fakeHost{},
+		events:    make(chan proto.Emission, 8),
+		done:      make(chan struct{}),
+		rpcDone:   make(chan struct{}),
+		pending:   map[string]chan rpcResponse{},
+		editPaths: map[string]string{},
+		dialogs:   map[string]dialog{},
+	}
+	s.turnID, s.ranTurn = "t1", "t1"
+	s.closeUnrunTurn("t1")
+	if s.turnID != "t1" {
+		t.Fatal("closed a turn whose run had started")
+	}
+	s.turnID, s.ranTurn = "t2", ""
+	s.closeUnrunTurn("t1")
+	if s.turnID != "t2" {
+		t.Fatal("closed a turn the ack was not for")
+	}
+	select {
+	case e := <-s.events:
+		t.Fatalf("emitted %+v", e)
+	default:
+	}
 }
 
 // A refusal only closes the turn it was sent for. One that lands after that

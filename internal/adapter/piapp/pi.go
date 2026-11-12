@@ -320,10 +320,10 @@ type session struct {
 	// cancelled; each removes itself when its Elicit returns.
 	dialogs map[string]dialog
 	turnID  string
-	// ran is the turn pi has started an agent run for (agent_start). A prompt
-	// pi acks without one ran no agent — an extension command, or an input
-	// handler that took it — and gets no agent_settled to close its turn.
-	ran string
+	// ranTurn is the turn pi has started an agent run for (agent_start). A
+	// prompt pi acks without one ran no agent — an extension command, or an
+	// input handler that took it — and gets no agent_settled to close it.
+	ranTurn string
 	// editPaths holds the file each running edit call names, by item id.
 	// tool_execution_end carries the result but not the args, and the diff
 	// it becomes needs the path.
@@ -560,7 +560,8 @@ func (s *session) awaitPromptAck(turnID string, ack <-chan rpcResponse, release 
 // agent_settled, so nothing else would ever close the turn. A prompt that does
 // run is acked just before its run starts, which flips isStreaming at once, so
 // get_state, sent after the ack, tells the two apart. A run the handler sets
-// off later still arrives, as a harness-initiated turn (see ensureTurn).
+// off later still arrives, as a harness-initiated turn (see ensureTurn). If
+// get_state fails the turn stays open, and Stop's kill timer ends it.
 func (s *session) endIfNoRun(turnID string) {
 	var state struct {
 		IsStreaming bool `json:"isStreaming"`
@@ -572,7 +573,7 @@ func (s *session) endIfNoRun(turnID string) {
 	if state.IsStreaming {
 		return
 	}
-	s.closeTurn(turnID, false)
+	s.closeUnrunTurn(turnID)
 }
 
 // clearTurn resets the active turn id if it is still ours. Guarded because the
@@ -589,25 +590,16 @@ func (s *session) clearTurn(turnID string) {
 // there is no coalescing to do, but skipping the call when no turn is open
 // keeps a stray stop press from aborting a run that starts a moment later.
 // Open extension dialogs are withdrawn with it: stop means stop.
-//
-// Pi answers abort only once it is idle, after the aborted run's
-// agent_settled, so a turn still open by then has no run left to settle it: a
-// prompt still in preflight, or one pi took without running anything. Cancel
-// closes it itself rather than leave the thread working forever.
 func (s *session) Cancel(ctx context.Context) error {
 	s.cancelDialogs()
 	s.mu.Lock()
-	turn := s.turnID
-	s.aborted = turn
+	idle := s.turnID == ""
+	s.aborted = s.turnID
 	s.mu.Unlock()
-	if turn == "" {
+	if idle {
 		return nil
 	}
-	if err := s.call(ctx, map[string]any{"type": "abort"}, nil); err != nil {
-		return err
-	}
-	s.closeTurn(turn, true)
-	return nil
+	return s.call(ctx, map[string]any{"type": "abort"}, nil)
 }
 
 // SetModel switches models mid-session. Model ids are "provider/modelId",
@@ -736,7 +728,7 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 	case "agent_start":
 		turn := s.ensureTurn()
 		s.mu.Lock()
-		s.ran = turn
+		s.ranTurn = turn
 		s.mu.Unlock()
 
 	case "message_start":
@@ -863,10 +855,23 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 
 	case "extension_error":
 		var p struct {
+			Event string `json:"event"`
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &p)
 		s.host.Logf("pi extension error: %s", p.Error)
+		// A command whose handler threw is still acked as a success, and it
+		// ran nothing, so this is the only word of its failure. Pi sends it
+		// before the ack, while the command's turn is open, and the turn
+		// closes with it as its error. One from a command a run's extension
+		// called, mid-run, is the run's message_end's to overwrite.
+		if p.Event == "command" {
+			s.mu.Lock()
+			if s.turnID != "" {
+				s.lastStop, s.lastErr = "error", p.Error
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -1030,27 +1035,33 @@ func (s *session) handleMessageEnd(raw json.RawMessage) {
 }
 
 func (s *session) finishTurn() {
-	s.closeTurn("", false)
+	s.mu.Lock()
+	s.endTurnLocked()
 }
 
-// closeTurn finishes the open turn with the stop reason pi left for it.
-// With want set it closes a turn on pi's behalf, for when pi will not: only
-// want, only while it is still open, and only if pi never started a run for
-// it, since a run that started settles its turn itself. cancelled reports the
-// close as the user's Stop.
-func (s *session) closeTurn(want string, cancelled bool) {
+// closeUnrunTurn closes turnID on pi's behalf, for a prompt pi took without
+// running anything: only while it is still the open turn, and only if pi
+// never started a run for it, since a run settles its own turn. A command
+// that failed reports its error; one Stop was pressed on, cancelled.
+func (s *session) closeUnrunTurn(turnID string) {
 	s.mu.Lock()
-	turn := s.turnID
-	if want != "" && (turn != want || s.ran == want) {
+	if s.turnID != turnID || s.ranTurn == turnID {
 		s.mu.Unlock()
 		return
 	}
-	stop, errMsg := s.lastStop, s.lastErr
-	if cancelled {
-		stop = "aborted"
+	if s.aborted == turnID && s.lastStop == "" {
+		s.lastStop = "aborted"
 	}
+	s.endTurnLocked()
+}
+
+// endTurnLocked finishes the open turn with the stop reason pi left for it.
+// It is entered with mu held and releases it, so the emit happens unlocked.
+func (s *session) endTurnLocked() {
+	turn := s.turnID
+	stop, errMsg := s.lastStop, s.lastErr
 	aborted := turn != "" && s.aborted == turn
-	s.turnID, s.ran = "", ""
+	s.turnID, s.ranTurn = "", ""
 	s.lastStop, s.lastErr, s.aborted = "", "", ""
 	// An edit that never ended (pi died mid-call) has nothing left to claim
 	// its path: the next turn builds different item ids.
