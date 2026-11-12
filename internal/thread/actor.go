@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -2029,12 +2030,7 @@ func (a *Actor) heldIDs() []string {
 
 // holding reports whether any queued prompt is waiting for a human.
 func (a *Actor) holding() bool {
-	for _, q := range a.state.Queued {
-		if q.Held {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(a.state.Queued, func(q projection.QueuedPrompt) bool { return q.Held })
 }
 
 // holdQueued holds every queued prompt that is not held already, in one
