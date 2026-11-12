@@ -10,6 +10,7 @@ import {
   FileTextIcon,
   PencilIcon,
   SearchIcon,
+  ShieldXIcon,
   TerminalIcon,
   Trash2Icon,
   XIcon,
@@ -45,6 +46,9 @@ export function StatusMark({ status }: { status?: ToolStatus }) {
   // Stopped on purpose, not broken: muted, not red.
   if (status === "cancelled")
     return <CircleSlashIcon aria-label="Cancelled" className="text-muted-foreground size-3.5" />;
+  // Refused by the user, so it never ran: neither done nor broken.
+  if (status === "declined")
+    return <ShieldXIcon aria-label="Declined" className="text-muted-foreground size-3.5" />;
   return <CheckIcon aria-label="Done" className="text-success size-3.5" />;
 }
 
@@ -68,6 +72,10 @@ export function ToolCard({ item }: { item: Item }) {
         <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">
           {item.title || "tool"}
         </span>
+        {/* A shield alone reads as nothing much; the word says it never ran. */}
+        {item.status === "declined" && (
+          <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
+        )}
         <StatusMark status={item.status as ToolStatus | undefined} />
         {output && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
@@ -132,6 +140,7 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
     items.filter((i) => i.status === "in_progress" || i.status === "pending").pop() ??
     items[items.length - 1];
   const failed = items.some((i) => i.status === "failed");
+  const declined = items.some((i) => i.status === "declined");
   const kinds = Array.from(new Set(items.map((i) => i.toolKind ?? "other")));
   const ActiveIcon = TOOL_ICON[active?.toolKind ?? "other"] ?? CircleIcon;
 
@@ -155,6 +164,7 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
           <>
             <span className="flex shrink-0 items-center gap-1">
               {failed && <XIcon aria-label="A call failed" className="text-destructive size-3.5" />}
+              {declined && <ShieldXIcon aria-label="A call was declined" className="size-3.5" />}
               {kinds.slice(0, 4).map((k) => {
                 const Icon = TOOL_ICON[k] ?? CircleIcon;
                 return <Icon key={k} className="size-3.5" />;

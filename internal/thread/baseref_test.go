@@ -92,26 +92,174 @@ func TestResolveBaseRefUsesAnExplicitRemoteRefAsIs(t *testing.T) {
 	}
 }
 
-// The local branch is the one the user has been working on. It wins, and
-// nothing goes to the network to second-guess it.
+// A local branch holding work the remote does not have — ahead of it, or
+// diverged from it — is the one the user has been working on. It wins, quietly,
+// even though the remote was asked, and it is not moved.
 func TestResolveBaseRefPrefersALocalBranchOverTheRemote(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		parent func(t *testing.T, root, remoteTip string) string
+	}{
+		{"ahead", func(t *testing.T, root, remoteTip string) string { return remoteTip }},
+		{"diverged", func(t *testing.T, root, remoteTip string) string { return git(t, root, "rev-parse", "main") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _ := gitRepo(t)
+			_, remoteTip := remoteOnlyBase(t, root)
+			parent := tc.parent(t, root, remoteTip)
+			local := git(t, root, "commit-tree", "-p", parent, "-m", "local work", parent+"^{tree}")
+			git(t, root, "branch", "staging", local)
+
+			res, err := resolveBaseRef(context.Background(), root, "staging")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Ref != "staging" || res.Created || res.Fetched || res.FellBack || res.Note != "" {
+				t.Fatalf("resolution = %+v, want the local branch used as-is and quietly", res)
+			}
+			if got := git(t, root, "rev-parse", "staging"); got != local {
+				t.Fatalf("the local branch moved: %s, want %s", got, local)
+			}
+			if got := git(t, root, "rev-parse", "origin/staging"); got != remoteTip {
+				t.Fatalf("origin/staging is %s, want the remote's %s: the remote was not asked", got, remoteTip)
+			}
+		})
+	}
+}
+
+// localBehindRemote is the issue's shape: a local staging made a while ago and
+// never pulled, while origin/staging moved on. The clone's remote-tracking ref
+// is stale — it still points where the local branch does.
+func localBehindRemote(t *testing.T, root string) (remoteTip, local string) {
+	t.Helper()
+	_, remoteTip = remoteOnlyBase(t, root)
+	local = git(t, root, "rev-parse", "main")
+	git(t, root, "branch", "staging", local)
+	git(t, root, "update-ref", "refs/remotes/origin/staging", local)
+	return remoteTip, local
+}
+
+// A local branch that is merely stale starts the worktree from the remote, so
+// a new thread does not begin behind origin — but the local branch, which may
+// be checked out in the user's own checkout, is left exactly where it was.
+func TestResolveBaseRefBranchesFromARemoteThatIsAhead(t *testing.T) {
 	root, _, _ := gitRepo(t)
-	remoteOnlyBase(t, root)
-	git(t, root, "branch", "staging", "main")
-	want := git(t, root, "rev-parse", "staging")
+	remoteTip, local := localBehindRemote(t, root)
 
 	res, err := resolveBaseRef(context.Background(), root, "staging")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Ref != "staging" || res.Created || res.Fetched || res.FellBack {
-		t.Fatalf("resolution = %+v, want the local branch used as-is", res)
+	if res.Ref != "origin/staging" || res.FellBack || res.Note == "" {
+		t.Fatalf("resolution = %+v, want origin/staging with a note", res)
 	}
-	if got := git(t, root, "rev-parse", "staging"); got != want {
-		t.Fatalf("the local branch moved: %s, want %s", got, want)
+	if got := git(t, root, "rev-parse", res.Ref); got != remoteTip {
+		t.Fatalf("%s resolves to %s, want the remote's new commit %s", res.Ref, got, remoteTip)
 	}
-	if hasRemoteRef(context.Background(), root, "origin/staging") {
-		t.Fatal("a fetch happened even though the branch was already local")
+	if got := git(t, root, "rev-parse", "refs/heads/staging"); got != local {
+		t.Fatalf("the local branch moved: %s, want %s", got, local)
+	}
+}
+
+// The remote compared with is the branch's configured upstream, not whatever
+// shares its name on origin.
+func TestResolveBaseRefFollowsTheConfiguredUpstream(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	_, remoteTip := remoteOnlyBase(t, root)
+	local := git(t, root, "rev-parse", "main")
+	git(t, root, "branch", "stage", local)
+	git(t, root, "config", "branch.stage.remote", "origin")
+	git(t, root, "config", "branch.stage.merge", "refs/heads/staging")
+
+	res, err := resolveBaseRef(context.Background(), root, "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "origin/staging" {
+		t.Fatalf("resolution = %+v, want the upstream origin/staging", res)
+	}
+	if got := git(t, root, "rev-parse", res.Ref); got != remoteTip {
+		t.Fatalf("%s resolves to %s, want %s", res.Ref, got, remoteTip)
+	}
+	if got := git(t, root, "rev-parse", "refs/heads/stage"); got != local {
+		t.Fatalf("the local branch moved: %s, want %s", got, local)
+	}
+}
+
+// Offline, the local branch is used: the refresh is best-effort, and an
+// unreachable remote is neither an error nor a wait.
+func TestResolveBaseRefUsesTheLocalBranchWhenTheRemoteIsUnreachable(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	git(t, root, "remote", "add", "origin", filepath.Join(t.TempDir(), "definitely-not-here.git"))
+	git(t, root, "branch", "staging", "main")
+
+	start := time.Now()
+	res, err := resolveBaseRef(context.Background(), root, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "staging" || res.FellBack {
+		t.Fatalf("resolution = %+v, want the local branch", res)
+	}
+	if took := time.Since(start); took >= baseRefreshTimeout {
+		t.Fatalf("resolving took %s, want a fast failure, not a wait on the timeout", took)
+	}
+}
+
+// Offline with a tracking ref that is already ahead: the stale remote ref is
+// still fresher than the local branch, so it is used.
+func TestResolveBaseRefUsesAStaleRemoteRefThatIsAheadWhenOffline(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	remoteTip, local := localBehindRemote(t, root)
+	git(t, root, "update-ref", "refs/remotes/origin/staging", remoteTip)
+	git(t, root, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "definitely-not-here.git"))
+
+	res, err := resolveBaseRef(context.Background(), root, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "origin/staging" || git(t, root, "rev-parse", res.Ref) != remoteTip {
+		t.Fatalf("resolution = %+v, want origin/staging at %s", res, remoteTip)
+	}
+	if got := git(t, root, "rev-parse", "refs/heads/staging"); got != local {
+		t.Fatalf("the local branch moved: %s, want %s", got, local)
+	}
+}
+
+// An explicit remote ref the clone has never fetched is fetched, not dropped
+// for the default branch.
+func TestResolveBaseRefFetchesAnUnseenExplicitRemoteRef(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	_, remoteTip := remoteOnlyBase(t, root)
+
+	res, err := resolveBaseRef(context.Background(), root, "origin/staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "origin/staging" || res.FellBack || res.Created {
+		t.Fatalf("resolution = %+v, want origin/staging used verbatim", res)
+	}
+	if got := git(t, root, "rev-parse", res.Ref); got != remoteTip {
+		t.Fatalf("%s resolves to %s, want %s", res.Ref, got, remoteTip)
+	}
+}
+
+// A remote-tracking ref that is here but stale is refreshed before the local
+// branch is made from it, so the new branch starts at the remote's tip.
+func TestResolveBaseRefRefreshesAStaleRemoteRefBeforeTrackingIt(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	_, remoteTip := remoteOnlyBase(t, root)
+	git(t, root, "update-ref", "refs/remotes/origin/staging", git(t, root, "rev-parse", "main"))
+
+	res, err := resolveBaseRef(context.Background(), root, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "staging" || !res.Created || res.Fetched {
+		t.Fatalf("resolution = %+v, want a created branch that was found, not discovered", res)
+	}
+	if got := git(t, root, "rev-parse", "refs/heads/staging"); got != remoteTip {
+		t.Fatalf("local staging is %s, want the remote's tip %s", got, remoteTip)
 	}
 }
 
@@ -212,6 +360,29 @@ func TestManagedWorktreeBranchesFromARemoteOnlyBaseBranch(t *testing.T) {
 	}
 	if !strings.Contains(state.Workspace.Output, "note: ") || !strings.Contains(state.Workspace.Output, "staging") {
 		t.Fatalf("the fetch was not reported on the workspace card: %q", state.Workspace.Output)
+	}
+}
+
+// End to end: a thread based on a stale local staging starts at origin's tip.
+func TestManagedWorktreeBranchesFromARemoteThatIsAhead(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	remoteTip, local := localBehindRemote(t, root)
+	st, p := testProject(t, root)
+	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	defer mgr.Shutdown()
+
+	a, err := mgr.CreateProject(context.Background(), CreateProjectOptions{
+		ProjectID: p.ID, Workspace: "managed", Branch: "issue/9-on-staging", BaseRef: "staging",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := ready(t, st, a.ID)
+	if got := git(t, meta.Cwd, "rev-parse", "HEAD"); got != remoteTip {
+		t.Fatalf("worktree HEAD %s, want the remote's newer commit %s", got, remoteTip)
+	}
+	if got := git(t, root, "rev-parse", "refs/heads/staging"); got != local {
+		t.Fatalf("the local branch moved: %s, want %s", got, local)
 	}
 }
 

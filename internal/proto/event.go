@@ -118,6 +118,10 @@ const (
 	// ended — interrupted, not broken. It is deliberately not "failed": a
 	// stopped agent did not fail, and painting it red was a lie the UI told.
 	StatusCancelled = "cancelled"
+	// StatusDeclined marks a call the user refused, so it never ran. Not
+	// "failed" for the same reason as cancelled, and not "completed": a
+	// declined command shown as done claims work that did not happen.
+	StatusDeclined = "declined"
 )
 
 // Job kinds. Classified once, at ingestion, by ClassifyJob; every consumer

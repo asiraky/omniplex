@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -136,6 +137,11 @@ type Actor struct {
 	// told anything. Only that turn can be measured: any other would be
 	// compared against a picture of the checkout from the wrong moment.
 	measuring string
+
+	// deltas holds a streamed delta for up to deltaWindow, and deltaFlush
+	// fires when the window closes. deltaFlush is nil when nothing is held.
+	deltas     coalescer
+	deltaFlush *time.Timer
 
 	logf func(string, ...any)
 }
@@ -816,6 +822,10 @@ func (a *Actor) run() {
 	a.attention = a.state.Attention()
 	a.mu.Unlock()
 	for {
+		var flush <-chan time.Time
+		if a.deltaFlush != nil {
+			flush = a.deltaFlush.C
+		}
 		select {
 		case c := <-a.inbox:
 			if a.handle(c) {
@@ -827,12 +837,20 @@ func (a *Actor) run() {
 			// queued prompt needs to be picked up.
 			a.settleStop()
 			a.dispatchQueued(context.Background())
+		case <-flush:
+			a.flushDeltas()
 		}
 	}
 }
 
 func (a *Actor) handle(c command) (stop bool) {
 	ctx := context.Background()
+
+	// Whatever a command reads or decides, it does so on a projection with
+	// every held delta in it. Only another harness event may leave them held.
+	if c.kind != cmdHarnessEvent {
+		a.flushDeltas()
+	}
 
 	// Continuing is a prompt the server writes, so it is turned into one here
 	// where the projection can say which turn is being continued.
@@ -884,7 +902,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.from != a.sess {
 			return false
 		}
-		a.append(*c.emission)
+		a.appendStreamed(*c.emission)
 
 	case cmdHarnessReply:
 		c.onReply()
@@ -948,6 +966,25 @@ func (a *Actor) handle(c command) (stop bool) {
 		cwd, model, mode, effort := c.prompt, c.model, c.mode, c.effort
 		if c.resume {
 			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
+		}
+		// A resumed thread's worktree can be deleted or moved while the
+		// server is down. A harness started there fails later with an error
+		// that never names the directory, so refuse here, where we can.
+		if cwd != "" {
+			info, statErr := os.Stat(cwd)
+			var unusable error
+			switch {
+			case errors.Is(statErr, fs.ErrNotExist):
+				unusable = fmt.Errorf("this thread's workspace %s no longer exists, so it was probably deleted or moved; restore the directory to continue, or start a new thread", cwd)
+			case statErr != nil:
+				unusable = fmt.Errorf("this thread's workspace %s cannot be opened: %w", cwd, statErr)
+			case !info.IsDir():
+				unusable = fmt.Errorf("this thread's workspace %s is no longer a directory; restore it to continue, or start a new thread", cwd)
+			}
+			if unusable != nil {
+				c.reply <- cmdResult{err: unusable}
+				return false
+			}
 		}
 		meta, err := a.store.Thread(ctx, a.ID)
 		if err != nil {
@@ -1584,9 +1621,54 @@ func (a *Actor) dropQueue() {
 	a.sent = nil
 }
 
-// append writes the event, folds it into the projection, and fans it out.
-// This is the only place any of those three happen.
+// appendStreamed appends an event from the harness, holding it for the
+// delta window when it is a delta that can be merged with the ones after it.
+func (a *Actor) appendStreamed(em proto.Emission) {
+	known := func(id string) bool {
+		_, ok := a.state.ItemByID(id)
+		return ok
+	}
+	flushed, held := a.deltas.add(em, known)
+	if len(flushed) > 0 {
+		a.stopDeltaFlush()
+	}
+	for _, f := range flushed {
+		a.write(f)
+	}
+	if !held {
+		a.write(em)
+		return
+	}
+	if a.deltaFlush == nil {
+		a.deltaFlush = time.NewTimer(deltaWindow)
+	}
+}
+
+func (a *Actor) stopDeltaFlush() {
+	if a.deltaFlush != nil {
+		a.deltaFlush.Stop()
+		a.deltaFlush = nil
+	}
+}
+
+// flushDeltas writes the held delta, if any, and closes the window.
+func (a *Actor) flushDeltas() {
+	a.stopDeltaFlush()
+	for _, em := range a.deltas.take() {
+		a.write(em)
+	}
+}
+
+// append writes the event after any deltas still held, so the log keeps the
+// order the events happened in.
 func (a *Actor) append(em proto.Emission) error {
+	a.flushDeltas()
+	return a.write(em)
+}
+
+// write stores the event, folds it into the projection, and fans it out.
+// This is the only place any of those three happen.
+func (a *Actor) write(em proto.Emission) error {
 	ctx := context.Background()
 	em = a.redact(em)
 

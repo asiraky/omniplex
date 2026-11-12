@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,12 +128,12 @@ func signedOut(ctx context.Context, path string, env map[string]string) bool {
 
 // LoginCommand starts Codex's own sign-in flow, which opens the browser and
 // waits for the callback on this machine.
-func (a *Adapter) LoginCommand(ctx context.Context) ([]string, error) {
+func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
 	path, err := exec.LookPath(a.Bin)
 	if err != nil {
-		return nil, fmt.Errorf("the Codex CLI was not found on this machine")
+		return nil, nil, fmt.Errorf("the Codex CLI was not found on this machine")
 	}
-	return []string{path, "login"}, nil
+	return []string{path, "login"}, adapter.MergeEnv(os.Environ(), overlay), nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
@@ -215,6 +216,22 @@ func trustArgs(cwd string) []string {
 	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
 }
 
+// sessionArgs turns on what a session needs that codex leaves off.
+//
+// update_plan has been opt-in since codex 0.152; without it the model never
+// plans, and turn/plan/updated — recorded as plan.updated — never arrives.
+//
+// Codex waits one second for optional MCP servers before the first turn and
+// runs it without any still starting. An npx or uvx server routinely takes
+// longer, so it would be missing from the turn the user just sent. Ten seconds
+// covers them; a server that is ready sooner ends the wait sooner.
+func sessionArgs() []string {
+	return []string{
+		"-c", "tools.update_plan.enabled=true",
+		"-c", "mcp_optional_startup_grace_ms=10000",
+	}
+}
+
 // writableRootsArgs lets a workspace-write sandbox write to folders outside
 // the cwd: the project's home folder, when the session works in a repo.
 func writableRootsArgs(dirs []string) []string {
@@ -236,7 +253,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
+	args := append([]string{"app-server"}, sessionArgs()...)
+	args = append(args, trustArgs(o.Cwd)...)
 	var native []string
 	if len(o.MCPServers) > 0 {
 		all, err := nativeServers(o.Env)
@@ -473,9 +491,30 @@ type session struct {
 	stoppedTurn string
 	// Set while a /compact RPC is awaiting its contextCompaction item, so the
 	// canonical notice can distinguish a human request from auto-compaction.
-	manualCompact  bool
-	lastCompaction string
+	manualCompact bool
+	compaction    compactionCount
+	// decodeWarned holds each notification method and decode error already
+	// logged, so a drifted codex that repeats a bad shape logs it once.
+	decodeWarned map[string]bool
 }
+
+// compactionCount tracks the compactions one codex turn has reported, so the
+// two signals for the same compaction become one notice. A turn can compact
+// more than once, so the turn id alone cannot be the key.
+type compactionCount struct {
+	turn    string
+	items   int // contextCompaction items completed
+	notices int // deprecated thread/compacted notifications
+	emitted int // notices sent for this turn
+}
+
+// compactionSignal is which of codex's two reports of a compaction arrived.
+type compactionSignal int
+
+const (
+	compactionItem   compactionSignal = iota // a contextCompaction item
+	compactionNotice                         // a thread/compacted notification
+)
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
 
@@ -870,20 +909,17 @@ func (s *session) backfillServerTurnLocked(turn, serverTurn string) {
 
 func (s *session) handleRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
-	case "item/commandExecution/requestApproval", "execCommandApproval":
+	case "item/commandExecution/requestApproval":
 		var p struct {
 			ItemID  string `json:"itemId"`
 			Command string `json:"command"`
-			Cwd     string `json:"cwd"`
-			Reason  string `json:"reason"`
 		}
 		_ = json.Unmarshal(params, &p)
-		return s.ask(ctx, p.ItemID, "shell", firstLine(p.Command), params)
+		return decisionResponse(s.ask(ctx, p.ItemID, "shell", firstLine(p.Command), params)), nil
 
-	case "item/fileChange/requestApproval", "applyPatchApproval":
+	case "item/fileChange/requestApproval":
 		var p struct {
 			ItemID    string `json:"itemId"`
-			Reason    string `json:"reason"`
 			GrantRoot string `json:"grantRoot"`
 		}
 		_ = json.Unmarshal(params, &p)
@@ -891,19 +927,20 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 		if p.GrantRoot != "" {
 			title = "Apply file changes outside " + p.GrantRoot
 		}
-		return s.ask(ctx, p.ItemID, "apply_patch", title, params)
+		return decisionResponse(s.ask(ctx, p.ItemID, "apply_patch", title, params)), nil
 
 	case "item/permissions/requestApproval":
 		var p struct {
-			ItemID string `json:"itemId"`
-			Reason string `json:"reason"`
+			ItemID      string          `json:"itemId"`
+			Reason      string          `json:"reason"`
+			Permissions json.RawMessage `json:"permissions"`
 		}
 		_ = json.Unmarshal(params, &p)
 		title := "Grant additional permissions"
 		if p.Reason != "" {
 			title = p.Reason
 		}
-		return s.ask(ctx, p.ItemID, "permissions", title, params)
+		return permissionsResponse(s.ask(ctx, p.ItemID, "permissions", title, params), p.Permissions), nil
 
 	case "item/tool/requestUserInput":
 		return s.requestUserInput(ctx, params)
@@ -1025,9 +1062,9 @@ func stringValues(value any) []string {
 	}
 }
 
-// ask routes an approval to a human via the host and maps the answer onto
-// codex's decision vocabulary.
-func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.RawMessage) (any, error) {
+// ask routes an approval to a human via the host and returns the outcome
+// (proto.Outcome*). A host error reads as a rejection.
+func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.RawMessage) string {
 	outcome, err := s.host.RequestPermission(ctx, adapter.PermissionRequest{
 		TurnID:     s.currentTurn(),
 		ToolCallID: itemID,
@@ -1041,11 +1078,16 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 		},
 	})
 	if err != nil {
-		return map[string]any{"decision": "decline"}, nil
+		return proto.OutcomeRejectOnce
 	}
+	return outcome.Outcome
+}
 
+// decisionResponse maps an outcome onto the {decision} reply that command and
+// file change approvals take.
+func decisionResponse(outcome string) map[string]any {
 	decision := "decline"
-	switch outcome.Outcome {
+	switch outcome {
 	case proto.OutcomeAllowOnce:
 		decision = "accept"
 	case proto.OutcomeAllowAlways:
@@ -1053,7 +1095,25 @@ func (s *session) ask(ctx context.Context, itemID, tool, title string, raw json.
 	case proto.OutcomeCancelled:
 		decision = "cancel"
 	}
-	return map[string]any{"decision": decision}, nil
+	return map[string]any{"decision": decision}
+}
+
+// permissionsResponse builds a PermissionsRequestApprovalResponse. Codex grants
+// exactly the profile we send back, so allowing echoes the requested profile
+// and denying (or cancelling, which this reply has no word for) sends an
+// empty one.
+func permissionsResponse(outcome string, requested json.RawMessage) map[string]any {
+	granted, scope := json.RawMessage(`{}`), "turn"
+	switch outcome {
+	case proto.OutcomeAllowAlways:
+		scope = "session"
+		fallthrough
+	case proto.OutcomeAllowOnce:
+		if len(requested) > 0 && string(requested) != "null" {
+			granted = requested
+		}
+	}
+	return map[string]any{"permissions": granted, "scope": scope}
 }
 
 // ---- server → client notifications ----
@@ -1247,7 +1307,7 @@ func (s *session) handleSubagentNotification(method, thread, turn string, params
 		if p.Item.Type == "contextCompaction" {
 			return
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method, turn, params)
 	case "item/agentMessage/delta":
 		s.emitMessageDelta(turn, parseDelta(params))
 	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
@@ -1283,7 +1343,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			TurnID string `json:"turnId"`
 		}
 		_ = json.Unmarshal(params, &p)
-		s.emitContextCompacted(p.TurnID)
+		s.emitContextCompacted(p.TurnID, compactionNotice)
 
 	case "turn/started":
 		// Codex names the turn outright here, which is the one place a
@@ -1309,7 +1369,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			_ = json.Unmarshal(params, &p)
 			turn = s.workingTurn(turn, p.TurnID)
 		}
-		s.handleItem(method == "item/completed", turn, params)
+		s.handleItem(method, turn, params)
 
 	case "item/agentMessage/delta":
 		p := parseDelta(params)
@@ -1328,7 +1388,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// aggregated output, which is what the timeline renders.
 
 	case "turn/plan/updated", "item/plan/delta":
-		s.handlePlan(params)
+		s.handlePlan(method, params)
 
 	case "thread/tokenUsage/updated":
 		var p struct {
@@ -1349,6 +1409,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		}
 		_ = json.Unmarshal(params, &p)
 		t := p.TokenUsage.Total
+		// Codex's input includes the cached and cache-written share; the
+		// canonical input is the uncached remainder, as the usage scanner
+		// reads it from the rollout. Passing it through counted cached
+		// tokens twice wherever input and cache reads are summed.
+		input := max(0, t.InputTokens-t.CachedInputTokens-t.CacheWriteInputTokens)
 		var pct float64
 		window := p.TokenUsage.ModelContextWindow
 		used := p.TokenUsage.Last.TotalTokens
@@ -1359,7 +1424,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			pct = float64(used) / float64(window) * 100
 		}
 		s.emit(proto.Emit(proto.UsageUpdated, proto.UsageUpdatedPayload{
-			Input: t.InputTokens, Output: t.OutputTokens,
+			Input: input, Output: t.OutputTokens,
 			CacheRead: t.CachedInputTokens, CacheWrite: t.CacheWriteInputTokens,
 			ContextPct: pct, ContextUsed: used, ContextWindow: window,
 		}))
@@ -1454,9 +1519,7 @@ type codexItem struct {
 	Phase string `json:"phase"`
 
 	// reasoning
-	Summary []struct {
-		Text string `json:"text"`
-	} `json:"summary"`
+	Summary []string `json:"summary"`
 
 	// commandExecution
 	Command          string `json:"command"`
@@ -1465,29 +1528,125 @@ type codexItem struct {
 	ExitCode         *int   `json:"exitCode"`
 
 	// fileChange
-	Changes []struct {
-		Path string `json:"path"`
-		Kind string `json:"kind"`
-		Diff string `json:"diff"`
-	} `json:"changes"`
+	Changes []codexChange `json:"changes"`
 
 	// mcpToolCall
-	Server string          `json:"server"`
-	Tool   string          `json:"tool"`
-	Result json.RawMessage `json:"result"`
+	Server string         `json:"server"`
+	Tool   string         `json:"tool"`
+	Result *mcpToolResult `json:"result"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 
 	// webSearch
-	Query string `json:"query"`
+	Query  string `json:"query"`
+	Action *struct {
+		Type    string   `json:"type"`
+		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
+		URL     string   `json:"url"`
+		Pattern string   `json:"pattern"`
+	} `json:"action"`
 }
 
-func (s *session) handleItem(completed bool, turn string, params json.RawMessage) {
+// mcpToolResult is an MCP CallToolResult as codex relays it.
+type mcpToolResult struct {
+	Content []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Data     string `json:"data"`
+		MimeType string `json:"mimeType"`
+		URI      string `json:"uri"`
+		Resource *struct {
+			URI  string `json:"uri"`
+			Text string `json:"text"`
+		} `json:"resource"`
+	} `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent"`
+}
+
+// codexChange is one file of a fileChange item. Kind is an object, not a
+// string; an update with a move_path renames Path to MovePath.
+type codexChange struct {
+	Path string `json:"path"`
+	Kind struct {
+		Type     string  `json:"type"` // add | delete | update
+		MovePath *string `json:"move_path"`
+	} `json:"kind"`
+	Diff string `json:"diff"`
+}
+
+// op names what the change does to its file: add, delete, update or move.
+func (c codexChange) op() string {
+	if c.Kind.Type == "update" && c.Kind.MovePath != nil && *c.Kind.MovePath != "" {
+		return "move"
+	}
+	return c.Kind.Type
+}
+
+// fileChangeCall renders a patch as one tool row: a title naming every file,
+// and a diff per file. A patch that only renames is a move and one that only
+// deletes is a delete; anything else is an edit.
+func fileChangeCall(changes []codexChange) (kind, title string, content []proto.ToolContent) {
+	ops := map[string]bool{}
+	names := make([]string, 0, len(changes))
+	for _, c := range changes {
+		op := c.op()
+		ops[op] = true
+		if op != "move" {
+			names = append(names, c.Path)
+			content = append(content, proto.ToolContent{Type: "diff", Path: c.Path, Text: c.Diff})
+			continue
+		}
+		to := *c.Kind.MovePath
+		names = append(names, c.Path+" → "+to)
+		// Codex marks a rename by appending this line to the diff; the
+		// content says it in its own words instead.
+		diff := strings.TrimSuffix(c.Diff, "\n\nMoved to: "+to)
+		content = append(content, proto.ToolContent{Type: "diff", Path: to, Text: "moved from " + c.Path + "\n" + diff})
+	}
+	kind, verb := proto.KindEdit, "Edit"
+	if len(ops) == 1 {
+		switch {
+		case ops["move"]:
+			kind, verb = proto.KindMove, "Move"
+		case ops["delete"]:
+			kind, verb = proto.KindDelete, "Delete"
+		case ops["add"]:
+			verb = "Add"
+		}
+	}
+	return kind, verb + " " + strings.Join(names, ", "), content
+}
+
+// decodeFailed logs a notification that would not decode, once per method
+// and error. Dropping it silently is how every fileChange item went missing.
+func (s *session) decodeFailed(method string, err error) {
+	key := method + "\n" + err.Error()
+	s.mu.Lock()
+	seen := s.decodeWarned[key]
+	if !seen {
+		if s.decodeWarned == nil {
+			s.decodeWarned = map[string]bool{}
+		}
+		s.decodeWarned[key] = true
+	}
+	s.mu.Unlock()
+	if !seen {
+		s.host.Logf("codex: dropped %s that failed to decode: %v", method, err)
+	}
+}
+
+func (s *session) handleItem(method, turn string, params json.RawMessage) {
 	var p struct {
 		Item   codexItem `json:"item"`
 		TurnID string    `json:"turnId"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
+		s.decodeFailed(method, err)
 		return
 	}
+	completed := method == "item/completed"
 	it := p.Item
 	// open reports whether omniplex has this turn open; a completion arriving with
 	// no open turn is a straggler from after turn/completed. Labelling such
@@ -1503,7 +1662,7 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		if !completed {
 			return
 		}
-		s.emitContextCompacted(p.TurnID)
+		s.emitContextCompacted(p.TurnID, compactionItem)
 
 	case "userMessage":
 		// The turn's own prompt is already in the log via turn.started. A
@@ -1549,8 +1708,8 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			}))
 			return
 		}
-		status := proto.StatusCompleted
-		if it.ExitCode != nil && *it.ExitCode != 0 {
+		status := itemStatus(it.Status)
+		if status == proto.StatusCompleted && it.ExitCode != nil && *it.ExitCode != 0 {
 			status = proto.StatusFailed
 		}
 		var content []proto.ToolContent
@@ -1562,26 +1721,16 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 		}))
 
 	case "fileChange":
-		var content []proto.ToolContent
-		paths := make([]string, 0, len(it.Changes))
-		for _, c := range it.Changes {
-			paths = append(paths, c.Path)
-			content = append(content, proto.ToolContent{Type: "diff", Path: c.Path, Text: c.Diff})
-		}
-		title := "Edit " + strings.Join(paths, ", ")
+		kind, title, content := fileChangeCall(it.Changes)
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
-				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindEdit,
+				TurnID: turn, ToolCallID: it.ID, Kind: kind,
 				Title: title, Status: proto.StatusInProgress,
 			}))
 			return
 		}
-		status := proto.StatusCompleted
-		if it.Status == "failed" || it.Status == "declined" {
-			status = proto.StatusFailed
-		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: status, Title: title, Content: content,
+			ToolCallID: it.ID, Status: itemStatus(it.Status), Title: title, Content: content,
 		}))
 
 	case "mcpToolCall":
@@ -1593,36 +1742,159 @@ func (s *session) handleItem(completed bool, turn string, params json.RawMessage
 			}))
 			return
 		}
+		status, content := mcpOutcome(it)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: proto.StatusCompleted,
-			Content: []proto.ToolContent{{Type: "text", Text: string(it.Result)}},
+			ToolCallID: it.ID, Status: status, Content: content,
 		}))
 
 	case "webSearch":
+		// The query is often empty when the search starts and filled in by
+		// the time it completes, so the completion re-titles the card.
 		if !completed {
 			s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 				TurnID: turn, ToolCallID: it.ID, Kind: proto.KindFetch,
-				Title: "Search: " + it.Query, Status: proto.StatusInProgress,
+				Title: webSearchTitle(it), Status: proto.StatusInProgress,
 			}))
 			return
 		}
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: it.ID, Status: proto.StatusCompleted,
+			ToolCallID: it.ID, Status: proto.StatusCompleted, Title: webSearchTitle(it),
 		}))
 	}
 }
 
+// itemStatus maps a completed item's CommandExecutionStatus or
+// PatchApplyStatus onto the canonical one. A declined call never ran: it is
+// neither done nor broken.
+func itemStatus(status string) string {
+	switch status {
+	case "declined":
+		return proto.StatusDeclined
+	case "failed":
+		return proto.StatusFailed
+	}
+	return proto.StatusCompleted
+}
+
+// mcpOutcome is a completed MCP call's status and what the card shows. A
+// failure carries its error and no result; printing the absent result is what
+// rendered "null" under a green tick.
+func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
+	if it.Status == "failed" || it.Error != nil {
+		msg := "MCP call failed"
+		if it.Error != nil && it.Error.Message != "" {
+			msg = it.Error.Message
+		}
+		return proto.StatusFailed, []proto.ToolContent{{Type: "text", Text: msg}}
+	}
+	if it.Result == nil {
+		return proto.StatusCompleted, nil
+	}
+	var content []proto.ToolContent
+	for _, c := range it.Result.Content {
+		var text string
+		switch c.Type {
+		case "text":
+			text = c.Text
+		case "image", "audio":
+			// The bytes stay off the wire: base64 is unreadable as text and
+			// heavy on a phone. A placeholder says what was there (#287
+			// turns images into thumbnails).
+			text = fmt.Sprintf("[%s: %s, %s]", c.Type, c.MimeType, base64Size(c.Data))
+		case "resource_link":
+			text = c.URI
+		case "resource":
+			if c.Resource != nil {
+				text = c.Resource.Text
+				if text == "" {
+					text = "[resource: " + c.Resource.URI + "]"
+				}
+			}
+		}
+		if text != "" {
+			content = append(content, proto.ToolContent{Type: "text", Text: text})
+		}
+	}
+	// Structured output is often the data itself behind a one-line text
+	// summary, so it is kept unless a text block already carries it — MCP
+	// asks servers to mirror it as text, and printing it twice is noise.
+	if sc := it.Result.StructuredContent; len(sc) > 0 && string(sc) != "null" && !textCarries(content, sc) {
+		content = append(content, proto.ToolContent{Type: "text", Text: string(sc)})
+	}
+	return proto.StatusCompleted, content
+}
+
+// textCarries reports whether a text block holds the same JSON as raw.
+func textCarries(content []proto.ToolContent, raw json.RawMessage) bool {
+	var want any
+	if json.Unmarshal(raw, &want) != nil {
+		return false
+	}
+	for _, c := range content {
+		var got any
+		if json.Unmarshal([]byte(c.Text), &got) == nil && reflect.DeepEqual(got, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// base64Size is the decoded size of base64 data, for a human: "42 KB".
+func base64Size(data string) string {
+	n := len(strings.TrimRight(data, "=")) * 3 / 4
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%d KB", (n+512)/1024)
+}
+
+// webSearchTitle names a web search by what it looked for. Codex fills the
+// item's query for a plain search; the action carries the rest.
+func webSearchTitle(it codexItem) string {
+	if it.Query != "" {
+		return "Search: " + it.Query
+	}
+	if a := it.Action; a != nil {
+		switch {
+		case a.Query != "":
+			return "Search: " + a.Query
+		case len(a.Queries) > 0:
+			return "Search: " + strings.Join(a.Queries, ", ")
+		case a.Type == "openPage" && a.URL != "":
+			return "Open " + a.URL
+		case a.Type == "findInPage" && a.Pattern != "" && a.URL != "":
+			return "Find \"" + a.Pattern + "\" in " + a.URL
+		case a.Type == "findInPage" && a.Pattern != "":
+			return "Find \"" + a.Pattern + "\""
+		}
+	}
+	return "Web search"
+}
+
 // New app-servers emit a contextCompaction item; older ones emit the
 // thread/compacted notification, and transitional versions may emit both.
-func (s *session) emitContextCompacted(turnID string) {
+// Within a turn, the nth compaction is announced by whichever signal reports
+// it first, so both signals count but neither repeats the other.
+func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 	s.mu.Lock()
-	if turnID != "" && turnID == s.lastCompaction {
-		s.mu.Unlock()
-		return
+	if turnID != "" {
+		c := &s.compaction
+		if c.turn != turnID {
+			*c = compactionCount{turn: turnID}
+		}
+		if signal == compactionItem {
+			c.items++
+		} else {
+			c.notices++
+		}
+		if max(c.items, c.notices) <= c.emitted {
+			s.mu.Unlock()
+			return
+		}
+		c.emitted++
 	}
 	manual := s.manualCompact
 	s.manualCompact = false
-	s.lastCompaction = turnID
 	s.mu.Unlock()
 	trigger := "auto"
 	if manual {
@@ -1631,7 +1903,7 @@ func (s *session) emitContextCompacted(turnID string) {
 	s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: trigger}))
 }
 
-func (s *session) handlePlan(params json.RawMessage) {
+func (s *session) handlePlan(method string, params json.RawMessage) {
 	var p struct {
 		Plan []struct {
 			Step   string `json:"step"`
@@ -1647,6 +1919,7 @@ func (s *session) handlePlan(params json.RawMessage) {
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
+		s.decodeFailed(method, err)
 		return
 	}
 	steps := p.Plan

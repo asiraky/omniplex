@@ -238,6 +238,96 @@ func TestMCPElicitationIsRoutedThroughHost(t *testing.T) {
 	}
 }
 
+// permissionHost answers every permission request with a fixed outcome, or
+// fails it when err is set.
+type permissionHost struct {
+	elicitHost
+	outcome string
+	err     error
+	request adapter.PermissionRequest
+}
+
+func (h *permissionHost) RequestPermission(_ context.Context, req adapter.PermissionRequest) (adapter.PermissionOutcome, error) {
+	h.request = req
+	return adapter.PermissionOutcome{Outcome: h.outcome}, h.err
+}
+
+// TestPermissionsApprovalResponse checks the reply against codex's
+// PermissionsRequestApprovalResponse: {permissions: GrantedPermissionProfile,
+// scope: "turn"|"session"}. Allowing grants exactly what was asked for; anything
+// else grants nothing.
+func TestPermissionsApprovalResponse(t *testing.T) {
+	params := json.RawMessage(`{
+		"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","cwd":"/repo","startedAtMs":1,
+		"reason":"Needs network to fetch deps",
+		"permissions":{"network":{"enabled":true},"fileSystem":{"write":["/tmp/cache"]}}
+	}`)
+	requested := `{"network":{"enabled":true},"fileSystem":{"write":["/tmp/cache"]}}`
+	for _, tc := range []struct {
+		name    string
+		outcome string
+		err     error
+		want    string
+	}{
+		{"allow", proto.OutcomeAllowOnce, nil, `{"permissions":` + requested + `,"scope":"turn"}`},
+		{"allow always", proto.OutcomeAllowAlways, nil, `{"permissions":` + requested + `,"scope":"session"}`},
+		{"deny", proto.OutcomeRejectOnce, nil, `{"permissions":{},"scope":"turn"}`},
+		{"cancelled", proto.OutcomeCancelled, nil, `{"permissions":{},"scope":"turn"}`},
+		{"host error", "", errors.New("host gone"), `{"permissions":{},"scope":"turn"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &permissionHost{outcome: tc.outcome, err: tc.err}
+			s := &session{host: host}
+			got, err := s.handleRequest(context.Background(), "item/permissions/requestApproval", params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blob, _ := json.Marshal(got)
+			if string(blob) != tc.want {
+				t.Fatalf("response=%s, want %s", blob, tc.want)
+			}
+			if host.request.Title != "Needs network to fetch deps" || host.request.ToolCallID != "item-1" {
+				t.Fatalf("request=%+v", host.request)
+			}
+		})
+	}
+}
+
+// A request without a profile still gets an object back: permissions is
+// required and must not be null.
+func TestPermissionsApprovalWithoutProfileGrantsEmptyObject(t *testing.T) {
+	s := &session{host: &permissionHost{outcome: proto.OutcomeAllowOnce}}
+	got, err := s.handleRequest(context.Background(), "item/permissions/requestApproval",
+		json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, _ := json.Marshal(got)
+	if string(blob) != `{"permissions":{},"scope":"turn"}` {
+		t.Fatalf("response=%s", blob)
+	}
+}
+
+func TestCommandApprovalDecision(t *testing.T) {
+	for outcome, want := range map[string]string{
+		proto.OutcomeAllowOnce:   "accept",
+		proto.OutcomeAllowAlways: "acceptForSession",
+		proto.OutcomeRejectOnce:  "decline",
+		proto.OutcomeCancelled:   "cancel",
+	} {
+		s := &session{host: &permissionHost{outcome: outcome}}
+		got, err := s.handleRequest(context.Background(), "item/commandExecution/requestApproval",
+			json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","command":"curl example.com\nmore"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blob, _ := json.Marshal(got)
+		if string(blob) != `{"decision":"`+want+`"}` {
+			t.Fatalf("%s: response=%s", outcome, blob)
+		}
+	}
+}
+
 // drain collects every emission a session has queued so far.
 func drain(s *session) []proto.Emission {
 	var out []proto.Emission
