@@ -317,6 +317,11 @@ type Authenticator interface {
 // sign-in that runs the adapter's LoginCommand in a terminal.
 const RemedyLogin = "login"
 
+// RemedyAddAccount marks a remedy for a driver with no account at all: the UI
+// opens Providers settings to add one. Signing in always happens inside an
+// account that already has its own home.
+const RemedyAddAccount = "add_account"
+
 func Ready(facts map[string]string) Availability {
 	return Availability{State: StateReady, Facts: facts}
 }
