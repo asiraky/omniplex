@@ -114,6 +114,8 @@ func AttentionForPhase(phase string) string {
 		return AttentionFailed
 	case "turn", "creating", "provisioning", "cleaning":
 		return AttentionWorking
+	case "background":
+		return AttentionBackground
 	default:
 		return AttentionNeedsPrompt
 	}

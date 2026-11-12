@@ -131,6 +131,14 @@ type Manager struct {
 	// usageScan reads the account-level Usage page out of the harnesses'
 	// transcripts, keeping what it parsed between reports.
 	usageScan *usage.Scanner
+
+	// recoverCtx bounds the continuations a restart owes its threads: one
+	// still waiting to retry when the server shuts down is abandoned, not
+	// started against a store being closed. recoveryRetries is the wait
+	// before each retry; see recovery.go.
+	recoverCtx      context.Context
+	recoverStop     context.CancelFunc
+	recoveryRetries []time.Duration
 }
 
 // probeTTL bounds how stale a readiness answer may be.
@@ -176,7 +184,9 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		quotaSub:        map[string]chan struct{}{},
 		authFlows:       map[string]*authFlow{},
 		usageScan:       usage.NewScanner(),
+		recoveryRetries: recoveryRetries,
 	}
+	m.recoverCtx, m.recoverStop = context.WithCancel(context.Background())
 	for _, ad := range ads {
 		m.drivers[ad.ID()] = ad
 		m.driverOrder = append(m.driverOrder, ad.ID())
@@ -1214,7 +1224,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 }
 
 func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.ThreadMeta, activate bool) (*Actor, error) {
-	if !activate || (meta.Phase != "idle" && meta.Phase != "turn") {
+	if !activate || (meta.Phase != "idle" && !interruptedPhase(meta.Phase)) {
 		return a, nil
 	}
 	// Process startup is intentionally outside the global lifecycle lock. The
@@ -1223,16 +1233,10 @@ func (m *Manager) finishGet(ctx context.Context, a *Actor, meta store.ThreadMeta
 	if err := a.ActivateResume(ctx); err != nil {
 		return nil, err
 	}
-	if meta.Phase == "turn" {
+	if interruptedPhase(meta.Phase) {
 		go m.recoverActor(a)
 	}
 	return a, nil
-}
-
-func (m *Manager) recoverActor(a *Actor) {
-	if err := a.Recover(context.Background()); err != nil {
-		m.logf("continue interrupted turn on %s: %v", a.ID, err)
-	}
 }
 
 // Peek returns the live actor if one exists, without starting a harness.
@@ -1537,6 +1541,7 @@ func (m *Manager) ForceDelete(ctx context.Context, id string) error {
 // Shutdown tears down every harness process. Threads are left resumable: the
 // log is the thread, and a restart reattaches to it.
 func (m *Manager) Shutdown() {
+	m.recoverStop()
 	if m.schedulerCancel != nil {
 		m.schedulerCancel()
 		m.schedulerWG.Wait()
