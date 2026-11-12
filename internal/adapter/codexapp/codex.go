@@ -216,6 +216,22 @@ func trustArgs(cwd string) []string {
 	return []string{"-c", fmt.Sprintf("projects.%s.trust_level=%q", strconv.Quote(cwd), "trusted")}
 }
 
+// sessionArgs turns on what a session needs that codex leaves off.
+//
+// update_plan has been opt-in since codex 0.152; without it the model never
+// plans, and turn/plan/updated — recorded as plan.updated — never arrives.
+//
+// Codex waits one second for optional MCP servers before the first turn and
+// runs it without any still starting. An npx or uvx server routinely takes
+// longer, so it would be missing from the turn the user just sent. Ten seconds
+// covers them; a server that is ready sooner ends the wait sooner.
+func sessionArgs() []string {
+	return []string{
+		"-c", "tools.update_plan.enabled=true",
+		"-c", "mcp_optional_startup_grace_ms=10000",
+	}
+}
+
 // writableRootsArgs lets a workspace-write sandbox write to folders outside
 // the cwd: the project's home folder, when the session works in a repo.
 func writableRootsArgs(dirs []string) []string {
@@ -237,7 +253,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, err
 	}
 
-	args := append([]string{"app-server"}, trustArgs(o.Cwd)...)
+	args := append([]string{"app-server"}, sessionArgs()...)
+	args = append(args, trustArgs(o.Cwd)...)
 	var native []string
 	if len(o.MCPServers) > 0 {
 		all, err := nativeServers(o.Env)
