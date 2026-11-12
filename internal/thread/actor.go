@@ -202,7 +202,7 @@ type command struct {
 	perm         permAsk
 	elicit       elicitAsk
 	elicitResult adapter.ElicitationResult
-	emission     *proto.Emission
+	emission     *proto.Emission // emit: the event; activate: the workspace.ready to record once the harness is up
 	hard         bool // close: append thread.closed, rather than just disposing
 	resume       bool // activate: resume an existing harness conversation
 	reply        chan cmdResult
@@ -797,8 +797,13 @@ func (a *Actor) Emit(ctx context.Context, em proto.Emission) error {
 	return err
 }
 
-func (a *Actor) Activate(ctx context.Context, cwd, model, mode, effort, serviceTier string) error {
-	_, err := a.call(ctx, command{kind: cmdActivate, prompt: cwd, model: model, mode: mode, effort: effort, serviceTier: serviceTier})
+// Activate starts the provider process for a freshly provisioned thread and
+// records ready, the workspace.ready event that ends provisioning. It is
+// written inside the command, before the actor loop can start a prompt queued
+// while the workspace was being made: written after, it would land behind
+// that prompt's turn.started and reset the running turn to idle.
+func (a *Actor) Activate(ctx context.Context, cwd, model, mode, effort, serviceTier string, ready proto.Emission) error {
+	_, err := a.call(ctx, command{kind: cmdActivate, prompt: cwd, model: model, mode: mode, effort: effort, serviceTier: serviceTier, emission: &ready})
 	return err
 }
 
@@ -1161,6 +1166,10 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		if a.sess != nil {
+			// Already up, so nothing can have overtaken the ready.
+			if c.emission != nil {
+				a.readyWorkspace(ctx, *c.emission)
+			}
 			c.reply <- cmdResult{}
 			return false
 		}
@@ -1215,6 +1224,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		a.Cwd, a.sess, a.preparing = cwd, sess, false
 		a.pump(sess)
 		a.startCheckpoints()
+		if c.emission != nil {
+			a.readyWorkspace(ctx, *c.emission)
+		}
 		if c.resume {
 			// Server death ends anything that was waiting in the old process.
 			// Do this only when the harness is actually resumed: viewing the
@@ -1920,6 +1932,16 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 		return "", err
 	}
 	return turnID, nil
+}
+
+// readyWorkspace records the end of provisioning: the stored phase, then the
+// workspace.ready event. Both precede any queued prompt's turn.started, whose
+// phase write must be the one that stands.
+func (a *Actor) readyWorkspace(ctx context.Context, ready proto.Emission) {
+	if err := a.store.SetPhase(ctx, a.ID, "ready"); err != nil {
+		a.logf("set phase ready on %s: %v", a.ID, err)
+	}
+	a.append(ready)
 }
 
 // dispatchQueued starts the oldest queued prompt if the thread is idle and

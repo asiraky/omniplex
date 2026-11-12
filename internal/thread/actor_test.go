@@ -2679,7 +2679,8 @@ func TestSendQueuedPromptNeedsSteerWhileBusy(t *testing.T) {
 
 // TestFirstMessageRunsWhenProvisioningFinishes: the message that creates a
 // thread waits while its workspace is prepared, then runs by itself the
-// moment the harness starts. Nobody needs to resume it.
+// moment the harness starts. Nobody needs to resume it, and its turn reads as
+// running: the end of provisioning comes before it, never on top of it.
 func TestFirstMessageRunsWhenProvisioningFinishes(t *testing.T) {
 	st, fa, meta := provisioningThread(t)
 	ctx := context.Background()
@@ -2690,12 +2691,26 @@ func TestFirstMessageRunsWhenProvisioningFinishes(t *testing.T) {
 	if res, err := a.Prompt(ctx, "first message", nil); err != nil || !res.Queued() {
 		t.Fatalf("prompt while provisioning = %+v, %v", res, err)
 	}
-	if err := a.Activate(ctx, meta.Cwd, "", "", "", ""); err != nil {
+	if err := a.Activate(ctx, meta.Cwd, "", "", "", "", workspaceReady(meta)); err != nil {
 		t.Fatal(err)
 	}
 	if in := nextInput(t, fa.thread()); in.Text != "first message" {
 		t.Fatalf("prompt after provisioning = %q, want the first message", in.Text)
 	}
+	waitFor(t, func() bool {
+		s, _ := a.State(ctx)
+		return len(s.Turns) == 1
+	})
+	if s, _ := a.State(ctx); s.Phase != "turn" || s.Workspace.Phase != "ready" {
+		t.Fatalf("phase = %q, workspace = %q, want the first turn running in a ready workspace", s.Phase, s.Workspace.Phase)
+	}
+	if stored, _ := st.Thread(ctx, meta.ID); stored.Phase != "turn" {
+		t.Fatalf("stored phase = %q, want turn", stored.Phase)
+	}
+}
+
+func workspaceReady(meta store.ThreadMeta) proto.Emission {
+	return proto.Emit(proto.WorkspaceReady, proto.WorkspaceReadyPayload{Cwd: meta.Cwd})
 }
 
 // TestProvisioningQueueHeldAfterRestart: a restart while a thread is being
@@ -2717,7 +2732,7 @@ func TestProvisioningQueueHeldAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { a.Dispose("test done") })
-	if err := a.Activate(ctx, meta.Cwd, "", "", "", ""); err != nil {
+	if err := a.Activate(ctx, meta.Cwd, "", "", "", "", workspaceReady(meta)); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := a.State(ctx)
