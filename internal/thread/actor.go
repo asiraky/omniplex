@@ -76,6 +76,22 @@ type Actor struct {
 	// so it is not in the log: a restart starts a new harness that knows
 	// nothing, and the log's queue is dispatched afresh.
 	sent map[string]bool
+	// stopping is the Stop in progress: the turn it was asked to end, and the
+	// timer that kills the harness if that turn has not ended in time.
+	stopping *stopRequest
+	// controlTail is closed once the last control call handed to inOrder has
+	// posted its result; the next one waits on it. Nil for a process that
+	// has had none.
+	controlTail chan struct{}
+	// controlPending counts the control calls handed to inOrder whose result
+	// has not come back. A prompt waits behind them, so a model change made
+	// just before sending is the model the prompt runs on.
+	controlPending int
+	// process numbers the harness processes this actor has run. It moves on
+	// whenever one is started or dropped, and the host services handed to a
+	// process carry the number it was started under, so a question from one
+	// this actor no longer runs can be told from the current one's.
+	process uint64
 
 	mu   sync.Mutex // guards subs and headSeq for readers outside the loop
 	subs map[string]*Subscriber
@@ -150,9 +166,17 @@ type command struct {
 	effort       string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
 	// from is the harness process a harness event or exit came from. A
-	// process replaced by an account switch still drains its last events and
-	// its exit; those are about a process this actor no longer runs.
-	from    adapter.Session
+	// process replaced by an account switch, or killed by Stop, still drains
+	// its last events and its exit; those are about a process this actor no
+	// longer runs. A reply is not filtered by it: whoever asked is waiting on
+	// the answer, and each reply's onReply checks what it acts on itself.
+	from adapter.Session
+	// process is the generation of the harness process a question came from
+	// (Actor.process).
+	process uint64
+	// onReply is what a harness reply does once it is back on the loop.
+	onReply func()
+	stop    *stopRequest
 	account *accountSwitch
 	show    *Show
 	mcp     func(context.Context, adapter.MCPControl) (any, error)
@@ -211,6 +235,8 @@ const (
 	cmdMCP           = "mcp"
 	cmdRaiseCard     = "raise_card"
 	cmdResolveCard   = "resolve_card"
+	cmdHarnessReply  = "harness_reply"
+	cmdStopExpired   = "stop_expired"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -253,7 +279,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 	}
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
+	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
 	}))
 	if err != nil {
@@ -320,7 +346,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 	a.recovery = planRecovery(state)
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
-	sess, err := ad.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
+	sess, err := ad.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
 		ThreadID:         meta.ID,
 		Cwd:              meta.Cwd,
 		Model:            state.Model,
@@ -807,7 +833,9 @@ func (a *Actor) run() {
 			}
 			// Every command that can end a turn — a harness event, a cancel,
 			// a resume closing an interrupted turn — comes through here, so
-			// this is the one place a queued prompt needs to be picked up.
+			// this is the one place a Stop learns its turn is over and a
+			// queued prompt needs to be picked up.
+			a.settleStop()
 			a.dispatchQueued(context.Background())
 		case <-flush:
 			a.flushDeltas()
@@ -876,10 +904,20 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		a.appendStreamed(*c.emission)
 
+	case cmdHarnessReply:
+		c.onReply()
+
+	case cmdStopExpired:
+		// The turn Stop was asked to end is still running: the harness did
+		// not, or could not, do as it was told.
+		if a.stopping == c.stop && a.turnActive == c.stop.turnID {
+			a.forceStop()
+		}
+
 	case cmdHarnessExit:
 		if c.from != a.sess {
-			// The process an account switch replaced. Its going is expected
-			// and says nothing about this thread.
+			// The process an account switch replaced, or one Stop killed. Its
+			// going is expected and says nothing about this thread.
 			return false
 		}
 		// A harness that dies without closing its turn leaves the log saying
@@ -954,7 +992,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
-		sess, err := a.adapter.CreateSession(ctx, hostServices{a}, x.options(adapter.CreateOptions{
+		sess, err := a.adapter.CreateSession(ctx, a.newHost(), x.options(adapter.CreateOptions{
 			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
 		}))
@@ -969,18 +1007,7 @@ func (a *Actor) handle(c command) (stop bool) {
 			// Server death ends anything that was waiting in the old process.
 			// Do this only when the harness is actually resumed: viewing the
 			// durable transcript is read-only and must not rewrite its history.
-			for _, pending := range append([]projection.PendingPermission(nil), a.state.Pending...) {
-				a.append(proto.Emit(proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: pending.RequestID, Outcome: proto.OutcomeCancelled}))
-			}
-			// A card the server still holds is not the old process's: it
-			// stays answerable. One the server lost is cancelled with the
-			// rest.
-			for _, pending := range append([]projection.PendingElicitation(nil), a.state.Elicitations...) {
-				if pending.IsCard() && a.liveCard(pending.RequestID) {
-					continue
-				}
-				a.append(proto.Emit(proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: pending.RequestID, Action: "cancel"}))
-			}
+			a.cancelProcessAsks()
 			for _, turn := range append([]projection.Turn(nil), a.state.Turns...) {
 				if !turn.Done {
 					a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: turn.ID, StopReason: proto.StopError, Error: "server restarted during turn", Failure: proto.FailureRestart}))
@@ -1006,10 +1033,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot stop a job")}
 			return false
 		}
-		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := stopper.StopJob(stopCtx, c.reqID)
-		cancel()
-		c.reply <- cmdResult{err: err}
+		a.inOrder(30*time.Second, func(ctx context.Context) (any, error) {
+			return nil, stopper.StopJob(ctx, c.reqID)
+		}, func(_ any, err error) {
+			c.reply <- cmdResult{err: err}
+		})
 
 	case cmdQuota:
 		// An account-level read, not a turn: the harness is asked out-of-band
@@ -1024,14 +1052,15 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness does not report usage limits")}
 			return false
 		}
-		quotaCtx, cancel := context.WithTimeout(ctx, quotaTimeout)
-		snap, err := reader.Quota(quotaCtx)
-		cancel()
-		c.reply <- cmdResult{value: snap, err: err}
+		a.offLoop(quotaTimeout, func(ctx context.Context) (any, error) {
+			return reader.Quota(ctx)
+		}, func(snap any, err error) {
+			c.reply <- cmdResult{value: snap, err: err}
+		})
 
 	case cmdMCP:
 		// A read or a reconnect through the harness's own control path, like
-		// the quota read; bounded so a wedged harness cannot stall the loop.
+		// the quota read; bounded so a wedged harness cannot strand the caller.
 		if a.sess == nil {
 			c.reply <- cmdResult{err: ErrNotReady}
 			return false
@@ -1041,10 +1070,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: adapter.ErrMCPUnsupported}
 			return false
 		}
-		mcpCtx, cancel := context.WithTimeout(ctx, mcpTimeout)
-		v, err := c.mcp(mcpCtx, ctl)
-		cancel()
-		c.reply <- cmdResult{value: v, err: err}
+		a.offLoop(mcpTimeout, func(ctx context.Context) (any, error) {
+			return c.mcp(ctx, ctl)
+		}, func(v any, err error) {
+			c.reply <- cmdResult{value: v, err: err}
+		})
 
 	case cmdSetMode:
 		if a.state.Closed {
@@ -1060,19 +1090,10 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot change permission mode mid-thread")}
 			return false
 		}
-		// Bounded: this is a round-trip to the harness from inside the actor
-		// loop, and a wedged process must not stall the loop forever.
-		modeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := switcher.SetMode(modeCtx, c.mode)
-		cancel()
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
 		// Durable and fanned out, so the change lands in the log and every
 		// connected presenter follows — same requirement as permission.resolved.
-		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Mode: c.mode}))
-		c.reply <- cmdResult{}
+		a.setting(func(ctx context.Context) error { return switcher.SetMode(ctx, c.mode) },
+			proto.ThreadConfigChangedPayload{Mode: c.mode}, c.reply)
 
 	case cmdSwitchAccount:
 		c.reply <- cmdResult{err: a.switchAccount(c.account)}
@@ -1091,17 +1112,8 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot change model mid-thread")}
 			return false
 		}
-		// Bounded for the same reason as cmdSetMode: a wedged harness must
-		// not stall the actor loop forever.
-		modelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := switcher.SetModel(modelCtx, c.model)
-		cancel()
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
-		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: c.model}))
-		c.reply <- cmdResult{}
+		a.setting(func(ctx context.Context) error { return switcher.SetModel(ctx, c.model) },
+			proto.ThreadConfigChangedPayload{Model: c.model}, c.reply)
 
 	case cmdSetEffort:
 		if a.state.Closed {
@@ -1117,17 +1129,8 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot change reasoning effort mid-thread")}
 			return false
 		}
-		// Bounded for the same reason as cmdSetModel: a wedged harness must
-		// not stall the actor loop forever.
-		effortCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := switcher.SetEffort(effortCtx, c.effort)
-		cancel()
-		if err != nil {
-			c.reply <- cmdResult{err: err}
-			return false
-		}
-		a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &c.effort}))
-		c.reply <- cmdResult{}
+		a.setting(func(ctx context.Context) error { return switcher.SetEffort(ctx, c.effort) },
+			proto.ThreadConfigChangedPayload{Effort: &c.effort}, c.reply)
 
 	case cmdListComposer:
 		if a.state.Closed {
@@ -1143,10 +1146,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{value: []adapter.ComposerItem{}}
 			return false
 		}
-		listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		items, err := catalogue.ComposerItems(listCtx)
-		cancel()
-		c.reply <- cmdResult{value: items, err: err}
+		a.offLoop(30*time.Second, func(ctx context.Context) (any, error) {
+			return catalogue.ComposerItems(ctx)
+		}, func(items any, err error) {
+			c.reply <- cmdResult{value: items, err: err}
+		})
 
 	case cmdRunComposer:
 		if a.state.Closed {
@@ -1166,27 +1170,29 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this harness cannot run composer actions")}
 			return false
 		}
+		// The turn is reserved here, on the loop, so nothing else can start
+		// one while the harness is being asked; the asking happens off it.
 		turnID := uuid.NewString()
 		a.turnActive = turnID
 		a.append(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turnID, Prompt: c.model}))
-		actionCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		value, err := runner.RunComposerAction(actionCtx, adapter.ComposerActionInput{
-			TurnID: turnID,
-			Action: c.mode,
-			Args:   c.prompt,
-		})
-		cancel()
-		if err != nil {
+		in := adapter.ComposerActionInput{TurnID: turnID, Action: c.mode, Args: c.prompt}
+		a.inOrder(60*time.Second, func(ctx context.Context) (any, error) {
+			return runner.RunComposerAction(ctx, in)
+		}, func(value any, err error) {
 			// The adapter may already know what kind of failure this is —
 			// a harness that needs a login says so when it refuses the
 			// prompt — and dropping that leaves the turn looking generic
-			// enough to be offered a continue button it cannot use.
-			a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-				TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
-				Failure: adapter.FailureOf(err),
-			}))
-		}
-		c.reply <- cmdResult{value: value, err: err}
+			// enough to be offered a continue button it cannot use. A turn
+			// that already ended meanwhile, by Stop or by the harness, is
+			// not closed a second time.
+			if err != nil && a.turnActive == turnID {
+				a.append(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+					TurnID: turnID, StopReason: proto.StopError, Error: err.Error(),
+					Failure: adapter.FailureOf(err),
+				}))
+			}
+			c.reply <- cmdResult{value: value, err: err}
+		})
 
 	case cmdPrompt:
 		if a.state.Closed {
@@ -1213,24 +1219,20 @@ func (a *Actor) handle(c command) (stop bool) {
 			// turn when this one ends. A steer that fails on the way out is
 			// simply queued the old way.
 			queueID := uuid.NewString()
-			sent := false
-			if st, ok := a.sess.(adapter.Steerer); ok {
-				// Bounded like the other harness RPCs made from this goroutine.
-				steerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				err := st.Steer(steerCtx, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images})
-				cancel()
-				if err != nil {
-					a.logf("steer on %s: %v", a.ID, err)
-				} else {
-					sent = true
-					a.markSent(queueID)
-				}
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			// Nor while a Stop is open: it would reach the harness behind the
+			// interrupt and start the turn over. It starts once the turn ends.
+			st, ok := a.sess.(adapter.Steerer)
+			if !ok || a.stopping != nil {
+				c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
+				return false
 			}
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Sent: sent}))
-			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
+			a.steer(st, queueID, adapter.PromptInput{QueueID: queueID, Text: c.prompt, Images: c.images}, c.reply)
 			return false
 		}
-		if a.sess == nil && a.preparing && c.recovery == nil {
+		// A prompt cannot overtake a control call still on its way, so while one
+		// is it waits in the queue, which starts it once the call has answered.
+		if (a.sess == nil && a.preparing || a.sess != nil && a.controlPending > 0) && c.recovery == nil {
 			queueID := uuid.NewString()
 			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
@@ -1285,20 +1287,25 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{value: "idle"}
 			return false
 		}
-		// Bounded for the same reason as the settings RPCs above: Cancel runs on
-		// the actor goroutine, so an interrupt promise the harness never settles
-		// must not wedge every later command for this thread.
-		cancelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := a.sess.Cancel(cancelCtx)
-		cancel()
-		// The queue goes after the harness has been told, not before: a steer
-		// it read in the moment between would otherwise vanish from the log
-		// although the model saw it. Nothing from the harness is processed
-		// while Cancel runs, so nothing queued can start in between.
-		a.dropQueue()
-		c.reply <- cmdResult{value: "cancelling", err: err}
+		if a.stopping != nil && a.stopping.turnID == a.turnActive {
+			// Asked twice: whoever is asking has seen the first Stop not
+			// work, and waiting out the rest of the grace would be the
+			// server knowing better.
+			a.forceStop()
+			c.reply <- cmdResult{value: "idle"}
+			return false
+		}
+		a.requestStop()
+		c.reply <- cmdResult{value: "cancelling"}
 
 	case cmdAskPerm:
+		if c.process != a.process {
+			// From a process Stop killed or an account switch replaced, asked
+			// on its way out. Nobody could answer it for that process, and
+			// recorded it would wait in the log for ever.
+			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
+			return false
+		}
 		req := c.perm.req
 		requestID := uuid.NewString()
 		a.pendingPerm[requestID] = c.perm.ch
@@ -1334,6 +1341,11 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: "resolved"}
 
 	case cmdAskElicit:
+		if c.process != a.process {
+			// As for a permission.
+			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
+			return false
+		}
 		requestID := uuid.NewString()
 		a.pendingElicit[requestID] = c.elicit.ch
 		a.append(proto.Emit(proto.ElicitationRequested, proto.ElicitationRequestedPayload{
@@ -1385,10 +1397,9 @@ func (a *Actor) switchAccount(sw *accountSwitch) error {
 		return errors.New("answer the waiting question before switching account")
 	}
 	// The harness writes its conversation as it goes, so it has to be gone
-	// before its files are moved. Dropping a.sess first is what marks its
-	// exit, still on its way through the inbox, as stale.
-	if old := a.sess; old != nil {
-		a.sess, a.sent = nil, nil
+	// before its files are moved. Dropping the process first is what marks
+	// its exit, still on its way through the inbox, as stale.
+	if old := a.dropProcess(); old != nil {
 		_ = old.Close()
 	}
 	id := a.state.HarnessSessionID
@@ -1422,21 +1433,8 @@ func (a *Actor) shutdown(hard bool) {
 	}
 	_ = a.store.SetPhase(ctx, a.ID, phase)
 
-	// Unblock every adapter goroutine waiting on a human.
-	for id, ch := range a.pendingPerm {
-		select {
-		case ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}:
-		default:
-		}
-		delete(a.pendingPerm, id)
-	}
-	for id, ch := range a.pendingElicit {
-		select {
-		case ch <- adapter.ElicitationResult{Action: "cancel"}:
-		default:
-		}
-		delete(a.pendingElicit, id)
-	}
+	a.releaseAsks()
+	a.clearStopping()
 
 	if a.sess != nil {
 		_ = a.sess.Close()
@@ -1512,7 +1510,13 @@ func (a *Actor) startTurn(ctx context.Context, prompt string, images []proto.Pro
 		_ = a.store.SetTitle(ctx, a.ID, title)
 	}
 
-	if err := a.sess.Prompt(ctx, adapter.PromptInput{TurnID: turnID, Text: prompt, Images: images}); err != nil {
+	// This one call to the harness is made on the loop, so a harness that
+	// never takes the prompt must not hold the thread for ever. Every adapter
+	// returns once the prompt is written or the turn acknowledged.
+	promptCtx, cancelPrompt := context.WithTimeout(ctx, 30*time.Second)
+	err := a.sess.Prompt(promptCtx, adapter.PromptInput{TurnID: turnID, Text: prompt, Images: images})
+	cancelPrompt()
+	if err != nil {
 		// turnActive is left for append to clear: a prompt that failed on
 		// the way out may still have reached the harness, and the closing
 		// snapshot is the only way to find out what it did.
@@ -1542,7 +1546,13 @@ func (a *Actor) isQueued(queueID string) bool {
 // able to run one. A prompt that fails on the way out ends as an errored turn
 // like any other; the rest of the queue stays, each to be tried in its turn.
 func (a *Actor) dispatchQueued(ctx context.Context) {
-	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed {
+	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed || a.controlPending > 0 {
+		return
+	}
+	// Stop means stop. The stopped turn can end before the harness answers
+	// the interrupt; settleStop drops what was queued behind it the moment
+	// it does, and nothing queued may start while a Stop is still open.
+	if a.stopping != nil {
 		return
 	}
 	// A restart interrupted a turn and the continuation has not been sent
@@ -1787,7 +1797,12 @@ func (a *Actor) fanout(ev proto.Event) {
 
 // ---- host services exposed to adapters ----
 
-type hostServices struct{ a *Actor }
+// hostServices is what one harness process is given to reach the actor.
+// process is the generation it was started under (Actor.process).
+type hostServices struct {
+	a       *Actor
+	process uint64
+}
 
 // RequestPermission appends a durable permission.requested event and blocks
 // until any presenter resolves it. Nothing about this lives in a connection.
@@ -1795,7 +1810,7 @@ func (h hostServices) RequestPermission(ctx context.Context, req adapter.Permiss
 	ch := make(chan adapter.PermissionOutcome, 1)
 
 	select {
-	case h.a.inbox <- command{kind: cmdAskPerm, perm: permAsk{req: req, ch: ch}}:
+	case h.a.inbox <- command{kind: cmdAskPerm, process: h.process, perm: permAsk{req: req, ch: ch}}:
 	case <-h.a.quit:
 		return adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}, nil
 	case <-ctx.Done():
@@ -1815,7 +1830,7 @@ func (h hostServices) RequestPermission(ctx context.Context, req adapter.Permiss
 func (h hostServices) Elicit(ctx context.Context, req adapter.ElicitationRequest) (adapter.ElicitationResult, error) {
 	ch := make(chan adapter.ElicitationResult, 1)
 	select {
-	case h.a.inbox <- command{kind: cmdAskElicit, elicit: elicitAsk{req: req, ch: ch}}:
+	case h.a.inbox <- command{kind: cmdAskElicit, process: h.process, elicit: elicitAsk{req: req, ch: ch}}:
 	case <-h.a.quit:
 		return adapter.ElicitationResult{Action: "cancel"}, nil
 	case <-ctx.Done():

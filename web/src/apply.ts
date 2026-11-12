@@ -228,7 +228,16 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "prompt.queued":
       return {
         ...s,
-        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp, sent: p.sent }],
+        queuedPrompts: [...(s.queuedPrompts ?? []), { queueId: p.queueId, prompt: p.prompt, images: p.images, queuedAt: ev.timestamp }],
+      };
+
+    case "prompt.sent":
+      // The harness took a queued prompt mid-turn. One it already read has
+      // left the queue, and there is nothing to mark. Mirrors
+      // internal/projection/state.go.
+      return {
+        ...s,
+        queuedPrompts: (s.queuedPrompts ?? []).map((q) => (q.queueId === p.queueId ? { ...q, sent: true } : q)),
       };
 
     case "prompt.injected": {

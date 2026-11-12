@@ -36,6 +36,19 @@ type fakeAdapter struct {
 	listGate      chan struct{}
 	createGate    <-chan struct{}
 	createStarted chan<- struct{}
+	// cancelGate, modeGate and steerGate hold every thread's Cancel, SetMode
+	// and Steer until closed (or the call's deadline), for a harness that is
+	// slow to answer or never does.
+	cancelGate <-chan struct{}
+	modeGate   <-chan struct{}
+	steerGate  <-chan struct{}
+	// modeAsked hears each mode a thread is asked for, before modeGate.
+	modeAsked chan<- string
+	// modeHeld holds the answer to SetMode for a mode, once the thread has
+	// taken it: a harness that applied the change and is slow to say so.
+	modeHeld map[string]<-chan struct{}
+	// opts is what each CreateSession was asked for, oldest first.
+	opts []adapter.CreateOptions
 }
 
 func TestViewRestoresProjectionWithoutStartingHarness(t *testing.T) {
@@ -270,10 +283,12 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	s := &fakeThread{
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
-		steerRefuse: f.steerRefuse,
+		steerRefuse: f.steerRefuse, cancelGate: f.cancelGate, modeGate: f.modeGate, modeAsked: f.modeAsked, steerGate: f.steerGate,
+		modeHeld: f.modeHeld,
 	}
 	f.mu.Lock()
 	f.last = s
+	f.opts = append(f.opts, o)
 	f.mu.Unlock()
 	if f.steer {
 		return steerThread{s}, nil
@@ -287,9 +302,13 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 type steerThread struct{ *fakeThread }
 
 func (s steerThread) Steer(ctx context.Context, in adapter.PromptInput) error {
+	if err := gated(ctx, s.steerGate); err != nil {
+		return err
+	}
 	if s.steerRefuse != nil {
 		return s.steerRefuse
 	}
+	s.record("steer")
 	s.prompts <- in
 	return nil
 }
@@ -308,11 +327,34 @@ type fakeThread struct {
 	closeOnce    sync.Once
 	closeStarted chan struct{}
 	closeRelease <-chan struct{}
+	cancelGate   <-chan struct{}
+	modeGate     <-chan struct{}
+	steerGate    <-chan struct{}
+	modeAsked    chan<- string
+	modeHeld     map[string]<-chan struct{}
 
-	mu          sync.Mutex
-	mode        string
+	mu   sync.Mutex
+	mode string
+	// calls is the control calls the thread has taken, in the order it
+	// took them: "cancel" when asked, "steer" once it has the prompt.
+	calls       []string
 	refuse      error
 	steerRefuse error
+	closed      bool
+}
+
+// gated holds a fake's call until gate is closed, or fails it at the call's
+// deadline the way a harness that never answers does. A nil gate is open.
+func gated(ctx context.Context, gate <-chan struct{}) error {
+	if gate == nil {
+		return nil
+	}
+	select {
+	case <-gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *fakeThread) Prompt(ctx context.Context, in adapter.PromptInput) error {
@@ -325,19 +367,38 @@ func (s *fakeThread) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	s.prompts <- in
 	return nil
 }
-func (s *fakeThread) Cancel(ctx context.Context) error { return nil }
+func (s *fakeThread) Cancel(ctx context.Context) error {
+	s.record("cancel")
+	return gated(ctx, s.cancelGate)
+}
+func (s *fakeThread) record(call string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, call)
+}
+func (s *fakeThread) taken() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...)
+}
 func (s *fakeThread) RunComposerAction(ctx context.Context, in adapter.ComposerActionInput) (any, error) {
 	s.actions <- in
 	return map[string]any{}, nil
 }
 func (s *fakeThread) SetMode(ctx context.Context, mode string) error {
+	if s.modeAsked != nil {
+		s.modeAsked <- mode
+	}
+	if err := gated(ctx, s.modeGate); err != nil {
+		return err
+	}
 	if mode == "rejected" {
 		return errors.New("the harness refused this mode")
 	}
 	s.mu.Lock()
 	s.mode = mode
 	s.mu.Unlock()
-	return nil
+	return gated(ctx, s.modeHeld[mode])
 }
 func (s *fakeThread) currentMode() string {
 	s.mu.Lock()
@@ -346,6 +407,9 @@ func (s *fakeThread) currentMode() string {
 }
 func (s *fakeThread) Events() <-chan proto.Emission { return s.events }
 func (s *fakeThread) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	s.closeOnce.Do(func() {
 		if s.closeStarted != nil {
 			close(s.closeStarted)
@@ -358,6 +422,11 @@ func (s *fakeThread) Close() error {
 	return nil
 }
 func (s *fakeThread) emit(e proto.Emission) { s.events <- e }
+func (s *fakeThread) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
 
 func newTestActor(t *testing.T) (*Actor, *fakeAdapter, *store.Store) {
 	t.Helper()
