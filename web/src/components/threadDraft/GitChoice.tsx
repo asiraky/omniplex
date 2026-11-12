@@ -189,7 +189,7 @@ function ExistingWorktreeField({
 }
 
 /** What the Git chip's popover holds: the checkout kind, then its fields. */
-export default function GitChoice({
+export function GitChoice({
   folder,
   git,
   userConfig,

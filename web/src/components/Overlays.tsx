@@ -1,6 +1,7 @@
 import { useEffect, useState, type ComponentType } from "react";
 
 import { chunk, type Chunk } from "~/lib/chunk";
+import { useIdlePrefetch } from "~/useIdlePrefetch";
 import { useIsDesktop } from "~/useMediaQuery";
 
 import type { CommandPaletteProps } from "./CommandPalette";
@@ -17,18 +18,7 @@ const help = chunk(() => import("./ShortcutsHelp").then((m) => m.ShortcutsHelp))
 
 /** Fetches the palette and the shortcuts list once the page has settled. */
 export function usePrefetchOverlays() {
-  useEffect(() => {
-    const prefetch = () => {
-      void palette.load();
-      void help.load();
-    };
-    if (typeof requestIdleCallback === "function") {
-      const id = requestIdleCallback(prefetch, { timeout: 5000 });
-      return () => cancelIdleCallback(id);
-    }
-    const id = setTimeout(prefetch, 2000);
-    return () => clearTimeout(id);
-  }, []);
+  useIdlePrefetch(palette, help);
 }
 
 export function LazyCommandPalette(props: CommandPaletteProps) {
