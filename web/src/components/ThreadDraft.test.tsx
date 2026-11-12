@@ -820,31 +820,39 @@ describe("remembered thread choices", () => {
     ],
   })) as unknown as HarnessMeta[];
 
+  const picker = () => screen.getByRole("combobox", { name: "Harness and model" });
+  // A model pick leaves the picker open for the effort, and a click on the
+  // trigger of an open picker closes it, so these open it only when shut.
+  function openPicker() {
+    if (picker().getAttribute("aria-expanded") !== "true") fireEvent.click(picker());
+  }
+  function closePicker() {
+    const search = screen.queryByPlaceholderText(/Search models and accounts/);
+    if (search) fireEvent.keyDown(search, { key: "Escape" });
+  }
+  const effortLevel = (name: string | RegExp) => screen.getByRole("radio", { name });
   async function pickModel(label: string) {
-    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    openPicker();
     fireEvent.change(screen.getByPlaceholderText(/Search models and accounts/), {
       target: { value: label },
     });
     fireEvent.click(await screen.findByRole("option", { name: new RegExp(label) }));
   }
   async function switchHarness(id: string) {
-    await waitFor(() =>
-      expect(screen.queryByPlaceholderText(/Search models and accounts/)).toBeNull(),
-    );
-    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    openPicker();
     fireEvent.click(await screen.findByRole("button", { name: new RegExp(id + "$", "i") }));
-    fireEvent.keyDown(screen.getByPlaceholderText(/Search models and accounts/), { key: "Escape" });
+    closePicker();
   }
   async function bypass() {
+    closePicker();
     menu("Permissions");
     const advanced = await screen.findByRole("menuitem", { name: "Advanced" });
     if (advanced.getAttribute("aria-expanded") !== "true") fireEvent.click(advanced);
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Bypass/ }));
   }
-  async function highEffort() {
-    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
-    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
-    fireEvent.click(await screen.findByRole("option", { name: "High" }));
+  function highEffort() {
+    openPicker();
+    fireEvent.click(effortLevel("High"));
   }
 
   it("restores choices when switching away and back, cancelling and reopening, then starting", async () => {
@@ -853,7 +861,7 @@ describe("remembered thread choices", () => {
     open(props);
     await pickModel("codex Advanced");
     await bypass();
-    await highEffort();
+    highEffort();
     await switchHarness("claude");
     expect(chip("Permissions").textContent).toBe("Ask");
     await pickModel("claude Advanced");
@@ -900,9 +908,8 @@ describe("remembered thread choices", () => {
     const other = { ...project, id: "p2", name: "other" };
     const props = { projects: [seeded, other], harnesses: agents };
     open(props);
-    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
-    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto/ }));
+    openPicker();
+    fireEvent.click(effortLevel("Auto"));
     await bypass();
     menu("Project");
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "other" }));
@@ -922,10 +929,15 @@ describe("remembered thread choices", () => {
     const onCreate = vi.fn(async () => {});
     open({ harnesses: agents, onCreate });
     await pickModel("codex Advanced");
-    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
-    fireEvent.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Ultra/i }));
+    // Still open from the model pick: the level is the next thing to choose.
+    fireEvent.click(effortLevel(/Ultra/i));
+    expect(screen.queryByRole("radiogroup", { name: "Reasoning effort" })).toBeNull();
     await pickModel("codex Basic");
+    // The picker stayed open, and its levels are already the new model's,
+    // with the drop from Ultra to High shown in place.
+    expect(screen.queryByRole("radio", { name: /Ultra/i })).toBeNull();
+    expect(effortLevel("High").getAttribute("aria-checked")).toBe("true");
+    expect(picker().textContent).toContain("High");
     await bypass();
     const send = screen.getByRole("button", { name: "Send" });
     await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
