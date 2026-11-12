@@ -608,13 +608,13 @@ describe("a turn that failed", () => {
       });
     });
 
-    it("labels queued prompts as held only while the latest turn is stopped at a limit", () => {
+    it("labels queued prompts as held only while the latest turn is stopped at a limit", async () => {
       const queued = [{ queueId: "q1", prompt: "next" }];
       const s = limited();
       s.queuedPrompts = queued;
       const first = render(<Transcript state={s} {...props} />);
       // Nothing armed: only the reader sending moves it.
-      expect(screen.getByText(/held until you send/)).toBeTruthy();
+      expect(await screen.findByText(/held until you send/)).toBeTruthy();
       first.unmount();
 
       s.scheduledPrompts = [
@@ -622,19 +622,21 @@ describe("a turn that failed", () => {
           model: "", mode: "default", effort: "", status: "pending", kind: "limit" },
       ];
       const { unmount } = render(<Transcript state={s} {...props} />);
-      expect(screen.getByText(/held until the limit resets/)).toBeTruthy();
+      expect(await screen.findByText(/held until the limit resets/)).toBeTruthy();
       unmount();
 
       for (const other of [failed({ failure: "auth" }), failed({}), state("hi")]) {
         other.queuedPrompts = queued;
         const { unmount } = render(<Transcript state={other} {...props} />);
+        // The card loads lazily: wait for it, or the absence proves nothing.
+        await screen.findByText("Queued");
         expect(screen.queryByText(/held until/)).toBeNull();
         unmount();
       }
     });
   });
 
-  it("holds only what was queued before the limit, and nothing once the thread moved account", () => {
+  it("holds only what was queued before the limit, and nothing once the thread moved account", async () => {
     const s = failed({ failure: "limit", error: "You've hit your limit", finishedAt: 10 });
     s.queuedPrompts = [
       { queueId: "q1", prompt: "before", queuedAt: 5 },
@@ -649,12 +651,37 @@ describe("a turn that failed", () => {
       onOpenDiff: () => {},
     };
     const first = render(<Transcript state={s} {...props} />);
-    expect(screen.getAllByText(/held until you send/)).toHaveLength(1);
+    expect(await screen.findAllByText(/held until you send/)).toHaveLength(1);
     first.unmount();
 
     s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce", receivedAt: 30 });
     render(<Transcript state={s} {...props} />);
+    expect(await screen.findAllByText("Queued")).toHaveLength(2);
     expect(screen.queryByText(/held until/)).toBeNull();
+  });
+
+  it("offers Resume only for a paused queue, and still says what a limit holds it for", async () => {
+    const s = failed({ failure: "limit", error: "You've hit your limit", finishedAt: 10 });
+    s.queuedPrompts = [{ queueId: "q1", prompt: "before", queuedAt: 5 }];
+    const props = {
+      onFinish: () => {},
+      onRetryProvision: () => {},
+      onCleanup: () => {},
+      onForceDelete: () => {},
+      onContinue: () => {},
+      onOpenDiff: () => {},
+    };
+    const first = render(<Transcript state={s} {...props} />);
+    // The limit lifts on its own; there is nothing to resume.
+    expect(await screen.findByText("held until you send")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Resume queue" })).toBeNull();
+    first.unmount();
+
+    s.queuedPrompts = [{ queueId: "q1", prompt: "before", queuedAt: 5, held: true }];
+    render(<Transcript state={s} {...props} />);
+    expect(await screen.findByText("until you send")).toBeTruthy();
+    expect(screen.getByText("Held")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume queue" })).toBeTruthy();
   });
 
   it("only says the server restarted when the server says so", async () => {
@@ -753,5 +780,47 @@ describe("published artefacts", () => {
     published(4);
     expect(tiles()).toHaveLength(4);
     expect(screen.queryByRole("button", { name: /^Show \d+ more/ })).toBeNull();
+  });
+});
+
+describe("a held queue", () => {
+  function queued(prompts: { queueId: string; prompt: string; held?: boolean }[], over: Record<string, unknown> = {}) {
+    const onResumeQueue = vi.fn();
+    const onSendQueued = vi.fn();
+    render(
+      <Transcript
+        state={{ ...state("hi"), queuedPrompts: prompts, ...over }}
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+        onResumeQueue={onResumeQueue}
+        onSendQueued={onSendQueued}
+        steers
+      />,
+    );
+    return { onResumeQueue, onSendQueued };
+  }
+
+  it("asks to resume while anything in it is held", () => {
+    const { onResumeQueue } = queued([
+      { queueId: "q1", prompt: "a" },
+      { queueId: "q2", prompt: "b", held: true },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+    expect(onResumeQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask once nothing is held", () => {
+    queued([{ queueId: "q1", prompt: "a", held: false }]);
+    expect(screen.queryByRole("button", { name: "Resume queue" })).toBeNull();
+  });
+
+  it("offers to steer a queued prompt in while a turn runs", async () => {
+    const { onSendQueued } = queued([{ queueId: "q1", prompt: "a" }], { phase: "turn" });
+    fireEvent.click(await screen.findByRole("button", { name: "Steer now" }));
+    expect(onSendQueued).toHaveBeenCalledWith("q1");
   });
 });

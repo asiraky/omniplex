@@ -472,7 +472,16 @@ export interface QueuedPrompt {
   // The harness holds it and reads it at its next step; it cannot be taken
   // back.
   sent?: boolean;
+  /** Waiting for the person to resume the queue, which the server stops
+      after a restart or a start it refused, so a prompt they may have
+      forgotten does not fire on its own. Never sent while held. */
+  held?: boolean;
 }
+
+/** How a prompt sent mid-turn reaches the harness: read into the running turn
+    at its next step, or queued for a turn of its own. Absent on the command
+    means the harness's default. */
+export type Delivery = "steer" | "queue";
 
 export type JobKind = "agent" | "shell" | "monitor" | "inert";
 export type JobStatus = "running" | "paused" | "completed" | "failed" | "stopped" | "interrupted";
@@ -1091,6 +1100,8 @@ export interface HarnessMeta {
   instances: ProviderInstanceMeta[];
   /** The driver's instance-configuration schema; absent means no settings. */
   configFields?: ProviderConfigField[];
+  /** The harness can take a message into a running turn. */
+  steers?: boolean;
   /**
    * A per-model setting the harness itself reads, offered beside the account
    * so it does not have to be hand-edited into a config file. Absent means the

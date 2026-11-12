@@ -195,6 +195,19 @@ type promptArgs struct {
 	// Files names artefacts uploaded to this thread that the message
 	// carries. The agent is told where each one is on disk.
 	Files []promptFile `json:"files,omitempty"`
+	// Delivery is what a message sent mid-turn should do: "steer" hands it
+	// to the running turn, "queue" waits for the turn to end, and absent
+	// lets the server steer whenever the harness can.
+	Delivery string `json:"delivery,omitempty"`
+}
+
+// editQueuedArgs rewrites a queued prompt. ImageIDs absent keeps the
+// attachments it has; present, even empty, is the whole new set.
+type editQueuedArgs struct {
+	ThreadID string    `json:"threadId"`
+	QueueID  string    `json:"queueId"`
+	Text     string    `json:"text"`
+	ImageIDs *[]string `json:"imageIds,omitempty"`
 }
 
 type promptFile struct {

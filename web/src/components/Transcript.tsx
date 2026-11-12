@@ -10,6 +10,7 @@ import type {
   ComposerItem,
   Job,
   PullRequest,
+  QueuedPrompt,
   ScheduledPrompt,
   ThreadState,
   Turn,
@@ -19,7 +20,7 @@ import { useAutoScroll } from "~/useAutoScroll";
 import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
 import { MergedCard } from "./transcript/MergedCard";
-import { QueuedCard } from "./transcript/QueuedCard";
+import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import { TranscriptRow } from "./transcript/TranscriptRow";
 import { useOlderPages } from "./transcript/useOlderPages";
 import { usePromptAnchor } from "./transcript/usePromptAnchor";
@@ -61,6 +62,7 @@ const EMPTY_RESERVE = "var(--composer-h, 9rem)";
 const NO_ARTEFACTS: Artefact[] = [];
 const NO_JOBS: Job[] = [];
 const NO_RECENTS: ComposerItem[] = [];
+const NO_QUEUED: QueuedPrompt[] = [];
 
 type TranscriptProps = {
   state: ThreadState;
@@ -116,6 +118,17 @@ type TranscriptProps = {
   onPickRecent?: (item: ComposerItem) => void;
   /** Takes a queued prompt back before it runs. */
   onDequeue?: (queueId: string) => void;
+  /** Rewords a queued prompt; resolves false when the server refused. */
+  onEditQueued?: (queueId: string, prompt: string) => Promise<boolean> | boolean;
+  /** Steers a queued prompt into the running turn, or starts a turn with it. */
+  onSendQueued?: (queueId: string) => void;
+  /** Lets the prompts the server is holding run. */
+  onResumeQueue?: () => void;
+  /** Takes the words of an edit whose prompt left the queue before it was
+      saved, so they are not lost with the editor. */
+  onQueuedEditLost?: (text: string) => void;
+  /** The thread's harness can take a message into a running turn. */
+  steers?: boolean;
   /** Opens the sign-in a saved card offers. */
   onCardSignIn?: (target: CardSignIn) => void;
   /** Names a model and effort, for the line where the thread switched. */
@@ -169,6 +182,11 @@ export function Transcript({
   recentsSeeded = false,
   onPickRecent,
   onDequeue,
+  onEditQueued,
+  onSendQueued,
+  onResumeQueue,
+  onQueuedEditLost,
+  steers = false,
   onCardSignIn,
   describeSettings,
   ...interruptedProps
@@ -293,15 +311,19 @@ export function Transcript({
             </Suspense>
           )}
 
-          {(state.queuedPrompts ?? []).map((q) => (
-            <QueuedCard
-              key={q.queueId}
-              queued={q}
-              threadId={state.threadId}
-              artefacts={artefacts}
-              held={heldFor(q)}
-              onDequeue={(id) => onDequeue?.(id)} />
-          ))}
+          <QueuedPrompts
+            queued={state.queuedPrompts ?? NO_QUEUED}
+            threadId={state.threadId}
+            artefacts={artefacts}
+            heldFor={heldFor}
+            busy={state.phase === "turn"}
+            steers={steers}
+            onDequeue={onDequeue}
+            onEdit={onEditQueued}
+            onSend={onSendQueued}
+            onResume={onResumeQueue}
+            onEditLost={onQueuedEditLost}
+          />
 
           {/* Last, because it is the latest news about the work above it. */}
           {pr?.merged && <MergedCard pr={pr} onFinish={onFinish} />}
