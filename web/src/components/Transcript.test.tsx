@@ -404,7 +404,7 @@ describe("a turn that failed", () => {
     return s;
   };
 
-  it("lets a signed-out user sign in from the failed thread", () => {
+  it("lets a signed-out user sign in from the failed thread", async () => {
     const onLogin = vi.fn();
     render(
       <Transcript
@@ -420,7 +420,7 @@ describe("a turn that failed", () => {
       />,
     );
 
-    expect(screen.getByText(/Claude Code needs to sign in again/i)).toBeTruthy();
+    expect(await screen.findByText(/Claude Code needs to sign in again/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     expect(onLogin).toHaveBeenCalledOnce();
     expect(screen.queryByText(/Continue where it left off/)).toBeNull();
@@ -430,7 +430,7 @@ describe("a turn that failed", () => {
   // Retry appears only once the provider reports ready again, and re-sending
   // the failed prompt is always the user's press — never a side effect of a
   // sign-in finishing.
-  it("offers retry only when the provider is ready, and only on request", () => {
+  it("offers retry only when the provider is ready, and only on request", async () => {
     const onRetryTurn = vi.fn();
     const authFailed = failed({ failure: "auth", error: "signed out" });
     const props = {
@@ -447,12 +447,14 @@ describe("a turn that failed", () => {
     const { unmount } = render(
       <Transcript state={authFailed} {...props} providerReady={false} />,
     );
+    await screen.findByText(/needs to sign in again/);
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
     unmount();
 
     render(<Transcript state={authFailed} {...props} providerReady />);
+    const retry = await screen.findByRole("button", { name: /retry this prompt/i });
     expect(onRetryTurn).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+    fireEvent.click(retry);
     expect(onRetryTurn).toHaveBeenCalledOnce();
     expect(onRetryTurn.mock.calls[0][0]).toMatchObject({ id: "t1", prompt: "go" });
   });
@@ -471,7 +473,7 @@ describe("a turn that failed", () => {
       providerName: "Aaron",
     };
 
-    it("moves the failed prompt to the account picked", () => {
+    it("moves the failed prompt to the account picked", async () => {
       const onSwitchAccount = vi.fn((_instance: string, _turn: Turn) => new Promise<boolean>(() => {}));
       render(
         <Transcript
@@ -485,8 +487,9 @@ describe("a turn that failed", () => {
           onSwitchAccount={onSwitchAccount}
         />,
       );
+      const spare = await screen.findByRole("button", { name: /continue on spare/i });
       expect(screen.queryByText(/Continue where it left off/)).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: /continue on spare/i }));
+      fireEvent.click(spare);
       expect(onSwitchAccount).toHaveBeenCalledOnce();
       expect(onSwitchAccount.mock.calls[0][0]).toBe("spare");
       expect(onSwitchAccount.mock.calls[0][1]).toMatchObject({ id: "t1", prompt: "go" });
@@ -503,12 +506,12 @@ describe("a turn that failed", () => {
           onSwitchAccount={async () => false}
         />,
       );
-      const button = screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement;
+      const button = (await screen.findByRole("button", { name: /continue on worksauce/i })) as HTMLButtonElement;
       fireEvent.click(button);
       await waitFor(() => expect(button.disabled).toBe(false));
     });
 
-    it("offers only the retry once the thread has switched", () => {
+    it("offers only the retry once the thread has switched", async () => {
       const s = limited();
       s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
       const onRetryTurn = vi.fn();
@@ -521,16 +524,17 @@ describe("a turn that failed", () => {
           onSwitchAccount={async () => true}
         />,
       );
+      const retry = await screen.findByRole("button", { name: /retry this prompt/i });
       expect(screen.getAllByText(/Switched to Worksauce/).length).toBeGreaterThan(0);
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+      fireEvent.click(retry);
       expect(onRetryTurn).toHaveBeenCalledOnce();
     });
 
-    it("with no other account, says to wait and still offers the retry", () => {
+    it("with no other account, says to wait and still offers the retry", async () => {
       render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
+      expect(await screen.findByRole("button", { name: /retry this prompt/i })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
-      expect(screen.getByRole("button", { name: /retry this prompt/i })).toBeTruthy();
     });
 
     // The server arms a continuation at the reset; the card says when, and
@@ -561,13 +565,13 @@ describe("a turn that failed", () => {
       });
       afterEach(() => vi.useRealTimers());
 
-      it("says when it continues", () => {
+      it("says when it continues", async () => {
         render(<Transcript state={armed(schedule())} {...props} onCancelContinuation={async () => {}} />);
-        expect(screen.getByText(`Continuing at ${shortTime(dueAt)}`)).toBeTruthy();
+        expect(await screen.findByText(`Continuing at ${shortTime(dueAt)}`)).toBeTruthy();
         expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
       });
 
-      it("says nothing once it is cancelled or sent, or when there is none", () => {
+      it("says nothing once it is cancelled or sent, or when there is none", async () => {
         for (const s of [
           armed(schedule({ status: "cancelled" })),
           armed(schedule({ status: "sent" })),
@@ -575,6 +579,7 @@ describe("a turn that failed", () => {
           limited(),
         ]) {
           const { unmount } = render(<Transcript state={s} {...props} onCancelContinuation={async () => {}} />);
+          await screen.findByText(/hit its usage limit/);
           expect(screen.queryByText(/Continuing/)).toBeNull();
           unmount();
         }
@@ -592,7 +597,7 @@ describe("a turn that failed", () => {
             onCancelContinuation={onCancelContinuation}
           />,
         );
-        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
         expect(onCancelContinuation).toHaveBeenCalledOnce();
         expect(onCancelContinuation.mock.calls[0][0]).toMatchObject({ id: "s1", revision: 1 });
         const pending = screen.getByRole("button", { name: /Cancelling/ }) as HTMLButtonElement;
@@ -652,12 +657,12 @@ describe("a turn that failed", () => {
     expect(screen.queryByText(/held until/)).toBeNull();
   });
 
-  it("only says the server restarted when the server says so", () => {
+  it("only says the server restarted when the server says so", async () => {
     render(view(failed({ failure: "restart", error: "server restarted during turn" })));
-    expect(screen.getByText(/The server restarted/)).toBeTruthy();
+    expect(await screen.findByText(/The server restarted/)).toBeTruthy();
 
     render(view(failed({ error: "claude exited: ENOENT" })));
-    expect(screen.getByText(/ended with an error/)).toBeTruthy();
+    expect(await screen.findByText(/ended with an error/)).toBeTruthy();
     expect(screen.getByText(/claude exited: ENOENT/)).toBeTruthy();
   });
 

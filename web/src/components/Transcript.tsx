@@ -1,5 +1,5 @@
 import { ChevronDownIcon } from "lucide-react";
-import { useLayoutEffect } from "react";
+import { lazy, Suspense, useLayoutEffect } from "react";
 
 import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
@@ -18,7 +18,6 @@ import { useAutoScroll } from "~/useAutoScroll";
 
 import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
-import { InterruptedCard } from "./transcript/InterruptedCard";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedCard } from "./transcript/QueuedCard";
 import { TranscriptRow } from "./transcript/TranscriptRow";
@@ -27,6 +26,12 @@ import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";
 import { useTranscriptModel } from "./transcript/useTranscriptModel";
 import { WorkspaceCard } from "./transcript/WorkspaceCard";
+
+// Only a turn that died shows it, which most loads of a thread never see, so
+// it loads on first use and stays out of the initial bundle.
+const InterruptedCard = lazy(() =>
+  import("./transcript/InterruptedCard").then((m) => ({ default: m.InterruptedCard })),
+);
 
 // Room reserved beneath the transcript's tail: the overlay's measured height
 // (`--composer-h`, published by App from a ResizeObserver) plus a headroom band
@@ -263,12 +268,14 @@ export function Transcript({
             )}
 
           {interrupted && (
-            <InterruptedCard
-              turn={interrupted}
-              switchedTo={switchedTo}
-              continuation={continuation}
-              {...interruptedProps}
-            />
+            <Suspense fallback={null}>
+              <InterruptedCard
+                turn={interrupted}
+                switchedTo={switchedTo}
+                continuation={continuation}
+                {...interruptedProps}
+              />
+            </Suspense>
           )}
 
           {(state.queuedPrompts ?? []).map((q) => (
