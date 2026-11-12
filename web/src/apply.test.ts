@@ -193,6 +193,19 @@ describe("applyEvent model notices", () => {
     expect(notices(s)).toEqual([["model:7", "sonnet", ""]]);
   });
 
+  it("takes a model report during an effort switch, and still marks the effort", () => {
+    let s = replay(
+      ev(1, "thread.created", { model: "opus", effort: "high" }),
+      turn(2, "t1"),
+      config(3, { effort: "low" }),
+      config(4, { model: "claude-opus-5", harnessSessionId: "h1" }),
+    );
+    expect(s.model).toBe("claude-opus-5");
+    s = applyEvent(s, turn(5, "t2"));
+    expect(notices(s)).toEqual([["model:5", "claude-opus-5", "low"]]);
+    expect(s.items[1].from).toEqual({ model: "claude-opus-5", effort: "high" });
+  });
+
   it("keeps a pick that a late report from the turn before names over", () => {
     let s = replay(
       ev(1, "thread.created", { model: "claude-opus-5" }),

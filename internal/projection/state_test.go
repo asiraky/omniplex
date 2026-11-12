@@ -973,6 +973,28 @@ func TestReportBehindAPickKeepsThePick(t *testing.T) {
 	}
 }
 
+// An effort switch waiting for its turn is no reason to drop a model report,
+// and the report must not swallow the effort switch either. Mirrored by
+// web/src/apply.test.ts.
+func TestReportDuringAnEffortSwitch(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus", Effort: "high"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(pickEffort(t, 3, "low"))
+	s.Apply(event(t, 4, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "claude-opus-5", HarnessSessionID: "h1"}))
+	if s.Model != "claude-opus-5" {
+		t.Fatalf("model = %q, want the report's claude-opus-5", s.Model)
+	}
+	s.Apply(startTurn(t, 5, "t2"))
+	want := [][3]string{{"model:5", "claude-opus-5", "low"}}
+	if got := noticeSettings(modelNotices(s)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %v, want %v", got, want)
+	}
+	if from := s.Items[1].From; from == nil || *from != (TurnSettings{Model: "claude-opus-5", Effort: "high"}) {
+		t.Fatalf("from = %+v, want the reported model at the old effort", from)
+	}
+}
+
 // A reload resumes from a stored snapshot, so a switch made before it must
 // still be marked at the turn after it. A snapshot stored before the baseline
 // existed has none, and must not mark its next turn as a switch. Mirrored by

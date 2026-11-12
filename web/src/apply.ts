@@ -373,21 +373,22 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "thread.config_changed": {
       // A harness reporting its own settings as it (re)starts or takes a
       // prompt names the bare model id for the alias that was picked: not a
-      // switch. One that lands while a switch waits for its turn can predate
-      // it, so it leaves the pick alone; otherwise it moves the baseline with
-      // it. Mirrors internal/projection/state.go.
+      // switch. One that lands while a model switch waits for its turn can
+      // predate it, so it leaves the pick alone; otherwise it moves the
+      // baseline's model with it. Mirrors internal/projection/state.go.
       const report = !!p.harnessSessionId;
-      const pending = !!s.ranWith && !sameSettings(s.ranWith, settings(s));
+      const pending = !!s.ranWith && s.ranWith.model !== s.model;
+      const model = p.replaceSettings ? p.model ?? "" : p.model || s.model;
       const next: ThreadState = {
         ...s,
-        model: report && pending ? s.model : p.replaceSettings ? p.model ?? "" : p.model || s.model,
+        model: report && pending ? s.model : model,
         mode: p.replaceSettings ? p.mode ?? "" : p.mode || s.mode,
         // "" is a value effort can be set to — the harness's own default —
         // so an event that carries it must win, which || would not let it.
         effort: p.effort ?? s.effort,
         title: p.title || s.title,
       };
-      if (report && s.ranWith && !pending) return { ...next, ranWith: settings(next) };
+      if (report && s.ranWith && !pending) return { ...next, ranWith: { ...s.ranWith, model: next.model } };
       return next;
     }
 
