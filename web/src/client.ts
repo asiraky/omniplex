@@ -759,6 +759,8 @@ export class Client {
       case "resync":
         // The server dropped our queue. Reattach from the applied cursor; if
         // we have fallen far enough behind it answers with a snapshot.
+        // A clear made while our queue was dropped never reached us; the
+        // attach drops the status too, and the server re-sends a live one.
         if (f.threadId === this.threadId) this.sendAttach(f.threadId, this.cursor);
         break;
 

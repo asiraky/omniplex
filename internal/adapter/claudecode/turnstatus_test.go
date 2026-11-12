@@ -105,6 +105,19 @@ func TestStatusCompactingSetsAndNullClears(t *testing.T) {
 	}
 }
 
+// A null status that ends no compaction — the SDK sends one to report a
+// permission-mode change — must not wipe a retry the harness is waiting out.
+func TestNullStatusLeavesARetryStanding(t *testing.T) {
+	s := newTestSession()
+	s.handleSDKMessage(rawSDK(t, apiRetry(1, 10, 2000, 529, "overloaded")))
+	s.handleSDKMessage(rawSDK(t, statusMsg(nil)))
+
+	got := turnStatuses(t, s)
+	if len(got) != 1 || got[0].State != proto.TurnRetrying {
+		t.Fatalf("statuses = %+v, want only the retry", got)
+	}
+}
+
 // "requesting" goes out before the retried request too, so it must leave the
 // retry standing: the line stays until the model answers.
 func TestRequestingLeavesARetryStanding(t *testing.T) {

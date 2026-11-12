@@ -114,6 +114,26 @@ func TestTurnStatusClearsWhenTheTurnFinishes(t *testing.T) {
 	}
 }
 
+// A retried response can open with a plan and no text or tool row, which is
+// still the model answering.
+func TestTurnStatusClearsOnAPlanUpdate(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	sub := actor.Subscribe()
+	defer actor.Unsubscribe(sub)
+
+	turnID := startFakeTurn(t, actor, fa)
+	fa.thread().emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnRetrying, Attempt: 1}))
+	expectSignal(t, sub.StatusChanged)
+
+	fa.thread().emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
+		TurnID: turnID, Steps: []proto.PlanStep{{Text: "look", Status: "pending"}},
+	}))
+	expectSignal(t, sub.StatusChanged)
+	if got := actor.TurnStatus(); got != nil {
+		t.Fatalf("TurnStatus after plan.updated = %+v, want nil", got)
+	}
+}
+
 func TestTurnStatusWhileIdleIsDropped(t *testing.T) {
 	actor, fa, _ := newTestActor(t)
 	sub := actor.Subscribe()

@@ -2020,8 +2020,12 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 		}
 
 	case "reasoning":
-		// Reasoning text arrives as thought deltas; nothing to do on the
-		// item boundaries.
+		// Reasoning text arrives as thought deltas, and may not arrive at
+		// all, so the item starting is the model answering: whatever retry
+		// came before it is over.
+		if !completed && owner == nil {
+			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
+		}
 
 	case "commandExecution":
 		if !completed {

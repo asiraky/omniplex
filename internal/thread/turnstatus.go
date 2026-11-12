@@ -34,6 +34,8 @@ func (a *Actor) holdTurnStatus(em proto.Emission) {
 // this is the safety net for one that forgets, or dies before it can. Output
 // from inside a subagent does not count: the status is about the top-level
 // conversation, which can still be retrying while a subagent it spawned works.
+// A plan update is the model answering too, and only the top-level agent's
+// plan reaches the log.
 // A turn ending is not here: the actor clears once no turn is active, so a
 // stale turn.finished for some other turn leaves the live one's status alone.
 func clearsTurnStatus(em proto.Emission) bool {
@@ -44,7 +46,7 @@ func clearsTurnStatus(em proto.Emission) bool {
 		return p.ParentToolCallID == ""
 	}
 	switch em.Type {
-	case proto.ContextCompacted, proto.ThreadClosed:
+	case proto.ContextCompacted, proto.ThreadClosed, proto.PlanUpdated:
 		return true
 	}
 	return false

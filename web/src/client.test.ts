@@ -741,6 +741,17 @@ describe("turn status", () => {
     expect(latest().sent.map((f) => f.type)).toContain("attach");
   });
 
+  it("clears on a resync, whose clear the dropped queue may have lost", () => {
+    const { seen, send } = watching();
+    send({ type: "turn_status", threadId: "a", turnStatus: RETRYING });
+    send({ type: "resync", threadId: "a" });
+    expect(seen).toEqual([
+      ["a", RETRYING],
+      ["a", null],
+    ]);
+    expect(latest().sent.at(-1)).toMatchObject({ type: "attach", threadId: "a" });
+  });
+
   it("clears on a snapshot", () => {
     const { seen, send } = watching();
     send({ type: "snapshot", threadId: "a", state: { ...emptyState("a"), seq: 9 } });

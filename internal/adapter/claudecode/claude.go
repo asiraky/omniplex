@@ -512,6 +512,10 @@ type session struct {
 	// an id that drops out without a terminal row of its own was reaped, and
 	// the job is finished here so it cannot spin forever.
 	background map[string]bool
+	// compacting is set while the harness reports it is compacting, so the
+	// null status that ends it clears the line and a null that only reports
+	// a permission-mode change leaves a live retry alone.
+	compacting bool
 	// todos holds the ids of the main agent's TodoWrite calls, which go out
 	// as plan.updated rather than tool calls. The id is remembered from the
 	// stream until the tool result arrives, so neither the start nor the
@@ -1252,12 +1256,15 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 			Status *string `json:"status"`
 		}
 		remarshal(msg, &st)
+		s.mu.Lock()
+		wasCompacting := s.compacting
+		s.compacting = st.Status != nil && *st.Status == "compacting"
+		s.mu.Unlock()
 		switch {
-		case st.Status == nil:
-			// Whatever the harness was waiting on is over, compaction failed
-			// or not. The actor ignores a clear of nothing.
+		case st.Status == nil && wasCompacting:
+			// The compaction is over, failed or not.
 			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
-		case *st.Status == "compacting":
+		case st.Status != nil && *st.Status == "compacting":
 			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnCompacting}))
 		}
 		// "requesting" is a retried request going out too, so it must not

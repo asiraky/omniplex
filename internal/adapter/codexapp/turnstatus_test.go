@@ -124,6 +124,21 @@ func TestCompactionItemIsAStatusUntilItLands(t *testing.T) {
 	}
 }
 
+// TestReasoningItemClearsARetry: a reconnected stream may reason with no
+// summary deltas, so the reasoning item starting is the first sign it worked.
+func TestReasoningItemClearsARetry(t *testing.T) {
+	s := subagentSession(t)
+	s.turnID, s.serverTurnID = "omniplex-turn", "codex-turn-7"
+	s.handleNotification("item/started", json.RawMessage(
+		`{"threadId":"thread-1","turnId":"codex-turn-7","item":{"type":"reasoning","id":"rs-1","summary":[],"content":[]}}`))
+
+	got := drain(s)
+	if len(got) != 1 || got[0].Type != proto.TurnStatus ||
+		got[0].Payload.(proto.TurnStatusPayload) != (proto.TurnStatusPayload{}) {
+		t.Fatalf("emissions = %+v, want one clearing status", got)
+	}
+}
+
 // TestDuplicateCompactionStillClears: when thread/compacted has already sent
 // the boundary, the item completing sends no second one, so it must clear the
 // status itself.
