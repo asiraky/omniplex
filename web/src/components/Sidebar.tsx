@@ -40,7 +40,6 @@ import { visibleByProject } from "~/projectGroups";
 import { newCount } from "~/threadStatus";
 import type { Project, ThreadMeta } from "~/protocol";
 import { sectionRows, sidebarSections, type SidebarSection } from "~/sidebarOrder";
-import { useLatest } from "~/useLatest";
 import { useIsDesktop } from "~/useMediaQuery";
 import { useShortcut, useShowShortcuts } from "~/useShortcuts";
 import { Wordmark } from "./Logo";
@@ -193,12 +192,7 @@ function useDeleteFlow({
     return list;
   }, [threads, frozen, exiting]);
 
-  // Every row takes this, and the hook's own is a fresh function each render,
-  // which would re-render every memoised row whenever the sidebar renders.
-  const askLatest = useLatest(thread.ask);
-  const ask = useCallback((s: ThreadMeta) => askLatest.current(s), [askLatest]);
-
-  return { thread, rows, ask, deleting, exiting };
+  return { thread, rows, ask: thread.ask, deleting, exiting };
 }
 
 type DeleteFlow = ReturnType<typeof useDeleteFlow>;
