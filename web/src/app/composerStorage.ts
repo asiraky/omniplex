@@ -39,6 +39,10 @@ const LAPSED_AFTER_MS = 10 * 60_000;
 /** Why a lapsed send is shown as not sent. */
 export const LAPSED_REASON = "the page closed before the server answered";
 
+/** Why a send that was waiting on its uploads when the page died is shown as
+    not sent. */
+export const UPLOAD_LAPSED_REASON = "the page closed before its files finished uploading";
+
 function read(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -266,8 +270,19 @@ function isDelivery(v: unknown): v is Delivery {
 
 function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefined {
   if (!isRecord(v)) return undefined;
-  const { commandId, threadId, text, status, reason, dismissed, sentAt, attachments, delivery, tab } =
-    v;
+  const {
+    commandId,
+    threadId,
+    text,
+    status,
+    reason,
+    dismissed,
+    cannotRetry,
+    sentAt,
+    attachments,
+    delivery,
+    tab,
+  } = v;
   if (typeof commandId !== "string" || typeof threadId !== "string" || typeof text !== "string")
     return undefined;
   if (typeof sentAt !== "number") return undefined;
@@ -279,10 +294,11 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
     attachments: reviveAll(threadId, attachments),
     ...(isDelivery(delivery) ? { delivery } : {}),
   };
-  if (status === "pending") return { entry: { ...send, status }, tab };
+  if (status === "pending" || status === "waiting") return { entry: { ...send, status }, tab };
   if (status !== "failed" || typeof reason !== "string") return undefined;
   const entry: FailedSend = { ...send, status, reason };
   if (dismissed === true) entry.dismissed = true;
+  if (cannotRetry === true) entry.cannotRetry = true;
   return { entry, tab };
 }
 
@@ -300,6 +316,14 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
  * lapses instead: it comes back failed, and listed as lapsed, for the caller
  * to put its text back in the composer.
  *
+ * One that was waiting on its uploads is another tab's for longer: a big file
+ * on a slow link keeps it waiting for minutes, and nothing about the wait
+ * shows in storage. Only once it is old enough to have lapsed is that tab
+ * taken to be gone. This tab's own lapses whatever its age: its unfinished files died with
+ * the page, and only the ready ones were stored, so sending it as it stands
+ * would send it without them. It comes back failed, as an upload failure, so
+ * its note offers no Retry.
+ *
  * A failed one already had its text restored, which the persisted draft kept,
  * so it only comes back as it was: from any tab, so a retry from this one is
  * still a retry.
@@ -314,9 +338,18 @@ export function loadOutbox(): { entries: OutboxEntry[]; lapsed: FailedSend[] } {
     if (!found) continue;
     const { entry } = found;
     const age = now - entry.sentAt;
-    if (entry.status === "pending" && found.tab !== tab && age < ABANDONED_AFTER_MS) continue;
-    if (entry.status === "pending" && age >= LAPSED_AFTER_MS) {
-      const failed: FailedSend = { ...entry, status: "failed", reason: LAPSED_REASON };
+    if (found.tab !== tab) {
+      if (entry.status === "pending" && age < ABANDONED_AFTER_MS) continue;
+      if (entry.status === "waiting" && age < LAPSED_AFTER_MS) continue;
+    }
+    const lapse =
+      entry.status === "waiting"
+        ? { reason: UPLOAD_LAPSED_REASON, cannotRetry: true as const }
+        : entry.status === "pending" && age >= LAPSED_AFTER_MS
+          ? { reason: LAPSED_REASON }
+          : undefined;
+    if (lapse) {
+      const failed: FailedSend = { ...entry, status: "failed", ...lapse };
       entries.push(failed);
       lapsed.push(failed);
     } else entries.push(entry);

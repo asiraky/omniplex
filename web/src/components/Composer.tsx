@@ -26,9 +26,9 @@ import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
+import { ComposerNotes } from "./composer/ComposerNotes";
 import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
 import { SendButtons } from "./composer/SendButtons";
-import { SendFailure } from "./composer/SendFailure";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerSend } from "./composer/useComposerSend";
@@ -80,6 +80,12 @@ interface ComposerProps {
       Anything that is not a file is left to the textarea. */
   onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (key: string) => void;
+  /** Puts a failed upload up again. Omitted, a failed chip offers only removal. */
+  onRetryAttachment?: (key: string) => void;
+  /** A message from this thread went with files still uploading and is held
+      until they land. Send waits too, or the next message would overtake it;
+      writing it does not. */
+  waiting?: boolean;
   disabledPlaceholder?: string;
   /** Every harness the server reports; the picker reads this thread's out. */
   harnesses?: HarnessMeta[];
@@ -114,8 +120,9 @@ interface ComposerProps {
       remember which skills this user actually reaches for. */
   onCommandUsed?: (insertText: string) => void;
   /** The last message came back unsent: why, shown over the composer, how to
-      send it again, and how to put the note away. */
-  failure?: { reason: string; onRetry: () => void; onDismiss: () => void };
+      send it again, and how to put the note away. No `onRetry` for one that
+      cannot go again as it was, such as a message whose file failed to upload. */
+  failure?: { reason: string; onRetry?: () => void; onDismiss: () => void };
   /** Extra controls in the toolbar, right after the model picker. */
   tools?: ReactNode;
   /** A drawer under the box, for context that is usually right already. */
@@ -173,6 +180,8 @@ export function Composer({
   attachments = NO_ATTACHMENTS,
   onAttachFiles,
   onRemoveAttachment,
+  onRetryAttachment,
+  waiting = false,
   disabledPlaceholder,
   harnesses = NO_HARNESSES,
   harness = "",
@@ -242,13 +251,14 @@ export function Composer({
     runClientAction,
     onRunComposerAction,
   });
-  const { send, cannotSend, sendableAttachments, carriesFiles, tooMuch } = useComposerSend({
+  const { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch } = useComposerSend({
     draft,
     draftRef,
     changeDraft,
     attachments,
     disabled,
     sendDisabled,
+    waiting,
     catalogueReady: catalogue.ready,
     items: menu.items,
     onSend,
@@ -388,21 +398,14 @@ export function Composer({
         )}
         {...drop.handlers}
       >
-        {drop.dragging && (
-          <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
-            <PaperclipIcon className="size-4" />
-            Drop files to attach
-          </div>
-        )}
-        {failure && (
-          <SendFailure
-            reason={failure.reason}
-            canRetry={!disabled && !sendDisabled}
-            onRetry={failure.onRetry}
-            onDismiss={failure.onDismiss}
-          />
-        )}
-        <AttachmentStrip attachments={attachments} tooMuch={tooMuch} onRemove={onRemoveAttachment} />
+        {drop.dragging && <DropHint />}
+        <ComposerNotes waiting={waiting} failure={failure} canSend={!disabled && !sendDisabled} />
+        <AttachmentStrip
+          attachments={attachments}
+          tooMuch={tooMuch}
+          onRemove={onRemoveAttachment}
+          onRetry={onRetryAttachment}
+        />
         <CommandMenu
           open={menu.open}
           anchor={textarea}
@@ -442,7 +445,7 @@ export function Composer({
             steers={steers}
             hasContent={!!draft.trim() || sendableAttachments > 0}
             cannotSend={cannotSend}
-            carriesFiles={carriesFiles}
+            scheduleBlock={scheduleBlock}
             onSend={(delivery) => void send(delivery)}
             onSchedule={onSchedule}
             onCancel={onCancel}
@@ -456,6 +459,16 @@ export function Composer({
           {footer}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Over the whole box while files are dragged across it. */
+function DropHint() {
+  return (
+    <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
+      <PaperclipIcon className="size-4" />
+      Drop files to attach
     </div>
   );
 }

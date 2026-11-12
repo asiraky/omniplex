@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 
 import { useDraft } from "~/app/draftStore";
-import { useFailedSend } from "~/app/outbox";
+import { useFailedSend, useWaitingSend } from "~/app/outbox";
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
@@ -434,6 +434,7 @@ function ThreadComposer({
   // this composer and not the thread view, transcript and sidebar around it.
   const draft = useDraft(store.draftStore, activeId);
   const failed = useFailedSend(store.outbox, activeId);
+  const waiting = useWaitingSend(store.outbox, activeId);
   // The one part of the thread view that draws usage (the context meter), so
   // the one that rerenders on a usage tick.
   const state = useThread(useThreadStore(), composerFields, shallow);
@@ -453,6 +454,8 @@ function ThreadComposer({
       attachments={activeId ? (store.attachments[activeId] ?? []) : []}
       onAttachFiles={store.attachFiles}
       onRemoveAttachment={(key) => activeId && store.removeAttachment(activeId, key)}
+      onRetryAttachment={(key) => activeId && store.retryUpload(activeId, key)}
+      waiting={waiting}
       harnesses={harnesses}
       harness={state.harness}
       instance={meta?.providerInstance ?? ""}
@@ -474,7 +477,10 @@ function ThreadComposer({
       failure={
         failed && {
           reason: failed.reason,
-          onRetry: () => commands.retry(failed),
+          // A message whose file did not upload never went: retrying it as it
+          // stands would send it without the file. The file's own retry, on
+          // its chip, is the way back.
+          onRetry: failed.cannotRetry ? undefined : () => commands.retry(failed),
           onDismiss: () => store.outbox.dismiss(failed.commandId),
         }
       }

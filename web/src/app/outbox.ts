@@ -25,15 +25,27 @@ export interface PendingSend extends Sent {
   status: "pending";
 }
 
+/** Sent while some of its files were still uploading: held here, under the
+    id it will go with, until they are all up. Nothing has gone to the server
+    yet, so nothing resends it. */
+export interface WaitingSend extends Sent {
+  status: "waiting";
+}
+
 export interface FailedSend extends Sent {
   status: "failed";
   reason: string;
+  /** It never went, and sending it again as it stands would be wrong: a file
+      it carried did not upload, so it would go without it, or its files came
+      to more than a message may carry. The fix is made in the composer it came
+      back to, and the send from there is a new one. */
+  cannotRetry?: true;
   /** The note was put away. The entry stays, so sending the same message
       again is still a retry under its id rather than a second prompt. */
   dismissed?: boolean;
 }
 
-export type OutboxEntry = PendingSend | FailedSend;
+export type OutboxEntry = PendingSend | WaitingSend | FailedSend;
 
 export type Outbox = ReturnType<typeof createOutbox>;
 
@@ -60,6 +72,22 @@ export function createOutbox(initial: readonly OutboxEntry[] = []) {
   const replace = (found: OutboxEntry, next: OutboxEntry) =>
     set(entries.map((e) => (e === found ? next : e)));
 
+  const put = (
+    { commandId, threadId, text, attachments, delivery }: OutboxSend,
+    status: "pending" | "waiting",
+  ) => {
+    const fresh: PendingSend | WaitingSend = {
+      commandId,
+      threadId,
+      text,
+      attachments,
+      ...(delivery ? { delivery } : {}),
+      status,
+      sentAt: Date.now(),
+    };
+    set([...entries.filter((e) => e.commandId !== commandId), fresh]);
+  };
+
   const remove = (commandId: string) => {
     const found = entries.find((e) => e.commandId === commandId);
     if (found) set(entries.filter((e) => e !== found));
@@ -75,27 +103,34 @@ export function createOutbox(initial: readonly OutboxEntry[] = []) {
       };
     },
     /** A retry sends under the same commandId, so it replaces the failed entry
-        and moves to the end: it is now the latest send. */
-    add: ({ commandId, threadId, text, attachments, delivery }: OutboxSend) => {
-      const fresh: PendingSend = {
-        commandId,
-        threadId,
-        text,
-        attachments,
-        ...(delivery ? { delivery } : {}),
-        status: "pending",
-        sentAt: Date.now(),
-      };
-      set([...entries.filter((e) => e.commandId !== commandId), fresh]);
-    },
+        and moves to the end: it is now the latest send. A waiting send turns
+        pending the same way once its files are up. */
+    add: (send: OutboxSend) => put(send, "pending"),
+    /** A send held back for its uploads. */
+    wait: (send: OutboxSend) => put(send, "waiting"),
+    /** Whether the thread has a send held back for its uploads. */
+    isWaiting: (threadId: string) =>
+      entries.some((e) => e.threadId === threadId && e.status === "waiting"),
     ack: (commandId: string) => remove(commandId),
-    /** Returns the entry only on the pending to failed step. Two sends under
-        the same id can both report a failure; the text must go back to the
-        composer once, not twice. */
-    fail: (commandId: string, reason: string) => {
+    /** Returns the entry only on the step to failed, from pending or waiting.
+        Two sends under the same id can both report a failure; the text must go
+        back to the composer once, not twice. A send that waited on its uploads
+        fails with its files as they came out, the failed ones marked, which is
+        how they go back to the composer. */
+    fail: (
+      commandId: string,
+      reason: string,
+      opts: { cannotRetry?: boolean; attachments?: Attachment[] } = {},
+    ) => {
       const found = entries.find((e) => e.commandId === commandId);
-      if (!found || found.status !== "pending") return undefined;
-      const failed: FailedSend = { ...found, status: "failed", reason };
+      if (!found || found.status === "failed") return undefined;
+      const failed: FailedSend = {
+        ...found,
+        status: "failed",
+        reason,
+        ...(opts.attachments ? { attachments: opts.attachments } : {}),
+        ...(opts.cannotRetry ? { cannotRetry: true as const } : {}),
+      };
       replace(found, failed);
       return failed;
     },
@@ -136,5 +171,15 @@ export function useFailedSend(outbox: Outbox, threadId: string | null) {
     }
     return undefined;
   }, [outbox, threadId]);
+  return useSyncExternalStore(outbox.subscribe, snapshot, snapshot);
+}
+
+/**
+ * Whether the thread has a send held back for its uploads, rerendering only
+ * when that flips. A second send from the thread would overtake it, so the
+ * composer holds its own send until this clears.
+ */
+export function useWaitingSend(outbox: Outbox, threadId: string | null) {
+  const snapshot = useCallback(() => !!threadId && outbox.isWaiting(threadId), [outbox, threadId]);
   return useSyncExternalStore(outbox.subscribe, snapshot, snapshot);
 }

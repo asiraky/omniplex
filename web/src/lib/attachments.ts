@@ -8,6 +8,7 @@
  */
 
 import { MAX_ARTEFACT_BYTES, uploadArtefact, type ArtefactRef, type UploadedArtefact } from "~/lib/artefacts";
+import { postFile, type UploadOpts } from "~/lib/postFile";
 
 export const PDF_TYPE = "application/pdf";
 
@@ -99,31 +100,109 @@ export function attachmentUrl(threadId: string, id: string): string {
   return `/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(id)}`;
 }
 
-/** Uploads one image or PDF and returns how the prompt will refer to it. */
-export async function uploadAttachment(
+/**
+ * Uploads one image or PDF and returns how the prompt will refer to it.
+ *
+ * It reports progress like an artefact upload does, because the stall
+ * watchdog runs on progress: a 10 MB PDF on 4G can take well over a minute
+ * and still be moving.
+ */
+export function uploadAttachment(
   threadId: string,
   file: File,
-  signal?: AbortSignal,
+  opts: UploadOpts = {},
 ): Promise<UploadedImage> {
-  const res = await fetch(
-    `/api/threads/${encodeURIComponent(threadId)}/attachments`,
-    {
-      method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
-      // Removing a half-uploaded picture stops the upload: on a slow link the
-      // rest of it is bandwidth spent on something already taken back.
-      signal,
-    },
-  );
-  if (!res.ok) {
-    const message = await res
-      .json()
-      .then((b: { error?: string }) => b.error)
-      .catch(() => "");
-    throw new Error(message || `upload failed (${res.status})`);
-  }
-  return (await res.json()) as UploadedImage;
+  // Removing a half-uploaded picture stops the upload: on a slow link the
+  // rest of it is bandwidth spent on something already taken back.
+  return postFile<UploadedImage>(`/api/threads/${encodeURIComponent(threadId)}/attachments`, file, opts);
+}
+
+/** How long an upload may send nothing before it counts as failed. Long
+    enough to ride out a train through a cutting, short enough that a dead
+    connection does not leave the chip spinning for the rest of the trip. */
+export const UPLOAD_STALL_MS = 60_000;
+
+export const UPLOAD_STALLED = "Upload stalled: nothing went up for a minute";
+
+/**
+ * Runs an upload under a watchdog that gives up when it stops moving.
+ *
+ * A 4G connection that dies mid-upload often does not error: the request just
+ * sits there, and without this the chip would spin forever. The timer is a
+ * gap between progress reports, not a cap on the whole upload, so a big file
+ * on a slow link that keeps moving is never cut off.
+ *
+ * A stall aborts `run`'s signal and rejects with an Error named
+ * "UploadStalled", whatever `run` rejects with once aborted. That is not an
+ * AbortError on purpose: callers read an AbortError as "the user took the file
+ * back" and show nothing, and a stall is a failure the user needs to see. The
+ * outer signal is that taking back, and rejects with an AbortError.
+ */
+export function withStallTimeout<T>(
+  run: (opts: { signal: AbortSignal; onProgress: (fraction: number) => void }) => Promise<T>,
+  opts: UploadOpts & { stallMs?: number } = {},
+): Promise<T> {
+  const outer = opts.signal;
+  if (outer?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  const stallMs = opts.stallMs ?? UPLOAD_STALL_MS;
+  const inner = new AbortController();
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      settled = true;
+      clearTimeout(timer);
+      outer?.removeEventListener("abort", onOuterAbort);
+    };
+    // Settled here rather than left to `run`, so a step that cannot be
+    // aborted (shrinking a picture) does not leave the stall timer to fire on
+    // a file the user already removed.
+    const onOuterAbort = () => {
+      if (settled) return;
+      finish();
+      inner.abort();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const onStall = () => {
+      if (settled) return;
+      finish();
+      inner.abort();
+      const err = new Error(UPLOAD_STALLED);
+      err.name = "UploadStalled";
+      reject(err);
+    };
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(onStall, stallMs);
+    };
+    const onProgress = (fraction: number) => {
+      if (settled) return;
+      arm();
+      opts.onProgress?.(fraction);
+    };
+
+    outer?.addEventListener("abort", onOuterAbort, { once: true });
+    arm();
+    let running: Promise<T>;
+    try {
+      running = run({ signal: inner.signal, onProgress });
+    } catch (e) {
+      running = Promise.reject(e);
+    }
+    running.then(
+      (value) => {
+        if (settled) return;
+        finish();
+        resolve(value);
+      },
+      (e: unknown) => {
+        if (settled) return;
+        finish();
+        reject(e);
+      },
+    );
+  });
 }
 
 /**
@@ -208,18 +287,23 @@ export function stageFile(file: File, key: string): Attachment {
     status: "uploading",
     mediaType: file.type || "application/octet-stream",
     size: file.size,
-    // Only an artefact upload reports progress; see FileChip.
+    // Only an artefact starts with a bar. A PDF reports progress too, but
+    // shows "Uploading…" until its first report lands; see FileChip.
     ...(image || (isPdf(file.type) && file.size <= MAX_PDF_BYTES) ? {} : { progress: 0 }),
   };
 }
 
 export interface UploadDeps {
   prepare: (file: File) => Promise<File>;
-  uploadImage: (threadId: string, file: File, signal?: AbortSignal) => Promise<UploadedImage>;
+  uploadImage: (
+    threadId: string,
+    file: File,
+    opts: UploadOpts,
+  ) => Promise<UploadedImage>;
   uploadFile: (
     threadId: string,
     file: File,
-    opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void },
+    opts: UploadOpts,
   ) => Promise<UploadedArtefact>;
 }
 
@@ -237,31 +321,36 @@ const defaultDeps: UploadDeps = {
  * it goes up as a file instead, so the agent can still open it, and the patch
  * says so by turning the attachment's kind to "file". A file over the artefact
  * cap is refused here, before the upload spends the connection on it.
+ *
+ * Every route runs under the stall watchdog, so an upload that stops moving
+ * fails with UPLOAD_STALLED instead of spinning.
  */
-export async function uploadStaged(
+export function uploadStaged(
   threadId: string,
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
+  opts: UploadOpts & { stallMs?: number } = {},
   deps: UploadDeps = defaultDeps,
 ): Promise<Partial<Attachment>> {
-  if (isImageAttachment(file)) {
-    const ready = await deps.prepare(file);
-    if (ready.size <= MAX_IMAGE_BYTES) {
-      const up = await deps.uploadImage(threadId, ready, opts.signal);
-      return { status: "ready", id: up.id, size: up.size };
+  return withStallTimeout(async (up) => {
+    if (isImageAttachment(file)) {
+      const ready = await deps.prepare(file);
+      if (ready.size <= MAX_IMAGE_BYTES) {
+        const img = await deps.uploadImage(threadId, ready, up);
+        return { status: "ready", id: img.id, size: img.size };
+      }
+    } else if (isPdf(file.type) && file.size <= MAX_PDF_BYTES) {
+      const doc = await deps.uploadImage(threadId, file, up);
+      return { status: "ready", id: doc.id, size: doc.size, progress: 1 };
     }
-  } else if (isPdf(file.type) && file.size <= MAX_PDF_BYTES) {
-    const up = await deps.uploadImage(threadId, file, opts.signal);
-    return { status: "ready", id: up.id, size: up.size, progress: 1 };
-  }
-  if (file.size > MAX_ARTEFACT_BYTES) throw new Error("This file is too large to send (200 MB at most).");
-  const up = await deps.uploadFile(threadId, file, opts);
-  return {
-    kind: "file",
-    status: "ready",
-    artefactId: up.artefact.id,
-    progress: 1,
-  };
+    if (file.size > MAX_ARTEFACT_BYTES) throw new Error("This file is too large to send (200 MB at most).");
+    const art = await deps.uploadFile(threadId, file, up);
+    return {
+      kind: "file",
+      status: "ready",
+      artefactId: art.artefact.id,
+      progress: 1,
+    };
+  }, opts);
 }
 
 /** What a message carries: the ready images and PDFs by id and the ready

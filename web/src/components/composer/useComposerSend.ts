@@ -17,6 +17,7 @@ export function useComposerSend({
   attachments,
   disabled,
   sendDisabled,
+  waiting,
   catalogueReady,
   items,
   onSend,
@@ -30,6 +31,9 @@ export function useComposerSend({
   attachments: Attachment[];
   disabled: boolean;
   sendDisabled: boolean;
+  /** A message from this thread is held for its uploads. Another would
+      overtake it, so nothing goes until it has. */
+  waiting: boolean;
   catalogueReady: boolean;
   items: ComposerItem[];
   onSend: (text: string, attached: ComposerAttachments, delivery?: Delivery) => void;
@@ -37,18 +41,24 @@ export function useComposerSend({
   runClientAction: (action: string) => void;
   onRunComposerAction?: (action: string, args: string, invocation: string) => Promise<void>;
 }) {
-  const uploading = attachments.some((a) => a.status === "uploading");
-  const sendableAttachments = attachments.filter(
-    (a) => a.status === "ready" || a.status === "staged",
-  ).length;
-  const carriesFiles = attachments.some((a) => a.kind === "file" && a.status !== "error");
+  // A file still on its way up counts: the message is held until it lands,
+  // so on a slow connection hitting send does not wait on the upload too.
+  const sendableAttachments = attachments.filter((a) => a.status !== "error").length;
+  // A scheduled prompt keeps its text and images, not files. And it takes the
+  // images there are when it is scheduled: unlike a send, it does not wait for
+  // one still going up, which would quietly be left out.
+  const scheduleBlock = attachments.some((a) => a.kind === "file" && a.status !== "error")
+    ? "Not with files attached"
+    : attachments.some((a) => a.status === "uploading")
+      ? "Once the uploads finish"
+      : undefined;
   // The server would refuse it, and a refused send has already cleared the
   // composer by the time it says so.
   const tooMuch = overPromptLimit(attachments);
   const cannotSend =
     disabled ||
     sendDisabled ||
-    uploading ||
+    waiting ||
     tooMuch ||
     (!draft.trim() && sendableAttachments === 0);
 
@@ -57,10 +67,8 @@ export function useComposerSend({
     const t = draft.trim();
     // A message may be nothing but attachments: "what is this?" is often the
     // whole question, and the picture or the file is the rest of it.
-    if ((!t && sendableAttachments === 0) || disabled || sendDisabled) return;
-    // Sending now would send the message without the file still on its way up,
-    // which is not what attaching it meant.
-    if (uploading || tooMuch) return;
+    if ((!t && sendableAttachments === 0) || disabled || sendDisabled || waiting) return;
+    if (tooMuch) return;
     if (t.startsWith("/") && !catalogueReady) return;
     // Recorded on submit rather than on completion: choosing from the menu is
     // browsing, sending is the use. The token is reported whatever the message
@@ -93,5 +101,5 @@ export function useComposerSend({
     changeDraft("");
   };
 
-  return { send, cannotSend, sendableAttachments, carriesFiles, tooMuch };
+  return { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch };
 }

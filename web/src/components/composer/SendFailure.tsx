@@ -3,7 +3,10 @@ import { CircleAlertIcon, XIcon } from "lucide-react";
 /**
  * Why the last message did not go, in the composer it came back to. Retry
  * sends that message again as it went, under the same command id, so a send
- * that did reach the server after all is not run twice.
+ * that did reach the server after all is not run twice. A message held back
+ * because a file failed to upload has no Retry here: sent again as it went it
+ * would fail the same way, so the file is retried on its chip and the message
+ * sent from the composer.
  *
  * Both buttons get a 44px hit area on a touch screen: this note turns up most
  * on a phone on a bad connection. The areas reach over the top of the
@@ -17,22 +20,27 @@ export function SendFailure({
 }: {
   reason: string;
   canRetry: boolean;
-  onRetry: () => void;
+  onRetry?: () => void;
   onDismiss: () => void;
 }) {
   return (
     <div role="alert" className="text-destructive flex items-start gap-2 px-4 pt-3 text-xs">
       <CircleAlertIcon className="mt-px size-3.5 shrink-0" />
       <p className="min-w-0 flex-1 break-words">
-        Not sent: {reason.replace(/[.\s]+$/, "")}.{" "}
-        <button
-          type="button"
-          onClick={onRetry}
-          disabled={!canRetry}
-          className="hit-44 relative z-10 font-medium underline underline-offset-2 disabled:no-underline disabled:opacity-60"
-        >
-          Retry
-        </button>
+        Not sent: {reason.replace(/[.\s]+$/, "")}.
+        {onRetry && (
+          <>
+            {" "}
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={!canRetry}
+              className="hit-44 relative z-10 font-medium underline underline-offset-2 disabled:no-underline disabled:opacity-60"
+            >
+              Retry
+            </button>
+          </>
+        )}
       </p>
       <button
         type="button"

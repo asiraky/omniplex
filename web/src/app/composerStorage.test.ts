@@ -12,6 +12,7 @@ import {
   persistDrafts,
   persistOutbox,
   saveAttachments,
+  UPLOAD_LAPSED_REASON,
 } from "./composerStorage";
 import { createDraftStore } from "./draftStore";
 import { createOutbox, type OutboxSend } from "./outbox";
@@ -314,6 +315,47 @@ describe("outbox", () => {
       // This tab's recent send is still its own.
       expect(ids(there.entries)).toEqual(["mine"]);
     });
+  });
+
+  it("lapses a send left waiting on its uploads, since the files it waited on are gone", () => {
+    const outbox = createOutbox();
+    persistOutbox(outbox);
+    outbox.wait(entry("c1", { attachments: [ready(), ready({ key: "k2", status: "uploading", id: undefined })] }));
+
+    const { entries, lapsed } = loadOutbox();
+    expect(lapsed).toEqual(entries);
+    expect(entries).toMatchObject([
+      {
+        commandId: "c1",
+        status: "failed",
+        reason: UPLOAD_LAPSED_REASON,
+        cannotRetry: true,
+        text: "text of c1",
+      },
+    ]);
+    // Only what had finished comes back to the composer.
+    expect(entries[0].attachments.map((a) => a.key)).toEqual(["k1"]);
+
+    // And stays an upload failure across the next reload.
+    persistOutbox(createOutbox(entries));
+    expect(loadOutbox().entries).toMatchObject([{ status: "failed", cannotRetry: true }]);
+  });
+
+  it("leaves alone a send another live tab is waiting on the uploads of, for minutes", () => {
+    // This tab has an id of its own before the other one writes.
+    loadOutbox();
+    inAnotherTab(() => {
+      const theirs = createOutbox();
+      persistOutbox(theirs);
+      theirs.wait(entry("c1"));
+    });
+
+    expect(loadOutbox()).toEqual({ entries: [], lapsed: [] });
+    // Past the minute a pending send gets: a big file on 4G takes longer.
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(loadOutbox()).toEqual({ entries: [], lapsed: [] });
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(loadOutbox().lapsed).toMatchObject([{ commandId: "c1", cannotRetry: true }]);
   });
 
   it("shares a failed send with another tab, so a retry from there is still a retry", () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { uuid } from "~/client";
-import { stageFile, uploadStaged, type Attachment } from "~/lib/attachments";
+import { isImageAttachment, stageFile, uploadStaged, type Attachment } from "~/lib/attachments";
 import type { ThreadMeta } from "~/protocol";
 
 import {
@@ -101,6 +101,13 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   // connection never blocks typing the question that goes with it.
   // The in-flight upload behind each staged image, so removing one can stop it.
   const uploadsInFlight = useRef<Map<string, AbortController>>(new Map());
+  // The file behind each upload, from the moment it starts until it is up, so
+  // a failed one can be tried again without picking it again: on a phone
+  // that is a trip back through the photo library.
+  const uploadFiles = useRef<Map<string, File>>(new Map());
+  // The upload itself, so a message sent while it is still going can wait
+  // for it and send what it resolves to.
+  const uploads = useRef<Map<string, Promise<Partial<Attachment>>>>(new Map());
 
   // One file up to one thread. Resolves to what made it sendable; rejects when
   // it failed or was taken back, having already marked it in the composer.
@@ -108,25 +115,94 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
     (threadId: string, key: string, file: File) => {
       const abort = new AbortController();
       uploadsInFlight.current.set(key, abort);
-      return uploadStaged(threadId, file, {
+      uploadFiles.current.set(key, file);
+      // A thumbnail draws no progress, and each report would redraw the app.
+      const showsProgress = !isImageAttachment(file);
+      const upload = uploadStaged(threadId, file, {
         signal: abort.signal,
-        onProgress: (progress) => patchAttachment(threadId, key, { progress }),
+        onProgress: showsProgress
+          ? (progress) => patchAttachment(threadId, key, { progress })
+          : undefined,
       })
         .then((patch) => {
+          uploadFiles.current.delete(key);
           patchAttachment(threadId, key, patch);
           return patch;
         })
         .catch((e: Error) => {
           // An abort means the file was taken back; there is nothing left
-          // to report it to.
+          // to report it to. Anything else, a stall included, stays in the
+          // composer marked failed, its file kept for a retry.
           if (e.name !== "AbortError")
             patchAttachment(threadId, key, { status: "error", error: e.message });
           throw e;
         })
         .finally(() => uploadsInFlight.current.delete(key));
+      uploads.current.set(key, upload);
+      return upload;
     },
     [patchAttachment],
   );
+
+  const uploadOf = useCallback((key: string) => uploads.current.get(key), []);
+
+  // A failed upload's retry: the same file, up again under the same chip.
+  // Nothing happens for a chip whose file this page never had, one restored
+  // from storage, say: it has to be picked again.
+  const retryUpload = useCallback(
+    (threadId: string, key: string) => {
+      const file = uploadFiles.current.get(key);
+      if (!file) return;
+      setAttachments((all) => {
+        const list = all[threadId];
+        if (!list?.some((a) => a.key === key)) return all;
+        return {
+          ...all,
+          [threadId]: list.map((a) =>
+            a.key === key
+              ? {
+                  ...a,
+                  status: "uploading" as const,
+                  error: undefined,
+                  progress: a.progress === undefined ? undefined : 0,
+                }
+              : a,
+          ),
+        };
+      });
+      uploadInto(threadId, key, file).catch(() => {});
+    },
+    [uploadInto],
+  );
+
+  // The files and uploads go once nothing can ask for them again: neither a
+  // composer nor a message waiting on its uploads holds their chip. An upload
+  // is kept only while its chip is still uploading, since a send reads the
+  // finished ones from the chip itself. This covers a thread that went, and
+  // a message that went with its files, and is run again as the outbox moves,
+  // so a message's files go once it is acked.
+  useEffect(() => {
+    const sweep = () => {
+      const held = new Set<string>();
+      const going = new Set<string>();
+      for (const list of Object.values(attachments)) {
+        for (const a of list) {
+          held.add(a.key);
+          if (a.status === "uploading") going.add(a.key);
+        }
+      }
+      for (const e of outbox.get()) {
+        for (const a of e.attachments) {
+          held.add(a.key);
+          if (e.status === "waiting") going.add(a.key);
+        }
+      }
+      for (const key of uploadFiles.current.keys()) if (!held.has(key)) uploadFiles.current.delete(key);
+      for (const key of uploads.current.keys()) if (!going.has(key)) uploads.current.delete(key);
+    };
+    sweep();
+    return outbox.subscribe(sweep);
+  }, [attachments, outbox]);
 
   const attachFiles = useCallback(
     (files: File[]) => {
@@ -161,6 +237,8 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   const removeAttachment = useCallback((threadId: string, key: string) => {
     uploadsInFlight.current.get(key)?.abort();
     draftFiles.current.delete(key);
+    uploadFiles.current.delete(key);
+    uploads.current.delete(key);
     setAttachments((all) => {
       const list = all[threadId] ?? [];
       const going = list.find((a) => a.key === key);
@@ -228,6 +306,8 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       setAttachments,
       draftFiles,
       uploadInto,
+      uploadOf,
+      retryUpload,
       attachFiles,
       attachToDraft,
       removeAttachment,
@@ -242,6 +322,8 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       setDrafts,
       attachments,
       uploadInto,
+      uploadOf,
+      retryUpload,
       attachFiles,
       attachToDraft,
       removeAttachment,
