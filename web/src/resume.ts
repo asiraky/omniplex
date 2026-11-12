@@ -14,6 +14,7 @@
 // accumulating transcripts in localStorage forever.
 
 import { currentBuild } from "./boot";
+import type { ScrollPosition } from "./components/transcript/scrollAnchor";
 import type { ThreadState } from "./protocol";
 
 const KEY = "omniplex.resume";
@@ -23,17 +24,19 @@ export interface ResumeSnapshot {
       shape of ThreadState, so its cache is not trusted. */
   build: string;
   state: ThreadState;
-  scrollTop: number;
-  /** Pinned to the tail when saved, so the restore re-arms the follow pin
-      rather than parking the view at a stale offset near the bottom. */
-  atBottom: boolean;
+  /** Where it was scrolled, by row and by offset — see scrollAnchor.ts. */
+  position: ScrollPosition;
 }
 
-export function saveResume(state: ThreadState, scrollTop: number, atBottom: boolean) {
+export function saveResume(state: ThreadState, position: ScrollPosition) {
   try {
     sessionStorage.setItem(
       KEY,
-      JSON.stringify({ build: currentBuild(), state, scrollTop, atBottom } satisfies ResumeSnapshot),
+      JSON.stringify({
+        build: currentBuild(),
+        state,
+        position,
+      } satisfies ResumeSnapshot),
     );
   } catch {
     // Quota, or storage blocked outright. A cold attach is the fallback, not

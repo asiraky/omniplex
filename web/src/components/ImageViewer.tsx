@@ -1,4 +1,4 @@
-import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
+import { ExternalLinkIcon, MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
@@ -7,17 +7,35 @@ const MAX_ZOOM = 8;
 const control =
   "hover:bg-accent focus-visible:ring-ring flex size-11 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 disabled:opacity-40";
 
-export function MermaidViewer({
+/**
+ * One picture, full screen: fitted to the viewport first, then zoomable by
+ * button or key, with a one-press jump to its own pixel size for a screenshot
+ * too big to read fitted. A known `width`/`height` sizes the frame before the
+ * bytes arrive, so a slow load does not reflow the dialog when they do.
+ * `href` adds a link that opens the original in a new tab.
+ */
+export function ImageViewer({
   image,
+  title = "Image",
+  noun = "image",
+  href,
+  width: knownWidth,
+  height: knownHeight,
   onClose,
   onReturnFocus,
 }: {
   image: string;
+  title?: string;
+  /** What the controls call the picture: "Fit diagram", "Image zoom". */
+  noun?: string;
+  href?: string;
+  width?: number;
+  height?: number;
   onClose: () => void;
   onReturnFocus: () => void;
 }) {
   const [zoom, setZoom] = useState(1);
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [size, setSize] = useState({ width: knownWidth || 0, height: knownHeight || 0 });
   const [bounds, setBounds] = useState({ width: 0, height: 0 });
   const scroller = useRef<HTMLDivElement>(null);
   const previous = useRef(1);
@@ -47,6 +65,11 @@ export function MermaidViewer({
           ),
         )
       : 1;
+  // Zoom is relative to the fitted size, so its own pixel size is 1/fit. A
+  // tall full-page screenshot fits far below that, so the ceiling rises to
+  // reach it.
+  const actual = 1 / fit;
+  const maxZoom = Math.max(MAX_ZOOM, actual);
   const width = size.width * fit * zoom;
   const height = size.height * fit * zoom;
 
@@ -65,7 +88,7 @@ export function MermaidViewer({
   function changeZoom(direction: number) {
     setZoom((value) =>
       Math.min(
-        MAX_ZOOM,
+        maxZoom,
         Math.max(MIN_ZOOM, value * (direction > 0 ? 1.25 : 0.8)),
       ),
     );
@@ -97,12 +120,15 @@ export function MermaidViewer({
             } else if (event.key === "0") {
               event.preventDefault();
               setZoom(1);
+            } else if (event.key === "1") {
+              event.preventDefault();
+              setZoom(actual);
             }
           }}
         >
           <div className="flex shrink-0 items-center gap-2 border-b pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] pt-[env(safe-area-inset-top)]">
             <Dialog.Title className="min-w-0 flex-1 truncate text-sm font-medium">
-              Mermaid diagram
+              {title}
             </Dialog.Title>
             <div className="flex shrink-0 items-center gap-1">
               <button
@@ -115,9 +141,10 @@ export function MermaidViewer({
               >
                 <MinusIcon className="size-4" />
               </button>
+              {/* Hidden on a phone: six 44px controls already fill the bar. */}
               <output
-                className="w-10 text-center text-xs tabular-nums"
-                aria-label="Diagram zoom"
+                className="hidden w-10 text-center text-xs tabular-nums sm:block"
+                aria-label={`${noun[0].toUpperCase()}${noun.slice(1)} zoom`}
               >
                 {Math.round(zoom * 100)}%
               </output>
@@ -125,7 +152,7 @@ export function MermaidViewer({
                 type="button"
                 aria-label="Zoom in"
                 title="Zoom in (+)"
-                disabled={zoom >= MAX_ZOOM}
+                disabled={zoom >= maxZoom}
                 onClick={() => changeZoom(1)}
                 className={control}
               >
@@ -133,13 +160,36 @@ export function MermaidViewer({
               </button>
               <button
                 type="button"
-                aria-label="Fit diagram"
-                title="Fit diagram (0)"
+                aria-label={`Fit ${noun}`}
+                title={`Fit ${noun} (0)`}
                 onClick={() => setZoom(1)}
                 className={`${control} text-xs`}
               >
                 Fit
               </button>
+              <button
+                type="button"
+                aria-label="Actual size"
+                title="Actual size (1)"
+                // Nothing to enlarge to when the whole picture already fits.
+                disabled={actual <= 1 || zoom === actual}
+                onClick={() => setZoom(actual)}
+                className={`${control} text-xs`}
+              >
+                1:1
+              </button>
+              {href && (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Open original in a new tab"
+                  title="Open original in a new tab"
+                  className={control}
+                >
+                  <ExternalLinkIcon className="size-4" />
+                </a>
+              )}
               <button
                 type="button"
                 aria-label="Close full screen"
@@ -154,7 +204,7 @@ export function MermaidViewer({
           <div
             ref={mountScroller}
             role="region"
-            aria-label="Expanded Mermaid diagram"
+            aria-label={`Expanded ${title}`}
             tabIndex={0}
             className="scroll-thin focus-visible:ring-ring min-h-0 flex-1 overflow-auto overscroll-contain outline-none focus-visible:ring-2 focus-visible:ring-inset pb-[env(safe-area-inset-bottom)]"
           >
@@ -169,7 +219,7 @@ export function MermaidViewer({
             >
               <img
                 src={image}
-                alt="Mermaid diagram"
+                alt={title}
                 className="max-w-none select-none"
                 draggable={false}
                 style={{

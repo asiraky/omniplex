@@ -25,11 +25,12 @@ import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
 import { rowStatus, unread, type RowStatus } from "~/threadStatus";
 import { useShortcut } from "~/useShortcuts";
+import { useNow } from "~/useNow";
 
 import type { RowDrag } from "./SortableRows";
 
-function ago(ms: number) {
-  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+function ago(ms: number, now: number) {
+  const s = Math.max(0, Math.floor((now - ms) / 1000));
   if (s < 60) return "now";
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
@@ -52,23 +53,33 @@ function TitleLine({
   jumpHint: CommandId | undefined;
 }) {
   const jump = useShortcut(jumpHint);
+  const now = useNow();
   return (
     <span
       className={cn(
         "flex items-center gap-1.5",
-        // Room for the X, the one control a phone always shows. On desktop
-        // the row's controls only exist on hover, so the line runs full width
-        // until then — but it has to yield when they arrive. The fading
-        // timestamp alone covers one control; the pin would sit on top of
-        // the title, so the hovered line yields as well. Hover also brings
-        // the rename pencil, one control-width further left, so the hovered
-        // line yields to the pencil's glyph (pr-18) rather than the trio's
-        // full 96px box: the buttons are mostly hit area, and reserving all
-        // of it leaves a canyon between the truncated title and the X.
-        // Deliberately not transitioned: an animated padding hands the pin
-        // ~150ms sitting on the title. The line yields first, then the
-        // controls fade in.
-        reordering ? null : "pr-8 md:pr-0 md:group-hover:pr-18 md:group-focus-within:pr-18",
+        // Room for whichever controls are showing. Without a mouse nothing
+        // waits for hover: a narrow row shows only the X, so the line leaves
+        // it 32px; a wide one (an iPad, a phone on its side) shows the pin
+        // and the pencil too, and the line clears all three boxes, because a
+        // finger cannot aim at a glyph and the pencil's box would otherwise
+        // sit on the end of the title.
+        //
+        // With a mouse the controls only exist on hover, so the line runs
+        // full width until then — but it has to yield when they arrive. The
+        // fading timestamp alone covers one control; the pin would sit on
+        // top of the title, so the hovered line yields as well. Hover also
+        // brings the rename pencil, one control-width further left, so the
+        // hovered line yields to the pencil's glyph (pr-18) rather than the
+        // trio's full 96px box: a pointer lands where it is aimed, and
+        // reserving the whole box leaves a canyon between the truncated
+        // title and the X. Below md there is no pin or pencil, so hover only
+        // makes room for the X. Deliberately not transitioned: an animated
+        // padding hands the pin ~150ms sitting on the title. The line yields
+        // first, then the controls fade in.
+        reordering
+          ? null
+          : "not-mouse:pr-8 not-mouse:md:pr-22 max-md:mouse:group-hover:pr-8 max-md:mouse:group-focus-within:pr-8 md:mouse:group-hover:pr-18 md:mouse:group-focus-within:pr-18",
       )}
     >
       <span className={cn("min-w-0 truncate text-[13px]", isNew && "font-semibold")}>
@@ -83,7 +94,10 @@ function TitleLine({
           ◷ {s.scheduledCount}
         </span>
       )}
-      <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity md:group-hover:opacity-0 md:group-focus-within:opacity-0">
+      {/* Gives way wherever the trio covers its corner: always, on a wide
+          touch screen, and on hover with a mouse. Beside the X alone it has
+          room to stay. */}
+      <span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px] transition-opacity not-mouse:md:opacity-0 md:mouse:group-hover:opacity-0 md:mouse:group-focus-within:opacity-0">
         {/* While ⌘ is held the timestamp's corner says which digit opens the
             row instead. Chips a size down, so the line keeps its height. */}
         {jump ? (
@@ -93,7 +107,7 @@ function TitleLine({
             className="[&_kbd]:h-4 [&_kbd]:min-w-4 [&_kbd]:text-[10px]"
           />
         ) : (
-          ago(s.updatedAt)
+          ago(s.updatedAt, now)
         )}
       </span>
     </span>
@@ -201,10 +215,11 @@ function DetailLine({
 }
 
 /**
- * The pin toggle, one control-width left of the X. Desktop only, on hover
- * like the X and the pencil, pinned or not: the Pinned section already says
- * which threads are pinned, so the row needs no mark of its own. Touch pins
- * through the long-press menu or the thread header, for the pencil's reason.
+ * The pin toggle, one control-width left of the X. From md up only, and with
+ * a mouse on hover like the X and the pencil, pinned or not: the Pinned
+ * section already says which threads are pinned, so the row needs no mark of
+ * its own. A phone pins through the long-press menu or the thread header, for
+ * the pencil's reason.
  */
 function PinControl({
   s,
@@ -223,7 +238,10 @@ function PinControl({
           aria-label={`${pinned ? "Unpin" : "Pin"} thread ${s.title || "Untitled"}`}
           onClick={() => onSetPinned(s.id, !pinned)}
           // The same 32px square as the X, so the pair reads as one rail.
-          className="group/pin text-muted-foreground hover:text-foreground absolute top-0.5 right-8 hidden size-8 shrink-0 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+          // The rail's squares touch, so on touch the hit area grows only
+          // in height: any wider and it would take taps meant for the X or
+          // the pencil.
+          className="group/pin text-muted-foreground hover:text-foreground hit-44 absolute top-0.5 right-8 hidden size-8 shrink-0 [--hit-w:0px] md:inline-flex md:size-8 mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100"
         >
           {/* 14px, a step under the X. Filled when pinned; pointed at, a
               pin turns into what the click will do. */}
@@ -243,10 +261,11 @@ function PinControl({
 }
 
 /**
- * The pencil that turns the title into a field. Desktop only, on hover like
- * the X: a third always-visible control on a phone row would cost the title
- * too much room, so touch reaches rename through the long-press menu, or the
- * pencil in the thread header.
+ * The pencil that turns the title into a field. From md up only, and with a
+ * mouse on hover like the X: a phone row has no room for a third always-visible
+ * control without costing the title too much, so a phone reaches rename
+ * through the long-press menu, or the pencil in the thread header. A wide
+ * touch screen has the room, so there it shows.
  */
 function RenameControl({ s, onRename }: { s: ThreadMeta; onRename: () => void }) {
   return (
@@ -257,8 +276,8 @@ function RenameControl({ s, onRename }: { s: ThreadMeta; onRename: () => void })
           size="icon"
           aria-label={`Rename thread ${s.title || "Untitled"}`}
           onClick={onRename}
-          // Left of the pin.
-          className="text-muted-foreground/70 hover:text-foreground absolute top-0.5 right-16 hidden size-8 shrink-0 hover:bg-transparent md:size-8 md:inline-flex md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:hover:bg-transparent"
+          // Left of the pin, and like it grown only in height on touch.
+          className="text-muted-foreground/70 hover:text-foreground hit-44 absolute top-0.5 right-16 hidden size-8 shrink-0 [--hit-w:0px] hover:bg-transparent md:inline-flex md:size-8 mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100 dark:hover:bg-transparent"
         >
           {/* Smaller and fainter than the X beside it: renaming is the
               quieter of the two, and the title it edits is 13px. */}
@@ -307,9 +326,11 @@ function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMet
           // inside its 16px box — right-px puts the visible strokes on
           // that same centre line.
           // The visible square stays 32px so it keeps that alignment
-          // at every size; `after` grows the hit area to 44px without
-          // moving anything, which a larger button could not do.
-          className="hover:text-destructive absolute top-0.5 right-px size-8 shrink-0 after:absolute after:-inset-1.5 after:content-[''] md:size-8 md:opacity-0 md:after:hidden md:group-hover:opacity-100 md:focus-visible:opacity-100"
+          // at every size; on touch `hit-44` grows the hit area to 44px
+          // without moving anything, which a larger button could not do.
+          // From md up the pin sits flush against it, so there it grows
+          // only in height.
+          className="hover:text-destructive hit-44 absolute top-0.5 right-px size-8 shrink-0 md:size-8 md:[--hit-w:0px] mouse:opacity-0 mouse:group-hover:opacity-100 mouse:focus-visible:opacity-100"
         >
           <XIcon />
         </Button>
@@ -323,7 +344,8 @@ function DeleteControl({ s, onDelete }: { s: ThreadMeta; onDelete: (s: ThreadMet
 // on the container — a button cannot legally nest inside another button. The
 // delete X and the pin beside it overlay the timestamp's corner instead of
 // owning a column of their own, so an un-hovered row has no phantom right
-// margin; on hover (desktop) the timestamp yields.
+// margin; wherever the pin is showing (on hover with a mouse, always on a
+// wide touch screen) the timestamp yields.
 export function ThreadRow({
   s,
   showProject,
@@ -391,8 +413,8 @@ export function ThreadRow({
       )}
     >
       {/* Right-click (long-press, on touch) for the row's quiet
-         actions: rename, which on touch has no control of its own,
-         and read-state. */}
+         actions: rename and pin, which on a phone have no control of
+         their own, and read-state. */}
       {/* Not modal: a modal menu traps focus until it has finished
          closing, so the rename field it opens would have its focus pulled
          back and lose it. It has to take focus inside the tap itself, too,
@@ -436,7 +458,10 @@ export function ThreadRow({
                     label="Thread title"
                     onSave={(title) => onRename(s.id, title)}
                     onDone={() => setRenaming(false)}
-                    className="-mx-1 h-6 flex-1 md:h-5"
+                    // A touch screen's fields are always 16px (index.css),
+                    // which a 20px field would crop; only a fine pointer
+                    // gets the tighter one.
+                    className="-mx-1 h-6 flex-1 md:not-pointer-coarse:h-5"
                   />
                 </span>
                 <DetailLine

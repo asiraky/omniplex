@@ -56,7 +56,9 @@ const ANCHOR_GAP_PX = 16;
 // because `offsetTop` is relative to the nearest positioned ancestor and
 // neither the scroller nor the content is required to be one — whatever that
 // ancestor turns out to be, it is on both walks and cancels.
-const layoutTop = (el: HTMLElement) => {
+//
+// Exported for the scroll memory, which measures rows for the same reason.
+export const layoutTop = (el: HTMLElement) => {
   let y = 0;
   for (let node: HTMLElement | null = el; node; node = node.offsetParent as HTMLElement | null)
     y += node.offsetTop;

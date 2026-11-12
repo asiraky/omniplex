@@ -1,66 +1,7 @@
 import { useMemo } from "react";
 
+import { type DiffLine, parsePatch } from "~/lib/patch";
 import { cn } from "~/lib/utils";
-
-export type DiffLineKind = "add" | "del" | "context" | "hunk" | "meta";
-
-export interface DiffLine {
-  kind: DiffLineKind;
-  text: string;
-  oldNo?: number;
-  newNo?: number;
-}
-
-// Header lines carry nothing a reader wants: the path is already the row they
-// clicked, and the blob hashes are noise.
-const HEADER = /^(diff --git |index |--- |\+\+\+ |old mode |new mode |new file mode |deleted file mode |similarity index |rename from |rename to |copy from |copy to |Binary files )/;
-
-/**
- * Turn a unified diff into lines that know their own numbering. Git is the one
- * producing this text, so the parser only has to be right about git's output,
- * not about every patch a human might paste.
- */
-function parsePatch(patch: string): DiffLine[] {
-  const out: DiffLine[] = [];
-  let oldNo = 0;
-  let newNo = 0;
-
-  for (const raw of patch.split("\n")) {
-    if (raw.startsWith("@@")) {
-      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
-      if (m) {
-        oldNo = Number(m[1]);
-        newNo = Number(m[2]);
-      }
-      out.push({ kind: "hunk", text: raw });
-      continue;
-    }
-    if (raw.startsWith("\\")) {
-      out.push({ kind: "meta", text: raw.replace(/^\\ /, "") });
-      continue;
-    }
-    if (HEADER.test(raw)) {
-      // A binary file has no hunks at all, so its one header line is the only
-      // thing there is to say about it.
-      if (raw.startsWith("Binary files")) out.push({ kind: "meta", text: raw });
-      continue;
-    }
-    if (raw === "" && out.length === 0) continue;
-    if (raw.startsWith("+")) {
-      out.push({ kind: "add", text: raw.slice(1), newNo: newNo++ });
-      continue;
-    }
-    if (raw.startsWith("-")) {
-      out.push({ kind: "del", text: raw.slice(1), oldNo: oldNo++ });
-      continue;
-    }
-    // The last line of a patch is an empty string from the trailing newline,
-    // and is not a line of the file.
-    if (raw === "") continue;
-    out.push({ kind: "context", text: raw.slice(1), oldNo: oldNo++, newNo: newNo++ });
-  }
-  return out;
-}
 
 /**
  * A key for each line that stays with it: its kind, numbers and text, plus a

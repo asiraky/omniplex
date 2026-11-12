@@ -5,10 +5,10 @@ import { useOverlayHeight } from "~/app/useOverlayHeight";
 import type { PanelControls } from "~/app/usePanel";
 import type { RecentSkills } from "~/app/useRecentSkills";
 import type { ScheduleEditor } from "~/app/useScheduleEditor";
-import type { ScrollPosition } from "~/app/useScrollMemory";
 import type { ThreadCommands } from "~/app/useThreadCommands";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { ConnectionStatus } from "~/client";
+import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { CardSignIn } from "~/lib/cards";
 import { liveJobCount } from "~/lib/jobs";
 import { describeSettings, pickerInstances, resolveInstance } from "~/lib/models";
@@ -72,7 +72,7 @@ export function ThreadView({
   harnesses: HarnessMeta[];
   scroll: {
     positionOf: (id: string) => ScrollPosition | undefined;
-    record: (id: string, top: number, atBottom: boolean) => void;
+    record: (id: string, position: ScrollPosition) => void;
   };
   commands: ThreadCommands;
   harness: ThreadHarness;

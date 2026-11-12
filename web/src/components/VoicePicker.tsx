@@ -14,6 +14,7 @@ import { Input } from "~/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Spinner } from "~/components/ui/spinner";
+import { isComposing } from "~/lib/ime";
 import { player, usePlayback } from "~/lib/ttsPlayer";
 import { cn } from "~/lib/utils";
 import { retryVoices, useVoices, voiceTraits } from "~/lib/voices";
@@ -242,7 +243,8 @@ function VoiceIdInput({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
+        // Enter that confirms an IME candidate is still typing, not a save.
+        if (e.key === "Enter" && !isComposing(e)) {
           e.preventDefault();
           commit();
         }

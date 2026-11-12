@@ -103,7 +103,6 @@ export function ThreadHeader({
           <HeaderTitle
             threadId={activeId}
             title={threadTitle(meta, actions.state)}
-            isDesktop={isDesktop}
             editing={renamingId !== null && renamingId === activeId}
             onEdit={() => setRenamingId(activeId)}
             onDone={() => setRenamingId(null)}
@@ -127,14 +126,13 @@ export function ThreadHeader({
 }
 
 /**
- * The open thread's name, and the pencil that turns it into a field. On a
- * desktop the pencil waits for hover; a phone has no hover, so there it is
- * always showing.
+ * The open thread's name, and the pencil that turns it into a field. With a
+ * mouse the pencil waits for hover; a touch screen has no hover to wait for,
+ * phone or tablet, so there it is always showing.
  */
 function HeaderTitle({
   threadId,
   title,
-  isDesktop,
   editing,
   onEdit,
   onDone,
@@ -142,7 +140,6 @@ function HeaderTitle({
 }: {
   threadId: string | null;
   title: string;
-  isDesktop: boolean;
   editing: boolean;
   onEdit: () => void;
   onDone: () => void;
@@ -169,10 +166,9 @@ function HeaderTitle({
           // A 12px glyph, smaller than the 13px title, and faint until
           // pointed at. On a phone the button keeps its 44px target but
           // tucks in so the glyph sits just after the text, not 16px off.
-          className={cn(
-            "text-muted-foreground/70 hover:text-foreground -ml-3 hover:bg-transparent md:ml-0 md:size-6 dark:hover:bg-transparent",
-            isDesktop && "opacity-0 group-hover/title:opacity-100 focus-visible:opacity-100",
-          )}
+          // From md up it hugs the glyph, and a touch screen that wide (an
+          // iPad) gets its 44px back as hit area alone.
+          className="text-muted-foreground/70 hover:text-foreground hit-44 relative -ml-3 hover:bg-transparent md:ml-0 md:size-6 mouse:opacity-0 mouse:group-hover/title:opacity-100 mouse:focus-visible:opacity-100 dark:hover:bg-transparent"
         >
           <PencilIcon className="size-3" strokeWidth={1.75} />
         </IconButton>

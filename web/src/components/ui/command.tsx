@@ -33,10 +33,12 @@ function CommandInput({
       className={cn("flex h-9 items-center gap-2 border-b px-3", wrapperClassName)}
     >
       <SearchIcon className="size-4 shrink-0 opacity-50" />
+      {/* Fills the row rather than naming a height of its own, so the field
+          can never overhang the row and its border. */}
       <CommandPrimitive.Input
         data-slot="command-input"
         className={cn(
-          "flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
+          "flex h-full w-full rounded-md bg-transparent text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
           className,
         )}
         {...props}

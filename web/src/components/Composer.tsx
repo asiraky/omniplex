@@ -15,6 +15,7 @@ import { ContextMeter } from "~/components/ContextMeter";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
+import { isComposing } from "~/lib/ime";
 import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
@@ -358,7 +359,7 @@ export function Composer({
       }}
       onKeyDown={(e) => {
         paste.noteKey(e);
-        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (isComposing(e)) return;
         if (menu.onKey(e)) return;
         if (e.key !== "Enter") return;
         // Shift+Enter is the newline; let the textarea handle it.

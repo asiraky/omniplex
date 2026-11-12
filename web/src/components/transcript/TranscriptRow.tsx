@@ -1,10 +1,8 @@
-import { Fragment } from "react";
-
 import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
 import type { Job, TurnDiff } from "~/protocol";
-import { rowTurnID, type Row } from "~/rows";
+import { rowKey, rowTurnID, type Row } from "~/rows";
 
 import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
@@ -86,18 +84,23 @@ export function TranscriptRow({
   const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
 
   return (
-    // A plain fragment, not a `content-visibility: auto` box. Skipping
-    // the render of off-screen rows costs nothing to measure and a lot
-    // to scroll: a row that has never been on screen is laid out at
-    // its `contain-intrinsic-size` guess, and rows here are anything
-    // from a one-line tool call to a screenful of markdown, so every
-    // one the reader scrolls up into swaps a 120px placeholder for its
-    // real height and shoves the view. That is the scroll-up stutter,
-    // and it healed only on the way back down because by then each row
-    // had been rendered once and its size remembered.
-    <Fragment>
+    // A `display: contents` box, not a `content-visibility: auto` one.
+    // Skipping the render of off-screen rows costs nothing to measure and
+    // a lot to scroll: a row that has never been on screen is laid out at
+    // its `contain-intrinsic-size` guess, and rows here are anything from
+    // a one-line tool call to a screenful of markdown, so every one the
+    // reader scrolls up into swaps a 120px placeholder for its real height
+    // and shoves the view. That is the scroll-up stutter, and it healed
+    // only on the way back down because by then each row had been rendered
+    // once and its size remembered.
+    //
+    // The box is here only to carry the row's id, which is how the scroll
+    // memory finds the row the reader was on (scrollAnchor.ts). `contents`
+    // keeps it out of layout, so the transcript's gap still falls between
+    // the row and its changed-files card as if they were loose children.
+    <div data-row-id={rowKey(row)} className="contents">
       <RowBody row={row} {...context} />
       {diff && <ChangedFiles diff={diff} latest={turnID === lastTurnID} onOpenDiff={onOpenDiff} />}
-    </Fragment>
+    </div>
   );
 }

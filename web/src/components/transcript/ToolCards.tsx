@@ -15,16 +15,18 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { lazy, Suspense, useState, type ComponentType } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType } from "react";
 
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
+import { toolImages } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
 import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
 import { LiveTail } from "./LiveTail";
 import type { FullToolBody } from "./LoadFullOutput";
+import { ToolImages } from "./ToolImages";
 
 // Few cards are truncated, so the loader arrives on first open. On a dropped
 // connection or after a redeploy its chunk can fail to load, and with no error
@@ -37,6 +39,20 @@ function LoaderUnavailable() {
   );
 }
 const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ default: LoaderUnavailable })));
+
+// A diff shows only once its card is opened, so its renderer stays out of the
+// initial bundle. If its chunk fails to load, the patch shows as plain text
+// rather than taking the app down.
+type DiffView = ComponentType<{ patch: string }>;
+const PlainPatch: DiffView = ({ patch }) => <pre className={PRE}>{patch}</pre>;
+// The mount prefetch and the lazy render share one load.
+let toolDiff: Promise<{ default: DiffView }> | undefined;
+const loadToolDiff = () =>
+  (toolDiff ??= import("./ToolDiff").then(
+    (m): { default: DiffView } => ({ default: m.ToolDiff }),
+    () => ({ default: PlainPatch }),
+  ));
+const ToolDiff = lazy(loadToolDiff);
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -70,13 +86,6 @@ export function StatusMark({ status }: { status?: ToolStatus }) {
 const running = (item: Item | undefined) =>
   item?.status === "in_progress" || item?.status === "pending";
 
-function joinOutput(content: ToolContent[] | undefined) {
-  return (content ?? [])
-    .map((c) => (c.type === "diff" ? `--- ${c.path}\n${c.text ?? ""}` : (c.text ?? "")))
-    .join("\n")
-    .trim();
-}
-
 // What a tool card shows: the full output and input once fetched, standing in
 // for the previews, else the previews. The full body is held by the card only,
 // so it goes when the card does. It is the call as it stood when loaded: once
@@ -91,24 +100,100 @@ function useToolOutput(item: Item) {
   }
   return {
     setFull,
-    output: joinOutput(full ? full.content : item.content),
+    content: (full ? full.content : item.content) ?? [],
     input: full && full.input !== undefined ? full.input : item.input,
     truncated: !!item.truncated && !full,
   };
 }
 
-// A preview's line count is the preview's, not the output's.
-function outputLabel(open: boolean, truncated: boolean, output: string) {
-  if (open) return "hide";
-  if (truncated) return "truncated";
-  const lines = output.split("\n").length;
-  return `${lines} ${lines === 1 ? "line" : "lines"}`;
+// What a card's body shows, in the order the tool produced it. Neighbouring
+// text pieces read as one output, so they share a box. Images are not here:
+// they show as thumbnails whether or not the card is open.
+type Block =
+  | { kind: "text"; text: string; path?: string }
+  | { kind: "diff"; path?: string; patch: string };
+
+// A preview of a long patch is cut in the middle (capToolText). The marker it
+// leaves becomes a patch note, so it reads as a gap rather than a line of the
+// file. A cut that landed on a line break leaves that break before the marker
+// too, which would otherwise read as an empty line.
+const PREVIEW_CUT = /\n\n\n?(\[… \d+ characters truncated …\])\n\n/;
+
+function blocks(content: ToolContent[]): Block[] {
+  const out: Block[] = [];
+  for (const c of content) {
+    const text = c.text ?? "";
+    // A "diff" with no hunk is a whole file (Codex sends an added or deleted
+    // file's contents as-is), and read as a patch it would lose every line's
+    // first character.
+    if (c.type === "diff" && /^@@ /m.test(text)) {
+      out.push({ kind: "diff", path: c.path, patch: text.replace(PREVIEW_CUT, "\n\\ $1\n") });
+    } else if (c.type === "diff") {
+      if (text.trim()) out.push({ kind: "text", text: text.trim(), path: c.path });
+    } else if (c.type === "text" && text.trim()) {
+      const last = out[out.length - 1];
+      if (last?.kind === "text" && !last.path) last.text = `${last.text}\n${text.trim()}`;
+      else out.push({ kind: "text", text: text.trim() });
+    }
+  }
+  return out;
+}
+
+function PathLabel({ path }: { path: string }) {
+  return (
+    <div title={path} className="bg-muted/60 text-muted-foreground truncate border-b px-2 py-1 font-mono text-[11px]">
+      {path}
+    </div>
+  );
+}
+
+const PRE =
+  "scroll-thin bg-muted/60 max-h-80 overflow-auto overscroll-contain p-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap";
+
+function ContentBlock({ block }: { block: Block }) {
+  if (block.kind === "diff") {
+    return (
+      <div className="overflow-hidden rounded-md border">
+        {block.path && <PathLabel path={block.path} />}
+        <div className="scroll-thin max-h-80 overflow-auto overscroll-contain">
+          <Suspense fallback={null}>
+            <ToolDiff patch={block.patch} />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
+  if (block.path) {
+    return (
+      <div className="overflow-hidden rounded-md border">
+        <PathLabel path={block.path} />
+        <pre className={PRE}>{block.text}</pre>
+      </div>
+    );
+  }
+  return <pre className={cn(PRE, "rounded-md")}>{block.text}</pre>;
 }
 
 export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const [open, setOpen] = useState(false);
-  const { setFull, output, input, truncated } = useToolOutput(item);
+  const { setFull, content, input, truncated } = useToolOutput(item);
+  const body = useMemo(() => blocks(content), [content]);
+  const hasDiff = body.some((b) => b.kind === "diff");
+  // Fetched once a card has a diff to show, after first paint, so opening the
+  // card does not wait a 4G round trip for the renderer.
+  useEffect(() => {
+    if (hasDiff) void loadToolDiff();
+  }, [hasDiff]);
+  // Once loaded, the full output brings back any image the preview's caps left out.
+  const images = useMemo(() => toolImages([{ ...item, content }]), [item, content]);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
+
+  // How much opening the card would show, said on the closed card. A patch's
+  // closing newline ends its last line rather than starting another.
+  const lines = useMemo(
+    () => body.reduce((n, b) => n + (b.kind === "text" ? b.text : b.patch.replace(/\n$/, "")).split("\n").length, 0),
+    [body],
+  );
 
   return (
     <div className="fade-in bg-card/60 rounded-lg border">
@@ -127,10 +212,17 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
           <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
         )}
         <StatusMark status={item.status as ToolStatus | undefined} />
-        {/* A cut input alone still has a body worth opening for. */}
-        {(output || truncated) && (
+        {/* A cut input alone still has a body worth opening for. A preview's
+            counts are the preview's, not the output's, so it says neither. */}
+        {(body.length > 0 || truncated) && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
-            {outputLabel(open, truncated, output)}
+            {open ? (
+              "hide"
+            ) : truncated ? (
+              "truncated"
+            ) : (
+              lines > 0 && `${lines} ${lines === 1 ? "line" : "lines"}`
+            )}
             <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
           </span>
         )}
@@ -141,6 +233,10 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
           unchanged. */}
       {running(item) && <LiveTail tail={item.tail} className="mx-3 mb-2" />}
 
+      {/* A screenshot is the point of the call: its thumbnail shows on the
+          closed card, not behind a tap. */}
+      <ToolImages images={images} className="px-2.5 pb-2" />
+
       {open && (
         <div className="space-y-2 border-t px-3 py-2">
           {input != null && (
@@ -148,11 +244,9 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
               {JSON.stringify(input, null, 2)}
             </pre>
           )}
-          {output && (
-            <pre className="scroll-thin bg-muted/60 max-h-80 overflow-auto overscroll-contain rounded-md p-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
-              {output}
-            </pre>
-          )}
+          {body.map((block, i) => (
+            <ContentBlock key={i} block={block} />
+          ))}
           {truncated && (
             <Suspense fallback={<Spinner className="text-primary size-3" />}>
               {/* Keyed on the output it was asked over: more landing mid-request
@@ -209,6 +303,7 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
   const declined = items.some((i) => i.status === "declined");
   const kinds = Array.from(new Set(items.map((i) => i.toolKind ?? "other")));
   const ActiveIcon = TOOL_ICON[active?.toolKind ?? "other"] ?? CircleIcon;
+  const images = useMemo(() => toolImages(items), [items]);
 
   return (
     <div className="fade-in">
@@ -216,7 +311,9 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="hover:bg-accent/40 focus-visible:ring-ring text-muted-foreground flex min-h-11 w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
+        // 44px tall on a phone, its content's height from md up; a touch
+        // screen that wide still gets the 44px, as hit area.
+        className="hover:bg-accent/40 focus-visible:ring-ring text-muted-foreground hit-44 relative flex min-h-11 w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
       >
         {live ? (
           <>
@@ -255,6 +352,9 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
         <LiveTail tail={active?.tail} className="mt-1 ml-1.5" />
       )}
 
+      {/* Closed, the run still shows what its calls saw. Open, each card shows
+          its own, so the strip would only be a second copy. */}
+      {!open && <ToolImages images={images} className="mt-1 px-1" />}
       {open && <ExpandedItems threadId={threadId} items={items} />}
     </div>
   );
@@ -277,6 +377,7 @@ export function TurnFold({
   continued?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const images = useMemo(() => toolImages(items), [items]);
 
   return (
     <div className="fade-in">
@@ -284,12 +385,17 @@ export function TurnFold({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="hover:text-foreground focus-visible:ring-ring text-muted-foreground flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2"
+        // A 24px line, grown on touch to a 40px target rather than 44: the
+        // opened work starts 8px below it, and the target stops short.
+        className="hover:text-foreground focus-visible:ring-ring text-muted-foreground hit-44 relative flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors [--hit-h:40px] outline-none focus-visible:ring-2"
       >
         <span>{continued ? summarise(items) || "More work" : foldLabel(turn)}</span>
         <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
       </button>
 
+      {/* Screenshots outlive the fold, the way artefacts do: a picture of the
+          result is often the most direct receipt for the work. */}
+      {!open && <ToolImages images={images} className="mt-1" />}
       {open && <ExpandedItems threadId={threadId} items={items} />}
     </div>
   );

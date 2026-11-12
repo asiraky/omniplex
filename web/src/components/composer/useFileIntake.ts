@@ -1,7 +1,7 @@
 import { useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 
 import { dragHasFiles, filesFrom } from "~/lib/attachments";
-import { pastedFile } from "~/lib/paste";
+import { pastedFile, pasteTakesText } from "~/lib/paste";
 
 /** Files dragged onto the composer's card. */
 export function useFileDrop(attach: (files: File[]) => void) {
@@ -58,9 +58,10 @@ export function usePasteIntake({
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     // A screenshot on the clipboard is the fastest way to attach one, and
     // the reason the terminal habit transfers; a copied file comes the same
-    // way.
+    // way. Files that come with real text, as cells from a spreadsheet do
+    // with a picture of themselves, go in as the text.
     const files = filesFrom(e.clipboardData);
-    if (files.length > 0) {
+    if (files.length > 0 && !pasteTakesText(e.clipboardData)) {
       e.preventDefault();
       attach(files);
       return;

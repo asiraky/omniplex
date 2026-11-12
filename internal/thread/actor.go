@@ -145,6 +145,11 @@ type Actor struct {
 	// for queued prompts whose images came back out of the log without one.
 	imagePath func(threadID, imageID string) (string, error)
 
+	// toolImage stores an image from a tool result under this thread and
+	// returns the content that names it. Set by the manager at adopt time;
+	// nil when the server keeps no attachments.
+	toolImage func(threadID string, data []byte) (proto.ToolContent, error)
+
 	// quotaSink receives the account-level usage-limit pushes the harness
 	// streams (Claude rate-limit events, Codex rateLimits notifications). Set
 	// by the manager at adopt time, bound to the instance the thread runs
@@ -2514,6 +2519,24 @@ func (h hostServices) ReportQuota(snap adapter.QuotaSnapshot) {
 		sink(snap)
 	}
 }
+
+// StoreToolImage keeps an image a tool returned so the event can carry a URL
+// rather than the bytes. It implements adapter.ToolImageStore.
+func (h hostServices) StoreToolImage(data []byte) (proto.ToolContent, error) {
+	h.a.mu.Lock()
+	store := h.a.toolImage
+	h.a.mu.Unlock()
+	if store == nil {
+		return proto.ToolContent{}, errNoToolImages
+	}
+	return store(h.a.ID, data)
+}
+
+var errNoToolImages = errors.New("this server keeps no images")
+
+// The adapter finds StoreToolImage by type assertion, so a changed signature
+// would fail silently there; this makes it fail here instead.
+var _ adapter.ToolImageStore = hostServices{}
 
 func (h hostServices) ComposerCatalogueChanged() {
 	h.a.mu.Lock()

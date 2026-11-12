@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/attachment"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
@@ -112,6 +114,7 @@ type Manager struct {
 	// artefacts holds what threads produced; deleting a thread deletes them.
 	artefacts AttachmentPurger
 	imagePath func(threadID, id string) (string, error)
+	toolImage func(threadID string, data []byte) (proto.ToolContent, error)
 
 	probeMu sync.Mutex
 	probes  map[string]probeResult
@@ -279,6 +282,12 @@ type AttachmentResolver interface {
 	Path(threadID, id string) (path, mediaType string, err error)
 }
 
+// ToolImageKeeper stores an image a harness returned from a tool call, so the
+// event names it by URL instead of carrying its bytes.
+type ToolImageKeeper interface {
+	PutToolImage(threadID string, data []byte) (attachment.Meta, error)
+}
+
 // SetAttachments tells the manager where prompt images live. A thread that is
 // deleted takes them with it; without this they would outlive it on disk.
 func (m *Manager) SetAttachments(p AttachmentPurger) {
@@ -287,6 +296,28 @@ func (m *Manager) SetAttachments(p AttachmentPurger) {
 		m.imagePath = func(threadID, id string) (string, error) {
 			path, _, err := r.Path(threadID, id)
 			return path, err
+		}
+	}
+	if k, ok := p.(ToolImageKeeper); ok {
+		m.toolImage = func(threadID string, data []byte) (proto.ToolContent, error) {
+			meta, err := k.PutToolImage(threadID, data)
+			if err != nil {
+				return proto.ToolContent{}, err
+			}
+			served := func(id string) string {
+				if id == "" {
+					return ""
+				}
+				return "/api/threads/" + url.PathEscape(threadID) + "/attachments/" + url.PathEscape(id)
+			}
+			return proto.ToolContent{
+				Type:      "image",
+				URL:       served(meta.ID),
+				ThumbURL:  served(meta.ThumbID),
+				MediaType: meta.MediaType,
+				Width:     meta.Width,
+				Height:    meta.Height,
+			}, nil
 		}
 	}
 }
@@ -1429,6 +1460,7 @@ func (m *Manager) adopt(a *Actor) {
 	a.onExit = m.forgetFn(a.ID, a)
 	a.onPhase = m.notifyList
 	a.imagePath = m.imagePath
+	a.toolImage = m.toolImage
 	a.cardLive = m.liveCard
 	a.mu.Unlock()
 	m.bindQuota(a)
