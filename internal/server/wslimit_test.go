@@ -143,7 +143,7 @@ func TestLargeTerminalPasteDoesNotCloseTheSocket(t *testing.T) {
 	defer cancel()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
-	conn, res, err := websocket.Dial(ctx, wsURL+"/api/term?thread=term-thread", &websocket.DialOptions{HTTPClient: client})
+	conn, res, err := websocket.Dial(ctx, wsURL+"/api/term?id=paste-term&thread=term-thread", &websocket.DialOptions{HTTPClient: client})
 	if err != nil {
 		code := 0
 		if res != nil {
