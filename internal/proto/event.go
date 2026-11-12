@@ -517,14 +517,31 @@ type ToolCallUpdatedPayload struct {
 	ParentToolCallID string          `json:"parentToolCallId,omitempty"`
 }
 
-type PlanEntry struct {
-	Content  string `json:"content"`
-	Status   string `json:"status"`
-	Priority string `json:"priority,omitempty"`
+// Plan step statuses. One vocabulary for every harness: each adapter maps its
+// own (codex's inProgress, Claude's in_progress) onto running.
+const (
+	PlanPending   = "pending"
+	PlanRunning   = "running"
+	PlanCompleted = "completed"
+)
+
+type PlanStep struct {
+	Text   string `json:"text"`
+	Status string `json:"status"`
 }
 
+// PlanUpdatedPayload is the agent's task list as it stands now — the whole
+// list, never a delta.
 type PlanUpdatedPayload struct {
-	Entries []PlanEntry `json:"entries"`
+	TurnID string `json:"turnId"`
+	// ToolCallID is set when the list came from a tool call (Claude's
+	// TodoWrite): every call is a list of its own, and the newest supersedes
+	// the ones before it. Empty means the harness's plan for the turn
+	// (codex), revised in place as the turn goes.
+	ToolCallID string `json:"toolCallId,omitempty"`
+	// Explanation is why the plan changed, when the harness says (codex).
+	Explanation string     `json:"explanation,omitempty"`
+	Steps       []PlanStep `json:"steps"`
 }
 
 type UsageUpdatedPayload struct {

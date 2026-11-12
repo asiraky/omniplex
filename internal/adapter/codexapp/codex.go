@@ -1157,8 +1157,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// Streamed output is dropped; the completed item carries the
 		// aggregated output, which is what the timeline renders.
 
-	case "turn/plan/updated", "item/plan/delta":
-		s.handlePlan(method, params)
+	case "turn/plan/updated":
+		// item/plan/delta is deliberately absent: it streams the text of a
+		// plan-mode item, never a step list, and goes unhandled like any
+		// other method this switch does not name.
+		s.handlePlan(method, turn, params)
 
 	case "thread/tokenUsage/updated":
 		var p struct {
@@ -1668,40 +1671,48 @@ func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 	s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: trigger}))
 }
 
-func (s *session) handlePlan(method string, params json.RawMessage) {
+// handlePlan records codex's update_plan list: the whole plan as it stands,
+// sent again on every revision. It is stamped with the omniplex turn, not
+// codex's turnId — the projection keys plans by the turns it knows.
+func (s *session) handlePlan(method, turn string, params json.RawMessage) {
 	var p struct {
-		Plan []struct {
+		TurnID      string `json:"turnId"`
+		Explanation string `json:"explanation"` // null decodes to ""
+		Plan        []struct {
 			Step   string `json:"step"`
-			Text   string `json:"text"`
 			Status string `json:"status"`
 		} `json:"plan"`
-		Item struct {
-			Plan []struct {
-				Step   string `json:"step"`
-				Text   string `json:"text"`
-				Status string `json:"status"`
-			} `json:"plan"`
-		} `json:"item"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		s.decodeFailed(method, err)
 		return
 	}
-	steps := p.Plan
-	if len(steps) == 0 {
-		steps = p.Item.Plan
+	if len(p.Plan) == 0 {
+		return
 	}
-	entries := make([]proto.PlanEntry, 0, len(steps))
-	for _, st := range steps {
-		text := st.Step
-		if text == "" {
-			text = st.Text
-		}
-		entries = append(entries, proto.PlanEntry{Content: text, Status: st.Status})
+	steps := make([]proto.PlanStep, 0, len(p.Plan))
+	for _, st := range p.Plan {
+		steps = append(steps, proto.PlanStep{Text: st.Step, Status: planStatus(st.Status)})
 	}
-	if len(entries) > 0 {
-		s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{Entries: entries}))
+	// Planning while idle is a harness-initiated turn; see ensureTurn.
+	if turn == "" {
+		turn = s.ensureTurn(p.TurnID)
 	}
+	s.emit(proto.Emit(proto.PlanUpdated, proto.PlanUpdatedPayload{
+		TurnID: turn, Explanation: p.Explanation, Steps: steps,
+	}))
+}
+
+// planStatus maps codex's step status onto the canonical one. Anything it
+// does not recognise reads as pending: a step not yet known to be running.
+func planStatus(s string) string {
+	switch s {
+	case "inProgress":
+		return proto.PlanRunning
+	case "completed":
+		return proto.PlanCompleted
+	}
+	return proto.PlanPending
 }
 
 func jsonOf(v any) json.RawMessage {
