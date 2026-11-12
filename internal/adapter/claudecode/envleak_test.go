@@ -17,8 +17,14 @@ import (
 // dotenv files, with a stand-in for Claude Code that records the environment
 // it was started with. The stand-in comes in both shapes an install does: a
 // native executable, and a script the SDK runs under the bridge's own runtime —
-// which under Bun is a second process that would load the files again.
+// which under Bun is a second process that would load the files again. The
+// host also runs as if inside a Claude Code session, whose variables must not
+// reach the threads it starts.
 func TestProjectDotenvDoesNotReachClaudeCode(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_EFFORT", "max")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
+
 	a := &Adapter{}
 	sidecarDir, err := a.sidecarPath()
 	if err != nil {
@@ -81,7 +87,7 @@ renameSync(seen + ".tmp", seen);
 				defer cancel()
 				cmd, err := r.command(ctx,
 					sidecarConfig{Op: "models", Cwd: project, ClaudePath: filepath.Join(project, stub)},
-					map[string]string{"OMNIPLEX_GIVEN": "from-host", "OMNIPLEX_OVERLAY": "yes"},
+					map[string]string{"OMNIPLEX_GIVEN": "from-host", "OMNIPLEX_OVERLAY": "yes", "CLAUDE_EFFORT": "low"},
 				)
 				if err != nil {
 					t.Fatal(err)
@@ -107,9 +113,15 @@ renameSync(seen + ".tmp", seen);
 						t.Errorf("%s=%q reached Claude Code from the project's dotenv files", leaked, v)
 					}
 				}
+				for _, leaked := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID"} {
+					if v, ok := got[leaked]; ok {
+						t.Errorf("%s=%q reached Claude Code from the host's Claude Code session", leaked, v)
+					}
+				}
 				for k, want := range map[string]string{
 					"OMNIPLEX_GIVEN":         "from-host",
 					"OMNIPLEX_OVERLAY":       "yes",
+					"CLAUDE_EFFORT":          "low",
 					"CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
 				} {
 					if got[k] != want {

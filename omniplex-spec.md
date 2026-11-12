@@ -216,8 +216,8 @@ Transport-agnostic; JSON over WebSocket to start.
 
 1. Subscribe to the live stream **first**, buffering into the connection's queue.
 2. Compute `gap = head_seq - afterSeq`.
-3. If `afterSeq` is absent, `gap < 0`, or `gap > MaxReplayGap` (1000) → read the latest snapshot, fold forward to head, send `snapshot`.
-4. Otherwise read events `(afterSeq, head]` from the log and send them.
+3. If `afterSeq` is absent, `gap < 0`, or `gap > MaxReplayEvents` (128) → send `snapshot`, built from the actor's state.
+4. Otherwise read events `(afterSeq, head]` from the log, capped for the wire. If they come to more than `MaxReplayBytes` (1 MiB), send `snapshot` instead; else send them in one `replay` frame. The client applies them without rendering and renders once on `synchronized`.
 5. Send `synchronized`, then drain the buffered queue.
 
 Subscribing before reading closes the window where an event lands between the read and the subscription. The gap bound is not an optimisation — unbounded replay from a months-old cursor reads an entire session into memory, and that has OOM-killed real servers.
@@ -237,12 +237,12 @@ Testable, each mapped to a real failure.
 3. **Single writer.** At most one process holds a session's lease; fenced-out writers abort before appending.
 4. **At-least-once, idempotent apply.** Applying an event twice is a no-op; clients discard `seq <= lastApplied`.
 5. **Command idempotency.** The same `commandId` executes at most once.
-6. **Attach completeness.** After `synchronized`, client state equals server state as of that seq — no event skipped or duplicated across the snapshot/replay/live seam. One carve-out: a snapshot's timeline items are windowed to the newest page for the wire, with `itemsBefore` counting what was trimmed; the trimmed items are display history, reachable via `GET /api/sessions/{id}/items`, and every other field is complete as of that seq.
+6. **Attach completeness.** After `synchronized`, client state equals server state as of that seq — no event skipped or duplicated across the snapshot/replay/live seam. One carve-out: a snapshot is windowed for the wire. Its timeline items are the newest page, with `itemsBefore` counting what was trimmed (reachable via `GET /api/threads/{id}/items`); a sub-agent's child items are left out once both its call and the job it spawned have settled, and while either runs only those beyond its tail are (save those still running and its newest message), counted on the parent as `childrenBefore` (`/items/{itemId}/children`); finished jobs beyond the newest few are left out and counted as `jobsBefore` (`/jobs`), a live row for one of those makes the client fetch the list, and rows for left-out jobs that land while it is in flight are applied over it once it arrives (they were dropped, never applied); tool output and input are head/tail previews within a per-item budget, marked `truncated` (`/items/{itemId}/content`). What was left out is display history, and every other field is complete as of that seq.
 7. **Nothing lives in a connection.** Every piece of state a UI needs is reconstructible from the log, pending permissions and elicitations included.
 8. **Disconnect is not cancel.** Losing every client does not interrupt a turn. Only an explicit cancel does.
 9. **Permission fungibility.** Any attached presenter may resolve any pending request. First resolution wins; losers get an `already_resolved` ack, not an error.
 10. **Adapter purity.** Adapters emit canonical events and answer host callbacks. They never touch the log, the fanout, or a connection.
-11. **Bounded replay.** No attach reads more than `MaxReplayGap` events.
+11. **Bounded replay.** No attach replays more than `MaxReplayEvents` events or `MaxReplayBytes` bytes.
 12. **Bounded memory per connection.** A slow consumer is dropped and resynced, never buffered without limit.
 
 Invariants 6, 9, and 12 are the ones "obvious" implementations quietly violate. Write those tests first.

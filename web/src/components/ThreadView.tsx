@@ -121,6 +121,7 @@ export function ThreadView({
             onRetryTurn={harness.retryTurn}
             switchTargets={harness.switchTargets}
             onSwitchAccount={(instance, retry) => harness.switchAccount(instance, { retry })}
+            onCancelContinuation={(p) => schedule.runAction(activeId, "cancel_schedule", p)}
             onRetryProvision={() => commands.threadCommand("retry_provision")}
             onCleanup={() => commands.threadCommand("cleanup_thread")}
             onForceDelete={() => activeId && onForceDelete(activeId)}

@@ -12,7 +12,7 @@ export type StopReason =
   | "cancelled"
   | "error";
 
-export type ToolStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
+export type ToolStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "declined";
 
 export type ToolKind =
   | "read"
@@ -51,10 +51,15 @@ export interface PromptImage {
 
 export interface Item {
   id: string;
-  kind: "message" | "tool" | "notice" | "artefact" | "card";
+  kind: "message" | "tool" | "notice" | "artefact" | "card" | "plan";
   turnId?: string;
   /** The Task/Agent tool call this item's work happened inside, for subagents. */
   parentId?: string;
+  /** On a parent (Task/Agent) tool call: how many of its child items the
+      snapshot left out. A settled parent's narration is not sent at all and a
+      running one's only its tail; all of it is at
+      /api/threads/{id}/items/{itemId}/children. */
+  childrenBefore?: number;
   /** When the item's first event landed, in millis. Display metadata only. */
   receivedAt?: number;
   role?: "user" | "agent";
@@ -68,6 +73,13 @@ export interface Item {
   status?: ToolStatus | CardResult;
   input?: unknown;
   content?: ToolContent[];
+  /** The last lines a running tool has printed, until it finishes and
+      `content` carries the output (a preview when `truncated`). */
+  tail?: string;
+  /** A tool's content or input is a head/tail preview: some text, or whole
+      entries, were cut. The full content and input are at
+      /api/threads/{id}/items/{itemId}/content. */
+  truncated?: boolean;
   // notice
   noticeKind?: "compaction" | "account";
   /** For a compaction notice: whether the harness ("auto") or a human triggered it. */
@@ -81,6 +93,17 @@ export interface Item {
   // card: what the agent proposed, and once answered, what happened
   card?: Card;
   outcome?: CardOutcome;
+  // plan: the whole task list as it stands, never a delta
+  steps?: PlanStep[];
+  explanation?: string;
+  /** A TodoWrite list a later one replaced. Codex turn plans never are. */
+  superseded?: boolean;
+}
+
+/** One task in an agent's plan. */
+export interface PlanStep {
+  text: string;
+  status: "pending" | "running" | "completed";
 }
 
 /** One file the thread changed, aggregated across the whole thread. */
@@ -226,6 +249,8 @@ export interface PendingPermission {
   title: string;
   input?: unknown;
   options: PermissionOption[];
+  /** The turn that asked, when the harness said; that turn's finish settles it. */
+  turnId?: string;
 }
 
 export interface PendingElicitation {
@@ -237,6 +262,9 @@ export interface PendingElicitation {
     required?: string[];
     "x-url"?: string;
   };
+  /** The turn that asked, when the harness said; that turn's finish settles it
+      unless this is a card. */
+  turnId?: string;
   /** Set when the agent raised this through Omniplex's own tools: a change to
       Omniplex itself, answered with resolve_card rather than as a question. */
   card?: Card;
@@ -384,12 +412,6 @@ export interface Usage {
   contextCategories?: { name: string; tokens: number }[];
 }
 
-export interface PlanEntry {
-  content: string;
-  status: string;
-  priority?: string;
-}
-
 export interface ThreadState {
   threadId: string;
   seq: number;
@@ -409,8 +431,12 @@ export interface ThreadState {
       the timeline is complete. */
   itemsBefore?: number;
   turns: Turn[];
+  /** Snapshots carry running jobs, the latest finished ones and those the
+      window's items spawned, not the whole history. */
   jobs: Job[];
-  plan: PlanEntry[];
+  /** How many jobs the snapshot left out of `jobs`; all of them are at
+      GET /api/threads/{id}/jobs. Zero or absent means the list is complete. */
+  jobsBefore?: number;
   usage: Usage;
   pendingPermissions: PendingPermission[];
   pendingElicitations: PendingElicitation[];
@@ -1115,6 +1141,7 @@ export interface ServerFrame {
     | "composer_items_changed"
     | "snapshot"
     | "event"
+    | "replay"
     | "synchronized"
     | "resync"
     | "ack"
@@ -1135,6 +1162,9 @@ export interface ServerFrame {
   seq?: number;
   state?: ThreadState;
   event?: Event;
+  /** A reconnect's whole gap in one frame, oldest first; `synchronized`
+      follows. A gap too big to replay comes as a `snapshot` instead. */
+  events?: Event[];
   commandId?: string;
   result?: any;
   error?: string;
@@ -1155,6 +1185,9 @@ export interface ScheduledPrompt {
  status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
  error?: string;
  turnId?: string;
+ /** "limit" marks the continuation the server arms when a turn stops at a
+     usage limit; absent on one a human scheduled. */
+ kind?: "limit";
 }
 
 // ---- Account-level usage ----

@@ -22,16 +22,26 @@ const (
 
 	TurnStarted  = "turn.started"
 	TurnFinished = "turn.finished"
+	// TurnLimitReset is the reset a turn that finished on a usage limit did
+	// not know when it finished: the harness learned it afterwards. It
+	// changes nothing in the transcript; the server arms the turn's
+	// continuation from it.
+	TurnLimitReset = "turn.limit_reset"
 	// PromptQueued is a prompt sent while a turn was running. It waits in the
 	// log, not in a connection. When the harness can take a message mid-turn
-	// the prompt is handed over at once (Sent) and the harness reads it at
-	// its next step — PromptInjected — or, if the turn ends first, starts a
-	// turn with it (turn.started naming the queue id). Otherwise it starts
-	// its own turn once the thread is idle. PromptDequeued removes it:
-	// because a human took it back, or because the running turn was
-	// interrupted.
+	// the prompt is handed over at once, and PromptSent follows once the
+	// harness has taken it; the harness then reads it at its next step —
+	// PromptInjected — or, if the turn ends first, starts a turn with it
+	// (turn.started naming the queue id). A hand-over that fails leaves it
+	// queued as if none had been tried, and it starts its own turn once the
+	// thread is idle. PromptDequeued removes it: because a human took it
+	// back, or because the running turn was interrupted.
 	PromptQueued   = "prompt.queued"
 	PromptDequeued = "prompt.dequeued"
+	// PromptSent marks a queued prompt as one the harness now holds. The
+	// hand-over is a round trip to the harness, so it is recorded when the
+	// harness answers rather than with the prompt.queued it follows.
+	PromptSent = "prompt.sent"
 	// PromptInjected is a sent prompt the harness read inside the running
 	// turn. From here on it is part of that turn's transcript.
 	PromptInjected = "prompt.injected"
@@ -113,7 +123,21 @@ const (
 	// ended — interrupted, not broken. It is deliberately not "failed": a
 	// stopped agent did not fail, and painting it red was a lie the UI told.
 	StatusCancelled = "cancelled"
+	// StatusDeclined marks a call the user refused, so it never ran. Not
+	// "failed" for the same reason as cancelled, and not "completed": a
+	// declined command shown as done claims work that did not happen.
+	StatusDeclined = "declined"
 )
+
+// ToolDone reports whether a tool call's status is terminal: the call has
+// stopped running, one way or another.
+func ToolDone(status string) bool {
+	switch status {
+	case StatusCompleted, StatusFailed, StatusCancelled:
+		return true
+	}
+	return false
+}
 
 // Job kinds. Classified once, at ingestion, by ClassifyJob; every consumer
 // reads the stamp rather than re-deriving it.
@@ -168,6 +192,10 @@ func ClassifyJob(taskType string) string {
 		return JobAgent
 	}
 }
+
+// ToolRunning reports whether a tool call's status is unsettled: still
+// running, or yet to start.
+func ToolRunning(status string) bool { return status == StatusInProgress || status == StatusPending }
 
 // JobDone reports whether a job status is terminal.
 func JobDone(status string) bool {
@@ -357,9 +385,10 @@ type PromptQueuedPayload struct {
 	QueueID string        `json:"queueId"`
 	Prompt  string        `json:"prompt"`
 	Images  []PromptImage `json:"images,omitempty"`
-	// Sent means the harness already has the prompt and will read it at its
-	// next step. It can no longer be taken back.
-	Sent bool `json:"sent,omitempty"`
+}
+
+type PromptSentPayload struct {
+	QueueID string `json:"queueId"`
 }
 
 type PromptInjectedPayload struct {
@@ -410,7 +439,8 @@ type TurnRecovery struct {
 
 // Causes for TurnRecovery.
 const (
-	// RecoveryRestart: the server died mid-turn and picked the work back up.
+	// RecoveryRestart: the server died mid-turn, or while background work the
+	// agent was waiting on was running, and picked the work back up.
 	RecoveryRestart = "restart"
 	// RecoveryContinue: a human asked to continue a turn that ended in error.
 	RecoveryContinue = "continue"
@@ -455,6 +485,16 @@ type TurnFinishedPayload struct {
 	// on English, which is how a login failure came to be reported as a server
 	// restart. Empty means unclassified: show the message and nothing more.
 	Failure string `json:"failure,omitempty"`
+	// ResetAt is when a FailureLimit's window reopens, in epoch ms. Zero means
+	// the harness did not say, or the failure is not a limit.
+	ResetAt int64 `json:"resetAt,omitempty"`
+}
+
+// TurnLimitResetPayload back-fills TurnFinishedPayload.ResetAt for a limit
+// turn that finished with it zero.
+type TurnLimitResetPayload struct {
+	TurnID  string `json:"turnId"`
+	ResetAt int64  `json:"resetAt"`
 }
 
 // Failure kinds for turn.finished.
@@ -502,6 +542,9 @@ type ToolCallStartedPayload struct {
 	// ParentToolCallID links a call made by a subagent to the Task/Agent call
 	// that spawned it. Empty means the top-level conversation.
 	ParentToolCallID string `json:"parentToolCallId,omitempty"`
+	// Truncated is set only on the copy sent to a client, when RawInput was
+	// capped for the wire. The log never holds it.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type ToolCallUpdatedPayload struct {
@@ -511,16 +554,42 @@ type ToolCallUpdatedPayload struct {
 	Content          []ToolContent   `json:"content,omitempty"`
 	RawInput         json.RawMessage `json:"rawInput,omitempty"`
 	ParentToolCallID string          `json:"parentToolCallId,omitempty"`
+	// OutputDelta is output a running call has printed since its last update
+	// — a command's stdout and stderr as they arrive. Only the new text, never
+	// the output so far: the projection keeps a short tail of it for the
+	// running row and drops that tail when the call finishes, because the
+	// final output arrives as Content.
+	OutputDelta string `json:"outputDelta,omitempty"`
+	// Truncated is set only on the copy sent to a client, when Content or
+	// RawInput was capped for the wire. The log never holds it.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
-type PlanEntry struct {
-	Content  string `json:"content"`
-	Status   string `json:"status"`
-	Priority string `json:"priority,omitempty"`
+// Plan step statuses. One vocabulary for every harness: each adapter maps its
+// own (codex's inProgress, Claude's in_progress) onto running.
+const (
+	PlanPending   = "pending"
+	PlanRunning   = "running"
+	PlanCompleted = "completed"
+)
+
+type PlanStep struct {
+	Text   string `json:"text"`
+	Status string `json:"status"`
 }
 
+// PlanUpdatedPayload is the agent's task list as it stands now — the whole
+// list, never a delta.
 type PlanUpdatedPayload struct {
-	Entries []PlanEntry `json:"entries"`
+	TurnID string `json:"turnId"`
+	// ToolCallID is set when the list came from a tool call (Claude's
+	// TodoWrite): every call is a list of its own, and the newest supersedes
+	// the ones before it. Empty means the harness's plan for the turn
+	// (codex), revised in place as the turn goes.
+	ToolCallID string `json:"toolCallId,omitempty"`
+	// Explanation is why the plan changed, when the harness says (codex).
+	Explanation string     `json:"explanation,omitempty"`
+	Steps       []PlanStep `json:"steps"`
 }
 
 type UsageUpdatedPayload struct {
@@ -691,4 +760,10 @@ type ScheduledPrompt struct {
 	Status   string        `json:"status"`
 	Error    string        `json:"error,omitempty"`
 	TurnID   string        `json:"turnId,omitempty"`
+	// Kind is empty for a prompt a human scheduled. ScheduleLimit marks the
+	// continuation the server arms when a turn stops at a usage limit.
+	Kind string `json:"kind,omitempty"`
 }
+
+// ScheduleLimit is the ScheduledPrompt.Kind of a usage-limit continuation.
+const ScheduleLimit = "limit"

@@ -21,8 +21,12 @@ export function ScheduledPrompts({
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
+  // A limit continuation is the usage-limit card's to show and cancel.
   const visible = schedules
-    .filter((p) => p.status !== "sent" && p.status !== "cancelled")
+    .filter(
+      (p) =>
+        p.kind !== "limit" && p.status !== "sent" && p.status !== "cancelled",
+    )
     .sort((a, b) => a.dueAt - b.dueAt);
   if (!visible.length) return null;
   async function action(name: string, p: ScheduledPrompt) {

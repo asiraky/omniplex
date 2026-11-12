@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
-import { ModelPicker } from "~/components/ModelPicker";
+import { ModelPicker, type PickerFocus } from "~/components/ModelPicker";
 import {
   formatContextWindow,
   pickerInstances,
@@ -13,7 +13,7 @@ import type { HarnessMeta } from "~/protocol";
 /**
  * The one control for what runs the next turn: the model, the account it
  * bills to among this harness's own accounts, and reasoning effort, which
- * opens out of the same menu rather than sitting beside it as a second
+ * sits in the foot of the same menu rather than beside it as a second
  * dropdown.
  */
 export function ComposerModelPicker({
@@ -27,6 +27,7 @@ export function ComposerModelPicker({
   disabled,
   open,
   onOpenChange,
+  focusRequest,
   onSwitchModel,
   onSwitchEffort,
   onSwitchAccount,
@@ -42,19 +43,59 @@ export function ComposerModelPicker({
   disabled: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSwitchModel?: (id: string) => void;
-  onSwitchEffort?: (effort: string) => void;
+  focusRequest?: { target: PickerFocus } | null;
+  onSwitchModel?: (id: string) => void | Promise<boolean>;
+  onSwitchEffort?: (effort: string) => void | Promise<boolean>;
   onSwitchAccount?: (instance: string, model: string) => void;
   onPickInstance?: (instance: PickerInstance) => void;
 }) {
-  // The running model's own reasoning levels, so the effort control offers what
-  // this model accepts rather than a fixed set. Legacy picks report none, and
-  // the control simply does not appear.
+  // Mid-thread a pick only lands when the server echoes it back, a round trip
+  // that on a slow connection is long enough to see the open menu still
+  // naming the old model and its levels. So the pick is shown until the props
+  // agree with it. Closing the menu, or the thread's account changing under
+  // it, drops it: the trigger goes back to saying what is actually running.
+  // A draft's choices are local and agree at once, so this is a no-op there.
+  const [pending, setPending] = useState<{ model?: string; effort?: string }>({});
+  const [synced, setSynced] = useState({ open, harness, instance, model, effort });
+  if (
+    synced.open !== open ||
+    synced.harness !== harness ||
+    synced.instance !== instance ||
+    synced.model !== model ||
+    synced.effort !== effort
+  ) {
+    setSynced({ open, harness, instance, model, effort });
+    if (!open || synced.harness !== harness || synced.instance !== instance) setPending({});
+    else
+      setPending((p) => ({
+        model: p.model === model ? undefined : p.model,
+        effort: p.effort === effort ? undefined : p.effort,
+      }));
+  }
+  // A switch the server refused is never echoed back: stop showing it.
+  const settle = (field: "model" | "effort", value: string, sent: void | Promise<boolean>) => {
+    if (!(sent instanceof Promise)) return;
+    void sent.then((ok) => {
+      if (!ok) setPending((p) => (p[field] === value ? { ...p, [field]: undefined } : p));
+    });
+  };
+  const shownModel = pending.model ?? model;
+  const shownEffort = pending.effort ?? effort;
+
+  // The model's own reasoning levels, so the effort control offers what this
+  // model accepts rather than a fixed set. Legacy picks report none, and the
+  // control simply does not appear.
   const modelEfforts = useMemo(() => {
     const instances = pickerInstances(harnesses);
     const inst = resolveInstance(instances, instance, harness);
-    return resolveModel(inst, model)?.efforts ?? [];
-  }, [harnesses, instance, harness, model]);
+    return resolveModel(inst, shownModel)?.efforts ?? [];
+  }, [harnesses, instance, harness, shownModel]);
+
+  const switchEffort = (next: string) => {
+    if (!onSwitchEffort) return;
+    setPending((p) => ({ ...p, effort: next === effort ? undefined : next }));
+    settle("effort", next, onSwitchEffort(next));
+  };
 
   return (
     <ModelPicker
@@ -63,17 +104,20 @@ export function ComposerModelPicker({
       onInstanceChange={onPickInstance}
       disabled={disabled}
       efforts={onSwitchEffort ? modelEfforts : []}
-      effort={effort}
+      effort={shownEffort}
       contextLabel={formatContextWindow(contextWindow)}
-      onEffortChange={onSwitchEffort}
-      value={{ harness, instance, model }}
+      onEffortChange={onSwitchEffort && switchEffort}
+      value={{ harness, instance, model: shownModel }}
       onChange={(next) => {
         const current = resolveInstance(pickerInstances(harnesses), instance, harness)?.id;
         if (next.instance !== current) {
           onSwitchAccount?.(next.instance, next.model);
           return;
         }
-        onSwitchModel?.(next.model);
+        if (onSwitchModel) {
+          setPending((p) => ({ ...p, model: next.model === model ? undefined : next.model }));
+          settle("model", next.model, onSwitchModel(next.model));
+        }
         // Effort is per model: a level the old model allowed (Codex's
         // "ultra") may be one the new model rejects, which would break
         // its next turn. When the chosen model does not support the
@@ -82,12 +126,13 @@ export function ComposerModelPicker({
         const nextEfforts =
           resolveModel(resolveInstance(pickerInstances(harnesses), instance, harness), next.model)
             ?.efforts ?? [];
-        if (effort && nextEfforts.length > 0 && !nextEfforts.includes(effort)) {
-          onSwitchEffort?.(nextEfforts[nextEfforts.length - 1]);
+        if (shownEffort && nextEfforts.length > 0 && !nextEfforts.includes(shownEffort)) {
+          switchEffort(nextEfforts[nextEfforts.length - 1]);
         }
       }}
       open={open}
       onOpenChange={onOpenChange}
+      focusRequest={focusRequest}
       compact
       // shrink undoes Button's shrink-0: the picker is the one control
       // in this row that can give up width, so it must, or the send

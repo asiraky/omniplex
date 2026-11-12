@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { WorkspaceKind } from "~/components/threadDraft/shared";
 import { openThreadMessage, threadIdFromPath } from "~/lib/threadLinks";
 import type { ThreadMeta } from "~/protocol";
 import { useLatest } from "~/useLatest";
@@ -8,6 +9,18 @@ import { LAST_THREAD } from "./threadKeys";
 import type { Wire } from "./useWire";
 
 export type ThreadSelection = ReturnType<typeof useThreadSelection>;
+
+/** Where a new thread should open, when the request says (as "New thread in…" does). */
+export interface DraftPreset {
+  projectId?: string;
+  /** "" is the whole project. */
+  folderId?: string;
+  kind?: WorkspaceKind;
+  /** With kind "attach": the existing worktree's path. */
+  attachPath?: string;
+  /** Put the cursor in the draft's composer as it opens. */
+  focus?: boolean;
+}
 
 /**
  * Which thread is attached, whether a new one is being written instead, and
@@ -36,8 +49,11 @@ export function useThreadSelection({
   useEffect(() => {
     activeRef.current = activeId;
   }, [activeRef, activeId]);
-  // A thread being written but not yet sent, and the project it opened on.
-  const [creating, setCreating] = useState<{ projectId?: string } | null>(null);
+  // A thread being written but not yet sent, and where it opened. The nonce
+  // is new per request, so the app can key the draft on it and a second
+  // request while one is open starts over on its own values.
+  const [creating, setCreating] = useState<(DraftPreset & { nonce: number }) | null>(null);
+  const nonce = useRef(0);
 
   // Whether the last-thread key was set at boot. Read once, before anything
   // can write it, because it decides what the very first frame shows. Storage
@@ -75,6 +91,11 @@ export function useThreadSelection({
   const select = useCallback(
     (id: string) => {
       pendingLink.current = null;
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a pick shows its thread, which on a phone means putting the list away
+      if (!isDesktop) setSidebarOpen(false);
+      // The thread already open stays as it is: no re-attach, no trip
+      // through "Attaching…", the panel and scroll left alone.
+      if (id === activeRef.current) return;
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: selecting attaches the socket and writes storage, and the restore effect is the one caller that reacts to the thread list
       setCreating(null);
       setActiveId(id);
@@ -83,32 +104,40 @@ export function useThreadSelection({
       setState(null);
       localStorage.setItem(LAST_THREAD, id);
       clientRef.current?.attach(id);
-      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: selecting attaches the socket and writes storage, and the restore effect is the one caller that reacts to the thread list
-      if (!isDesktop) setSidebarOpen(false);
     },
     [activeRef, clientRef, isDesktop, onLeave, setState],
   );
 
   // The draft takes the thread's place: nothing is attached while it is up,
   // and picking a thread from the list leaves it.
-  const startNew = useCallback(() => {
-    pendingLink.current = null;
-    const projectId = threads.find((t) => t.id === activeRef.current)?.projectId;
-    setCreating({ projectId });
-    if (activeRef.current) {
-      activeRef.current = null;
-      setActiveId(null);
-      setState(null);
-      dropResume();
-      clientRef.current?.detach();
-    }
-    if (!isDesktop) setSidebarOpen(false);
-  }, [activeRef, clientRef, dropResume, isDesktop, setState, threads]);
+  // With no preset (or with one naming no project) the draft opens on the
+  // project of the thread being left.
+  const startNew = useCallback(
+    (preset?: DraftPreset) => {
+      pendingLink.current = null;
+      const asked = preset ?? {};
+      const projectId =
+        asked.projectId ?? threads.find((t) => t.id === activeRef.current)?.projectId;
+      nonce.current += 1;
+      setCreating({ ...asked, projectId, nonce: nonce.current });
+      if (activeRef.current) {
+        activeRef.current = null;
+        setActiveId(null);
+        setState(null);
+        dropResume();
+        clientRef.current?.detach();
+      }
+      if (!isDesktop) setSidebarOpen(false);
+    },
+    [activeRef, clientRef, dropResume, isDesktop, setState, threads],
+  );
 
   // The draft's own project pick, kept here so the Skills page reads the
-  // project being drafted in and the draft comes back on it.
+  // project being drafted in and the draft comes back on it. A folder or
+  // worktree preset meant the old project, so it goes; the nonce stays, since
+  // this is the same draft and must not remount under the person picking.
   const pickDraftProject = useCallback((projectId: string) => {
-    setCreating((c) => c && { ...c, projectId });
+    setCreating((c) => c && { projectId, nonce: c.nonce });
   }, []);
 
   // Letting go of the attached thread because it is gone. On a phone that
@@ -173,15 +202,9 @@ export function useThreadSelection({
   const openLink = useCallback(
     (id: string) => {
       onOpenLink();
-      if (id !== activeRef.current) {
-        select(id);
-        return;
-      }
-      pendingLink.current = null;
-      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a tapped notification shows its thread, which on a phone means putting the list away
-      if (!isDesktop) setSidebarOpen(false);
+      select(id);
     },
-    [activeRef, isDesktop, onOpenLink, select],
+    [onOpenLink, select],
   );
   const latest = useLatest({ threads, openLink });
   useEffect(() => {

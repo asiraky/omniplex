@@ -81,6 +81,13 @@ export function ThreadPanel({
     [clientRef, threadId],
   );
 
+  // The jobs a snapshot left out. The client merges and publishes them, so the
+  // roster picks them up through state like any other update.
+  const loadAllJobs = useCallback(
+    async () => (await clientRef.current?.loadAllJobs()) ?? null,
+    [clientRef],
+  );
+
   if (!panel.loaded) return null;
   return (
     <Suspense fallback={null}>
@@ -90,6 +97,7 @@ export function ThreadPanel({
         threadId={threadId}
         state={state}
         command={command}
+        loadAllJobs={loadAllJobs}
         open={panel.open}
         onClose={panel.close}
         expanded={panel.expanded}

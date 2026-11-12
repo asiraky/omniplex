@@ -1,4 +1,5 @@
 import { app, BrowserWindow, shell } from "electron";
+import path from "node:path";
 import { classifyNavigation, type DesktopAction } from "./routing";
 import type { LogFile } from "./log";
 
@@ -76,6 +77,8 @@ export class MainWindow {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // Built next to dist/main.cjs.
+        preload: path.join(__dirname, "preload.cjs"),
       },
     });
     this.win = win;

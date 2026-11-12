@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
@@ -460,5 +462,142 @@ func TestNoCheckpointsOutsideARepository(t *testing.T) {
 		if turn.Diff != nil {
 			t.Fatalf("got a card without a repository: %+v", turn.Diff)
 		}
+	}
+}
+
+// treeOf is the tree a checkpoint commit snapshots.
+func treeOf(t *testing.T, dir, commit string) string {
+	t.Helper()
+	return gitOut(t, dir, "rev-parse", commit+"^{tree}")
+}
+
+// Seeding from the person's index is a shortcut, never a different answer:
+// whatever state the worktree is in, the seeded snapshot is the one a scratch
+// index built from HEAD alone would have produced.
+func TestSeededCheckpointMatchesOneBuiltFromHead(t *testing.T) {
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour)
+
+	cases := map[string]func(t *testing.T, worktree string){
+		"every kind of change": func(t *testing.T, worktree string) {
+			write(t, worktree, "edited.txt", "edited\n")
+			write(t, worktree, "staged.txt", "staged\n")
+			gitRun(t, worktree, "add", "staged.txt")
+			write(t, worktree, "staged.txt", "staged, then edited again\n")
+			if err := os.Remove(filepath.Join(worktree, "deleted.txt")); err != nil {
+				t.Fatal(err)
+			}
+			gitRun(t, worktree, "rm", "-q", "removed.txt")
+			write(t, worktree, "untracked.txt", "new\n")
+			write(t, worktree, "added.txt", "new and staged\n")
+			gitRun(t, worktree, "add", "added.txt")
+			write(t, worktree, "intent.txt", "intent to add\n")
+			gitRun(t, worktree, "add", "-N", "intent.txt")
+			write(t, worktree, ".gitignore", "*.log\n")
+			write(t, worktree, "forced.log", "ignored but staged\n")
+			gitRun(t, worktree, "add", "-f", "forced.log")
+		},
+		// An edit that leaves size and mtime as the index recorded them, in
+		// the same second the index was written: only git's racy-clean check
+		// stands between it and a stale snapshot.
+		"racily clean edit": func(t *testing.T, worktree string) {
+			edited := filepath.Join(worktree, "edited.txt")
+			gitRun(t, worktree, "config", "core.trustctime", "false")
+			if err := os.Chtimes(edited, past, past); err != nil {
+				t.Fatal(err)
+			}
+			gitRun(t, worktree, "add", "edited.txt")
+			write(t, worktree, "edited.txt", "ORIGINAL\n")
+			index := gitOut(t, worktree, "rev-parse", "--path-format=absolute", "--git-path", "index")
+			for _, p := range []string{edited, index} {
+				if err := os.Chtimes(p, past, past); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+		"assume-unchanged edit": func(t *testing.T, worktree string) {
+			gitRun(t, worktree, "update-index", "--assume-unchanged", "edited.txt")
+			write(t, worktree, "edited.txt", "edited behind git's back\n")
+		},
+		"skip-worktree file gone from disk": func(t *testing.T, worktree string) {
+			gitRun(t, worktree, "update-index", "--skip-worktree", "deleted.txt")
+			if err := os.Remove(filepath.Join(worktree, "deleted.txt")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, worktree, _ := gitRepo(t)
+			for _, f := range []string{"edited.txt", "staged.txt", "deleted.txt", "removed.txt", "kept.txt"} {
+				write(t, worktree, f, "original\n")
+			}
+			gitRun(t, worktree, "add", ".")
+			gitRun(t, worktree, "commit", "-m", "before the turn")
+			change(t, worktree)
+
+			fresh, err := writeCheckpoint(ctx, worktree, checkpointRef("s1", "t1", "fresh"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seeded, err := writeCheckpoint(ctx, worktree, checkpointRef("s1", "t1", "seeded"), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := treeOf(t, worktree, seeded), treeOf(t, worktree, fresh); got != want {
+				t.Errorf("seeded tree differs from fresh:\nseeded %s\nfresh  %s",
+					gitOut(t, worktree, "ls-tree", "-r", seeded), gitOut(t, worktree, "ls-tree", "-r", fresh))
+			}
+		})
+	}
+}
+
+// The point of seeding: on a capture, git reads only the files that changed.
+// A clean filter that logs each file it is handed counts the reads.
+func TestSeededCheckpointHashesOnlyWhatChanged(t *testing.T) {
+	ctx := context.Background()
+	_, worktree, _ := gitRepo(t)
+	reads := filepath.Join(t.TempDir(), "reads")
+	gitRun(t, worktree, "config", "filter.probe.clean", "printf '%s\\n' %f >> '"+reads+"'; cat")
+	write(t, worktree, ".gitattributes", "*.txt filter=probe\n")
+	past := time.Now().Add(-time.Hour)
+	for _, f := range []string{"stable.txt", "changed.txt"} {
+		write(t, worktree, f, "original\n")
+		// Older than the index git is about to write, so its stat data is
+		// trusted rather than racily clean.
+		if err := os.Chtimes(filepath.Join(worktree, f), past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, worktree, "add", ".")
+	gitRun(t, worktree, "commit", "-m", "before the turn")
+	write(t, worktree, "changed.txt", "changed\n")
+
+	readsOf := func(seed bool) []string {
+		t.Helper()
+		if err := os.WriteFile(reads, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writeCheckpoint(ctx, worktree, checkpointRef("s1", "t1", "end"), seed); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(reads)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// git may read a changed file more than once in one add; which files
+		// it read is the measure, not how often.
+		files := strings.Fields(string(got))
+		slices.Sort(files)
+		return slices.Compact(files)
+	}
+
+	if got := readsOf(true); !slices.Equal(got, []string{"changed.txt"}) {
+		t.Errorf("seeded capture read %v, want only changed.txt", got)
+	}
+	// Without the seed every file is read; if this ever stops holding, the
+	// probe has stopped measuring anything.
+	if got := readsOf(false); !slices.Contains(got, "stable.txt") {
+		t.Errorf("fresh capture read %v, want stable.txt among them", got)
 	}
 }

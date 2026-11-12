@@ -214,8 +214,8 @@ func TestAuthOverviewStructuredFlows(t *testing.T) {
 // termAdapter has only the old argv-style login.
 type termAdapter struct{ fakeAdapter }
 
-func (t *termAdapter) LoginCommand(ctx context.Context) ([]string, error) {
-	return []string{"fake", "login"}, nil
+func (t *termAdapter) LoginCommand(ctx context.Context, overlay map[string]string) ([]string, []string, error) {
+	return []string{"fake", "login"}, nil, nil
 }
 
 func (t *termAdapter) Probe(ctx context.Context, env map[string]string) adapter.Availability {

@@ -46,23 +46,28 @@ export function useThreadHarness(
     [activeId, clientRef],
   );
 
-  const switchModel = useCallback(
-    (modelId: string) => {
-      if (!activeId) return;
-      clientRef.current?.command("set_model", { threadId: activeId, model: modelId }).catch((e) => {
-        toast.error("Could not switch model", { description: e.message });
-      });
+  // Both resolve to whether the server took the change, so the picker can stop
+  // showing a pick that will never be echoed back.
+  const setOnThread = useCallback(
+    (name: string, args: Record<string, string>, failure: string) => {
+      if (!activeId || !clientRef.current) return Promise.resolve(false);
+      return clientRef.current.command(name, { threadId: activeId, ...args }).then(
+        () => true,
+        (e) => {
+          toast.error(failure, { description: e.message });
+          return false;
+        },
+      );
     },
     [activeId, clientRef],
   );
+  const switchModel = useCallback(
+    (modelId: string) => setOnThread("set_model", { model: modelId }, "Could not switch model"),
+    [setOnThread],
+  );
   const switchEffort = useCallback(
-    (effort: string) => {
-      if (!activeId) return;
-      clientRef.current?.command("set_effort", { threadId: activeId, effort }).catch((e) => {
-        toast.error("Could not change reasoning effort", { description: e.message });
-      });
-    },
-    [activeId, clientRef],
+    (effort: string) => setOnThread("set_effort", { effort }, "Could not change reasoning effort"),
+    [setOnThread],
   );
   // Re-sends a failed turn's prompt, images and all. Only ever on an explicit
   // press: nothing finishing (a sign-in, an account switch) resends by itself.

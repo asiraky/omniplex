@@ -45,7 +45,7 @@ func (a *Adapter) Prompt(ctx context.Context, env map[string]string, req adapter
 	}
 	cmd := exec.CommandContext(ctx, claude, args...)
 	cmd.Dir = dir
-	cmd.Env = adapter.MergeEnv(os.Environ(), env)
+	cmd.Env = claudeEnv(os.Environ(), env)
 	cmd.Stdin = strings.NewReader(req.Input)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

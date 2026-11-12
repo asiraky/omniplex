@@ -1,8 +1,9 @@
-import { app, shell } from "electron";
+import { app, Menu, shell } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { LogFile } from "./log";
 import { launchedHidden, loginItemQuery, loginItemSettings, loginItemSupported } from "./loginItem";
+import { appMenuTemplate } from "./menu";
 import { errorPage, loadingPage } from "./pages";
 import { anyFreePort, candidatePorts, choosePort, DEFAULT_PORT, isPortFree } from "./ports";
 import { initialRoute, parseSetup, type DesktopAction } from "./routing";
@@ -60,6 +61,7 @@ function run(): void {
     const log = new LogFile(app.getPath("logs"), !app.isPackaged);
     const state = new StateFile(path.join(app.getPath("userData"), "desktop-state.json"));
     log.line(`Omniplex desktop ${app.getVersion()} starting${hidden ? " hidden" : ""}`);
+    Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(platform, app.name)));
 
     // Login items are only registered for an installed app; a dev build
     // would otherwise register the Electron binary from node_modules.

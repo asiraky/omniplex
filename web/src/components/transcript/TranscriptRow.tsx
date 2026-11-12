@@ -10,8 +10,9 @@ import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
 import { CardRow } from "./CardRow";
 import { JobsCard } from "./JobsCard";
-import { Message } from "./Message";
+import { Message, type Recovered } from "./Message";
 import { NoticeCard } from "./NoticeCard";
+import { PlanRow } from "./PlanRow";
 import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
 
 type RowContext = {
@@ -22,7 +23,7 @@ type RowContext = {
   onOpenArtefact?: OpenArtefact;
   jobs: Job[];
   onOpenJobs?: () => void;
-  recoveredTurns: Map<string, "restart" | "continue">;
+  recoveredTurns: Map<string, Recovered>;
   /** Opens the sign-in a saved card offers. */
   onCardSignIn?: (target: CardSignIn) => void;
 };
@@ -38,14 +39,16 @@ function RowBody({
   recoveredTurns,
   onCardSignIn,
 }: RowContext & { row: Row }) {
-  if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} />;
-  if (row.kind === "run") return <ToolRun items={row.items} live={row.live} />;
+  if (row.kind === "fold")
+    return <TurnFold threadId={threadId} turn={row.turn} items={row.items} continued={row.continued} />;
+  if (row.kind === "run") return <ToolRun threadId={threadId} items={row.items} live={row.live} />;
   if (row.kind === "jobs") return <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")
     return <ArtefactCards items={row.items} artefacts={artefacts} onOpen={onOpenArtefact} />;
-  if (row.item.kind === "tool") return <ToolCard item={row.item} />;
+  if (row.item.kind === "tool") return <ToolCard threadId={threadId} item={row.item} />;
   if (row.item.kind === "notice") return <NoticeCard item={row.item} />;
   if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;
+  if (row.item.kind === "plan") return <PlanRow item={row.item} />;
   return (
     <Message
       item={row.item}

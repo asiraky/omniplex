@@ -8,6 +8,7 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { cn } from "~/lib/utils";
+import { useShortcutLabel } from "~/useShortcuts";
 
 /** The end of the toolbar: interrupt while a turn runs, and send, with
     scheduling folded into it. */
@@ -29,6 +30,7 @@ export function SendButtons({
   onSchedule?: () => void;
   onCancel: () => void;
 }) {
+  const stopChord = useShortcutLabel("stopTurn");
   return (
     <>
       {busy && (
@@ -37,7 +39,7 @@ export function SendButtons({
           size="icon"
           onClick={onCancel}
           aria-label="Interrupt the running turn"
-          title="Interrupt the running turn"
+          title={stopChord ? `Interrupt the running turn (${stopChord})` : "Interrupt the running turn"}
           // Set apart from the model control beside it: the send button
           // ends the row rather than continuing it, and a shared gap made
           // the two read as one cluster.

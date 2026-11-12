@@ -208,8 +208,8 @@ type HarnessMeta struct {
 type ModelMeta struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	// Version names the generation behind the label ("Opus 5 with 1M
-	// context", "5.6"), so a row can say which Opus it is.
+	// Version names the generation behind the label ("5.6"), so a row can
+	// say which model of a family it is. A UI shows it beside the label.
 	Version string `json:"version,omitempty"`
 	// Description is the harness's one-line summary of what the model is for.
 	Description string `json:"description,omitempty"`
@@ -294,10 +294,11 @@ type Availability struct {
 // interactively. The server runs the command in a terminal the user can see
 // and type into — the login is the harness's own flow, not omniplex's.
 type Authenticator interface {
-	// LoginCommand is the argv that starts the harness's sign-in flow under the
-	// instance's environment. Unavailable when the harness itself cannot be
-	// found, in which case the error says why.
-	LoginCommand(ctx context.Context) ([]string, error)
+	// LoginCommand is the argv that starts the harness's sign-in flow, and the
+	// environment it runs under: the ambient one with the instance's overlay
+	// on top, as the adapter builds it for its sessions. Unavailable when the
+	// harness itself cannot be found, in which case the error says why.
+	LoginCommand(ctx context.Context, overlay map[string]string) (argv, env []string, err error)
 }
 
 // RemedyLogin marks a remedy the server can carry out itself: the UI offers a

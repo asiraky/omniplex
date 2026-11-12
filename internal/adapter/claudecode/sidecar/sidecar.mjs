@@ -10,8 +10,11 @@
 //   host -> here (notifications):  prompt (text + image paths), interrupt
 //   host -> here (request):        setModel, setEffort, setPermissionMode, supportedCommands, stopTask,
 //                                  mcpStatus, reconnectMcp
-//   here -> host (notifications):  message, models, fatal
+//   here -> host (notifications):  message, models, fatal, permissionCancelled {id}
 //   here -> host (request):        permission  -> {behavior, updatedInput?, message?}
+//
+// permissionCancelled withdraws a permission request the SDK aborted before
+// the host answered; the host stops waiting and sends no answer.
 
 // Imported first, and deliberately so: it installs stdout discipline before
 // any other module is evaluated. See guard.mjs.
@@ -173,13 +176,20 @@ async function* prompts() {
 // ---------------------------------------------------------------------------
 // permissions: each canUseTool call becomes an outbound request; the host's
 // response resolves it. The SDK's AbortSignal fires if the turn is cancelled,
-// so a request the host never answers cannot hang the process forever.
+// so a request the host never answers cannot hang the process forever. The
+// host is told, or it would keep the prompt up for a question nobody is
+// asking any more.
 // ---------------------------------------------------------------------------
 const pending = new Map();
 let requestSeq = 0;
 
 const canUseTool = (toolName, input, { signal, suggestions }) =>
   new Promise((resolve) => {
+    // Already aborted: nobody is waiting on the answer, so don't ask.
+    if (signal?.aborted) {
+      resolve({ behavior: "deny", message: "Cancelled" });
+      return;
+    }
     const id = ++requestSeq;
     let settled = false;
     const settle = (value) => {
@@ -190,9 +200,15 @@ const canUseTool = (toolName, input, { signal, suggestions }) =>
     };
 
     pending.set(id, settle);
-    signal?.addEventListener?.("abort", () => settle({ behavior: "deny", message: "Cancelled" }), {
-      once: true,
-    });
+    signal?.addEventListener?.(
+      "abort",
+      () => {
+        if (settled) return; // the host answered first
+        settle({ behavior: "deny", message: "Cancelled" });
+        notify("permissionCancelled", { id });
+      },
+      { once: true },
+    );
 
     send({
       jsonrpc: "2.0",
