@@ -31,14 +31,15 @@ import { WorkspaceCard } from "./transcript/WorkspaceCard";
 // it loads on first use and stays out of the initial bundle. It is often
 // fetched just after a reconnect; with no error boundary above it, a fetch
 // that fails on a bad link would take the app down, so it says to reload.
-const CardUnavailable = () => (
+type Card = ComponentType<
+  ComponentProps<typeof import("./transcript/InterruptedCard").InterruptedCard>
+>;
+const CardUnavailable: Card = () => (
   <p className="text-muted-foreground text-[13px]">This turn stopped. Reload to see why.</p>
 );
 const InterruptedCard = lazy(() =>
   import("./transcript/InterruptedCard").then(
-    (m): { default: ComponentType<ComponentProps<typeof m.InterruptedCard>> } => ({
-      default: m.InterruptedCard,
-    }),
+    (m): { default: Card } => ({ default: m.InterruptedCard }),
     () => ({ default: CardUnavailable }),
   ),
 );
