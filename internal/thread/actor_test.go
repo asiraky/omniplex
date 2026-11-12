@@ -2714,12 +2714,16 @@ func TestPromptBehindASettingsChangeRunsPastAHold(t *testing.T) {
 	if res, err := r.actor.Prompt(ctx, "by hand", nil); err != nil || !res.Queued() {
 		t.Fatalf("prompt behind a mode change = %+v, %v", res, err)
 	}
+	r.actor.Prompt(ctx, "and another", nil)
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 3 || s.Queued[1].Held || !s.Queued[2].Held {
+		t.Fatalf("queue = %+v, want only the first message sent past the hold", s.Queued)
+	}
 	answer()
 	if in := nextInput(t, r.fa.thread()); in.Text != "by hand" {
 		t.Fatalf("first to run = %q, want the message sent by hand", in.Text)
 	}
-	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || s.Queued[0].Held {
-		t.Fatalf("queue = %+v, want \"after\" released behind it", s.Queued)
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 2 || s.Queued[0].Held || s.Queued[1].Held {
+		t.Fatalf("queue = %+v, want the rest released behind it", s.Queued)
 	}
 }
 
@@ -2734,6 +2738,10 @@ func TestSendNowBehindASettingsChangeStartsThatPrompt(t *testing.T) {
 	}
 	if res, err := r.actor.SendQueuedPrompt(ctx, behind.QueueID); err != nil || res.QueueID != behind.QueueID {
 		t.Fatalf("send now = %+v, %v", res, err)
+	}
+	head, _ := r.actor.State(ctx)
+	if _, err := r.actor.SendQueuedPrompt(ctx, head.Queued[0].QueueID); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a second send now = %v, want ErrBusy", err)
 	}
 	answer()
 	if in := nextInput(t, r.fa.thread()); in.Text != "behind" {

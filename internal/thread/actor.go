@@ -58,14 +58,15 @@ type Actor struct {
 	// after its harness exited is not a restart, and the manager clears it
 	// (adopt). Guarded by mu.
 	restored bool
-	// first is a prompt a human sent into an idle thread with holds on it
-	// while a control call was still on its way. It runs before anything
-	// held, the way it would have had the call not been there, and releases
-	// the holds when it starts (dispatchQueued).
-	first   string
-	ID      string
-	Harness string
-	Cwd     string
+	// sendFirst is the queue id of a prompt a human sent into an idle thread
+	// past a held queue, typed or by Send now, while a control call was
+	// still on its way. It runs before the held prompts, the way it would
+	// have had the call not been there, and releases them once it starts
+	// (dispatchQueued).
+	sendFirst string
+	ID        string
+	Harness   string
+	Cwd       string
 
 	store   *store.Store
 	adapter adapter.Adapter
@@ -1426,14 +1427,15 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		// A prompt cannot overtake a control call still on its way, so while one
 		// is it waits in the queue, which starts it once the call has answered.
-		// Behind holds, it is still a human starting a run: it goes first and
-		// is not held with them.
+		// Past holds, it is still a human starting a run: it goes first and
+		// is not held with them. Anything sent after it is, until it starts.
 		if (a.sess == nil && a.preparing || a.sess != nil && a.controlPending > 0) && c.recovery == nil {
 			queueID := uuid.NewString()
-			if a.first == "" && a.holding() {
-				a.first = queueID
+			held := a.holding()
+			if held && a.queuedEntry(a.sendFirst) == nil {
+				a.sendFirst, held = queueID, false
 			}
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Held: held}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
@@ -1870,10 +1872,12 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	if recovering {
 		return
 	}
-	if id := a.first; id != "" {
-		a.first = ""
+	if id := a.sendFirst; id != "" {
+		a.sendFirst = ""
 		if q := a.queuedEntry(id); q != nil && !a.sent[id] {
-			a.startQueued(ctx, *q, true)
+			if a.startQueued(ctx, *q) {
+				a.releaseHolds()
+			}
 			return
 		}
 	}
@@ -1890,14 +1894,13 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 		if a.sent[next.QueueID] || a.state.HeldByLimit(next) {
 			continue
 		}
-		a.startQueued(ctx, next, false)
+		a.startQueued(ctx, next)
 		return
 	}
 }
 
-// startQueued starts a queued prompt's turn. One a human sent ahead of the
-// holds (release) lets them go once it is running.
-func (a *Actor) startQueued(ctx context.Context, q projection.QueuedPrompt, release bool) {
+// startQueued starts a queued prompt's turn, and reports whether it did.
+func (a *Actor) startQueued(ctx context.Context, q projection.QueuedPrompt) bool {
 	if _, err := a.startTurn(ctx, q.Prompt, a.resolveImages(q.Images), nil, q.QueueID); err != nil {
 		a.logf("queued prompt on %s: %v", a.ID, err)
 		// A harness that refused one prompt — a login that expired, a
@@ -1908,11 +1911,9 @@ func (a *Actor) startQueued(ctx context.Context, q projection.QueuedPrompt, rele
 		if !a.state.QueueHeld() {
 			a.holdQueued()
 		}
-		return
+		return false
 	}
-	if release {
-		a.releaseHolds()
-	}
+	return true
 }
 
 // setRecovery replaces the pending continuation. Recover reads it from
@@ -2029,9 +2030,13 @@ func (a *Actor) sendQueued(ctx context.Context, queueID string, reply chan cmdRe
 		return
 	}
 	// A control call still on its way goes first; dispatch starts this
-	// ahead of the rest once it has answered.
+	// ahead of the rest once it has answered. Only one prompt can be first.
 	if a.controlPending > 0 {
-		a.first = queueID
+		if a.sendFirst != queueID && a.queuedEntry(a.sendFirst) != nil {
+			reply <- cmdResult{err: ErrBusy}
+			return
+		}
+		a.sendFirst = queueID
 		reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 		return
 	}
@@ -2075,11 +2080,11 @@ func (a *Actor) holding() bool {
 // event. One the running harness was handed is left alone: it is that
 // process's to run, and holding it would hand it out a second time on
 // resume. After a restart nothing is with the harness, so that is all of
-// them.
+// them. Nor is the one a human sent past the holds (sendFirst).
 func (a *Actor) holdQueued() {
 	var ids []string
 	for _, q := range a.state.Queued {
-		if !q.Held && !a.sent[q.QueueID] {
+		if !q.Held && !a.sent[q.QueueID] && q.QueueID != a.sendFirst {
 			ids = append(ids, q.QueueID)
 		}
 	}
