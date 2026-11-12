@@ -141,7 +141,8 @@ function appendToolContent(it: Item, add: ToolContent[]) {
   let used = have.reduce((n, c) => n + contentText(c), 0);
   const capped: ToolContent[] = [];
   for (const c of add.slice(0, room)) {
-    // An image has no text, and the full output shows no images: keep it.
+    // An image is a URL with no text, and a closed fold's strip shows only
+    // what the preview kept: keep it.
     if (used >= TOOL_MAX_TEXT && contentText(c) > 0) {
       cut = true;
       continue;

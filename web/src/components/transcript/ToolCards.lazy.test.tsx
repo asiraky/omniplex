@@ -33,8 +33,6 @@ describe("a tool card whose chunks cannot load", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Edit a\.ts/ }));
-    await new Promise((r) => setTimeout(r, 1000));
-    console.log("BODY", document.body.innerHTML.slice(-1500));
     expect(await screen.findByText(/-old\s+\+new/, undefined, { timeout: 3000 })).toBeTruthy();
   });
 
