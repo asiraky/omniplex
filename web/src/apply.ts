@@ -65,12 +65,17 @@ function toolDone(status: Item["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-/** A tool call moved to a terminal status. The tail goes with it: it only
-    ever stands for output still arriving. Absent rather than empty, as the
-    server's omitempty leaves it. */
-function settle(it: Item, status: Item["status"]): Item {
+/** The call without its tail: absent rather than empty, as the server's
+    omitempty leaves it. */
+function dropTail(it: Item): Item {
   const { tail: _tail, ...rest } = it;
-  return { ...rest, status };
+  return rest;
+}
+
+/** A tool call moved to a terminal status. The tail goes with it: it only
+    ever stands for output still arriving. */
+function settle(it: Item, status: Item["status"]): Item {
+  return { ...dropTail(it), status };
 }
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
@@ -344,9 +349,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           ? s.items.map((it) => {
               if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId)) return it;
               if (s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)) {
-                if (!("tail" in it)) return it;
-                const { tail: _tail, ...rest } = it;
-                return rest;
+                return "tail" in it ? dropTail(it) : it;
               }
               return it.status === "in_progress" || it.status === "pending" ? settle(it, "cancelled") : it;
             })

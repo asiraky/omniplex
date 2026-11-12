@@ -832,8 +832,10 @@ func (s *State) Apply(ev proto.Event) {
 			// broken: it is cancelled, never failed. A call that is standing
 			// for a live job keeps its status — it outlived its turn on
 			// purpose, and the job's own finish will settle it — but not its
-			// tail: nothing streams a call's output past the end of its turn,
-			// so the tail would sit there frozen. Tools of other turns are
+			// tail: nothing streams a call's output past the end of its turn
+			// (the Claude adapter stops its tailers before it emits the
+			// finish; Codex reports no jobs), so the tail would sit there
+			// frozen. Tools of other turns are
 			// left alone too: a stray finish must not touch unrelated running
 			// work.
 			live := map[string]bool{}
