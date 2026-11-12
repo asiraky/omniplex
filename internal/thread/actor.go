@@ -122,6 +122,11 @@ type Actor struct {
 	// compared against a picture of the checkout from the wrong moment.
 	measuring string
 
+	// deltas holds a streamed delta for up to deltaWindow, and deltaFlush
+	// fires when the window closes. deltaFlush is nil when nothing is held.
+	deltas     coalescer
+	deltaFlush *time.Timer
+
 	logf func(string, ...any)
 }
 
@@ -791,6 +796,10 @@ func (a *Actor) run() {
 	a.attention = a.state.Attention()
 	a.mu.Unlock()
 	for {
+		var flush <-chan time.Time
+		if a.deltaFlush != nil {
+			flush = a.deltaFlush.C
+		}
 		select {
 		case c := <-a.inbox:
 			if a.handle(c) {
@@ -800,12 +809,20 @@ func (a *Actor) run() {
 			// a resume closing an interrupted turn — comes through here, so
 			// this is the one place a queued prompt needs to be picked up.
 			a.dispatchQueued(context.Background())
+		case <-flush:
+			a.flushDeltas()
 		}
 	}
 }
 
 func (a *Actor) handle(c command) (stop bool) {
 	ctx := context.Background()
+
+	// Whatever a command reads or decides, it does so on a projection with
+	// every held delta in it. Only another harness event may leave them held.
+	if c.kind != cmdHarnessEvent {
+		a.flushDeltas()
+	}
 
 	// Continuing is a prompt the server writes, so it is turned into one here
 	// where the projection can say which turn is being continued.
@@ -857,7 +874,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		if c.from != a.sess {
 			return false
 		}
-		a.append(*c.emission)
+		a.appendStreamed(*c.emission)
 
 	case cmdHarnessExit:
 		if c.from != a.sess {
@@ -1594,9 +1611,54 @@ func (a *Actor) dropQueue() {
 	a.sent = nil
 }
 
-// append writes the event, folds it into the projection, and fans it out.
-// This is the only place any of those three happen.
+// appendStreamed appends an event from the harness, holding it for the
+// delta window when it is a delta that can be merged with the ones after it.
+func (a *Actor) appendStreamed(em proto.Emission) {
+	known := func(id string) bool {
+		_, ok := a.state.ItemByID(id)
+		return ok
+	}
+	flushed, held := a.deltas.add(em, known)
+	if len(flushed) > 0 {
+		a.stopDeltaFlush()
+	}
+	for _, f := range flushed {
+		a.write(f)
+	}
+	if !held {
+		a.write(em)
+		return
+	}
+	if a.deltaFlush == nil {
+		a.deltaFlush = time.NewTimer(deltaWindow)
+	}
+}
+
+func (a *Actor) stopDeltaFlush() {
+	if a.deltaFlush != nil {
+		a.deltaFlush.Stop()
+		a.deltaFlush = nil
+	}
+}
+
+// flushDeltas writes the held delta, if any, and closes the window.
+func (a *Actor) flushDeltas() {
+	a.stopDeltaFlush()
+	for _, em := range a.deltas.take() {
+		a.write(em)
+	}
+}
+
+// append writes the event after any deltas still held, so the log keeps the
+// order the events happened in.
 func (a *Actor) append(em proto.Emission) error {
+	a.flushDeltas()
+	return a.write(em)
+}
+
+// write stores the event, folds it into the projection, and fans it out.
+// This is the only place any of those three happen.
+func (a *Actor) write(em proto.Emission) error {
 	ctx := context.Background()
 	em = a.redact(em)
 
