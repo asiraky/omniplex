@@ -156,6 +156,85 @@ describe("jobs", () => {
     expect(s.items[1].status).toBe("cancelled");
   });
 
+  it("keeps a subagent's work out of the parent's turn and alive past its finish", () => {
+    let s = emptyState("s");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "agent", status: "in_progress", title: "spawn" }));
+    s = applyEvent(s, ev(3, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "subagent" }));
+    s = applyEvent(s, ev(4, "tool_call.started", { turnId: "t1", toolCallId: "sub1", parentToolCallId: "c1", kind: "execute", status: "in_progress", title: "go test" }));
+    s = applyEvent(s, ev(5, "tool_call.started", { turnId: "t1", toolCallId: "own1", kind: "execute", status: "in_progress", title: "ls" }));
+    s = applyEvent(s, ev(6, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    expect(s.items.find((it) => it.id === "sub1")?.status).toBe("in_progress");
+    expect(s.items.find((it) => it.id === "own1")?.status).toBe("cancelled");
+
+    s = applyEvent(s, ev(7, "message.chunk", { turnId: "t1", blockId: "b1", role: "agent", kind: "text", delta: "found it", parentToolCallId: "c1" }));
+    s = applyEvent(s, ev(8, "tool_call.started", { turnId: "t1", toolCallId: "sub2", parentToolCallId: "c1", kind: "read", status: "pending", title: "read" }));
+    s = applyEvent(s, ev(9, "tool_call.updated", { toolCallId: "sub2", parentToolCallId: "c1", status: "in_progress" }));
+    expect(s.phase).toBe("idle");
+    expect(s.items.find((it) => it.id === "b1")).toMatchObject({ parentId: "c1", text: "found it" });
+    expect(s.items.find((it) => it.id === "sub2")).toMatchObject({ parentId: "c1", status: "in_progress" });
+  });
+
+  it("keeps a subagent's running command's tail past the parent's turn, and drops it when the job ends", () => {
+    let s = emptyState("s");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "agent", status: "in_progress", title: "spawn" }));
+    s = applyEvent(s, ev(3, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "subagent" }));
+    s = applyEvent(s, ev(4, "tool_call.started", { turnId: "t1", toolCallId: "sub1", parentToolCallId: "c1", kind: "execute", status: "in_progress", title: "go test" }));
+    s = applyEvent(s, ev(5, "tool_call.updated", { toolCallId: "sub1", outputDelta: "ok 1\n" }));
+    s = applyEvent(s, ev(6, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    expect(s.items.find((it) => it.id === "sub1")).toMatchObject({ status: "in_progress", tail: "ok 1\n" });
+
+    s = applyEvent(s, ev(7, "job.finished", { jobId: "j1", toolCallId: "c1", status: "stopped" }));
+    const sub1 = s.items.find((it) => it.id === "sub1");
+    expect(sub1?.status).toBe("cancelled");
+    expect(sub1 && "tail" in sub1 ? sub1.tail : undefined).toBeUndefined();
+  });
+
+  it("cancels a finished job's unfinished work, and lets a later completion land", () => {
+    let s = emptyState("s");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "agent", status: "in_progress", title: "spawn" }));
+    s = applyEvent(s, ev(3, "tool_call.started", { turnId: "t1", toolCallId: "c2", kind: "agent", status: "in_progress", title: "spawn" }));
+    s = applyEvent(s, ev(4, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "subagent" }));
+    s = applyEvent(s, ev(5, "job.started", { jobId: "j2", toolCallId: "c2", taskType: "subagent" }));
+    s = applyEvent(s, ev(6, "tool_call.started", { turnId: "t1", toolCallId: "run1", parentToolCallId: "c1", kind: "execute", status: "in_progress", title: "run1" }));
+    s = applyEvent(s, ev(7, "tool_call.started", { turnId: "t1", toolCallId: "wait1", parentToolCallId: "c1", kind: "execute", status: "pending", title: "wait1" }));
+    s = applyEvent(s, ev(8, "tool_call.started", { turnId: "t1", toolCallId: "done1", parentToolCallId: "c1", kind: "execute", status: "in_progress", title: "done1" }));
+    s = applyEvent(s, ev(9, "tool_call.started", { turnId: "t1", toolCallId: "other", parentToolCallId: "c2", kind: "execute", status: "in_progress", title: "other" }));
+    // j1's child spawned a grandchild that outlives it.
+    s = applyEvent(s, ev(10, "tool_call.started", { turnId: "t1", toolCallId: "spawn3", parentToolCallId: "c1", kind: "agent", status: "in_progress", title: "spawn" }));
+    s = applyEvent(s, ev(11, "job.started", { jobId: "j3", toolCallId: "spawn3", parentJobId: "j1", taskType: "subagent" }));
+    s = applyEvent(s, ev(12, "tool_call.updated", { toolCallId: "done1", status: "completed" }));
+    s = applyEvent(s, ev(13, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    s = applyEvent(s, ev(14, "job.finished", { jobId: "j1", status: "stopped" }));
+    const status = (id: string) => s.items.find((it) => it.id === id)?.status;
+    expect({ c1: status("c1"), run1: status("run1"), wait1: status("wait1"), done1: status("done1"), other: status("other"), spawn3: status("spawn3") }).toEqual({
+      c1: "cancelled",
+      run1: "cancelled",
+      wait1: "cancelled",
+      done1: "completed",
+      other: "in_progress",
+      spawn3: "in_progress",
+    });
+    s = applyEvent(s, ev(15, "tool_call.updated", { toolCallId: "run1", parentToolCallId: "c1", status: "completed" }));
+    expect(status("run1")).toBe("completed");
+  });
+
+  it("clears finishedAt when a finished job is reopened, and stamps it again on the next finish", () => {
+    let s = emptyState("s");
+    s = applyEvent(s, ev(1, "job.started", { jobId: "j1", taskType: "subagent" }));
+    s = applyEvent(s, ev(2, "job.finished", { jobId: "j1", status: "completed" }));
+    expect(s.jobs[0].finishedAt).toBe(2000);
+    s = applyEvent(s, ev(3, "job.updated", { jobId: "j1", status: "running" }));
+    expect(s.jobs[0].status).toBe("running");
+    expect(s.jobs[0].finishedAt).toBeUndefined();
+    // An update that sets no status leaves a finished job finished.
+    s = applyEvent(s, ev(4, "job.finished", { jobId: "j1", status: "completed" }));
+    s = applyEvent(s, ev(5, "job.updated", { jobId: "j1", activity: "done" }));
+    expect(s.jobs[0]).toMatchObject({ status: "completed", finishedAt: 4000 });
+  });
+
   it("classifies by task type and nests children", () => {
     let s = emptyState("s");
     s = applyEvent(s, ev(1, "job.started", { jobId: "a", taskType: "local_bash" }));
