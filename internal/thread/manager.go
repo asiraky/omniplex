@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -593,7 +592,7 @@ func (m *Manager) LoginCommand(ctx context.Context, instanceID string) (argv []s
 	if err != nil {
 		return nil, nil, err
 	}
-	argv, err = auth.LoginCommand(ctx)
+	argv, env, err = auth.LoginCommand(ctx, overlay)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -602,7 +601,7 @@ func (m *Manager) LoginCommand(ctx context.Context, instanceID string) (argv []s
 	m.probeMu.Lock()
 	delete(m.probes, instanceID)
 	m.probeMu.Unlock()
-	return argv, adapter.MergeEnv(os.Environ(), overlay), nil
+	return argv, env, nil
 }
 
 // RecheckHarnesses drops cached probes so the next listing re-examines the

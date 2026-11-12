@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -927,6 +928,25 @@ func (a *Actor) handle(c command) (stop bool) {
 		cwd, model, mode, effort := c.prompt, c.model, c.mode, c.effort
 		if c.resume {
 			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
+		}
+		// A resumed thread's worktree can be deleted or moved while the
+		// server is down. A harness started there fails later with an error
+		// that never names the directory, so refuse here, where we can.
+		if cwd != "" {
+			info, statErr := os.Stat(cwd)
+			var unusable error
+			switch {
+			case errors.Is(statErr, fs.ErrNotExist):
+				unusable = fmt.Errorf("this thread's workspace %s no longer exists, so it was probably deleted or moved; restore the directory to continue, or start a new thread", cwd)
+			case statErr != nil:
+				unusable = fmt.Errorf("this thread's workspace %s cannot be opened: %w", cwd, statErr)
+			case !info.IsDir():
+				unusable = fmt.Errorf("this thread's workspace %s is no longer a directory; restore it to continue, or start a new thread", cwd)
+			}
+			if unusable != nil {
+				c.reply <- cmdResult{err: unusable}
+				return false
+			}
 		}
 		meta, err := a.store.Thread(ctx, a.ID)
 		if err != nil {
