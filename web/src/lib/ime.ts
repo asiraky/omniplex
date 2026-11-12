@@ -24,8 +24,9 @@ export function isComposing(e: {
  * A Radix `onEscapeKeyDown` that keeps its surface open while an IME is
  * composing. Radix listens for Escape on the document, ahead of the field that
  * is composing, so no field's own check can stop an IME's cancel from closing
- * the dialog, sheet or popover around it. The shared wrappers in ui/ pass
- * every caller's handler through this, so no surface has to remember to.
+ * the dialog, sheet or popover around it. Those three wrappers in ui/ pass
+ * every caller's handler through this, so no surface has to remember to; the
+ * menus and select hold no text field to compose in.
  */
 export function escapeUnlessComposing(
   handler?: (e: KeyboardEvent) => void,

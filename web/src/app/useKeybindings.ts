@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import { isComposing } from "~/lib/ime";
 import {
   currentPlatform,
   isElectronApp,
@@ -77,8 +78,7 @@ export function useKeybindings(handlers: KeyHandlers, app: AppKeyState) {
 
   useEffect(() => {
     const listen = (phase: "early" | "late") => (e: KeyboardEvent) => {
-      // keyCode 229 is a key an IME is still composing.
-      if (e.isComposing || e.keyCode === 229 || e.repeat || e.defaultPrevented) return;
+      if (isComposing(e) || e.repeat || e.defaultPrevented) return;
       const { handlers, app } = latest.current;
       const id = resolveCommand(e, readKeyContext(app), currentPlatform(), phase);
       const run = id && handlers[id];
