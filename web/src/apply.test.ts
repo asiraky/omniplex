@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, emptyState } from "./apply";
-import type { Event } from "./protocol";
+import { applyEvent, emptyState, prependItems } from "./apply";
+import type { Event, Item } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
   return { threadId: "s1", seq, timestamp, type, payload } as Event;
@@ -294,5 +294,93 @@ describe("cards", () => {
     s = applyEvent(s, ev(3, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
     expect(s.items.find((it) => it.id === "card:r1")!.status).toBe("pending");
     expect(s.pendingElicitations).toHaveLength(1);
+  });
+});
+
+// These mirror the plan.updated cases in internal/projection/state_test.go.
+describe("plans", () => {
+  const step = (text: string, status = "pending") => ({ text, status });
+  const plans = (s: ReturnType<typeof emptyState>) => s.items.filter((it) => it.kind === "plan");
+
+  it("supersedes a TodoWrite list in an older page read before a newer list landed", () => {
+    const todo = (id: string, superseded?: boolean): Item => ({ id: `todo:${id}`, kind: "plan", steps: [], superseded });
+    const page = [todo("a"), { id: "x", kind: "message" } as Item, todo("b")];
+    const items = prependItems([todo("b"), todo("c")], page);
+    expect(items.map((it) => [it.id, !!it.superseded])).toEqual([
+      ["todo:a", true],
+      ["x", false],
+      ["todo:b", false],
+      ["todo:c", false],
+    ]);
+    // A window with no TodoWrite list of its own leaves the page as it came.
+    expect(prependItems([], [todo("a")])[0].superseded).toBeUndefined();
+  });
+
+  it("drops a plan in the old shape, which names no turn and no call", () => {
+    const s = applyEvent(emptyState("s1"), ev(1, "plan.updated", { entries: [{ content: "a", status: "pending" }] }));
+    expect(plans(s)).toEqual([]);
+  });
+
+  it("revises a codex plan in place within its turn, and starts a new one next turn", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "plan.updated", { turnId: "t1", steps: [step("a", "running"), step("b")] }, 100));
+    s = applyEvent(s, ev(3, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "execute", status: "in_progress" }));
+    s = applyEvent(s, ev(4, "plan.updated", { turnId: "t1", steps: [step("a", "completed"), step("b", "running")] }, 200));
+    expect(s.items.map((it) => it.id)).toEqual(["prompt:t1", "turn-plan:t1", "c1"]);
+    const p = s.items[1];
+    expect(p.kind).toBe("plan");
+    expect(p.steps).toEqual([step("a", "completed"), step("b", "running")]);
+    expect(p.receivedAt).toBe(100);
+
+    s = applyEvent(s, ev(5, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    s = applyEvent(s, ev(6, "turn.started", { turnId: "t2", prompt: "again" }));
+    s = applyEvent(s, ev(7, "plan.updated", { turnId: "t2", steps: [step("c")] }));
+    expect(plans(s).map((it) => it.id)).toEqual(["turn-plan:t1", "turn-plan:t2"]);
+    expect(plans(s)[0].steps).toEqual([step("a", "completed"), step("b", "running")]);
+  });
+
+  it("keeps a codex plan's explanation when a later update leaves it out", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "plan.updated", { turnId: "t1", explanation: "why", steps: [step("a")] }));
+    expect(plans(s)[0].explanation).toBe("why");
+    s = applyEvent(s, ev(2, "plan.updated", { turnId: "t1", steps: [step("a", "completed")] }));
+    expect(plans(s)[0].explanation).toBe("why");
+    s = applyEvent(s, ev(3, "plan.updated", { turnId: "t1", explanation: "why not", steps: [step("a", "completed")] }));
+    expect(plans(s)[0].explanation).toBe("why not");
+  });
+
+  it("supersedes earlier TodoWrite lists when a new one is written, never codex plans", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "plan.updated", { turnId: "t1", toolCallId: "w1", steps: [step("a")] }));
+    s = applyEvent(s, ev(2, "plan.updated", { turnId: "t1", steps: [step("x")] }));
+    s = applyEvent(s, ev(3, "plan.updated", { turnId: "t1", toolCallId: "w2", steps: [step("a", "completed")] }));
+    expect(plans(s).map((it) => [it.id, !!it.superseded])).toEqual([
+      ["todo:w1", true],
+      ["turn-plan:t1", false],
+      ["todo:w2", false],
+    ]);
+
+    // Updating the latest list again supersedes nothing, itself included.
+    s = applyEvent(s, ev(4, "plan.updated", { turnId: "t1", toolCallId: "w2", steps: [step("b")] }));
+    expect(plans(s).map((it) => !!it.superseded)).toEqual([true, false, false]);
+    expect(plans(s)[2].steps).toEqual([step("b")]);
+  });
+
+  it("drops a straggler for a plan windowed out with its finished turn", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    // A harness-initiated turn: nothing of it in the window yet.
+    s = applyEvent(s, ev(3, "turn.started", { turnId: "t2" }));
+    s = { ...s, items: [], itemsBefore: 1 };
+
+    const late = applyEvent(s, ev(4, "plan.updated", { turnId: "t1", steps: [step("a")] }));
+    expect(late.items).toEqual([]);
+    expect(late.seq).toBe(4);
+
+    // The running turn's first plan is new, not a straggler.
+    const live = applyEvent(s, ev(4, "plan.updated", { turnId: "t2", steps: [step("a")] }));
+    expect(live.items.map((it) => it.id)).toEqual(["turn-plan:t2"]);
   });
 });

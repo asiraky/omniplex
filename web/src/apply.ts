@@ -4,6 +4,22 @@
 
 import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
+import { isTodoPlan, planItemId } from "./lib/plans";
+
+/** Splices a page of older items in front of the window. A straggling event
+    for a trimmed item is dropped rather than applied, but belt and braces:
+    never prepend an id the window already holds — duplicate ids break
+    rendering outright. The page may have been read before the newest
+    TodoWrite list landed, and every list in it is older than any the window
+    holds: one here supersedes them all, as it did on the server. */
+export function prependItems(items: Item[], older: Item[]): Item[] {
+  const have = new Set(items.map((it) => it.id));
+  const newer = items.some(isTodoPlan);
+  const page = older
+    .filter((it) => !have.has(it.id))
+    .map((it) => (newer && isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it));
+  return [...page, ...items];
+}
 
 export function emptyState(threadId: string): ThreadState {
   return {
@@ -21,7 +37,6 @@ export function emptyState(threadId: string): ThreadState {
     items: [],
     turns: [],
     jobs: [],
-    plan: [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     pendingPermissions: [],
     pendingElicitations: [],
@@ -382,8 +397,51 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "job.finished":
       return applyJob(s, ev.timestamp, p as JobPayload, true);
 
-    case "plan.updated":
-      return { ...s, plan: p.entries ?? [] };
+    case "plan.updated": {
+      // A TodoWrite call is a list of its own, keyed by the call; a codex
+      // plan is the turn's, revised in place. Each update carries every step,
+      // so steps are replaced outright. Codex gives its explanation only on
+      // the turn's first update, so a later one that omits it keeps it.
+      // Mirrors internal/projection/state.go.
+      // A plan anchored to nothing — the old shape, logged before plans had
+      // a turn — has nowhere in the transcript to go.
+      if (!p.turnId && !p.toolCallId) return s;
+      const id = planItemId(p.turnId, p.toolCallId);
+      const present = s.items.some((it) => it.id === id);
+      // A straggler for a plan whose turn was windowed out, as for
+      // tool_call.updated. The window keeps whole turns, so a turn with no
+      // items here that is no longer running lies above the window: the page
+      // fetch delivers the server's folded item. A running turn's first plan
+      // is new, not a straggler, and is created.
+      if (
+        !present &&
+        (s.itemsBefore ?? 0) > 0 &&
+        !s.items.some((it) => it.turnId === p.turnId) &&
+        !s.turns.some((t) => t.id === p.turnId && !t.done)
+      ) {
+        return s;
+      }
+      // A new TodoWrite list replaces every earlier one in this window.
+      const base =
+        p.toolCallId && !present
+          ? {
+              ...s,
+              items: s.items.map((it) =>
+                isTodoPlan(it) && !it.superseded ? { ...it, superseded: true } : it,
+              ),
+            }
+          : s;
+      return {
+        ...s,
+        items: upsert(base, id, (it) => {
+          it.kind = "plan";
+          it.receivedAt ??= ev.timestamp;
+          it.turnId = p.turnId || undefined;
+          it.steps = p.steps ?? [];
+          if (p.explanation) it.explanation = p.explanation;
+        }),
+      };
+    }
 
     case "usage.updated":
       return { ...s, usage: p };

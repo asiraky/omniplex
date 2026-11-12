@@ -12,6 +12,7 @@ import { CardRow } from "./CardRow";
 import { JobsCard } from "./JobsCard";
 import { Message } from "./Message";
 import { NoticeCard } from "./NoticeCard";
+import { PlanRow } from "./PlanRow";
 import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
 
 type RowContext = {
@@ -38,7 +39,7 @@ function RowBody({
   recoveredTurns,
   onCardSignIn,
 }: RowContext & { row: Row }) {
-  if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} />;
+  if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} continued={row.continued} />;
   if (row.kind === "run") return <ToolRun items={row.items} live={row.live} />;
   if (row.kind === "jobs") return <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")
@@ -46,6 +47,7 @@ function RowBody({
   if (row.item.kind === "tool") return <ToolCard item={row.item} />;
   if (row.item.kind === "notice") return <NoticeCard item={row.item} />;
   if (row.item.kind === "card") return <CardRow item={row.item} onSignIn={onCardSignIn} />;
+  if (row.item.kind === "plan") return <PlanRow item={row.item} />;
   return (
     <Message
       item={row.item}

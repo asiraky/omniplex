@@ -391,3 +391,161 @@ func TestShowingAPathAgainRevisesOneArtefact(t *testing.T) {
 		t.Fatalf("clone shares artefacts: %+v", got)
 	}
 }
+
+func plans(s *State) []Item {
+	var out []Item
+	for _, it := range s.Items {
+		if it.Kind == ItemPlan {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func steps(texts ...string) []proto.PlanStep {
+	out := make([]proto.PlanStep, len(texts))
+	for i, t := range texts {
+		out[i] = proto.PlanStep{Text: t, Status: proto.PlanPending}
+	}
+	return out
+}
+
+// A codex plan is the turn's: every update within the turn revises one item
+// in place, wholesale, and the next turn's plan is a second item that leaves
+// the first alone. Mirrored by web/src/apply.test.ts.
+func TestCodexPlanRevisesOneItemPerTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PlanUpdated, proto.PlanUpdatedPayload{
+		TurnID: "t1", Explanation: "first cut", Steps: steps("read", "write"),
+	}))
+	s.Apply(event(t, 3, proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t1", ToolCallID: "c1", Title: "ls"}))
+	revised := steps("read", "write", "test")
+	revised[0].Status = proto.PlanCompleted
+	revised[1].Status = proto.PlanRunning
+	s.Apply(event(t, 4, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Steps: revised}))
+
+	ps := plans(s)
+	if len(ps) != 1 {
+		t.Fatalf("plan items = %+v, want one", ps)
+	}
+	p := ps[0]
+	if p.ID != "turn-plan:t1" || p.TurnID != "t1" || len(p.Steps) != 3 || p.Steps[1].Status != proto.PlanRunning {
+		t.Fatalf("plan item = %+v", p)
+	}
+	if p.Explanation != "first cut" {
+		t.Fatalf("explanation = %q, want kept: codex sends it on the first update only", p.Explanation)
+	}
+	if p.ReceivedAt != 2000 {
+		t.Fatalf("receivedAt = %d, want the first update's 2000", p.ReceivedAt)
+	}
+	if s.Items[1].ID != "turn-plan:t1" {
+		t.Fatalf("plan moved from where it first appeared: items = %+v", s.Items)
+	}
+
+	s.Apply(event(t, 5, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	s.Apply(event(t, 6, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "more"}))
+	s.Apply(event(t, 7, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t2", Explanation: "again", Steps: steps("ship")}))
+
+	ps = plans(s)
+	if len(ps) != 2 || ps[1].ID != "turn-plan:t2" || ps[1].Explanation != "again" || len(ps[1].Steps) != 1 {
+		t.Fatalf("plan items after second turn = %+v", ps)
+	}
+	if len(ps[0].Steps) != 3 || ps[0].Superseded || ps[0].Steps[0].Status != proto.PlanCompleted {
+		t.Fatalf("first turn's plan changed: %+v", ps[0])
+	}
+}
+
+// Each TodoWrite call is a list of its own; a new one marks every earlier
+// TodoWrite list superseded, and never touches a codex turn plan. Re-sending
+// the same call updates it without superseding anything. Mirrored by
+// web/src/apply.test.ts.
+func TestTodoWriteListsSupersedeEachOther(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Steps: steps("codex")}))
+	s.Apply(event(t, 3, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c1", Steps: steps("a")}))
+	s.Apply(event(t, 4, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c2", Steps: steps("a", "b")}))
+
+	ps := plans(s)
+	if len(ps) != 3 || ps[1].ID != "todo:c1" || ps[2].ID != "todo:c2" {
+		t.Fatalf("plan items = %+v", ps)
+	}
+	if ps[0].Superseded || !ps[1].Superseded || ps[2].Superseded {
+		t.Fatalf("superseded = %v/%v/%v, want false/true/false", ps[0].Superseded, ps[1].Superseded, ps[2].Superseded)
+	}
+
+	// Updating the newest list again is not a new list.
+	s.Apply(event(t, 5, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c2", Steps: steps("a", "b", "c")}))
+	ps = plans(s)
+	if len(ps) != 3 || ps[2].Superseded || len(ps[2].Steps) != 3 {
+		t.Fatalf("after re-send: %+v", ps)
+	}
+
+	// A later codex plan neither supersedes nor is superseded.
+	s.Apply(event(t, 6, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t2", Steps: steps("codex2")}))
+	s.Apply(event(t, 7, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t2", ToolCallID: "c3", Steps: steps("z")}))
+	for _, p := range plans(s) {
+		want := p.ID == "todo:c1" || p.ID == "todo:c2"
+		if p.Superseded != want {
+			t.Fatalf("%s superseded = %v, want %v", p.ID, p.Superseded, want)
+		}
+	}
+}
+
+// Superseding must work on a state that came from a snapshot or a clone,
+// whose item index is not yet built, and replaying the log must land the same
+// state as folding it live.
+func TestPlanItemsReplay(t *testing.T) {
+	evs := []proto.Event{
+		event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}),
+		event(t, 2, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c1", Steps: steps("a")}),
+		event(t, 3, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", ToolCallID: "c1", Steps: steps("a", "b")}),
+		event(t, 4, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Explanation: "why", Steps: steps("x")}),
+	}
+	live := New("s1")
+	for _, ev := range evs {
+		live.Apply(ev)
+	}
+
+	resumed := New("s1")
+	resumed.Apply(evs[0])
+	resumed.Apply(evs[1])
+	resumed = resumed.Clone() // drops the item index, as a loaded snapshot has none
+	for _, ev := range evs[2:] {
+		resumed.Apply(ev)
+	}
+
+	a, _ := json.Marshal(live)
+	b, _ := json.Marshal(resumed)
+	if string(a) != string(b) {
+		t.Fatalf("resumed state differs:\nlive:    %s\nresumed: %s", a, b)
+	}
+	// Re-sending c1 after the resume is an update, not a new list: it must
+	// not supersede itself.
+	if resumed.Items[1].Superseded || len(resumed.Items[1].Steps) != 2 || resumed.Items[2].Explanation != "why" {
+		t.Fatalf("items = %+v", resumed.Items)
+	}
+}
+
+// A clone's plan steps are its own: the actor revising a plan in place must
+// not reach into a copy already handed out.
+func TestCloneDoesNotAliasPlanSteps(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PlanUpdated, proto.PlanUpdatedPayload{TurnID: "t1", Steps: steps("a")}))
+	c := s.Clone()
+	s.Items[0].Steps[0].Status = proto.PlanCompleted
+	if c.Items[0].Steps[0].Status != proto.PlanPending {
+		t.Fatalf("clone shares steps: %+v", c.Items[0].Steps)
+	}
+}
+
+// TestUnanchoredPlanIsDropped: a plan.updated logged in the old shape names
+// no turn and no call, so replaying it must not grow a blank row.
+func TestUnanchoredPlanIsDropped(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.PlanUpdated, json.RawMessage(`{"entries":[{"content":"a","status":"pending"}]}`)))
+	if ps := plans(s); len(ps) != 0 {
+		t.Fatalf("plan items = %+v, want none", ps)
+	}
+}

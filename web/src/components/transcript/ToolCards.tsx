@@ -190,7 +190,9 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
 // A finished turn's work, behind one quiet line. What the reader keeps is the
 // prompt above and the answer below; "Worked for 34s" is the receipt for
 // everything in between, and opens to all of it — thoughts, calls, failures.
-export function TurnFold({ turn, items }: { turn: Turn; items: Item[] }) {
+// A piece after the first, when a plan or spawn batch split the turn, says
+// what it holds instead: the duration is the whole turn's, and is said once.
+export function TurnFold({ turn, items, continued }: { turn: Turn; items: Item[]; continued?: boolean }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -201,7 +203,7 @@ export function TurnFold({ turn, items }: { turn: Turn; items: Item[] }) {
         aria-expanded={open}
         className="hover:text-foreground focus-visible:ring-ring text-muted-foreground flex items-center gap-1 rounded-md px-1 py-0.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2"
       >
-        <span>{foldLabel(turn)}</span>
+        <span>{continued ? summarise(items) || "More work" : foldLabel(turn)}</span>
         <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
       </button>
 

@@ -2,7 +2,7 @@
 // here: backoff, cursor tracking, reattach with afterSeq, resync handling, and
 // command idempotency across reconnects.
 
-import { applyEvent, emptyState } from "./apply";
+import { applyEvent, emptyState, prependItems } from "./apply";
 import { checkBuild } from "./boot";
 import type { Access, AuthFlowEvent, HarnessMeta, Item, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
 
@@ -212,13 +212,9 @@ export class Client {
       // moves only when a snapshot replaced the state (resync, reattach) — and
       // a page fetched against the old cursor would splice in the wrong place.
       if (!cur || cur.threadId !== s.threadId || (cur.itemsBefore ?? 0) !== before) return null;
-      // A straggling event for a trimmed item is dropped rather than applied
-      // (see apply.ts), but belt and braces: never prepend an id the window
-      // already holds — duplicate ids break rendering outright.
-      const have = new Set(cur.items.map((it) => it.id));
       const next: ThreadState = {
         ...cur,
-        items: [...(page.items ?? []).filter((it) => !have.has(it.id)), ...cur.items],
+        items: prependItems(cur.items, page.items ?? []),
         itemsBefore: page.itemsBefore,
       };
       this.state = next;
