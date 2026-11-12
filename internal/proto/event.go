@@ -116,7 +116,8 @@ const (
 	// ExtensionStatus sets or clears one status line an extension keeps in
 	// the thread header (pi's ctx.ui.setStatus). It lives as long as the
 	// process that set it, so the thread clears it once it sees that process
-	// gone: on exit, on resume, on an account switch, and on close.
+	// gone: on exit, on resume, on an account switch, on a Stop that kills
+	// it, and on close.
 	ExtensionStatus = "extension.status"
 )
 

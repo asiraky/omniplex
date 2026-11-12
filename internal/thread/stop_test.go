@@ -137,6 +137,41 @@ func TestSecondStopKillsAtOnce(t *testing.T) {
 	waitFor(t, func() bool { return fa.thread().isClosed() })
 }
 
+// A killed harness's exit is dropped as stale, so the statuses its
+// extensions were keeping go with the kill rather than outliving it.
+func TestKilledHarnessTakesItsStatusesWithIt(t *testing.T) {
+	withStopGrace(t, time.Hour)
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{cancelGate: gate(t)})
+	ctx := context.Background()
+
+	if _, err := actor.Prompt(ctx, "work", nil); err != nil {
+		t.Fatal(err)
+	}
+	old := fa.thread()
+	<-old.prompts
+	old.emit(proto.Emit(proto.ExtensionStatus, proto.ExtensionStatusPayload{Key: "watch", Text: "watching"}))
+	waitFor(t, func() bool {
+		state, _ := actor.State(ctx)
+		return len(state.ExtensionStatuses) == 1
+	})
+
+	for range 2 {
+		if err := actor.Cancel(quick(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool { return old.isClosed() })
+	actor.inbox <- command{kind: cmdHarnessExit, from: adapter.Session(old)}
+
+	state, err := actor.State(quick(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ExtensionStatuses) != 0 {
+		t.Fatalf("statuses after the kill = %+v, want none", state.ExtensionStatuses)
+	}
+}
+
 // A harness that ends the turn after Stop — before it has even answered the
 // interrupt — is left alone, and the queue goes with the turn.
 func TestStoppedTurnThatEndsInTimeIsNotKilled(t *testing.T) {
