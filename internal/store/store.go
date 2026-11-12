@@ -68,7 +68,21 @@ CREATE TABLE IF NOT EXISTS scheduled_prompts (
 CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_prompts(status, due_at);
 
 CREATE INDEX IF NOT EXISTS events_type_time ON events(type, created_at);
+
+` + toolCallIndexDDL + `
 `
+
+// toolCallKey is the expression events_tool_call is built on, and ToolContent
+// must say it the same way or the planner will not match it to the index. The
+// CAST is deliberate: payload is a BLOB, and SQLite's json functions take a
+// BLOB for JSONB, reading text JSON out of one only through a deprecated
+// fallback. As TEXT it is plain JSON, whatever the bytes happen to look like.
+const toolCallKey = `json_extract(CAST(payload AS TEXT), '$.toolCallId')`
+
+// toolCallIndexDDL finds one tool call's updates without reading the rest of
+// the thread. Partial, so only tool_call.updated rows pay for it; seq last,
+// so the rows come out in fold order with no sort.
+const toolCallIndexDDL = `CREATE INDEX IF NOT EXISTS events_tool_call ON events(thread_id, ` + toolCallKey + `, seq) WHERE type = 'tool_call.updated';`
 
 // ThreadMeta is the row-level view of a thread, enough for a thread list.
 type ThreadMeta struct {
@@ -454,6 +468,48 @@ func (s *Store) ReadEvents(ctx context.Context, threadID string, afterSeq int64,
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// toolContentQuery is a seek on events_tool_call, which a test holds it to.
+const toolContentQuery = `SELECT payload FROM events
+	WHERE thread_id = ? AND ` + toolCallKey + ` = ? AND type = 'tool_call.updated'
+	ORDER BY seq ASC`
+
+// ToolContent is a tool call's whole output, read from the log: every
+// tool_call.updated for it, in seq order, with their content appended, the
+// same fold the projection does. The projection keeps only a preview, so this
+// is where the rest comes from, without opening the thread. ErrNotFound when
+// the thread has no update for that call.
+func (s *Store) ToolContent(ctx context.Context, threadID, toolCallID string) ([]proto.ToolContent, error) {
+	rows, err := s.db.QueryContext(ctx, toolContentQuery, threadID, toolCallID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	found := false
+	out := []proto.ToolContent{}
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var p struct {
+			Content []proto.ToolContent `json:"content"`
+		}
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("decode tool_call.updated: %w", err)
+		}
+		found = true
+		out = append(out, p.Content...)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrNotFound
+	}
+	return out, nil
 }
 
 func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {

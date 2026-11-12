@@ -152,6 +152,16 @@ type Actor struct {
 	deltaFlush *time.Timer
 
 	logf func(string, ...any)
+
+	// evictable marks an actor restored only to be looked at (RestoreIdle,
+	// RestoreClosed). Such an actor holds a whole projection and nothing
+	// else, so the manager may drop it once nobody has used it for a while;
+	// see evict.go. Set before the loop starts and never changed.
+	evictable bool
+	// lastUsed is when a caller last reached this actor: a command, a
+	// subscription coming or going, or the manager handing it out. Guarded
+	// by mu.
+	lastUsed time.Time
 }
 
 type command struct {
@@ -190,6 +200,8 @@ type command struct {
 	show    *Show
 	mcp     func(context.Context, adapter.MCPControl) (any, error)
 	card    *cardCmd
+	// evict commits an eviction with the manager; see Actor.evict.
+	evict func() (idle time.Duration, ok bool)
 }
 
 // accountSwitch is what the manager hands the actor to move the thread to
@@ -247,6 +259,7 @@ const (
 	cmdHarnessReply  = "harness_reply"
 	cmdStopExpired   = "stop_expired"
 	cmdDropRecovery  = "drop_recovery"
+	cmdEvict         = "evict"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -326,7 +339,7 @@ func StartPending(st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, en
 // Resume rebuilds an actor for an existing thread id, replaying its log into
 // the projection before starting a fresh harness process.
 func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, _, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +423,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 // provider process. It is used by read-only attachment; ActivateResume pays
 // the process cost only when a later command actually needs the harness.
 func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, snapAt, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -419,6 +432,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 		store: st, adapter: ad, env: env, inbox: make(chan command, 64), quit: make(chan struct{}),
 		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
 		pendingElicit: map[string]chan adapter.ElicitationResult{}, subs: map[string]*Subscriber{}, logf: logf,
+		lastSnapAt: snapAt, evictable: true, lastUsed: time.Now(),
 	}
 	a.recovery, a.heldNote = planRecovery(state, proto.NowMillis())
 	a.holdRowOnlyIfAsked(meta.Phase)
@@ -436,7 +450,7 @@ func RestoreIdle(ctx context.Context, st *store.Store, ad adapter.Adapter, meta 
 // harness process, but retains the same attach/state/fanout surface so closed
 // threads remain inspectable by presenters.
 func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, snapAt, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +467,7 @@ func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, 
 		state: state, head: state.Seq, pendingPerm: map[string]chan adapter.PermissionOutcome{},
 		pendingElicit: map[string]chan adapter.ElicitationResult{},
 		subs:          map[string]*Subscriber{}, logf: logf,
+		lastSnapAt: snapAt, evictable: true, lastUsed: time.Now(),
 	}
 	a.wg.Add(1)
 	go a.run()
@@ -460,7 +475,7 @@ func RestoreClosed(ctx context.Context, st *store.Store, meta store.ThreadMeta, 
 }
 
 func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, env map[string]string, logf func(string, ...any)) (*Actor, error) {
-	state, err := loadState(ctx, st, meta.ID)
+	state, _, err := loadState(ctx, st, meta.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -470,22 +485,31 @@ func RestorePending(ctx context.Context, st *store.Store, ad adapter.Adapter, me
 	return a, nil
 }
 
-// loadState folds the whole log, using the newest snapshot as a starting point.
-func loadState(ctx context.Context, st *store.Store, id string) (*projection.State, error) {
+// loadState folds the whole log, using the newest snapshot as a starting
+// point, and says which seq that snapshot was taken at, zero for none or for
+// one worth rewriting. An actor that knows it is not asked to write the same
+// snapshot again.
+func loadState(ctx context.Context, st *store.Store, id string) (*projection.State, int64, error) {
 	state := projection.New(id)
+	var snapAt int64
 	if seq, blob, err := st.LatestSnapshot(ctx, id); err == nil && blob != nil {
 		if s, err := projection.FromSnapshot(blob); err == nil {
 			state = s
 			state.Seq = seq
+			// A snapshot from before tool output was capped loads small but
+			// is still big on disk; leaving snapAt at zero gets it rewritten.
+			if !s.Recapped() {
+				snapAt = seq
+			}
 		}
 	}
 	for {
 		evs, err := st.ReadEvents(ctx, id, state.Seq, 1000)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if len(evs) == 0 {
-			return state, nil
+			return state, snapAt, nil
 		}
 		for _, ev := range evs {
 			state.Apply(ev)
@@ -538,6 +562,7 @@ func (a *Actor) Subscribe() *Subscriber {
 	default:
 		a.subs[sub.ID] = sub
 	}
+	a.lastUsed = time.Now()
 	a.mu.Unlock()
 	return sub
 }
@@ -545,12 +570,15 @@ func (a *Actor) Subscribe() *Subscriber {
 func (a *Actor) Unsubscribe(sub *Subscriber) {
 	a.mu.Lock()
 	delete(a.subs, sub.ID)
+	// Idle is counted from the last viewer leaving, not from when they came.
+	a.lastUsed = time.Now()
 	a.mu.Unlock()
 }
 
 // ---- commands from presenters ----
 
 func (a *Actor) call(ctx context.Context, c command) (any, error) {
+	a.touch()
 	c.reply = make(chan cmdResult, 1)
 	select {
 	case a.inbox <- c:
@@ -1431,6 +1459,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		a.shutdown(c.hard)
 		return true
+
+	case cmdEvict:
+		return a.evict(c.evict)
 	}
 	return false
 }
@@ -1494,7 +1525,13 @@ func (a *Actor) shutdown(hard bool) {
 		}
 	}
 	_ = a.store.SetPhase(ctx, a.ID, phase)
+	a.stop(phase == "closed")
+}
 
+// stop ends the actor without touching the stored phase: it releases whatever
+// is waiting on it, closes the harness, and ends every subscription. drop
+// discards the checkout snapshots too, for a thread that is done with them.
+func (a *Actor) stop(drop bool) {
 	a.releaseAsks()
 	a.clearStopping()
 
@@ -1505,7 +1542,7 @@ func (a *Actor) shutdown(hard bool) {
 	// snapshots are the baseline the next turn needs. Only a thread closed for
 	// good is done with them.
 	a.checkpoints.stop()
-	if phase == "closed" {
+	if drop {
 		a.checkpoints.drop()
 	}
 	close(a.quit)

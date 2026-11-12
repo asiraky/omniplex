@@ -2,7 +2,17 @@
 // the server sends a snapshot or a replay, then live events, and applying them
 // here must reach the same state the server holds.
 
-import type { Artefact, CardOutcome, Event, Item, Job, JobPayload, ThreadState, TurnDiff } from "./protocol";
+import type {
+  Artefact,
+  CardOutcome,
+  Event,
+  Item,
+  Job,
+  JobPayload,
+  ThreadState,
+  ToolContent,
+  TurnDiff,
+} from "./protocol";
 import { classifyJob, jobDone } from "./lib/jobs";
 import { isTodoPlan, planItemId } from "./lib/plans";
 import { appendTail } from "./lib/tail";
@@ -81,6 +91,63 @@ function dropTail(it: Item): Item {
     ever stands for output still arriving. */
 function settle(it: Item, status: Item["status"]): Item {
   return { ...dropTail(it), status };
+}
+
+// The server keeps only a head and tail of each tool output in its projection
+// and serves the rest on demand (GET /api/threads/{id}/items/{itemId}/content).
+// Live events and afterSeq replays still carry the full text, so the reducer
+// caps what it appends the same way, or one long session's tool output would
+// sit in the tab's memory. Mirrors internal/projection. Go measures bytes and
+// this measures UTF-16 units, so the two can cut at slightly different points;
+// that is fine, since a capped preview is shorter than the cap in either unit
+// and the full text is one fetch away.
+export const TOOL_HEAD = 4096;
+export const TOOL_TAIL = 4096;
+export const TOOL_MAX_ENTRIES = 16;
+const TOOL_SLACK = 128;
+// How far a cut may move to land on a line break.
+const TOOL_SNAP = 512;
+
+const highSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const lowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+/** The head and tail of a long string, or the string itself if it is short.
+    Idempotent: a capped string is under the threshold. */
+export function capToolText(s: string): string {
+  if (s.length <= TOOL_HEAD + TOOL_TAIL + TOOL_SLACK) return s;
+  // Each cut moves inward to a line break when one is near, so the preview
+  // never shows part of a line as if it were whole; failing that, past half a
+  // surrogate pair so no character is split.
+  let head = TOOL_HEAD;
+  const nl = s.lastIndexOf("\n", head - 1);
+  if (nl >= head - TOOL_SNAP) head = nl + 1;
+  else if (highSurrogate(s.charCodeAt(head - 1))) head--;
+  let tail = s.length - TOOL_TAIL;
+  const tnl = s.indexOf("\n", tail);
+  if (tnl >= 0 && tnl < tail + TOOL_SNAP) tail = tnl + 1;
+  else if (lowSurrogate(s.charCodeAt(tail))) tail++;
+  return `${s.slice(0, head)}\n\n[… ${tail - head} characters truncated …]\n\n${s.slice(tail)}`;
+}
+
+function appendToolContent(it: Item, add: ToolContent[]) {
+  const have = it.content ?? [];
+  const room = Math.max(0, TOOL_MAX_ENTRIES - have.length);
+  let cut = add.length > room;
+  const capped = add.slice(0, room).map((c) => {
+    const next = { ...c };
+    for (const key of ["text", "oldText", "newText"] as const) {
+      const v = next[key];
+      if (v === undefined) continue;
+      const short = capToolText(v);
+      if (short !== v) {
+        next[key] = short;
+        cut = true;
+      }
+    }
+    return next;
+  });
+  if (capped.length) it.content = [...have, ...capped];
+  if (cut) it.truncated = true;
 }
 
 // applyArtefact folds artefact.shown: the artefact as it is now replaces what
@@ -451,7 +518,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           if (p.title) it.title = p.title;
           if (p.rawInput) it.input = p.rawInput;
           if (p.parentToolCallId) it.parentId = p.parentToolCallId;
-          if (p.content?.length) it.content = [...(it.content ?? []), ...p.content];
+          if (p.content?.length) appendToolContent(it, p.content);
           // Output lands in the tail only while the call is running, judged
           // after this update's own status: a finished call has its output
           // in content, so its tail is dropped, and a delta straggling in

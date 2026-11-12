@@ -37,6 +37,11 @@ type Manager struct {
 	schedulerWG     sync.WaitGroup
 	scheduleReady   sync.Map
 	store           *store.Store
+	// The idle-actor sweeper; see evict.go. idleEvictAfter is how long a
+	// view-only actor may sit unused before it is dropped.
+	evictorCancel  context.CancelFunc
+	evictorWG      sync.WaitGroup
+	idleEvictAfter time.Duration
 	// drivers maps adapter id to its singleton implementation.
 	drivers     map[string]adapter.Adapter
 	driverOrder []string
@@ -185,6 +190,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		authFlows:       map[string]*authFlow{},
 		usageScan:       usage.NewScanner(),
 		recoveryRetries: recoveryRetries,
+		idleEvictAfter:  idleEvictAfter,
 	}
 	m.recoverCtx, m.recoverStop = context.WithCancel(context.Background())
 	for _, ad := range ads {
@@ -1153,8 +1159,11 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		locked = false
 	}
 
+	// The touch is made under mu, with the lookup: the evictor re-checks
+	// idleness under the same lock before it forgets an actor, so one handed
+	// out here cannot be evicted from under its caller.
 	m.mu.RLock()
-	a, ok := m.actors[id]
+	a, ok := m.liveActor(id)
 	m.mu.RUnlock()
 	if ok {
 		meta, err := m.store.Thread(ctx, id)
@@ -1170,7 +1179,7 @@ func (m *Manager) get(ctx context.Context, id string, activate bool) (*Actor, er
 		return nil, err
 	}
 	m.mu.Lock()
-	if a, ok := m.actors[id]; ok { // another caller won the race
+	if a, ok := m.liveActor(id); ok { // another caller won the race
 		m.mu.Unlock()
 		return a, nil
 	}
@@ -1244,7 +1253,28 @@ func (m *Manager) Peek(id string) (*Actor, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	a, ok := m.actors[id]
+	if ok {
+		a.touch()
+	}
 	return a, ok
+}
+
+// liveActor is the map's actor for id, unless it has already stopped: one
+// whose loop has ended but whose onExit has not yet removed it is as good as
+// absent, and handing it out would strand the caller on ErrClosed and a
+// subscription that closes at once. Touches what it returns. Caller holds mu.
+func (m *Manager) liveActor(id string) (*Actor, bool) {
+	a, ok := m.actors[id]
+	if !ok {
+		return nil, false
+	}
+	select {
+	case <-a.quit:
+		return nil, false
+	default:
+	}
+	a.touch()
+	return a, true
 }
 
 // adopt registers a live actor and arranges for it to be forgotten when its
@@ -1545,6 +1575,10 @@ func (m *Manager) Shutdown() {
 	if m.schedulerCancel != nil {
 		m.schedulerCancel()
 		m.schedulerWG.Wait()
+	}
+	if m.evictorCancel != nil {
+		m.evictorCancel()
+		m.evictorWG.Wait()
 	}
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()

@@ -15,15 +15,27 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useState, type ComponentType } from "react";
+import { lazy, Suspense, useState, type ComponentType } from "react";
 
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
-import type { Item, ToolStatus, Turn } from "~/protocol";
+import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
 import { LiveTail } from "./LiveTail";
+
+// Few cards are truncated, so the loader arrives on first open. On a dropped
+// connection or after a redeploy its chunk can fail to load, and with no error
+// boundary above it that would take the app down; the card says so instead.
+function LoaderUnavailable() {
+  return (
+    <p role="alert" className="text-destructive text-[12px]">
+      Could not load the full output. Reload the page to try again.
+    </p>
+  );
+}
+const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ default: LoaderUnavailable })));
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -57,12 +69,34 @@ export function StatusMark({ status }: { status?: ToolStatus }) {
 const running = (item: Item | undefined) =>
   item?.status === "in_progress" || item?.status === "pending";
 
-export function ToolCard({ item }: { item: Item }) {
-  const [open, setOpen] = useState(false);
-  const output = (item.content ?? [])
+function joinOutput(content: ToolContent[] | undefined) {
+  return (content ?? [])
     .map((c) => (c.type === "diff" ? `--- ${c.path}\n${c.text ?? ""}` : (c.text ?? "")))
     .join("\n")
     .trim();
+}
+
+// What a tool card shows: the full output once fetched, standing in for the
+// preview, else the preview. The full output is held by the card only, so it
+// goes when the card does.
+function useToolOutput(item: Item) {
+  const [full, setFull] = useState<ToolContent[]>();
+  return {
+    setFull,
+    output: joinOutput(full ?? item.content),
+    truncated: !!item.truncated && !full,
+  };
+}
+
+// A preview's line count is the preview's, not the output's.
+function outputLabel(open: boolean, truncated: boolean, output: string) {
+  if (open) return "hide";
+  return truncated ? "truncated" : `${output.split("\n").length} lines`;
+}
+
+export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
+  const [open, setOpen] = useState(false);
+  const { setFull, output, truncated } = useToolOutput(item);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
   return (
@@ -84,7 +118,7 @@ export function ToolCard({ item }: { item: Item }) {
         <StatusMark status={item.status as ToolStatus | undefined} />
         {output && (
           <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
-            {open ? "hide" : `${output.split("\n").length} lines`}
+            {outputLabel(open, truncated, output)}
             <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
           </span>
         )}
@@ -107,6 +141,11 @@ export function ToolCard({ item }: { item: Item }) {
               {output}
             </pre>
           )}
+          {truncated && (
+            <Suspense fallback={<Spinner className="text-primary size-3" />}>
+              <LoadFullOutput threadId={threadId} itemId={item.id} onLoad={setFull} />
+            </Suspense>
+          )}
         </div>
       )}
     </div>
@@ -117,12 +156,12 @@ export function ToolCard({ item }: { item: Item }) {
 // stands in for. Everything renders the way it would in the open — the same
 // content shown two different ways in one transcript is a seam the reader has
 // to notice.
-function ExpandedItems({ items }: { items: Item[] }) {
+function ExpandedItems({ threadId, items }: { threadId: string; items: Item[] }) {
   return (
     <div className="mt-2 space-y-2 border-l pl-3">
       {items.map((item) =>
         item.kind === "tool" ? (
-          <ToolCard key={item.id} item={item} />
+          <ToolCard key={item.id} threadId={threadId} item={item} />
         ) : (
           <Markdown
             key={item.id}
@@ -144,7 +183,7 @@ function ExpandedItems({ items }: { items: Item[] }) {
 // Either way it expands to the cards, and either way the row never leaves —
 // the fix this design carries: nothing at the tail of a working transcript
 // disappears out from under the reader.
-export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
+export function ToolRun({ threadId, items, live }: { threadId: string; items: Item[]; live: boolean }) {
   const [open, setOpen] = useState(false);
   const active = items.filter(running).pop() ?? items[items.length - 1];
   const failed = items.some((i) => i.status === "failed");
@@ -197,7 +236,7 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
         <LiveTail tail={active?.tail} className="mt-1 ml-1.5" />
       )}
 
-      {open && <ExpandedItems items={items} />}
+      {open && <ExpandedItems threadId={threadId} items={items} />}
     </div>
   );
 }
@@ -207,7 +246,17 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
 // everything in between, and opens to all of it — thoughts, calls, failures.
 // A piece after the first, when a plan or spawn batch split the turn, says
 // what it holds instead: the duration is the whole turn's, and is said once.
-export function TurnFold({ turn, items, continued }: { turn: Turn; items: Item[]; continued?: boolean }) {
+export function TurnFold({
+  threadId,
+  turn,
+  items,
+  continued,
+}: {
+  threadId: string;
+  turn: Turn;
+  items: Item[];
+  continued?: boolean;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -222,7 +271,7 @@ export function TurnFold({ turn, items, continued }: { turn: Turn; items: Item[]
         <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
       </button>
 
-      {open && <ExpandedItems items={items} />}
+      {open && <ExpandedItems threadId={threadId} items={items} />}
     </div>
   );
 }

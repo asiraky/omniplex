@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, emptyState, prependItems } from "./apply";
+import { applyEvent, capToolText, emptyState, prependItems, TOOL_HEAD, TOOL_MAX_ENTRIES, TOOL_TAIL } from "./apply";
 import type { Event, Item } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
@@ -570,5 +570,86 @@ describe("a running call's output tail", () => {
     s = applyEvent(s, ev(5, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
     expect(call(s).status).toBe("in_progress");
     expect(call(s)).not.toHaveProperty("tail");
+  });
+});
+
+// Mirrors the cap in internal/projection: live events carry a tool's whole
+// output, and the client keeps only what the server's projection keeps.
+describe("applyEvent tool output cap", () => {
+  const output = (seq: number, content: unknown[], id = "c1") =>
+    ev(seq, "tool_call.updated", { toolCallId: id, status: "completed", content });
+
+  it("keeps the head and tail of a huge output and marks the item truncated", () => {
+    const huge = "h".repeat(TOOL_HEAD) + "m".repeat(50_000) + "t".repeat(TOOL_TAIL);
+    const s = applyEvent(emptyState("s1"), output(1, [{ type: "text", text: huge }]));
+    const it = s.items[0];
+    expect(it.truncated).toBe(true);
+    expect(it.content![0].text).toBe(
+      "h".repeat(TOOL_HEAD) + "\n\n[… 50000 characters truncated …]\n\n" + "t".repeat(TOOL_TAIL),
+    );
+  });
+
+  it("caps each side of a diff on its own", () => {
+    const big = "x".repeat(20_000);
+    const s = applyEvent(
+      emptyState("s1"),
+      output(1, [{ type: "diff", path: "a.go", oldText: big, newText: "small" }]),
+    );
+    const c = s.items[0].content![0];
+    expect(c.oldText).toContain("characters truncated");
+    expect(c.newText).toBe("small");
+    expect(s.items[0].truncated).toBe(true);
+  });
+
+  it("leaves output under the cap alone", () => {
+    const text = "y".repeat(TOOL_HEAD + TOOL_TAIL + 128);
+    const s = applyEvent(emptyState("s1"), output(1, [{ type: "text", text }]));
+    expect(s.items[0].content![0].text).toBe(text);
+    expect(s.items[0].truncated).toBeUndefined();
+  });
+
+  it("caps an already capped output to itself", () => {
+    const once = capToolText("z".repeat(100_000));
+    expect(capToolText(once)).toBe(once);
+    const s = applyEvent(emptyState("s1"), output(1, [{ type: "text", text: once }]));
+    expect(s.items[0].content![0].text).toBe(once);
+  });
+
+  it("drops entries past the limit, across updates", () => {
+    const entry = (n: number) => ({ type: "text", text: `entry ${n}` });
+    let s = emptyState("s1");
+    s = applyEvent(s, output(1, Array.from({ length: TOOL_MAX_ENTRIES - 2 }, (_, i) => entry(i))));
+    expect(s.items[0].truncated).toBeUndefined();
+    s = applyEvent(s, output(2, [entry(100), entry(101), entry(102), entry(103)]));
+    const texts = s.items[0].content!.map((c) => c.text);
+    expect(texts).toHaveLength(TOOL_MAX_ENTRIES);
+    expect(texts.slice(-2)).toEqual(["entry 100", "entry 101"]);
+    expect(s.items[0].truncated).toBe(true);
+    // A later small update still lands nowhere, and the mark stays.
+    s = applyEvent(s, output(3, [entry(200)]));
+    expect(s.items[0].content).toHaveLength(TOOL_MAX_ENTRIES);
+    expect(s.items[0].truncated).toBe(true);
+  });
+
+  it("does not split a surrogate pair at either cut", () => {
+    const face = "\u{1F600}"; // two UTF-16 units
+    // The head cut falls between the halves of the emoji at 4095..4096, and
+    // the tail cut between the halves of the one ending the omitted middle.
+    const text = "a".repeat(TOOL_HEAD - 1) + face + "m".repeat(20_000) + face + "b".repeat(TOOL_TAIL - 1);
+    const capped = capToolText(text);
+    const [head, tail] = capped.split(/\n\n\[… \d+ characters truncated …\]\n\n/);
+    expect(head).toBe("a".repeat(TOOL_HEAD - 1));
+    expect(tail).toBe("b".repeat(TOOL_TAIL - 1));
+    // The emoji went whole into the omitted middle, and the count says so.
+    expect(capped).toContain(`[… ${text.length - head.length - tail.length} characters truncated …]`);
+  });
+
+  it("cuts between lines when a break is near", () => {
+    const text = Array.from({ length: 5000 }, (_, i) => `${i + 1}\n`).join("");
+    const [head, tail] = capToolText(text).split(/\n\n\[… \d+ characters truncated …\]\n\n/);
+    expect(head.endsWith("\n")).toBe(true);
+    expect(text.startsWith(head)).toBe(true);
+    expect(text.endsWith(tail)).toBe(true);
+    expect(text[text.length - tail.length - 1]).toBe("\n");
   });
 });

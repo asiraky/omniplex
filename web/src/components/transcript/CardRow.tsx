@@ -1,7 +1,7 @@
 import { BookOpenIcon, KeyRoundIcon, PlugIcon, UserPlusIcon, type LucideIcon } from "lucide-react";
 
-import { Marker, type Tone } from "~/components/tools/parts";
 import { Button } from "~/components/ui/button";
+import { Marker, type Tone } from "~/components/ui/marker";
 import { cardSummary, LIVE_TEXT, resultText, SHADOWED_TEXT, signInTargets, type CardSignIn } from "~/lib/cards";
 import type { CardKind, CardResult, Item } from "~/protocol";
 
