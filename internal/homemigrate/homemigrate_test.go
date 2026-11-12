@@ -511,13 +511,25 @@ func TestReverseRestoresTheOriginalTreeExactly(t *testing.T) {
 		}
 	}
 	cfgAfter := providers(t)
-	if len(cfgAfter) != len(cfgBefore) {
-		t.Errorf("config has %d providers after reverse, %d before", len(cfgAfter), len(cfgBefore))
-	}
 	for id, inst := range cfgBefore {
 		if string(compact(cfgAfter[id].Raw)) != string(compact(inst.Raw)) {
 			t.Errorf("%s: %s, want %s", id, cfgAfter[id].Raw, inst.Raw)
 		}
+	}
+	// codex was implicit and had no entry. With no synthesised default its
+	// threads need one, so it is back on the machine home through a bare one.
+	if _, had := cfgBefore["codex"]; had {
+		t.Fatal("fixture: codex should start with no entry")
+	}
+	codex, ok := cfgAfter["codex"]
+	if !ok {
+		t.Fatal("reverse left the implicit account with no config entry; its threads cannot resolve")
+	}
+	if codex.Driver != "codex" || codex.DisplayName != "Codex" || !codex.Enabled || envValue(codex, "CODEX_HOME") != "" {
+		t.Errorf("codex entry after reverse = %s", codex.Raw)
+	}
+	if len(cfgAfter) != len(cfgBefore)+1 {
+		t.Errorf("config has %d providers after reverse, want %d", len(cfgAfter), len(cfgBefore)+1)
 	}
 
 	// A second reverse finds nothing to do.
@@ -820,9 +832,6 @@ func TestLinkedTranscriptAbortsItsAccount(t *testing.T) {
 		home            func(f *fixture) string
 	}{
 		"claude": {"claude", "claude", func(f *fixture) string { return f.proj("l1.jsonl") }, func(f *fixture) string { return f.newClaude() }},
-		"codex": {"codex", "codex", func(f *fixture) string {
-			return filepath.Join(f.codex, "sessions", "2026", "10", "02", "rollout-2026-10-02T00-00-00-l1.jsonl")
-		}, func(f *fixture) string { return f.newCodex() }},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -856,6 +865,173 @@ func TestLinkedTranscriptAbortsItsAccount(t *testing.T) {
 				t.Error("something of the aborted account moved")
 			}
 		})
+	}
+}
+
+// WalkDir does not follow symlinks, so a rollout behind one would read as
+// gone and its account would migrate away from it. A symlink anywhere under
+// the machine home's sessions roots stops every codex account, naming it.
+func TestSymlinkUnderCodexSessionsStopsCodexMigrating(t *testing.T) {
+	cases := map[string]func(f *fixture, real string) string{
+		"sessions folder": func(f *fixture, real string) string {
+			f.write(filepath.Join(real, "2026", "10", "02", "rollout-2026-10-02T00-00-00-l1.jsonl"), codexRollout("omniplex", "l1"))
+			link := filepath.Join(f.codex, "archived_sessions")
+			if err := os.RemoveAll(link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
+		"year folder": func(f *fixture, real string) string {
+			f.write(filepath.Join(real, "10", "02", "rollout-2026-10-02T00-00-00-l1.jsonl"), codexRollout("omniplex", "l1"))
+			return filepath.Join(f.codex, "sessions", "2025")
+		},
+		"rollout": func(f *fixture, real string) string {
+			f.write(filepath.Join(real, "l1.jsonl"), codexRollout("omniplex", "l1"))
+			return filepath.Join(f.codex, "sessions", "2026", "10", "02", "rollout-2026-10-02T00-00-00-l1.jsonl")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			real := filepath.Join(f.home, "elsewhere")
+			link := setup(f, real)
+			target := real
+			if name == "rollout" {
+				target = filepath.Join(real, "l1.jsonl")
+			}
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			f.thread("t8", "codex", "", "l1")
+			before := tree(t, f.codex, real)
+
+			if _, err := PlanMigration(context.Background(), f.opts(f.st)); err == nil || !strings.Contains(err.Error(), link) {
+				t.Errorf("dry run err = %v, want one naming %s", err, link)
+			}
+			if _, err := Run(context.Background(), f.opts(f.st)); err == nil || !strings.Contains(err.Error(), link) {
+				t.Errorf("run err = %v, want one naming %s", err, link)
+			}
+			after := tree(t, f.codex, real)
+			for path, content := range before {
+				if after[path] != content {
+					t.Errorf("%s moved or changed", path)
+				}
+			}
+			if exists(f.newCodex("sessions")) || envValue(providers(t)["codex"], "CODEX_HOME") != "" {
+				t.Error("codex migrated past a symlink under its sessions")
+			}
+		})
+	}
+}
+
+// A thread's rollout possibly behind a symlink in another codex home is not
+// "exists nowhere": its account does not migrate.
+func TestCodexRolloutBehindASymlinkElsewhereAbortsItsAccount(t *testing.T) {
+	for name, home := range map[string]func(f *fixture) string{
+		"its own new home": func(f *fixture) string { return f.newCodex() },
+		"another home":     func(f *fixture) string { return accounthome.InstanceHome(f.home, "removed") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			real := filepath.Join(f.home, "elsewhere")
+			f.write(filepath.Join(real, "10", "02", "rollout-2026-10-02T00-00-00-l1.jsonl"), codexRollout("omniplex", "l1"))
+			link := filepath.Join(home(f), "sessions", "2026")
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(real, link); err != nil {
+				t.Fatal(err)
+			}
+			f.thread("t8", "codex", "", "l1")
+			res := f.run()
+
+			var checked bool
+			for _, c := range res.Plan.Threads {
+				if c.Thread == "t8" {
+					checked = true
+					if c.OK || c.Gone || !strings.Contains(c.Where, link) {
+						t.Errorf("t8 check = %+v, want a failure naming %s", c, link)
+					}
+				}
+			}
+			if !checked {
+				t.Fatal("no check for t8")
+			}
+			if envValue(providers(t)["codex"], "CODEX_HOME") != "" || !exists(filepath.Join(f.codex, "sessions", "2026", "10", "01", "rollout-2026-10-01T00-00-00-x1.jsonl")) {
+				t.Error("codex migrated with a thread whose rollout may be behind a symlink")
+			}
+		})
+	}
+}
+
+// A transcript and its sidecar move together or not at all: a sidecar that is
+// not a plain folder keeps its transcript where it is.
+func TestClaudeSidecarThatIsNotAFolderKeepsItsTranscript(t *testing.T) {
+	sidecars := map[string]func(t *testing.T, f *fixture, side string){
+		"symlink": func(t *testing.T, f *fixture, side string) {
+			real := filepath.Join(f.home, "elsewhere", "s3")
+			f.write(filepath.Join(real, "subagents", "agent-s.jsonl"), "{}\n")
+			if err := os.Symlink(real, side); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"file": func(t *testing.T, f *fixture, side string) { f.write(side, "not a folder\n") },
+	}
+	for kind, makeSidecar := range sidecars {
+		for _, referenced := range []bool{true, false} {
+			name := kind + "/unreferenced"
+			if referenced {
+				name = kind + "/referenced"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := newFixture(t)
+				f.write(f.proj("s3.jsonl"), claudeTranscript("sdk-ts", "s3"))
+				makeSidecar(t, f, f.proj("s3"))
+				if referenced {
+					f.thread("t9", "claude", "", "s3")
+				}
+				before := tree(t, f.proj())
+				res := f.run()
+
+				if !exists(f.proj("s3.jsonl")) || !exists(f.proj("s3")) {
+					t.Fatal("the transcript or its sidecar moved")
+				}
+				if exists(f.newClaude("projects", projectKey, "s3.jsonl")) || exists(f.newClaude("projects", projectKey, "s3")) {
+					t.Error("part of s3 is in the new home")
+				}
+				var listed bool
+				for _, c := range res.Plan.Stay {
+					if c.ID == "s3" && strings.Contains(c.Reason, f.proj("s3")) {
+						listed = true
+					}
+				}
+				if !listed {
+					t.Error("s3 is not listed as staying, with its sidecar named")
+				}
+				migrated := envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR") == f.newClaude()
+				if referenced {
+					if migrated || !exists(f.proj("s1.jsonl")) {
+						t.Error("claude migrated though a thread resumes a conversation that cannot move")
+					}
+					after := tree(t, f.proj())
+					for path, content := range before {
+						if after[path] != content {
+							t.Errorf("%s moved or changed though its account was aborted", path)
+						}
+					}
+					for _, c := range res.Plan.Threads {
+						if c.Thread == "t9" && (c.OK || !strings.Contains(c.Status, f.proj("s3"))) {
+							t.Errorf("t9 check = %+v, want a failure naming the sidecar", c)
+						}
+					}
+				} else if !migrated || exists(f.proj("s1.jsonl")) {
+					t.Error("claude did not migrate the rest")
+				}
+			})
+		}
 	}
 }
 

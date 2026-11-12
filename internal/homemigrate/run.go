@@ -83,7 +83,7 @@ func Run(ctx context.Context, opts Options) (res *Result, err error) {
 		}
 	}
 	for _, c := range p.Stay {
-		if len(c.Referenced) > 0 || strings.HasPrefix(c.Reason, "no account") {
+		if len(c.Referenced) > 0 || c.blocked != "" || strings.HasPrefix(c.Reason, "no account") {
 			opts.logf("home migration: %s conversation %s stays in %s: %s", c.Driver, c.ID, c.Entries[len(c.Entries)-1].Src, c.Reason)
 		}
 	}
@@ -144,7 +144,7 @@ func Run(ctx context.Context, opts Options) (res *Result, err error) {
 			err = fmt.Errorf("update the manifest: %w", saveErr)
 		}
 		if errors.Is(err, errVerify) {
-			opts.logf("HOME MIGRATION VERIFY FAILED for account %s (%s): %v; its config is unchanged, and no run migrates it again while manifest %s records this: check its conversations, then reverse that run (omniplex migrate-homes --reverse %s) or remove the manifest. The run stops here.", a.ID, a.Name, err, path, path)
+			opts.logf("HOME MIGRATION VERIFY FAILED for account %s (%s): %v; its config is unchanged, and no run migrates it again while manifest %s records this: check the conversations named above, then reverse that run with omniplex migrate-homes --reverse %s. Reversing undoes that run's other accounts too, and the next start migrates them again. The run stops here.", a.ID, a.Name, err, path, path)
 			for _, later := range p.Accounts[i+1:] {
 				if later.work() {
 					later.Status, later.Reason = statusAborted, "not run: the run stopped at account "+a.ID+"'s failed verify"
@@ -414,13 +414,7 @@ func keepImplicit(p *Plan, m *Manifest, opts Options) {
 		if !a.Implicit || a.Status == statusMigrated || a.BareEntry {
 			continue
 		}
-		entry, _ := json.Marshal(map[string]any{
-			"id":          a.ID,
-			"driver":      a.Driver,
-			"displayName": a.Name,
-			"enabled":     true,
-		})
-		added, err := addEntry(a.ID, entry)
+		added, err := addEntry(a.ID, bareEntry(a))
 		if err != nil {
 			opts.logf("home migration: account %s (%s) has no config entry, and writing one failed: %v; its threads cannot start until it has one", a.ID, a.Name, err)
 			continue
@@ -435,6 +429,18 @@ func keepImplicit(p *Plan, m *Manifest, opts Options) {
 			opts.logf("home migration: update the manifest %s: %v", m.path, err)
 		}
 	}
+}
+
+// bareEntry is the config entry an implicit account runs on the machine home
+// with: no home variable.
+func bareEntry(a *Account) json.RawMessage {
+	entry, _ := json.Marshal(map[string]any{
+		"id":          a.ID,
+		"driver":      a.Driver,
+		"displayName": a.Name,
+		"enabled":     true,
+	})
+	return entry
 }
 
 // addEntry appends entry unless the config already has one with id.

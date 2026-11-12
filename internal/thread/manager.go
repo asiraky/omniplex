@@ -388,14 +388,14 @@ func (m *Manager) configureLocked(instances []provider.Instance) {
 // config, sensitive values from the secret store, at spawn (or probe) time.
 // A missing secret is an error, never a silent fall-through to the ambient
 // account. Every use of an account goes through here, so it is also where
-// the account's config home is pinned (pinHome) and made to share the user's
-// configuration (shareHome).
+// an account naming no config home is reported (warnMachineHome) and its home
+// is made to share the user's configuration (shareHome).
 func (m *Manager) envFor(inst provider.Instance) (map[string]string, error) {
 	env, err := inst.EnvOverlay(m.secretStore())
 	if err != nil {
 		return nil, err
 	}
-	env = m.pinHome(inst, env)
+	m.warnMachineHome(inst, env)
 	m.shareHome(inst, env)
 	return env, nil
 }

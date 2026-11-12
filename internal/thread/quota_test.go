@@ -431,3 +431,34 @@ func TestUsageCountsOnlyTheAccountsOwnHomes(t *testing.T) {
 		t.Fatalf("input = %d, want 11: both accounts once, nothing from ~/.claude or the inherited home", rep.Totals.Input)
 	}
 }
+
+// An account naming no home runs in Claude's default one, so its usage is
+// what is written there, never the home the server process inherited.
+func TestUsageOfAnAccountWithNoHomeIsTheDefaultHomes(t *testing.T) {
+	home, session := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", session)
+	t.Setenv("OMNIPLEX_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	mgr := NewManager(st, func(string, ...any) {}, &claudeHome{})
+	mgr.ConfigureInstances([]provider.Instance{{ID: "claude", Driver: "claude", DisplayName: "Claude", Enabled: true}}, mgr.secretStore())
+
+	ts := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	line := func(id string, in int) string {
+		return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":"r-%s","message":{"id":%q,"model":"claude-opus-5","usage":{"input_tokens":%d,"output_tokens":0}}}`, ts, id, id, in)
+	}
+	writeTranscript(t, filepath.Join(home, ".claude", "projects", "p", "a.jsonl"), line("a", 1))
+	writeTranscript(t, filepath.Join(session, "projects", "p", "session.jsonl"), line("s", 1000))
+
+	rep, err := mgr.UsageReport(context.Background(), "24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.Input != 1 {
+		t.Fatalf("input = %d, want 1: ~/.claude only", rep.Totals.Input)
+	}
+}

@@ -16,7 +16,7 @@ import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
 import { describeHarnessUpdate } from "~/lib/harnessUpdate";
 import { buildInstanceSpec, deriveInstanceId, hasStoredSecret, initialFieldValues } from "~/lib/providerSpec";
-import { joinAnd, sameLoginNames as loginNames } from "~/lib/sameLogin";
+import { joinAnd, sameLoginNames } from "~/lib/sameLogin";
 import type {
   HarnessMeta,
   ProviderConfigField,
@@ -64,11 +64,6 @@ function instanceSummary(harness: HarnessMeta, instance: ProviderInstanceMeta): 
       .filter(Boolean)
       .join(" · ") || instance.id
   );
-}
-
-/** The other accounts of this driver signed in to the same login, by display name. */
-function sameLoginNames(harness: HarnessMeta, instance: ProviderInstanceMeta): string[] {
-  return loginNames(instance.sameLoginAs, (id) => (harness.instances ?? []).find((i) => i.id === id)?.displayName);
 }
 
 /** The signed-in login, the CLI's version and its last auto-update, under the detail heading. */
@@ -300,7 +295,7 @@ function InstanceList({
                   </span>
                   {(inst.sameLoginAs?.length ?? 0) > 0 && (
                     <RowWarning>
-                      Same login as {joinAnd(sameLoginNames(h, inst))}
+                      Same login as {joinAnd(sameLoginNames(inst.sameLoginAs, (id) => h.instances?.find((i) => i.id === id)?.displayName))}
                     </RowWarning>
                   )}
                   {(inst.configConflicts?.length ?? 0) > 0 && (
@@ -539,7 +534,7 @@ function InstanceView({
           <CircleAlertIcon aria-hidden />
           <AlertDescription className="text-[12px]">
             <p className="text-foreground">
-              Signed in to the same login as {joinAnd(sameLoginNames(harness, instance))}.
+              Signed in to the same login as {joinAnd(sameLoginNames(instance.sameLoginAs, (id) => harness.instances?.find((i) => i.id === id)?.displayName))}.
             </p>
             <p>They share one set of limits and history. Sign one of them in to another login.</p>
           </AlertDescription>

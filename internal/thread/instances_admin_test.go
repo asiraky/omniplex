@@ -423,28 +423,84 @@ func TestTheServersOwnHomeVariableIsIgnored(t *testing.T) {
 		t.Errorf("account skills link to %q, want the machine's ~/.fake", target)
 	}
 
-	// An instance with no home of its own (a hand edit, or a config not yet
-	// migrated) is pinned to the machine's home, not left to inherit.
 	reg, _ := mgr.lookup("fake")
-	bare := reg.inst
-	bare.ID, bare.Env, bare.Raw = "fake-bare", nil, nil
-	mgr.ConfigureInstances([]provider.Instance{reg.inst, bare}, mgr.secretStore())
-	for _, id := range []string{"fake", "fake-bare"} {
-		reg, _ := mgr.lookup(id)
+	env, err := mgr.envFor(reg.inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["FAKE_HOME"] != account {
+		t.Errorf("fake runs with FAKE_HOME=%q, want %q", env["FAKE_HOME"], account)
+	}
+	if des, _ := os.ReadDir(filepath.Join(session, "skills")); len(des) != 0 {
+		t.Errorf("session home changed: %v", des)
+	}
+}
+
+// An account naming no home (a hand edit, or one the startup migration left
+// as it was) runs exactly as the harness does from a terminal: no home
+// variable at all, not the server's and not the default spelled out, since
+// naming the default is not always the same as leaving it unset. Omniplex
+// still treats ~/.fake as its home, and does not link that home into itself.
+func TestAnAccountWithNoHomeRunsWithTheHarnessDefault(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		logs []string
+	)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FAKE_HOME", t.TempDir())
+	machine := filepath.Join(home, ".fake")
+	if err := os.MkdirAll(filepath.Join(machine, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(machine, "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := adminTestManagerWith(t, &homeAdapter{})
+	mgr.logf = func(f string, a ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(f, a...))
+	}
+	mgr.ConfigureInstances([]provider.Instance{{ID: "fake-bare", Driver: "fake", DisplayName: "bare", Enabled: true}}, mgr.secretStore())
+	reg, _ := mgr.lookup("fake-bare")
+
+	for range 3 {
 		env, err := mgr.envFor(reg.inst)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if env["FAKE_HOME"] == "" || env["FAKE_HOME"] == session {
-			t.Errorf("%s runs with FAKE_HOME=%q", id, env["FAKE_HOME"])
+		if v, ok := env["FAKE_HOME"]; ok {
+			t.Fatalf("overlay names FAKE_HOME=%q", v)
+		}
+		for _, kv := range adapter.HarnessEnv(env, "FAKE_HOME") {
+			if strings.HasPrefix(kv, "FAKE_HOME=") {
+				t.Fatalf("harness spawned with %s", kv)
+			}
+		}
+		_, shared, account, ok, err := mgr.homes(reg.inst, env)
+		if !ok || err != nil || account != machine || shared != machine {
+			t.Fatalf("homes = %q, %q, %v, %v; want both %q", shared, account, ok, err, machine)
 		}
 	}
-	reg, _ = mgr.lookup("fake-bare")
-	if env, _ := mgr.envFor(reg.inst); env["FAKE_HOME"] != filepath.Join(home, ".fake") {
-		t.Errorf("unhomed instance pinned to %q, want ~/.fake", env["FAKE_HOME"])
+	for _, name := range []string{"skills", "settings.json"} {
+		if info, err := os.Lstat(filepath.Join(machine, name)); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("machine home %s: %v %v", name, info, err)
+		}
 	}
-	if des, _ := os.ReadDir(filepath.Join(session, "skills")); len(des) != 0 {
-		t.Errorf("session home changed: %v", des)
+	if got := len(instanceMeta(t, mgr, "fake-bare").ConfigConflicts); got != 0 {
+		t.Errorf("%d conflicts for an account on the shared home", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	warned := 0
+	for _, l := range logs {
+		if strings.Contains(l, "fake-bare") && strings.Contains(l, "no home of its own") {
+			warned++
+		}
+	}
+	if warned != 1 {
+		t.Errorf("warned %d times, want once: %q", warned, logs)
 	}
 }
 

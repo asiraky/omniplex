@@ -408,7 +408,6 @@ func (m *Manager) usageSources() []usage.Source {
 					env[v.Name] = v.Value
 				}
 			}
-			env = m.pinHome(reg.inst, env)
 		}
 		// The adapters' rule for an account's home: any non-blank HOME.
 		home := serverHome

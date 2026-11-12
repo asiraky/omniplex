@@ -74,9 +74,22 @@ func scanClaude(root string) ([]*Conversation, int, error) {
 				continue
 			}
 			c := &Conversation{Driver: DriverClaude, ID: strings.TrimSuffix(name, ".jsonl"), Origin: origin}
+			// The transcript and its sidecar move together or not at all, so
+			// anything at the sidecar's path that is not a plain folder keeps
+			// the transcript where it is too.
 			side := filepath.Join(dir, c.ID)
-			if info, err := os.Lstat(side); err == nil && info.IsDir() {
+			info, err := os.Lstat(side)
+			switch {
+			case err == nil && info.IsDir():
 				c.Entries = append(c.Entries, &Entry{Src: side, Dir: true})
+			case err == nil:
+				kind := irregular(side)
+				if kind == "" {
+					kind = "a file"
+				}
+				c.blocked = "its sidecar " + side + " is " + kind + ", not a folder, and a transcript does not move without its sidecar"
+			case !errors.Is(err, fs.ErrNotExist):
+				c.blocked = "cannot check its sidecar " + side + ": " + err.Error()
 			}
 			c.Entries = append(c.Entries, &Entry{Src: path})
 			if err := c.collect(); err != nil {
@@ -126,6 +139,11 @@ func scanCodex(root string) ([]*Conversation, int, error) {
 					return filepath.SkipDir
 				}
 				return err
+			}
+			// WalkDir does not follow a symlink, so a rollout behind one would
+			// go unseen and its thread read as gone. Refuse instead.
+			if d.Type()&fs.ModeSymlink != 0 {
+				return errors.New(path + " is a symlink, which is not followed; no " + DriverCodex + " account migrates while one is there")
 			}
 			name := d.Name()
 			if !d.Type().IsRegular() || !isRollout(name) {
@@ -229,7 +247,9 @@ func locateSidecar(driver, root, id string) string {
 // locate finds conversation id in a config home, "" when it is not there.
 // Anything at the transcript's path counts, whatever it is: a symlink or a
 // folder there is the conversation found but not movable, never it being
-// gone.
+// gone. A Codex home with a symlink under sessions/ or archived_sessions/
+// and no rollout found answers with the symlink, which is not followed: the
+// rollout may be behind it.
 func locate(driver, root, id string) string {
 	if root == "" || id == "" {
 		return ""
@@ -243,15 +263,18 @@ func locate(driver, root, id string) string {
 			}
 		}
 	case DriverCodex:
-		var hit string
+		var hit, link string
 		for _, sub := range []string{"sessions", "archived_sessions"} {
 			_ = filepath.WalkDir(filepath.Join(root, sub), func(path string, d fs.DirEntry, err error) error {
-				if err != nil || hit != "" {
+				if err != nil {
 					return filepath.SkipDir
 				}
 				if isRollout(d.Name()) && strings.HasSuffix(d.Name(), "-"+id+".jsonl") {
 					hit = path
 					return filepath.SkipAll
+				}
+				if d.Type()&fs.ModeSymlink != 0 && link == "" {
+					link = path
 				}
 				return nil
 			})
@@ -259,6 +282,7 @@ func locate(driver, root, id string) string {
 				return hit
 			}
 		}
+		return link
 	}
 	return ""
 }
@@ -278,4 +302,9 @@ func irregular(path string) string {
 		return "a folder"
 	}
 	return "a " + info.Mode().Type().String() + " entry"
+}
+
+func isSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&fs.ModeSymlink != 0
 }

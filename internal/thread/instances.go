@@ -216,39 +216,31 @@ func enforceSensitive(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 	return spec
 }
 
-// pinHome makes an isolating driver's env always name its config home, so the
-// harness never inherits the server process's value. An instance with none is
-// only a hand edit or a config the startup migration has not fixed yet; it
-// runs on the machine's own home, said once, until it is given its own.
-func (m *Manager) pinHome(inst provider.Instance, env map[string]string) map[string]string {
+// warnMachineHome says, once, that an isolating driver's instance names no
+// config home: a hand edit, or a config the startup migration left as it was.
+// Its env is not given one. The harness then runs exactly as it would from a
+// terminal, on its own default home (the server's inherited variable is
+// stripped from the child, see adapter.HarnessEnv), which is not always the
+// same as naming that home: Claude with CLAUDE_CONFIG_DIR=~/.claude reads
+// ~/.claude/.claude.json instead of ~/.claude.json.
+func (m *Manager) warnMachineHome(inst provider.Instance, env map[string]string) {
 	ad := m.drivers[inst.Driver]
-	sh, ok := ad.(adapter.SharedHome)
 	homeEnv := isolatingEnv(ad)
-	if !ok || homeEnv == "" || strings.TrimSpace(env[homeEnv]) != "" {
-		return env
+	if homeEnv == "" || strings.TrimSpace(env[homeEnv]) != "" {
+		return
 	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return env
+	if _, _, account, ok, _ := m.homes(inst, env); ok {
+		m.warnHome(inst.ID, fmt.Errorf("has no home of its own; running on %s until migrated", account))
 	}
-	// The adapters' rule for an account's home folder: any non-blank HOME.
-	if h := strings.TrimSpace(env["HOME"]); h != "" {
-		userHome = h
-	}
-	machine := sh.DefaultHome(userHome)
-	if env == nil {
-		env = map[string]string{}
-	}
-	env[homeEnv] = machine
-	m.warnHome(inst.ID, fmt.Errorf("has no home of its own; running on %s until migrated", machine))
-	return env
 }
 
 // homes is where inst's shared configuration comes from and the config home
 // its harness runs in, given the env envFor built. The shared source is always
 // the machine's own harness home, never the server process's variable: a
 // server started from inside a harness session must not re-link every account
-// to that session's home. ok is false for a driver with no shared home.
+// to that session's home. An env naming no home runs in the harness's default
+// one, under the overlay's HOME if it sets one. ok is false for a driver with
+// no shared home.
 func (m *Manager) homes(inst provider.Instance, env map[string]string) (sh adapter.SharedHome, shared, account string, ok bool, err error) {
 	ad := m.drivers[inst.Driver]
 	sh, ok = ad.(adapter.SharedHome)
@@ -262,6 +254,14 @@ func (m *Manager) homes(inst provider.Instance, env map[string]string) (sh adapt
 	}
 	shared = sh.DefaultHome(serverHome)
 	raw := strings.TrimSpace(env[homeEnv])
+	if raw == "" {
+		// The adapters' rule for an account's home folder: any non-blank HOME.
+		userHome := serverHome
+		if h := strings.TrimSpace(env["HOME"]); h != "" {
+			userHome = h
+		}
+		return sh, shared, filepath.Clean(sh.DefaultHome(userHome)), true, nil
+	}
 	// A relative value is resolved by the harness against the session's
 	// working directory, so there is no one home to prepare. Saved instances
 	// are made absolute (absolutePaths); this is a hand edit.
@@ -272,8 +272,9 @@ func (m *Manager) homes(inst provider.Instance, env map[string]string) (sh adapt
 }
 
 // shareHome links the user's configuration from the machine's own config
-// home into the instance's. An instance pinned to the machine's home is the
-// shared home and has nothing to do. Problems are logged, once each, and
+// home into the instance's. An instance on the machine's home is the shared
+// home and has nothing to do (accounthome.Link refuses to link a home into
+// itself). Problems are logged, once each, and
 // never stop the account from running: an account whose home could not be
 // linked still has its login. The entries the account keeps its own copy of
 // are remembered for the listing.

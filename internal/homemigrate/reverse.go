@@ -26,9 +26,11 @@ type ReverseResult struct {
 
 // Reverse undoes the run recorded in the manifest at path: every moved entry
 // goes back to where it was, never over anything, then each account whose
-// conversations are all back gets its config entry as it was before (an
-// entry the run created is removed). Copies the run left aside are left
-// too. Reversing twice does nothing the second time.
+// conversations are all back gets its config entry as it was before. An
+// implicit account, which had none, gets a bare entry with no home variable
+// rather than none: with no synthesised default, an account with no entry is
+// unknown and its threads could not start. Copies the run left aside are
+// left too. Reversing twice does nothing the second time.
 func Reverse(path string, now time.Time, logf func(string, ...any)) (*ReverseResult, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -106,7 +108,7 @@ func Reverse(path string, now time.Time, logf func(string, ...any)) (*ReverseRes
 			logf("reverse home migration: account %s keeps its own home in its config: not all of its conversations could go back", a.ID)
 			continue
 		}
-		if err := restoreEntry(a.ID, a.Before); err != nil {
+		if err := restoreEntry(a); err != nil {
 			res.Kept = append(res.Kept, a.ID)
 			logf("reverse home migration: account %s: %v", a.ID, err)
 			continue
@@ -135,19 +137,18 @@ func missing(path string) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
-// restoreEntry puts the config entry with id back to before, or removes it
-// when before is null.
-func restoreEntry(id string, before json.RawMessage) error {
+// restoreEntry puts account a's config entry back to before, or to a bare
+// entry when it had none.
+func restoreEntry(a *Account) error {
+	before := a.Before
+	if before == nil {
+		before = bareEntry(a)
+	}
 	_, err := userconfig.Update(func(cfg *userconfig.Config) error {
-		at := entryIndex(cfg.Providers, id)
-		switch {
-		case at < 0 && before == nil:
-		case at < 0:
-			cfg.Providers = append(cfg.Providers, before)
-		case before == nil:
-			cfg.Providers = append(cfg.Providers[:at:at], cfg.Providers[at+1:]...)
-		default:
+		if at := entryIndex(cfg.Providers, a.ID); at >= 0 {
 			cfg.Providers[at] = before
+		} else {
+			cfg.Providers = append(cfg.Providers, before)
 		}
 		return nil
 	})

@@ -197,6 +197,8 @@ type Conversation struct {
 	Later bool `json:"later,omitempty"`
 
 	modified time.Time
+	// blocked is why the conversation cannot move at all, whoever takes it.
+	blocked string
 }
 
 // Entry is one rename.
@@ -311,7 +313,7 @@ func planMigration(ctx context.Context, opts Options) (*Plan, error) {
 	for _, a := range p.Accounts {
 		if manifest, stuck := hist.verifyFailed[a.ID]; stuck {
 			a.Status = statusAborted
-			a.Reason = fmt.Sprintf("an earlier run's verify failed for it (manifest %s); no run migrates it until a person has checked its conversations and reversed that run (omniplex migrate-homes --reverse %s) or removed the manifest", manifest, manifest)
+			a.Reason = fmt.Sprintf("an earlier run's verify failed for it (manifest %s); no run migrates it until a person has checked the conversations it names and reversed that run with omniplex migrate-homes --reverse %s. Reversing undoes that run's other accounts too, and the next start migrates them again", manifest, manifest)
 		}
 	}
 	if len(p.Accounts) == 0 {
@@ -352,6 +354,11 @@ func planMigration(ctx context.Context, opts Options) (*Plan, error) {
 		for _, c := range scanned[driver] {
 			for _, r := range refsBySession[key{driver, c.ID}] {
 				c.Referenced = append(c.Referenced, r.thread)
+			}
+			if c.blocked != "" {
+				c.Status, c.Reason = statusSkipped, c.blocked
+				p.Stay = append(p.Stay, c)
+				continue
 			}
 			owner, why := assign(c, driver, refsBySession[key{driver, c.ID}], byID, p.Accounts)
 			if owner == nil {
@@ -756,6 +763,10 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 		return check
 	}
 	atDest := locate(a.Driver, a.Home, r.session)
+	if a.Driver == DriverCodex && atDest != "" && isSymlink(atDest) {
+		check.Status, check.Where = "maybe behind a symlink at the destination, which is not followed", atDest
+		return check
+	}
 	if atDest == "" {
 		// A sidecar with no transcript beside it is not the conversation
 		// being there, and not it being gone either.
@@ -816,6 +827,9 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 			continue
 		}
 		if path := locate(a.Driver, h, r.session); path != "" {
+			if a.Driver == DriverCodex && isSymlink(path) {
+				path += " (a symlink, not followed; the conversation may be behind it)"
+			}
 			elsewhere = append(elsewhere, path)
 		} else if side := locateSidecar(a.Driver, h, r.session); side != "" {
 			elsewhere = append(elsewhere, side)
