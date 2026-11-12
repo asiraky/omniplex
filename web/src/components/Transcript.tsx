@@ -175,18 +175,12 @@ export function Transcript({
     turnDiffs,
     lastTurnID,
     recoveredTurns,
+    continuation,
+    heldFor,
   } = useTranscriptModel(state);
   usePromptAnchor(scrollerRef, state.threadId, lastPromptID, anchorTo);
 
   const artefacts = state.artefacts ?? NO_ARTEFACTS;
-  // A turn stopped at a usage limit holds the queue on the server until a new
-  // turn starts, and arms a continuation for when the limit resets.
-  const lastTurn = state.turns[state.turns.length - 1];
-  const continuation = state.scheduledPrompts?.find(
-    (p) => p.kind === "limit" && (p.status === "pending" || p.status === "ready"),
-  );
-  const held =
-    lastTurn?.done && lastTurn.failure === "limit" ? (continuation ? "reset" : "send") : undefined;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -283,7 +277,7 @@ export function Transcript({
               queued={q}
               threadId={state.threadId}
               artefacts={artefacts}
-              held={held}
+              held={heldFor(q)}
               onDequeue={(id) => onDequeue?.(id)} />
           ))}
 

@@ -35,6 +35,10 @@ since each would only hit the limit again. The next turn to start releases
 them. That is the continuation, a manual send, or a human's schedule. A human's
 schedule goes past the held queue only while no continuation is armed, so it
 stays a way round an unknown reset without calling an armed continuation off.
+The hold covers only prompts queued before the limit: one sent by hand while a
+settings change is still on its way waits for that change, then goes. Moving
+the thread to another account lifts the hold, since the limit was the old
+account's.
 
 Codex can fail a turn before it knows the reset. The adapter then reads the
 account's limits for up to 10 seconds. If that still says nothing, the first

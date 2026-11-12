@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import type { Item, ThreadState } from "~/protocol";
+import type { Item, QueuedPrompt, ThreadState } from "~/protocol";
 import { buildRows } from "~/rows";
 
 import type { Recovered } from "./Message";
@@ -19,6 +19,30 @@ function newestPrompt(items: Item[]): string | undefined {
     if (it.kind === "message" && it.role === "user") return it.id;
   }
   return undefined;
+}
+
+/**
+ * A turn stopped at a usage limit holds the queue on the server until a new
+ * turn starts, and arms a continuation for when the limit resets. The hold is
+ * for what was queued before the limit, and lifts once the thread moves to
+ * another account: the limit was the old one's. Mirrors the server's
+ * projection.State.QueueHeld and HeldByLimit.
+ */
+export function limitHold(state: ThreadState) {
+  const continuation = state.scheduledPrompts?.find(
+    (p) => p.kind === "limit" && (p.status === "pending" || p.status === "ready"),
+  );
+  const last = state.turns[state.turns.length - 1];
+  const finishedAt = last?.finishedAt ?? 0;
+  let holding = last?.done === true && last.failure === "limit";
+  for (let i = state.items.length - 1; holding && i >= 0; i--) {
+    const it = state.items[i];
+    if ((it.receivedAt ?? 0) < finishedAt) break;
+    if (it.kind === "notice" && it.noticeKind === "account") holding = false;
+  }
+  const held: "reset" | "send" | undefined = holding ? (continuation ? "reset" : "send") : undefined;
+  const heldFor = (q: QueuedPrompt) => ((q.queuedAt ?? 0) <= finishedAt ? held : undefined);
+  return { continuation, heldFor };
 }
 
 /** What the transcript derives from the thread's state before it draws a row. */
@@ -97,7 +121,11 @@ export function useTranscriptModel(state: ThreadState) {
     return causes;
   }, [state.turns, state.scheduledPrompts]);
 
+  const { continuation, heldFor } = limitHold(state);
+
   return {
+    continuation,
+    heldFor,
     empty,
     liveAgentId,
     lastPromptID,

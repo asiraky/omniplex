@@ -1024,6 +1024,10 @@ func agentItem(turnID string) projection.Item {
 	return projection.Item{ID: "msg-" + turnID, Kind: projection.ItemMessage, Role: "agent", TurnID: turnID}
 }
 
+func toolItem(turnID string) projection.Item {
+	return projection.Item{ID: "tool-" + turnID, Kind: projection.ItemTool, TurnID: turnID}
+}
+
 func withItems(s *projection.State, items ...projection.Item) *projection.State {
 	s.Items = append(s.Items, items...)
 	return s
@@ -1133,7 +1137,9 @@ func TestOwedNote(t *testing.T) {
 		want  string
 	}{
 		{"a refused continuation still owes it", planState([]projection.Turn{restartClosedTurn("t1"), limited}, shell), "- shell: dev server"},
-		{"one the agent acted in delivered it", withItems(planState([]projection.Turn{restartClosedTurn("t1"), acted}, early), agentItem("c1")), ""},
+		{"Claude's refusal is not the agent hearing it", withItems(planState([]projection.Turn{restartClosedTurn("t1"), limited}, shell), agentItem("c1")), "- shell: dev server"},
+		{"one the agent acted in delivered it", withItems(planState([]projection.Turn{restartClosedTurn("t1"), acted}, early), toolItem("c1"), agentItem("c1")), ""},
+		{"so did a reply before the refusal", withItems(planState([]projection.Turn{restartClosedTurn("t1"), acted}, early), agentItem("c1"), projection.Item{ID: "refusal", Kind: projection.ItemMessage, Role: "agent", TurnID: "c1"}), ""},
 		{"live work is running, not dead", planState([]projection.Turn{doneTurn("t1"), refusedPrompt("t2")}, liveJob("s2", proto.JobShell, "watch")), ""},
 	}
 	for _, c := range cases {

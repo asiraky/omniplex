@@ -144,12 +144,28 @@ func owedNote(state *projection.State) string {
 
 // lastHeard is the newest turn, and the newest one whose prompt reached the
 // agent: what it last heard. A prompt the harness refused told it nothing.
+// Claude reports a usage limit's refusal as a message from the agent, so a
+// turn the limit ended counts only what came before its last message.
 func lastHeard(state *projection.State) (last, heard *projection.Turn) {
-	acted := map[string]bool{}
-	for _, it := range state.Items {
-		if it.TurnID != "" && it.Role != "user" {
-			acted[it.TurnID] = true
+	limited := map[string]bool{}
+	for _, t := range state.Turns {
+		if t.Failure == proto.FailureLimit {
+			limited[t.ID] = true
 		}
+	}
+	acted := map[string]bool{}
+	for i := len(state.Items) - 1; i >= 0; i-- {
+		it := state.Items[i]
+		if it.TurnID == "" || it.Role == "user" {
+			continue
+		}
+		if limited[it.TurnID] {
+			delete(limited, it.TurnID)
+			if it.Kind == projection.ItemMessage {
+				continue
+			}
+		}
+		acted[it.TurnID] = true
 	}
 	for i := len(state.Turns) - 1; i >= 0; i-- {
 		t := &state.Turns[i]

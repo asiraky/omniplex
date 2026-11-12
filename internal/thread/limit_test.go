@@ -320,6 +320,48 @@ func TestStopBeforeALateLimitFinishArmsNothing(t *testing.T) {
 	}
 }
 
+// Stop with nothing running is aimed at the limit just reached: a reset
+// Codex back-fills after it arms nothing.
+func TestStopWhileIdleBeforeABackFillArmsNothing(t *testing.T) {
+	a, fa, _ := newTestActor(t)
+	th := fa.thread()
+	turn := hitLimit(t, a, th, 0, "")
+	if err := a.Cancel(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	harnessEmit(t, a, th, backFill(turn, time.Now().Add(time.Hour).UnixMilli()))
+	if got := limitSchedules(t, a); len(got) != 0 {
+		t.Fatalf("armed a continuation the human stopped: %+v", got)
+	}
+}
+
+// A prompt sent by hand while a settings change is on its way waits in the
+// queue for it. The hold is for what was queued before the limit, so it
+// still goes once the change has answered.
+func TestHandSendBehindASettingsChangeIsNotHeld(t *testing.T) {
+	release, asked := make(chan struct{}), make(chan string, 1)
+	a, fa, _ := newTestActorWith(t, &fakeAdapter{modeGate: release, modeAsked: asked})
+	ctx := context.Background()
+	th := fa.thread()
+	hitLimit(t, a, th, 0, "after")
+	s, _ := a.State(ctx)
+	finished := lastTurnOf(s).FinishedAt
+	waitFor(t, func() bool { return time.Now().UnixMilli() > finished })
+	switched := make(chan error, 1)
+	go func() { switched <- a.SetMode(ctx, "acceptEdits") }()
+	<-asked
+	if res, err := a.Prompt(ctx, "by hand", nil); err != nil || !res.Queued() {
+		t.Fatalf("send during SetMode = %+v, %v; want it queued", res, err)
+	}
+	close(release)
+	if err := <-switched; err != nil {
+		t.Fatal(err)
+	}
+	if got := nextPrompt(t, th); got != "by hand" {
+		t.Fatalf("got %q, want the hand send", got)
+	}
+}
+
 // A Codex turn can finish on a limit before the harness knows its reset;
 // the back-fill arms the continuation once it does.
 func TestBackFillArmsTheContinuation(t *testing.T) {

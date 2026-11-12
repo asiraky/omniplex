@@ -315,13 +315,30 @@ func (s *State) Questions() int {
 
 // QueueHeld says queued prompts must wait: the last turn stopped at a usage
 // limit, and each would only hit it again. The next turn to start — the
-// server's continuation, or anything a human sends — lifts it.
+// server's continuation, or anything a human sends — lifts it, and so does
+// moving the thread to another account: the limit was the old one's.
+// Mirrored by web/src/components/transcript/useTranscriptModel.ts.
 func (s *State) QueueHeld() bool {
 	if len(s.Turns) == 0 {
 		return false
 	}
 	last := s.Turns[len(s.Turns)-1]
-	return last.Done && last.Failure == proto.FailureLimit
+	if !last.Done || last.Failure != proto.FailureLimit {
+		return false
+	}
+	for i := len(s.Items) - 1; i >= 0 && s.Items[i].ReceivedAt >= last.FinishedAt; i-- {
+		if it := s.Items[i]; it.Kind == ItemNotice && it.NoticeKind == "account" {
+			return false
+		}
+	}
+	return true
+}
+
+// HeldByLimit says whether a held queue holds q: it was queued before the
+// limit stopped the turn. One queued since is a prompt sent by hand that had
+// to wait on a settings change, and it is what lifts the hold.
+func (s *State) HeldByLimit(q QueuedPrompt) bool {
+	return s.QueueHeld() && q.QueuedAt <= s.Turns[len(s.Turns)-1].FinishedAt
 }
 
 // CardID is the timeline item id of the card a request raised.

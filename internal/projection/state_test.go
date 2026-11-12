@@ -595,6 +595,26 @@ func TestTurnFinishedNamingNoTurnSettlesNothing(t *testing.T) {
 
 // A limit holds the queue until another turn starts, and only the newest
 // turn counts: an older limit the thread has moved past holds nothing.
+// The limit was the old account's, and a prompt queued after it was sent by
+// hand: neither waits on it.
+func TestQueueHoldSparesAnotherAccountAndLaterPrompts(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "before"}))
+	s.Apply(event(t, 3, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopError, Failure: proto.FailureLimit}))
+	s.Apply(event(t, 4, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "by hand"}))
+	if !s.HeldByLimit(s.Queued[0]) {
+		t.Fatal("a prompt queued before the limit is not held")
+	}
+	if s.HeldByLimit(s.Queued[1]) {
+		t.Fatal("a prompt queued after the limit is held")
+	}
+	s.Apply(event(t, 5, proto.ThreadAccountChanged, proto.ThreadAccountChangedPayload{From: "a", To: "b"}))
+	if s.QueueHeld() || s.HeldByLimit(s.Queued[0]) {
+		t.Fatal("still held on another account")
+	}
+}
+
 func TestQueueHeldFollowsTheLastTurn(t *testing.T) {
 	s := New("s1")
 	if s.QueueHeld() {
