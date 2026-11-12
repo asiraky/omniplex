@@ -532,6 +532,11 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		j.Hidden = true
 	}
 	if p.Status != "" {
+		// A finished job reported running again was reopened (a Codex
+		// subagent taking a new turn): its elapsed clock runs again.
+		if !finished && !proto.JobDone(p.Status) {
+			j.FinishedAt = 0
+		}
 		j.Status = p.Status
 	}
 	if finished {
@@ -543,6 +548,9 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 		}
 		// The spawning tool call, if it was still waiting on this job, is
 		// settled by it: a stopped agent's Task row must not spin forever.
+		// So is the job's own work left mid-flight (a stopped subagent's
+		// command): its parent's turn finishing spared it for the job, and
+		// the job is over. A real completion arriving later still lands.
 		if j.ToolCallID != "" {
 			if i, ok := s.itemIndex[j.ToolCallID]; ok {
 				it := &s.Items[i]
@@ -555,6 +563,20 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 					default:
 						it.settle(proto.StatusCancelled)
 					}
+				}
+			}
+			// A live grandchild's spawn call is still its job's to settle.
+			live := map[string]bool{}
+			for _, o := range s.Jobs {
+				if o.ToolCallID != "" && !proto.JobDone(o.Status) {
+					live[o.ToolCallID] = true
+				}
+			}
+			for i := range s.Items {
+				it := &s.Items[i]
+				if it.Kind == ItemTool && it.ParentID == j.ToolCallID && !live[it.ID] &&
+					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) {
+					it.settle(proto.StatusCancelled)
 				}
 			}
 		}
@@ -832,12 +854,13 @@ func (s *State) Apply(ev proto.Event) {
 			// broken: it is cancelled, never failed. A call that is standing
 			// for a live job keeps its status — it outlived its turn on
 			// purpose, and the job's own finish will settle it — but not its
-			// tail: nothing streams a call's output past the end of its turn
-			// (the Claude adapter stops its tailers before it emits the
-			// finish; Codex reports no jobs), so the tail would sit there
-			// frozen. Tools of other turns are
-			// left alone too: a stray finish must not touch unrelated running
-			// work.
+			// tail: nothing streams a call's own output past the end of its
+			// turn (the Claude adapter stops its tailers before it emits the
+			// finish; a Codex subagent's output goes to its own work), so the
+			// tail would sit there frozen. A live job's own work (a subagent's
+			// running command) is left alone entirely: it is still running.
+			// Tools of other turns are left alone too: a stray finish must
+			// not touch unrelated running work.
 			live := map[string]bool{}
 			for _, j := range s.Jobs {
 				if !proto.JobDone(j.Status) && j.ToolCallID != "" {
@@ -846,7 +869,8 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			for i := range s.Items {
 				it := &s.Items[i]
-				if it.Kind != ItemTool || (it.TurnID != p.TurnID && it.TurnID != "") {
+				if it.Kind != ItemTool || (it.TurnID != p.TurnID && it.TurnID != "") ||
+					(it.ParentID != "" && live[it.ParentID]) {
 					continue
 				}
 				if live[it.ID] {
@@ -862,8 +886,11 @@ func (s *State) Apply(ev proto.Event) {
 		decode(ev.Payload, &p)
 		// Streaming while idle means a turn is running that the log did not
 		// announce. Trusting the activity over the phase keeps a lifecycle
-		// desync from freezing every attached UI. Mirrored in web/src/apply.ts.
-		if s.Phase == "idle" {
+		// desync from freezing every attached UI. A subagent's own output
+		// (parented to its job's call) is not: it streams on after the
+		// parent's turn ended, and the job surfaces carry it. Mirrored in
+		// web/src/apply.ts.
+		if s.Phase == "idle" && p.ParentToolCallID == "" {
 			s.Phase = "turn"
 		}
 		s.upsert(p.BlockID, func(it *Item) {
@@ -883,8 +910,9 @@ func (s *State) Apply(ev proto.Event) {
 	case proto.ToolCallStarted:
 		var p proto.ToolCallStartedPayload
 		decode(ev.Payload, &p)
-		// Same defence as message.chunk: a tool starting is a turn running.
-		if s.Phase == "idle" {
+		// Same defence as message.chunk: a tool starting is a turn running,
+		// unless it is a subagent's.
+		if s.Phase == "idle" && p.ParentToolCallID == "" {
 			s.Phase = "turn"
 		}
 		s.upsert(p.ToolCallID, func(it *Item) {
@@ -911,8 +939,8 @@ func (s *State) Apply(ev proto.Event) {
 		// Same defence as message.chunk, but only for a tool going active. A
 		// completion is not: a background tool's result straggling in after
 		// the turn ended must not reopen "working" with nothing left to close
-		// it.
-		if s.Phase == "idle" && p.Status == proto.StatusInProgress {
+		// it. A subagent's tool is not the parent's turn either.
+		if s.Phase == "idle" && p.Status == proto.StatusInProgress && p.ParentToolCallID == "" {
 			s.Phase = "turn"
 		}
 		s.upsert(p.ToolCallID, func(it *Item) {

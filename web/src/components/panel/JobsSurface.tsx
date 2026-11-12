@@ -81,7 +81,7 @@ function JobRow({
     { key: "elapsed", part: <Elapsed since={job.startedAt} finishedAt={job.finishedAt} /> },
     ...usageParts(job),
   ];
-  const second = live ? job.activity || "working…" : job.error || job.status;
+  const second = live ? job.activity || "working…" : job.error || job.activity || job.status;
 
   return (
     // Fixed height on purpose: a streaming activity line must never reflow the
