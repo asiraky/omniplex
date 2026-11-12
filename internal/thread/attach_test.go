@@ -3,6 +3,7 @@ package thread
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -163,9 +164,10 @@ func TestAttachChoosesReplayOrSnapshot(t *testing.T) {
 		}
 	}
 
-	// Further behind than a replay may reach.
-	for range MaxReplayEvents {
-		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{Role: "agent", Kind: "text", BlockID: "b1", Delta: "x"}))
+	// Further behind than a replay may reach. Each chunk starts its own
+	// block, so the delta coalescer writes every one as its own event.
+	for i := range MaxReplayEvents {
+		sess.emit(proto.Emit(proto.MessageChunk, proto.MessageChunkPayload{Role: "agent", Kind: "text", BlockID: fmt.Sprintf("b%d", i), Delta: "x"}))
 	}
 	waitFor(t, func() bool { return actor.Head() == head+1+MaxReplayEvents })
 	res, err = actor.Attach(ctx, head, true, 10)
