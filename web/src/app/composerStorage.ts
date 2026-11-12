@@ -18,7 +18,7 @@ import type { FailedSend, Outbox, OutboxEntry } from "./outbox";
 
 const DRAFT_PREFIX = "omniplex.draft.v1:";
 const ATTACHMENTS_PREFIX = "omniplex.attachments.v1:";
-const OUTBOX_PREFIX = "omniplex.outbox.v2:";
+const OUTBOX_PREFIX = "omniplex.outbox.v1:";
 const TAB_KEY = "omniplex.tab.v1";
 
 /** Long enough to skip the writes between keystrokes, short enough that a
@@ -30,6 +30,14 @@ export const DRAFT_DEBOUNCE_MS = 400;
     client's command deadline and probe, under 20s, but a hidden one runs its
     timers up to a minute late. */
 const ABANDONED_AFTER_MS = 60_000;
+
+/** How old a send still unanswered at load can be and still go by itself.
+    Older than this, the person has moved on: it comes back to the composer
+    with a note instead of turning up in the thread out of nowhere. */
+const LAPSED_AFTER_MS = 10 * 60_000;
+
+/** Why a lapsed send is shown as not sent. */
+export const LAPSED_REASON = "the page closed before the server answered";
 
 function read(key: string): string | null {
   try {
@@ -105,6 +113,10 @@ export function loadDrafts(): Record<string, string> {
  * thread another tab is typing into is left alone until this tab changes it.
  * The baseline is what storage holds, not what the store was seeded with: the
  * caller may have changed a draft on load, and that has to reach storage now.
+ *
+ * A draft emptied, which is what sending does, is written at once: its prompt
+ * is in the outbox already, and a page that died with the old text still
+ * stored would come back holding a prompt that is also being sent again.
  */
 export function persistDrafts(store: DraftStore): () => void {
   let written: Readonly<Record<string, string>> = loadDrafts();
@@ -127,6 +139,10 @@ export function persistDrafts(store: DraftStore): () => void {
   };
 
   const schedule = () => {
+    const next = store.all();
+    for (const [threadId, text] of Object.entries(written)) {
+      if (text && !next[threadId]) return flush();
+    }
     clearTimeout(timer);
     timer = setTimeout(flush, DRAFT_DEBOUNCE_MS);
   };
@@ -271,7 +287,7 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
 }
 
 /**
- * Entries left by earlier pages, oldest send first.
+ * Entries left by earlier pages, oldest send first, and which of them lapsed.
  *
  * A pending one this tab sent never heard its ack before the page died: it
  * comes back pending, for the caller to send again under its id, and the
@@ -280,23 +296,33 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
  * another tab sent moments ago is that tab's, still waiting on its ack, and
  * is left alone.
  *
+ * A pending one sent longer ago than anyone would still expect it to arrive
+ * lapses instead: it comes back failed, and listed as lapsed, for the caller
+ * to put its text back in the composer.
+ *
  * A failed one already had its text restored, which the persisted draft kept,
  * so it only comes back as it was: from any tab, so a retry from this one is
  * still a retry.
  */
-export function loadOutbox(): OutboxEntry[] {
+export function loadOutbox(): { entries: OutboxEntry[]; lapsed: FailedSend[] } {
   const tab = thisTab();
   const now = Date.now();
   const entries: OutboxEntry[] = [];
+  const lapsed: FailedSend[] = [];
   for (const [key] of keysUnder(OUTBOX_PREFIX)) {
     const found = reviveEntry(parse(read(key)));
     if (!found) continue;
     const { entry } = found;
-    const theirs = found.tab !== tab && now - entry.sentAt < ABANDONED_AFTER_MS;
-    if (entry.status === "pending" && theirs) continue;
-    entries.push(entry);
+    const age = now - entry.sentAt;
+    if (entry.status === "pending" && found.tab !== tab && age < ABANDONED_AFTER_MS) continue;
+    if (entry.status === "pending" && age >= LAPSED_AFTER_MS) {
+      const failed: FailedSend = { ...entry, status: "failed", reason: LAPSED_REASON };
+      entries.push(failed);
+      lapsed.push(failed);
+    } else entries.push(entry);
   }
-  return entries.sort((a, b) => a.sentAt - b.sentAt);
+  const bySent = (a: OutboxEntry, b: OutboxEntry) => a.sentAt - b.sentAt;
+  return { entries: entries.sort(bySent), lapsed: lapsed.sort(bySent) };
 }
 
 /**

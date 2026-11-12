@@ -5,6 +5,7 @@ import { attachmentUrl, type Attachment } from "~/lib/attachments";
 
 import {
   DRAFT_DEBOUNCE_MS,
+  LAPSED_REASON,
   loadAttachments,
   loadDrafts,
   loadOutbox,
@@ -97,6 +98,24 @@ describe("drafts", () => {
     expect(loadDrafts()).toEqual({});
   });
 
+  it("write an emptied draft at once, since its prompt is already in the outbox", () => {
+    vi.useFakeTimers();
+    const store = loadedStore();
+    persistDrafts(store);
+    store.set("a", "hello");
+    vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+    expect(loadDrafts()).toEqual({ a: "hello" });
+
+    store.set("a", "");
+    expect(loadDrafts()).toEqual({});
+
+    // Typing again is debounced as before.
+    store.set("a", "next");
+    expect(loadDrafts()).toEqual({});
+    vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+    expect(loadDrafts()).toEqual({ a: "next" });
+  });
+
   it("leave alone a thread this page has not changed", () => {
     const store = loadedStore();
     const dispose = persistDrafts(store);
@@ -180,7 +199,7 @@ describe("outbox", () => {
     outbox.ack("c3");
 
     const revived = [ready({ previewUrl: attachmentUrl("t1", "att1") })];
-    expect(loadOutbox()).toEqual([
+    expect(loadOutbox().entries).toEqual([
       { ...entry("c1"), attachments: revived, status: "pending", sentAt: expect.any(Number) },
       { ...entry("c2"), attachments: revived, status: "failed", reason: "timed out", sentAt: expect.any(Number) },
     ]);
@@ -192,10 +211,10 @@ describe("outbox", () => {
     outbox.add(entry("c1", { delivery: "queue" }));
     outbox.add(entry("c2", { delivery: "steer" }));
     outbox.add(entry("c3"));
-    const key = "omniplex.outbox.v2:c3";
+    const key = "omniplex.outbox.v1:c3";
     localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key)!), delivery: "shout" }));
 
-    const byId = Object.fromEntries(loadOutbox().map((e) => [e.commandId, e]));
+    const byId = Object.fromEntries(loadOutbox().entries.map((e) => [e.commandId, e]));
     expect(byId.c1.delivery).toBe("queue");
     expect(byId.c2.delivery).toBe("steer");
     expect(byId.c3).not.toHaveProperty("delivery");
@@ -211,7 +230,7 @@ describe("outbox", () => {
     outbox.fail("c1", "x");
     outbox.add(entry("c1"));
 
-    const reloaded = loadOutbox();
+    const reloaded = loadOutbox().entries;
     expect(ids(reloaded)).toEqual(["c2", "c3", "c1"]);
 
     // And again once the reloaded outbox is the one persisting.
@@ -220,7 +239,7 @@ describe("outbox", () => {
     next.ack("c2");
     vi.advanceTimersByTime(1);
     next.add(entry("c4"));
-    expect(ids(loadOutbox())).toEqual(["c3", "c1", "c4"]);
+    expect(ids(loadOutbox().entries)).toEqual(["c3", "c1", "c4"]);
   });
 
   it("keeps a dismissed note dismissed across a reload", () => {
@@ -230,7 +249,7 @@ describe("outbox", () => {
     outbox.fail("c1", "x");
     outbox.dismiss("c1");
 
-    expect(loadOutbox()).toMatchObject([{ commandId: "c1", dismissed: true }]);
+    expect(loadOutbox().entries).toMatchObject([{ commandId: "c1", dismissed: true }]);
   });
 
   it("removes stored entries the outbox it persists no longer holds", () => {
@@ -240,11 +259,11 @@ describe("outbox", () => {
     outbox.add(entry("c2"));
 
     // As the app runs it: persisting what was loaded, then pruning it.
-    const loaded = createOutbox(loadOutbox());
+    const loaded = createOutbox(loadOutbox().entries);
     persistOutbox(loaded);
     loaded.prune((id) => id !== "gone");
 
-    expect(ids(loadOutbox())).toEqual(["c2"]);
+    expect(ids(loadOutbox().entries)).toEqual(["c2"]);
   });
 
   it("leaves alone what another tab is still waiting on", () => {
@@ -259,10 +278,10 @@ describe("outbox", () => {
       persistOutbox(theirs);
       theirs.add(entry("c2"));
       theirs.ack("c2");
-      expect(loadOutbox()).toEqual([]);
+      expect(loadOutbox().entries).toEqual([]);
     });
 
-    expect(ids(loadOutbox())).toEqual(["c1"]);
+    expect(ids(loadOutbox().entries)).toEqual(["c1"]);
   });
 
   it("takes over another tab's send once that tab has been gone too long to be waiting", () => {
@@ -271,7 +290,30 @@ describe("outbox", () => {
     outbox.add(entry("c1"));
     vi.advanceTimersByTime(60_000);
 
-    inAnotherTab(() => expect(loadOutbox()).toMatchObject([{ commandId: "c1", status: "pending" }]));
+    inAnotherTab(() => expect(loadOutbox().entries).toMatchObject([{ commandId: "c1", status: "pending" }]));
+  });
+
+  it("lapses a send left unanswered too long, whichever tab sent it, rather than send it", () => {
+    const outbox = createOutbox();
+    persistOutbox(outbox);
+    outbox.add(entry("mine"));
+    vi.advanceTimersByTime(10 * 60_000);
+    outbox.add(entry("recent"));
+
+    const { entries, lapsed } = loadOutbox();
+    expect(entries.map((e) => [e.commandId, e.status])).toEqual([
+      ["mine", "failed"],
+      ["recent", "pending"],
+    ]);
+    expect(lapsed).toEqual([entries[0]]);
+    expect(lapsed[0]).toMatchObject({ reason: LAPSED_REASON, text: "text of mine" });
+
+    inAnotherTab(() => {
+      const there = loadOutbox();
+      expect(ids(there.lapsed)).toEqual(["mine"]);
+      // This tab's recent send is still its own.
+      expect(ids(there.entries)).toEqual(["mine"]);
+    });
   });
 
   it("shares a failed send with another tab, so a retry from there is still a retry", () => {
@@ -281,7 +323,7 @@ describe("outbox", () => {
     outbox.fail("c1", "x");
 
     inAnotherTab(() =>
-      expect(loadOutbox()).toMatchObject([{ commandId: "c1", reason: "x" }]),
+      expect(loadOutbox().entries).toMatchObject([{ commandId: "c1", reason: "x" }]),
     );
   });
 });
@@ -301,11 +343,11 @@ describe("what storage holds", () => {
       c5: { commandId: "c5", threadId: "t", text: "x", status: "pending" },
       c6: { commandId: "c6", threadId: "t", text: "kept", status: "failed", reason: "r", sentAt: 1, attachments: "bad" },
     };
-    for (const [id, v] of Object.entries(stored)) localStorage.setItem(`omniplex.outbox.v2:${id}`, JSON.stringify(v));
-    localStorage.setItem("omniplex.outbox.v2:c7", "{not json");
+    for (const [id, v] of Object.entries(stored)) localStorage.setItem(`omniplex.outbox.v1:${id}`, JSON.stringify(v));
+    localStorage.setItem("omniplex.outbox.v1:c7", "{not json");
 
     expect(loadAttachments()).toEqual({ t2: [{ key: "ok", name: "n", status: "ready", id: "i", previewUrl: attachmentUrl("t2", "i") }] });
-    expect(loadOutbox()).toEqual([{ commandId: "c6", threadId: "t", text: "kept", status: "failed", reason: "r", sentAt: 1, attachments: [] }]);
+    expect(loadOutbox().entries).toEqual([{ commandId: "c6", threadId: "t", text: "kept", status: "failed", reason: "r", sentAt: 1, attachments: [] }]);
   });
 
   it("costs the memory, not the interaction, when storage is denied", () => {
@@ -319,7 +361,7 @@ describe("what storage holds", () => {
 
     expect(loadDrafts()).toEqual({});
     expect(loadAttachments()).toEqual({});
-    expect(loadOutbox()).toEqual([]);
+    expect(loadOutbox().entries).toEqual([]);
 
     const store = createDraftStore();
     const dispose = persistDrafts(store);

@@ -12,8 +12,8 @@ import {
   persistOutbox,
   saveAttachments,
 } from "./composerStorage";
-import { createDraftStore, type Drafts } from "./draftStore";
-import { createOutbox, type OutboxSend } from "./outbox";
+import { createDraftStore, PARAGRAPH, type Drafts } from "./draftStore";
+import { createOutbox, type Outbox, type OutboxSend } from "./outbox";
 import { NEW_THREAD } from "./threadKeys";
 
 export type ComposerDrafts = ReturnType<typeof useComposerDrafts>;
@@ -59,22 +59,26 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   }, [attachments]);
 
   // A prompt that did not go, back in its thread's composer: in front of
-  // whatever has been typed since, with the files it carried.
+  // whatever has been typed since, with the files it carried, and behind any
+  // earlier send of the thread that failed too, so they read in the order
+  // they were sent.
   const restoreFailedSend = useCallback(
     (entry: OutboxSend) => {
-      draftStore.update((d) => restoreDraft(d, entry));
-      setAttachments((all) => restoreAttachments(all, entry));
+      const before = failedBefore(outbox, entry);
+      draftStore.update((d) => restoreDraft(d, entry, before));
+      setAttachments((all) => restoreAttachments(all, entry, before));
     },
-    [draftStore],
+    [draftStore, outbox],
   );
-  // And out again once it has gone again, by a retry,
-  // leaving what was typed after it. Text edited since is left alone.
+  // And out again once it has gone again, by a retry, leaving what was typed
+  // after it. Text edited since is left alone.
   const withdrawFailedSend = useCallback(
     (entry: OutboxSend) => {
-      draftStore.update((d) => withdrawDraft(d, entry));
+      const before = failedBefore(outbox, entry);
+      draftStore.update((d) => withdrawDraft(d, entry, before));
       setAttachments((all) => withdrawAttachments(all, entry));
     },
-    [draftStore],
+    [draftStore, outbox],
   );
   const getDraft = draftStore.get;
   const setDraft = draftStore.set;
@@ -247,15 +251,19 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
 
 /**
  * What the last page of this browser left: drafts, staged files and the
- * outbox. A prompt still waiting for its ack when that page died is about to
- * go again; its text comes out of the draft if it is still there (the page
- * died before the cleared draft reached storage), or it would be sent twice.
+ * outbox. A send that lapsed while the page was gone goes back into its
+ * composer, as a failed one does.
  */
 function restoreSaved() {
-  const entries = loadOutbox();
+  const { entries, lapsed } = loadOutbox();
+  const outbox = createOutbox(entries);
   let drafts: Drafts = loadDrafts();
-  for (const entry of entries) if (entry.status === "pending") drafts = withdrawDraft(drafts, entry);
-  const attachments = loadAttachments();
+  let attachments = loadAttachments();
+  for (const entry of lapsed) {
+    const before = failedBefore(outbox, entry);
+    drafts = restoreDraft(drafts, entry, before);
+    attachments = restoreAttachments(attachments, entry, before);
+  }
   const threadIds = new Set([
     ...Object.keys(drafts),
     ...Object.keys(attachments),
@@ -263,40 +271,70 @@ function restoreSaved() {
   ]);
   // The new-thread composer is not a thread, and is never in the list.
   threadIds.delete(NEW_THREAD);
-  return {
-    draftStore: createDraftStore(drafts),
-    outbox: createOutbox(entries),
-    attachments,
-    threadIds,
-  };
+  return { draftStore: createDraftStore(drafts), outbox, attachments, threadIds };
 }
 
-/** Between a restored message and what was typed after it. */
-const PARAGRAPH = "\n\n";
-
-function restoreDraft(drafts: Drafts, entry: OutboxSend): Drafts {
-  const current = drafts[entry.threadId] ?? "";
-  return { ...drafts, [entry.threadId]: [entry.text, current].filter(Boolean).join(PARAGRAPH) };
+/** The thread's failed sends from before this one, oldest first: what a
+    restore of it should already find at the head of the composer. */
+function failedBefore(outbox: Outbox, entry: OutboxSend): OutboxSend[] {
+  const all = outbox.get();
+  const at = all.findIndex((e) => e.commandId === entry.commandId);
+  return all
+    .slice(0, at < 0 ? all.length : at)
+    .filter((e) => e.threadId === entry.threadId && e.status === "failed");
 }
 
-function withdrawDraft(drafts: Drafts, entry: OutboxSend): Drafts {
+/** Where the text of earlier failed sends, still there as they went, ends in a
+    draft: past each one and the breaks that follow it. */
+function afterEarlier(draft: string, before: readonly OutboxSend[]): number {
+  let at = 0;
+  for (const { text } of before) {
+    if (!text) continue;
+    if (!draft.startsWith(text, at)) break;
+    const next = at + text.length;
+    if (next < draft.length && draft[next] !== "\n") break;
+    at = next;
+    while (draft[at] === "\n") at++;
+  }
+  return at;
+}
+
+function splitAt(draft: string, at: number) {
+  return { head: draft.slice(0, at).replace(/\n+$/, ""), tail: draft.slice(at) };
+}
+
+function restoreDraft(drafts: Drafts, entry: OutboxSend, before: readonly OutboxSend[]): Drafts {
   const current = drafts[entry.threadId] ?? "";
-  if (current === entry.text) return { ...drafts, [entry.threadId]: "" };
+  const { head, tail } = splitAt(current, afterEarlier(current, before));
+  const text = [head, entry.text, tail].filter(Boolean).join(PARAGRAPH);
+  return { ...drafts, [entry.threadId]: text };
+}
+
+function withdrawDraft(drafts: Drafts, entry: OutboxSend, before: readonly OutboxSend[]): Drafts {
+  const current = drafts[entry.threadId] ?? "";
+  const { head, tail } = splitAt(current, afterEarlier(current, before));
+  if (!tail.startsWith(entry.text)) return drafts;
   // What follows the message has to start on a line of its own, however many
   // breaks down: the user may have retyped the gap the restore left.
-  const rest = current.startsWith(entry.text) ? current.slice(entry.text.length) : "";
-  if (!rest.startsWith("\n")) return drafts;
-  return { ...drafts, [entry.threadId]: rest.replace(/^\n+/, "") };
+  const rest = tail.slice(entry.text.length);
+  if (rest && !rest.startsWith("\n")) return drafts;
+  const text = [head, rest.replace(/^\n+/, "")].filter(Boolean).join(PARAGRAPH);
+  return text === current ? drafts : { ...drafts, [entry.threadId]: text };
 }
 
 function restoreAttachments(
   all: Record<string, Attachment[]>,
   entry: OutboxSend,
+  before: readonly OutboxSend[],
 ): Record<string, Attachment[]> {
   if (entry.attachments.length === 0) return all;
   const list = all[entry.threadId] ?? [];
   const back = entry.attachments.filter((a) => !list.some((b) => b.key === a.key));
-  return { ...all, [entry.threadId]: [...back, ...list] };
+  // Behind the files of earlier failed sends still at the front.
+  const earlier = new Set(before.flatMap((e) => e.attachments.map((a) => a.key)));
+  let at = 0;
+  while (at < list.length && earlier.has(list[at].key)) at++;
+  return { ...all, [entry.threadId]: [...list.slice(0, at), ...back, ...list.slice(at)] };
 }
 
 function withdrawAttachments(

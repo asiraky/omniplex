@@ -42,8 +42,8 @@ export type Outbox = ReturnType<typeof createOutbox>;
  *
  * Sending clears the composer straight away, so until the server confirms the
  * prompt this is the only copy of what was typed. A send that fails, or whose
- * connection is found dead before it is answered, is marked failed here rather than dropped, and its text goes back
- * to the composer.
+ * connection is found dead before it is answered, is marked failed here
+ * rather than dropped, and its text goes back to the composer.
  *
  * Held outside React state like the drafts: it changes once per send and once
  * per ack, and only the thread showing a failure needs to rerender for it.

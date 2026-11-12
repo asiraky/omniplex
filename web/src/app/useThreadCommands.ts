@@ -6,6 +6,7 @@ import { sendPayload } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
 import type { CardEdits, CardOutcome, ComposerItem, Delivery, ThreadState } from "~/protocol";
 
+import { prependDraft } from "./draftStore";
 import type { OutboxSend } from "./outbox";
 import type { ComposerDrafts } from "./useComposerDrafts";
 import type { Wire } from "./useWire";
@@ -384,11 +385,6 @@ function statusLine(state: ThreadState) {
     state.mode || "Default approvals",
     used !== undefined ? `${used.toLocaleString()} context tokens` : "Token usage unavailable",
   ].join(" · ");
-}
-
-// Words given back to a thread's composer, in front of anything already typed.
-function prependDraft(drafts: Record<string, string>, threadId: string, text: string) {
-  return { ...drafts, [threadId]: [text, drafts[threadId] ?? ""].filter(Boolean).join("\n\n") };
 }
 
 function samePayload(a: ReturnType<typeof sendPayload>, b: ReturnType<typeof sendPayload>) {
