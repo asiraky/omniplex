@@ -1,9 +1,13 @@
 import type { Element, Text } from "hast";
 import { CheckIcon, CopyIcon } from "lucide-react";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
 import { lazy, memo, Suspense, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
-import remarkGfm from "remark-gfm";
+// Declares the processor data the GFM plugin below writes to.
+import type {} from "remark-parse";
+import type { Processor } from "unified";
 
 import { useCopy } from "~/lib/clipboard";
 import { fileIconFor } from "~/lib/fileIcons";
@@ -204,6 +208,17 @@ const COMPONENTS: Components = {
       <span className="text-muted-foreground">{alt || "image"}</span>
     ),
 };
+
+/**
+ * GitHub flavour, parsing only. remark-gfm also registers the extensions for
+ * writing markdown back out, which nothing here does, and that serializer was
+ * several KiB of the first load.
+ */
+function remarkGfm(this: Processor) {
+  const data = this.data();
+  (data.micromarkExtensions ??= []).push(gfm());
+  (data.fromMarkdownExtensions ??= []).push(gfmFromMarkdown());
+}
 
 const PLUGINS = [remarkGfm, remarkBreaks];
 // A written document means its single newlines as soft wraps, the way every

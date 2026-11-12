@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { emptyState } from "./apply";
 import { Client, CommandTimeout, type ClientEvents, type ConnectionStatus } from "./client";
-import type { Job, ThreadState } from "./protocol";
+import type { Event, Job, ThreadState } from "./protocol";
 
 // A socket the test opens and closes by hand, recording what the client sends.
 class FakeSocket {
@@ -538,11 +538,149 @@ describe("loading all jobs", () => {
     expect(published.at(-1)?.jobs.map((j) => [j.name, j.status])).toEqual([["reopened", "completed"]]);
   });
 
+  it("drops the fetch and its held rows when the thread is left", async () => {
+    const { client, frame, published } = attached({ jobs: [], jobsBefore: 2 });
+    let answer!: (r: Response) => void;
+    const jobsList = new Promise<Response>((resolve) => (answer = resolve));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith("/jobs") ? jobsList : new Response(JSON.stringify({ ...emptyState("b"), jobsBefore: 2 })),
+      ),
+    );
+    const request = client.loadAllJobs();
+
+    // Over to b, where a row for a job b does not hold lands, and straight
+    // back to a from the cache, before a's list arrives.
+    client.attach("b");
+    await vi.waitFor(() => expect(latest().sent.at(-1)).toMatchObject({ type: "attach", threadId: "b" }));
+    const row = { threadId: "b", seq: 1, timestamp: 0, type: "job.updated", payload: { jobId: "b-job", status: "running" } };
+    frame({ type: "event", threadId: "b", event: row });
+    client.attach("a");
+    answer(new Response(JSON.stringify({ jobs: [job("a-job")] })));
+
+    expect(await request).toBeNull();
+    expect(published.filter((s) => s.threadId === "a").flatMap((s) => s.jobs.map((j) => j.id))).not.toContain("b-job");
+  });
+
   it("resolves null and publishes nothing when the fetch fails", async () => {
     const { client, published } = attached({ jobsBefore: 2 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
     vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(await client.loadAllJobs()).toBeNull();
     expect(published).toHaveLength(0);
+  });
+});
+
+describe("thread cache", () => {
+  const snapshot = (id: string, seq: number): ThreadState => ({ ...emptyState(id), seq });
+  const event = (seq: number, title: string) =>
+    ({ seq, type: "thread.config_changed", payload: { title } }) as unknown as Event;
+  const deliver = (frame: Record<string, unknown>) => latest().onmessage?.({ data: JSON.stringify(frame) });
+  const attaches = () => latest().sent.filter((f) => f.type === "attach");
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let rendered: [string, ThreadState][];
+  let client: Client;
+
+  beforeEach(async () => {
+    fetchMock = vi.fn(async (url: string) => {
+      const id = decodeURIComponent(url.split("/").pop()!);
+      return new Response(JSON.stringify(snapshot(id, 5)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    rendered = [];
+    client = new Client("ws://test", { ...events, onState: (id, s) => rendered.push([id, s]) });
+    client.connect();
+    latest().open();
+    // Visit a over HTTP, then move on to b, leaving a cached.
+    client.attach("a");
+    await vi.waitFor(() => expect(attaches()).toHaveLength(1));
+    deliver({ type: "synchronized", threadId: "a", seq: 5 });
+    client.attach("b");
+    await vi.waitFor(() => expect(attaches()).toHaveLength(2));
+    rendered = [];
+    fetchMock.mockClear();
+  });
+
+  it("paints a recent thread from the cache and attaches after its seq", () => {
+    client.attach("a");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(rendered).toEqual([["a", expect.objectContaining({ threadId: "a", seq: 5 })]]);
+    expect(attaches().at(-1)).toEqual({ type: "attach", threadId: "a", afterSeq: 5 });
+  });
+
+  it("publishes a replayed catch-up once, then live events as they land", () => {
+    client.attach("a");
+    rendered = [];
+    deliver({ type: "replay", threadId: "a", seq: 8, events: [event(6, "one"), event(7, "two"), event(8, "three")] });
+    expect(rendered).toEqual([]);
+
+    deliver({ type: "synchronized", threadId: "a", seq: 8 });
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0][1]).toMatchObject({ seq: 8, title: "three" });
+
+    deliver({ type: "event", threadId: "a", event: event(9, "live") });
+    expect(rendered).toHaveLength(2);
+    expect(rendered[1][1]).toMatchObject({ seq: 9, title: "live" });
+  });
+
+  it("replaces the cached state when the server answers with a snapshot", () => {
+    client.attach("a");
+    deliver({ type: "snapshot", threadId: "a", seq: 40, state: { ...snapshot("a", 40), title: "fresh" } });
+    deliver({ type: "synchronized", threadId: "a", seq: 40 });
+    expect(rendered.at(-1)![1]).toMatchObject({ seq: 40, title: "fresh" });
+
+    // Leaving and coming back resumes from the snapshot, not the stale entry.
+    client.attach("b");
+    client.attach("a");
+    expect(attaches().at(-1)).toEqual({ type: "attach", threadId: "a", afterSeq: 40 });
+  });
+
+  it("stops waiting on an attach that failed", () => {
+    client.attach("a");
+    deliver({ type: "error", threadId: "a", error: "gone" });
+    // No replay is coming now, so a skipped seq is a loss to ask about again.
+    deliver({ type: "event", threadId: "a", event: event(7, "after a hole") });
+    expect(attaches().at(-1)).toEqual({ type: "attach", threadId: "a", afterSeq: 5 });
+  });
+
+  it("drops a straggler from an earlier attachment, and lets the replay bring what it skipped", () => {
+    client.attach("a");
+    const sent = attaches().length;
+    // a's old live stream got as far as 7 before the detach; 6 was dropped
+    // while we were on b.
+    deliver({ type: "event", threadId: "a", event: event(7, "straggler") });
+    expect(rendered.at(-1)![1]).toMatchObject({ seq: 5 });
+    expect(attaches()).toHaveLength(sent); // no reattach: this one's replay is coming
+
+    deliver({ type: "replay", threadId: "a", seq: 7, events: [event(6, "six"), event(7, "seven")] });
+    deliver({ type: "synchronized", threadId: "a", seq: 7 });
+    expect(rendered.at(-1)![1]).toMatchObject({ seq: 7, title: "seven" });
+  });
+
+  it("keeps waiting when an earlier attachment's marker arrives late", () => {
+    // a → b → a before the server answered the first of those attaches.
+    client.attach("a");
+    client.attach("b");
+    client.attach("a");
+    const sent = attaches().length;
+    deliver({ type: "synchronized", threadId: "a", seq: 5 }); // the first visit's
+    // The second visit's replay is still coming, so this is a straggler.
+    deliver({ type: "event", threadId: "a", event: event(7, "straggler") });
+    expect(attaches()).toHaveLength(sent);
+
+    deliver({ type: "replay", threadId: "a", seq: 7, events: [event(6, "one"), event(7, "two")] });
+    deliver({ type: "synchronized", threadId: "a", seq: 7 });
+    expect(rendered.at(-1)![1]).toMatchObject({ seq: 7, title: "two" });
+  });
+
+  it("reattaches from its cursor when the live stream skips a seq", () => {
+    client.attach("a");
+    deliver({ type: "synchronized", threadId: "a", seq: 5 });
+    rendered = [];
+    deliver({ type: "event", threadId: "a", event: event(7, "after a hole") });
+    expect(rendered).toEqual([]);
+    expect(attaches().at(-1)).toEqual({ type: "attach", threadId: "a", afterSeq: 5 });
   });
 });

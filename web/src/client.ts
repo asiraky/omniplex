@@ -5,6 +5,7 @@
 import { applyEvent, applyJobRow, dropsJobRow, emptyState, prependItems, revivesUnheldJob } from "./apply";
 import { checkBuild } from "./boot";
 import type { Access, AuthFlowEvent, Event, HarnessMeta, Item, Job, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
+import { ThreadCache } from "./threadCache";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 
@@ -95,6 +96,16 @@ export class Client {
   private cursor = 0;
   private state: ThreadState | null = null;
   private snapshotRequest: AbortController | null = null;
+  // Attaches sent and not yet answered, per thread. The server answers each
+  // with exactly one "synchronized" (or one error), so while this is nonzero
+  // a replay is still coming, and an event that skips ahead is a straggler
+  // the replay will cover rather than a loss to reattach for. Counted, not
+  // flagged: switch A→B→A quickly and the first attach's marker is still on
+  // the wire, and must not end the second one's wait.
+  private attachesInFlight = new Map<string, number>();
+  // Threads recently left, so coming back paints at once and attaches with
+  // afterSeq instead of refetching the snapshot.
+  private recentThreads = new ThreadCache();
 
   // What this page last said it is showing, for the server's "is anyone
   // watching this thread" check that decides whether to push. Kept so every
@@ -126,7 +137,7 @@ export class Client {
 
         // Re-attach where we left off; the server sends only what we missed.
         if (this.threadId && !this.snapshotRequest) {
-          this.raw({ type: "attach", threadId: this.threadId, afterSeq: this.cursor });
+          this.sendAttach(this.threadId, this.cursor);
         }
         // Re-send in-flight commands with their original ids. The server
         // replays stored results rather than executing twice.
@@ -170,6 +181,8 @@ export class Client {
     if (this.stableTimer) window.clearTimeout(this.stableTimer);
     this.stableTimer = null;
     this.ws = null;
+    // Its attaches will never be answered; the next socket sends its own.
+    this.attachesInFlight.clear();
     // A probe of the old socket must not fire against its replacement.
     this.clearProbe();
     this.settleProbe(false);
@@ -298,13 +311,26 @@ export class Client {
     this.state = state;
   }
 
-  /** Attach to a thread, replacing any current attachment. */
+  /**
+   * Attach to a thread, replacing any current attachment. A thread in the
+   * cache is published from it immediately and attached with afterSeq; any
+   * other is fetched over HTTP first. Never called for the thread already
+   * attached (see useThreadSelection's select): a primed page's attach is
+   * already on the way, and a second would replay the gap twice.
+   */
   attach(threadId: string) {
-    this.snapshotRequest?.abort();
-    if (this.threadId && this.threadId !== threadId) {
-      this.raw({ type: "detach", threadId: this.threadId });
-    }
+    this.leave();
     this.threadId = threadId;
+
+    const cached = this.recentThreads.get(threadId);
+    if (cached) {
+      this.state = cached;
+      this.cursor = cached.seq;
+      this.events.onState(threadId, cached);
+      this.sendAttach(threadId, cached.seq);
+      return;
+    }
+
     this.cursor = 0;
     this.state = null;
     const request = new AbortController();
@@ -330,12 +356,12 @@ export class Client {
         this.cursor = state.seq;
         this.events.onState(threadId, state);
         performance.measure("omniplex.thread_snapshot", { start: started });
-        this.raw({ type: "attach", threadId, afterSeq: state.seq });
+        this.sendAttach(threadId, state.seq);
       })
       .catch((error) => {
         if ((request.signal.aborted && !stalled) || this.threadId !== threadId) return;
         console.warn("HTTP snapshot failed; falling back to WebSocket", error);
-        this.raw({ type: "attach", threadId });
+        this.sendAttach(threadId);
       })
       .finally(() => {
         window.clearTimeout(deadline);
@@ -421,25 +447,28 @@ export class Client {
    * changed underneath; concurrent asks share one request.
    */
   loadAllJobs(): Promise<ThreadState | null> {
-    if (this.jobsInFlight) return this.jobsInFlight;
+    if (this.jobsInFlight) return this.jobsInFlight.request;
     this.droppedJobRows = [];
-    const request = this.fetchJobs().finally(() => (this.jobsInFlight = null));
-    this.jobsInFlight = request;
+    const controller = new AbortController();
+    const request = this.fetchJobs(controller.signal).finally(() => {
+      if (this.jobsInFlight?.controller === controller) this.jobsInFlight = null;
+    });
+    this.jobsInFlight = { request, controller };
     return request;
   }
 
-  private async fetchJobs(): Promise<ThreadState | null> {
+  private async fetchJobs(signal: AbortSignal): Promise<ThreadState | null> {
     const s = this.state;
     if (!s) return null;
     try {
-      const response = await fetch(`/api/threads/${encodeURIComponent(s.threadId)}/jobs`);
+      const response = await fetch(`/api/threads/${encodeURIComponent(s.threadId)}/jobs`, { signal });
       if (!response.ok) throw new Error(`jobs failed (${response.status})`);
       const body = (await response.json()) as { jobs?: Job[] };
       const cur = this.state;
       // Unlike an items page there is no position to get wrong: the merge is a
       // union by id, so a snapshot landing meanwhile is harmless. Only another
-      // thread's list would be.
-      if (!cur || cur.threadId !== s.threadId) return null;
+      // thread's list would be, and leaving the thread aborts this.
+      if (signal.aborted || !cur) return null;
       // The client's copy of a job wins: live events have folded into it
       // since the server answered. Jobs the server did not list yet (started
       // after it read) stay, after the rest.
@@ -458,21 +487,53 @@ export class Client {
       this.events.onState(next.threadId, next);
       return next;
     } catch (error) {
-      console.warn("loading all jobs failed", error);
+      if (!signal.aborted) console.warn("loading all jobs failed", error);
       return null;
     }
   }
-  private jobsInFlight: Promise<ThreadState | null> | null = null;
+  private jobsInFlight: { request: Promise<ThreadState | null>; controller: AbortController } | null = null;
   // Job rows applyEvent dropped while jobsInFlight; see fetchJobs.
   private droppedJobRows: Event[] = [];
 
   detach() {
-    this.snapshotRequest?.abort();
-    this.snapshotRequest = null;
-    if (this.threadId) this.raw({ type: "detach", threadId: this.threadId });
+    this.leave();
     this.threadId = null;
     this.cursor = 0;
     this.state = null;
+  }
+
+  /**
+   * Let go of the attached thread: tell the server, keep its state for a
+   * quick return to it, and drop what was being fetched for it. A jobs fetch
+   * left running, beaten by a return from the cache, would fold the other
+   * thread's rows into this one's list.
+   */
+  private leave() {
+    this.snapshotRequest?.abort();
+    this.snapshotRequest = null;
+    if (this.threadId) this.raw({ type: "detach", threadId: this.threadId });
+    if (this.state && this.state.threadId === this.threadId) this.recentThreads.put(this.state);
+    this.jobsInFlight?.controller.abort();
+    this.jobsInFlight = null;
+    this.droppedJobRows = [];
+  }
+
+  /** Ask for the thread's history after afterSeq, or all of it when absent. */
+  private sendAttach(threadId: string, afterSeq?: number) {
+    const sent = this.raw({ type: "attach", threadId, afterSeq });
+    if (sent) this.attachesInFlight.set(threadId, (this.attachesInFlight.get(threadId) ?? 0) + 1);
+  }
+
+  /** One attach for the thread has been answered, by "synchronized" or an error. */
+  private attachAnswered(threadId: string) {
+    const n = this.attachesInFlight.get(threadId) ?? 0;
+    if (n <= 1) this.attachesInFlight.delete(threadId);
+    else this.attachesInFlight.set(threadId, n - 1);
+  }
+
+  /** Whether a replay is still coming for the attached thread. */
+  private catchingUp(): boolean {
+    return this.threadId !== null && this.attachesInFlight.has(this.threadId);
   }
 
   /**
@@ -548,10 +609,10 @@ export class Client {
     }
   }
 
-  private raw(frame: Record<string, unknown>) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(frame));
-    }
+  private raw(frame: Record<string, unknown>): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(frame));
+    return true;
   }
 
   private handle(f: ServerFrame) {
@@ -602,9 +663,13 @@ export class Client {
         break;
 
       // A snapshot and a replay are both followed by `synchronized`, which
-      // publishes. Holding off until then renders a reconnect once, not once
-      // per event of the gap — on a phone that is the difference between a
-      // tap landing and the page locking up.
+      // publishes. Holding off until then renders a reconnect or a return to
+      // a cached thread once, not once per event of the gap — on a phone that
+      // is the difference between a tap landing and the page locking up.
+      //
+      // A snapshot means the gap was past replay range, so whatever we held
+      // for this thread, a cached copy included, is superseded wholesale; it
+      // is this that gets cached when we leave.
       case "snapshot":
         if (f.threadId !== this.threadId || !f.state) return;
         this.state = f.state;
@@ -631,6 +696,14 @@ export class Client {
       // A live event, published as it lands.
       case "event": {
         if (f.threadId !== this.threadId || !f.event) return;
+        // seq is gapless per thread, so anything past the next one is not
+        // ours to apply yet. With an attach outstanding it is a straggler from
+        // an earlier attachment of this thread, and the replay behind it
+        // brings the events it skipped. Otherwise something was lost: ask again.
+        if (this.state && f.event.seq > this.state.seq + 1) {
+          if (!this.catchingUp()) this.sendAttach(f.threadId, this.cursor);
+          return;
+        }
         const base = this.state ?? emptyState(f.threadId);
         const next = applyEvent(base, f.event);
         if (next === base) return; // duplicate; already applied
@@ -642,18 +715,17 @@ export class Client {
         break;
       }
 
+      // The end of a catch-up: publish everything it applied, once.
       case "synchronized":
-        if (f.threadId === this.threadId && this.state) {
-          this.events.onState(f.threadId, this.state);
-        }
+        if (!f.threadId) return;
+        this.attachAnswered(f.threadId);
+        if (f.threadId === this.threadId && this.state) this.events.onState(f.threadId, this.state);
         break;
 
       case "resync":
         // The server dropped our queue. Reattach from the applied cursor; if
         // we have fallen far enough behind it answers with a snapshot.
-        if (f.threadId === this.threadId) {
-          this.raw({ type: "attach", threadId: f.threadId, afterSeq: this.cursor });
-        }
+        if (f.threadId === this.threadId) this.sendAttach(f.threadId, this.cursor);
         break;
 
       case "ack": {
@@ -686,6 +758,8 @@ export class Client {
 
       case "error":
         console.warn("server error:", f.error);
+        // A failed attach answers with this instead of "synchronized".
+        if (f.threadId) this.attachAnswered(f.threadId);
         break;
     }
   }
