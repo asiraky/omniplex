@@ -86,6 +86,7 @@ type Actor struct {
 	// Owned by the actor goroutine only.
 	state         *projection.State
 	lastSnapAt    int64
+	snaps         *snapshotter // made on the first snapshot; see snapshotter
 	pendingPerm   map[string]chan adapter.PermissionOutcome
 	pendingElicit map[string]chan adapter.ElicitationResult
 	turnActive    string
@@ -1828,6 +1829,11 @@ func (a *Actor) stop(drop bool) {
 	if drop {
 		a.checkpoints.drop()
 	}
+	// Before quit: whoever waits on it next may delete the thread, or read
+	// the snapshot this actor was about to leave behind.
+	if a.snaps != nil {
+		a.snaps.close()
+	}
 	close(a.quit)
 
 	a.mu.Lock()
@@ -2422,10 +2428,7 @@ func (a *Actor) write(em proto.Emission) error {
 	}
 
 	if ev.Seq-a.lastSnapAt >= SnapshotEvery || em.Type == proto.TurnFinished {
-		a.lastSnapAt = ev.Seq
-		if err := a.store.PutSnapshot(ctx, a.ID, ev.Seq, a.state); err != nil {
-			a.logf("snapshot %s: %v", a.ID, err)
-		}
+		a.snapshot(ev.Seq)
 	}
 	// Last, so whatever it appends follows this event everywhere it went.
 	a.followLimit(ev)
@@ -2699,4 +2702,14 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// snapshot records the projection as of seq. Encoding happens here, since the
+// projection is this goroutine's; the write does not. Actor-loop only.
+func (a *Actor) snapshot(seq int64) {
+	a.lastSnapAt = seq
+	if a.snaps == nil {
+		a.snaps = newSnapshotter(a.store, a.ID, a.logf)
+	}
+	a.snaps.put(seq, a.state)
 }
