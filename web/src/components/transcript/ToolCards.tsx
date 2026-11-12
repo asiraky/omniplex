@@ -25,7 +25,17 @@ import { foldLabel, summarise } from "~/rows";
 
 import { LiveTail } from "./LiveTail";
 
-const LoadFullOutput = lazy(() => import("./LoadFullOutput"));
+// Few cards are truncated, so the loader arrives on first open. On a dropped
+// connection or after a redeploy its chunk can fail to load, and with no error
+// boundary above it that would take the app down; the card says so instead.
+function LoaderUnavailable() {
+  return (
+    <p role="alert" className="text-destructive text-[12px]">
+      Could not load the full output. Reload the page to try again.
+    </p>
+  );
+}
+const LoadFullOutput = lazy(() => import("./LoadFullOutput").catch(() => ({ default: LoaderUnavailable })));
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -132,7 +142,7 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
             </pre>
           )}
           {truncated && (
-            <Suspense fallback={null}>
+            <Suspense fallback={<Spinner className="text-primary size-3" />}>
               <LoadFullOutput threadId={threadId} itemId={item.id} onLoad={setFull} />
             </Suspense>
           )}
