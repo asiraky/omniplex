@@ -25,6 +25,10 @@ describe("splitMarkdownBlocks", () => {
     "line one\nline two\n\nline three\nline four",
     "``` a ` b\n\nnot a fence\n```\n\ninside the fence\n\nstill inside",
     "````\n```js\n\n```\n\n````\n\nafter",
+    "1. ```sh\n   ls\n   ```\n\nnext\n\n```\nfoo\n\nbar\n```",
+    "- ```\n  ls\n  ```\n\nnext\n\n```\nfoo\n\nbar\n```",
+    "- item\n  ```\n  code\n\nPara.\n\n```\nreal\n\nmore\n```",
+    "Intro\n\n  ```\n  code\n\nstill code\n  ```\n\nafter",
   ])("renders each block as the whole text renders it, at every streamed prefix: %j", (text) => {
     for (let end = 0; end <= text.length; end++) {
       const source = text.slice(0, end);
@@ -47,6 +51,15 @@ describe("splitMarkdownBlocks", () => {
       "end",
     ]);
     expect(blocks.map(html).join("")).toBe(html(text));
+  });
+
+  // A list item can open or close a fence, and the splitter does not follow
+  // list items, so it cannot tell which later lines are code.
+  it("cuts nothing after a fence off the margin", () => {
+    expect(splitMarkdownBlocks("Intro\n\nSteps:\n\n1. Install:\n   ```sh\n   npm i\n   ```\n\nDone.")).toEqual([
+      "Intro\n\n",
+      "Steps:\n\n1. Install:\n   ```sh\n   npm i\n   ```\n\nDone.",
+    ]);
   });
 
   it("splits only between closed blocks", () => {
@@ -74,18 +87,7 @@ describe("splitMarkdownBlocks", () => {
     "a\r\n\r\nb",
   ])("keeps text with document-wide syntax whole: %j", (text) => {
     expect(splitMarkdownBlocks(text)).toBeNull();
-  });
-
-  // A list item can open a fence or close one, and the splitter does not
-  // follow list items, so it would lose track of which later lines are code.
-  it.each([
-    "1. ```sh\n   ls\n   ```\n\nnext\n\n```\nfoo\n\nbar\n```",
-    "- ```\n  ls\n  ```\n\nnext\n\n```\nfoo\n\nbar\n```",
-    "- item\n  ```\n  code\n\nPara.\n\n```\nreal\n\nmore\n```",
-  ])("keeps text with a fence opened off the margin whole: %j", (text) => {
-    expect(splitMarkdownBlocks(text)).toBeNull();
-  });
-});
+  });});
 
 describe("closeOpenFence", () => {
   it.each([

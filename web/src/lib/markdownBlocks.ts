@@ -22,8 +22,8 @@ function documentWide(line: string): boolean {
 // After a blank line these still continue the previous block: a list item or indented content.
 const CONTINUATION_PATTERN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 // A fence behind indentation or a list marker. It may sit in a list item,
-// which this does not follow and which can close it, so where it ends is
-// unknown.
+// which this does not follow and which can close it, so past one there is no
+// telling code from text, and no cut is safe.
 const FENCE_OFF_MARGIN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])[ \t])[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*(?:`{3,}|~{3,})/;
 
 /**
@@ -57,8 +57,8 @@ export function closeOpenFence(text: string): string {
 /**
  * Cuts Markdown at blank lines that close every open block, so each piece
  * renders exactly as it would inside the whole text. Returns null when the
- * text, outside its code, uses syntax that spans blocks, or opens a fence
- * anywhere but the margin.
+ * text, outside its code, uses syntax that spans blocks. Nothing is cut after
+ * a fence that opens anywhere but the margin.
  *
  * A cut is never made inside a fence, so a fence still open at the end of the
  * text is always in the last piece: `closeOpenFence` on that piece alone is
@@ -79,7 +79,11 @@ export function splitMarkdownBlocks(text: string): string[] | null {
       afterBlankLine = true;
     } else {
       if (documentWide(line)) return null;
-      if (FENCE_OFF_MARGIN.test(line)) return null;
+      if (FENCE_OFF_MARGIN.test(line)) {
+        // Code and text alike from here, so the guard reads every line.
+        if (text.slice(lineStart).split("\n").some(documentWide)) return null;
+        break;
+      }
       if (afterBlankLine && lineStart > blockStart && !CONTINUATION_PATTERN.test(line)) {
         blocks.push(text.slice(blockStart, lineStart));
         blockStart = lineStart;
