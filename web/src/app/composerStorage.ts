@@ -294,7 +294,7 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
     attachments: reviveAll(threadId, attachments),
     ...(isDelivery(delivery) ? { delivery } : {}),
   };
-  if (status === "pending" || status === "uploading") return { entry: { ...send, status }, tab };
+  if (status === "pending" || status === "waiting") return { entry: { ...send, status }, tab };
   if (status !== "failed" || typeof reason !== "string") return undefined;
   const entry: FailedSend = { ...send, status, reason };
   if (dismissed === true) entry.dismissed = true;
@@ -340,10 +340,10 @@ export function loadOutbox(): { entries: OutboxEntry[]; lapsed: FailedSend[] } {
     const age = now - entry.sentAt;
     if (found.tab !== tab) {
       if (entry.status === "pending" && age < ABANDONED_AFTER_MS) continue;
-      if (entry.status === "uploading" && age < LAPSED_AFTER_MS) continue;
+      if (entry.status === "waiting" && age < LAPSED_AFTER_MS) continue;
     }
     const lapse =
-      entry.status === "uploading"
+      entry.status === "waiting"
         ? { reason: UPLOAD_LAPSED_REASON, cannotRetry: true as const }
         : entry.status === "pending" && age >= LAPSED_AFTER_MS
           ? { reason: LAPSED_REASON }

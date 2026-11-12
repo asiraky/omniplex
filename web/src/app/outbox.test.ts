@@ -110,7 +110,7 @@ describe("outbox", () => {
   it("holds a send waiting on its uploads, then sends it under the same id", () => {
     const outbox = createOutbox();
     outbox.wait(send("c1"));
-    expect(outbox.get()).toMatchObject([{ commandId: "c1", status: "uploading" }]);
+    expect(outbox.get()).toMatchObject([{ commandId: "c1", status: "waiting" }]);
     // Nothing to resend or take: it has not gone yet, and has not failed.
     expect(outbox.takeFailed("t1")).toEqual([]);
 

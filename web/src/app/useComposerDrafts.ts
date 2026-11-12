@@ -179,24 +179,29 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   // composer nor a message waiting on its uploads holds their chip. An upload
   // is kept only while its chip is still uploading, since a send reads the
   // finished ones from the chip itself. This covers a thread that went, and
-  // a message that went with its files.
+  // a message that went with its files, and is run again as the outbox moves,
+  // so a message's files go once it is acked.
   useEffect(() => {
-    const held = new Set<string>();
-    const going = new Set<string>();
-    for (const list of Object.values(attachments)) {
-      for (const a of list) {
-        held.add(a.key);
-        if (a.status === "uploading") going.add(a.key);
+    const sweep = () => {
+      const held = new Set<string>();
+      const going = new Set<string>();
+      for (const list of Object.values(attachments)) {
+        for (const a of list) {
+          held.add(a.key);
+          if (a.status === "uploading") going.add(a.key);
+        }
       }
-    }
-    for (const e of outbox.get()) {
-      for (const a of e.attachments) {
-        held.add(a.key);
-        if (e.status === "uploading") going.add(a.key);
+      for (const e of outbox.get()) {
+        for (const a of e.attachments) {
+          held.add(a.key);
+          if (e.status === "waiting") going.add(a.key);
+        }
       }
-    }
-    for (const key of uploadFiles.current.keys()) if (!held.has(key)) uploadFiles.current.delete(key);
-    for (const key of uploads.current.keys()) if (!going.has(key)) uploads.current.delete(key);
+      for (const key of uploadFiles.current.keys()) if (!held.has(key)) uploadFiles.current.delete(key);
+      for (const key of uploads.current.keys()) if (!going.has(key)) uploads.current.delete(key);
+    };
+    sweep();
+    return outbox.subscribe(sweep);
   }, [attachments, outbox]);
 
   const attachFiles = useCallback(

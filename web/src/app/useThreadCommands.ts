@@ -126,11 +126,11 @@ export function useThreadCommands({
   // they are all up, then goes. If any of them fails, or together they come
   // to more than a message may carry, it never goes, and comes back to the
   // composer with every file it carried, the failed ones marked for a retry.
-  // `uploading` are the files of `waiting` still on their way; their chips
-  // are no longer in any composer, so the uploads' own marks land on nothing
-  // and what each one came to is read from its promise instead.
+  // Its chips are no longer in any composer, so the uploads' own marks land
+  // on nothing and what each one came to is read from its promise instead.
   const sendWhenUploaded = useCallback(
-    (waiting: OutboxSend, uploading: Attachment[]) => {
+    (waiting: OutboxSend) => {
+      const uploading = waiting.attachments.filter((a) => a.status === "uploading");
       // Read before anything else runs: the files are kept only while
       // something still waits on them.
       const done = uploading.map(
@@ -140,7 +140,7 @@ export function useThreadCommands({
       void Promise.allSettled(done).then((results) => {
         // Gone with its thread while it waited.
         const entry = outbox.get().find((e) => e.commandId === waiting.commandId);
-        if (entry?.status !== "uploading") return;
+        if (entry?.status !== "waiting") return;
         const outcome = new Map(uploading.map((a, i) => [a.key, results[i]]));
         const settled = waiting.attachments.map((a): Attachment => {
           const r = outcome.get(a.key);
@@ -188,7 +188,7 @@ export function useThreadCommands({
       // composer holds its send while one is, so this is only a backstop;
       // the composer empties itself once this returns, so the text goes back
       // after that rather than being lost.
-      if (outbox.get().some((e) => e.threadId === threadId && e.status === "uploading")) {
+      if (outbox.isWaiting(threadId)) {
         queueMicrotask(() => setDrafts((d) => prependDraft(d, threadId, text)));
         return;
       }
@@ -210,7 +210,7 @@ export function useThreadCommands({
       } else {
         // Not a retry: a send that waits has files the earlier one never had.
         outbox.takeFailed(threadId);
-        sendWhenUploaded({ commandId: uuid(), ...message }, uploading);
+        sendWhenUploaded({ commandId: uuid(), ...message });
       }
       // Cleared optimistically, like the draft: the message is on its way, and
       // the transcript is about to show the same pictures back from the server.

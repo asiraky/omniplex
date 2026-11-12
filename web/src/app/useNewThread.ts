@@ -74,7 +74,7 @@ export function useNewThread({
       const uploads = pending.map(({ a, file }) => uploadInto(threadId, a.key, file));
       if (!schedule) {
         for (const u of uploads) u.catch(() => {});
-        sendWhenUploaded({ commandId: uuid(), threadId, text: input.text, attachments: going }, going);
+        sendWhenUploaded({ commandId: uuid(), threadId, text: input.text, attachments: going });
         return;
       }
 

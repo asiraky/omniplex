@@ -9,7 +9,7 @@
  * can badge an artefact without pulling the viewers into the first bundle.
  */
 
-import { postFile } from "~/lib/postFile";
+import { postFile, type UploadOpts } from "~/lib/postFile";
 
 /**
  * A file or folder the thread has shown: a file on the server, read live.
@@ -128,7 +128,7 @@ export interface UploadedArtefact {
 export function uploadArtefact(
   threadId: string,
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
+  opts: UploadOpts = {},
 ): Promise<UploadedArtefact> {
   const name = file.name || "file";
   return postFile<UploadedArtefact>(

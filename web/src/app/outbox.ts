@@ -29,7 +29,7 @@ export interface PendingSend extends Sent {
     id it will go with, until they are all up. Nothing has gone to the server
     yet, so nothing resends it. */
 export interface WaitingSend extends Sent {
-  status: "uploading";
+  status: "waiting";
 }
 
 export interface FailedSend extends Sent {
@@ -74,7 +74,7 @@ export function createOutbox(initial: readonly OutboxEntry[] = []) {
 
   const put = (
     { commandId, threadId, text, attachments, delivery }: OutboxSend,
-    status: "pending" | "uploading",
+    status: "pending" | "waiting",
   ) => {
     const fresh: PendingSend | WaitingSend = {
       commandId,
@@ -107,7 +107,10 @@ export function createOutbox(initial: readonly OutboxEntry[] = []) {
         pending the same way once its files are up. */
     add: (send: OutboxSend) => put(send, "pending"),
     /** A send held back for its uploads. */
-    wait: (send: OutboxSend) => put(send, "uploading"),
+    wait: (send: OutboxSend) => put(send, "waiting"),
+    /** Whether the thread has a send held back for its uploads. */
+    isWaiting: (threadId: string) =>
+      entries.some((e) => e.threadId === threadId && e.status === "waiting"),
     ack: (commandId: string) => remove(commandId),
     /** Returns the entry only on the step to failed, from pending or waiting.
         Two sends under the same id can both report a failure; the text must go
@@ -177,9 +180,6 @@ export function useFailedSend(outbox: Outbox, threadId: string | null) {
  * composer holds its own send until this clears.
  */
 export function useWaitingSend(outbox: Outbox, threadId: string | null) {
-  const snapshot = useCallback(
-    () => !!threadId && outbox.get().some((e) => e.threadId === threadId && e.status === "uploading"),
-    [outbox, threadId],
-  );
+  const snapshot = useCallback(() => !!threadId && outbox.isWaiting(threadId), [outbox, threadId]);
   return useSyncExternalStore(outbox.subscribe, snapshot, snapshot);
 }

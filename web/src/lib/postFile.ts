@@ -10,10 +10,17 @@
  * dropped connection rejects with a plain Error; an abort rejects with an
  * AbortError DOMException, which callers read as "taken back", not a failure.
  */
+/** How an upload can be called off, and where it reports how far it has got,
+    as a fraction from 0 to 1. */
+export interface UploadOpts {
+  signal?: AbortSignal;
+  onProgress?: (fraction: number) => void;
+}
+
 export function postFile<T>(
   url: string,
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
+  opts: UploadOpts = {},
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     if (opts.signal?.aborted) {

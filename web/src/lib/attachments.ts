@@ -8,7 +8,7 @@
  */
 
 import { MAX_ARTEFACT_BYTES, uploadArtefact, type ArtefactRef, type UploadedArtefact } from "~/lib/artefacts";
-import { postFile } from "~/lib/postFile";
+import { postFile, type UploadOpts } from "~/lib/postFile";
 
 export const PDF_TYPE = "application/pdf";
 
@@ -110,7 +110,7 @@ export function attachmentUrl(threadId: string, id: string): string {
 export function uploadAttachment(
   threadId: string,
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
+  opts: UploadOpts = {},
 ): Promise<UploadedImage> {
   // Removing a half-uploaded picture stops the upload: on a slow link the
   // rest of it is bandwidth spent on something already taken back.
@@ -140,7 +140,7 @@ export const UPLOAD_STALLED = "Upload stalled: nothing went up for a minute";
  */
 export function withStallTimeout<T>(
   run: (opts: { signal: AbortSignal; onProgress: (fraction: number) => void }) => Promise<T>,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void; stallMs?: number } = {},
+  opts: UploadOpts & { stallMs?: number } = {},
 ): Promise<T> {
   const outer = opts.signal;
   if (outer?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
@@ -298,12 +298,12 @@ export interface UploadDeps {
   uploadImage: (
     threadId: string,
     file: File,
-    opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void },
+    opts: UploadOpts,
   ) => Promise<UploadedImage>;
   uploadFile: (
     threadId: string,
     file: File,
-    opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void },
+    opts: UploadOpts,
   ) => Promise<UploadedArtefact>;
 }
 
@@ -328,7 +328,7 @@ const defaultDeps: UploadDeps = {
 export function uploadStaged(
   threadId: string,
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void; stallMs?: number } = {},
+  opts: UploadOpts & { stallMs?: number } = {},
   deps: UploadDeps = defaultDeps,
 ): Promise<Partial<Attachment>> {
   return withStallTimeout(async (up) => {

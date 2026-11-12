@@ -398,12 +398,7 @@ export function Composer({
         )}
         {...drop.handlers}
       >
-        {drop.dragging && (
-          <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
-            <PaperclipIcon className="size-4" />
-            Drop files to attach
-          </div>
-        )}
+        {drop.dragging && <DropHint />}
         <ComposerNotes waiting={waiting} failure={failure} canSend={!disabled && !sendDisabled} />
         <AttachmentStrip
           attachments={attachments}
@@ -464,6 +459,16 @@ export function Composer({
           {footer}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Over the whole box while files are dragged across it. */
+function DropHint() {
+  return (
+    <div className="bg-card/85 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl text-sm">
+      <PaperclipIcon className="size-4" />
+      Drop files to attach
     </div>
   );
 }
