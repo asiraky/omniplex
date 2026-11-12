@@ -64,4 +64,28 @@ describe("parsePatch", () => {
   it("still renders the lines of a hunk whose counts are short", () => {
     expect(kinds("@@ -1 +1 @@\n-a\n+b\n+c\n")).toEqual(["hunk:@@ -1 +1 @@", "del:a", "add:b", "add:c"]);
   });
+
+  it("leaves the lines after a gap unnumbered, until the next hunk says where they are", () => {
+    const patch = [
+      "@@ -1,0 +1,2000 @@",
+      "+line 1",
+      "\\ [… 900 characters truncated …]",
+      "+line 2000",
+      "@@ -10 +2010 @@",
+      "-x",
+      "\\ No newline at end of file",
+      "+y",
+      "",
+    ].join("\n");
+    expect(parsePatch(patch)).toEqual([
+      { kind: "hunk", text: "@@ -1,0 +1,2000 @@" },
+      { kind: "add", text: "line 1", newNo: 1 },
+      { kind: "meta", text: "[… 900 characters truncated …]" },
+      { kind: "add", text: "line 2000", newNo: undefined },
+      { kind: "hunk", text: "@@ -10 +2010 @@" },
+      { kind: "del", text: "x", oldNo: 10 },
+      { kind: "meta", text: "No newline at end of file" },
+      { kind: "add", text: "y", newNo: 2010 },
+    ]);
+  });
 });

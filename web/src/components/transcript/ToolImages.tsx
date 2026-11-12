@@ -30,6 +30,10 @@ const ImageViewer = lazy(loadViewer);
 // strip on a phone, big enough to tell one screen from another.
 const MAX_H = 96;
 const MAX_W = 192;
+// How far the box may stray from square. A full-page screenshot or a
+// panorama past these is cropped to its top or left, not drawn as a sliver.
+const TALLEST = 1 / 2;
+const WIDEST = MAX_W / (MAX_H / 2);
 
 /**
  * Tool-result images as a strip of thumbnails, each opening the full-size
@@ -77,6 +81,15 @@ export function ToolImages({ images, className }: { images: ToolImage[]; classNa
   );
 }
 
+/** A w×h image's thumbnail box: within MAX_W×MAX_H, never upscaled. */
+function box(w: number, h: number) {
+  const ratio = Math.min(WIDEST, Math.max(TALLEST, w / h));
+  return {
+    width: Math.min(MAX_W, MAX_H * ratio, w),
+    aspectRatio: ratio === w / h ? `${w} / ${h}` : `${ratio} / 1`,
+  };
+}
+
 function Thumbnail({
   image,
   buttonRef,
@@ -90,8 +103,7 @@ function Thumbnail({
   const { width: w, height: h } = image;
   // With the size known, the box is reserved before a byte arrives: a
   // screenshot landing seconds later over 4G does not shove the transcript.
-  const style =
-    w && h ? { width: Math.min(MAX_W, (MAX_H * w) / h, w), aspectRatio: `${w} / ${h}` } : undefined;
+  const style = w && h ? box(w, h) : undefined;
 
   return (
     <button
@@ -120,7 +132,7 @@ function Thumbnail({
           draggable={false}
           onError={() => setFailed(true)}
           style={style}
-          className={cn("bg-muted block rounded-md border object-cover", style ? "h-auto" : "size-24")}
+          className={cn("bg-muted block rounded-md border object-cover object-left-top", style ? "h-auto" : "size-24")}
         />
       )}
     </button>

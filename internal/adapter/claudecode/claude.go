@@ -2361,7 +2361,7 @@ func (s *session) toolResultContent(raw json.RawMessage) (string, []proto.ToolCo
 			if b.Source.Type == "base64" {
 				rest = append(rest, adapter.ToolImage(s.host, b.Source.Data))
 			} else {
-				rest = append(rest, proto.ToolContent{Type: "text", Text: "[image not shown: " + cmp.Or(b.Source.Type, "no source") + " source]"})
+				rest = append(rest, adapter.ImageNotShown(cmp.Or(b.Source.Type, "no source")+" source"))
 			}
 		}
 	}

@@ -116,6 +116,17 @@ describe("a truncated tool card", () => {
     expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
   });
 
+  it("shows an image the preview left out once the full output is loaded", async () => {
+    const shot = { type: "image", url: "/api/threads/s1/attachments/shot.png", width: 1280, height: 800 };
+    serve(() => new Response(JSON.stringify({ content: [{ type: "text", text: "the whole output" }, shot] })));
+    openCard(tool());
+    expect(screen.queryByRole("img")).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load full output" }));
+    const img = (await screen.findByRole("img")) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe(shot.url);
+  });
+
   it("reports a failed load and loads again on retry", async () => {
     serve(() => new Response(JSON.stringify({ error: "the disk is on fire" }), { status: 500 }), full("second time lucky"));
     openCard(tool());
@@ -227,8 +238,16 @@ describe("an image in a tool result", () => {
     render(<ToolCard threadId="t1" item={result([screenshot])} />);
     const img = screen.getByRole("img") as HTMLImageElement;
     // 1280x800 held to 96px tall is 153.6px wide.
-    expect(img.style.width).toBe("153.6px");
+    expect(parseFloat(img.style.width)).toBeCloseTo(153.6);
     expect(img.style.aspectRatio).toBe("1280 / 800");
+  });
+
+  it("crops a full-page screenshot to a readable box rather than a sliver", () => {
+    render(<ToolCard threadId="t1" item={result([{ ...screenshot, width: 1280, height: 20000 }])} />);
+    const img = screen.getByRole("img") as HTMLImageElement;
+    // Held to 1:2, 96px tall is 48px wide.
+    expect(parseFloat(img.style.width)).toBeCloseTo(48);
+    expect(img.style.aspectRatio).toBe("0.5 / 1");
   });
 
   it("refuses an image that is not a same-origin path", () => {

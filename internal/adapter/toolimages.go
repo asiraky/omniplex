@@ -26,9 +26,15 @@ func ToolImage(host HostServices, b64 string) proto.ToolContent {
 	content, err := storeToolImage(host, b64)
 	if err != nil {
 		host.Logf("tool result image: %v", err)
-		return proto.ToolContent{Type: "text", Text: "[image not shown: " + err.Error() + "]"}
+		return ImageNotShown(err.Error())
 	}
 	return content
+}
+
+// ImageNotShown is what stands in for a tool result image that cannot be
+// shown, saying why.
+func ImageNotShown(why string) proto.ToolContent {
+	return proto.ToolContent{Type: "text", Text: "[image not shown: " + why + "]"}
 }
 
 func storeToolImage(host HostServices, b64 string) (proto.ToolContent, error) {

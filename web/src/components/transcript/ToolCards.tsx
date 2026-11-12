@@ -184,7 +184,8 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   useEffect(() => {
     if (hasDiff) void loadToolDiff();
   }, [hasDiff]);
-  const images = useMemo(() => toolImages([item]), [item]);
+  // Once loaded, the full output brings back any image the preview's caps left out.
+  const images = useMemo(() => toolImages([{ ...item, content }]), [item, content]);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
   // What opening the card would show, said on the closed card: how much text,

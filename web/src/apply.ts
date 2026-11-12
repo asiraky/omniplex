@@ -141,9 +141,10 @@ function appendToolContent(it: Item, add: ToolContent[]) {
   let used = have.reduce((n, c) => n + contentText(c), 0);
   const capped: ToolContent[] = [];
   for (const c of add.slice(0, room)) {
-    if (used >= TOOL_MAX_TEXT) {
+    // An image has no text, and the full output shows no images: keep it.
+    if (used >= TOOL_MAX_TEXT && contentText(c) > 0) {
       cut = true;
-      break;
+      continue;
     }
     const next = { ...c };
     for (const key of ["text", "oldText", "newText"] as const) {

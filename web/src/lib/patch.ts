@@ -20,6 +20,10 @@ const HEADER = /^(diff --git |index |--- |\+\+\+ |old mode |new mode |new file m
  * the line `--- x`, and must not be mistaken for a file header. Only once the
  * counts run out is a line read as a header again. A producer that miscounts
  * still renders: past the counts, `+` and `-` lines are taken as they come.
+ *
+ * Git's only note inside a hunk is "No newline at end of file". Any other
+ * `\` line marks a gap, such as a capped preview's cut: what follows it goes
+ * unnumbered until the next `@@`, since the header's counts no longer reach.
  */
 export function parsePatch(patch: string): DiffLine[] {
   const out: DiffLine[] = [];
@@ -27,6 +31,7 @@ export function parsePatch(patch: string): DiffLine[] {
   let newNo = 0;
   let oldLeft = 0;
   let newLeft = 0;
+  let gap = false;
 
   for (const raw of patch.split("\n")) {
     const inHunk = oldLeft > 0 || newLeft > 0;
@@ -37,12 +42,18 @@ export function parsePatch(patch: string): DiffLine[] {
         newNo = Number(m[3]);
         oldLeft = m[2] === undefined ? 1 : Number(m[2]);
         newLeft = m[4] === undefined ? 1 : Number(m[4]);
+        gap = false;
       }
       out.push({ kind: "hunk", text: raw });
       continue;
     }
     if (raw.startsWith("\\")) {
-      out.push({ kind: "meta", text: raw.replace(/^\\ /, "") });
+      const text = raw.replace(/^\\ /, "");
+      out.push({ kind: "meta", text });
+      if (text !== "No newline at end of file") {
+        gap = true;
+        oldLeft = newLeft = 0;
+      }
       continue;
     }
     if (!inHunk && HEADER.test(raw)) {
@@ -53,18 +64,22 @@ export function parsePatch(patch: string): DiffLine[] {
     }
     if (raw === "" && out.length === 0) continue;
     if (raw.startsWith("+")) {
-      out.push({ kind: "add", text: raw.slice(1), newNo: newNo++ });
+      out.push({ kind: "add", text: raw.slice(1), newNo: gap ? undefined : newNo++ });
       newLeft = Math.max(0, newLeft - 1);
       continue;
     }
     if (raw.startsWith("-")) {
-      out.push({ kind: "del", text: raw.slice(1), oldNo: oldNo++ });
+      out.push({ kind: "del", text: raw.slice(1), oldNo: gap ? undefined : oldNo++ });
       oldLeft = Math.max(0, oldLeft - 1);
       continue;
     }
     // The last line of a patch is an empty string from the trailing newline,
     // and is not a line of the file.
     if (raw === "" && !inHunk) continue;
+    if (gap) {
+      out.push({ kind: "context", text: raw.slice(1) });
+      continue;
+    }
     out.push({ kind: "context", text: raw.slice(1), oldNo: oldNo++, newNo: newNo++ });
     oldLeft = Math.max(0, oldLeft - 1);
     newLeft = Math.max(0, newLeft - 1);

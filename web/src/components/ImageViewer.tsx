@@ -17,7 +17,6 @@ const control =
 export function ImageViewer({
   image,
   title = "Image",
-  alt = title,
   noun = "image",
   href,
   width: knownWidth,
@@ -27,7 +26,6 @@ export function ImageViewer({
 }: {
   image: string;
   title?: string;
-  alt?: string;
   /** What the controls call the picture: "Fit diagram", "Image zoom". */
   noun?: string;
   href?: string;
@@ -221,7 +219,7 @@ export function ImageViewer({
             >
               <img
                 src={image}
-                alt={alt}
+                alt={title}
                 className="max-w-none select-none"
                 draggable={false}
                 style={{
