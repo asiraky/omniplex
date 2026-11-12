@@ -1167,6 +1167,9 @@ export interface ScheduledPrompt {
  status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
  error?: string;
  turnId?: string;
+ /** "limit" marks the continuation the server arms when a turn stops at a
+     usage limit; absent on one a human scheduled. */
+ kind?: "limit";
 }
 
 // ---- Account-level usage ----

@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./Transcript";
 import { render, viewport, wrap } from "~/test/harness";
-import type { PullRequest, Turn } from "~/protocol";
+import { shortTime } from "~/lib/scheduleTime";
+import type { PullRequest, ScheduledPrompt, Turn } from "~/protocol";
 
 const state = (text: string): any => ({
   threadId: "a",
@@ -403,7 +404,7 @@ describe("a turn that failed", () => {
     return s;
   };
 
-  it("lets a signed-out user sign in from the failed thread", () => {
+  it("lets a signed-out user sign in from the failed thread", async () => {
     const onLogin = vi.fn();
     render(
       <Transcript
@@ -419,7 +420,7 @@ describe("a turn that failed", () => {
       />,
     );
 
-    expect(screen.getByText(/Claude Code needs to sign in again/i)).toBeTruthy();
+    expect(await screen.findByText(/Claude Code needs to sign in again/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     expect(onLogin).toHaveBeenCalledOnce();
     expect(screen.queryByText(/Continue where it left off/)).toBeNull();
@@ -429,7 +430,7 @@ describe("a turn that failed", () => {
   // Retry appears only once the provider reports ready again, and re-sending
   // the failed prompt is always the user's press — never a side effect of a
   // sign-in finishing.
-  it("offers retry only when the provider is ready, and only on request", () => {
+  it("offers retry only when the provider is ready, and only on request", async () => {
     const onRetryTurn = vi.fn();
     const authFailed = failed({ failure: "auth", error: "signed out" });
     const props = {
@@ -446,12 +447,14 @@ describe("a turn that failed", () => {
     const { unmount } = render(
       <Transcript state={authFailed} {...props} providerReady={false} />,
     );
+    await screen.findByText(/needs to sign in again/);
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
     unmount();
 
     render(<Transcript state={authFailed} {...props} providerReady />);
+    const retry = await screen.findByRole("button", { name: /retry this prompt/i });
     expect(onRetryTurn).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+    fireEvent.click(retry);
     expect(onRetryTurn).toHaveBeenCalledOnce();
     expect(onRetryTurn.mock.calls[0][0]).toMatchObject({ id: "t1", prompt: "go" });
   });
@@ -470,7 +473,7 @@ describe("a turn that failed", () => {
       providerName: "Aaron",
     };
 
-    it("moves the failed prompt to the account picked", () => {
+    it("moves the failed prompt to the account picked", async () => {
       const onSwitchAccount = vi.fn((_instance: string, _turn: Turn) => new Promise<boolean>(() => {}));
       render(
         <Transcript
@@ -484,8 +487,9 @@ describe("a turn that failed", () => {
           onSwitchAccount={onSwitchAccount}
         />,
       );
+      const spare = await screen.findByRole("button", { name: /continue on spare/i });
       expect(screen.queryByText(/Continue where it left off/)).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: /continue on spare/i }));
+      fireEvent.click(spare);
       expect(onSwitchAccount).toHaveBeenCalledOnce();
       expect(onSwitchAccount.mock.calls[0][0]).toBe("spare");
       expect(onSwitchAccount.mock.calls[0][1]).toMatchObject({ id: "t1", prompt: "go" });
@@ -502,12 +506,12 @@ describe("a turn that failed", () => {
           onSwitchAccount={async () => false}
         />,
       );
-      const button = screen.getByRole("button", { name: /continue on worksauce/i }) as HTMLButtonElement;
+      const button = (await screen.findByRole("button", { name: /continue on worksauce/i })) as HTMLButtonElement;
       fireEvent.click(button);
       await waitFor(() => expect(button.disabled).toBe(false));
     });
 
-    it("offers only the retry once the thread has switched", () => {
+    it("offers only the retry once the thread has switched", async () => {
       const s = limited();
       s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce" });
       const onRetryTurn = vi.fn();
@@ -520,25 +524,145 @@ describe("a turn that failed", () => {
           onSwitchAccount={async () => true}
         />,
       );
+      const retry = await screen.findByRole("button", { name: /retry this prompt/i });
       expect(screen.getAllByText(/Switched to Worksauce/).length).toBeGreaterThan(0);
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: /retry this prompt/i }));
+      fireEvent.click(retry);
       expect(onRetryTurn).toHaveBeenCalledOnce();
     });
 
-    it("with no other account, says to wait and still offers the retry", () => {
+    it("with no other account, says to wait and still offers the retry", async () => {
       render(<Transcript state={limited()} {...props} onRetryTurn={() => {}} switchTargets={[]} onSwitchAccount={async () => true} />);
+      expect(await screen.findByRole("button", { name: /retry this prompt/i })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /continue on/i })).toBeNull();
-      expect(screen.getByRole("button", { name: /retry this prompt/i })).toBeTruthy();
+    });
+
+    // The server arms a continuation at the reset; the card says when, and
+    // is where it gets called off.
+    describe("with a continuation armed", () => {
+      const dueAt = new Date(2026, 10, 11, 15, 40).getTime();
+      const schedule = (over: Partial<ScheduledPrompt> = {}): ScheduledPrompt => ({
+        id: "s1",
+        revision: 1,
+        prompt: "continue",
+        dueAt,
+        timeZone: "Australia/Brisbane",
+        model: "",
+        mode: "default",
+        effort: "",
+        status: "pending",
+        kind: "limit",
+        ...over,
+      });
+      const armed = (...schedules: ScheduledPrompt[]) => {
+        const s = limited();
+        s.scheduledPrompts = schedules;
+        return s;
+      };
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date(2026, 10, 11, 12, 0));
+      });
+      afterEach(() => vi.useRealTimers());
+
+      it("says when it continues", async () => {
+        render(<Transcript state={armed(schedule())} {...props} onCancelContinuation={async () => {}} />);
+        expect(await screen.findByText(`Continuing at ${shortTime(dueAt)}`)).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+      });
+
+      it("says nothing once it is cancelled or sent, or when there is none", async () => {
+        for (const s of [
+          armed(schedule({ status: "cancelled" })),
+          armed(schedule({ status: "sent" })),
+          armed(schedule({ kind: undefined })),
+          limited(),
+        ]) {
+          const { unmount } = render(<Transcript state={s} {...props} onCancelContinuation={async () => {}} />);
+          await screen.findByText(/hit its usage limit/);
+          expect(screen.queryByText(/Continuing/)).toBeNull();
+          unmount();
+        }
+      });
+
+      it("cancels that schedule, and says so when it could not", async () => {
+        let fail!: (e: Error) => void;
+        const onCancelContinuation = vi.fn(
+          (_p: ScheduledPrompt) => new Promise<void>((_, reject) => (fail = reject)),
+        );
+        render(
+          <Transcript
+            state={armed(schedule({ id: "human", kind: undefined }), schedule())}
+            {...props}
+            onCancelContinuation={onCancelContinuation}
+          />,
+        );
+        fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+        expect(onCancelContinuation).toHaveBeenCalledOnce();
+        expect(onCancelContinuation.mock.calls[0][0]).toMatchObject({ id: "s1", revision: 1 });
+        const pending = screen.getByRole("button", { name: /Cancelling/ }) as HTMLButtonElement;
+        expect(pending.disabled).toBe(true);
+        await act(async () => fail(new Error("Reconnect first")));
+        expect(screen.getByRole("alert").textContent).toBe("Reconnect first");
+        expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
+      });
+    });
+
+    it("labels queued prompts as held only while the latest turn is stopped at a limit", () => {
+      const queued = [{ queueId: "q1", prompt: "next" }];
+      const s = limited();
+      s.queuedPrompts = queued;
+      const first = render(<Transcript state={s} {...props} />);
+      // Nothing armed: only the reader sending moves it.
+      expect(screen.getByText(/held until you send/)).toBeTruthy();
+      first.unmount();
+
+      s.scheduledPrompts = [
+        { id: "s1", revision: 1, prompt: "continue", dueAt: Date.now() + 60_000, timeZone: "UTC",
+          model: "", mode: "default", effort: "", status: "pending", kind: "limit" },
+      ];
+      const { unmount } = render(<Transcript state={s} {...props} />);
+      expect(screen.getByText(/held until the limit resets/)).toBeTruthy();
+      unmount();
+
+      for (const other of [failed({ failure: "auth" }), failed({}), state("hi")]) {
+        other.queuedPrompts = queued;
+        const { unmount } = render(<Transcript state={other} {...props} />);
+        expect(screen.queryByText(/held until/)).toBeNull();
+        unmount();
+      }
     });
   });
 
-  it("only says the server restarted when the server says so", () => {
+  it("holds only what was queued before the limit, and nothing once the thread moved account", () => {
+    const s = failed({ failure: "limit", error: "You've hit your limit", finishedAt: 10 });
+    s.queuedPrompts = [
+      { queueId: "q1", prompt: "before", queuedAt: 5 },
+      { queueId: "q2", prompt: "by hand", queuedAt: 20 },
+    ];
+    const props = {
+      onFinish: () => {},
+      onRetryProvision: () => {},
+      onCleanup: () => {},
+      onForceDelete: () => {},
+      onContinue: () => {},
+      onOpenDiff: () => {},
+    };
+    const first = render(<Transcript state={s} {...props} />);
+    expect(screen.getAllByText(/held until you send/)).toHaveLength(1);
+    first.unmount();
+
+    s.items.push({ id: "account:9", kind: "notice", noticeKind: "account", title: "Worksauce", receivedAt: 30 });
+    render(<Transcript state={s} {...props} />);
+    expect(screen.queryByText(/held until/)).toBeNull();
+  });
+
+  it("only says the server restarted when the server says so", async () => {
     render(view(failed({ failure: "restart", error: "server restarted during turn" })));
-    expect(screen.getByText(/The server restarted/)).toBeTruthy();
+    expect(await screen.findByText(/The server restarted/)).toBeTruthy();
 
     render(view(failed({ error: "claude exited: ENOENT" })));
-    expect(screen.getByText(/ended with an error/)).toBeTruthy();
+    expect(await screen.findByText(/ended with an error/)).toBeTruthy();
     expect(screen.getByText(/claude exited: ENOENT/)).toBeTruthy();
   });
 
@@ -561,6 +685,31 @@ describe("a turn that failed", () => {
 
     expect(screen.getByText("Asked the agent to pick the work back up")).toBeTruthy();
     expect(screen.queryByText(/Server restarted/)).toBeNull();
+  });
+
+  it("shows a sent limit continuation as the server's note, not the reader's prompt", () => {
+    const s = failed({ failure: "limit" });
+    s.items.push({
+      id: "u2",
+      kind: "message",
+      role: "user",
+      text: "[omniplex] Your previous turn stopped because the account hit its usage limit…",
+      turnId: "t2",
+      receivedAt: 2,
+    });
+    s.turns.push({ id: "t2", done: false });
+    const sent = { id: "limit-t1", kind: "limit", prompt: "", dueAt: 1, timeZone: "UTC" };
+    s.scheduledPrompts = [{ ...sent, status: "sent", turnId: "t2" }];
+    const { unmount } = render(view(s));
+    expect(screen.getByText("Usage limit reset — the agent was asked to pick the work back up")).toBeTruthy();
+    expect(screen.queryByText(/account hit its usage limit/)).toBeNull();
+    unmount();
+
+    // A human's own schedule that started a turn is still their prompt.
+    s.scheduledPrompts = [{ ...sent, kind: undefined, status: "sent", turnId: "t2" }];
+    render(view(s));
+    expect(screen.getByText(/account hit its usage limit/)).toBeTruthy();
+    expect(screen.queryByText(/Usage limit reset/)).toBeNull();
   });
 });
 

@@ -184,6 +184,7 @@ func (s *session) RunComposerAction(ctx context.Context, in adapter.ComposerActi
 		return nil, errors.New("the harness resumed work on its own; wait for it to finish")
 	}
 	s.turnID = in.TurnID
+	s.resetTurn = ""
 	s.mu.Unlock()
 	if in.Action == "compact" {
 		s.mu.Lock()

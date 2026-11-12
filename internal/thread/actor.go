@@ -70,6 +70,9 @@ type Actor struct {
 	pendingPerm   map[string]chan adapter.PermissionOutcome
 	pendingElicit map[string]chan adapter.ElicitationResult
 	turnActive    string
+	// stoppedTurn is the last turn a human stopped. It never gets a usage
+	// limit continuation, however late its finish says it hit one.
+	stoppedTurn string
 	// sent holds the queue ids the running harness process has been handed
 	// (adapter.Steerer) and not yet reported reading. Those are the harness's
 	// to run; dispatchQueued skips them. It is knowledge about this process,
@@ -1267,7 +1270,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery, "")
 		if err != nil {
-			if c.plan != nil {
+			// A usage limit takes the continuation over: whatever turn goes
+			// next past the held queue carries the note (followLimit).
+			if c.plan != nil && !a.state.QueueHeld() {
 				// Put back for a retry, or for its note to ride on the
 				// next human prompt: either way the agent still has to hear
 				// what died.
@@ -1306,7 +1311,17 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdCancel:
 		// Stop means stop: a prompt queued behind the interrupted turn would
 		// otherwise start the moment the interrupt landed. The web puts the
-		// text back in the composer before it asks.
+		// text back in the composer before it asks. A continuation armed for
+		// a usage limit is the same thing, only later; so is one for the
+		// turn being stopped, which a late limit finish would otherwise arm.
+		// With no turn running, the one Stop is aimed at is the limit just
+		// reached: Codex may still back-fill its reset.
+		a.disarmLimit()
+		if a.turnActive != "" {
+			a.stoppedTurn = a.turnActive
+		} else if last := a.lastTurn(); last != nil && a.state.QueueHeld() {
+			a.stoppedTurn = last.ID
+		}
 		if a.turnActive == "" {
 			a.dropQueue()
 			c.reply <- cmdResult{value: "idle"}
@@ -1628,9 +1643,10 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	}
 	// A prompt the harness already holds is its to run: it starts a turn
 	// with it itself, or reads it into one. Only what nobody has is started
-	// here.
+	// here. Nor what a usage limit holds: that waits for the next turn to
+	// start rather than walking into the limit one prompt at a time.
 	for _, next := range a.state.Queued {
-		if a.sent[next.QueueID] {
+		if a.sent[next.QueueID] || a.state.HeldByLimit(next) {
 			continue
 		}
 		if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
@@ -1917,6 +1933,8 @@ func (a *Actor) write(em proto.Emission) error {
 			a.logf("snapshot %s: %v", a.ID, err)
 		}
 	}
+	// Last, so whatever it appends follows this event everywhere it went.
+	a.followLimit(ev)
 	return nil
 }
 

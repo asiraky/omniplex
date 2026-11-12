@@ -10,7 +10,7 @@ import { ArtefactCards } from "./ArtefactCards";
 import type { OpenArtefact } from "./Attachments";
 import { CardRow } from "./CardRow";
 import { JobsCard } from "./JobsCard";
-import { Message } from "./Message";
+import { Message, type Recovered } from "./Message";
 import { NoticeCard } from "./NoticeCard";
 import { PlanRow } from "./PlanRow";
 import { ToolCard, ToolRun, TurnFold } from "./ToolCards";
@@ -23,7 +23,7 @@ type RowContext = {
   onOpenArtefact?: OpenArtefact;
   jobs: Job[];
   onOpenJobs?: () => void;
-  recoveredTurns: Map<string, "restart" | "continue">;
+  recoveredTurns: Map<string, Recovered>;
   /** Opens the sign-in a saved card offers. */
   onCardSignIn?: (target: CardSignIn) => void;
 };

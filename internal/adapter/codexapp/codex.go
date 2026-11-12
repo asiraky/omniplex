@@ -513,6 +513,22 @@ type session struct {
 	// decodeWarned holds each notification method and decode error already
 	// logged, so a drifted codex that repeats a bad shape logs it once.
 	decodeWarned map[string]bool
+
+	// turnFailure is the running turn's last error notification that codex
+	// did not retry. It usually says more than the completion that follows.
+	turnFailure *codexFailure
+	// limits is the main allowance's rate-limit snapshot, merged from every
+	// update and read; limitsGen counts the merges, so a read can tell that an
+	// update overtook it.
+	limits    *codexLimitSnapshot
+	limitsGen int
+	// resetTurn is the last turn that finished on a limit with its reset
+	// unknown. The first merge that knows the reset back-fills it with
+	// turn.limit_reset; a turn starting first forgets it.
+	resetTurn string
+	// finishing counts turn.finished emissions deferred behind a rate-limit
+	// read. watchExit waits for them before it closes events.
+	finishing sync.WaitGroup
 }
 
 // compactionCount tracks the compactions one codex turn has reported, so the
@@ -548,6 +564,7 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 		return errors.New("the harness resumed work on its own; wait for it to finish")
 	}
 	s.turnID = in.TurnID
+	s.resetTurn = ""
 	s.mu.Unlock()
 
 	_, err := s.startTurn(ctx, in.TurnID, in.Text, in.Images)
@@ -901,11 +918,15 @@ func (s *session) Close() error {
 
 func (s *session) watchExit() {
 	<-s.conn.Done()
+	// A limited turn waiting on its reset read finishes before the stream
+	// closes. The read fails with the connection, so this does not hang.
+	s.finishing.Wait()
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
 	s.serverTurnID, s.runningTurnID = "", ""
 	s.interrupting = false
+	s.turnFailure = nil
 	s.mu.Unlock()
 	if turn != "" {
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
@@ -966,6 +987,7 @@ func (s *session) ensureTurn(serverTurn string) string {
 	if serverTurn != s.lastServerTurn {
 		s.serverTurnID = serverTurn
 	}
+	s.resetTurn = ""
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
@@ -1326,6 +1348,9 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		// twin of what the CLI's /status prints, pushed as usage moves. It
 		// belongs to the account, not the transcript: it goes to the host's
 		// quota cache and never becomes a canonical event.
+		// The session keeps its own merge of the main allowance too: that is
+		// where a limited turn's reset time comes from.
+		s.mergeUpdate(params)
 		if snap, ok := parseCodexUpdate(params); ok {
 			s.reportQuota(snap)
 		}
@@ -1441,11 +1466,9 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 	case "turn/completed", "turn/failed":
 		var p struct {
 			Turn struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-				Error  *struct {
-					Message string `json:"message"`
-				} `json:"error"`
+				ID     string          `json:"id"`
+				Status string          `json:"status"`
+				Error  *codexTurnError `json:"error"`
 			} `json:"turn"`
 		}
 		_ = json.Unmarshal(params, &p)
@@ -1463,10 +1486,10 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			return
 		}
 
-		stop, errMsg := proto.StopEndTurn, ""
+		stop := proto.StopEndTurn
 		switch {
 		case p.Turn.Error != nil:
-			stop, errMsg = proto.StopError, p.Turn.Error.Message
+			stop = proto.StopError
 		case p.Turn.Status == "cancelled" || p.Turn.Status == "interrupted":
 			stop = proto.StopCancelled
 		case p.Turn.Status == "failed":
@@ -1485,9 +1508,11 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		} else {
 			s.lastTurn = ""
 		}
+		remembered := s.turnFailure
 		s.turnID = ""
 		s.serverTurnID, s.runningTurnID = "", ""
 		s.interrupting = false
+		s.turnFailure = nil
 		// A turn that ended cancelled was stopped, whether or not the stop
 		// came through Cancel.
 		if done != "" && stop == proto.StopCancelled {
@@ -1505,9 +1530,29 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			return
 		}
 
-		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: done, StopReason: stop, Error: errMsg,
-		}))
+		fin := proto.TurnFinishedPayload{TurnID: done, StopReason: stop}
+		if stop == proto.StopError {
+			f := completionFailure(p.Turn.Error, remembered)
+			fin.Error = f.message
+			if f.limit {
+				fin.Failure = proto.FailureLimit
+				fin.ResetAt = s.limitResetAt()
+			}
+		}
+
+		// A turn can hit the limit before codex has pushed any snapshot that
+		// says when it reopens, so the account is asked. This handler runs on
+		// the read loop, which is what delivers the answer: the read and the
+		// turn.finished behind it go to a goroutine. The turn is already
+		// cleared, so the session reads as idle to everything but the actor,
+		// which waits for the turn.finished — at most the read's timeout.
+		if fin.Failure == proto.FailureLimit && fin.ResetAt == 0 {
+			s.finishing.Add(1)
+			go s.finishAfterLimitRead(fin)
+			return
+		}
+
+		s.emit(proto.Emit(proto.TurnFinished, fin))
 
 		// A finished turn is when the allowance moved, so the quota cache
 		// re-reads now — the notification the CLI pushes on its own covers the
@@ -1516,11 +1561,156 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 
 	case "error":
 		var p struct {
-			Message string `json:"message"`
+			Error     *codexTurnError `json:"error"`
+			TurnID    string          `json:"turnId"`
+			WillRetry bool            `json:"willRetry"`
+			Message   string          `json:"message"` // an older CLI's flat shape
 		}
 		_ = json.Unmarshal(params, &p)
-		s.host.Logf("codex error: %s", p.Message)
+		if p.Error == nil {
+			p.Error = &codexTurnError{Message: p.Message}
+		}
+		s.host.Logf("codex error: %s", p.Error.Message)
+		// An error codex is retrying is not the turn's failure yet. One it is
+		// not retrying is, and the completion that follows repeats it with
+		// less: remember it for that completion.
+		if p.WillRetry {
+			return
+		}
+		f := errorFailure(*p.Error)
+		s.mu.Lock()
+		if s.turnID != "" && (p.TurnID == "" || s.serverTurnID == "" || p.TurnID == s.serverTurnID) {
+			s.turnFailure = &f
+		}
+		s.mu.Unlock()
 	}
+}
+
+// finishAfterLimitRead reads the account's limits for a turn that failed on
+// one with no reset time known, then finishes the turn with whatever reset the
+// merged snapshot now says. A failed or slow read still finishes the turn —
+// as a limit, with the reset unknown until a later snapshot back-fills it.
+func (s *session) finishAfterLimitRead(fin proto.TurnFinishedPayload) {
+	defer s.finishing.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), limitReadTimeout)
+	defer cancel()
+	raw, err := s.readLimits(ctx)
+	if err != nil {
+		s.host.Logf("codex limit reset read: %v", err)
+	}
+	fin.ResetAt = s.limitResetAt()
+	s.emit(proto.Emit(proto.TurnFinished, fin))
+	// After the finish, so the back-fill never overtakes it.
+	if fin.ResetAt == 0 {
+		s.awaitReset(fin.TurnID)
+	}
+
+	// The read is the post-turn quota refresh too; there is no need for a
+	// second one.
+	if err == nil {
+		if snap, err := parseCodexRead(raw); err == nil {
+			s.reportQuota(snap)
+		}
+	}
+}
+
+// limitReadTimeout bounds the read a limited turn's turn.finished waits on.
+const limitReadTimeout = 10 * time.Second
+
+// codexTurnError is the TurnError codex reports on a failed turn and on the
+// error notification.
+type codexTurnError struct {
+	Message           string `json:"message"`
+	AdditionalDetails string `json:"additionalDetails"`
+	// CodexErrorInfo is a bare code ("usageLimitExceeded") or an object with
+	// one key naming the code ({"responseTooManyFailedAttempts": {...}}).
+	CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
+}
+
+// code is the error's codexErrorInfo code, whichever shape carried it.
+func (e codexTurnError) code() string {
+	var code string
+	if json.Unmarshal(e.CodexErrorInfo, &code) == nil {
+		return code
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(e.CodexErrorInfo, &obj) == nil && len(obj) == 1 {
+		for k := range obj {
+			return k
+		}
+	}
+	return ""
+}
+
+// exhaustionStatus is the last attempt's HTTP status when codex gave up
+// retrying, zero otherwise. Retry exhaustion says why only through it.
+func (e codexTurnError) exhaustionStatus() int {
+	var obj struct {
+		ResponseTooManyFailedAttempts *struct {
+			HTTPStatusCode *int `json:"httpStatusCode"`
+		} `json:"responseTooManyFailedAttempts"`
+	}
+	if json.Unmarshal(e.CodexErrorInfo, &obj) != nil || obj.ResponseTooManyFailedAttempts == nil ||
+		obj.ResponseTooManyFailedAttempts.HTTPStatusCode == nil {
+		return 0
+	}
+	return *obj.ResponseTooManyFailedAttempts.HTTPStatusCode
+}
+
+// usageLimit reports whether the error is the account running out of
+// allowance: the limit codes, or retries exhausted on a 429. Other exhaustion
+// statuses are provider or transport failures, which time does not fix.
+func (e codexTurnError) usageLimit() bool {
+	switch e.code() {
+	case "usageLimitExceeded", "rateLimitExceeded":
+		return true
+	}
+	return e.exhaustionStatus() == 429
+}
+
+// codexFailure is a turn's failure, classified.
+type codexFailure struct {
+	native  string // codex's own message, which a completion repeats
+	code    string
+	message string // what the human reads
+	limit   bool
+}
+
+func failureOf(e codexTurnError, message string) codexFailure {
+	return codexFailure{native: e.Message, code: e.code(), message: message, limit: e.usageLimit()}
+}
+
+// errorFailure classifies an error notification. Its additional details,
+// when it has them, are the readable account of what went wrong.
+func errorFailure(e codexTurnError) codexFailure {
+	message := strings.TrimSpace(e.AdditionalDetails)
+	if message == "" {
+		message = e.Message
+	}
+	return failureOf(e, message)
+}
+
+// completionFailure classifies a failed turn from its completion's error and
+// the error notification remembered for it. The notification wins when the
+// completion only repeats it — same message, same code — since it carries
+// the richer message; a completion that says something else is the newer
+// word. An explicit exhaustion status on the completion still decides
+// whether it is a limit; a missing one is not evidence.
+func completionFailure(completion *codexTurnError, remembered *codexFailure) codexFailure {
+	if completion == nil {
+		if remembered != nil {
+			return *remembered
+		}
+		return codexFailure{}
+	}
+	f := failureOf(*completion, completion.Message)
+	if remembered != nil &&
+		(f.native == "" || f.native == remembered.native) &&
+		(f.code == "" || f.code == remembered.code) &&
+		(completion.exhaustionStatus() == 0 || remembered.limit == f.limit) {
+		return *remembered
+	}
+	return f
 }
 
 // codexItem is the subset of the ThreadItem union this prototype renders.
