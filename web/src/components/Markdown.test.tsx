@@ -275,6 +275,27 @@ it("renders Mermaid fences as diagrams, retaining copyable source", async () => 
   expect(writeText).toHaveBeenCalledWith(code);
 });
 
+it("parses GitHub flavour: tables, strikethrough, task lists and bare links", async () => {
+  const text = [
+    "| a | b |",
+    "| - | - |",
+    "| 1 | 2 |",
+    "",
+    "~~gone~~",
+    "",
+    "- [x] done",
+    "",
+    "see https://example.com/x",
+  ].join("\n");
+  const { container } = render(<Markdown text={text} />);
+  await settle();
+  expect(screen.getByRole("table")).toBeTruthy();
+  expect(screen.getByRole("cell", { name: "2" })).toBeTruthy();
+  expect(screen.getByText("gone").tagName).toBe("DEL");
+  expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
+  expect(screen.getByRole("link", { name: "https://example.com/x" })).toBeTruthy();
+});
+
 it("leaves ordinary fenced and inline code alone without loading Mermaid", async () => {
   render(<Markdown text={"```js\nconst x = 1;\n```\n\n`mermaid`"} />);
   await settle();

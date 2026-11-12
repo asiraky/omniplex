@@ -562,12 +562,24 @@ type MessageChunkPayload struct {
 	ParentToolCallID string `json:"parentToolCallId,omitempty"`
 }
 
+// ToolContent is one piece of what a tool call produced. A diff carries a
+// unified patch in Text. An image never carries its bytes: the adapter stores
+// them and the content names the URL a presenter loads them from, with the
+// pixel size so a thumbnail can hold its place before it arrives. ThumbURL,
+// when set, names a small JPEG of the same picture: what a presenter draws a
+// thumbnail from, so a strip of screenshots does not cost their full size.
 type ToolContent struct {
-	Type string `json:"type"` // text | diff
+	Type string `json:"type"` // text | diff | image
 	Text string `json:"text,omitempty"`
 	Path string `json:"path,omitempty"`
 	Old  string `json:"oldText,omitempty"`
 	New  string `json:"newText,omitempty"`
+
+	URL       string `json:"url,omitempty"`
+	ThumbURL  string `json:"thumbUrl,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
 }
 
 type ToolCallStartedPayload struct {

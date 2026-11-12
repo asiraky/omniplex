@@ -19,6 +19,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif" // registers the decoder image.DecodeConfig uses for a tool image's size
+	"image/jpeg"
+	_ "image/png" // as above
 	"io"
 	"net/http"
 	"os"
@@ -27,6 +31,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp" // as above
 )
 
 // MaxImageBytes bounds one image. Set by what the far end will take rather
@@ -45,6 +51,21 @@ const MaxPDFBytes = 10_000_000
 // MaxBytes is the largest upload of any kind, which is as much as the server
 // will read before it knows what it has been sent.
 const MaxBytes = MaxPDFBytes
+
+// MaxToolImageBytes bounds one image a harness handed back in a tool result.
+// Looser than MaxImageBytes because nothing here sends these bytes on to an
+// API: they already came from the harness, and the far end's limits were its
+// business. This is the backstop against a runaway tool filling the disk.
+const MaxToolImageBytes = 10_000_000
+
+// ErrCorrupt is returned for a tool image whose header does not decode: a
+// thumbnail with no size cannot hold its place, and a browser would show a
+// broken picture anyway.
+var ErrCorrupt = errors.New("image is corrupt")
+
+// errNotToolImage is what PutToolImage says about a PDF or anything else that
+// is not a picture.
+var errNotToolImage = fmt.Errorf("%w: tool images must be PNG, JPEG, GIF or WebP", ErrUnsupported)
 
 // MaxPerPrompt bounds how many files one message may carry. The sidecar holds
 // every attachment of a prompt in memory, base64-expanded, at once; without a
@@ -107,6 +128,14 @@ type Meta struct {
 	ID        string `json:"id"`
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
+	// Width and Height are the pixel size, known only for a tool image:
+	// PutToolImage decodes the header, Put does not.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// ThumbID names a small JPEG of a tool image, stored alongside it, for a
+	// presenter to show in place of the original. Empty when the image is
+	// already small enough to be its own thumbnail, or could not be shrunk.
+	ThumbID string `json:"thumbId,omitempty"`
 }
 
 // Store keeps attachments under one directory, one subdirectory per thread.
@@ -150,18 +179,13 @@ func (s *Store) Put(threadID string, r io.Reader) (Meta, error) {
 		return Meta{}, err
 	}
 	head = head[:n]
-	mediaType, _, _ := strings.Cut(http.DetectContentType(head), ";")
+	mediaType := sniff(head)
 	ext, ok := extensions[mediaType]
 	if !ok {
 		return Meta{}, ErrUnsupported
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Meta{}, err
-	}
-	id := uuid.NewString()
-	path := filepath.Join(dir, id+ext)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	id, path, f, err := create(dir, ext)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -182,6 +206,143 @@ func (s *Store) Put(threadID string, r io.Reader) (Meta, error) {
 		return Meta{}, err
 	}
 	return Meta{ID: id, MediaType: mediaType, Size: written}, nil
+}
+
+// PutToolImage stores an image a harness returned from a tool call, so the
+// event can name a URL instead of carrying the bytes. Only pictures are kept,
+// and only ones whose header decodes: the pixel size goes into the event so a
+// thumbnail can hold its place before the image loads. The file lands where
+// Put would put it, so the same id resolves through Path.
+func (s *Store) PutToolImage(threadID string, data []byte) (Meta, error) {
+	dir, err := s.threadDir(threadID)
+	if err != nil {
+		return Meta{}, err
+	}
+	mediaType := sniff(data)
+	ext, ok := extensions[mediaType]
+	if !ok || mediaType == PDF {
+		return Meta{}, errNotToolImage
+	}
+	if len(data) > MaxToolImageBytes {
+		return Meta{}, fmt.Errorf("%w: tool images are limited to 10 MB", ErrTooLarge)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return Meta{}, ErrCorrupt
+	}
+
+	id, path, f, err := create(dir, ext)
+	if err != nil {
+		return Meta{}, err
+	}
+	_, err = f.Write(data)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return Meta{}, err
+	}
+	meta := Meta{ID: id, MediaType: mediaType, Size: int64(len(data)), Width: cfg.Width, Height: cfg.Height}
+	if cfg.Width > ThumbBound || cfg.Height > ThumbBound {
+		// Best effort: the original is stored and is a fine thumbnail, just a
+		// heavy one, so a picture that will not shrink is not a failure.
+		meta.ThumbID, _ = putThumb(dir, data, cfg.Width, cfg.Height)
+	}
+	return meta, nil
+}
+
+// ThumbBound is the long edge of a tool image's thumbnail, in pixels. The UI
+// shows a thumbnail at most 192 px wide; 2.5x that is sharp on a retina phone
+// and still a few tens of KB, where the screenshot behind it can be megabytes
+// the transcript would otherwise pull over 4G just to draw a strip of previews.
+const ThumbBound = 480
+
+// maxThumbPixels bounds the images a thumbnail is made from. Decoding means
+// holding every pixel at four bytes, and a 10 MB PNG of flat colour can claim
+// to be far larger than any screen: past this the original stands in.
+const maxThumbPixels = 50_000_000
+
+// thumbCrop is the top-left part of a w×h image a thumbnail shows. The UI's
+// box (ToolImages.tsx) is no taller than 1:2 and no wider than 4:1, and crops
+// an image past those to its top left. Cutting the thumbnail the same way
+// spends its pixels on what is shown: shrunk whole, a full-page screenshot is
+// a 31 px wide strip, blurred to fill the box.
+func thumbCrop(w, h int) (int, int) {
+	if h > 2*w {
+		return w, 2 * w
+	}
+	if w > 4*h {
+		return 4 * h, h
+	}
+	return w, h
+}
+
+// thumbQuality is the JPEG quality of a thumbnail: no visible artefacts at
+// thumbnail size, a fraction of the bytes of a lossless one.
+const thumbQuality = 80
+
+// putThumb stores a JPEG of the image cut to thumbCrop and shrunk to
+// ThumbBound on its long edge, and returns its id.
+func putThumb(dir string, data []byte, w, h int) (string, error) {
+	if int64(w)*int64(h) > maxThumbPixels {
+		return "", ErrTooLarge
+	}
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	cw, ch := thumbCrop(w, h)
+	tw, th := cw, ch
+	if cw >= ch && cw > ThumbBound {
+		tw, th = ThumbBound, max(1, (ch*ThumbBound+cw/2)/cw)
+	} else if ch > cw && ch > ThumbBound {
+		tw, th = max(1, (cw*ThumbBound+ch/2)/ch), ThumbBound
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
+	// JPEG has no alpha: a transparent screenshot is laid on white, which is
+	// what a browser shows behind it on a light page anyway.
+	draw.Draw(dst, dst.Bounds(), image.White, image.Point{}, draw.Src)
+	crop := image.Rect(0, 0, cw, ch).Add(src.Bounds().Min)
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, crop, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: thumbQuality}); err != nil {
+		return "", err
+	}
+	id, path, f, err := create(dir, ".jpg")
+	if err != nil {
+		return "", err
+	}
+	_, err = f.Write(buf.Bytes())
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return id, nil
+}
+
+// sniff names the media type of a file from its leading bytes.
+func sniff(head []byte) string {
+	mediaType, _, _ := strings.Cut(http.DetectContentType(head), ";")
+	return mediaType
+}
+
+// create opens a new, empty file for a fresh id in a thread's directory.
+func create(dir, ext string) (id, path string, f *os.File, err error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", nil, err
+	}
+	id = uuid.NewString()
+	path = filepath.Join(dir, id+ext)
+	f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return id, path, f, nil
 }
 
 // Path resolves a stored file to a file on disk, along with its media type.
