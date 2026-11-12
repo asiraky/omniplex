@@ -137,10 +137,7 @@ func (a *Actor) evict(commit func() (time.Duration, bool)) bool {
 	// The next open starts from here instead of replaying what came since the
 	// last snapshot. Most view-only actors appended nothing, and write none.
 	if a.lastSnapAt < a.state.Seq {
-		a.lastSnapAt = a.state.Seq
-		if err := a.store.PutSnapshot(ctx, a.ID, a.state.Seq, a.state); err != nil {
-			a.logf("snapshot %s: %v", a.ID, err)
-		}
+		a.snapshot(a.state.Seq)
 	}
 	// The manager has already forgotten this actor, and nothing the list
 	// shows changed. The stored phase is left alone: it is already right for
