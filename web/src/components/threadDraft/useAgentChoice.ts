@@ -34,7 +34,7 @@ function resolveHarness({ project, remembered, harnesses, userConfig }: Sources)
   return { instances, instance, harnessId };
 }
 
-/** The model, its context window and its effort. */
+/** The model, its context window, its effort and whether it runs Fast. */
 function resolveModel(
   instance: PickerInstance | undefined,
   chosen: HarnessPrefs | undefined,
@@ -60,7 +60,21 @@ function resolveModel(
   const efforts = modelMeta?.efforts ?? [];
   const preferredEffort = chosen?.effort ?? harnessDefaults?.effort ?? "";
   const effort = efforts.includes(preferredEffort) ? preferredEffort : "";
-  return { model, want1m, supports1m, effectiveModel, effort, preferredEffort };
+  // Fast is kept as a wish and turned into this model's own tier id at send,
+  // so it survives a pick that has no fast tier.
+  const wantFast = chosen?.fast ?? false;
+  const fastTier = modelMeta?.fastTier ?? "";
+  const serviceTier = wantFast && fastTier ? fastTier : "";
+  return {
+    model,
+    want1m,
+    supports1m,
+    effectiveModel,
+    effort,
+    preferredEffort,
+    wantFast,
+    serviceTier,
+  };
 }
 
 /** The permission mode, as sent and as shown. */
@@ -102,6 +116,7 @@ export function useAgentChoice(sources: Sources, { patch }: Pick<RememberedChoic
     mode: modes.preferredMode,
     effort: models.preferredEffort,
     want1m: models.want1m,
+    fast: models.wantFast,
   };
   const remember = (harness: string, change: Partial<HarnessPrefs>) => {
     if (!project) return;
@@ -116,6 +131,7 @@ export function useAgentChoice(sources: Sources, { patch }: Pick<RememberedChoic
       mode: previous?.mode ?? seed?.mode ?? "",
       effort: previous?.effort ?? seed?.effort ?? "",
       want1m: previous?.want1m ?? false,
+      fast: previous?.fast ?? false,
     });
   };
 

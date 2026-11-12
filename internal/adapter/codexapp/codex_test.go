@@ -1090,3 +1090,112 @@ func TestPromptToADeadCodexSaysWhy(t *testing.T) {
 		t.Fatalf("Prompt err = %v\nwant:\n%s", err, want)
 	}
 }
+
+// turnStartTier reports what serviceTierForTurn a turn/start carried, and
+// whether it carried the key at all.
+func turnStartTier(t *testing.T, params json.RawMessage) (string, bool) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(params, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, persisted := m["serviceTier"]; persisted {
+		t.Fatalf("turn/start set the thread's own serviceTier, which outlives the turn: %v", m)
+	}
+	v, ok := m["serviceTierForTurn"]
+	if !ok {
+		return "", false
+	}
+	s, _ := v.(string)
+	return s, true
+}
+
+// A thread created with a service tier asks codex for it on every turn it
+// starts, and one created without asks for standard speed rather than
+// inheriting whatever tier codex's own config names.
+func TestServiceTierFromCreateOptionsReachesTurnStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stand-in codex is a shell script")
+	}
+	for _, tier := range []string{"priority", ""} {
+		t.Run("tier="+tier, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := New(fakeAppServer(t, dir)).CreateSession(context.Background(), &elicitHost{}, adapter.CreateOptions{Cwd: dir, ServiceTier: tier})
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "omniplex-turn", Text: "hi"}); err != nil {
+				t.Fatalf("Prompt: %v", err)
+			}
+			_ = s.Close()
+
+			raw, err := os.ReadFile(filepath.Join(dir, "lines"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var params json.RawMessage
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				var m struct {
+					Method string          `json:"method"`
+					Params json.RawMessage `json:"params"`
+				}
+				if err := json.Unmarshal([]byte(line), &m); err != nil {
+					t.Fatalf("line %q: %v", line, err)
+				}
+				if m.Method == "turn/start" {
+					params = m.Params
+				}
+			}
+			if params == nil {
+				t.Fatal("no turn/start sent")
+			}
+			want := tier
+			if want == "" {
+				want = standardTier
+			}
+			if got, sent := turnStartTier(t, params); !sent || got != want {
+				t.Fatalf("serviceTierForTurn = %q (sent %v), want %q", got, sent, want)
+			}
+		})
+	}
+}
+
+// Switching the tier mid-thread takes effect on the next turn, and switching
+// it back to "" asks for standard speed again.
+func TestSetServiceTierAppliesToTheNextTurn(t *testing.T) {
+	conn, rec := pairedConn(t, nil)
+	s := &session{conn: conn, threadID: "thread-1"}
+
+	prompt := func(turn string) (string, bool) {
+		t.Helper()
+		if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: turn, Text: "hi"}); err != nil {
+			t.Fatalf("Prompt: %v", err)
+		}
+		method, params := rec.last()
+		if method != "turn/start" {
+			t.Fatalf("Prompt sent %q, want turn/start", method)
+		}
+		// Stand in for turn/completed so the next prompt is not refused as a
+		// collision with a turn still running.
+		s.mu.Lock()
+		s.turnID = ""
+		s.mu.Unlock()
+		return turnStartTier(t, params)
+	}
+
+	if got, sent := prompt("t1"); !sent || got != standardTier {
+		t.Fatalf("serviceTierForTurn = %q (sent %v) before any tier was set, want %q", got, sent, standardTier)
+	}
+	if err := s.SetServiceTier(context.Background(), "priority"); err != nil {
+		t.Fatal(err)
+	}
+	if got, sent := prompt("t2"); !sent || got != "priority" {
+		t.Fatalf("serviceTierForTurn = %q (sent %v), want priority", got, sent)
+	}
+	if err := s.SetServiceTier(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, sent := prompt("t3"); !sent || got != standardTier {
+		t.Fatalf("serviceTierForTurn = %q (sent %v) after clearing the tier, want %q", got, sent, standardTier)
+	}
+}

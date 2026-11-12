@@ -22,6 +22,9 @@ type CreateOptions struct {
 	Model    string
 	Mode     string
 	Effort   string
+	// ServiceTier is a harness service-tier id to run every turn at, or ""
+	// for standard speed.
+	ServiceTier string
 
 	// Env is the provider instance's credential overlay, applied over the
 	// ambient environment when the harness process spawns. It is the entire
@@ -232,6 +235,11 @@ type ModelMeta struct {
 	// They are per model — one harness offers "ultra" on its newest models
 	// only — so an effort control reads them rather than assuming a fixed set.
 	Efforts []string `json:"efforts,omitempty"`
+	// FastTier is the service-tier id that runs this model faster, or "" when
+	// the model offers none. It is the harness's own id, passed back verbatim
+	// as a thread's service tier, so a UI offers a Fast toggle only where it
+	// would do something.
+	FastTier string `json:"fastTier,omitempty"`
 	// Supports1M marks a model the harness offers a 1M-context alias for, so a
 	// UI can offer the larger window rather than guessing from the name.
 	Supports1M bool `json:"supports1m,omitempty"`
@@ -400,6 +408,13 @@ type ConversationMover interface {
 // and the host reports that legibly instead of silently ignoring it.
 type EffortSwitcher interface {
 	SetEffort(ctx context.Context, effort string) error
+}
+
+// ServiceTierSwitcher is implemented by sessions whose harness can change the
+// service tier mid-conversation. The tier is a harness tier id such as a
+// model's FastTier, or "" for standard speed.
+type ServiceTierSwitcher interface {
+	SetServiceTier(ctx context.Context, tier string) error
 }
 
 // JobStopper is implemented by sessions whose harness can stop one running

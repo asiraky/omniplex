@@ -583,3 +583,97 @@ describe("the model picker mid-thread", () => {
     await waitFor(() => expect(document.activeElement).toBe(search()));
   });
 });
+
+describe("Fast across a model switch", () => {
+  const codex = {
+    id: "codex",
+    name: "Codex",
+    permissionModes: [],
+    availability: { state: "ready" },
+    models: [],
+    instances: [
+      {
+        id: "codex",
+        driver: "codex",
+        displayName: "Codex",
+        enabled: true,
+        availability: { state: "ready" },
+        models: [
+          { id: "sol", label: "Sol", default: true, fastTier: "priority" },
+          { id: "terra", label: "Terra", fastTier: "turbo" },
+          { id: "luna", label: "Luna" },
+        ],
+      },
+    ],
+  } as unknown as HarnessMeta;
+
+  function pick(label: string, serviceTier: string) {
+    const onSwitchServiceTier = vi.fn();
+    mount({
+      harnesses: [codex],
+      harness: "codex",
+      instance: "codex",
+      model: "sol",
+      serviceTier,
+      onSwitchModel: vi.fn(),
+      onSwitchServiceTier,
+    });
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("option", { name: new RegExp(label) }));
+    return onSwitchServiceTier;
+  }
+
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  });
+
+  it("stays Fast on the new model's own tier", () => {
+    expect(pick("Terra", "priority")).toHaveBeenCalledWith("turbo");
+  });
+
+  it("drops to the default on a model with no fast tier", () => {
+    expect(pick("Luna", "priority")).toHaveBeenCalledWith("");
+  });
+
+  it("leaves a thread that is not Fast alone", () => {
+    expect(pick("Terra", "")).not.toHaveBeenCalled();
+  });
+
+  function toggleFast(onSwitchServiceTier: (tier: string) => void | Promise<boolean>) {
+    mount({
+      harnesses: [codex],
+      harness: "codex",
+      instance: "codex",
+      model: "sol",
+      serviceTier: "",
+      onSwitchModel: vi.fn(),
+      onSwitchServiceTier,
+    });
+    fireEvent.click(screen.getByRole("combobox", { name: "Harness and model" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
+  }
+  const fastSwitch = () => screen.getByRole("switch", { name: "Fast mode" });
+
+  it("shows Fast on before the server echoes it", () => {
+    const onSwitchServiceTier = vi.fn();
+    toggleFast(onSwitchServiceTier);
+
+    expect(onSwitchServiceTier).toHaveBeenCalledWith("priority");
+    expect(fastSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Harness and model" }).textContent).toContain("Fast");
+  });
+
+  it("goes back to off when the server refuses it", async () => {
+    toggleFast(vi.fn(() => Promise.resolve(false)));
+
+    await waitFor(() => expect(fastSwitch().getAttribute("aria-checked")).toBe("false"));
+  });
+});

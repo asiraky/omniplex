@@ -936,6 +936,10 @@ type CreateProjectOptions struct {
 	Model    string
 	Mode     string
 	Effort   string
+	// ServiceTier is a harness service-tier id, or "" for standard speed.
+	// Unlike the settings above it has no project default to inherit: it is
+	// chosen per thread or not at all.
+	ServiceTier string
 	// AgentSettingsExplicit means empty model/mode/effort values deliberately
 	// select the harness's own defaults. False preserves inheritance for older
 	// clients and direct callers that omit the fields.
@@ -1121,7 +1125,7 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 
-	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned}
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}

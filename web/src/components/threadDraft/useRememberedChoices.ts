@@ -8,6 +8,7 @@ const NO_PREFS: HarnessPrefs = {
   mode: "",
   effort: "",
   want1m: false,
+  fast: false,
 };
 
 /**

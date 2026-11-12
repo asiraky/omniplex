@@ -217,6 +217,32 @@ func TestClearingEffortSticks(t *testing.T) {
 	}
 }
 
+// Turning Fast off is a change like any other, so it sticks; events about
+// anything else, including the effort beside it, leave the tier alone.
+func TestClearingServiceTierSticks(t *testing.T) {
+	s := New("s1")
+	fast, cleared, high := "priority", "", "high"
+
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: "/w", Harness: "codex", ServiceTier: fast}))
+	if s.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q after creation, want priority", s.ServiceTier)
+	}
+
+	s.Apply(event(t, 2, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{ServiceTier: &cleared}))
+	if s.ServiceTier != "" {
+		t.Fatalf("service tier = %q after clearing, want empty", s.ServiceTier)
+	}
+
+	s.Apply(event(t, 3, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{ServiceTier: &fast}))
+	s.Apply(event(t, 4, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "gpt-5.6-sol"}))
+	s.Apply(event(t, 5, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &cleared}))
+	s.Apply(event(t, 6, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{ReplaceSettings: true, Model: "gpt-5.5", Mode: "auto"}))
+	s.Apply(event(t, 7, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &high}))
+	if s.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q after unrelated changes, want priority", s.ServiceTier)
+	}
+}
+
 // A tool standing for a live job outlives its turn: the turn's finish leaves
 // it in flight, and the job's own finish settles it. Attention reports
 // "background" for the gap. Mirrored by web/src/apply.test.ts.

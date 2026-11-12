@@ -12,12 +12,14 @@ describe("thread preference storage", () => {
       mode: "bypass",
       effort: "",
       want1m: false,
+      fast: true,
     };
     const claude = {
       ...codex,
       instance: "claude",
       model: "fable",
       effort: "high",
+      fast: false,
     };
     const choices = {
       one: { harness: "claude", byHarness: { codex, claude } },
@@ -28,6 +30,19 @@ describe("thread preference storage", () => {
     };
     saveThreadPrefs(choices);
     expect(loadThreadPrefs()).toEqual(choices);
+  });
+
+  it("loads a choice saved before Fast existed, as off", () => {
+    localStorage.setItem(
+      "omniplex.threadChoices.v1",
+      JSON.stringify({
+        p: {
+          harness: "codex",
+          byHarness: { codex: { instance: "codex", model: "astra", mode: "", effort: "high" } },
+        },
+      }),
+    );
+    expect(loadThreadPrefs().p?.byHarness.codex).toMatchObject({ model: "astra", fast: false });
   });
 
   it("ignores corrupt storage", () => {

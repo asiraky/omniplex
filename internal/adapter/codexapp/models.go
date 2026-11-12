@@ -45,6 +45,10 @@ type codexModel struct {
 	Efforts     []struct {
 		ReasoningEffort string `json:"reasoningEffort"`
 	} `json:"supportedReasoningEfforts"`
+	ServiceTiers []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"serviceTiers"`
 }
 
 // ListModels asks the installed Codex CLI what it offers. model/list answers
@@ -175,6 +179,15 @@ func mapCodexModels(in []codexModel) []adapter.ModelMeta {
 		for _, e := range m.Efforts {
 			if e.ReasoningEffort != "" {
 				meta.Efforts = append(meta.Efforts, e.ReasoningEffort)
+			}
+		}
+		// Codex names the tier "Fast" but its id is "priority", and the id is
+		// what turn/start wants. Matching the name rather than the id keeps
+		// this right if Codex renames the id or adds other tiers.
+		for _, t := range m.ServiceTiers {
+			if t.ID != "" && strings.EqualFold(t.Name, "Fast") {
+				meta.FastTier = t.ID
+				break
 			}
 		}
 		out = append(out, meta)

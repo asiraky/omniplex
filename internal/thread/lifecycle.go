@@ -94,7 +94,7 @@ func (m *Manager) provision(meta store.ThreadMeta, f project.Folder, a *Actor) {
 		return
 	}
 	a.Cwd = result.Cwd
-	if err := a.Activate(ctx, result.Cwd, meta.Model, meta.Mode, meta.Effort); err != nil {
+	if err := a.Activate(ctx, result.Cwd, meta.Model, meta.Mode, meta.Effort, meta.ServiceTier); err != nil {
 		m.provisionFailed(meta.ID, a, fmt.Errorf("start harness: %w", err))
 		return
 	}

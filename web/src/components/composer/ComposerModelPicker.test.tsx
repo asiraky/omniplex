@@ -85,6 +85,7 @@ function Picker({
       instance="claude"
       model={model}
       effort=""
+      serviceTier=""
       contextWindow={undefined}
       anyHarness={false}
       disabled={false}

@@ -15,6 +15,7 @@ const schedule = (over: Partial<ScheduledPrompt>): ScheduledPrompt => ({
   model: "",
   mode: "default",
   effort: "",
+  serviceTier: "",
   status: "pending",
   ...over,
 });

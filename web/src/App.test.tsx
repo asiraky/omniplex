@@ -108,6 +108,7 @@ const state = (id: string, mode: string): any => ({
   model: "",
   mode,
   effort: "",
+  serviceTier: "",
   title: `Thread ${id}`,
   phase: "idle",
   closed: false,

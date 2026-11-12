@@ -5,6 +5,8 @@ export interface HarnessPrefs {
   mode: string;
   effort: string;
   want1m: boolean;
+  /** Fast when the model offers it; a model that does not runs at its default. */
+  fast: boolean;
 }
 export interface ProjectPrefs {
   harness: string;
@@ -30,7 +32,9 @@ export function loadThreadPrefs(): ThreadPrefs {
         if (!p || ![p.instance, p.model, p.mode, p.effort].every((v) => typeof v === "string"))
           continue;
         Object.defineProperty(byHarness, id, {
-          value: { ...p, want1m: p.want1m === true },
+          // Booleans are coerced rather than checked above, so an entry saved
+          // before one existed still loads, as off.
+          value: { ...p, want1m: p.want1m === true, fast: p.fast === true },
           enumerable: true,
         });
       }

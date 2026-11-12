@@ -252,12 +252,13 @@ func NowMillis() int64 { return time.Now().UnixMilli() }
 // ---- Payloads ----
 
 type ThreadCreatedPayload struct {
-	Cwd     string `json:"cwd"`
-	Harness string `json:"harness"`
-	Model   string `json:"model,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Effort  string `json:"effort,omitempty"`
-	Title   string `json:"title,omitempty"`
+	Cwd         string `json:"cwd"`
+	Harness     string `json:"harness"`
+	Model       string `json:"model,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	Effort      string `json:"effort,omitempty"`
+	ServiceTier string `json:"serviceTier,omitempty"`
+	Title       string `json:"title,omitempty"`
 }
 
 type WorkspaceRequestedPayload struct {
@@ -310,7 +311,10 @@ type ThreadConfigChangedPayload struct {
 	// vanishes and a projection reads it as "this event did not touch
 	// effort", leaving the old level in place forever.
 	Effort *string `json:"effort,omitempty"`
-	Title  string  `json:"title,omitempty"`
+	// ServiceTier is a pointer for the same reason as Effort: "" turns Fast
+	// off, which is a change and not the absence of one.
+	ServiceTier *string `json:"serviceTier,omitempty"`
+	Title       string  `json:"title,omitempty"`
 	// HarnessSessionID is the harness's own identifier for this conversation,
 	// which is what a restart needs in order to resume with context intact.
 	HarnessSessionID string `json:"harnessSessionId,omitempty"`
@@ -786,18 +790,19 @@ func DefaultPermissionOptions() []PermissionOption {
 // ScheduledPrompt is a durable one-shot instruction. Revision guards edits from
 // stale devices. The provider account remains the thread's account.
 type ScheduledPrompt struct {
-	ID       string        `json:"id"`
-	Revision int           `json:"revision"`
-	Prompt   string        `json:"prompt"`
-	Images   []PromptImage `json:"images,omitempty"`
-	DueAt    int64         `json:"dueAt"`
-	TimeZone string        `json:"timeZone"`
-	Model    string        `json:"model"`
-	Mode     string        `json:"mode"`
-	Effort   string        `json:"effort"`
-	Status   string        `json:"status"`
-	Error    string        `json:"error,omitempty"`
-	TurnID   string        `json:"turnId,omitempty"`
+	ID          string        `json:"id"`
+	Revision    int           `json:"revision"`
+	Prompt      string        `json:"prompt"`
+	Images      []PromptImage `json:"images,omitempty"`
+	DueAt       int64         `json:"dueAt"`
+	TimeZone    string        `json:"timeZone"`
+	Model       string        `json:"model"`
+	Mode        string        `json:"mode"`
+	Effort      string        `json:"effort"`
+	ServiceTier string        `json:"serviceTier"`
+	Status      string        `json:"status"`
+	Error       string        `json:"error,omitempty"`
+	TurnID      string        `json:"turnId,omitempty"`
 	// Kind is empty for a prompt a human scheduled. ScheduleLimit marks the
 	// continuation the server arms when a turn stops at a usage limit.
 	Kind string `json:"kind,omitempty"`

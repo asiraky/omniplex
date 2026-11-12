@@ -949,7 +949,66 @@ describe("remembered thread choices", () => {
     );
   });
 
+  describe("Fast", () => {
+    // Only the advanced model has a faster tier, so Fast can be wanted and
+    // still not apply.
+    const fastAgents = agents.map((h) => ({
+      ...h,
+      instances: h.instances!.map((i) => ({
+        ...i,
+        models: i.models?.map((m) =>
+          m.id.endsWith("-advanced") ? { ...m, fastTier: "priority" } : m,
+        ),
+      })),
+    })) as HarnessMeta[];
 
+    async function send() {
+      const button = screen.getByRole("button", { name: "Send" });
+      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(button);
+    }
+
+    async function turnFastOn() {
+      await pickModel("codex Advanced");
+      openPicker();
+      fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
+      closePicker();
+    }
+
+    it("sends a remembered Fast as the model's own tier", async () => {
+      open({ harnesses: fastAgents });
+      await turnFastOn();
+      cleanup();
+
+      const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+      open({ harnesses: fastAgents, onCreate });
+      await send();
+      await waitFor(() => expect(onCreate).toHaveBeenCalled());
+      expect(onCreate.mock.calls[0][0]).toMatchObject({
+        model: "codex-advanced",
+        serviceTier: "priority",
+      });
+    });
+
+    it("sends the default tier for a model with no fast one, and keeps the wish", async () => {
+      const onCreate = vi.fn(async (_input: NewThreadInput) => {});
+      open({ harnesses: fastAgents, onCreate });
+      await turnFastOn();
+      await pickModel("codex Basic");
+      await send();
+      await waitFor(() => expect(onCreate).toHaveBeenCalled());
+      expect(onCreate.mock.calls[0][0]).toMatchObject({ model: "codex-basic", serviceTier: "" });
+
+      // Back on a model that has one, Fast is still on.
+      cleanup();
+      const again = vi.fn(async (_input: NewThreadInput) => {});
+      open({ harnesses: fastAgents, onCreate: again });
+      await pickModel("codex Advanced");
+      await send();
+      await waitFor(() => expect(again).toHaveBeenCalled());
+      expect(again.mock.calls[0][0]).toMatchObject({ serviceTier: "priority" });
+    });
+  });
 });
 
 describe("permission levels", () => {

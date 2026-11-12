@@ -131,6 +131,22 @@ describe("applyEvent config changes", () => {
     expect(s.effort).toBe("high");
     expect(s.model).toBe("sonnet");
   });
+
+  it("lets an empty service tier turn Fast off", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "thread.config_changed", { serviceTier: "priority" }));
+    expect(s.serviceTier).toBe("priority");
+
+    s = applyEvent(s, ev(2, "thread.config_changed", { serviceTier: "" }));
+    expect(s.serviceTier).toBe("");
+  });
+
+  it("leaves the service tier alone when the event is about something else", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "thread.config_changed", { serviceTier: "priority" }));
+    s = applyEvent(s, ev(2, "thread.config_changed", { effort: "low" }));
+    expect(s.serviceTier).toBe("priority");
+  });
 });
 
 // Mirrors internal/projection/state_test.go: a switch is marked where the next

@@ -69,6 +69,7 @@ export function ScheduledPrompts({
               : ""}{" "}
             · {p.model || "Default model"}
             {p.effort ? ` · ${p.effort}` : ""}
+            {p.serviceTier ? " · Fast" : ""}
           </div>
           <p className="mt-2 line-clamp-3 whitespace-pre-wrap break-words">
             {p.prompt}

@@ -198,6 +198,7 @@ type command struct {
 	model        string
 	mode         string
 	effort       string
+	serviceTier  string
 	recovery     *proto.TurnRecovery // prompt: set when the server started this turn itself
 	plan         *recoveryPlan       // prompt: the restart continuation Recover is sending
 	delivery     string              // prompt: proto.DeliverySteer, proto.DeliveryQueue, or the default
@@ -251,39 +252,40 @@ type cmdResult struct {
 }
 
 const (
-	cmdPrompt        = "prompt"
-	cmdShowArtefact  = "show_artefact"
-	cmdArtefact      = "artefact"
-	cmdCancel        = "cancel"
-	cmdResolvePerm   = "resolve_permission"
-	cmdAskPerm       = "ask_permission"
-	cmdResolveElicit = "resolve_elicitation"
-	cmdAskElicit     = "ask_elicitation"
-	cmdClose         = "close"
-	cmdActivate      = "activate"
-	cmdSetMode       = "set_mode"
-	cmdSetModel      = "set_model"
-	cmdSetEffort     = "set_effort"
-	cmdListComposer  = "list_composer_items"
-	cmdRunComposer   = "run_composer_action"
-	cmdHarnessEvent  = "harness_event"
-	cmdHarnessExit   = "harness_exit"
-	cmdContinue      = "continue"
-	cmdStopJob       = "stop_job"
-	cmdDequeue       = "dequeue_prompt"
-	cmdEditQueued    = "edit_queued_prompt"
-	cmdSendQueued    = "send_queued_prompt"
-	cmdResumeQueue   = "resume_queue"
-	cmdQuota         = "quota"
-	cmdSwitchAccount = "switch_account"
-	cmdMCP           = "mcp"
-	cmdRaiseCard     = "raise_card"
-	cmdResolveCard   = "resolve_card"
-	cmdHarnessReply  = "harness_reply"
-	cmdStopExpired   = "stop_expired"
-	cmdDropRecovery  = "drop_recovery"
-	cmdEvict         = "evict"
-	cmdRead          = "read"
+	cmdPrompt         = "prompt"
+	cmdShowArtefact   = "show_artefact"
+	cmdArtefact       = "artefact"
+	cmdCancel         = "cancel"
+	cmdResolvePerm    = "resolve_permission"
+	cmdAskPerm        = "ask_permission"
+	cmdResolveElicit  = "resolve_elicitation"
+	cmdAskElicit      = "ask_elicitation"
+	cmdClose          = "close"
+	cmdActivate       = "activate"
+	cmdSetMode        = "set_mode"
+	cmdSetModel       = "set_model"
+	cmdSetEffort      = "set_effort"
+	cmdSetServiceTier = "set_service_tier"
+	cmdListComposer   = "list_composer_items"
+	cmdRunComposer    = "run_composer_action"
+	cmdHarnessEvent   = "harness_event"
+	cmdHarnessExit    = "harness_exit"
+	cmdContinue       = "continue"
+	cmdStopJob        = "stop_job"
+	cmdDequeue        = "dequeue_prompt"
+	cmdEditQueued     = "edit_queued_prompt"
+	cmdSendQueued     = "send_queued_prompt"
+	cmdResumeQueue    = "resume_queue"
+	cmdQuota          = "quota"
+	cmdSwitchAccount  = "switch_account"
+	cmdMCP            = "mcp"
+	cmdRaiseCard      = "raise_card"
+	cmdResolveCard    = "resolve_card"
+	cmdHarnessReply   = "harness_reply"
+	cmdStopExpired    = "stop_expired"
+	cmdDropRecovery   = "drop_recovery"
+	cmdEvict          = "evict"
+	cmdRead           = "read"
 )
 
 // ErrBusy is returned when a composer action arrives while a turn is already
@@ -335,7 +337,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 
 	x := harnessExtras(ctx, st, ad, meta, meta.Cwd, logf)
 	sess, err := createSession(ctx, ad, a.newHost(), x.options(adapter.CreateOptions{
-		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, Env: env,
+		ThreadID: meta.ID, Cwd: meta.Cwd, Model: model, Mode: mode, Effort: meta.Effort, ServiceTier: meta.ServiceTier, Env: env,
 	}))
 	if err != nil {
 		return nil, err
@@ -350,7 +352,7 @@ func Start(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store.
 
 	// thread.created is the first event in every thread's log.
 	a.enqueueEmission(proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{
-		Cwd: meta.Cwd, Harness: meta.Harness, Model: model, Mode: mode, Effort: meta.Effort, Title: meta.Title,
+		Cwd: meta.Cwd, Harness: meta.Harness, Model: model, Mode: mode, Effort: meta.Effort, ServiceTier: meta.ServiceTier, Title: meta.Title,
 	}))
 	return a, nil
 }
@@ -364,7 +366,7 @@ func StartPending(st *store.Store, ad adapter.Adapter, meta store.ThreadMeta, en
 		subs: map[string]*Subscriber{}, logf: logf, preparing: true}
 	a.wg.Add(1)
 	go a.run()
-	a.enqueueEmission(proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness, Model: meta.Model, Mode: meta.Mode, Effort: meta.Effort, Title: meta.Title}))
+	a.enqueueEmission(proto.Emit(proto.ThreadCreated, proto.ThreadCreatedPayload{Cwd: meta.Cwd, Harness: meta.Harness, Model: meta.Model, Mode: meta.Mode, Effort: meta.Effort, ServiceTier: meta.ServiceTier, Title: meta.Title}))
 	return a
 }
 
@@ -408,6 +410,7 @@ func Resume(ctx context.Context, st *store.Store, ad adapter.Adapter, meta store
 		Model:            state.Model,
 		Mode:             state.Mode,
 		Effort:           state.Effort,
+		ServiceTier:      state.ServiceTier,
 		Resume:           true,
 		HarnessSessionID: state.HarnessSessionID,
 		Env:              env,
@@ -775,8 +778,8 @@ func (a *Actor) Emit(ctx context.Context, em proto.Emission) error {
 	return err
 }
 
-func (a *Actor) Activate(ctx context.Context, cwd, model, mode, effort string) error {
-	_, err := a.call(ctx, command{kind: cmdActivate, prompt: cwd, model: model, mode: mode, effort: effort})
+func (a *Actor) Activate(ctx context.Context, cwd, model, mode, effort, serviceTier string) error {
+	_, err := a.call(ctx, command{kind: cmdActivate, prompt: cwd, model: model, mode: mode, effort: effort, serviceTier: serviceTier})
 	return err
 }
 
@@ -806,6 +809,14 @@ func (a *Actor) SetModel(ctx context.Context, model string) error {
 // change as a thread.config_changed event, so every presenter sees it.
 func (a *Actor) SetEffort(ctx context.Context, effort string) error {
 	_, err := a.call(ctx, command{kind: cmdSetEffort, effort: effort})
+	return err
+}
+
+// SetServiceTier switches the harness's service tier mid-thread and records
+// the change as a thread.config_changed event, so every presenter sees it.
+// "" goes back to standard speed.
+func (a *Actor) SetServiceTier(ctx context.Context, tier string) error {
+	_, err := a.call(ctx, command{kind: cmdSetServiceTier, serviceTier: tier})
 	return err
 }
 
@@ -1130,9 +1141,9 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.reply <- cmdResult{err: errors.New("this thread's provider instance is no longer configured")}
 			return false
 		}
-		cwd, model, mode, effort := c.prompt, c.model, c.mode, c.effort
+		cwd, model, mode, effort, tier := c.prompt, c.model, c.mode, c.effort, c.serviceTier
 		if c.resume {
-			cwd, model, mode, effort = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort
+			cwd, model, mode, effort, tier = a.Cwd, a.state.Model, a.state.Mode, a.state.Effort, a.state.ServiceTier
 		}
 		// A resumed thread's worktree can be deleted or moved while the
 		// server is down. A harness started there fails later with an error
@@ -1160,7 +1171,7 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		x := harnessExtras(ctx, a.store, a.adapter, meta, cwd, a.logf)
 		sess, err := createSession(ctx, a.adapter, a.newHost(), x.options(adapter.CreateOptions{
-			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, Env: a.env,
+			ThreadID: a.ID, Cwd: cwd, Model: model, Mode: mode, Effort: effort, ServiceTier: tier, Env: a.env,
 			Resume: c.resume, HarnessSessionID: a.state.HarnessSessionID,
 		}))
 		if err != nil {
@@ -1313,6 +1324,23 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		a.setting(func(ctx context.Context) error { return switcher.SetEffort(ctx, c.effort) },
 			proto.ThreadConfigChangedPayload{Effort: &c.effort}, c.reply)
+
+	case cmdSetServiceTier:
+		if a.state.Closed {
+			c.reply <- cmdResult{err: ErrClosed}
+			return false
+		}
+		if a.sess == nil {
+			c.reply <- cmdResult{err: ErrNotReady}
+			return false
+		}
+		switcher, ok := a.sess.(adapter.ServiceTierSwitcher)
+		if !ok {
+			c.reply <- cmdResult{err: errors.New("this harness cannot change service tier mid-thread")}
+			return false
+		}
+		a.setting(func(ctx context.Context) error { return switcher.SetServiceTier(ctx, c.serviceTier) },
+			proto.ThreadConfigChangedPayload{ServiceTier: &c.serviceTier}, c.reply)
 
 	case cmdListComposer:
 		if a.state.Closed {

@@ -414,7 +414,10 @@ type State struct {
 	Model     string                  `json:"model"`
 	Mode      string                  `json:"mode"`
 	Effort    string                  `json:"effort"`
-	Title     string                  `json:"title"`
+	// ServiceTier is a harness service-tier id every turn runs at, or "" for
+	// standard speed.
+	ServiceTier string `json:"serviceTier"`
+	Title       string `json:"title"`
 	// HarnessSessionID is the harness's own conversation id, used to resume.
 	HarnessSessionID string         `json:"harnessSessionId,omitempty"`
 	Phase            string         `json:"phase"` // idle | turn | closed
@@ -731,6 +734,7 @@ func (s *State) Apply(ev proto.Event) {
 		var p proto.ThreadCreatedPayload
 		decode(ev.Payload, &p)
 		s.Cwd, s.Harness, s.Model, s.Mode, s.Effort, s.Title = p.Cwd, p.Harness, p.Model, p.Mode, p.Effort, p.Title
+		s.ServiceTier = p.ServiceTier
 
 	case proto.ThreadConfigChanged:
 		var p proto.ThreadConfigChangedPayload
@@ -755,6 +759,10 @@ func (s *State) Apply(ev proto.Event) {
 		// all rather than inferring it from emptiness.
 		if p.Effort != nil {
 			s.Effort = *p.Effort
+		}
+		// The same goes for the service tier: "" turns Fast off.
+		if p.ServiceTier != nil {
+			s.ServiceTier = *p.ServiceTier
 		}
 		if p.Title != "" {
 			s.Title = p.Title
