@@ -881,6 +881,11 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 		RawInput: p.Input,
 		Options:  proto.DefaultPermissionOptions(),
 	})
+	if ctx.Err() != nil {
+		// Withdrawn by the bridge (permissionCancelled) or the stream ended:
+		// the response is never sent, so there is nothing to decide.
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		return map[string]any{"behavior": "deny", "message": "permission unavailable: " + err.Error()}, nil
 	}
@@ -980,6 +985,9 @@ func (s *session) askUserQuestion(ctx context.Context, rawInput json.RawMessage)
 		Prompt: "The assistant needs your input to continue.",
 		Schema: schema,
 	})
+	if ctx.Err() != nil {
+		return nil, ctx.Err() // withdrawn, as in handleRequest
+	}
 	if err != nil || result.Action != "accept" {
 		return allow(map[string]string{})
 	}
@@ -1039,6 +1047,19 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		s.scopedLimit = scopedLimitName(p.Usage)
 		s.mu.Unlock()
 		s.reportQuota(snap)
+
+	case "permissionCancelled":
+		// The SDK aborted a permission request (or AskUserQuestion) it had
+		// asked us, and the bridge has already settled it. Cancelling the
+		// handler's ctx releases the host, which resolves the prompt as
+		// cancelled; no answer goes back.
+		var p struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(params, &p); err != nil || len(p.ID) == 0 {
+			return
+		}
+		s.conn.CancelInbound(p.ID)
 
 	case "fatal":
 		var p struct {

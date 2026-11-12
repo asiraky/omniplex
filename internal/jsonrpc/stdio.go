@@ -5,6 +5,7 @@ package jsonrpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,12 @@ type Conn struct {
 	nextID atomic.Int64
 
 	pending sync.Map // string -> chan Message
+	inbound sync.Map // compact id -> *inbound, one per request being served
+
+	// life parents every inbound handler's context; it ends with the stream,
+	// since nobody is left to read an answer to what the peer asked.
+	life    context.Context
+	endLife context.CancelFunc
 
 	handler  Handler
 	notifier Notifier
@@ -57,6 +64,7 @@ type Conn struct {
 
 func NewConn(r io.Reader, w io.Writer, h Handler, n Notifier) *Conn {
 	c := &Conn{w: w, handler: h, notifier: n, done: make(chan struct{})}
+	c.life, c.endLife = context.WithCancel(context.Background())
 	go c.readLoop(r)
 	return c
 }
@@ -81,6 +89,7 @@ func (c *Conn) readLoop(r io.Reader) {
 		c.dispatch(m)
 	}
 	c.readErr = sc.Err()
+	c.endLife()
 
 	// Fail every in-flight call so no caller waits on a dead process.
 	c.pending.Range(func(k, v any) bool {
@@ -98,7 +107,12 @@ func (c *Conn) dispatch(m Message) {
 	case m.Method != "" && len(m.ID) > 0:
 		// Inbound request: serve it off the read loop so a slow handler
 		// (a permission prompt awaiting a human) cannot stall the stream.
-		go c.serve(m)
+		// Its cancel is registered here, on the read loop, so a withdrawal
+		// the peer sends right behind it always finds it.
+		ctx, cancel := context.WithCancel(c.life)
+		in := &inbound{cancel: cancel}
+		c.inbound.Store(idKey(m.ID), in)
+		go c.serve(ctx, in, m)
 	case m.Method != "":
 		if c.notifier != nil {
 			c.notifier(m.Method, m.Params)
@@ -113,12 +127,23 @@ func (c *Conn) dispatch(m Message) {
 	}
 }
 
-func (c *Conn) serve(m Message) {
+// inbound is a request of the peer's being served. A pointer, so a finished
+// handler removes its own entry and not a later request that reused the id.
+type inbound struct{ cancel context.CancelFunc }
+
+func (c *Conn) serve(ctx context.Context, in *inbound, m Message) {
+	defer in.cancel()
+	defer c.inbound.CompareAndDelete(idKey(m.ID), in)
 	if c.handler == nil {
 		_ = c.send(Message{JSONRPC: "2.0", ID: m.ID, Error: &RPCError{Code: -32601, Message: "method not found"}})
 		return
 	}
-	result, err := c.handler(context.Background(), m.Method, m.Params)
+	result, err := c.handler(ctx, m.Method, m.Params)
+	if ctx.Err() != nil {
+		// The peer withdrew the request, or went away: it is not waiting on
+		// an answer, whatever the handler made of the cancel.
+		return
+	}
 	if err != nil {
 		_ = c.send(Message{JSONRPC: "2.0", ID: m.ID, Error: &RPCError{Code: -32000, Message: err.Error()}})
 		return
@@ -185,6 +210,27 @@ func (c *Conn) Call(ctx context.Context, method string, params any, out any) err
 		}
 		return nil
 	}
+}
+
+// CancelInbound cancels the context of the handler serving the peer's
+// request id, for a peer that settled the request on its own. No response is
+// sent for it. Reports whether such a request was being served.
+func (c *Conn) CancelInbound(id json.RawMessage) bool {
+	v, ok := c.inbound.LoadAndDelete(idKey(id))
+	if ok {
+		v.(*inbound).cancel()
+	}
+	return ok
+}
+
+// idKey is a request id in a form both ends agree on, whatever whitespace the
+// peer echoed it back with.
+func idKey(id json.RawMessage) string {
+	var b bytes.Buffer
+	if json.Compact(&b, id) != nil {
+		return string(id)
+	}
+	return b.String()
 }
 
 // Respond replies to an inbound request that was handled out of band.

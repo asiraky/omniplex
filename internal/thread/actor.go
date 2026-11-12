@@ -1335,15 +1335,16 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: "cancelling"}
 
 	case cmdAskPerm:
-		if c.process != a.process {
-			// From a process Stop killed or an account switch replaced, asked
-			// on its way out. Nobody could answer it for that process, and
-			// recorded it would wait in the log for ever.
+		// From a process Stop killed or an account switch replaced, asked on
+		// its way out, or asked as its turn ended and overtaken by the
+		// finish. Nobody is waiting on it, and recorded it would wait in the
+		// log for ever.
+		if c.process != a.process || a.turnOver(c.perm.req.TurnID) {
 			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
 			return false
 		}
 		req := c.perm.req
-		requestID := uuid.NewString()
+		requestID := c.reqID
 		a.pendingPerm[requestID] = c.perm.ch
 		opts := req.Options
 		if len(opts) == 0 {
@@ -1377,12 +1378,12 @@ func (a *Actor) handle(c command) (stop bool) {
 		c.reply <- cmdResult{value: "resolved"}
 
 	case cmdAskElicit:
-		if c.process != a.process {
+		if c.process != a.process || a.turnOver(c.elicit.req.TurnID) {
 			// As for a permission.
 			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
 			return false
 		}
-		requestID := uuid.NewString()
+		requestID := c.reqID
 		a.pendingElicit[requestID] = c.elicit.ch
 		a.append(proto.Emit(proto.ElicitationRequested, proto.ElicitationRequestedPayload{
 			RequestID: requestID, TurnID: c.elicit.req.TurnID,
@@ -1850,6 +1851,7 @@ func (a *Actor) write(em proto.Emission) error {
 			a.measuring = ""
 			a.turnActive = ""
 		}
+		a.releaseSettled()
 	}
 
 	// The stored phase column is a cache of the projection, kept for the
@@ -1939,6 +1941,35 @@ func (a *Actor) fanout(ev proto.Event) {
 	}
 }
 
+// turnOver reports whether the log has already finished turn. An ask that
+// names no turn is never over.
+func (a *Actor) turnOver(turn string) bool {
+	if turn == "" {
+		return false
+	}
+	for _, t := range a.state.Turns {
+		if t.ID == turn {
+			return t.Done
+		}
+	}
+	return false
+}
+
+// releaseSettled unblocks the asker of every request the projection no longer
+// holds open. A finished turn takes its requests with it, whether or not the
+// harness said it withdrew them, and the adapter goroutine waiting on one
+// must not wait forever.
+func (a *Actor) releaseSettled() {
+	open := map[string]bool{}
+	for _, p := range a.state.Pending {
+		open[p.RequestID] = true
+	}
+	for _, p := range a.state.Elicitations {
+		open[p.RequestID] = true
+	}
+	a.releaseAsksExcept(open)
+}
+
 // ---- host services exposed to adapters ----
 
 // hostServices is what one harness process is given to reach the actor.
@@ -1950,11 +1981,15 @@ type hostServices struct {
 
 // RequestPermission appends a durable permission.requested event and blocks
 // until any presenter resolves it. Nothing about this lives in a connection.
+// An adapter cancels ctx when the harness withdraws the request; the request
+// is then resolved as cancelled, so no presenter is left holding a card the
+// harness has stopped waiting on.
 func (h hostServices) RequestPermission(ctx context.Context, req adapter.PermissionRequest) (adapter.PermissionOutcome, error) {
 	ch := make(chan adapter.PermissionOutcome, 1)
+	requestID := uuid.NewString()
 
 	select {
-	case h.a.inbox <- command{kind: cmdAskPerm, process: h.process, perm: permAsk{req: req, ch: ch}}:
+	case h.a.inbox <- command{kind: cmdAskPerm, process: h.process, reqID: requestID, perm: permAsk{req: req, ch: ch}}:
 	case <-h.a.quit:
 		return adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}, nil
 	case <-ctx.Done():
@@ -1967,14 +2002,18 @@ func (h hostServices) RequestPermission(ctx context.Context, req adapter.Permiss
 	case <-h.a.quit:
 		return adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}, nil
 	case <-ctx.Done():
-		return adapter.PermissionOutcome{}, ctx.Err()
+		cancelled := adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
+		h.withdraw(command{kind: cmdResolvePerm, reqID: requestID, outcome: cancelled})
+		return cancelled, ctx.Err()
 	}
 }
 
+// Elicit is RequestPermission's twin for a question, withdrawn the same way.
 func (h hostServices) Elicit(ctx context.Context, req adapter.ElicitationRequest) (adapter.ElicitationResult, error) {
 	ch := make(chan adapter.ElicitationResult, 1)
+	requestID := uuid.NewString()
 	select {
-	case h.a.inbox <- command{kind: cmdAskElicit, process: h.process, elicit: elicitAsk{req: req, ch: ch}}:
+	case h.a.inbox <- command{kind: cmdAskElicit, process: h.process, reqID: requestID, elicit: elicitAsk{req: req, ch: ch}}:
 	case <-h.a.quit:
 		return adapter.ElicitationResult{Action: "cancel"}, nil
 	case <-ctx.Done():
@@ -1986,7 +2025,20 @@ func (h hostServices) Elicit(ctx context.Context, req adapter.ElicitationRequest
 	case <-h.a.quit:
 		return adapter.ElicitationResult{Action: "cancel"}, nil
 	case <-ctx.Done():
-		return adapter.ElicitationResult{}, ctx.Err()
+		cancelled := adapter.ElicitationResult{Action: "cancel"}
+		h.withdraw(command{kind: cmdResolveElicit, reqID: requestID, elicitResult: cancelled})
+		return cancelled, ctx.Err()
+	}
+}
+
+// withdraw resolves a request whose asker stopped waiting. It does not wait
+// for the actor: a human answer that got there first wins, and the asker has
+// nothing left to do with either.
+func (h hostServices) withdraw(c command) {
+	c.reply = make(chan cmdResult, 1)
+	select {
+	case h.a.inbox <- c:
+	case <-h.a.quit:
 	}
 }
 

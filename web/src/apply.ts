@@ -161,6 +161,23 @@ function imageTitle(n: number): string {
   return n === 1 ? "1 image" : `${n} images`;
 }
 
+// The permissions and questions a finished turn was blocked on are dropped:
+// the harness stopped waiting once its turn was over. A request naming no turn
+// is left alone, and so are cards, which outlive the turn. Mirrors
+// internal/projection/state.go.
+function settleRequests(
+  s: ThreadState,
+  turnId: string | undefined,
+): Pick<ThreadState, "pendingPermissions" | "pendingElicitations"> {
+  const pendingPermissions = s.pendingPermissions;
+  const pendingElicitations = s.pendingElicitations ?? [];
+  if (!turnId) return { pendingPermissions, pendingElicitations };
+  return {
+    pendingPermissions: pendingPermissions.filter((x) => x.turnId !== turnId),
+    pendingElicitations: pendingElicitations.filter((x) => x.card || x.turnId !== turnId),
+  };
+}
+
 export function applyEvent(state: ThreadState, ev: Event): ThreadState {
   if (ev.seq <= state.seq) return state;
   const s: ThreadState = { ...state, seq: ev.seq };
@@ -288,6 +305,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       const match = open === "" || p.turnId === open;
       return {
         ...s,
+        ...settleRequests(s, p.turnId),
         phase: match ? "idle" : s.phase,
         scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.turnId === p.turnId && p.stopReason === "error" ? {...q, status: "failed", error: p.error, revision: q.revision + 1} : q),
         turns: s.turns.map((t) =>
@@ -491,6 +509,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
             title: p.title,
             input: p.rawInput,
             options: p.options ?? [],
+            ...(p.turnId ? { turnId: p.turnId } : {}),
           },
         ],
       };
@@ -504,7 +523,13 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "elicitation.requested": {
       const pendingElicitations = [
         ...(s.pendingElicitations ?? []),
-        { requestId: p.requestId, prompt: p.prompt, schema: p.schema ?? {}, ...(p.card ? { card: p.card } : {}) },
+        {
+          requestId: p.requestId,
+          prompt: p.prompt,
+          schema: p.schema ?? {},
+          ...(p.turnId ? { turnId: p.turnId } : {}),
+          ...(p.card ? { card: p.card } : {}),
+        },
       ];
       if (!p.card) return { ...s, pendingElicitations };
       // A card is also a row in the transcript, where it stays once answered

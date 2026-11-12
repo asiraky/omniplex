@@ -3,6 +3,7 @@ package piapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,8 +113,13 @@ func hasType(got []proto.Emission, typ string) bool {
 
 func startSession(t *testing.T, dir string, o adapter.CreateOptions) adapter.Session {
 	t.Helper()
+	return startSessionWith(t, dir, fakeHost{}, o)
+}
+
+func startSessionWith(t *testing.T, dir string, host adapter.HostServices, o adapter.CreateOptions) adapter.Session {
+	t.Helper()
 	a := New(fakePi(t, dir, ""))
-	s, err := a.CreateSession(context.Background(), fakeHost{}, o)
+	s, err := a.CreateSession(context.Background(), host, o)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -561,20 +567,25 @@ func TestHarnessInitiatedTurnAndCompaction(t *testing.T) {
 func TestFinishTurnStopMapping(t *testing.T) {
 	cases := []struct {
 		stop, errMsg string
+		aborted      string // the turn Cancel aborted
 		wantReason   string
 		wantFailure  string
 	}{
-		{"stop", "", proto.StopEndTurn, ""},
-		{"toolUse", "", proto.StopEndTurn, ""},
-		{"aborted", "", proto.StopCancelled, ""},
-		{"length", "", proto.StopMaxTokens, ""},
-		{"error", "boom", proto.StopError, ""},
-		{"error", `No API key found for "anthropic"`, proto.StopError, proto.FailureAuth},
-		{"error", "Provider is not configured: openrouter", proto.StopError, proto.FailureAuth},
+		{"stop", "", "", proto.StopEndTurn, ""},
+		{"toolUse", "", "", proto.StopEndTurn, ""},
+		{"aborted", "", "", proto.StopCancelled, ""},
+		{"length", "", "", proto.StopMaxTokens, ""},
+		{"error", "boom", "", proto.StopError, ""},
+		{"error", `No API key found for "anthropic"`, "", proto.StopError, proto.FailureAuth},
+		{"error", "Provider is not configured: openrouter", "", proto.StopError, proto.FailureAuth},
+		// Stopped mid-tool, pi calls the run an error; the user stopped it.
+		{"error", "This operation was aborted", "t1", proto.StopCancelled, ""},
+		{"stop", "", "t1", proto.StopEndTurn, ""},
+		{"error", "boom", "t0", proto.StopError, ""},
 	}
 	for _, c := range cases {
 		s := &session{events: make(chan proto.Emission, 8), done: make(chan struct{})}
-		s.turnID, s.lastStop, s.lastErr = "t1", c.stop, c.errMsg
+		s.turnID, s.lastStop, s.lastErr, s.aborted = "t1", c.stop, c.errMsg, c.aborted
 		s.finishTurn()
 		e := <-s.events
 		p := e.Payload.(proto.TurnFinishedPayload)
@@ -625,5 +636,136 @@ func TestProbe(t *testing.T) {
 
 	if avail := New(filepath.Join(dir, "missing")).Probe(context.Background(), nil); avail.OK() {
 		t.Error("a missing binary must probe unavailable")
+	}
+}
+
+// blockingHost holds every elicitation open until its ctx ends, as a human who
+// never answers would, and reports how each one was released.
+type blockingHost struct {
+	fakeHost
+	asked    chan struct{}
+	released chan error
+}
+
+func newBlockingHost() *blockingHost {
+	return &blockingHost{asked: make(chan struct{}, 4), released: make(chan error, 4)}
+}
+
+func (h *blockingHost) Elicit(ctx context.Context, req adapter.ElicitationRequest) (adapter.ElicitationResult, error) {
+	h.asked <- struct{}{}
+	<-ctx.Done()
+	h.released <- ctx.Err()
+	return adapter.ElicitationResult{Action: "cancel"}, ctx.Err()
+}
+
+// startDialog opens a turn whose only event is the given extension dialog and
+// waits until the host is holding it.
+func startDialog(t *testing.T, dir string, h *blockingHost, request string) adapter.Session {
+	t.Helper()
+	events := `{"type":"agent_start"}` + "\n" + request + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "events"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSessionWith(t, dir, h, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "go"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	select {
+	case <-h.asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dialog never reached the host")
+	}
+	return s
+}
+
+func waitReleased(t *testing.T, h *blockingHost) error {
+	t.Helper()
+	select {
+	case err := <-h.released:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dialog was never released")
+		return nil
+	}
+}
+
+func TestDialogTimeoutWithdrawsElicitation(t *testing.T) {
+	// Pi resolves a timed-out dialog to its default without a word, so the
+	// card must expire on the same clock.
+	dir := t.TempDir()
+	h := newBlockingHost()
+	startDialog(t, dir, h,
+		`{"type":"extension_ui_request","id":"d1","method":"confirm","title":"Proceed?","message":"","timeout":50}`)
+	if err := waitReleased(t, h); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("released with %v, want deadline exceeded", err)
+	}
+}
+
+func TestCancelWithdrawsOpenDialog(t *testing.T) {
+	dir := t.TempDir()
+	h := newBlockingHost()
+	s := startDialog(t, dir, h,
+		`{"type":"extension_ui_request","id":"d1","method":"input","title":"Name?"}`)
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if err := waitReleased(t, h); !errors.Is(err, context.Canceled) {
+		t.Fatalf("released with %v, want canceled", err)
+	}
+
+	// Pi must hear the dialog was cancelled, or the extension stays wedged.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		raw, _ := os.ReadFile(filepath.Join(dir, "lines"))
+		for _, line := range strings.Split(string(raw), "\n") {
+			var r struct {
+				Type      string `json:"type"`
+				ID        string `json:"id"`
+				Cancelled bool   `json:"cancelled"`
+			}
+			if json.Unmarshal([]byte(line), &r) == nil && r.Type == "extension_ui_response" && r.ID == "d1" && r.Cancelled {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pi never got a cancelled response for d1; saw:\n%s", raw)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCloseWithdrawsOpenDialog(t *testing.T) {
+	dir := t.TempDir()
+	h := newBlockingHost()
+	s := startDialog(t, dir, h,
+		`{"type":"extension_ui_request","id":"d1","method":"select","title":"Pick","options":["a","b"]}`)
+	_ = s.Close()
+	if err := waitReleased(t, h); !errors.Is(err, context.Canceled) {
+		t.Fatalf("released with %v, want canceled", err)
+	}
+}
+
+// A dialog pi raises as Stop is pressed lands after Cancel has swept, and
+// the turn then settles. Its turn ending must withdraw it, or the card stays
+// up with nothing left to take it down.
+func TestTurnEndWithdrawsDialogRaisedDuringStop(t *testing.T) {
+	dir := t.TempDir()
+	h := newBlockingHost()
+	if err := os.WriteFile(filepath.Join(dir, "events"), []byte(`{"type":"agent_start"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	abort := `{"type":"extension_ui_request","id":"d1","method":"input","title":"Name?"}` + "\n" + `{"type":"agent_settled"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "abort_events"), []byte(abort), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := startSessionWith(t, dir, h, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err := s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "go"}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if err := waitReleased(t, h); !errors.Is(err, context.Canceled) {
+		t.Fatalf("released with %v, want canceled", err)
 	}
 }

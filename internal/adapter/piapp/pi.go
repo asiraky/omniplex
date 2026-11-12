@@ -243,6 +243,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		done:    make(chan struct{}),
 		rpcDone: make(chan struct{}),
 		pending: map[string]chan rpcResponse{},
+		dialogs: map[string]dialog{},
 	}
 
 	go s.readLoop(stdout)
@@ -310,6 +311,10 @@ type session struct {
 
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
+	// dialogs holds every extension dialog still waiting on a human, keyed
+	// by pi's request id. Cancelling one withdraws its card and answers pi
+	// cancelled; each removes itself when its Elicit returns.
+	dialogs map[string]dialog
 	turnID  string
 	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
@@ -321,6 +326,9 @@ type session struct {
 	// become the turn's stop reason.
 	lastStop string
 	lastErr  string
+	// aborted is the turn Cancel aborted. Pi reports a run aborted mid-tool
+	// (an open extension dialog, say) as an error, and the user pressed Stop.
+	aborted string
 	// Running totals for usage.updated. Pi reports usage per assistant
 	// message; the meter wants the session's cumulative spend.
 	totIn, totOut, totCacheR, totCacheW int64
@@ -540,9 +548,12 @@ func (s *session) clearTurn(turnID string) {
 // Cancel aborts the in-flight run. Pi's abort succeeds even when idle, so
 // there is no coalescing to do, but skipping the call when no turn is open
 // keeps a stray stop press from aborting a run that starts a moment later.
+// Open extension dialogs are withdrawn with it: stop means stop.
 func (s *session) Cancel(ctx context.Context) error {
+	s.cancelDialogs()
 	s.mu.Lock()
 	idle := s.turnID == ""
+	s.aborted = s.turnID
 	s.mu.Unlock()
 	if idle {
 		return nil
@@ -580,6 +591,7 @@ func (s *session) SetEffort(ctx context.Context, effort string) error {
 
 func (s *session) Close() error {
 	s.closed.Do(func() {
+		s.cancelDialogs()
 		close(s.done)
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
@@ -592,6 +604,9 @@ func (s *session) Close() error {
 
 func (s *session) watchExit() {
 	<-s.rpcDone
+	// Nobody is left to read a dialog's answer, and the read loop has
+	// registered its last one, so this catches them all.
+	s.cancelDialogs()
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
@@ -905,15 +920,23 @@ func (s *session) finishTurn() {
 	s.mu.Lock()
 	turn := s.turnID
 	stop, errMsg := s.lastStop, s.lastErr
+	aborted := turn != "" && s.aborted == turn
 	s.turnID = ""
-	s.lastStop, s.lastErr = "", ""
+	s.lastStop, s.lastErr, s.aborted = "", "", ""
 	s.mu.Unlock()
 	// A settle with no open turn is a straggler (an abort raced the settle);
 	// emitting an empty turn id would confuse every projection downstream.
 	if turn == "" {
 		return
 	}
+	// Pi is done with the turn, so it is done with its dialogs, whether or
+	// not it said so: one raised as Stop was pressed lands after Cancel's
+	// sweep, and nothing else would take it down.
+	s.cancelTurnDialogs(turn)
 
+	if aborted && stop == "error" {
+		stop = "aborted"
+	}
 	reason, failure := proto.StopEndTurn, ""
 	switch stop {
 	case "aborted":
@@ -939,16 +962,7 @@ func (s *session) finishTurn() {
 // wedges the extension. Fire-and-forget methods (notify, setStatus, …) expect
 // no response.
 func (s *session) handleUIRequest(raw json.RawMessage) {
-	var p struct {
-		ID          string   `json:"id"`
-		Method      string   `json:"method"`
-		Title       string   `json:"title"`
-		Message     string   `json:"message"`
-		Placeholder string   `json:"placeholder"`
-		Prefill     string   `json:"prefill"`
-		Options     []string `json:"options"`
-		NotifyType  string   `json:"notifyType"`
-	}
+	var p uiRequest
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return
 	}
@@ -962,30 +976,95 @@ func (s *session) handleUIRequest(raw json.RawMessage) {
 		return
 	case "select", "confirm", "input", "editor":
 		// Handled below. Elicit blocks on a human, so it must not run on the
-		// read loop: a dialog would freeze every event until answered.
-		go s.elicitUIRequest(p.ID, p.Method, p.Title, p.Message, p.Placeholder, p.Prefill, p.Options)
+		// read loop: a dialog would freeze every event until answered. It is
+		// registered here, not in the goroutine, so a Cancel, exit or turn
+		// end that follows this event always finds it, under the turn that
+		// was open when pi raised it.
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if p.Timeout > 0 {
+			ctx, cancel = context.WithTimeout(context.Background(), time.Duration(p.Timeout*float64(time.Millisecond)))
+		} else {
+			ctx, cancel = context.WithCancel(context.Background())
+		}
+		s.mu.Lock()
+		turn := s.turnID
+		s.dialogs[p.ID] = dialog{turn: turn, cancel: cancel}
+		s.mu.Unlock()
+		go func() {
+			defer func() {
+				cancel()
+				s.mu.Lock()
+				delete(s.dialogs, p.ID)
+				s.mu.Unlock()
+			}()
+			s.elicitUIRequest(ctx, turn, p)
+		}()
 	}
 }
 
-func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefill string, options []string) {
-	prompt := title
-	if message != "" {
-		prompt = strings.TrimSpace(title + "\n" + message)
+// uiRequest is pi's extension_ui_request.
+type uiRequest struct {
+	ID          string   `json:"id"`
+	Method      string   `json:"method"`
+	Title       string   `json:"title"`
+	Message     string   `json:"message"`
+	Placeholder string   `json:"placeholder"`
+	Prefill     string   `json:"prefill"`
+	Options     []string `json:"options"`
+	NotifyType  string   `json:"notifyType"`
+	// Timeout is in milliseconds. On expiry pi resolves the dialog to its
+	// default by itself and tells us nothing, so the card must go too.
+	Timeout float64 `json:"timeout"`
+}
+
+// dialog is an extension dialog waiting on a human, and the turn it was
+// raised in; empty when pi raised it outside one.
+type dialog struct {
+	turn   string
+	cancel context.CancelFunc
+}
+
+// cancelDialogs withdraws every open extension dialog. The host drops each
+// card when its ctx ends, and elicitUIRequest answers pi cancelled.
+func (s *session) cancelDialogs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.dialogs {
+		d.cancel()
+	}
+}
+
+// cancelTurnDialogs withdraws the open extension dialogs raised during turn.
+func (s *session) cancelTurnDialogs(turn string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.dialogs {
+		if d.turn == turn {
+			d.cancel()
+		}
+	}
+}
+
+func (s *session) elicitUIRequest(ctx context.Context, turn string, p uiRequest) {
+	prompt := p.Title
+	if p.Message != "" {
+		prompt = strings.TrimSpace(p.Title + "\n" + p.Message)
 	}
 
-	field := map[string]any{"type": "string", "title": title}
-	switch method {
+	field := map[string]any{"type": "string", "title": p.Title}
+	switch p.Method {
 	case "select":
-		field["enum"] = options
+		field["enum"] = p.Options
 	case "confirm":
 		field["enum"] = []string{"Yes", "No"}
 	case "input":
-		if placeholder != "" {
-			field["description"] = placeholder
+		if p.Placeholder != "" {
+			field["description"] = p.Placeholder
 		}
 	case "editor":
-		if prefill != "" {
-			field["default"] = prefill
+		if p.Prefill != "" {
+			field["default"] = p.Prefill
 		}
 	}
 	schema, _ := json.Marshal(map[string]any{
@@ -996,12 +1075,12 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 
 	respond := func(body map[string]any) {
 		body["type"] = "extension_ui_response"
-		body["id"] = id
+		body["id"] = p.ID
 		_ = s.send(body)
 	}
 
-	result, err := s.host.Elicit(context.Background(), adapter.ElicitationRequest{
-		TurnID: s.currentTurn(), Prompt: prompt, Schema: schema,
+	result, err := s.host.Elicit(ctx, adapter.ElicitationRequest{
+		TurnID: turn, Prompt: prompt, Schema: schema,
 	})
 	if err != nil || result.Action != "accept" {
 		respond(map[string]any{"cancelled": true})
@@ -1011,7 +1090,7 @@ func (s *session) elicitUIRequest(id, method, title, message, placeholder, prefi
 		Value string `json:"value"`
 	}
 	_ = json.Unmarshal(result.Value, &values)
-	if method == "confirm" {
+	if p.Method == "confirm" {
 		respond(map[string]any{"confirmed": values.Value == "Yes"})
 		return
 	}

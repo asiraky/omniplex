@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -203,15 +204,16 @@ func TestRequestUserInputIsRoutedThroughDurableElicitation(t *testing.T) {
 	host := &elicitHost{result: adapter.ElicitationResult{
 		Action: "accept", Value: json.RawMessage(`{"colour":"Blue"}`),
 	}}
-	s := &session{host: host}
+	s := &session{host: host, turnID: "omniplex-turn"}
 	got, err := s.handleRequest(context.Background(), "item/tool/requestUserInput", json.RawMessage(`{
-		"turnId":"turn-1","threadId":"thread-1","itemId":"item-1","isBlocking":true,
+		"turnId":"codex-turn","threadId":"thread-1","itemId":"item-1","isBlocking":true,
 		"questions":[{"id":"colour","header":"Colour","question":"Pick one","options":[{"label":"Blue","description":"Cool"}]}]
 	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host.request.TurnID != "turn-1" || len(host.request.Schema) == 0 {
+	// Omniplex's turn id, which the projection settles pending requests by.
+	if host.request.TurnID != "omniplex-turn" || len(host.request.Schema) == 0 {
 		t.Fatalf("elicitation request was not canonicalised: %+v", host.request)
 	}
 	blob, _ := json.Marshal(got)
@@ -224,13 +226,16 @@ func TestMCPElicitationIsRoutedThroughHost(t *testing.T) {
 	host := &elicitHost{result: adapter.ElicitationResult{
 		Action: "accept", Value: json.RawMessage(`{"name":"Ada"}`),
 	}}
-	s := &session{host: host}
+	s := &session{host: host, turnID: "omniplex-turn"}
 	got, err := s.handleRequest(context.Background(), "mcpServer/elicitation/request", json.RawMessage(`{
-		"threadId":"thread-1","turnId":"turn-1","serverName":"demo","mode":"form",
+		"threadId":"thread-1","turnId":"codex-turn","serverName":"demo","mode":"form",
 		"message":"Your name?","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}}}
 	}`))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if host.request.TurnID != "omniplex-turn" {
+		t.Fatalf("elicitation turn=%q, want omniplex's", host.request.TurnID)
 	}
 	blob, _ := json.Marshal(got)
 	if string(blob) != `{"action":"accept","content":{"name":"Ada"}}` {
@@ -325,6 +330,82 @@ func TestCommandApprovalDecision(t *testing.T) {
 		if string(blob) != `{"decision":"`+want+`"}` {
 			t.Fatalf("%s: response=%s", outcome, blob)
 		}
+	}
+}
+
+// waitingHost holds every prompt open until its context ends, the way a human
+// who never answers does, and reports when each call starts and is released.
+type waitingHost struct {
+	entered, released chan struct{}
+}
+
+func (h *waitingHost) RequestPermission(ctx context.Context, _ adapter.PermissionRequest) (adapter.PermissionOutcome, error) {
+	h.entered <- struct{}{}
+	<-ctx.Done()
+	h.released <- struct{}{}
+	return adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}, ctx.Err()
+}
+func (h *waitingHost) Elicit(ctx context.Context, _ adapter.ElicitationRequest) (adapter.ElicitationResult, error) {
+	h.entered <- struct{}{}
+	<-ctx.Done()
+	h.released <- struct{}{}
+	return adapter.ElicitationResult{Action: "cancel"}, ctx.Err()
+}
+func (*waitingHost) Logf(string, ...any) {}
+
+// TestResolvedRequestReleasesItsPrompt is issue #253: codex settles a request
+// itself when its turn ends, and the prompt it withdrew stayed pending forever.
+// The resolution names a subagent's thread, which must not route it away from
+// the connection that owns the request id.
+func TestResolvedRequestReleasesItsPrompt(t *testing.T) {
+	for _, tc := range []struct{ name, request string }{
+		{"approval", `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","itemId":"c1","command":"rm -rf /"}}`},
+		{"user input", `{"jsonrpc":"2.0","id":7,"method":"item/tool/requestUserInput","params":{"threadId":"thread-1","questions":[{"id":"q","question":"Sure?"}]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &waitingHost{entered: make(chan struct{}, 1), released: make(chan struct{}, 1)}
+			// peer writes -> session reads; session writes -> peer reads.
+			sessionRead, peerWrite := io.Pipe()
+			peerRead, sessionWrite := io.Pipe()
+			s := &session{host: host, threadID: "thread-1", turnID: "omniplex-turn"}
+			s.conn = jsonrpc.NewConn(sessionRead, sessionWrite, s.handleRequest, s.handleNotification)
+			t.Cleanup(func() { _ = peerWrite.Close(); _ = peerRead.Close() })
+
+			send := func(line string) {
+				t.Helper()
+				if _, err := io.WriteString(peerWrite, line+"\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wait := func(ch chan struct{}, what string) {
+				t.Helper()
+				select {
+				case <-ch:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("prompt never %s", what)
+				}
+			}
+
+			send(tc.request)
+			wait(host.entered, "reached the host")
+			send(`{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"subagent-9","requestId":7}}`)
+			wait(host.released, "released")
+
+			// Codex is not waiting on 7, so the first answer it reads is the
+			// next request's.
+			send(`{"jsonrpc":"2.0","id":8,"method":"no/such/method"}`)
+			line, err := bufio.NewReader(peerRead).ReadBytes('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got jsonrpc.Message
+			if err := json.Unmarshal(line, &got); err != nil {
+				t.Fatal(err)
+			}
+			if string(got.ID) != "8" {
+				t.Fatalf("first response was %s, want id 8 with no answer to the withdrawn 7", line)
+			}
+		})
 	}
 }
 

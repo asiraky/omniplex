@@ -2076,3 +2076,142 @@ func TestSteerRefusedFallsBackToQueue(t *testing.T) {
 	})
 	_ = second
 }
+
+// A harness that withdraws a request cancels the adapter's ctx. The request is
+// resolved as cancelled in the log, so no presenter is left with a card the
+// harness has stopped waiting on.
+func TestWithdrawnRequestIsResolvedCancelled(t *testing.T) {
+	for _, kind := range []string{"permission", "elicitation"} {
+		t.Run(kind, func(t *testing.T) {
+			actor, fa, _ := newTestActor(t)
+			host := fa.thread().host
+			ctx, withdraw := context.WithCancel(context.Background())
+			returned := make(chan error, 1)
+			go func() {
+				var err error
+				if kind == "permission" {
+					var out adapter.PermissionOutcome
+					out, err = host.RequestPermission(ctx, adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+					if out.Outcome != proto.OutcomeCancelled {
+						t.Errorf("outcome = %q, want cancelled", out.Outcome)
+					}
+				} else {
+					var out adapter.ElicitationResult
+					out, err = host.Elicit(ctx, adapter.ElicitationRequest{TurnID: "t1", Prompt: "which?"})
+					if out.Action != "cancel" {
+						t.Errorf("action = %q, want cancel", out.Action)
+					}
+				}
+				returned <- err
+			}()
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Pending)+len(st.Elicitations) == 1
+			})
+
+			withdraw()
+			select {
+			case err := <-returned:
+				if err != context.Canceled {
+					t.Fatalf("asker returned %v, want context.Canceled", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("asker was not released by its ctx")
+			}
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Pending)+len(st.Elicitations) == 0 && st.Attention() == projection.AttentionNeedsPrompt
+			})
+
+			evs, _ := actor.store.ReadEvents(context.Background(), actor.ID, 0, 10000)
+			for _, ev := range evs {
+				switch ev.Type {
+				case proto.PermissionResolved:
+					var p proto.PermissionResolvedPayload
+					_ = json.Unmarshal(ev.Payload, &p)
+					if p.Outcome != proto.OutcomeCancelled {
+						t.Fatalf("resolved outcome = %q, want cancelled", p.Outcome)
+					}
+					return
+				case proto.ElicitationResolved:
+					var p proto.ElicitationResolvedPayload
+					_ = json.Unmarshal(ev.Payload, &p)
+					if p.Action != "cancel" {
+						t.Fatalf("resolved action = %q, want cancel", p.Action)
+					}
+					return
+				}
+			}
+			t.Fatal("no resolution was appended for the withdrawn request")
+		})
+	}
+}
+
+// A turn that ends while a request of its own is pending releases the adapter
+// waiting on it, even when the harness never said it withdrew the request.
+func TestTurnFinishedReleasesItsPendingRequest(t *testing.T) {
+	actor, fa, _ := newTestActor(t)
+	sess := fa.thread()
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+
+	outcomes := make(chan adapter.PermissionOutcome, 1)
+	go func() {
+		out, _ := sess.host.RequestPermission(context.Background(), adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+		outcomes <- out
+	}()
+	waitFor(t, func() bool {
+		st, err := actor.State(context.Background())
+		return err == nil && st.Attention() == projection.AttentionNeedsPermission
+	})
+
+	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+	select {
+	case out := <-outcomes:
+		if out.Outcome != proto.OutcomeCancelled {
+			t.Fatalf("outcome = %q, want cancelled", out.Outcome)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the asker outlived its turn")
+	}
+	st, _ := actor.State(context.Background())
+	if got := st.Attention(); got != projection.AttentionNeedsPrompt {
+		t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
+	}
+}
+
+// An ask that reaches the actor after its turn's finish is answered cancelled
+// and never recorded: the finish that would have settled it has been folded
+// already, so a card raised now would stay up for ever.
+func TestAskAfterItsTurnFinishedIsCancelled(t *testing.T) {
+	for _, kind := range []string{"permission", "elicitation"} {
+		t.Run(kind, func(t *testing.T) {
+			actor, fa, _ := newTestActor(t)
+			sess := fa.thread()
+			sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+			sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Turns) == 1 && st.Turns[0].Done
+			})
+
+			if kind == "permission" {
+				out, err := sess.host.RequestPermission(context.Background(), adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+				if err != nil || out.Outcome != proto.OutcomeCancelled {
+					t.Fatalf("outcome = %q, %v; want cancelled", out.Outcome, err)
+				}
+			} else {
+				out, err := sess.host.Elicit(context.Background(), adapter.ElicitationRequest{TurnID: "t1", Prompt: "which?"})
+				if err != nil || out.Action != "cancel" {
+					t.Fatalf("action = %q, %v; want cancel", out.Action, err)
+				}
+			}
+			st, _ := actor.State(context.Background())
+			if len(st.Pending)+len(st.Elicitations) != 0 {
+				t.Fatalf("a late ask was recorded: pending=%+v elicitations=%+v", st.Pending, st.Elicitations)
+			}
+			if got := st.Attention(); got != projection.AttentionNeedsPrompt {
+				t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
+			}
+		})
+	}
+}

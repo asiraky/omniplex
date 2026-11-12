@@ -549,3 +549,46 @@ func TestUnanchoredPlanIsDropped(t *testing.T) {
 		t.Fatalf("plan items = %+v, want none", ps)
 	}
 }
+
+// A finished turn takes the requests it was blocked on with it: a harness
+// that stopped waiting must not leave a card up, or the thread waiting on the
+// user. Requests of other turns, untagged ones and cards stay. Mirrored by
+// web/src/apply.test.ts.
+func TestTurnFinishedSettlesItsRequests(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p1", TurnID: "t1", Title: "rm -rf"}))
+	s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-other", TurnID: "t0", Title: "ls"}))
+	s.Apply(event(t, 4, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-untagged", Title: "cat"}))
+	s.Apply(event(t, 5, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", TurnID: "t1", Prompt: "which?"}))
+	s.Apply(event(t, 6, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "card1", TurnID: "t1", Card: json.RawMessage(`{"kind":"mcp"}`)}))
+	if got := s.Attention(); got != AttentionNeedsPermission {
+		t.Fatalf("attention before stop = %q, want %q", got, AttentionNeedsPermission)
+	}
+
+	s.Apply(event(t, 7, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+
+	var perms []string
+	for _, p := range s.Pending {
+		perms = append(perms, p.RequestID)
+	}
+	if len(perms) != 2 || perms[0] != "p-other" || perms[1] != "p-untagged" {
+		t.Fatalf("pending after finish = %v, want [p-other p-untagged]", perms)
+	}
+	if len(s.Elicitations) != 1 || s.Elicitations[0].RequestID != "card1" {
+		t.Fatalf("elicitations after finish = %+v, want only the card", s.Elicitations)
+	}
+}
+
+func TestTurnFinishedNamingNoTurnSettlesNothing(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "p-untagged", Title: "cat"}))
+	s.Apply(event(t, 3, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q-untagged", Prompt: "which?"}))
+
+	s.Apply(event(t, 4, proto.TurnFinished, proto.TurnFinishedPayload{StopReason: proto.StopCancelled}))
+
+	if len(s.Pending) != 1 || len(s.Elicitations) != 1 {
+		t.Fatalf("after a finish naming no turn: pending %+v, elicitations %+v; want both kept", s.Pending, s.Elicitations)
+	}
+}
