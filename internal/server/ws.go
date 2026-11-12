@@ -482,7 +482,7 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if a.ProjectID == "" {
 			return nil, errors.New("a thread belongs to a project; choose one")
 		}
-		actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef, Pinned: a.Pinned})
+		actor, err := c.srv.mgr.CreateProject(ctx, thread.CreateProjectOptions{ProjectID: a.ProjectID, Harness: a.Harness, Instance: a.Instance, Model: a.Model, Mode: a.Mode, Effort: a.Effort, ServiceTier: a.ServiceTier, AgentSettingsExplicit: a.AgentSettingsExplicit, Branch: a.Branch, Workspace: a.Workspace, WorkspacePath: a.WorkspacePath, FolderID: a.FolderID, BaseRef: a.BaseRef, Pinned: a.Pinned})
 		if err != nil {
 			return nil, err
 		}
@@ -747,6 +747,20 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"effort": a.Effort}, nil
+
+	case "set_service_tier":
+		var a setServiceTierArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if err := actor.SetServiceTier(ctx, a.ServiceTier); err != nil {
+			return nil, err
+		}
+		return map[string]any{"serviceTier": a.ServiceTier}, nil
 
 	case "set_thread_pinned":
 		var a setThreadPinnedArgs

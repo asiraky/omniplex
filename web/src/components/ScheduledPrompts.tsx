@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ScheduledPrompt } from "~/protocol";
 import { Button } from "~/components/ui/button";
 import { scheduleLabel } from "~/lib/scheduleTime";
+import { useNow } from "~/useNow";
 
 export function ScheduledPrompts({
   schedules,
@@ -14,13 +15,9 @@ export function ScheduledPrompts({
   onEdit: (p: ScheduledPrompt) => void;
   onAction: (action: string, p: ScheduledPrompt) => Promise<void>;
 }) {
-  const [, setNow] = useState(Date.now());
+  const now = useNow();
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, []);
   // A limit continuation is the usage-limit card's to show and cancel.
   const visible = schedules
     .filter(
@@ -64,11 +61,12 @@ export function ScheduledPrompts({
           </div>
           <div className="text-xs text-muted-foreground">
             {p.timeZone}
-            {p.status === "pending" && p.dueAt > Date.now()
-              ? ` · in ${Math.ceil((p.dueAt - Date.now()) / 60_000)} min`
+            {p.status === "pending" && p.dueAt > now
+              ? ` · in ${Math.ceil((p.dueAt - now) / 60_000)} min`
               : ""}{" "}
             · {p.model || "Default model"}
             {p.effort ? ` · ${p.effort}` : ""}
+            {p.serviceTier ? " · Fast" : ""}
           </div>
           <p className="mt-2 line-clamp-3 whitespace-pre-wrap break-words">
             {p.prompt}

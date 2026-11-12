@@ -46,7 +46,7 @@ export function useThreadHarness(
     [activeId, clientRef],
   );
 
-  // Both resolve to whether the server took the change, so the picker can stop
+  // Each resolves to whether the server took the change, so the picker can stop
   // showing a pick that will never be echoed back.
   const setOnThread = useCallback(
     (name: string, args: Record<string, string>, failure: string) => {
@@ -67,6 +67,11 @@ export function useThreadHarness(
   );
   const switchEffort = useCallback(
     (effort: string) => setOnThread("set_effort", { effort }, "Could not change reasoning effort"),
+    [setOnThread],
+  );
+  const switchServiceTier = useCallback(
+    (serviceTier: string) =>
+      setOnThread("set_service_tier", { serviceTier }, "Could not change Fast mode"),
     [setOnThread],
   );
   // Re-sends a failed turn's prompt, images and all. Only ever on an explicit
@@ -139,6 +144,7 @@ export function useThreadHarness(
     switchMode,
     switchModel,
     switchEffort,
+    switchServiceTier,
     retryTurn,
     switchTargets,
     switchAccount,

@@ -236,16 +236,17 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 
 	s := &session{
-		host:    host,
-		cmd:     cmd,
-		proc:    adapter.WatchProcess(cmd, stderr, host.Logf, "pi"),
-		tree:    tree,
-		stdin:   stdin,
-		events:  make(chan proto.Emission, 256),
-		done:    make(chan struct{}),
-		rpcDone: make(chan struct{}),
-		pending: map[string]chan rpcResponse{},
-		dialogs: map[string]dialog{},
+		host:      host,
+		cmd:       cmd,
+		proc:      adapter.WatchProcess(cmd, stderr, host.Logf, "pi"),
+		tree:      tree,
+		stdin:     stdin,
+		events:    make(chan proto.Emission, 256),
+		done:      make(chan struct{}),
+		rpcDone:   make(chan struct{}),
+		pending:   map[string]chan rpcResponse{},
+		dialogs:   map[string]dialog{},
+		editPaths: map[string]string{},
 	}
 
 	go s.readLoop(stdout)
@@ -319,6 +320,10 @@ type session struct {
 	// cancelled; each removes itself when its Elicit returns.
 	dialogs map[string]dialog
 	turnID  string
+	// editPaths holds the file each running edit call names, by item id.
+	// tool_execution_end carries the result but not the args, and the diff
+	// it becomes needs the path.
+	editPaths map[string]string
 	// msgSeq counts assistant messages within this process so block ids stay
 	// unique across a turn with several messages: pi's contentIndex restarts
 	// at zero on each one. It restarts on respawn, so it is only unique
@@ -725,6 +730,13 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 			return
 		}
 		turn := s.ensureTurn()
+		if p.ToolName == "edit" {
+			if path := editPath(p.Args); path != "" {
+				s.mu.Lock()
+				s.editPaths[toolItemID(turn, p.ToolCallID)] = path
+				s.mu.Unlock()
+			}
+		}
 		s.emit(proto.Emit(proto.ToolCallStarted, proto.ToolCallStartedPayload{
 			TurnID: turn, ToolCallID: toolItemID(turn, p.ToolCallID),
 			Kind: toolKind(p.ToolName), Title: toolTitle(p.ToolName, p.Args),
@@ -736,34 +748,7 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		// aggregate, which is what the timeline renders.
 
 	case "tool_execution_end":
-		var p struct {
-			ToolCallID string `json:"toolCallId"`
-			IsError    bool   `json:"isError"`
-			Result     struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"result"`
-		}
-		if err := json.Unmarshal(raw, &p); err != nil {
-			return
-		}
-		status := proto.StatusCompleted
-		if p.IsError {
-			status = proto.StatusFailed
-		}
-		var content []proto.ToolContent
-		for _, c := range p.Result.Content {
-			if c.Type == "text" && c.Text != "" {
-				content = append(content, proto.ToolContent{Type: "text", Text: c.Text})
-			}
-		}
-		// The tool ends inside the turn that started it (pi settles after its
-		// tools finish), so the current turn rebuilds the same item id.
-		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
-			ToolCallID: toolItemID(s.currentTurn(), p.ToolCallID), Status: status, Content: content,
-		}))
+		s.handleToolEnd(raw)
 
 	case "compaction_start":
 		// No ensureTurn: automatic compaction runs inside a run pi has already
@@ -845,6 +830,78 @@ func (s *session) handleEvent(typ string, raw json.RawMessage) {
 		_ = json.Unmarshal(raw, &p)
 		s.host.Logf("pi extension error: %s", p.Error)
 	}
+}
+
+// handleToolEnd turns pi's tool result into the call's final update. Text
+// stays text; an image (read on a PNG) is stored by the host and travels as a
+// URL, never as base64; an edit's unified patch becomes a diff the timeline
+// can render in place of "Successfully replaced 1 block(s)".
+func (s *session) handleToolEnd(raw json.RawMessage) {
+	var p struct {
+		ToolCallID string `json:"toolCallId"`
+		ToolName   string `json:"toolName"`
+		IsError    bool   `json:"isError"`
+		Result     struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+				Data string `json:"data"`
+			} `json:"content"`
+			Details json.RawMessage `json:"details"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return
+	}
+	// The tool ends inside the turn that started it (pi settles after its
+	// tools finish), so the current turn rebuilds the same item id.
+	itemID := toolItemID(s.currentTurn(), p.ToolCallID)
+	s.mu.Lock()
+	path := s.editPaths[itemID]
+	delete(s.editPaths, itemID)
+	s.mu.Unlock()
+
+	status := proto.StatusCompleted
+	if p.IsError {
+		status = proto.StatusFailed
+	}
+	var content []proto.ToolContent
+	for _, c := range p.Result.Content {
+		switch {
+		case c.Type == "text" && c.Text != "":
+			content = append(content, proto.ToolContent{Type: "text", Text: c.Text})
+		case c.Type == "image" && c.Data != "":
+			content = append(content, adapter.ToolImage(s.host, c.Data))
+		}
+	}
+	// Pi's patch is jsdiff's createTwoFilesPatch with file headers only:
+	// ---/+++ then @@ hunks, which the web's parsePatch reads as it is.
+	if p.ToolName == "edit" && !p.IsError && path != "" {
+		var d struct {
+			Patch string `json:"patch"`
+		}
+		_ = json.Unmarshal(p.Result.Details, &d)
+		if d.Patch != "" && len(d.Patch) <= adapter.MaxToolDiff {
+			content = append(content, proto.ToolContent{Type: "diff", Path: path, Text: d.Patch})
+		}
+	}
+	s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
+		ToolCallID: itemID, Status: status, Content: content,
+	}))
+}
+
+// editPath is the file an edit call names. Pi still accepts file_path from
+// models that use the older argument name.
+func editPath(args json.RawMessage) string {
+	var a struct {
+		Path string `json:"path"`
+		File string `json:"file_path"`
+	}
+	_ = json.Unmarshal(args, &a)
+	if a.Path != "" {
+		return a.Path
+	}
+	return a.File
 }
 
 func (s *session) handleMessageUpdate(raw json.RawMessage) {
@@ -941,6 +998,9 @@ func (s *session) finishTurn() {
 	aborted := turn != "" && s.aborted == turn
 	s.turnID = ""
 	s.lastStop, s.lastErr, s.aborted = "", "", ""
+	// An edit that never ended (pi died mid-call) has nothing left to claim
+	// its path: the next turn builds different item ids.
+	clear(s.editPaths)
 	s.mu.Unlock()
 	// A settle with no open turn is a straggler (an abort raced the settle);
 	// emitting an empty turn id would confuse every projection downstream.

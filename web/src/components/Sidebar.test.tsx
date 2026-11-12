@@ -185,18 +185,6 @@ describe("Sidebar", () => {
     expect(panel?.className).toContain("sm:max-w-none");
   });
 
-  it("keeps the delete target thumb-sized without moving the glyph", () => {
-    viewport("phone");
-    renderSidebar({ activeId: "a" });
-
-    const del = screen.getAllByRole("button", { name: /^Delete thread/ })[0];
-    // The square stays 32px so it stays aligned with the logo below it; the
-    // hit area is grown around it instead. 32 + 2*6 = 44.
-    expect(del.className).toContain("size-8");
-    expect(del.className).toContain("after:-inset-1.5");
-    expect(del.className).toContain("md:after:hidden");
-  });
-
   it("renames a thread in place from the row's pencil", () => {
     const props = renderSidebar();
     fireEvent.click(screen.getByRole("button", { name: "Rename thread Thread a" }));

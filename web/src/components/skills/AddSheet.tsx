@@ -9,6 +9,7 @@ import { Label } from "~/components/ui/label";
 import { Marker } from "~/components/ui/marker";
 import { Spinner } from "~/components/ui/spinner";
 import { Textarea } from "~/components/ui/textarea";
+import { isComposing } from "~/lib/ime";
 import { defaultStagedTicks, normalizeStaged, retickStaged, sourceLabel } from "~/lib/skillFlows";
 import {
   skillDescriptionError,
@@ -434,8 +435,9 @@ export function AddSheet({
           value={source}
           onChange={(e) => setSource(e.target.value)}
           onKeyDown={(e) => {
-            // One line of input that happens to wrap: Enter sends it.
-            if (e.key === "Enter" && !e.shiftKey) {
+            // One line of input that happens to wrap: Enter sends it, unless
+            // it is confirming an IME candidate.
+            if (e.key === "Enter" && !e.shiftKey && !isComposing(e)) {
               e.preventDefault();
               void fetchSource();
             }

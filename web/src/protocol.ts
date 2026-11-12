@@ -33,12 +33,23 @@ export type PermissionOutcome =
   | "reject_always"
   | "cancelled";
 
+/** One piece of what a tool call produced. A diff carries a unified patch in
+    `text` (possibly hunks only). An image never carries its bytes: `url` is a
+    same-origin path to load them from, and `width`/`height` (0 or absent when
+    unknown) let a thumbnail hold its place before they arrive. */
 export interface ToolContent {
-  type: "text" | "diff";
+  type: "text" | "diff" | "image";
   text?: string;
   path?: string;
   oldText?: string;
   newText?: string;
+  url?: string;
+  /** A small JPEG of the same image, for a thumbnail; absent when the image is
+      already thumbnail-sized. */
+  thumbUrl?: string;
+  mediaType?: string;
+  width?: number;
+  height?: number;
 }
 
 /** One image a human attached to a prompt. The bytes are read back from the
@@ -432,6 +443,8 @@ export interface ThreadState {
   model: string;
   mode: string;
   effort: string;
+  /** The harness's service tier: "" is standard speed, otherwise a tier id such as Codex's "priority". */
+  serviceTier: string;
   title: string;
   phase: "creating" | "provisioning" | "provision_failed" | "idle" | "turn" | "cleaning" | "cleanup_failed" | "closed";
   closed: boolean;
@@ -774,6 +787,11 @@ export interface ModelMeta {
    * the larger window rather than guessing from the model's name.
    */
   supports1m?: boolean;
+  /**
+   * The service tier that runs this model faster ("priority" on Codex).
+   * Absent when the model has none, which is what hides the Fast toggle.
+   */
+  fastTier?: string;
 }
 
 /** The group id for models kept for continuity rather than offered first. */
@@ -1249,6 +1267,7 @@ export interface ScheduledPrompt {
  model: string;
  mode: string;
  effort: string;
+ serviceTier: string;
  status: "pending" | "ready" | "sent" | "cancelled" | "missed" | "failed";
  error?: string;
  turnId?: string;

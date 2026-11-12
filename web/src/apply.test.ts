@@ -131,6 +131,22 @@ describe("applyEvent config changes", () => {
     expect(s.effort).toBe("high");
     expect(s.model).toBe("sonnet");
   });
+
+  it("lets an empty service tier turn Fast off", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "thread.config_changed", { serviceTier: "priority" }));
+    expect(s.serviceTier).toBe("priority");
+
+    s = applyEvent(s, ev(2, "thread.config_changed", { serviceTier: "" }));
+    expect(s.serviceTier).toBe("");
+  });
+
+  it("leaves the service tier alone when the event is about something else", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "thread.config_changed", { serviceTier: "priority" }));
+    s = applyEvent(s, ev(2, "thread.config_changed", { effort: "low" }));
+    expect(s.serviceTier).toBe("priority");
+  });
 });
 
 // Mirrors internal/projection/state_test.go: a switch is marked where the next
@@ -772,14 +788,16 @@ describe("applyEvent tool output cap", () => {
     expect(s.items[0].truncated).toBe(true);
   });
 
-  it("drops entries past the text budget, however they arrive", () => {
+  it("drops text entries past the text budget, however they arrive, and keeps an image after them", () => {
     const entry = { type: "diff", path: "a.go", oldText: "o".repeat(3000), newText: "n".repeat(3000) };
-    const want = Math.ceil(TOOL_MAX_TEXT / 6000);
-    const whole = applyEvent(emptyState("s1"), output(1, Array(10).fill(entry)));
+    const image = { type: "image", url: "/api/threads/t/attachments/a.png" };
+    const want = Math.ceil(TOOL_MAX_TEXT / 6000) + 1;
+    const whole = applyEvent(emptyState("s1"), output(1, [...Array(10).fill(entry), image]));
     let split = applyEvent(emptyState("s1"), output(1, Array(2).fill(entry)));
-    split = applyEvent(split, output(2, Array(8).fill(entry)));
+    split = applyEvent(split, output(2, [...Array(8).fill(entry), image]));
     for (const s of [whole, split]) {
       expect(s.items[0].content).toHaveLength(want);
+      expect(s.items[0].content?.at(-1)).toEqual(image);
       expect(s.items[0].truncated).toBe(true);
     }
   });

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Popover as PopoverPrimitive } from "radix-ui";
 
+import { escapeUnlessComposing } from "~/lib/ime";
 import { cn } from "~/lib/utils";
 
 function Popover({ ...props }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
@@ -21,6 +22,7 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 4,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
   return (
@@ -34,6 +36,7 @@ function PopoverContent({
           className,
         )}
         {...props}
+        onEscapeKeyDown={escapeUnlessComposing(onEscapeKeyDown)}
       />
     </PopoverPrimitive.Portal>
   );

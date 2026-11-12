@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/adapter"
@@ -124,6 +125,29 @@ func TestMapCodexModelsKeepsUnversionedIDsCurrent(t *testing.T) {
 	house := findCodexModel(t, got, "house-model")
 	if house.Group != "" || house.Version != "" {
 		t.Errorf("unversioned id mapped to group %q version %q", house.Group, house.Version)
+	}
+}
+
+// The Fast tier is found by its name, wherever it sits and however Codex
+// cases it, and its id is what comes back; a model with no tiers, or none
+// called Fast, offers nothing to toggle.
+func TestMapCodexModelsFindsTheFastTier(t *testing.T) {
+	var rows []codexModel
+	if err := json.Unmarshal([]byte(`[
+		{"id": "only", "serviceTiers": [{"id": "priority", "name": "Fast", "description": "1.5x speed"}]},
+		{"id": "second", "serviceTiers": [{"id": "flex", "name": "Slow"}, {"id": "turbo", "name": "fast"}]},
+		{"id": "none"},
+		{"id": "empty", "serviceTiers": []},
+		{"id": "other", "serviceTiers": [{"id": "flex", "name": "Flex"}]}
+	]`), &rows); err != nil {
+		t.Fatal(err)
+	}
+	got := mapCodexModels(rows)
+
+	for id, want := range map[string]string{"only": "priority", "second": "turbo", "none": "", "empty": "", "other": ""} {
+		if tier := findCodexModel(t, got, id).FastTier; tier != want {
+			t.Errorf("%s FastTier = %q, want %q", id, tier, want)
+		}
 	}
 }
 

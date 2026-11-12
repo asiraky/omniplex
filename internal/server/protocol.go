@@ -112,6 +112,9 @@ type createArgs struct {
 	Model   string `json:"model"`
 	Mode    string `json:"mode"`
 	Effort  string `json:"effort"`
+	// ServiceTier is a harness service-tier id, such as a model's fastTier;
+	// empty is standard speed.
+	ServiceTier string `json:"serviceTier"`
 	// AgentSettingsExplicit distinguishes a current UI sending "use the
 	// harness default" as an empty value from an older client omitting agent
 	// fields and asking the server to inherit the project profile.
@@ -297,6 +300,12 @@ type setModelArgs struct {
 type setEffortArgs struct {
 	ThreadID string `json:"threadId"`
 	Effort   string `json:"effort"`
+}
+
+// setServiceTierArgs switches a thread's service tier; "" turns it off.
+type setServiceTierArgs struct {
+	ThreadID    string `json:"threadId"`
+	ServiceTier string `json:"serviceTier"`
 }
 
 // setThreadPinnedArgs pins a thread to the top of the sidebar, or unpins it.

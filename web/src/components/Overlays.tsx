@@ -1,13 +1,13 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { useState, type ComponentType } from "react";
 
 import { chunk, type Chunk } from "~/lib/chunk";
+import { useChunk, useIdlePrefetch } from "~/useChunk";
 import { useIsDesktop } from "~/useMediaQuery";
 
+import { ChunkFallback } from "./ChunkFallback";
 import type { CommandPaletteProps } from "./CommandPalette";
-import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { Sheet, SheetContent, SheetTitle } from "./ui/sheet";
-import { Spinner } from "./ui/spinner";
 
 // The palette and the shortcuts list stay out of the first load. Both are
 // fetched once the page is idle, so the first ⌘K rarely waits; when it does,
@@ -17,18 +17,7 @@ const help = chunk(() => import("./ShortcutsHelp").then((m) => m.ShortcutsHelp))
 
 /** Fetches the palette and the shortcuts list once the page has settled. */
 export function usePrefetchOverlays() {
-  useEffect(() => {
-    const prefetch = () => {
-      void palette.load();
-      void help.load();
-    };
-    if (typeof requestIdleCallback === "function") {
-      const id = requestIdleCallback(prefetch, { timeout: 5000 });
-      return () => cancelIdleCallback(id);
-    }
-    const id = setTimeout(prefetch, 2000);
-    return () => clearTimeout(id);
-  }, []);
+  useIdlePrefetch(palette, help);
 }
 
 export function LazyCommandPalette(props: CommandPaletteProps) {
@@ -75,29 +64,11 @@ export function OnDemand<P extends OverlayProps>({
   const { open, onOpenChange } = props;
   const [seenOpen, setSeenOpen] = useState(open);
   const [opened, setOpened] = useState(open);
-  const [failed, setFailed] = useState(false);
-  const [, setArrived] = useState(0);
   if (seenOpen !== open) {
     setSeenOpen(open);
-    if (open) {
-      setOpened(true);
-      setFailed(false);
-    }
+    if (open) setOpened(true);
   }
-
-  const Loaded = chunk.get();
-  useEffect(() => {
-    if (!open || Loaded) return;
-    let live = true;
-    void chunk.load().then((c) => {
-      if (!live) return;
-      if (c) setArrived((n) => n + 1);
-      else setFailed(true);
-    });
-    return () => {
-      live = false;
-    };
-  }, [open, Loaded, chunk]);
+  const { loaded: Loaded, failed } = useChunk(chunk, open);
 
   if (!opened) return null;
   if (Loaded) return <Loaded {...props} />;
@@ -110,20 +81,7 @@ export function OnDemand<P extends OverlayProps>({
       if (open && chunk.get()) e.preventDefault();
     },
   };
-  const body = (
-    <div className="text-muted-foreground flex min-h-24 flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm">
-      {failed ? (
-        <>
-          <p>Couldn't load. Reloading the page tries again, but drops anything unsent.</p>
-          <Button variant="outline" size="sm" onClick={() => location.reload()}>
-            Reload
-          </Button>
-        </>
-      ) : (
-        <Spinner />
-      )}
-    </div>
-  );
+  const body = <ChunkFallback failed={failed} className="flex-1 p-6 text-sm" />;
   if (look === "sheet") {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>

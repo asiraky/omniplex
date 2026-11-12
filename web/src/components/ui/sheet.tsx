@@ -2,6 +2,7 @@ import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
+import { escapeUnlessComposing } from "~/lib/ime"
 import { cn } from "~/lib/utils"
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
@@ -47,6 +48,7 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
@@ -70,6 +72,7 @@ function SheetContent({
           className
         )}
         {...props}
+        onEscapeKeyDown={escapeUnlessComposing(onEscapeKeyDown)}
       >
         {children}
         {showCloseButton && (

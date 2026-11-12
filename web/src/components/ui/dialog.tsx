@@ -4,6 +4,7 @@ import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
+import { escapeUnlessComposing } from "~/lib/ime"
 import { cn } from "~/lib/utils"
 import { Button } from "~/components/ui/button"
 
@@ -68,6 +69,7 @@ function DialogContent({
   children,
   showCloseButton = true,
   fullscreenOnMobile = false,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -91,6 +93,7 @@ function DialogContent({
           className
         )}
         {...props}
+        onEscapeKeyDown={escapeUnlessComposing(onEscapeKeyDown)}
       >
         {children}
         {showCloseButton && (

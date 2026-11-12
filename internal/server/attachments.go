@@ -71,6 +71,9 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", mediaType)
+	// Tool results put agent-made bytes behind this route too; the browser
+	// takes the sniffed type at its word rather than guessing at HTML.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// The id is a UUID and the bytes under it never change, so a transcript
 	// scrolled past and back — or reopened on a phone — refetches nothing.
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")

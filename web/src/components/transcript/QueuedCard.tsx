@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { parseAttachedFiles, type Artefact, type AttachedFile } from "~/lib/artefacts";
+import { isComposing } from "~/lib/ime";
 import { cn } from "~/lib/utils";
 import type { PromptImage, QueuedPrompt } from "~/protocol";
 import { useIsCoarsePointer } from "~/useMediaQuery";
@@ -301,7 +302,7 @@ function QueuedEditor({
           onUnsaved?.(next === initial ? undefined : next);
         }}
         onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (isComposing(e)) return;
           if (e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();

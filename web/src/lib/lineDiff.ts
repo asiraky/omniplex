@@ -1,4 +1,4 @@
-import type { DiffLine } from "~/components/Diff";
+import type { DiffLine } from "~/lib/patch";
 
 /** Past this many cells the table is not worth a phone's memory; see `changedLines`. */
 const MAX_CELLS = 2_000_000;

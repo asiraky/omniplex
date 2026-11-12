@@ -166,18 +166,20 @@ func TestToolContentEntriesAreBounded(t *testing.T) {
 // kept while those before it hold less than maxToolText.
 func keptUnder(size int) int { return (maxToolText + size - 1) / size }
 
-// An item's content keeps a bounded amount of text: past it further entries
-// are dropped, however the content arrived, and loading a snapshot that held
-// more drops the same ones.
+// An item's content keeps a bounded amount of text: past it further text
+// entries are dropped, however the content arrived, and loading a snapshot
+// that held more drops the same ones. An image after them is kept.
 func TestToolContentTextIsBounded(t *testing.T) {
 	entry := proto.ToolContent{Type: "diff", Path: "a.go", Old: strings.Repeat("o", 3000), New: strings.Repeat("n", 3000)}
-	batch := make([]proto.ToolContent, 10)
+	batch := make([]proto.ToolContent, 10, 11)
 	for i := range batch {
 		batch[i] = entry
 	}
+	image := proto.ToolContent{Type: "image", URL: "/api/threads/t/attachments/a.png"}
+	batch = append(batch, image)
 	// Each entry is under the field cap, so only the budget cuts: an entry is
 	// kept while those before it hold less than maxToolText.
-	want := keptUnder(6000)
+	want := keptUnder(6000) + 1
 
 	whole := New("s1")
 	whole.Apply(toolUpdate(t, 1, "c1", batch...))
@@ -186,14 +188,14 @@ func TestToolContentTextIsBounded(t *testing.T) {
 	split.Apply(toolUpdate(t, 2, "c1", batch[2:]...))
 	for name, s := range map[string]*State{"one update": whole, "two updates": split} {
 		it, _ := s.ItemByID("c1")
-		if !it.Truncated || len(it.Content) != want {
-			t.Fatalf("%s: truncated=%v entries=%d, want true/%d", name, it.Truncated, len(it.Content), want)
+		if !it.Truncated || len(it.Content) != want || it.Content[want-1] != image {
+			t.Fatalf("%s: truncated=%v entries=%d, want true/%d ending in the image", name, it.Truncated, len(it.Content), want)
 		}
 	}
 
 	old := Item{ID: "c1", Kind: ItemTool, Content: batch}
-	if !capItem(&old) || !old.Truncated || len(old.Content) != want {
-		t.Fatalf("capItem: truncated=%v entries=%d, want true/%d", old.Truncated, len(old.Content), want)
+	if !capItem(&old) || !old.Truncated || len(old.Content) != want || old.Content[want-1] != image {
+		t.Fatalf("capItem: truncated=%v entries=%d, want true/%d ending in the image", old.Truncated, len(old.Content), want)
 	}
 	if capItem(&old) {
 		t.Fatal("capping capped content cut it again")

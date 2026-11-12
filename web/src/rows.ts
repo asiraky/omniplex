@@ -52,6 +52,9 @@ export type Row =
   // however many times it was shown.
   | { kind: "artefacts"; id: string; items: Item[] };
 
+/** A row's identity: its React key, and the id the scroll memory finds it by. */
+export const rowKey = (row: Row) => (row.kind === "item" ? row.item.id : row.id);
+
 function latestPerArtefact(items: Item[]): Item[] {
   const last = new Map<string, Item>();
   for (const it of items) last.set(it.artefactId ?? it.id, it);

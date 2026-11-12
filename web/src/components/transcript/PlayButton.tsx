@@ -96,9 +96,8 @@ export default function PlayButton({
       aria-label={look.aria}
       data-active={selected || playback ? "" : undefined}
       className={cn(
+        // The footer's button classes, hit area included.
         className,
-        // A wider hit area for a thumb, without moving the footer's layout.
-        "relative after:absolute after:-inset-x-1 after:-inset-y-2.5 md:after:hidden",
         selected && !playback && "text-primary hover:text-primary",
       )}
     >

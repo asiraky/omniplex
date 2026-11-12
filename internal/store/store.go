@@ -131,6 +131,7 @@ type ThreadMeta struct {
 	Model         string `json:"model,omitempty"`
 	Mode          string `json:"mode,omitempty"`
 	Effort        string `json:"effort,omitempty"`
+	ServiceTier   string `json:"serviceTier,omitempty"`
 	WorkspaceMode string `json:"workspaceMode,omitempty"`
 	// BaseRef is the ref a managed worktree was branched from, chosen per
 	// thread. Empty falls back to the project's default base branch, which is
@@ -196,6 +197,7 @@ func Open(path string) (*Store, error) {
 		`ALTER TABLE threads ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN home TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE threads ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE threads ADD COLUMN service_tier TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return nil, fmt.Errorf("migrate schema: %w", err)
@@ -373,9 +375,9 @@ func (s *Store) CreateThread(ctx context.Context, m ThreadMeta) error {
 	// so a new thread always lands first however the user has arranged the
 	// rest — and the store mutex means two creates cannot claim the same one.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, provision_script, deprovision_script, pinned, position)
-		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MIN(position), 1) - 1 FROM threads))`,
-		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript, m.Pinned); err != nil {
+		`INSERT INTO threads (id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, provision_script, deprovision_script, pinned, position)
+		 VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MIN(position), 1) - 1 FROM threads))`,
+		m.ID, m.Cwd, m.Harness, m.ProviderInstance, m.Title, m.CreatedAt, m.UpdatedAt, m.Phase, m.ProjectID, m.FolderID, m.Branch, m.Model, m.Mode, m.Effort, m.ServiceTier, m.WorkspaceMode, m.BaseRef, m.ProvisionScript, m.DeprovisionScript, m.Pinned); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -555,8 +557,8 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 	var m ThreadMeta
 	var provisionResult []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, pinned, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
-		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, pinned, last_viewed_seq, position, provision_script, deprovision_script, provision_result FROM threads WHERE id = ?`, id).
+		Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position, &m.ProvisionScript, &m.DeprovisionScript, &provisionResult)
 	m.ProvisionResult = json.RawMessage(provisionResult)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
@@ -573,7 +575,7 @@ func (s *Store) Thread(ctx context.Context, id string) (ThreadMeta, error) {
 // keeps two threads created in the same millisecond in one stable order.
 func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, workspace_mode, base_ref, pinned, last_viewed_seq, position
+		`SELECT id, cwd, harness, provider_instance, title, created_at, updated_at, head_seq, phase, project_id, folder_id, branch, model, mode, effort, service_tier, workspace_mode, base_ref, pinned, last_viewed_seq, position
 		 FROM threads ORDER BY position ASC, created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
@@ -583,7 +585,7 @@ func (s *Store) ListThreads(ctx context.Context) ([]ThreadMeta, error) {
 	out := []ThreadMeta{}
 	for rows.Next() {
 		var m ThreadMeta
-		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position); err != nil {
+		if err := rows.Scan(&m.ID, &m.Cwd, &m.Harness, &m.ProviderInstance, &m.Title, &m.CreatedAt, &m.UpdatedAt, &m.HeadSeq, &m.Phase, &m.ProjectID, &m.FolderID, &m.Branch, &m.Model, &m.Mode, &m.Effort, &m.ServiceTier, &m.WorkspaceMode, &m.BaseRef, &m.Pinned, &m.LastViewedSeq, &m.Position); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

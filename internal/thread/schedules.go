@@ -79,9 +79,9 @@ func (a *Actor) handleSchedule(c command) error {
 		// Kind is the server's to set: a human creates plain schedules, and
 		// editing a continuation does not turn it into one.
 		if old == nil {
-			p.Model, p.Mode, p.Effort, p.Kind = a.state.Model, a.state.Mode, a.state.Effort, ""
+			p.Model, p.Mode, p.Effort, p.ServiceTier, p.Kind = a.state.Model, a.state.Mode, a.state.Effort, a.state.ServiceTier, ""
 		} else {
-			p.Model, p.Mode, p.Effort, p.Kind = old.Model, old.Mode, old.Effort, old.Kind
+			p.Model, p.Mode, p.Effort, p.ServiceTier, p.Kind = old.Model, old.Mode, old.Effort, old.ServiceTier, old.Kind
 		}
 		p.Status = "pending"
 		p.Error = ""
@@ -231,6 +231,18 @@ func (a *Actor) scheduleSettings(p proto.ScheduledPrompt) error {
 			return err
 		}
 		if err := a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &p.Effort})); err != nil {
+			return err
+		}
+	}
+	if p.ServiceTier != a.state.ServiceTier {
+		s, ok := a.sess.(adapter.ServiceTierSwitcher)
+		if !ok {
+			return errors.New("provider cannot restore the scheduled service tier")
+		}
+		if err := s.SetServiceTier(ctx, p.ServiceTier); err != nil {
+			return err
+		}
+		if err := a.append(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{ServiceTier: &p.ServiceTier})); err != nil {
 			return err
 		}
 	}

@@ -42,6 +42,7 @@ export function emptyState(threadId: string): ThreadState {
     model: "",
     mode: "",
     effort: "",
+    serviceTier: "",
     title: "",
     phase: "idle",
     closed: false,
@@ -141,9 +142,11 @@ function appendToolContent(it: Item, add: ToolContent[]) {
   let used = have.reduce((n, c) => n + contentText(c), 0);
   const capped: ToolContent[] = [];
   for (const c of add.slice(0, room)) {
-    if (used >= TOOL_MAX_TEXT) {
+    // An image is a URL with no text, and a closed fold's strip shows only
+    // what the preview kept: keep it.
+    if (used >= TOOL_MAX_TEXT && contentText(c) > 0) {
       cut = true;
-      break;
+      continue;
     }
     const next = { ...c };
     for (const key of ["text", "oldText", "newText"] as const) {
@@ -368,7 +371,7 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
 
   switch (ev.type) {
     case "thread.created":
-      return { ...s, cwd: p.cwd, harness: p.harness, model: p.model ?? "", mode: p.mode ?? "", effort: p.effort ?? "", title: p.title ?? "" };
+      return { ...s, cwd: p.cwd, harness: p.harness, model: p.model ?? "", mode: p.mode ?? "", effort: p.effort ?? "", serviceTier: p.serviceTier ?? "", title: p.title ?? "" };
 
     case "thread.config_changed": {
       // A harness reporting its own settings as it (re)starts or takes a
@@ -386,6 +389,8 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         // "" is a value effort can be set to — the harness's own default —
         // so an event that carries it must win, which || would not let it.
         effort: p.effort ?? s.effort,
+        // The same goes for the service tier: "" turns Fast off.
+        serviceTier: p.serviceTier ?? s.serviceTier,
         title: p.title || s.title,
       };
       if (report && s.ranWith && !pending) return { ...next, ranWith: { ...s.ranWith, model: next.model } };

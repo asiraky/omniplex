@@ -340,11 +340,14 @@ function PanelBody({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-1 border-b px-1.5 pt-[calc(0.375rem+env(safe-area-inset-top))] pb-1.5">
+        {/* A scroller clips whatever overhangs it, the tab close buttons' grown
+            hit areas included, so on touch it takes 6px of the header's
+            padding as its own (padding in, margin out: nothing moves). */}
         <div
           ref={tabsRef}
           role="tablist"
           aria-label="Panel tabs"
-          className="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overscroll-x-contain"
+          className="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overscroll-x-contain pointer-coarse:-my-1.5 pointer-coarse:py-1.5"
         >
           {panel.surfaces.map((s) => {
             const selected = s.id === panel.active;
@@ -373,6 +376,10 @@ function PanelBody({
                     </span>
                   )}
                 </button>
+                {/* On touch the X takes a full 44px of the tab's width as its own,
+                    rather than a hit area spilling onto the label on its left
+                    or the next tab 2px off on its right: a stray close is the
+                    worse miss. The hit area only adds the height. */}
                 <button
                   type="button"
                   aria-label={`Close ${surfaceLabel(s, artefacts)}`}
@@ -382,7 +389,7 @@ function PanelBody({
                     if (s.termId) endTerminal(s.termId);
                     setPanel((p) => closeSurface(p, s.id));
                   }}
-                  className="text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-8 items-center rounded-r-md py-1 pr-1.5 pl-1 opacity-60 outline-none focus-visible:ring-2 group-hover:opacity-100"
+                  className="text-muted-foreground hover:text-foreground focus-visible:ring-ring hit-44 relative flex min-h-8 items-center rounded-r-md py-1 pr-1.5 pl-1 opacity-60 outline-none pointer-coarse:w-11 pointer-coarse:justify-center pointer-coarse:px-0 focus-visible:ring-2 group-hover:opacity-100"
                 >
                   <XIcon className="size-3" />
                 </button>

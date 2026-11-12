@@ -322,18 +322,19 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		mcpOurs[m.Name] = true
 	}
 	s := &session{
-		mcpKeys:   mcpKeys,
-		mcpOurs:   mcpOurs,
-		host:      host,
-		cmd:       cmd,
-		proc:      adapter.WatchProcess(cmd, stderr, host.Logf, "codex"),
-		tree:      tree,
-		cwd:       o.Cwd,
-		events:    make(chan proto.Emission, 256),
-		streamed:  map[string]bool{},
-		done:      make(chan struct{}),
-		effort:    o.Effort,
-		extraDirs: o.ExtraDirs,
+		mcpKeys:     mcpKeys,
+		mcpOurs:     mcpOurs,
+		host:        host,
+		cmd:         cmd,
+		proc:        adapter.WatchProcess(cmd, stderr, host.Logf, "codex"),
+		tree:        tree,
+		cwd:         o.Cwd,
+		events:      make(chan proto.Emission, 256),
+		streamed:    map[string]bool{},
+		done:        make(chan struct{}),
+		effort:      o.Effort,
+		serviceTier: o.ServiceTier,
+		extraDirs:   o.ExtraDirs,
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
 
@@ -453,6 +454,10 @@ type session struct {
 	threadID string
 	effort   string
 	model    string
+	// serviceTier is sent per turn as serviceTierForTurn, never as the
+	// thread's own serviceTier: that one persists on the codex thread, so
+	// clearing it here would leave codex still running fast.
+	serviceTier string
 
 	// mcpKeys maps each config key omniplex gave an MCP server back to its
 	// name; mcpOurs holds those names.
@@ -587,8 +592,9 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 // closed it (a very fast turn) or replaced it meanwhile — and ours reports
 // whether it was.
 func (s *session) startTurn(ctx context.Context, id, text string, images []proto.PromptImage) (ours bool, err error) {
-	// effort and model are both mutable mid-session (SetEffort/SetModel), so
-	// read them together under the lock.
+	// effort, model and service tier are all mutable mid-session
+	// (SetEffort/SetModel/SetServiceTier), so read them together under the
+	// lock.
 	s.mu.Lock()
 	params := map[string]any{
 		"threadId": s.threadID,
@@ -600,6 +606,14 @@ func (s *session) startTurn(ctx context.Context, id, text string, images []proto
 	if s.model != "" {
 		params["model"] = s.model
 	}
+	// Every turn names a tier. Omitting it would inherit the codex thread's
+	// own, which the user's codex config can set to fast, and Fast would
+	// show off while every turn ran fast anyway.
+	tier := s.serviceTier
+	if tier == "" {
+		tier = standardTier
+	}
+	params["serviceTierForTurn"] = tier
 	s.mu.Unlock()
 
 	var res struct {
@@ -914,6 +928,20 @@ func (s *session) SetModel(ctx context.Context, model string) error {
 func (s *session) SetEffort(ctx context.Context, effort string) error {
 	s.mu.Lock()
 	s.effort = effort
+	s.mu.Unlock()
+	return nil
+}
+
+// standardTier is codex's name for running at normal speed, sent whenever no
+// tier is set.
+const standardTier = "default"
+
+// SetServiceTier records the service tier for subsequent turns. It rides on
+// turn/start as a per-turn override, so "" sends the next turn at standard
+// speed.
+func (s *session) SetServiceTier(ctx context.Context, tier string) error {
+	s.mu.Lock()
+	s.serviceTier = tier
 	s.mu.Unlock()
 	return nil
 }
@@ -1863,6 +1891,7 @@ type mcpToolResult struct {
 		} `json:"resource"`
 	} `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent"`
+	IsError           bool            `json:"isError"`
 }
 
 // codexChange is one file of a fileChange item. Kind is an object, not a
@@ -2074,7 +2103,7 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 			}))
 			return
 		}
-		status, content := mcpOutcome(it)
+		status, content := s.mcpOutcome(it)
 		s.emit(proto.Emit(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{
 			ToolCallID: it.ID, Status: status, Content: content, ParentToolCallID: parent,
 		}))
@@ -2117,8 +2146,9 @@ func itemStatus(status string) string {
 
 // mcpOutcome is a completed MCP call's status and what the card shows. A
 // failure carries its error and no result; printing the absent result is what
-// rendered "null" under a green tick.
-func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
+// rendered "null" under a green tick. A result the tool itself flagged with
+// isError is a failure too, shown with its content.
+func (s *session) mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 	if it.Status == "failed" || it.Error != nil {
 		msg := "MCP call failed"
 		if it.Error != nil && it.Error.Message != "" {
@@ -2129,16 +2159,22 @@ func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 	if it.Result == nil {
 		return proto.StatusCompleted, nil
 	}
+	status := proto.StatusCompleted
+	if it.Result.IsError {
+		status = proto.StatusFailed
+	}
 	var content []proto.ToolContent
 	for _, c := range it.Result.Content {
 		var text string
 		switch c.Type {
 		case "text":
 			text = c.Text
-		case "image", "audio":
+		case "image":
+			// The host keeps the bytes and the card names them by URL.
+			content = append(content, adapter.ToolImage(s.host, c.Data))
+		case "audio":
 			// The bytes stay off the wire: base64 is unreadable as text and
-			// heavy on a phone. A placeholder says what was there (#287
-			// turns images into thumbnails).
+			// heavy on a phone. A placeholder says what was there.
 			text = fmt.Sprintf("[%s: %s, %s]", c.Type, c.MimeType, base64Size(c.Data))
 		case "resource_link":
 			text = c.URI
@@ -2160,7 +2196,7 @@ func mcpOutcome(it codexItem) (string, []proto.ToolContent) {
 	if sc := it.Result.StructuredContent; len(sc) > 0 && string(sc) != "null" && !textCarries(content, sc) {
 		content = append(content, proto.ToolContent{Type: "text", Text: string(sc)})
 	}
-	return proto.StatusCompleted, content
+	return status, content
 }
 
 // textCarries reports whether a text block holds the same JSON as raw.

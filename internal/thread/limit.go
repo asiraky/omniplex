@@ -103,7 +103,7 @@ func (a *Actor) armLimit(turnID string, resetAt, at int64) {
 	_ = a.append(proto.Emit(proto.PromptScheduled, proto.ScheduledPrompt{
 		ID: id, Kind: proto.ScheduleLimit, Prompt: limitContinuePrompt,
 		DueAt: resetAt + limitDelay, TimeZone: "UTC",
-		Model: a.state.Model, Mode: a.state.Mode, Effort: a.state.Effort,
+		Model: a.state.Model, Mode: a.state.Mode, Effort: a.state.Effort, ServiceTier: a.state.ServiceTier,
 		Status: "pending", Revision: 1,
 	}))
 }

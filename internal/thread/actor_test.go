@@ -26,11 +26,13 @@ type fakeAdapter struct {
 	// steer makes every thread a Steerer; steerRefuse is what Steer returns.
 	steer       bool
 	steerRefuse error
-	mu          sync.Mutex
-	last        *fakeThread
-	live        []adapter.ModelMeta
-	liveErr     error
-	listCalls   int
+	// tier makes every thread a ServiceTierSwitcher.
+	tier      bool
+	mu        sync.Mutex
+	last      *fakeThread
+	live      []adapter.ModelMeta
+	liveErr   error
+	listCalls int
 	// listGate, when set, holds the listing open so a test can prove the
 	// caller did not wait for it.
 	listGate      chan struct{}
@@ -293,7 +295,24 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	if f.steer {
 		return steerThread{s}, nil
 	}
+	if f.tier {
+		return tierThread{s}, nil
+	}
 	return s, nil
+}
+
+// tierThread is a fakeThread whose harness can change service tier; "rejected"
+// stands for a tier the harness refuses.
+type tierThread struct{ *fakeThread }
+
+func (s tierThread) SetServiceTier(ctx context.Context, tier string) error {
+	if tier == "rejected" {
+		return errors.New("the harness refused this tier")
+	}
+	s.mu.Lock()
+	s.tier = tier
+	s.mu.Unlock()
+	return nil
 }
 
 // steerThread is a fakeThread that can take a prompt mid-turn. Steered
@@ -335,6 +354,7 @@ type fakeThread struct {
 
 	mu   sync.Mutex
 	mode string
+	tier string
 	// calls is the control calls the thread has taken, in the order it
 	// took them: "cancel" when asked, "steer" once it has the prompt.
 	calls       []string
@@ -515,6 +535,61 @@ func TestSetModeSwitchesHarnessAndRecordsEvent(t *testing.T) {
 	}
 	if state.Mode != "acceptEdits" {
 		t.Fatalf("projection mode after refusal = %q, want acceptEdits", state.Mode)
+	}
+}
+
+// Turning Fast on and off reaches the harness and lands in the log, so every
+// presenter's projection follows; a refusal leaves the recorded tier alone.
+func TestSetServiceTierSwitchesHarnessAndRecordsEvent(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{tier: true})
+	ctx := context.Background()
+
+	for _, tier := range []string{"priority", ""} {
+		if err := actor.SetServiceTier(ctx, tier); err != nil {
+			t.Fatal(err)
+		}
+		fa.thread().mu.Lock()
+		got := fa.thread().tier
+		fa.thread().mu.Unlock()
+		if got != tier {
+			t.Fatalf("harness tier = %q, want %q", got, tier)
+		}
+		state, err := actor.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.ServiceTier != tier {
+			t.Fatalf("projection tier = %q, want %q", state.ServiceTier, tier)
+		}
+	}
+
+	if err := actor.SetServiceTier(ctx, "priority"); err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.SetServiceTier(ctx, "rejected"); err == nil {
+		t.Fatal("expected an error for a tier the harness refuses")
+	}
+	if state, _ := actor.State(ctx); state.ServiceTier != "priority" {
+		t.Fatalf("projection tier after refusal = %q, want priority", state.ServiceTier)
+	}
+}
+
+// A harness that cannot switch tiers says so rather than recording a change
+// that never reached it.
+func TestSetServiceTierRefusedWithoutASwitcher(t *testing.T) {
+	actor, _, _ := newTestActor(t)
+	ctx := context.Background()
+	before := actor.Head()
+
+	if err := actor.SetServiceTier(ctx, "priority"); err == nil {
+		t.Fatal("expected an error from a harness without a service-tier switcher")
+	}
+	state, err := actor.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ServiceTier != "" || actor.Head() != before {
+		t.Fatalf("refused switch was recorded: tier %q, head %d -> %d", state.ServiceTier, before, actor.Head())
 	}
 }
 
@@ -2536,7 +2611,7 @@ func TestFirstMessageRunsWhenProvisioningFinishes(t *testing.T) {
 	if res, err := a.Prompt(ctx, "first message", nil); err != nil || !res.Queued() {
 		t.Fatalf("prompt while provisioning = %+v, %v", res, err)
 	}
-	if err := a.Activate(ctx, meta.Cwd, "", "", ""); err != nil {
+	if err := a.Activate(ctx, meta.Cwd, "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if in := nextInput(t, fa.thread()); in.Text != "first message" {
@@ -2563,7 +2638,7 @@ func TestProvisioningQueueHeldAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { a.Dispose("test done") })
-	if err := a.Activate(ctx, meta.Cwd, "", "", ""); err != nil {
+	if err := a.Activate(ctx, meta.Cwd, "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := a.State(ctx)
