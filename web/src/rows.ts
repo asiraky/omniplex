@@ -40,7 +40,9 @@ export type Row =
   // trailing run — the one whose last call is the work happening now.
   | { kind: "run"; id: string; items: Item[]; live: boolean }
   // A finished turn's hidden middle: everything but its prompt and answer.
-  | { kind: "fold"; id: string; turn: Turn; items: Item[] }
+  // `continued` marks a piece after the first, when a plan or a spawn batch
+  // split the middle: the turn's duration belongs to the first piece alone.
+  | { kind: "fold"; id: string; turn: Turn; items: Item[]; continued?: boolean }
   // A batch of subagent spawns, pinned where the first one happened. Never
   // folded: the work is still running beside the conversation after the turn
   // that started it is over, so the card has to stay where it can be seen.
@@ -101,11 +103,18 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       // items are somehow split by another's folds twice, and two rows must
       // not share a key.
       let hidden: Item[] = [];
+      let folds = 0;
       const produced: Item[] = [];
       const decided: Item[] = [];
       const flush = () => {
         if (hidden.length > 0)
-          rows.push({ kind: "fold", id: `fold:${hidden[0].id}`, turn: turnById.get(turnId)!, items: hidden });
+          rows.push({
+            kind: "fold",
+            id: `fold:${hidden[0].id}`,
+            turn: turnById.get(turnId)!,
+            items: hidden,
+            continued: folds++ > 0 || undefined,
+          });
         hidden = [];
       };
       for (let k = 0; k < segment.length; k++) {

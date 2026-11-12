@@ -39,7 +39,7 @@ function RowBody({
   recoveredTurns,
   onCardSignIn,
 }: RowContext & { row: Row }) {
-  if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} />;
+  if (row.kind === "fold") return <TurnFold turn={row.turn} items={row.items} continued={row.continued} />;
   if (row.kind === "run") return <ToolRun items={row.items} live={row.live} />;
   if (row.kind === "jobs") return <JobsCard items={row.items} jobs={jobs} onOpen={onOpenJobs} />;
   if (row.kind === "artefacts")

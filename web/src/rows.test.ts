@@ -262,6 +262,12 @@ describe("buildRows with plans", () => {
     expect(rows[2]).toEqual({ kind: "item", item: p });
   });
 
+  it("marks only the fold pieces after the first as continued", () => {
+    const rows = buildRows([prompt("go"), tool(), plan(), tool(), plan(), tool(), msg("Done.")], [turn("turn1")], "idle");
+    const folds = rows.filter((r) => r.kind === "fold");
+    expect(folds.map((r) => r.kind === "fold" && !!r.continued)).toEqual([false, true, true]);
+  });
+
   it("keeps every plan of a finished turn, in order", () => {
     const a = plan();
     const b = plan();
