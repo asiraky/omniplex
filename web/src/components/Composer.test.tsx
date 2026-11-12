@@ -361,6 +361,24 @@ describe("the send button's options", () => {
     expect(onSchedule).not.toHaveBeenCalled();
   });
 
+  it("will not schedule while an image is still uploading, which a schedule would drop", async () => {
+    const onSchedule = vi.fn();
+    const { rerender } = mount({
+      draft: "look later",
+      onSchedule,
+      attachments: [staged({ status: "uploading", id: undefined })],
+    });
+    openOptions();
+    const item = await screen.findByRole("menuitem", { name: /Schedule send/ });
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(item);
+    expect(onSchedule).not.toHaveBeenCalled();
+
+    rerender({ draft: "look later", onSchedule, attachments: [staged()] });
+    const ready = await screen.findByRole("menuitem", { name: /Schedule send/ });
+    expect(ready.getAttribute("aria-disabled")).toBeNull();
+  });
+
   it("offers no options when there is nowhere to schedule", () => {
     mount({ draft: "hi" });
     expect(screen.queryByRole("button", { name: "More send options" })).toBeNull();

@@ -72,13 +72,13 @@ function HeldMenu({
 function MoreSendOptions({
   choice,
   cannotSend,
-  carriesFiles,
+  scheduleBlock,
   onSend,
   onSchedule,
 }: {
   choice: boolean;
   cannotSend: boolean;
-  carriesFiles: boolean;
+  scheduleBlock?: string;
   onSend: (delivery?: Delivery) => void;
   onSchedule?: () => void;
 }) {
@@ -108,13 +108,12 @@ function MoreSendOptions({
             Send now
           </DropdownMenuItem>
         )}
-        {/* A scheduled prompt keeps its text and images, not files. */}
         {onSchedule && (
-          <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule} disabled={carriesFiles}>
+          <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule} disabled={!!scheduleBlock}>
             <ClockIcon />
             <span className="flex flex-col">
               Schedule send…
-              {carriesFiles && <span className="text-muted-foreground text-xs">Not with files attached</span>}
+              {scheduleBlock && <span className="text-muted-foreground text-xs">{scheduleBlock}</span>}
             </span>
           </DropdownMenuItem>
         )}
@@ -130,7 +129,7 @@ export function SendButtons({
   steers,
   hasContent,
   cannotSend,
-  carriesFiles,
+  scheduleBlock,
   onSend,
   onSchedule,
   onCancel,
@@ -141,7 +140,8 @@ export function SendButtons({
   /** Text or a sendable attachment is waiting. */
   hasContent: boolean;
   cannotSend: boolean;
-  carriesFiles: boolean;
+  /** Why scheduling is not on offer right now, shown under it. */
+  scheduleBlock?: string;
   /** Undefined sends the server's default way. */
   onSend: (delivery?: Delivery) => void;
   onSchedule?: () => void;
@@ -181,7 +181,7 @@ export function SendButtons({
             <MoreSendOptions
               choice={choice}
               cannotSend={cannotSend}
-              carriesFiles={carriesFiles}
+              scheduleBlock={scheduleBlock}
               onSend={onSend}
               onSchedule={onSchedule}
             />

@@ -252,7 +252,7 @@ export function Composer({
     runClientAction,
     onRunComposerAction,
   });
-  const { send, cannotSend, sendableAttachments, carriesFiles, tooMuch } = useComposerSend({
+  const { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch } = useComposerSend({
     draft,
     draftRef,
     changeDraft,
@@ -459,7 +459,7 @@ export function Composer({
             steers={steers}
             hasContent={!!draft.trim() || sendableAttachments > 0}
             cannotSend={cannotSend}
-            carriesFiles={carriesFiles}
+            scheduleBlock={scheduleBlock}
             onSend={(delivery) => void send(delivery)}
             onSchedule={onSchedule}
             onCancel={onCancel}

@@ -44,7 +44,14 @@ export function useComposerSend({
   // A file still on its way up counts: the message is held until it lands,
   // so on a slow connection hitting send does not wait on the upload too.
   const sendableAttachments = attachments.filter((a) => a.status !== "error").length;
-  const carriesFiles = attachments.some((a) => a.kind === "file" && a.status !== "error");
+  // A scheduled prompt keeps its text and images, not files. And it takes the
+  // images there are when it is scheduled: unlike a send, it does not wait for
+  // one still going up, which would quietly be left out.
+  const scheduleBlock = attachments.some((a) => a.kind === "file" && a.status !== "error")
+    ? "Not with files attached"
+    : attachments.some((a) => a.status === "uploading")
+      ? "Once the uploads finish"
+      : undefined;
   // The server would refuse it, and a refused send has already cleared the
   // composer by the time it says so.
   const tooMuch = overPromptLimit(attachments);
@@ -94,5 +101,5 @@ export function useComposerSend({
     changeDraft("");
   };
 
-  return { send, cannotSend, sendableAttachments, carriesFiles, tooMuch };
+  return { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch };
 }
