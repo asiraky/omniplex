@@ -216,6 +216,9 @@ func main() {
 	watchCtx, stopWatching := context.WithCancel(context.Background())
 	defer stopWatching()
 	go claudeBundled.Watch(watchCtx, time.Hour, logf)
+	// Old command ids go, and the pages snapshot churn frees go back to the
+	// filesystem instead of sitting in the file.
+	go st.MaintainEvery(watchCtx, time.Hour, logf)
 	// The Usage page reads gigabytes of harness transcripts; parse them now
 	// so the first report is served from a warm cache.
 	go mgr.WarmUsage(watchCtx)
