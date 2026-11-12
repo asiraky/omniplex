@@ -87,7 +87,7 @@ function ImageThumb({
           <>
             <button
               type="button"
-              onClick={() => onRetry?.(a.key)}
+              onClick={() => onRetry(a.key)}
               aria-label={`Retry ${a.name}`}
               aria-describedby={errorId}
               title={error}
@@ -102,7 +102,7 @@ function ImageThumb({
           </>
         ) : (
           <span
-            title={a.error}
+            title={error}
             className="text-destructive absolute inset-0 grid place-items-center rounded-lg px-1 text-center text-[10px] leading-tight"
           >
             {error}

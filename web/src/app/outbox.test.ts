@@ -126,17 +126,17 @@ describe("outbox", () => {
     const chip = { key: "k1", name: "shot.png", previewUrl: "", status: "error" as const, error: "disk full" };
 
     const failed = outbox.fail("c1", "shot.png did not upload", {
-      uploadFailed: true,
+      cannotRetry: true,
       attachments: [chip],
     });
 
-    expect(failed).toMatchObject({ status: "failed", uploadFailed: true, attachments: [chip] });
+    expect(failed).toMatchObject({ status: "failed", cannotRetry: true, attachments: [chip] });
     expect(outbox.get()).toEqual([failed]);
     expect(outbox.fail("c1", "again")).toBeUndefined();
-    expect(outbox.fail("missing", "x", { uploadFailed: true })).toBeUndefined();
+    expect(outbox.fail("missing", "x", { cannotRetry: true })).toBeUndefined();
     // Sent again, it is an ordinary send: the upload failure was the old one's.
     outbox.add(send("c1"));
-    expect(outbox.get()[0]).not.toHaveProperty("uploadFailed");
+    expect(outbox.get()[0]).not.toHaveProperty("cannotRetry");
   });
 
   it("keeps the same snapshot while nothing changes", () => {
@@ -220,7 +220,7 @@ describe("useWaitingSend", () => {
     expect(hook.result.current).toBe(false);
 
     act(() => outbox.wait(send("a3", "a")));
-    act(() => outbox.fail("a3", "x", { uploadFailed: true }));
+    act(() => outbox.fail("a3", "x", { cannotRetry: true }));
     expect(hook.result.current).toBe(false);
   });
 

@@ -26,10 +26,9 @@ import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
+import { ComposerNotes } from "./composer/ComposerNotes";
 import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
 import { SendButtons } from "./composer/SendButtons";
-import { SendFailure } from "./composer/SendFailure";
-import { UploadWait } from "./composer/UploadWait";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerSend } from "./composer/useComposerSend";
@@ -405,15 +404,7 @@ export function Composer({
             Drop files to attach
           </div>
         )}
-        {waiting && <UploadWait />}
-        {failure && (
-          <SendFailure
-            reason={failure.reason}
-            canRetry={!disabled && !sendDisabled && !waiting}
-            onRetry={failure.onRetry}
-            onDismiss={failure.onDismiss}
-          />
-        )}
+        <ComposerNotes waiting={waiting} failure={failure} canSend={!disabled && !sendDisabled} />
         <AttachmentStrip
           attachments={attachments}
           tooMuch={tooMuch}

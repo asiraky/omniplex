@@ -12,6 +12,7 @@ import {
   persistDrafts,
   persistOutbox,
   saveAttachments,
+  UPLOAD_LAPSED_REASON,
 } from "./composerStorage";
 import { createDraftStore } from "./draftStore";
 import { createOutbox, type OutboxSend } from "./outbox";
@@ -327,8 +328,8 @@ describe("outbox", () => {
       {
         commandId: "c1",
         status: "failed",
-        reason: "the page closed before its files finished uploading",
-        uploadFailed: true,
+        reason: UPLOAD_LAPSED_REASON,
+        cannotRetry: true,
         text: "text of c1",
       },
     ]);
@@ -337,10 +338,10 @@ describe("outbox", () => {
 
     // And stays an upload failure across the next reload.
     persistOutbox(createOutbox(entries));
-    expect(loadOutbox().entries).toMatchObject([{ status: "failed", uploadFailed: true }]);
+    expect(loadOutbox().entries).toMatchObject([{ status: "failed", cannotRetry: true }]);
   });
 
-  it("leaves alone a send another live tab is waiting on the uploads of", () => {
+  it("leaves alone a send another live tab is waiting on the uploads of, for minutes", () => {
     // This tab has an id of its own before the other one writes.
     loadOutbox();
     inAnotherTab(() => {
@@ -350,8 +351,11 @@ describe("outbox", () => {
     });
 
     expect(loadOutbox()).toEqual({ entries: [], lapsed: [] });
-    vi.advanceTimersByTime(60_000);
-    expect(loadOutbox().lapsed).toMatchObject([{ commandId: "c1", uploadFailed: true }]);
+    // Past the minute a pending send gets: a big file on 4G takes longer.
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(loadOutbox()).toEqual({ entries: [], lapsed: [] });
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(loadOutbox().lapsed).toMatchObject([{ commandId: "c1", cannotRetry: true }]);
   });
 
   it("shares a failed send with another tab, so a retry from there is still a retry", () => {

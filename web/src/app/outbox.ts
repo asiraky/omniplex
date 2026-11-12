@@ -35,10 +35,11 @@ export interface WaitingSend extends Sent {
 export interface FailedSend extends Sent {
   status: "failed";
   reason: string;
-  /** A file it carried did not upload, so it never went. Retrying it as it
-      stands would send it without that file; the file has to go up first,
-      from the composer it came back to. */
-  uploadFailed?: true;
+  /** It never went, and sending it again as it stands would be wrong: a file
+      it carried did not upload, so it would go without it, or its files came
+      to more than a message may carry. The fix is made in the composer it came
+      back to, and the send from there is a new one. */
+  cannotRetry?: true;
   /** The note was put away. The entry stays, so sending the same message
       again is still a retry under its id rather than a second prompt. */
   dismissed?: boolean;
@@ -116,7 +117,7 @@ export function createOutbox(initial: readonly OutboxEntry[] = []) {
     fail: (
       commandId: string,
       reason: string,
-      opts: { uploadFailed?: boolean; attachments?: Attachment[] } = {},
+      opts: { cannotRetry?: boolean; attachments?: Attachment[] } = {},
     ) => {
       const found = entries.find((e) => e.commandId === commandId);
       if (!found || found.status === "failed") return undefined;
@@ -125,7 +126,7 @@ export function createOutbox(initial: readonly OutboxEntry[] = []) {
         status: "failed",
         reason,
         ...(opts.attachments ? { attachments: opts.attachments } : {}),
-        ...(opts.uploadFailed ? { uploadFailed: true as const } : {}),
+        ...(opts.cannotRetry ? { cannotRetry: true as const } : {}),
       };
       replace(found, failed);
       return failed;

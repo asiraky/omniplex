@@ -74,8 +74,14 @@ export function App() {
   usePruneScrollMemory(scroll, threads);
   const store = useComposerDrafts(threads, activeId);
   const schedule = useScheduleEditor(wire, store);
-  const create = useNewThread({ wire, store, select, openSchedule: schedule.openNew });
   const commands = useThreadCommands({ wire, activeId, store, openDiff: panel.openDiff });
+  const create = useNewThread({
+    wire,
+    store,
+    select,
+    openSchedule: schedule.openNew,
+    sendWhenUploaded: commands.sendWhenUploaded,
+  });
   const setThreadUnread = useReadState(wire, activeId);
   const projectActions = useProjectActions(wire);
   const auth = useProviderAuth(wire);

@@ -12,8 +12,7 @@ import type { ThreadMeta } from "./protocol";
 // the thread list arrives — which is the whole subject of these tests.
 let events: ClientEvents;
 const command = vi.fn(async (_name: string, _args: unknown, _commandId?: string) => ({}) as any);
-// Every prompt the app sent, however it was sent: a composer send carries the
-// outbox's command id, a new thread's first message does not.
+// Every prompt the app sent, each under the outbox's command id.
 const promptsSent = () => command.mock.calls.filter(([name]) => name === "prompt");
 const attach = vi.fn();
 const detach = vi.fn();
@@ -1884,15 +1883,33 @@ describe("a new thread's first message", () => {
     expect(command).toHaveBeenCalledWith("create_thread", expect.objectContaining({ text: "" }));
     expect(uploadStaged).toHaveBeenCalledWith("fresh", report, expect.anything());
     await waitFor(() =>
-      expect(command).toHaveBeenCalledWith("prompt", {
-        threadId: "fresh",
-        text: "read this",
-        files: [{ artefactId: "art-1" }],
-      }),
+      expect(promptsSent()).toEqual([
+        ["prompt", { threadId: "fresh", text: "read this", files: [{ artefactId: "art-1" }] }, expect.any(String)],
+      ]),
     );
   });
 
-  it("leaves the message in the new thread when a file fails to upload", async () => {
+  it("sends the message once, with nothing left in the new thread's composer to send again", async () => {
+    let finish!: (v: unknown) => void;
+    uploadStaged.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    await start();
+    await pick(report);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await act(async () => events.onState("fresh", state("fresh", "default")));
+
+    expect(screen.getByText(/Sending once the uploads finish/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove report.txt" })).toBeNull();
+    await act(async () => {
+      fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
+    });
+    await act(async () => finish({ kind: "file", status: "ready", artefactId: "art-1", progress: 1 }));
+
+    await waitFor(() => expect(promptsSent()).toHaveLength(1));
+  });
+
+  it("brings the message back in the new thread when a file fails to upload", async () => {
     uploadStaged.mockRejectedValue(new Error("disk full"));
     await start();
     await pick(report);
@@ -1901,9 +1918,12 @@ describe("a new thread's first message", () => {
     });
     await act(async () => events.onState("fresh", state("fresh", "default")));
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    await waitFor(() =>
+      expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("read this"),
+    );
     expect(promptsSent()).toEqual([]);
-    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("read this");
+    expect(screen.getByRole("alert").textContent).toContain("Not sent: report.txt did not upload.");
+    expect(screen.getByRole("button", { name: "Retry report.txt" })).toBeTruthy();
   });
 
   it("sends a plain message with the thread", async () => {
@@ -2008,7 +2028,8 @@ describe("sending while files upload", () => {
     await waitFor(() => expect(composer().value).toBe("read this"));
     expect(promptsSent()).toEqual([]);
     const note = screen.getByRole("alert");
-    expect(note.textContent).toContain("Not sent: report.txt did not upload: disk full.");
+    expect(note.textContent).toContain("Not sent: report.txt did not upload.");
+    expect(screen.getByText("disk full")).toBeTruthy();
     // Retrying the message as it stands would send it without the file.
     expect(within(note).queryByRole("button", { name: "Retry" })).toBeNull();
 
@@ -2027,6 +2048,19 @@ describe("sending while files upload", () => {
       ["prompt", { threadId: "a", text: "read this", files: [{ artefactId: "art-2" }] }, expect.any(String)],
     ]);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("brings the message back when its files turn out to be over the limit once up", async () => {
+    await boot();
+    await pick(report);
+    await send("read this");
+    await act(async () =>
+      uploads[0].resolve({ kind: "file", status: "ready", id: "att-1", size: 20_000_001 }),
+    );
+
+    await waitFor(() => expect(composer().value).toBe("read this"));
+    expect(promptsSent()).toEqual([]);
+    expect(screen.getByRole("alert").textContent).toContain("more than 20 MB");
   });
 
   it("keeps a file that failed in the composer when a message goes without it", async () => {

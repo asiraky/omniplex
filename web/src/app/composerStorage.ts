@@ -277,7 +277,7 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
     status,
     reason,
     dismissed,
-    uploadFailed,
+    cannotRetry,
     sentAt,
     attachments,
     delivery,
@@ -298,7 +298,7 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
   if (status !== "failed" || typeof reason !== "string") return undefined;
   const entry: FailedSend = { ...send, status, reason };
   if (dismissed === true) entry.dismissed = true;
-  if (uploadFailed === true) entry.uploadFailed = true;
+  if (cannotRetry === true) entry.cannotRetry = true;
   return { entry, tab };
 }
 
@@ -316,8 +316,10 @@ function reviveEntry(v: unknown): { entry: OutboxEntry; tab: unknown } | undefin
  * lapses instead: it comes back failed, and listed as lapsed, for the caller
  * to put its text back in the composer.
  *
- * One that was waiting on its uploads follows the same rule for another
- * tab's. Otherwise it lapses whatever its age: its unfinished files died with
+ * One that was waiting on its uploads is another tab's for longer: a big file
+ * on a slow link keeps it waiting for minutes, and nothing about the wait
+ * shows in storage. Only once it is old enough to have lapsed is that tab
+ * taken to be gone. This tab's own lapses whatever its age: its unfinished files died with
  * the page, and only the ready ones were stored, so sending it as it stands
  * would send it without them. It comes back failed, as an upload failure, so
  * its note offers no Retry.
@@ -336,10 +338,13 @@ export function loadOutbox(): { entries: OutboxEntry[]; lapsed: FailedSend[] } {
     if (!found) continue;
     const { entry } = found;
     const age = now - entry.sentAt;
-    if (entry.status !== "failed" && found.tab !== tab && age < ABANDONED_AFTER_MS) continue;
+    if (found.tab !== tab) {
+      if (entry.status === "pending" && age < ABANDONED_AFTER_MS) continue;
+      if (entry.status === "uploading" && age < LAPSED_AFTER_MS) continue;
+    }
     const lapse =
       entry.status === "uploading"
-        ? { reason: UPLOAD_LAPSED_REASON, uploadFailed: true as const }
+        ? { reason: UPLOAD_LAPSED_REASON, cannotRetry: true as const }
         : entry.status === "pending" && age >= LAPSED_AFTER_MS
           ? { reason: LAPSED_REASON }
           : undefined;

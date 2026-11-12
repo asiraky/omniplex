@@ -480,7 +480,7 @@ function ThreadComposer({
           // A message whose file did not upload never went: retrying it as it
           // stands would send it without the file. The file's own retry, on
           // its chip, is the way back.
-          onRetry: failed.uploadFailed ? undefined : () => commands.retry(failed),
+          onRetry: failed.cannotRetry ? undefined : () => commands.retry(failed),
           onDismiss: () => store.outbox.dismiss(failed.commandId),
         }
       }

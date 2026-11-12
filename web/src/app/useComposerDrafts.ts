@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { uuid } from "~/client";
-import { stageFile, uploadStaged, type Attachment } from "~/lib/attachments";
+import { isImageAttachment, stageFile, uploadStaged, type Attachment } from "~/lib/attachments";
 import type { ThreadMeta } from "~/protocol";
 
 import {
@@ -116,9 +116,13 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       const abort = new AbortController();
       uploadsInFlight.current.set(key, abort);
       uploadFiles.current.set(key, file);
+      // A thumbnail draws no progress, and each report would redraw the app.
+      const showsProgress = !isImageAttachment(file);
       const upload = uploadStaged(threadId, file, {
         signal: abort.signal,
-        onProgress: (progress) => patchAttachment(threadId, key, { progress }),
+        onProgress: showsProgress
+          ? (progress) => patchAttachment(threadId, key, { progress })
+          : undefined,
       })
         .then((patch) => {
           uploadFiles.current.delete(key);

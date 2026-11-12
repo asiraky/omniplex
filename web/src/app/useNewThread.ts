@@ -1,32 +1,37 @@
 import { useCallback } from "react";
 
+import { uuid } from "~/client";
 import type { NewThreadInput } from "~/components/ThreadDraft";
 import { sendPayload, type Attachment } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
 
 import { NEW_THREAD } from "./threadKeys";
 import type { ComposerDrafts } from "./useComposerDrafts";
+import type { ThreadCommands } from "./useThreadCommands";
 import type { Wire } from "./useWire";
 
 /**
  * Starting a thread. A plain message goes with the thread. Files cannot: they
- * upload to a thread, so the thread starts empty, the message waits in its
- * composer while they go up, and then it sends. Scheduling starts it empty
- * too, and opens the schedule on it.
+ * upload to a thread, so the thread starts empty and the message waits on
+ * them, as one sent from the thread's composer while its files go up does.
+ * Scheduling starts it empty too, and opens the schedule on it once its
+ * pictures are up.
  */
 export function useNewThread({
   wire,
   store,
   select,
   openSchedule,
+  sendWhenUploaded,
 }: {
   wire: Wire;
   store: ComposerDrafts;
   select: (id: string) => void;
   openSchedule: (threadId: string, text: string, imageIds: string[]) => void;
+  sendWhenUploaded: ThreadCommands["sendWhenUploaded"];
 }) {
   const { clientRef } = wire;
-  const { attachments, draftFiles, setDraft, setDrafts, setAttachments, uploadInto } = store;
+  const { attachments, draftFiles, setDraft, setAttachments, uploadInto } = store;
   return useCallback(
     async (input: NewThreadInput, schedule = false) => {
       const pending = (attachments[NEW_THREAD] ?? []).flatMap((a) => {
@@ -41,17 +46,20 @@ export function useNewThread({
       const threadId: string = res.threadId;
       setDraft(NEW_THREAD, "");
       for (const { a } of pending) draftFiles.current.delete(a.key);
-      setAttachments((all) => {
-        const next: Record<string, Attachment[]> = { ...all, [NEW_THREAD]: [] };
-        if (pending.length) {
-          next[threadId] = pending.map(({ a }) => ({
-            ...a,
-            status: "uploading" as const,
-            ...(a.kind === "file" ? { progress: 0 } : {}),
-          }));
-        }
-        return next;
-      });
+      const going = pending.map(({ a }) => ({
+        ...a,
+        status: "uploading" as const,
+        ...(a.kind === "file" ? { progress: 0 } : {}),
+      }));
+      // A message waits on its files the way one sent from a thread's own
+      // composer does: out of the composer, in the outbox, with the composer
+      // saying so. Only a schedule shows them in the composer while they go
+      // up, since there is nothing to send until it is set.
+      setAttachments((all) => ({
+        ...all,
+        [NEW_THREAD]: [],
+        ...(schedule && going.length ? { [threadId]: going } : {}),
+      }));
       select(threadId);
       // The thread exists but the message did not go: it waits in the new
       // thread's composer rather than being lost.
@@ -63,10 +71,17 @@ export function useNewThread({
       }
       if (!later) return;
 
+      const uploads = pending.map(({ a, file }) => uploadInto(threadId, a.key, file));
+      if (!schedule) {
+        for (const u of uploads) u.catch(() => {});
+        sendWhenUploaded({ commandId: uuid(), threadId, text: input.text, attachments: going }, going);
+        return;
+      }
+
+      // Only once they are up: before that, the text in the composer beside
+      // its pictures would be sent by a tap on Send while it waits.
+      const results = await Promise.allSettled(uploads);
       setDraft(threadId, input.text);
-      const results = await Promise.allSettled(
-        pending.map(({ a, file }) => uploadInto(threadId, a.key, file)),
-      );
       const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failed.length) {
         // Taken back mid-upload is a choice, not a failure; either way the
@@ -79,33 +94,12 @@ export function useNewThread({
         return;
       }
       const payload = sendPayload(
-        pending.map(({ a }, i) => ({
+        going.map((a, i) => ({
           ...a,
           ...(results[i] as PromiseFulfilledResult<Partial<Attachment>>).value,
         })),
       );
-      if (schedule) {
-        openSchedule(threadId, input.text, payload.imageIds);
-        return;
-      }
-      try {
-        await clientRef.current!.command("prompt", {
-          threadId,
-          text: input.text,
-          ...(payload.imageIds.length ? { imageIds: payload.imageIds } : {}),
-          ...(payload.files.length ? { files: payload.files } : {}),
-        });
-      } catch (e) {
-        toast.error("The thread started, but the message did not send", {
-          description: e instanceof Error ? e.message : String(e),
-        });
-        return;
-      }
-      setDrafts((all) => (all[threadId] === input.text ? { ...all, [threadId]: "" } : all));
-      setAttachments((all) => {
-        for (const a of all[threadId] ?? []) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-        return { ...all, [threadId]: [] };
-      });
+      openSchedule(threadId, input.text, payload.imageIds);
     },
     [
       attachments,
@@ -113,9 +107,9 @@ export function useNewThread({
       draftFiles,
       openSchedule,
       select,
+      sendWhenUploaded,
       setAttachments,
       setDraft,
-      setDrafts,
       uploadInto,
     ],
   );
