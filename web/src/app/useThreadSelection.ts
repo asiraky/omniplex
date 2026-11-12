@@ -44,7 +44,7 @@ export function useThreadSelection({
   /** A tapped notification is opening a thread: clear whatever covers the thread view. */
   onOpenLink: () => void;
 }) {
-  const { clientRef, activeRef, threads, threadsLoaded, setState, dropResume } = wire;
+  const { clientRef, activeRef, threads, threadsLoaded, threadStore, dropResume } = wire;
   const [activeId, setActiveId] = useState<string | null>(wire.resume?.state.threadId ?? null);
   useEffect(() => {
     activeRef.current = activeId;
@@ -101,35 +101,39 @@ export function useThreadSelection({
       setActiveId(id);
       activeRef.current = id;
       onLeave();
-      setState(null);
+      threadStore.set(null);
       localStorage.setItem(LAST_THREAD, id);
       clientRef.current?.attach(id);
     },
-    [activeRef, clientRef, isDesktop, onLeave, setState],
+    [activeRef, clientRef, isDesktop, onLeave, threadStore],
   );
 
   // The draft takes the thread's place: nothing is attached while it is up,
   // and picking a thread from the list leaves it.
   // With no preset (or with one naming no project) the draft opens on the
-  // project of the thread being left.
+  // project of the thread being left. The list is read through a ref rather
+  // than closed over: the sidebar's New button takes this, and a callback that
+  // changed with every threads broadcast would re-render the memoised sidebar
+  // for each one.
+  const threadsRef = useLatest(threads);
   const startNew = useCallback(
     (preset?: DraftPreset) => {
       pendingLink.current = null;
       const asked = preset ?? {};
       const projectId =
-        asked.projectId ?? threads.find((t) => t.id === activeRef.current)?.projectId;
+        asked.projectId ?? threadsRef.current.find((t) => t.id === activeRef.current)?.projectId;
       nonce.current += 1;
       setCreating({ ...asked, projectId, nonce: nonce.current });
       if (activeRef.current) {
         activeRef.current = null;
         setActiveId(null);
-        setState(null);
+        threadStore.set(null);
         dropResume();
         clientRef.current?.detach();
       }
       if (!isDesktop) setSidebarOpen(false);
     },
-    [activeRef, clientRef, dropResume, isDesktop, setState, threads],
+    [activeRef, clientRef, dropResume, isDesktop, threadStore, threadsRef],
   );
 
   // The draft's own project pick, kept here so the Skills page reads the
@@ -145,12 +149,12 @@ export function useThreadSelection({
   const release = useCallback(() => {
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     setActiveId(null);
-    setState(null);
+    threadStore.set(null);
     dropResume();
     clientRef.current?.detach();
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     if (!isDesktop) setSidebarOpen(true);
-  }, [clientRef, dropResume, isDesktop, setState]);
+  }, [clientRef, dropResume, isDesktop, threadStore]);
 
   // Restore the last thread once the list arrives. This runs once: after it,
   // "no thread selected" is a state the user chose, not one we have yet to

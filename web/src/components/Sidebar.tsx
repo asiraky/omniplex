@@ -8,6 +8,7 @@ import {
   SquarePenIcon,
 } from "lucide-react";
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -541,7 +542,10 @@ function SidebarPanel({
   );
 }
 
-export function Sidebar(props: SidebarProps) {
+// Memoised, as its rows are: App re-renders on every frame the server sends and
+// every key the composer takes, and almost none of them touch the list. App
+// hands it nothing but values and callbacks that keep their identity.
+export const Sidebar = memo(function Sidebar(props: SidebarProps) {
   const isDesktop = useIsDesktop();
   // Held here, above both shapes, so a delete survives the sheet closing under
   // it and the switch between them. The dialog is rendered here for the same
@@ -615,7 +619,7 @@ export function Sidebar(props: SidebarProps) {
       <DeleteThreadDialog flow={flow.thread} />
     </>
   );
-}
+});
 
 function DockedSidebar({
   flow,

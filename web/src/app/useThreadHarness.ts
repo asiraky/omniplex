@@ -1,8 +1,9 @@
 import { useCallback, useMemo } from "react";
 
 import { toast } from "~/lib/toast";
-import type { ThreadMeta, Turn } from "~/protocol";
+import type { ThreadMeta, ThreadState, Turn } from "~/protocol";
 
+import { useThread } from "./threadStore";
 import type { Wire } from "./useWire";
 
 export type ThreadHarness = ReturnType<typeof useThreadHarness>;
@@ -17,7 +18,11 @@ export function useThreadHarness(
   activeId: string | null,
   meta: ThreadMeta | undefined,
 ) {
-  const { clientRef, harnesses, state } = wire;
+  const { clientRef, harnesses, threadStore } = wire;
+  // The two fields this renders from, each its own string, so the frames that
+  // change neither (nearly all of them) do not rerender the app.
+  const threadHarness = useThread(threadStore, harnessOf);
+  const threadMode = useThread(threadStore, modeOf);
   const activeProviderInstance = harnesses
     .flatMap((h) => h.instances ?? [])
     .find((i) => i.id === (meta?.providerInstance || meta?.harness));
@@ -25,12 +30,12 @@ export function useThreadHarness(
   // The permission modes for the attached thread's harness. Everything the UI
   // knows about them came from the adapter via the server; ids stay opaque.
   const modeOptions = useMemo(
-    () => harnesses.find((h) => h.id === state?.harness)?.permissionModes ?? [],
-    [harnesses, state?.harness],
+    () => harnesses.find((h) => h.id === threadHarness)?.permissionModes ?? [],
+    [harnesses, threadHarness],
   );
   // An empty recorded mode means the harness default; render it as such.
   const currentModeId =
-    (modeOptions.some((m) => m.id === state?.mode) ? state?.mode : undefined) ??
+    (modeOptions.some((m) => m.id === threadMode) ? threadMode : undefined) ??
     modeOptions.find((m) => m.default)?.id ??
     modeOptions[0]?.id ??
     "";
@@ -94,13 +99,13 @@ export function useThreadHarness(
   const activeInstanceId = activeProviderInstance?.id;
   const switchTargets = useMemo(
     () =>
-      (harnesses.find((h) => h.id === state?.harness)?.instances ?? [])
+      (harnesses.find((h) => h.id === threadHarness)?.instances ?? [])
         .filter(
           (i) =>
             i.enabled !== false && i.availability?.state === "ready" && i.id !== activeInstanceId,
         )
         .map((i) => ({ id: i.id, name: i.displayName })),
-    [harnesses, state?.harness, activeInstanceId],
+    [harnesses, threadHarness, activeInstanceId],
   );
   // Moves the thread, conversation and all, to another account of its
   // harness. From the model picker it asks first (a picker row is an easy
@@ -130,11 +135,12 @@ export function useThreadHarness(
         toast.error("Could not switch account", { description: (e as Error).message });
         return false;
       }
-      if (opts.model && opts.model !== state?.model) switchModel(opts.model);
+      // The model as it is now, after the switch, not as it was rendered.
+      if (opts.model && opts.model !== threadStore.get()?.model) switchModel(opts.model);
       if (opts.retry) retryTurn(opts.retry);
       return true;
     },
-    [activeId, clientRef, harnesses, state?.model, switchModel, retryTurn],
+    [activeId, clientRef, harnesses, threadStore, switchModel, retryTurn],
   );
 
   return {
@@ -150,3 +156,6 @@ export function useThreadHarness(
     switchAccount,
   };
 }
+
+const harnessOf = (s: ThreadState | null) => s?.harness;
+const modeOf = (s: ThreadState | null) => s?.mode;

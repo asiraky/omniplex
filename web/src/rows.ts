@@ -203,6 +203,54 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
   return rows;
 }
 
+function sameItems(a: Item[], b: Item[]) {
+  return a.length === b.length && a.every((it, i) => it === b[i]);
+}
+
+// Whether two rows under one key would draw the same thing. Items are compared
+// by reference: apply.ts copies only the item an event touched, so an item
+// that is still the same object is one nothing has happened to.
+function sameRow(a: Row, b: Row): boolean {
+  switch (a.kind) {
+    case "item":
+      return b.kind === "item" && a.item === b.item;
+    case "run":
+      return b.kind === "run" && a.live === b.live && sameItems(a.items, b.items);
+    case "fold":
+      return (
+        b.kind === "fold" &&
+        a.turn === b.turn &&
+        a.continued === b.continued &&
+        sameItems(a.items, b.items)
+      );
+    case "jobs":
+    case "artefacts":
+      return b.kind === a.kind && sameItems(a.items, b.items);
+  }
+}
+
+// buildRows makes every row afresh, so on its own every frame off the wire
+// hands the transcript a whole new set of rows and every one of them redraws —
+// a streamed token repainting the whole conversation above it. This keeps the
+// previous row object wherever the new one would draw the same thing, so only
+// the rows that actually changed are new; and when none did, the previous
+// array itself comes back.
+export function reuseRows(prev: Row[], next: Row[]): Row[] {
+  if (prev.length === 0) return next;
+  const byKey = new Map(prev.map((r) => [rowKey(r), r]));
+  let unchanged = prev.length === next.length;
+  const rows = next.map((row, i) => {
+    const old = byKey.get(rowKey(row));
+    if (old && sameRow(old, row)) {
+      if (old !== prev[i]) unchanged = false;
+      return old;
+    }
+    unchanged = false;
+    return row;
+  });
+  return unchanged ? prev : rows;
+}
+
 // A row belongs to the turn its last item came from: that is the turn whose
 // changed-files card, if it has one, comes next.
 export function rowTurnID(row: Row): string | undefined {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ThreadMeta } from "~/protocol";
 
+import { createThreadStore } from "./threadStore";
 import { useThreadSelection } from "./useThreadSelection";
 import type { Wire } from "./useWire";
 
@@ -17,7 +18,7 @@ function setup() {
     threads,
     // Not loaded, so the restore stays out of it.
     threadsLoaded: false,
-    setState: vi.fn(),
+    threadStore: createThreadStore(null),
     dropResume: vi.fn(),
     resume: null,
     link: null,

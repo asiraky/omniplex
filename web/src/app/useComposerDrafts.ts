@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { uuid } from "~/client";
 import { stageFile, uploadStaged, type Attachment } from "~/lib/attachments";
 import type { ThreadMeta } from "~/protocol";
 
+import { createDraftStore } from "./draftStore";
 import { NEW_THREAD } from "./threadKeys";
 
 export type ComposerDrafts = ReturnType<typeof useComposerDrafts>;
@@ -18,18 +19,25 @@ export type ComposerDrafts = ReturnType<typeof useComposerDrafts>;
  * keyed by thread id, lets a half-typed message survive the swap and still be
  * there when you come back. Thread scope only: no persistence, and the maps are
  * pruned as threads go away.
+ *
+ * The text is not React state: it changes on every keystroke, and state up
+ * here would rerender the whole app each time. It lives in a store the
+ * composers subscribe to themselves (`useDraft`), and the callbacks that need
+ * it read it when they run (`getDraft`) rather than closing over a render's
+ * copy. Attachments change rarely, so they stay ordinary state.
  */
 export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null) {
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftStore] = useState(createDraftStore);
   // Images staged for the next message, per thread and for the same reason as
   // the drafts: switching away and back must not lose what you attached. The
   // upload starts as soon as a picture is picked, so by send time this is a
   // list of ids the server already holds.
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
-  const setDraft = useCallback(
-    (id: string, text: string) => setDrafts((d) => (d[id] === text ? d : { ...d, [id]: text })),
-    [],
-  );
+  const getDraft = draftStore.get;
+  const setDraft = draftStore.set;
+  // The updater form, for writes that must land against the draft as it is
+  // when they run: a reply arriving seconds after its request, say.
+  const setDrafts = draftStore.update;
   const patchAttachment = useCallback(
     (threadId: string, key: string, patch: Partial<Attachment>) => {
       setAttachments((all) => {
@@ -122,7 +130,7 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   const seenThreads = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const s of threads) seenThreads.current.add(s.id);
-    setDrafts((d) => {
+    draftStore.update((d) => {
       const live = new Set(threads.map((s) => s.id));
       const next: Record<string, string> = {};
       let changed = false;
@@ -147,18 +155,34 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       }
       return changed ? next : all;
     });
-  }, [threads]);
+  }, [draftStore, threads]);
 
-  return {
-    drafts,
-    setDraft,
-    setDrafts,
-    attachments,
-    setAttachments,
-    draftFiles,
-    uploadInto,
-    attachFiles,
-    attachToDraft,
-    removeAttachment,
-  };
+  // One object while nothing in it changes, so typing (which changes nothing
+  // here) hands every consumer the same store it had.
+  return useMemo(
+    () => ({
+      draftStore,
+      getDraft,
+      setDraft,
+      setDrafts,
+      attachments,
+      setAttachments,
+      draftFiles,
+      uploadInto,
+      attachFiles,
+      attachToDraft,
+      removeAttachment,
+    }),
+    [
+      draftStore,
+      getDraft,
+      setDraft,
+      setDrafts,
+      attachments,
+      uploadInto,
+      attachFiles,
+      attachToDraft,
+      removeAttachment,
+    ],
+  );
 }

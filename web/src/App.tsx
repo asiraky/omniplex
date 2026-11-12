@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 
 import { NEW_THREAD } from "./app/threadKeys";
+import { ThreadStoreContext, useThread } from "./app/threadStore";
 import { useActivePR } from "./app/useActivePR";
 import { useAppKeybindings } from "./app/useAppKeybindings";
 import { useComposerDrafts } from "./app/useComposerDrafts";
@@ -42,19 +43,24 @@ import { loadLastProject } from "./lib/lastProject";
 import { skillsScope } from "./lib/skills";
 import { cn } from "./lib/utils";
 import { useIsDesktop } from "./useMediaQuery";
+import type { ThreadState } from "./protocol";
 import { useModHeld } from "./useShortcuts";
 
 export function App() {
   const isDesktop = useIsDesktop();
   const wire = useWire();
-  const { clientRef, state, projects, harnesses } = wire;
+  // Not the attached thread's state: only whether there is one. The state
+  // itself is in a store each part of the page selects its own slice of, so a
+  // frame off the wire (a job's progress, a usage tick) rerenders what it
+  // changed and not the app.
+  const { clientRef, threadStore, attached, projects, harnesses } = wire;
   // The list as the user should see it: with their renames, pins and moves,
   // before the server has confirmed them, in their order.
   const { threads: renamed, rename: renameThread } = useRenameThread(wire);
   const { threads: withPins, setPinned } = usePinThread(wire, renamed);
   const { threads, move: moveThread } = useThreadOrder(wire, withPins);
   const screens = useScreens();
-  const panel = usePanel(wire.stateRef);
+  const panel = usePanel(threadStore);
   const scroll = useScrollMemory(wire.resume);
   const nav = useThreadSelection({
     wire,
@@ -80,7 +86,7 @@ export function App() {
   const recents = useRecentSkills({
     activeId,
     projectId: meta?.projectId,
-    state,
+    threadStore,
     store,
     isDesktop,
     loadComposerItems: commands.loadComposerItems,
@@ -88,14 +94,22 @@ export function App() {
   const deletion = useThreadDeletion({ wire, activeId, select });
 
   const pr = useActivePR(wire, activeId, meta);
-  useThreadTitle(activeId, state, meta);
+  useThreadTitle(activeId, threadStore, meta);
 
   const accentOf = useCallback(
     (id: string) => harnesses.find((h) => h.id === id)?.accent,
     [harnesses],
   );
-  const projectFolders = (id?: string) =>
-    projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [];
+  // Kept to the projects list's identity, like accentOf: the sidebar is
+  // memoised, and a fresh lookup on every App render would re-render it.
+  const projectName = useCallback(
+    (id?: string) => projects.find((p) => p.id === id)?.name,
+    [projects],
+  );
+  const projectFolders = useCallback(
+    (id?: string) => projects.find((p) => p.id === id)?.folders.map((f) => f.path) ?? [],
+    [projects],
+  );
 
   // The keyboard and the palette. Everything below the early returns is one
   // screen of many, and ⌘K has to work from all of them.
@@ -105,7 +119,7 @@ export function App() {
   const showJumpHints = useModHeld(isElectronApp());
   // One composer at a time, the thread's or the draft's, behind one handle.
   const { composerRef } = recents;
-  const turnRunning = state?.phase === "turn";
+  const turnRunning = useThread(threadStore, isInTurn);
   const openThread = (id: string) => {
     screens.leaveAll();
     select(id);
@@ -114,7 +128,12 @@ export function App() {
     screens.leaveAll();
     nav.startNew(preset);
   };
-  const newThreadIn = () => palette.show("newThread");
+  // The sidebar's, kept stable for its memo like the screens' openers.
+  const { show: showPalette } = palette;
+  const { startNew: startFresh } = nav;
+  const newThreadIn = useCallback(() => showPalette("newThread"), [showPalette]);
+  const openPaletteRoot = useCallback(() => showPalette("root"), [showPalette]);
+  const startBlank = useCallback(() => startFresh(), [startFresh]);
   // Reachable from over the palette, which would otherwise cover the draft.
   const newThreadHere = () => {
     palette.setOpen(false);
@@ -133,7 +152,7 @@ export function App() {
     app: {
       paletteOpen: palette.open,
       helpOpen: palette.helpOpen,
-      threadOpen: !!state,
+      threadOpen: attached,
       turnRunning,
       panelOpen: panel.open,
     },
@@ -160,10 +179,10 @@ export function App() {
 
   const actions = usePaletteActions({
     meta,
-    threadOpen: !!state,
+    threadOpen: attached,
     turnRunning,
     // The full-page screens unmount the composer; Settings is a dialog over it.
-    composerOpen: (!!state || !!nav.creating) && !screens.fullPage,
+    composerOpen: (attached || !!nav.creating) && !screens.fullPage,
     composerRef,
     onSetPinned: setPinned,
     onSetUnread: setThreadUnread,
@@ -280,139 +299,139 @@ export function App() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      <Sidebar
-        threads={threads}
-        activeId={activeId}
-        status={wire.status}
-        open={nav.sidebarOpen}
-        onOpenChange={nav.setSidebarOpen}
-        onSelect={select}
-        onNewThreadIn={newThreadIn}
-        onNew={() => nav.startNew()}
-        onOpenPalette={() => palette.show("root")}
-        projectView={projectView}
-        showJumpHints={showJumpHints}
-        onDelete={deletion.remove}
-        onShowAccess={() => screens.setShowAccess(true)}
-        onShowUsage={() => screens.setShowUsage(true)}
-        onShowSkills={() => screens.setTools({})}
-        onShowSettings={() => screens.setSettings({})}
-        accentOf={accentOf}
-        projects={projects}
-        projectName={(id) => projects.find((p) => p.id === id)?.name}
-        projectFolders={projectFolders}
-        onSetPinned={setPinned}
-        onNewProject={() => screens.setNewProject(true)}
-        onSetUnread={setThreadUnread}
-        onRename={renameThread}
-        onReorder={moveThread}
-      />
-
-      <DeleteThreadDialog flow={deletion.deleteFlow} />
-
-      <main
-        className={cn(
-          "flex min-h-0 min-w-0 flex-1 flex-col",
-          // The expanded diff panel takes the whole content area; the main
-          // column stays mounted so the transcript keeps its scroll and state.
-          panel.open && panel.expanded && "hidden",
-        )}
-      >
-        <ThreadHeader
-          sidebarOpen={nav.sidebarOpen}
-          onShowSidebar={() => nav.setSidebarOpen(true)}
-          state={state}
+    <ThreadStoreContext.Provider value={threadStore}>
+      <div className="flex h-full overflow-hidden">
+        <Sidebar
+          threads={threads}
           activeId={activeId}
-          meta={meta}
-          onRename={renameThread}
-          creating={!!nav.creating}
-          isDesktop={isDesktop}
+          status={wire.status}
+          open={nav.sidebarOpen}
+          onOpenChange={nav.setSidebarOpen}
+          onSelect={select}
+          onNewThreadIn={newThreadIn}
+          onNew={startBlank}
+          onOpenPalette={openPaletteRoot}
+          projectView={projectView}
+          showJumpHints={showJumpHints}
+          onDelete={deletion.remove}
+          onShowAccess={screens.openAccess}
+          onShowUsage={screens.openUsage}
+          onShowSkills={screens.openSkills}
+          onShowSettings={screens.openSettings}
+          accentOf={accentOf}
+          projects={projects}
+          projectName={projectName}
+          projectFolders={projectFolders}
           onSetPinned={setPinned}
-          harness={harness}
-          copy={copy}
-          panel={panel}
-          onShowMcp={() => screens.setTools({ tab: "mcp" })}
+          onNewProject={screens.openNewProject}
+          onSetUnread={setThreadUnread}
+          onRename={renameThread}
+          onReorder={moveThread}
         />
 
-        {state ? (
-          <ThreadView
-            state={state}
+        <DeleteThreadDialog flow={deletion.deleteFlow} />
+
+        <main
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 flex-col",
+            // The expanded diff panel takes the whole content area; the main
+            // column stays mounted so the transcript keeps its scroll and state.
+            panel.open && panel.expanded && "hidden",
+          )}
+        >
+          <ThreadHeader
+            sidebarOpen={nav.sidebarOpen}
+            onShowSidebar={() => nav.setSidebarOpen(true)}
             activeId={activeId}
             meta={meta}
-            harnesses={harnesses}
-            scroll={scroll}
-            commands={commands}
+            onRename={renameThread}
+            creating={!!nav.creating}
+            isDesktop={isDesktop}
+            onSetPinned={setPinned}
             harness={harness}
+            copy={copy}
+            panel={panel}
+            onShowMcp={() => screens.setTools({ tab: "mcp" })}
+          />
+
+          {attached ? (
+            <ThreadView
+              activeId={activeId}
+              meta={meta}
+              harnesses={harnesses}
+              scroll={scroll}
+              commands={commands}
+              harness={harness}
+              panel={panel}
+              pr={pr}
+              recents={recents}
+              schedule={schedule}
+              store={store}
+              authWires={auth.authWires}
+              onLogin={auth.openInstanceAuth}
+              onForceDelete={deletion.forceDelete}
+              onFinish={deletion.deleteFlow.ask}
+              readAloud={wire.hasElevenLabsKey}
+              status={wire.status}
+              turnStatus={wire.turnStatus}
+            />
+          ) : nav.creating ? (
+            <ThreadDraft
+              // A new request is a new draft, on its own values.
+              key={nav.creating.nonce}
+              preset={nav.creating}
+              composerRef={composerRef}
+              projects={projects}
+              activeProjectId={nav.creating.projectId}
+              onProjectChange={nav.pickDraftProject}
+              harnesses={harnesses}
+              userConfig={wire.userConfig}
+              status={wire.status}
+              drafts={store.draftStore}
+              onStart={create}
+              attachments={store.attachments[NEW_THREAD] ?? []}
+              onAttachFiles={store.attachToDraft}
+              onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
+              onListWorkspaces={projectActions.listWorkspaces}
+              onListIssues={projectActions.listIssues}
+              onListComposerItems={projectActions.listDraftComposerItems}
+              onAddProject={() => screens.setNewProject(true)}
+              onSettings={(p) => screens.setSettings({ at: { kind: "project", id: p.id } })}
+              onRecheck={auth.recheck}
+              onLogin={auth.openInstanceAuth}
+              onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
+              dictate={wire.hasElevenLabsKey}
+            />
+          ) : (
+            <EmptyState
+              restoring={nav.restoring}
+              attaching={!!activeId}
+              hasThreads={threads.length > 0}
+              onNewThreadIn={newThreadIn}
+              onNew={startBlank}
+            />
+          )}
+        </main>
+
+        {attached && activeId && (
+          <ThreadPanel
+            clientRef={clientRef}
+            threadId={activeId}
             panel={panel}
             pr={pr}
-            recents={recents}
-            schedule={schedule}
-            store={store}
-            authWires={auth.authWires}
-            onLogin={auth.openInstanceAuth}
-            onForceDelete={deletion.forceDelete}
-            onFinish={deletion.deleteFlow.ask}
-            readAloud={wire.hasElevenLabsKey}
-            status={wire.status}
-            turnStatus={wire.turnStatus}
-          />
-        ) : nav.creating ? (
-          <ThreadDraft
-            // A new request is a new draft, on its own values.
-            key={nav.creating.nonce}
-            preset={nav.creating}
-            composerRef={composerRef}
-            projects={projects}
-            activeProjectId={nav.creating.projectId}
-            onProjectChange={nav.pickDraftProject}
-            harnesses={harnesses}
-            userConfig={wire.userConfig}
-            status={wire.status}
-            draft={store.drafts[NEW_THREAD] ?? ""}
-            onDraftChange={(text) => store.setDraft(NEW_THREAD, text)}
-            onStart={create}
-            attachments={store.attachments[NEW_THREAD] ?? []}
-            onAttachFiles={store.attachToDraft}
-            onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}
-            onListWorkspaces={projectActions.listWorkspaces}
-            onListIssues={projectActions.listIssues}
-            onListComposerItems={projectActions.listDraftComposerItems}
-            onAddProject={() => screens.setNewProject(true)}
-            onSettings={(p) => screens.setSettings({ at: { kind: "project", id: p.id } })}
-            onRecheck={auth.recheck}
-            onLogin={auth.openInstanceAuth}
-            onManageProviders={() => screens.setSettings({ at: { kind: "providers" } })}
-            dictate={wire.hasElevenLabsKey}
-          />
-        ) : (
-          <EmptyState
-            restoring={nav.restoring}
-            attaching={!!activeId}
-            hasThreads={threads.length > 0}
-            onNewThreadIn={newThreadIn}
-            onNew={() => nav.startNew()}
           />
         )}
-      </main>
 
-      {state && activeId && (
-        <ThreadPanel
-          clientRef={clientRef}
-          threadId={activeId}
-          state={state}
-          panel={panel}
-          pr={pr}
+        <AppDialogs
+          wire={wire}
+          screens={screens}
+          auth={auth}
+          projects={projectActions}
         />
-      )}
-
-      <AppDialogs
-        wire={wire}
-        screens={screens}
-        auth={auth}
-        projects={projectActions}
-      />
-      {overlays}
-    </div>
+        {overlays}
+      </div>
+    </ThreadStoreContext.Provider>
   );
 }
+
+const isInTurn = (state: ThreadState | null) => state?.phase === "turn";

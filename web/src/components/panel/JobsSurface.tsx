@@ -1,6 +1,7 @@
 import { ArrowLeftIcon, BotIcon, SquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import { Markdown } from "~/components/Markdown";
 import { RetryRow, textButton } from "~/components/RetryRow";
 import { Spinner } from "~/components/ui/spinner";
@@ -15,8 +16,6 @@ import { mergeChildren, useAgentChildren } from "./useAgentChildren";
 
 export interface JobsSurfaceProps {
   threadId: string;
-  /** The thread: `jobs` is the roster, `items` feeds an agent's transcript pane. */
-  state: ThreadState;
   /** A ws command: `stop_job` and `thread_job_output`. */
   command: (command: string, args: unknown) => Promise<any>;
   /** Fetch the jobs the snapshot left out (`state.jobsBefore`); null on failure. */
@@ -418,7 +417,10 @@ function RosterTotals({ jobs, partial }: { jobs: Job[]; partial: boolean }) {
 }
 
 /** The jobs roster: agents, shells and monitors running beside the conversation. */
-export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfaceProps) {
+export function JobsSurface({ threadId, command, loadAllJobs }: JobsSurfaceProps) {
+  // `jobs` is the roster, `items` feeds an agent's transcript pane, and
+  // `jobsBefore` says the snapshot left some out.
+  const state = useThread(useThreadStore(), surfaceFields, shallow);
   const tree = useMemo(() => jobTree(state.jobs), [state.jobs]);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = openId ? state.jobs.find((j) => j.id === openId) : undefined;
@@ -475,4 +477,15 @@ export function JobsSurface({ threadId, state, command, loadAllJobs }: JobsSurfa
       <RosterTotals jobs={state.jobs} partial={missing} />
     </div>
   );
+}
+
+const NO_JOBS: Job[] = [];
+const NO_ITEMS: Item[] = [];
+
+function surfaceFields(state: ThreadState | null) {
+  return {
+    jobs: state?.jobs ?? NO_JOBS,
+    items: state?.items ?? NO_ITEMS,
+    jobsBefore: state?.jobsBefore,
+  };
 }

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { emptyState } from "~/apply";
 import type { Item, Job, ThreadState } from "~/protocol";
+import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import { render } from "~/test/harness";
 
 import { JobsSurface } from "./JobsSurface";
@@ -35,8 +36,15 @@ function serve(...responses: (() => Response)[]) {
 
 const children = (...items: Item[]) => () => new Response(JSON.stringify({ items }));
 
+// The surface selects its thread from the store the app attaches it into.
+function mount(state: ThreadState, ui: React.ReactElement) {
+  return render(
+    <ThreadStoreContext.Provider value={createThreadStore(state)}>{ui}</ThreadStoreContext.Provider>,
+  );
+}
+
 function openAgent(state: ThreadState) {
-  render(<JobsSurface threadId="s1" state={state} command={vi.fn()} />);
+  mount(state, <JobsSurface threadId="s1" command={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: /Explore/ }));
 }
 
@@ -89,7 +97,7 @@ describe("an agent's drill-down", () => {
 describe("the roster with jobs left out", () => {
   it("loads them on request, and offers a retry when that fails", async () => {
     const loadAllJobs = vi.fn<() => Promise<ThreadState | null>>().mockResolvedValueOnce(null).mockResolvedValueOnce(thread());
-    render(<JobsSurface threadId="s1" state={thread({ jobsBefore: 7 })} command={vi.fn()} loadAllJobs={loadAllJobs} />);
+    mount(thread({ jobsBefore: 7 }), <JobsSurface threadId="s1" command={vi.fn()} loadAllJobs={loadAllJobs} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Show earlier jobs" }));
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
@@ -97,7 +105,10 @@ describe("the roster with jobs left out", () => {
   });
 
   it("offers them even when nothing loaded is visible", () => {
-    render(<JobsSurface threadId="s1" state={thread({ jobs: [], jobsBefore: 3 })} command={vi.fn()} loadAllJobs={vi.fn()} />);
+    mount(
+      thread({ jobs: [], jobsBefore: 3 }),
+      <JobsSurface threadId="s1" command={vi.fn()} loadAllJobs={vi.fn()} />,
+    );
     expect(screen.getByRole("button", { name: "Show earlier jobs" })).toBeTruthy();
   });
 });

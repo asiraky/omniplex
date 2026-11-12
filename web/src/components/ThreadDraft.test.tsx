@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createDraftStore } from "~/app/draftStore";
+import { NEW_THREAD } from "~/app/threadKeys";
 import { render, wrap } from "~/test/harness";
 import { ThreadDraft, type NewThreadInput } from "./ThreadDraft";
 import type { ComposerItem, HarnessMeta, Project, Workspace } from "~/protocol";
@@ -24,17 +25,15 @@ const harness = {
 
 type Props = React.ComponentProps<typeof ThreadDraft>;
 
-// The draft text lives with the caller, as it does in the app. It starts with
-// a message typed so Send is live as soon as nothing else holds it back.
-function Draft(props: Omit<Props, "draft" | "onDraftChange">) {
-  const [draft, setDraft] = useState("hi");
-  return <ThreadDraft {...props} draft={draft} onDraftChange={setDraft} />;
-}
-
 function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
   const { onCreate, ...rest } = over;
+  // The draft text lives in a store, as it does in the app. It starts with a
+  // message typed so Send is live as soon as nothing else holds it back.
+  const drafts = createDraftStore();
+  drafts.set(NEW_THREAD, "hi");
   // Made once, so a re-render hands the draft the same callbacks the app would.
-  const base: Omit<Props, "draft" | "onDraftChange"> = {
+  const base: Props = {
+    drafts,
     projects: [project],
     harnesses: [harness],
     userConfig: null,
@@ -48,9 +47,9 @@ function open(over: Partial<Props> & { onCreate?: Props["onStart"] } = {}) {
     onRecheck: vi.fn(),
     ...rest,
   };
-  const view = render(<Draft {...base} />);
+  const view = render(<ThreadDraft {...base} />);
   return {
-    rerender: (next: Partial<Props>) => view.rerender(wrap(<Draft {...base} {...next} />)),
+    rerender: (next: Partial<Props>) => view.rerender(wrap(<ThreadDraft {...base} {...next} />)),
   };
 }
 

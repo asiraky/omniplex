@@ -24,6 +24,30 @@ vi.mock("./lib/attachments", async (actual) => ({
   uploadStaged,
 }));
 
+// How many times the app and the transcript have drawn: each probe is a hook
+// the one calls on every render and nothing else does, counted and then run
+// for real.
+const renders = vi.hoisted(() => ({ app: 0, transcript: 0 }));
+vi.mock("./app/useThreadTitle", async (actual) => {
+  const real = await actual<typeof import("./app/useThreadTitle")>();
+  return {
+    useThreadTitle: (...args: Parameters<typeof real.useThreadTitle>) => {
+      renders.app++;
+      return real.useThreadTitle(...args);
+    },
+  };
+});
+vi.mock("./components/transcript/useTranscriptModel", async (actual) => {
+  const real = await actual<typeof import("./components/transcript/useTranscriptModel")>();
+  return {
+    ...real,
+    useTranscriptModel: (...args: Parameters<typeof real.useTranscriptModel>) => {
+      renders.transcript++;
+      return real.useTranscriptModel(...args);
+    },
+  };
+});
+
 vi.mock("./client", () => ({
   wsURL: () => "ws://test",
   uuid: () => Math.random().toString(36).slice(2),
@@ -1920,5 +1944,47 @@ describe("keyboard shortcuts and the palette", () => {
     key("Escape", {}, composer());
     await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     expect(cancels()).toHaveLength(1);
+  });
+});
+
+// A running subagent reports progress, and a turn its token counts, far more
+// often than the conversation changes. Those frames are for what shows them:
+// the spawn's card, the jobs strip, the context meter. The app around them and
+// the transcript they sit in have nothing new to draw.
+describe("a job or usage tick", () => {
+  const running = (): any => ({
+    ...state("a", "default"),
+    phase: "turn",
+    items: [
+      { id: "u1", kind: "message", role: "user", text: "go", turnId: "t1", receivedAt: 1 },
+      { id: "spawn", kind: "tool", toolKind: "agent", title: "scout", status: "in_progress", turnId: "t1", receivedAt: 2 },
+    ],
+    turns: [{ id: "t1", prompt: "go", done: false }],
+    jobs: [{ id: "j1", toolCallId: "spawn", name: "scout", kind: "agent", status: "running", depth: 0, usage: {}, activity: "reading files" }],
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  });
+
+  it("redraws neither the app nor the transcript", async () => {
+    localStorage.setItem("omniplex.lastThread", "a");
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a")]);
+    });
+    const s = running();
+    await act(async () => events.onState("a", s));
+    expect(await screen.findByText("reading files")).toBeTruthy();
+    renders.app = 0;
+    renders.transcript = 0;
+
+    // What apply.ts makes of each: a new state with the seq bumped and only
+    // the one field copied.
+    const ticked = { ...s, seq: 2, jobs: [{ ...s.jobs[0], activity: "running tests" }] };
+    await act(async () => events.onState("a", ticked));
+    await act(async () => events.onState("a", { ...ticked, seq: 3, usage: { ...s.usage, output: 2 } }));
+
+    expect(screen.getByText("running tests")).toBeTruthy();
+    expect(renders).toEqual({ app: 0, transcript: 0 });
   });
 });

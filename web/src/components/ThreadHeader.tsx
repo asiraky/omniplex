@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
+import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { TranscriptCopy } from "~/app/useTranscriptCopy";
@@ -41,7 +42,6 @@ const SHOW_MODE_SWITCHER = false;
 
 /** What the header's actions work on, on either layout. */
 type Actions = {
-  state: ThreadState;
   activeId: string | null;
   meta: ThreadMeta | undefined;
   onSetPinned: (threadId: string, pinned: boolean) => void;
@@ -55,7 +55,6 @@ type Actions = {
 export function ThreadHeader({
   sidebarOpen,
   onShowSidebar,
-  state,
   activeId,
   meta,
   onRename,
@@ -69,7 +68,6 @@ export function ThreadHeader({
 }: {
   sidebarOpen: boolean;
   onShowSidebar: () => void;
-  state: ThreadState | null;
   activeId: string | null;
   meta: ThreadMeta | undefined;
   onRename: (threadId: string, title: string) => void;
@@ -84,7 +82,10 @@ export function ThreadHeader({
   // The thread the title field is open on: switching threads closes it rather
   // than opening the next thread's name for editing.
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const actions = state && { state, activeId, meta, onSetPinned, copy, panel, onShowMcp };
+  // The attached thread, as far as the bar shows it: a frame that changes
+  // neither field leaves the header alone.
+  const thread = useThread(useThreadStore(), headerFields, shallow);
+  const actions = thread && { activeId, meta, onSetPinned, copy, panel, onShowMcp };
   return (
     <header className="flex items-center gap-2 px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       {/* The open sidebar carries its own collapse button, so this one
@@ -102,13 +103,13 @@ export function ThreadHeader({
         <>
           <HeaderTitle
             threadId={activeId}
-            title={threadTitle(meta, actions.state)}
+            title={threadTitle(meta, thread.title)}
             editing={renamingId !== null && renamingId === activeId}
             onEdit={() => setRenamingId(activeId)}
             onDone={() => setRenamingId(null)}
             onRename={onRename}
           />
-          {SHOW_MODE_SWITCHER && !actions.state.closed && <ModeSwitcher harness={harness} />}
+          {SHOW_MODE_SWITCHER && !thread.closed && <ModeSwitcher harness={harness} />}
           {isDesktop ? <DesktopActions actions={actions} /> : <PhoneActions actions={actions} />}
         </>
       ) : (
@@ -210,7 +211,7 @@ function threadPin({ activeId, meta, onSetPinned }: Actions) {
 }
 
 function DesktopActions({ actions }: { actions: Actions }) {
-  const { state, copy, panel } = actions;
+  const { copy, panel } = actions;
   const pin = threadPin(actions);
   return (
     <>
@@ -240,7 +241,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
       >
         <PanelRightIcon />
         {/* A live agent-count badge: work is happening off-transcript. */}
-        <JobsBadge state={state} className="-top-0.5 -right-0.5" />
+        <JobsBadge className="-top-0.5 -right-0.5" />
       </IconButton>
     </>
   );
@@ -249,7 +250,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
 // A phone has no room for a row of buttons, so the same actions sit in one
 // overflow menu.
 function PhoneActions({ actions }: { actions: Actions }) {
-  const { state, copy, panel, onShowMcp } = actions;
+  const { copy, panel, onShowMcp } = actions;
   const pin = threadPin(actions);
   return (
     <DropdownMenu>
@@ -261,7 +262,7 @@ function PhoneActions({ actions }: { actions: Actions }) {
           className="relative size-11 shrink-0"
         >
           <EllipsisIcon />
-          <JobsBadge state={state} className="top-0.5 right-0.5" />
+          <JobsBadge className="top-0.5 right-0.5" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-48">
@@ -300,8 +301,10 @@ function ItemShortcut({ command }: { command: CommandId }) {
   return label ? <DropdownMenuShortcut>{label}</DropdownMenuShortcut> : null;
 }
 
-function JobsBadge({ state, className }: { state: ThreadState; className: string }) {
-  const live = liveJobCount(state.jobs);
+// Selects the count itself, so a job's progress rerenders the badge only when
+// it changes how many are live, and never the header around it.
+function JobsBadge({ className }: { className: string }) {
+  const live = useThread(useThreadStore(), liveJobsOf);
   if (live === 0) return null;
   return (
     <span
@@ -313,4 +316,12 @@ function JobsBadge({ state, className }: { state: ThreadState; className: string
       {live}
     </span>
   );
+}
+
+function headerFields(state: ThreadState | null) {
+  return state && { title: state.title, closed: state.closed };
+}
+
+function liveJobsOf(state: ThreadState | null) {
+  return state ? liveJobCount(state.jobs) : 0;
 }

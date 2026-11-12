@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ThreadMeta } from "~/protocol";
 import { busy as isBusy } from "~/threadStatus";
@@ -56,12 +56,14 @@ export function useDeleteThread({
   // arrives too late to read state: a refusal from the server.
   const latest = useRef<string | null>(null);
 
-  const ask = (s: ThreadMeta) => {
+  // Stable, because every sidebar row takes it and a fresh one each render
+  // would re-render every memoised row. It can be: it only sets state.
+  const ask = useCallback((s: ThreadMeta) => {
     // Defaulted on for a worktree omniplex provisioned, because that is what omniplex did
     // before and it is usually right; off for one it merely borrowed.
     setRemoveWorktree(s.workspaceMode === "managed");
     setConfirming(s);
-  };
+  }, []);
 
   const mode = confirming?.workspaceMode ?? "";
   // "The last thread omniplex knows of" is a question the thread list can already

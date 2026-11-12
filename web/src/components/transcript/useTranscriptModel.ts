@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 
-import type { Item, QueuedPrompt, ThreadState } from "~/protocol";
-import { buildRows } from "~/rows";
+import type { Item, QueuedPrompt } from "~/protocol";
+import { buildRows, reuseRows, type Row } from "~/rows";
 
 import type { Recovered } from "./Message";
+import type { TranscriptState } from "./transcriptState";
 
 function newestAgentText(items: Item[]): Item | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -28,7 +29,7 @@ function newestPrompt(items: Item[]): string | undefined {
  * another account: the limit was the old one's. Mirrors the server's
  * projection.State.QueueHeld and HeldByLimit.
  */
-export function limitHold(state: ThreadState) {
+export function limitHold(state: Pick<TranscriptState, "scheduledPrompts" | "turns" | "items">) {
   const continuation = state.scheduledPrompts?.find(
     (p) => p.kind === "limit" && (p.status === "pending" || p.status === "ready"),
   );
@@ -46,7 +47,9 @@ export function limitHold(state: ThreadState) {
 }
 
 /** What the transcript derives from the thread's state before it draws a row. */
-export function useTranscriptModel(state: ThreadState) {
+export function useTranscriptModel(
+  state: Pick<TranscriptState, "phase" | "closed" | "items" | "turns" | "scheduledPrompts">,
+) {
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
   // never provisioned — leaves the empty state to speak.
@@ -82,10 +85,21 @@ export function useTranscriptModel(state: ThreadState) {
   // its first lines are readable the moment they land.
   const lastPromptID = useMemo(() => newestPrompt(ownItems), [ownItems]);
 
+  // Rows that would draw the same as last time are the same objects as last
+  // time, so a memoised row skips the frame (see reuseRows). The previous rows
+  // are only a cache to match against: whatever the ref holds, reuseRows hands
+  // back rows equal to a fresh build, so reading it here cannot render anything
+  // wrong — a stale value only costs a missed reuse. It is written after commit
+  // rather than here, so a render React throws away (StrictMode's second pass,
+  // an interrupted transition) never becomes what the next one matches against.
+  const prevRows = useRef<Row[]>([]);
   const rows = useMemo(
-    () => buildRows(ownItems, state.turns, state.phase),
+    () => reuseRows(prevRows.current, buildRows(ownItems, state.turns, state.phase)),
     [ownItems, state.turns, state.phase],
   );
+  useLayoutEffect(() => {
+    prevRows.current = rows;
+  }, [rows]);
 
   // Only the newest turn can be continued, and only once nothing is running:
   // an error further back was already answered by whatever came after it.

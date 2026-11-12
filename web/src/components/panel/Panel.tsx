@@ -14,6 +14,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import { ArtefactList } from "~/components/artefacts/ArtefactList";
 import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
+import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import { IconButton } from "~/components/IconButton";
 
 import { DiffSurface } from "~/components/panel/DiffSurface";
@@ -66,8 +67,6 @@ export interface PanelRequest {
 
 export interface PanelProps {
   threadId: string;
-  /** The thread, for the jobs surface (jobs + items) and its badge. */
-  state: ThreadState;
   /** A ws command, for stopping a job and tailing a shell's output. */
   command: (command: string, args: unknown) => Promise<any>;
   /** The jobs the snapshot left out, for the jobs surface. */
@@ -180,7 +179,6 @@ function SurfaceIcon({ s, className }: { s: Surface; className?: string }) {
 
 function PanelBody({
   threadId,
-  state,
   command,
   loadAllJobs,
   open,
@@ -314,8 +312,10 @@ function PanelBody({
     setPanel((p) => openSurface(p, fileSurface(path)));
   }, []);
 
-  const jobCount = liveJobCount(state.jobs);
-  const artefacts = state.artefacts ?? NO_ARTEFACTS;
+  // What the tabs show of the thread, selected so a job's progress rerenders
+  // the panel only when it changes how many are live. The jobs surface
+  // selects the jobs themselves.
+  const { jobCount, artefacts } = useThread(useThreadStore(), panelFields, shallow);
   const openArtefact = useCallback(
     (id: string) => setPanel((p) => putSurface(p, artefactSurface(id))),
     [],
@@ -478,7 +478,7 @@ function PanelBody({
           />
         )}
         {active?.kind === "jobs" && (
-          <JobsSurface threadId={threadId} state={state} command={command} loadAllJobs={loadAllJobs} />
+          <JobsSurface threadId={threadId} command={command} loadAllJobs={loadAllJobs} />
         )}
         {active?.kind === "artefacts" && <ArtefactList artefacts={artefacts} onOpen={openArtefact} />}
         {active?.kind === "artefact" &&
@@ -609,4 +609,11 @@ export function Panel(props: PanelProps) {
       <PanelBody {...props} />
     </aside>
   );
+}
+
+function panelFields(state: ThreadState | null) {
+  return {
+    jobCount: state ? liveJobCount(state.jobs) : 0,
+    artefacts: state?.artefacts ?? NO_ARTEFACTS,
+  };
 }

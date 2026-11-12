@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, type RefObject } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { PanelRequest } from "~/components/panel/Panel";
-import type { ThreadState } from "~/protocol";
+
+import type { ThreadStore } from "./threadStore";
 
 export type PanelControls = ReturnType<typeof usePanel>;
 
@@ -10,7 +11,7 @@ export type PanelControls = ReturnType<typeof usePanel>;
  * put on screen. Every "open this" in the thread (a turn's diff card, a path in
  * prose, a jobs strip, an artefact card) comes through here.
  */
-export function usePanel(stateRef: RefObject<ThreadState | null>) {
+export function usePanel(threadStore: ThreadStore) {
   const [open, setOpen] = useState(false);
   // The panel is lazy: nothing is fetched until it is first opened, and after
   // that it stays mounted so closing and reopening it is instant.
@@ -48,10 +49,11 @@ export function usePanel(stateRef: RefObject<ThreadState | null>) {
   // Opening a path clicked in prose. The panel routes it: the diff surface
   // when the thread changed it, the file surface otherwise. An absolute path
   // under the checkout is relativised first; the server only serves the
-  // workspace.
+  // workspace. The checkout is read at the click, so the callback stays the
+  // same across frames.
   const openPath = useCallback(
     (path: string, line?: number) => {
-      const cwd = stateRef.current?.cwd ?? "";
+      const cwd = threadStore.get()?.cwd ?? "";
       let rel = path;
       if (cwd && (rel === cwd || rel.startsWith(cwd + "/")))
         rel = rel.slice(cwd.length).replace(/^\//, "");
@@ -64,7 +66,7 @@ export function usePanel(stateRef: RefObject<ThreadState | null>) {
         nonce: (current?.nonce ?? 0) + 1,
       }));
     },
-    [stateRef],
+    [threadStore],
   );
 
   // The panel belongs to a checkout, so it must not survive a move to a

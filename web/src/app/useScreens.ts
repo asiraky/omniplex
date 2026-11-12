@@ -71,8 +71,21 @@ export function useScreens() {
     if (themePreview) leaveThemePreview();
   };
 
+  // The sidebar's buttons, made once: it is memoised, and an arrow written
+  // inline in App would be a new prop on every App render.
+  const openAccess = useCallback(() => setShowAccess(true), []);
+  const openUsage = useCallback(() => setShowUsage(true), []);
+  const openSkills = useCallback(() => setTools({}), []);
+  const openSettings = useCallback(() => setSettings({}), []);
+  const openNewProject = useCallback(() => setNewProject(true), []);
+
   return {
     fullPage,
+    openAccess,
+    openUsage,
+    openSkills,
+    openSettings,
+    openNewProject,
     covering,
     uncover,
     leaveAll,

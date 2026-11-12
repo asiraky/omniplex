@@ -1,4 +1,5 @@
-import type { Job } from "~/protocol";
+import { shallow, useThread, useThreadStore } from "~/app/threadStore";
+import type { ThreadState } from "~/protocol";
 import { liveJobCounts, liveJobsLabel } from "~/lib/jobs";
 import { cn } from "~/lib/utils";
 
@@ -7,11 +8,14 @@ import { cn } from "~/lib/utils";
  * "2 agents, 1 shell". It is about liveness, not the turn — it stays while a
  * backgrounded agent works on after the turn that started it has ended. Agents
  * pulse; a lone shell or monitor is a steady dot. Clicking opens the jobs panel.
+ *
+ * It selects what it says rather than the jobs, so a job's progress (its
+ * activity line, its token count) rerenders it only when the line changes.
  */
-export function JobsStrip({ jobs, onOpen }: { jobs: Job[]; onOpen: () => void }) {
-  const counts = liveJobCounts(jobs);
-  if (counts.agents + counts.shells + counts.monitors === 0) return null;
-  const pulsing = counts.agents > 0;
+export function JobsStrip({ onOpen }: { onOpen: () => void }) {
+  const { agents, shells, monitors, label } = useThread(useThreadStore(), stripFields, shallow);
+  if (agents + shells + monitors === 0) return null;
+  const pulsing = agents > 0;
   return (
     <div className="flex justify-center px-3 pb-1.5">
       <button
@@ -27,8 +31,13 @@ export function JobsStrip({ jobs, onOpen }: { jobs: Job[]; onOpen: () => void })
             className={cn("relative inline-flex size-2 rounded-full", pulsing ? "bg-primary" : "bg-primary/60")}
           />
         </span>
-        <span className="truncate">{liveJobsLabel(jobs)}</span>
+        <span className="truncate">{label}</span>
       </button>
     </div>
   );
+}
+
+function stripFields(state: ThreadState | null) {
+  const jobs = state?.jobs ?? [];
+  return { ...liveJobCounts(jobs), label: liveJobsLabel(jobs) };
 }
