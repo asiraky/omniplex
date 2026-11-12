@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { render, viewport } from "~/test/harness";
+import { render, viewport, wrap } from "~/test/harness";
 import type { ClientEvents } from "./client";
 import type { ThreadMeta } from "./protocol";
 
@@ -10,7 +11,10 @@ import type { ThreadMeta } from "./protocol";
 // captures the callbacks App hands the client and lets each test decide when
 // the thread list arrives — which is the whole subject of these tests.
 let events: ClientEvents;
-const command = vi.fn(async (_name: string, _args: unknown) => ({}) as any);
+const command = vi.fn(async (_name: string, _args: unknown, _commandId?: string) => ({}) as any);
+// Every prompt the app sent, however it was sent: a composer send carries the
+// outbox's command id, a new thread's first message does not.
+const promptsSent = () => command.mock.calls.filter(([name]) => name === "prompt");
 const attach = vi.fn();
 const detach = vi.fn();
 const prime = vi.fn();
@@ -48,7 +52,19 @@ vi.mock("./components/transcript/useTranscriptModel", async (actual) => {
   };
 });
 
+const { CommandTimeout } = vi.hoisted(() => ({
+  CommandTimeout: class extends Error {
+    constructor(
+      readonly command: string,
+      readonly commandId: string,
+    ) {
+      super("No answer from the server. Check the connection and try again.");
+    }
+  },
+}));
+
 vi.mock("./client", () => ({
+  CommandTimeout,
   wsURL: () => "ws://test",
   uuid: () => Math.random().toString(36).slice(2),
   Client: class {
@@ -58,7 +74,10 @@ vi.mock("./client", () => ({
     connect() {
       events.onStatus("online");
     }
-    close() {}
+    closed = false;
+    close() {
+      this.closed = true;
+    }
     detach = detach;
     attach = attach;
     command = command;
@@ -695,9 +714,11 @@ describe("the empty content column", () => {
 });
 
 describe("composer drafts", () => {
-  const boot = async (kind: "phone" | "desktop" = "desktop") => {
+  const boot = async (kind: "phone" | "desktop" = "desktop", { strict = false } = {}) => {
     viewport(kind);
-    render(<App />);
+    // At the root, as main.tsx has it: under the providers it mounts once.
+    if (strict) rtlRender(<StrictMode>{wrap(<App />)}</StrictMode>);
+    else render(<App />);
     await act(async () => {
       events.onProjects([project]);
       events.onHarnesses([harness]);
@@ -789,13 +810,287 @@ describe("composer drafts", () => {
       fireEvent.keyDown(composer(), { key: "Enter" });
     });
 
-    expect(command).toHaveBeenCalledWith("prompt", { threadId: "a", text: "hello" });
+    expect(command).toHaveBeenCalledWith(
+      "prompt",
+      { threadId: "a", text: "hello" },
+      expect.any(String),
+    );
     expect(composer().value).toBe("");
 
     // Coming back to the thread shows the cleared field, not the sent text.
     await open("b");
     await open("a");
     expect(composer().value).toBe("");
+  });
+
+  const send = async (text: string) => {
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: text } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(composer(), { key: "Enter" });
+    });
+  };
+  const commandIdOf = (call: unknown[]) => call[2] as string;
+
+  it("puts a message that failed back in the composer, and retries it under the same id", async () => {
+    let refuse = true;
+    command.mockImplementation(async (name: string) => {
+      if (name === "prompt" && refuse) throw new Error("workspace is not ready");
+      return {} as any;
+    });
+    await boot();
+    await open("a");
+
+    await send("hello");
+
+    await waitFor(() => expect(composer().value).toBe("hello"));
+    expect(screen.getByRole("alert").textContent).toContain("Not sent: workspace is not ready.");
+    expect(toast.error).not.toHaveBeenCalled();
+
+    refuse = false;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    });
+
+    const [first, retry] = promptsSent();
+    expect(commandIdOf(retry)).toBe(commandIdOf(first));
+    expect(composer().value).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("sends an edited message as a new one", async () => {
+    let refuse = true;
+    command.mockImplementation(async (name: string) => {
+      if (name === "prompt" && refuse) throw new Error("connection lost");
+      return {} as any;
+    });
+    await boot();
+    await open("a");
+
+    await send("hello");
+    await waitFor(() => expect(composer().value).toBe("hello"));
+
+    refuse = false;
+    await send("hello again");
+
+    const [first, edited] = promptsSent();
+    expect(commandIdOf(edited)).not.toBe(commandIdOf(first));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("puts a failed message in front of what was typed while it was on its way", async () => {
+    let fail: (e: Error) => void = () => {};
+    command.mockImplementation((name: string) =>
+      name === "prompt" ? new Promise((_, reject) => (fail = reject)) : Promise.resolve({}),
+    );
+    await boot();
+    await open("a");
+
+    await send("first");
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: "second" } });
+    });
+    await act(async () => fail(new Error("thread is closed")));
+
+    expect(composer().value).toBe("first\n\nsecond");
+  });
+
+  it("retries the failed message alone, leaving what was typed after it", async () => {
+    let fail: (e: Error) => void = () => {};
+    command.mockImplementation((name: string) => {
+      if (name !== "prompt" || promptsSent().length > 1) return Promise.resolve({});
+      return new Promise((_, reject) => (fail = reject));
+    });
+    await boot();
+    await open("a");
+
+    await send("first");
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: "second" } });
+    });
+    await act(async () => fail(new Error("connection lost")));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    });
+
+    const [first, retry] = promptsSent();
+    expect(retry[1]).toMatchObject({ text: "first" });
+    expect(commandIdOf(retry)).toBe(commandIdOf(first));
+    expect(composer().value).toBe("second");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each([
+    ["a line", "first\nsecond"],
+    ["a blank line", "first\n\nsecond"],
+  ])("retries the failed message alone when what follows it is %s down", async (_, typed) => {
+    let fail: (e: Error) => void = () => {};
+    command.mockImplementation((name: string) => {
+      if (name !== "prompt" || promptsSent().length > 1) return Promise.resolve({});
+      return new Promise((_, reject) => (fail = reject));
+    });
+    await boot();
+    await open("a");
+
+    await send("first");
+    await act(async () => fail(new Error("connection lost")));
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: typed } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    });
+
+    expect(promptsSent()[1][1]).toMatchObject({ text: "first" });
+    expect(composer().value).toBe("second");
+  });
+
+  it("says the server never answered when the connection was found dead", async () => {
+    command.mockImplementation(async (name: string, _args: unknown, id?: string) => {
+      if (name === "prompt") throw new CommandTimeout(name, id!);
+      return {} as any;
+    });
+    await boot();
+    await open("a");
+
+    await send("hello");
+
+    await waitFor(() => expect(composer().value).toBe("hello"));
+    expect(screen.getByRole("alert").textContent).toContain("Not sent: no answer from the server.");
+  });
+
+  it("still retries under the same id after the note is dismissed", async () => {
+    command.mockImplementation(async (name: string) => {
+      if (name === "prompt" && promptsSent().length === 1) throw new Error("connection lost");
+      return {} as any;
+    });
+    await boot();
+    await open("a");
+
+    await send("hello");
+    await waitFor(() => expect(composer().value).toBe("hello"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(composer().value).toBe("hello");
+
+    await send("hello");
+    const [first, again] = promptsSent();
+    expect(commandIdOf(again)).toBe(commandIdOf(first));
+  });
+
+  it("keeps every thread's draft across a reload", async () => {
+    await boot();
+    await open("a");
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: "draft for a" } });
+    });
+    await open("b");
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: "draft for b" } });
+    });
+    // What a phone does to a backgrounded tab before discarding it.
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    cleanup();
+
+    await boot();
+    await open("a");
+    expect(composer().value).toBe("draft for a");
+    await open("b");
+    expect(composer().value).toBe("draft for b");
+  });
+
+  it("sends again, under its id, a message the page died waiting on", async () => {
+    command.mockImplementation((name: string) =>
+      name === "prompt" ? new Promise(() => {}) : Promise.resolve({}),
+    );
+    await boot();
+    await open("a");
+    await send("hello");
+    cleanup();
+
+    command.mockImplementation(async () => ({}) as any);
+    await boot();
+    await open("a");
+
+    const [first, again] = promptsSent();
+    expect(again[1]).toMatchObject({ threadId: "a", text: "hello" });
+    expect(commandIdOf(again)).toBe(commandIdOf(first));
+    expect(composer().value).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("sends it again on the connection that stays, when the page mounts twice", async () => {
+    command.mockImplementation((name: string) =>
+      name === "prompt" ? new Promise(() => {}) : Promise.resolve({}),
+    );
+    await boot();
+    await open("a");
+    await send("hello");
+    cleanup();
+
+    // Dev mounts twice: the first connection is closed before it is up, and
+    // what went on it times out.
+    const sent: { client: { closed: boolean }; reject: (e: Error) => void }[] = [];
+    command.mockImplementation(function (this: { closed: boolean }, name: string) {
+      if (name !== "prompt") return Promise.resolve({});
+      return new Promise((_, reject) => sent.push({ client: this, reject }));
+    });
+    await boot("desktop", { strict: true });
+    await act(async () => {
+      for (const s of sent) if (s.client.closed) s.reject(new Error("connection lost"));
+    });
+    await open("a");
+
+    const [first, ...again] = promptsSent();
+    expect(sent.filter((s) => !s.client.closed)).toHaveLength(1);
+    expect(again.map(commandIdOf)).toContain(commandIdOf(first));
+    expect(composer().value).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("brings back a message whose resend after a reload fails, in front of what was typed", async () => {
+    command.mockImplementation((name: string) =>
+      name === "prompt" ? new Promise(() => {}) : Promise.resolve({}),
+    );
+    await boot();
+    await open("a");
+    await send("hello");
+    await act(async () => {
+      fireEvent.change(composer(), { target: { value: "later" } });
+    });
+    await open("b");
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    cleanup();
+
+    command.mockImplementation(async (name: string) => {
+      if (name === "prompt") throw new Error("workspace is not ready");
+      return {} as any;
+    });
+    await boot();
+    await open("a");
+    expect(composer().value).toBe("hello\n\nlater");
+    expect(screen.getByRole("alert").textContent).toContain("workspace is not ready");
+
+    // Back in the draft for good: a second reload does not lose it, and
+    // Retry is still the same message.
+    cleanup();
+    command.mockImplementation(async () => ({}) as any);
+    await boot();
+    await open("a");
+    expect(composer().value).toBe("hello\n\nlater");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    });
+    const prompts = promptsSent();
+    expect(commandIdOf(prompts.at(-1)!)).toBe(commandIdOf(prompts[0]));
+    expect(composer().value).toBe("later");
   });
 
   it("opens the model picker for /model without sending it to the harness", async () => {
@@ -809,7 +1104,7 @@ describe("composer drafts", () => {
       fireEvent.keyDown(composer(), { key: "Enter" });
     });
 
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
     expect(composer().value).toBe("");
     await waitFor(() =>
       expect(screen.getByLabelText("Harness and model").getAttribute("aria-expanded")).toBe("true"),
@@ -894,7 +1189,7 @@ describe("composer drafts", () => {
         invocation: "/review focus on races",
       }),
     );
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 
   it("does not leak slash actions while the provider catalogue is still unknown", async () => {
@@ -910,7 +1205,7 @@ describe("composer drafts", () => {
 
     fireEvent.change(composer(), { target: { value: "/compact", selectionStart: 8 } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
     expect(composer().value).toBe("/compact");
 
     await act(async () => resolveCatalogue({ items: [] }));
@@ -984,7 +1279,7 @@ describe("composer drafts", () => {
     });
 
     expect(composer().value).toBe("$review ");
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 
   it("refreshes the provider catalogue when the attached adapter invalidates it", async () => {
@@ -1022,7 +1317,7 @@ describe("composer drafts", () => {
     fireEvent.change(composer(), { target: { value: "$al", selectionStart: 3 } });
     fireEvent.keyDown(composer(), { key: "Tab" });
     expect(composer().value).toBe("$alpha ");
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 
   it("does not send on Enter when completion has no matches or input is composing", async () => {
@@ -1038,7 +1333,7 @@ describe("composer drafts", () => {
     fireEvent.change(composer(), { target: { value: "$al", selectionStart: 3 } });
     fireEvent.keyDown(composer(), { key: "Enter", keyCode: 229 });
     expect(composer().value).toBe("$al");
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 
   it("dismisses completion with Escape", async () => {
@@ -1391,7 +1686,7 @@ describe("recent skills on an empty transcript", () => {
     await act(async () => fireEvent.click(await screen.findByText("/beta")));
 
     expect(composer().value).toBe("/beta ");
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 
   it("takes the cursor with it on a desktop", async () => {
@@ -1607,7 +1902,7 @@ describe("a new thread's first message", () => {
     await act(async () => events.onState("fresh", state("fresh", "default")));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("read this");
   });
 
@@ -1620,7 +1915,7 @@ describe("a new thread's first message", () => {
       "create_thread",
       expect.objectContaining({ text: "read this" }),
     );
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 
   it("schedules: starts the thread empty and opens the schedule with the message", async () => {
@@ -1636,7 +1931,7 @@ describe("a new thread's first message", () => {
 
     expect(command).toHaveBeenCalledWith("create_thread", expect.objectContaining({ text: "" }));
     expect(await screen.findByRole("dialog", { name: "Schedule message" })).toBeTruthy();
-    expect(command).not.toHaveBeenCalledWith("prompt", expect.anything());
+    expect(promptsSent()).toEqual([]);
   });
 });
 

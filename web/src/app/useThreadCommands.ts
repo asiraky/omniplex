@@ -1,11 +1,13 @@
-import { useCallback, useMemo, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 
-import type { Client } from "~/client";
+import { CommandTimeout, uuid, type Client } from "~/client";
 import type { ComposerAttachments } from "~/components/Composer";
 import { sendPayload } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
 import type { CardEdits, CardOutcome, ComposerItem, Delivery, ThreadState } from "~/protocol";
 
+import { prependDraft } from "./draftStore";
+import type { OutboxSend } from "./outbox";
 import type { ComposerDrafts } from "./useComposerDrafts";
 import type { Wire } from "./useWire";
 
@@ -46,7 +48,77 @@ export function useThreadCommands({
   // callbacks only need it at that moment, and holding it would remake them,
   // and rerender whatever takes them, on every frame.
   const { clientRef, threadStore, composerRevision } = wire;
-  const { getDraft, setDraft, setDrafts, attachments, setAttachments } = store;
+  const {
+    getDraft,
+    setDraft,
+    setDrafts,
+    attachments,
+    setAttachments,
+    outbox,
+    restoreFailedSend,
+    withdrawFailedSend,
+  } = store;
+
+  // The prompt waits in the outbox until the server acks it. If it fails, or
+  // the connection is found dead before an answer, its text and files go back
+  // into the composer with the reason, rather than a toast over a composer
+  // that has already emptied.
+  const dispatch = useCallback(
+    (send: OutboxSend) => {
+      const { commandId, threadId, text, attachments: sent, delivery } = send;
+      outbox.add(send);
+      const { imageIds, files } = sendPayload(sent);
+      // Left out entirely when there are none: the overwhelming majority of
+      // prompts carry nothing, and the frame is persisted for retry.
+      const args = {
+        threadId,
+        text,
+        ...(imageIds.length ? { imageIds } : {}),
+        ...(files.length ? { files } : {}),
+        ...(delivery ? { delivery } : {}),
+      };
+      // The previews are kept until the ack: a failure puts the pictures back.
+      const settle = () => {
+        const entry = outbox.ack(commandId);
+        if (!entry) return undefined;
+        for (const a of entry.attachments) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+        return entry;
+      };
+      const client = clientRef.current;
+      const reply = client
+        ? client.command("prompt", args, commandId)
+        : Promise.reject(new Error("not connected"));
+      reply.then(settle, (e) => {
+        // A connection torn down for another says nothing about the send: the
+        // one that replaced it has it now.
+        if (client && clientRef.current !== client) return;
+        // The timeout's own message is written for a toast; the note already
+        // says what to do about it.
+        const reason =
+          e instanceof CommandTimeout
+            ? "no answer from the server"
+            : e instanceof Error
+              ? e.message
+              : String(e);
+        const entry = outbox.fail(commandId, reason);
+        if (entry) restoreFailedSend(entry);
+      });
+    },
+    [clientRef, outbox, restoreFailedSend],
+  );
+
+  // A send the last page never heard back about goes again, under its id:
+  // the server's ledger replays its result if it did arrive, and runs it if
+  // it did not. Only if this one fails too does the text come back. Once per
+  // connection, not per mount: a dev remount closes the first before it is
+  // up, and what was sent on it went nowhere.
+  const resentOn = useRef<Client | null>(null);
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || resentOn.current === client) return;
+    resentOn.current = client;
+    for (const e of outbox.get()) if (e.status === "pending") dispatch(e);
+  }, [clientRef, dispatch, outbox]);
 
   // The composer passes what it was handed alongside the text, but the
   // attachments it sends are the staged ones held here; delivery, when the
@@ -55,26 +127,42 @@ export function useThreadCommands({
   const send = useCallback(
     (text: string, _attached?: ComposerAttachments, delivery?: Delivery) => {
       if (!activeId) return;
-      const staged = attachments[activeId] ?? [];
-      const { imageIds, files } = sendPayload(staged);
-      // Left out entirely when there are none: the overwhelming majority of
-      // prompts carry nothing, and the frame is persisted for retry.
-      const args = {
-        threadId: activeId,
+      const threadId = activeId;
+      const staged = attachments[threadId] ?? [];
+      const sent = staged.filter((a) => a.status === "ready");
+      // Whatever failed before is superseded by this send: its text was in
+      // the composer, and this is what the composer now holds. Sent unchanged
+      // it is a retry, under the same id, so the server's command ledger
+      // replays the first one's result if that did arrive after all.
+      const payload = sendPayload(sent);
+      const retry = outbox
+        .takeFailed(threadId)
+        .find((e) => e.text === text && samePayload(sendPayload(e.attachments), payload));
+      dispatch({
+        commandId: retry?.commandId ?? uuid(),
+        threadId,
         text,
-        ...(imageIds.length ? { imageIds } : {}),
-        ...(files.length ? { files } : {}),
+        attachments: sent,
         ...(delivery ? { delivery } : {}),
-      };
-      clientRef.current?.command("prompt", args).catch((e) => {
-        toast.error("Could not send that prompt", { description: e.message });
       });
       // Cleared optimistically, like the draft: the message is on its way, and
       // the transcript is about to show the same pictures back from the server.
-      for (const a of staged) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-      setAttachments((all) => (all[activeId]?.length ? { ...all, [activeId]: [] } : all));
+      // A failed upload does not go with it, so it has nothing to come back to.
+      for (const a of staged) if (a.status !== "ready" && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      setAttachments((all) => (all[threadId]?.length ? { ...all, [threadId]: [] } : all));
     },
-    [activeId, attachments, clientRef, setAttachments],
+    [activeId, attachments, dispatch, outbox, setAttachments],
+  );
+
+  // The note's Retry: the failed message exactly as it went, under its own id,
+  // whatever the composer has gained since. What came back to the composer
+  // with it comes out again, so a second failure puts it back only once.
+  const retry = useCallback(
+    (entry: OutboxSend) => {
+      withdrawFailedSend(entry);
+      dispatch(entry);
+    },
+    [dispatch, withdrawFailedSend],
   );
 
   const cancel = useCallback(() => {
@@ -271,6 +359,7 @@ export function useThreadCommands({
 
   return {
     send,
+    retry,
     cancel,
     dequeue,
     editQueued,
@@ -298,7 +387,6 @@ function statusLine(state: ThreadState) {
   ].join(" · ");
 }
 
-// Words given back to a thread's composer, in front of anything already typed.
-function prependDraft(drafts: Record<string, string>, threadId: string, text: string) {
-  return { ...drafts, [threadId]: [text, drafts[threadId] ?? ""].filter(Boolean).join("\n\n") };
+function samePayload(a: ReturnType<typeof sendPayload>, b: ReturnType<typeof sendPayload>) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }

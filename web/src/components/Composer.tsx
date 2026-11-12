@@ -28,6 +28,7 @@ import { CommandMenu } from "./composer/CommandMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
 import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
 import { SendButtons } from "./composer/SendButtons";
+import { SendFailure } from "./composer/SendFailure";
 import { NO_CATALOGUE, type ComposerCatalogue } from "./composer/useComposerItems";
 import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerSend } from "./composer/useComposerSend";
@@ -112,6 +113,9 @@ interface ComposerProps {
   /** Reports the leading `/token` of a submitted message, so the parent can
       remember which skills this user actually reaches for. */
   onCommandUsed?: (insertText: string) => void;
+  /** The last message came back unsent: why, shown over the composer, how to
+      send it again, and how to put the note away. */
+  failure?: { reason: string; onRetry: () => void; onDismiss: () => void };
   /** Extra controls in the toolbar, right after the model picker. */
   tools?: ReactNode;
   /** A drawer under the box, for context that is usually right already. */
@@ -187,6 +191,7 @@ export function Composer({
   onRunClientAction,
   onRunComposerAction,
   onCommandUsed,
+  failure,
   tools,
   footer,
   dictation,
@@ -388,6 +393,14 @@ export function Composer({
             <PaperclipIcon className="size-4" />
             Drop files to attach
           </div>
+        )}
+        {failure && (
+          <SendFailure
+            reason={failure.reason}
+            canRetry={!disabled && !sendDisabled}
+            onRetry={failure.onRetry}
+            onDismiss={failure.onDismiss}
+          />
         )}
         <AttachmentStrip attachments={attachments} tooMuch={tooMuch} onRemove={onRemoveAttachment} />
         <CommandMenu
