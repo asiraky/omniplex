@@ -635,7 +635,14 @@ describe("a turn that failed", () => {
       { queueId: "q1", prompt: "before", queuedAt: 5 },
       { queueId: "q2", prompt: "by hand", queuedAt: 20 },
     ];
-    const props = { onFinish: () => {}, onRetryProvision: () => {}, onCleanup: () => {}, onForceDelete: () => {} };
+    const props = {
+      onFinish: () => {},
+      onRetryProvision: () => {},
+      onCleanup: () => {},
+      onForceDelete: () => {},
+      onContinue: () => {},
+      onOpenDiff: () => {},
+    };
     const first = render(<Transcript state={s} {...props} />);
     expect(screen.getAllByText(/held until you send/)).toHaveLength(1);
     first.unmount();
