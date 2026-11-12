@@ -27,7 +27,7 @@ func TestQueuedPromptCommands(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	images := attachment.New(filepath.Join(dir, "images"))
-	mgr := thread.NewManager(st, t.Logf, busyAdapter{})
+	mgr := newManager(st, t.Logf, busyAdapter{})
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetAttachments(images)
 	h := New(Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort), Attachments: images}).Handler()

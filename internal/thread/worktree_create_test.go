@@ -49,7 +49,7 @@ func registeredAt(t *testing.T, root, path string) (Workspace, bool) {
 func TestManagedWorktreesForBranchesWithTheSameSlugGetDistinctDirectories(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	first := ready(t, st, managedThread(t, mgr, p.ID, "fix/x", ""))
@@ -107,7 +107,7 @@ func TestWorktreePathIsStableForTheBranchThatLostTheSlug(t *testing.T) {
 func TestManagedWorktreeRemakesACheckoutWhoseAddDied(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	slug := filepath.Join(root, ".worktrees", "issue-11-crashed")
@@ -136,7 +136,7 @@ func TestManagedWorktreeRemakesACheckoutWhoseAddDied(t *testing.T) {
 func TestManagedWorktreeRecoversFromADeadAddWhoseDirectoryIsGone(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	slug := filepath.Join(root, ".worktrees", "issue-13-vanished")
@@ -160,7 +160,7 @@ func TestManagedWorktreeRecoversFromADeadAddWhoseDirectoryIsGone(t *testing.T) {
 func TestManagedWorktreeReusesAWorktreeTheUserLocked(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	slug := filepath.Join(root, ".worktrees", "issue-12-locked")
@@ -205,7 +205,7 @@ func TestWorktreePathFailsWhenBothChoicesAreTaken(t *testing.T) {
 func TestManagedWorktreeRefusesToAdoptAPlainDirectory(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	squatter := filepath.Join(root, ".worktrees", "issue-7-plain")
@@ -255,7 +255,7 @@ func failCheckouts(t *testing.T, root string) (restore func()) {
 func TestFailedWorktreeAddRemovesTheBranchItCreated(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
@@ -286,7 +286,7 @@ func TestFailedWorktreeAddRemovesTheBranchItCreated(t *testing.T) {
 func TestFailedWorktreeAddKeepsABranchThatAlreadyExisted(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	git(t, root, "branch", "issue/9-existing")
@@ -314,7 +314,7 @@ func TestConcurrentManagedWorktreesInOneRepositoryBothSucceed(t *testing.T) {
 	root, _, _ := gitRepo(t)
 	_, want := remoteOnlyBase(t, root)
 	st, p := testProject(t, root)
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
 	branches := []string{"issue/10-left", "issue/10-right"}

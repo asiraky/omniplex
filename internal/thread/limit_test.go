@@ -250,7 +250,7 @@ func TestLimitContinuationSurvivesRestart(t *testing.T) {
 			}
 			defer st.Close()
 			first := &fakeAdapter{}
-			m := NewManager(st, t.Logf, first)
+			m := newManager(st, t.Logf, first)
 			a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
 			if err != nil {
 				t.Fatal(err)
@@ -261,7 +261,7 @@ func TestLimitContinuationSurvivesRestart(t *testing.T) {
 			m.Shutdown()
 
 			fa := &fakeAdapter{}
-			m = NewManager(st, t.Logf, fa)
+			m = newManager(st, t.Logf, fa)
 			defer m.Shutdown()
 			if ids, err := st.DueScheduleThreads(ctx, due+tc.late); err != nil || len(ids) != 1 {
 				t.Fatalf("lost continuation %v %v", ids, err)

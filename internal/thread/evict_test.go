@@ -38,7 +38,7 @@ func seedThread(t *testing.T, phase string, ems ...proto.Emission) (*Manager, *s
 		}
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	t.Cleanup(mgr.Shutdown)
 	return mgr, st, fa, meta.ID
 }
@@ -274,7 +274,7 @@ func TestActorWithHarnessIsNotEvicted(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer st.Close()
-		mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+		mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 		defer mgr.Shutdown()
 		a, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 		if err != nil {

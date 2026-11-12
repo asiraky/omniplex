@@ -43,26 +43,21 @@ func (m *Manager) secretStore() *provider.SecretStore {
 	return m.secrets
 }
 
-// applyInstances rebuilds the registry from a full configured-instance list,
-// preserving the synthesised defaults exactly as startup does. It is
-// ConfigureInstances for a running server.
+// applyInstances rebuilds the registry from a full configured-instance list.
+// It is ConfigureInstances for a running server.
 func (m *Manager) applyInstances(instances []provider.Instance) {
 	m.instMu.Lock()
 	m.instances = map[string]registered{}
 	m.instanceOrder = nil
-	for _, id := range m.driverOrder {
-		ad := m.drivers[id]
-		m.register(registered{inst: provider.Default(ad.ID(), ad.Meta().Name), ad: ad})
-	}
 	m.configureLocked(instances)
 	m.instMu.Unlock()
 	m.notifyHarnesses()
 }
 
 // AddProviderInstance creates a configured instance and installs it live. The
-// driver must exist in this build — the UI offers only real drivers — and new
-// explicit instances get an isolated credential home by default, so a second
-// account can never silently share state with the first.
+// driver must exist in this build — the UI offers only real drivers — and
+// every new account, the first included, gets its own config home under
+// ~/.omniplex/instances, so no account's login is the machine's own.
 func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 	ad, ok := m.drivers[spec.Driver]
 	if !ok {
@@ -74,6 +69,9 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 	spec = defaultIsolation(spec, ad)
 	spec = enforceSensitive(spec, ad)
 	spec = absolutePaths(spec, ad)
+	if err := refuseMachineHome(spec, ad); err != nil {
+		return err
+	}
 	instances, err := provider.AddInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
 		return err
@@ -83,13 +81,15 @@ func (m *Manager) AddProviderInstance(spec provider.Spec) error {
 	return nil
 }
 
-// SaveProviderInstance updates a configured instance in place. Editing the
-// implicit default instance works by creating a config entry with the
-// driver's id, which Add covers; Save requires the entry to exist.
+// SaveProviderInstance updates a configured instance in place; the entry must
+// exist.
 func (m *Manager) SaveProviderInstance(spec provider.Spec) error {
 	if ad, ok := m.drivers[spec.Driver]; ok {
 		spec = enforceSensitive(spec, ad)
 		spec = absolutePaths(spec, ad)
+		if err := refuseMachineHome(spec, ad); err != nil {
+			return err
+		}
 	}
 	instances, err := provider.SaveInstance(spec, m.secretStore(), m.logf)
 	if err != nil {
@@ -120,18 +120,18 @@ func (m *Manager) DeleteProviderInstance(id string) error {
 	}
 	m.applyInstances(instances)
 	m.forgetInstance(id)
+	m.homeConflicts.Delete(id)
 	return nil
 }
 
 // defaultIsolation fills the adapter's isolating config field for a new
-// explicit instance that did not set it: each account gets its own directory
-// under ~/.omniplex/instances, so two Pi (or Codex, or Claude) accounts never
-// overwrite each other's credentials. The user's configuration in it is linked
-// from the machine's own home (shareHome). The default instance never passes
-// through here and keeps ambient behaviour.
+// instance that did not set it: each account, the first as much as any, gets
+// its own directory under ~/.omniplex/instances, so no two accounts share a
+// login and none shares the terminal's. The user's configuration in it is
+// linked from the machine's own home (shareHome).
 func defaultIsolation(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 	homeEnv := isolatingEnv(ad)
-	if homeEnv == "" || spec.ID == ad.ID() {
+	if homeEnv == "" {
 		return spec
 	}
 	for _, v := range spec.Env {
@@ -145,9 +145,36 @@ func defaultIsolation(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 	}
 	spec.Env = append(spec.Env, provider.EnvVar{
 		Name:  homeEnv,
-		Value: filepath.Join(home, ".omniplex", "instances", spec.ID),
+		Value: accounthome.InstanceHome(home, spec.ID),
 	})
 	return spec
+}
+
+// refuseMachineHome refuses a spec whose config home is the machine's own
+// harness home or inside it. That home is where a terminal on the box signs
+// in, and it is the one copy of the shared configuration every account links
+// to: an account living there would have its login changed from outside
+// Omniplex, and its home linked into itself.
+func refuseMachineHome(spec provider.Spec, ad adapter.Adapter) error {
+	homeEnv := isolatingEnv(ad)
+	sh, ok := ad.(adapter.SharedHome)
+	if homeEnv == "" || !ok {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	machine := sh.DefaultHome(home)
+	for _, v := range spec.Env {
+		if v.Name != homeEnv || v.Sensitive {
+			continue
+		}
+		if p := accounthome.Resolve(home, v.Value); p != "" && (p == machine || within(p, machine)) {
+			return fmt.Errorf("%s=%s is the machine's own %s home, which a terminal signs in to; give the account a folder of its own", homeEnv, v.Value, ad.Meta().Name)
+		}
+	}
+	return nil
 }
 
 // enforceSensitive marks every variable the adapter declares as a secret
@@ -173,54 +200,129 @@ func enforceSensitive(spec provider.Spec, ad adapter.Adapter) provider.Spec {
 	return spec
 }
 
-// shareHome links the user's configuration from the machine's own config
-// home into the instance's, when the instance has a home of its own. The
-// default instance, and any instance pointed at the machine's home, is the
-// shared home and has nothing to do. Problems are logged, once each, and never
-// stop the account from running: an account whose home could not be linked
-// still has its login.
-func (m *Manager) shareHome(inst provider.Instance, env map[string]string) {
+// pinHome makes an isolating driver's env always name its config home, so the
+// harness never inherits the server process's value. An instance with none is
+// only a hand edit or a config the startup migration has not fixed yet; it
+// runs on the machine's own home, said once, until it is given its own.
+func (m *Manager) pinHome(inst provider.Instance, env map[string]string) map[string]string {
 	ad := m.drivers[inst.Driver]
 	sh, ok := ad.(adapter.SharedHome)
-	if !ok {
-		return
-	}
 	homeEnv := isolatingEnv(ad)
-	if homeEnv == "" {
-		return
+	if !ok || homeEnv == "" || strings.TrimSpace(env[homeEnv]) != "" {
+		return env
 	}
-	serverHome, err := os.UserHomeDir()
+	userHome, err := os.UserHomeDir()
 	if err != nil {
-		return
-	}
-	shared := accounthome.Resolve(serverHome, os.Getenv(homeEnv))
-	if shared == "" {
-		shared = sh.DefaultHome(serverHome)
+		return env
 	}
 	// The adapters' rule for an account's home folder: any non-blank HOME.
-	userHome := serverHome
 	if h := strings.TrimSpace(env["HOME"]); h != "" {
 		userHome = h
 	}
-	// No override means the harness inherits the server's own value.
-	raw, set := env[homeEnv]
-	if !set {
-		raw = os.Getenv(homeEnv)
+	machine := sh.DefaultHome(userHome)
+	if env == nil {
+		env = map[string]string{}
 	}
-	account := sh.DefaultHome(userHome)
-	if raw = strings.TrimSpace(raw); raw != "" {
-		// A relative value is resolved by the harness against the session's
-		// working directory, so there is no one home to prepare. Saved
-		// instances are made absolute (absolutePaths); this is a hand edit.
-		if !filepath.IsAbs(raw) {
-			m.warnHome(inst.ID, fmt.Errorf("%s=%q is not an absolute path; not sharing configuration into it", homeEnv, raw))
-			return
-		}
-		account = filepath.Clean(raw)
+	env[homeEnv] = machine
+	m.warnHome(inst.ID, fmt.Errorf("has no home of its own; running on %s until migrated", machine))
+	return env
+}
+
+// homes is where inst's shared configuration comes from and the config home
+// its harness runs in, given the env envFor built. The shared source is always
+// the machine's own harness home, never the server process's variable: a
+// server started from inside a harness session must not re-link every account
+// to that session's home. ok is false for a driver with no shared home.
+func (m *Manager) homes(inst provider.Instance, env map[string]string) (sh adapter.SharedHome, shared, account string, ok bool, err error) {
+	ad := m.drivers[inst.Driver]
+	sh, ok = ad.(adapter.SharedHome)
+	homeEnv := isolatingEnv(ad)
+	if !ok || homeEnv == "" {
+		return nil, "", "", false, nil
 	}
-	if err := accounthome.Link(shared, account, sh.SharedEntries()); err != nil {
+	serverHome, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "", "", false, nil
+	}
+	shared = sh.DefaultHome(serverHome)
+	raw := strings.TrimSpace(env[homeEnv])
+	// A relative value is resolved by the harness against the session's
+	// working directory, so there is no one home to prepare. Saved instances
+	// are made absolute (absolutePaths); this is a hand edit.
+	if !filepath.IsAbs(raw) {
+		return sh, shared, "", true, fmt.Errorf("%s=%q is not an absolute path; not sharing configuration into it", homeEnv, raw)
+	}
+	return sh, shared, filepath.Clean(raw), true, nil
+}
+
+// shareHome links the user's configuration from the machine's own config
+// home into the instance's. An instance pinned to the machine's home is the
+// shared home and has nothing to do. Problems are logged, once each, and
+// never stop the account from running: an account whose home could not be
+// linked still has its login. The entries the account keeps its own copy of
+// are remembered for the listing.
+func (m *Manager) shareHome(inst provider.Instance, env map[string]string) {
+	sh, shared, account, ok, err := m.homes(inst, env)
+	if !ok {
+		return
+	}
+	if err != nil {
+		m.warnHome(inst.ID, err)
+		return
+	}
+	conflicts, err := accounthome.Link(shared, account, sh.SharedEntries())
+	if err != nil {
 		m.warnHome(inst.ID, fmt.Errorf("sharing %s into %s: %w", shared, account, err))
 	}
+	if len(conflicts) == 0 {
+		m.homeConflicts.Delete(inst.ID)
+	} else {
+		m.homeConflicts.Store(inst.ID, conflicts)
+	}
+}
+
+// configConflicts is what the last shareHome found instance id holding its
+// own copy of.
+func (m *Manager) configConflicts(id string) []string {
+	if v, ok := m.homeConflicts.Load(id); ok {
+		return v.([]string)
+	}
+	return nil
+}
+
+// UseSharedConfig gives up an account's own copy of one shared entry: the
+// copy is moved aside (backup is where to) and the entry linked to the
+// user's. Nothing is deleted. Clients are told so the conflict clears.
+func (m *Manager) UseSharedConfig(instanceID, entry string) (backup string, err error) {
+	reg, ok := m.lookup(instanceID)
+	if !ok {
+		return "", fmt.Errorf("unknown provider instance %q", instanceID)
+	}
+	env, err := m.envFor(reg.inst)
+	if err != nil {
+		return "", err
+	}
+	sh, shared, account, ok, err := m.homes(reg.inst, env)
+	if !ok {
+		return "", fmt.Errorf("%s shares no configuration", reg.inst.DisplayName)
+	}
+	if err != nil {
+		return "", err
+	}
+	var e accounthome.Entry
+	found := false
+	for _, se := range sh.SharedEntries() {
+		if se.Name == entry {
+			e, found = se, true
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("%q is not shared configuration for %s", entry, reg.inst.DisplayName)
+	}
+	backup, err = accounthome.UseShared(shared, account, e)
+	m.prepareHome(instanceID)
+	m.notifyHarnesses()
+	return backup, err
 }
 
 // warnHome logs a problem preparing an instance's home once, not on every

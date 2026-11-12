@@ -2,6 +2,7 @@ package thread
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,23 +56,11 @@ func TestAddProviderInstanceLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	hs := mgr.Harnesses(context.Background())
-	if len(hs[0].Instances) != 2 {
-		t.Fatalf("instances = %+v", hs[0].Instances)
+	if len(hs[0].Instances) != 1 {
+		t.Fatalf("instances = %+v, want only the added one", hs[0].Instances)
 	}
-	var work *InstanceMeta
-	for i := range hs[0].Instances {
-		if hs[0].Instances[i].ID == "fake-work" {
-			work = &hs[0].Instances[i]
-		}
-	}
-	if work == nil || !work.Configured || work.DisplayName != "Work" {
+	if work := hs[0].Instances[0]; work.ID != "fake-work" || work.DisplayName != "Work" {
 		t.Fatalf("added instance = %+v", work)
-	}
-	// The default stays unconfigured — it has no config entry to edit.
-	for _, i := range hs[0].Instances {
-		if i.ID == "fake" && i.Configured {
-			t.Error("synthesised default must not present as configured")
-		}
 	}
 }
 
@@ -102,6 +91,15 @@ func TestAddProviderInstanceDefaultsIsolation(t *testing.T) {
 	}
 	if filepath.Base(home) != "fake-work" {
 		t.Errorf("isolated home should be per-instance, got %q", home)
+	}
+
+	// An account named for its driver is no exception: it is not the
+	// machine's own home either.
+	if err := mgr.AddProviderInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Fake", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := envValue(mgr, "fake", "FAKE_HOME"); got != accounthome.InstanceHome(os.Getenv("HOME"), "fake") {
+		t.Errorf("account named for its driver got FAKE_HOME=%q", got)
 	}
 
 	// An explicitly set path is respected, not overwritten.
@@ -174,10 +172,22 @@ func TestSaveAndDeleteProviderInstanceLive(t *testing.T) {
 	if _, ok := mgr.lookup("fake-work"); ok {
 		t.Fatal("deleted instance still registered")
 	}
-	// The synthesised default survives every rebuild.
-	if _, ok := mgr.lookup("fake"); !ok {
-		t.Fatal("default instance vanished after delete")
+	// Deleting the last account leaves the driver with none, not with an
+	// account made up in its place.
+	if insts := mgr.Harnesses(context.Background())[0].Instances; len(insts) != 0 {
+		t.Fatalf("instances after deleting the only one = %+v", insts)
 	}
+}
+
+// envValue is the configured value of one variable of instance id.
+func envValue(mgr *Manager, id, name string) string {
+	reg, _ := mgr.lookup(id)
+	for _, v := range reg.inst.Env {
+		if v.Name == name {
+			return v.Value
+		}
+	}
+	return ""
 }
 
 // The server, not the client, decides what is secret: a variable matching a
@@ -276,21 +286,246 @@ func TestARelativeAccountHomeIsSavedAsTheFolderItIsSharedInto(t *testing.T) {
 	}
 }
 
-func TestAnAccountInheritingTheServersHomeIsTheSharedOne(t *testing.T) {
-	home, ambient := t.TempDir(), t.TempDir()
+// homeTestManager is a manager around homeAdapter on a throwaway HOME with no
+// ~/.fake, and FAKE_HOME unset in the process env.
+func homeTestManager(t *testing.T) (mgr *Manager, home string) {
+	t.Helper()
+	home = t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("FAKE_HOME", ambient)
-	if err := os.WriteFile(filepath.Join(home, "settings.json"), nil, 0o644); err != nil {
+	t.Setenv("FAKE_HOME", "")
+	return adminTestManagerWith(t, &homeAdapter{}), home
+}
+
+func addAccount(t *testing.T, mgr *Manager, id string) string {
+	t.Helper()
+	if err := mgr.AddProviderInstance(provider.Spec{ID: id, Driver: "fake", DisplayName: id, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	mgr := adminTestManagerWith(t, &homeAdapter{})
-	// No override: the harness runs in the server's FAKE_HOME, which is the
-	// shared home, so ~/.fake is not the account's and stays untouched.
-	mgr.shareHome(provider.Instance{ID: "fake", Driver: "fake"}, nil)
-	if _, err := os.Lstat(filepath.Join(home, ".fake")); !os.IsNotExist(err) {
-		t.Fatalf("~/.fake was prepared: %v", err)
+	return envValue(mgr, id, "FAKE_HOME")
+}
+
+// shape is a home's top-level entries: each link's literal target, or "file"
+// / "dir" with a file's content, for a real entry.
+func shape(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	des, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if des, _ := os.ReadDir(ambient); len(des) != 0 {
-		t.Fatalf("server's home changed: %v", des)
+	out := map[string]string{}
+	for _, de := range des {
+		p := filepath.Join(dir, de.Name())
+		switch info, _ := os.Lstat(p); {
+		case info.Mode()&os.ModeSymlink != 0:
+			target, _ := os.Readlink(p)
+			out[de.Name()] = "-> " + target
+		case info.IsDir():
+			out[de.Name()] = "dir"
+		default:
+			b, _ := os.ReadFile(p)
+			out[de.Name()] = "file " + string(b)
+		}
+	}
+	return out
+}
+
+func TestTheFirstAccountOnACleanMachineGetsItsOwnHomeAndTheSharedFolders(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	got := addAccount(t, mgr, "fake")
+	if want := accounthome.InstanceHome(home, "fake"); got != want {
+		t.Fatalf("first account's home = %q, want %q", got, want)
+	}
+	shared := filepath.Join(home, ".fake")
+	if info, err := os.Lstat(filepath.Join(shared, "skills")); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("shared skills folder not made as a real folder: %v %v", info, err)
+	}
+	if target, err := os.Readlink(filepath.Join(got, "skills")); err != nil || target != filepath.Join(shared, "skills") {
+		t.Fatalf("account skills link = %q %v", target, err)
+	}
+	// A skill installed into the shared folder later is the account's too.
+	if err := os.Mkdir(filepath.Join(shared, "skills", "infra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(got, "skills", "infra")); err != nil {
+		t.Fatalf("account does not see a skill added to the shared folder: %v", err)
+	}
+}
+
+func TestTheSecondAccountHasTheFirstsShape(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	if err := os.MkdirAll(filepath.Join(home, ".fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".fake", "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := shape(t, addAccount(t, mgr, "fake"))
+	second := shape(t, addAccount(t, mgr, "fake-two"))
+	if len(first) == 0 {
+		t.Fatal("first account's home is empty")
+	}
+	if fmt.Sprint(first) != fmt.Sprint(second) {
+		t.Fatalf("homes differ:\nfirst  %v\nsecond %v", first, second)
+	}
+}
+
+// A sign-in from a terminal writes the machine's own home. No account sees it.
+func TestATerminalSignInChangesNoAccount(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	ids := []string{"fake", "fake-two"}
+	homes := map[string]string{}
+	envs := map[string]string{}
+	shapes := map[string]string{}
+	for _, id := range ids {
+		homes[id] = addAccount(t, mgr, id)
+		reg, _ := mgr.lookup(id)
+		env, err := mgr.envFor(reg.inst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		envs[id] = fmt.Sprint(env)
+		shapes[id] = fmt.Sprint(shape(t, homes[id]))
+	}
+	for name, body := range map[string]string{".credentials.json": `{"token":"terminal"}`, ".fake.json": `{"account":"terminal@x"}`} {
+		if err := os.WriteFile(filepath.Join(home, ".fake", name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range ids {
+		reg, _ := mgr.lookup(id)
+		env, err := mgr.envFor(reg.inst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(env) != envs[id] {
+			t.Errorf("%s env changed: %v -> %v", id, envs[id], env)
+		}
+		if got := fmt.Sprint(shape(t, homes[id])); got != shapes[id] {
+			t.Errorf("%s home changed:\n%s\n%s", id, shapes[id], got)
+		}
+	}
+}
+
+// A server started from inside a harness session inherits that session's
+// home variable. It decides neither where the shared configuration comes
+// from nor any account's home.
+func TestTheServersOwnHomeVariableIsIgnored(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	session := t.TempDir()
+	t.Setenv("FAKE_HOME", session)
+	if err := os.MkdirAll(filepath.Join(session, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	account := addAccount(t, mgr, "fake")
+	if target, _ := os.Readlink(filepath.Join(account, "skills")); target != filepath.Join(home, ".fake", "skills") {
+		t.Errorf("account skills link to %q, want the machine's ~/.fake", target)
+	}
+
+	// An instance with no home of its own (a hand edit, or a config not yet
+	// migrated) is pinned to the machine's home, not left to inherit.
+	reg, _ := mgr.lookup("fake")
+	bare := reg.inst
+	bare.ID, bare.Env, bare.Raw = "fake-bare", nil, nil
+	mgr.ConfigureInstances([]provider.Instance{reg.inst, bare}, mgr.secretStore())
+	for _, id := range []string{"fake", "fake-bare"} {
+		reg, _ := mgr.lookup(id)
+		env, err := mgr.envFor(reg.inst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if env["FAKE_HOME"] == "" || env["FAKE_HOME"] == session {
+			t.Errorf("%s runs with FAKE_HOME=%q", id, env["FAKE_HOME"])
+		}
+	}
+	reg, _ = mgr.lookup("fake-bare")
+	if env, _ := mgr.envFor(reg.inst); env["FAKE_HOME"] != filepath.Join(home, ".fake") {
+		t.Errorf("unhomed instance pinned to %q, want ~/.fake", env["FAKE_HOME"])
+	}
+	if des, _ := os.ReadDir(filepath.Join(session, "skills")); len(des) != 0 {
+		t.Errorf("session home changed: %v", des)
+	}
+}
+
+func instanceMeta(t *testing.T, mgr *Manager, id string) InstanceMeta {
+	t.Helper()
+	mgr.ExpireProbes()
+	for _, h := range mgr.Harnesses(context.Background()) {
+		for _, im := range h.Instances {
+			if im.ID == id {
+				return im
+			}
+		}
+	}
+	t.Fatalf("instance %s not listed", id)
+	return InstanceMeta{}
+}
+
+func TestAnAccountsOwnCopyIsAConflictUntilItUsesTheShared(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	if err := os.MkdirAll(filepath.Join(home, ".fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".fake", "settings.json"), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	account := addAccount(t, mgr, "fake")
+	own := filepath.Join(account, "settings.json")
+	if err := os.Remove(own); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(own, []byte("own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := instanceMeta(t, mgr, "fake").ConfigConflicts; fmt.Sprint(got) != "[settings.json]" {
+		t.Fatalf("conflicts = %v", got)
+	}
+	if b, _ := os.ReadFile(own); string(b) != "own" {
+		t.Fatalf("account's own copy touched: %q", b)
+	}
+
+	if _, err := mgr.UseSharedConfig("fake", "auth.json"); err == nil {
+		t.Error("an entry that is not shared configuration must be refused")
+	}
+	backup, err := mgr.UseSharedConfig("fake", "settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(backup); err != nil || string(b) != "own" {
+		t.Fatalf("backup %q = %q %v", backup, b, err)
+	}
+	if b, _ := os.ReadFile(own); string(b) != "shared" {
+		t.Fatalf("account settings now %q, want the shared ones", b)
+	}
+	if got := instanceMeta(t, mgr, "fake").ConfigConflicts; len(got) != 0 {
+		t.Fatalf("conflict still listed: %v", got)
+	}
+}
+
+func TestAccountsInsideTheMachinesHomeAreRefused(t *testing.T) {
+	mgr, home := homeTestManager(t)
+	for _, value := range []string{"~/.fake", filepath.Join(home, ".fake"), filepath.Join(home, ".fake", "work"), ".fake"} {
+		err := mgr.AddProviderInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Fake", Enabled: true,
+			Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: value}}})
+		if err == nil {
+			t.Errorf("FAKE_HOME=%s was accepted", value)
+		}
+	}
+	if _, ok := mgr.lookup("fake"); ok {
+		t.Fatal("a refused account was installed")
+	}
+	addAccount(t, mgr, "fake")
+	err := mgr.SaveProviderInstance(provider.Spec{ID: "fake", Driver: "fake", DisplayName: "Fake", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: "~/.fake"}}})
+	if err == nil {
+		t.Fatal("saving an account onto the machine's home was accepted")
+	}
+	if got := envValue(mgr, "fake", "FAKE_HOME"); got != accounthome.InstanceHome(home, "fake") {
+		t.Errorf("refused save changed the home to %q", got)
+	}
+	// A sibling folder whose name merely starts the same is not inside it.
+	if err := mgr.AddProviderInstance(provider.Spec{ID: "fake-near", Driver: "fake", DisplayName: "Near", Enabled: true,
+		Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: "~/.fake-near"}}}); err != nil {
+		t.Errorf("a sibling of the machine's home was refused: %v", err)
 	}
 }

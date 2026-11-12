@@ -14,7 +14,8 @@ import (
 // project, and the name to show the project's skills under. A thread's roots
 // are what its harness actually sees: its provider instance's config dirs (an
 // instance can point Claude at a config dir of its own) and its checkout. A
-// project alone has only the ambient config dirs and its folder. Neither gives
+// project alone has only the machine's own config dirs, whose configuration
+// every account links to, and its folder. Neither gives
 // the user-level roots on their own.
 func (m *Manager) SkillRoots(ctx context.Context, threadID, projectID string) (skills.Roots, string, error) {
 	roots, projectID, err := m.harnessRoots(ctx, threadID, projectID)

@@ -74,7 +74,7 @@ func toolImageActor(t *testing.T) (*Actor, *attachment.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	images := attachment.New(t.TempDir())
-	mgr := NewManager(st, func(string, ...any) {}, &fakeAdapter{})
+	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	mgr.SetAttachments(images)
 	actor, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
 	if err != nil {

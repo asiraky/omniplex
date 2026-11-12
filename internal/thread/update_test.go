@@ -98,7 +98,7 @@ func updTestManager(t *testing.T) (*Manager, *updAdapter) {
 		avail:       adapter.Ready(nil),
 	}
 	ua.replaceBinary(t, "v1")
-	mgr := NewManager(st, func(string, ...any) {}, ua)
+	mgr := newManager(st, func(string, ...any) {}, ua)
 	t.Cleanup(mgr.Shutdown)
 	return mgr, ua
 }

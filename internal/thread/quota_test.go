@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asiraky/omniplex/internal/accounthome"
 	"github.com/asiraky/omniplex/internal/adapter"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/provider"
@@ -71,7 +72,7 @@ func quotaTestManager(t *testing.T) (*Manager, *quotaAdapter, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &quotaAdapter{}
-	return NewManager(st, func(string, ...any) {}, fa), fa, st
+	return newManager(st, func(string, ...any) {}, fa), fa, st
 }
 
 func TestQuotaSparseMergeKeepsUnmentionedWindows(t *testing.T) {
@@ -208,7 +209,7 @@ func TestQuotaAccountIsolation(t *testing.T) {
 		byInstance[s.Instance] = s
 	}
 	if len(byInstance["fake"].Snapshot.Windows) != 0 {
-		t.Fatalf("the default instance must not see the work account's quota: %+v", byInstance["fake"])
+		t.Fatalf("fake's account must not see the work account's quota: %+v", byInstance["fake"])
 	}
 	if len(byInstance["fake-work"].Snapshot.Windows) != 1 {
 		t.Fatalf("the work instance must see its own: %+v", byInstance["fake-work"])
@@ -234,7 +235,7 @@ func TestLiveThreadQuotaPushRoutesToInstance(t *testing.T) {
 
 	// The thread pushes a quota update through its host services; the
 	// manager's cache must file it under the instance the thread runs
-	// under — the default one here.
+	// under — fake's own here.
 	fa.mu.Lock()
 	s := fa.last
 	fa.mu.Unlock()
@@ -375,5 +376,58 @@ func TestQuotaAccountSwitchRejectsOldThreadAndDropsWindows(t *testing.T) {
 	mgr.reportQuota("fake", "fake", adapter.QuotaSnapshot{AccountID: "c", Windows: []adapter.QuotaWindow{{ID: "third"}}}, false)
 	if got := mgr.Quotas()[0].Snapshot.Windows; len(got) != 1 || got[0].ID != "third" {
 		t.Fatalf("mixed accounts: %+v", got)
+	}
+}
+
+// claudeHome is a fake driven as "claude", with Claude's config-home variable,
+// so usageSources reads its transcripts where Claude writes them.
+type claudeHome struct{ homeAdapter }
+
+func (*claudeHome) ID() string { return "claude" }
+
+func (*claudeHome) Meta() adapter.HarnessMeta {
+	return adapter.HarnessMeta{ID: "claude", Name: "Claude"}
+}
+
+func (*claudeHome) ConfigFields() []adapter.ConfigField {
+	return []adapter.ConfigField{{Env: "CLAUDE_CONFIG_DIR", Label: "Home", Kind: adapter.FieldPath, Isolates: true}}
+}
+
+func (*claudeHome) DefaultHome(userHome string) string { return filepath.Join(userHome, ".claude") }
+
+// Usage counts what Omniplex's accounts wrote, each once: not what a terminal
+// wrote into the machine's home, nor a home the server process inherited.
+func TestUsageCountsOnlyTheAccountsOwnHomes(t *testing.T) {
+	home, session := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", session)
+	t.Setenv("OMNIPLEX_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	mgr := NewManager(st, func(string, ...any) {}, &claudeHome{})
+	for _, id := range []string{"claude", "work"} {
+		if err := mgr.AddProviderInstance(provider.Spec{ID: id, Driver: "claude", DisplayName: id, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ts := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	line := func(id string, in int) string {
+		return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":"r-%s","message":{"id":%q,"model":"claude-opus-5","usage":{"input_tokens":%d,"output_tokens":0}}}`, ts, id, id, in)
+	}
+	writeTranscript(t, filepath.Join(accounthome.InstanceHome(home, "claude"), "projects", "p", "a.jsonl"), line("a", 1))
+	writeTranscript(t, filepath.Join(accounthome.InstanceHome(home, "work"), "projects", "p", "b.jsonl"), line("b", 10))
+	writeTranscript(t, filepath.Join(home, ".claude", "projects", "p", "terminal.jsonl"), line("t", 100))
+	writeTranscript(t, filepath.Join(session, "projects", "p", "session.jsonl"), line("s", 1000))
+
+	rep, err := mgr.UsageReport(context.Background(), "24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.Input != 11 {
+		t.Fatalf("input = %d, want 11: both accounts once, nothing from ~/.claude or the inherited home", rep.Totals.Input)
 	}
 }

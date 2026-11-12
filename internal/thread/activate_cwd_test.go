@@ -41,7 +41,7 @@ func TestActivateResumeRefusesDeletedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 	ctx := context.Background()
 
@@ -68,7 +68,7 @@ func TestActivateResumeRefusesWorkspaceReplacedByFile(t *testing.T) {
 	}
 	st, meta := restoredThread(t, cwd)
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	if _, err := mgr.Get(context.Background(), meta.ID); err == nil || !strings.Contains(err.Error(), cwd) {
@@ -83,7 +83,7 @@ func TestActivateResumeStartsInExistingWorkspace(t *testing.T) {
 	cwd := t.TempDir()
 	st, meta := restoredThread(t, cwd)
 	fa := &fakeAdapter{}
-	mgr := NewManager(st, func(string, ...any) {}, fa)
+	mgr := newManager(st, func(string, ...any) {}, fa)
 	defer mgr.Shutdown()
 
 	if _, err := mgr.Get(context.Background(), meta.ID); err != nil {

@@ -19,7 +19,6 @@ import (
 
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/store"
-	"github.com/asiraky/omniplex/internal/thread"
 )
 
 // termRig is a real server with a thread to root shells in, a paired client,
@@ -42,7 +41,7 @@ func newTermRig(t *testing.T, ttl time.Duration) *termRig {
 	}
 	t.Cleanup(func() { st.Close() })
 	guard := auth.New(st, true, auth.DefaultPort)
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	mgr := newManager(st, func(string, ...any) {})
 	t.Cleanup(mgr.Shutdown)
 
 	now := time.Now().UnixMilli()

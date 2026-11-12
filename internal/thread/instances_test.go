@@ -2,7 +2,9 @@ package thread
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -48,7 +50,7 @@ func instTestManager(t *testing.T) (*Manager, *instAdapter, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	fa := &instAdapter{}
-	return NewManager(st, func(string, ...any) {}, fa), fa, st
+	return newManager(st, func(string, ...any) {}, fa), fa, st
 }
 
 func workInstance() provider.Instance {
@@ -58,27 +60,85 @@ func workInstance() provider.Instance {
 	}
 }
 
-func TestDefaultInstanceSynthesisedPerAdapter(t *testing.T) {
-	mgr, _, _ := instTestManager(t)
+// A driver is not an account: with nothing configured it lists no instance,
+// says there is no account, and offers to add one, and a bare harness id has
+// nothing to start a thread on.
+func TestADriverWithNoAccountsHasNone(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	mgr := NewManager(st, func(string, ...any) {}, &instAdapter{})
+
 	hs := mgr.Harnesses(context.Background())
 	if len(hs) != 1 {
 		t.Fatalf("harnesses = %d, want 1", len(hs))
 	}
-	if len(hs[0].Instances) != 1 {
-		t.Fatalf("instances = %d, want the synthesised default", len(hs[0].Instances))
+	if hs[0].Instances == nil || len(hs[0].Instances) != 0 {
+		t.Fatalf("instances = %#v, want an empty list", hs[0].Instances)
 	}
-	inst := hs[0].Instances[0]
-	if inst.ID != "fake" || inst.Driver != "fake" || !inst.Enabled {
-		t.Errorf("default instance = %+v", inst)
+	avail := hs[0].Availability
+	if avail.OK() {
+		t.Fatal("a driver with no account must not report ready")
 	}
-	if len(inst.Models) == 0 {
+	if len(avail.Remedy) == 0 || avail.Remedy[0].Action != adapter.RemedyAddAccount {
+		t.Errorf("remedy = %+v, want add-account", avail.Remedy)
+	}
+
+	_, err = mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "add one") {
+		t.Fatalf("create with no account = %v, want a legible no-account error", err)
+	}
+}
+
+func TestEachAccountCarriesItsOwnModels(t *testing.T) {
+	mgr, _, _ := instTestManager(t)
+	hs := mgr.Harnesses(context.Background())
+	if len(hs) != 1 || len(hs[0].Instances) != 1 {
+		t.Fatalf("harnesses = %+v", hs)
+	}
+	if len(hs[0].Instances[0].Models) == 0 {
 		t.Error("instance should carry its own model list")
+	}
+}
+
+// With no account under the harness's own id, a bare harness id starts on the
+// first enabled account, and the driver-level availability is that one's.
+func TestABareHarnessIDUsesTheFirstEnabledAccount(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fa := &instAdapter{availFor: func(env map[string]string) adapter.Availability {
+		if env["FAKE_HOME"] == "/off" {
+			return adapter.Unavailable("disabled anyway")
+		}
+		return adapter.Ready(nil)
+	}}
+	mgr := NewManager(st, func(string, ...any) {}, fa)
+	off := workInstance()
+	off.ID, off.Enabled, off.Env = "fake-off", false, []provider.EnvVar{{Name: "FAKE_HOME", Value: "/off"}}
+	mgr.ConfigureInstances([]provider.Instance{off, workInstance()}, nil)
+
+	a, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Dispose("test done")
+	meta, _ := st.Thread(context.Background(), a.ID)
+	if meta.ProviderInstance != "fake-work" {
+		t.Errorf("bare harness id ran on %q, want fake-work", meta.ProviderInstance)
+	}
+	if h := mgr.Harnesses(context.Background())[0]; !h.Availability.OK() {
+		t.Errorf("driver availability = %+v, want fake-work's", h.Availability)
 	}
 }
 
 func TestInstancesReportIndependentAvailability(t *testing.T) {
 	mgr, fa, _ := instTestManager(t)
-	// The work account is broken; the ambient default is fine. One being
+	// The work account is broken; the primary one is fine. One being
 	// unhealthy must not mark the other.
 	fa.availFor = func(env map[string]string) adapter.Availability {
 		if env["FAKE_HOME"] != "" {
@@ -97,13 +157,13 @@ func TestInstancesReportIndependentAvailability(t *testing.T) {
 		byID[i.ID] = i.Availability
 	}
 	if !byID["fake"].OK() {
-		t.Errorf("default instance must stay ready: %+v", byID["fake"])
+		t.Errorf("primary instance must stay ready: %+v", byID["fake"])
 	}
 	if byID["fake-work"].OK() {
 		t.Error("broken instance must report unavailable")
 	}
 	if !hs[0].Availability.OK() {
-		t.Error("driver-level availability mirrors the default instance")
+		t.Error("driver-level availability mirrors the primary instance")
 	}
 }
 
@@ -131,7 +191,7 @@ func TestCreatePersistsInstanceAndAppliesEnv(t *testing.T) {
 		t.Errorf("adapter did not receive the instance overlay: %v", env)
 	}
 
-	// Creating on the bare harness id uses the default instance and ambient env.
+	// Creating on the bare harness id uses the account whose id it is.
 	b, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -139,10 +199,10 @@ func TestCreatePersistsInstanceAndAppliesEnv(t *testing.T) {
 	defer b.Dispose("test done")
 	metaB, _ := st.Thread(ctx, b.ID)
 	if metaB.ProviderInstance != "fake" {
-		t.Errorf("default create ProviderInstance = %q, want fake", metaB.ProviderInstance)
+		t.Errorf("bare create ProviderInstance = %q, want fake", metaB.ProviderInstance)
 	}
 	if env := fa.threadEnv(); len(env) != 0 {
-		t.Errorf("default instance must use ambient credentials, got %v", env)
+		t.Errorf("fake's account has no overlay, got %v", env)
 	}
 }
 
@@ -195,7 +255,7 @@ func TestResumeReusesInstance(t *testing.T) {
 	}
 }
 
-func TestLegacyThreadResolvesToDefaultInstance(t *testing.T) {
+func TestLegacyThreadResolvesToTheAccountNamedForItsHarness(t *testing.T) {
 	mgr, _, st := instTestManager(t)
 	ctx := context.Background()
 	// A row written before provider instances existed: harness only.
@@ -205,7 +265,7 @@ func TestLegacyThreadResolvesToDefaultInstance(t *testing.T) {
 	}
 	a, err := mgr.Get(ctx, "legacy-1")
 	if err != nil {
-		t.Fatalf("legacy thread must resolve to the default instance: %v", err)
+		t.Fatalf("legacy thread must resolve to the instance named for its harness: %v", err)
 	}
 	a.Dispose("test done")
 }
@@ -257,16 +317,16 @@ func TestMissingSecretFailsClosed(t *testing.T) {
 
 func TestCrossDriverIDCollisionIsRejected(t *testing.T) {
 	mgr, _, _ := instTestManager(t)
-	// "fake" is the synthesised default for the fake driver; an instance of a
-	// *different* driver must not be allowed to take its id.
+	// "fake" is an account of the fake driver; an instance of a *different*
+	// driver must not be allowed to take its id.
 	mgr.ConfigureInstances([]provider.Instance{{ID: "fake", Driver: "ollama", DisplayName: "Impostor", Enabled: true}}, nil)
 
 	reg := mgr.instances["fake"]
 	if reg.inst.Driver != "fake" {
-		t.Fatalf("default instance was replaced by a %q-driver entry", reg.inst.Driver)
+		t.Fatalf("instance was replaced by a %q-driver entry", reg.inst.Driver)
 	}
 	if _, err := mgr.Create(context.Background(), "fake", "", t.TempDir(), "", ""); err != nil {
-		t.Errorf("default instance must keep working after a rejected collision: %v", err)
+		t.Errorf("instance must keep working after a rejected collision: %v", err)
 	}
 }
 
@@ -311,5 +371,49 @@ func TestDisabledInstanceRefusesCreate(t *testing.T) {
 		if i.ID == "fake-work" && i.Availability.OK() {
 			t.Error("a disabled instance must list as unavailable")
 		}
+	}
+}
+
+// Two accounts signed in to one login share one set of limits, which reads as
+// data mixing between them. Both listings say so; different logins do not.
+func TestAccountsOnTheSameLoginNameEachOther(t *testing.T) {
+	mgr, fa, _ := instTestManager(t)
+	emails := map[string]string{"/a": "me@example.com", "/b": "Me@Example.com", "/c": "other@example.com"}
+	fa.availFor = func(env map[string]string) adapter.Availability {
+		if e := emails[env["FAKE_HOME"]]; e != "" {
+			return adapter.Ready(map[string]string{"account": e})
+		}
+		return adapter.Ready(nil)
+	}
+	var insts []provider.Instance
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		insts = append(insts, provider.Instance{ID: id, Driver: "fake", DisplayName: id, Enabled: true,
+			Env: []provider.EnvVar{{Name: "FAKE_HOME", Value: "/" + id}}})
+	}
+	mgr.ConfigureInstances(insts, nil)
+	// d and e report no email, but their limits carry one account id.
+	mgr.reportQuota("fake", "d", adapter.QuotaSnapshot{AccountID: "acct-1"}, true)
+	mgr.reportQuota("fake", "e", adapter.QuotaSnapshot{AccountID: "acct-1"}, true)
+
+	want := map[string]string{"a": "[b]", "b": "[a]", "c": "[]", "d": "[e]", "e": "[d]", "fake": "[]"}
+	got := map[string]string{}
+	for _, im := range mgr.Harnesses(context.Background())[0].Instances {
+		got[im.ID] = fmt.Sprint(im.SameLoginAs)
+		if im.ID == "c" && im.Account != "other@example.com" {
+			t.Errorf("c's account = %q", im.Account)
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("instances SameLoginAs = %v, want %v", got, want)
+	}
+	got = map[string]string{}
+	for _, q := range mgr.Quotas() {
+		got[q.Instance] = fmt.Sprint(q.SameLoginAs)
+		if q.Instance == "a" && q.Account != "me@example.com" {
+			t.Errorf("a's quota account = %q", q.Account)
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("quotas SameLoginAs = %v, want %v", got, want)
 	}
 }
