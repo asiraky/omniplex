@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { render } from "~/test/harness";
+import type { AuthWires } from "./AuthFlowDialog";
 import ProvidersSettings from "./ProvidersSettings";
 import type { HarnessMeta, HarnessUpdate, ProviderInstanceMeta } from "~/protocol";
 
@@ -73,8 +74,8 @@ function claudeAccount(over: Partial<ProviderInstanceMeta> = {}): ProviderInstan
   };
 }
 
-function setup(harnesses: HarnessMeta[], extra: { addFor?: string | null; command?: ReturnType<typeof vi.fn> } = {}) {
-  const command = extra.command ?? vi.fn().mockResolvedValue({});
+function setup(harnesses: HarnessMeta[], extra: { addFor?: string | null; command?: AuthWires["command"] } = {}) {
+  const command: AuthWires["command"] = extra.command ?? vi.fn().mockResolvedValue({});
   render(
     <ProvidersSettings
       harnesses={harnesses}
