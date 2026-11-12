@@ -1270,7 +1270,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		turnID, err := a.startTurn(ctx, c.prompt, c.images, c.recovery, "")
 		if err != nil {
-			if c.plan != nil {
+			// A usage limit takes the continuation over: whatever turn goes
+			// next past the held queue carries the note (followLimit).
+			if c.plan != nil && !a.state.QueueHeld() {
 				// Put back for a retry, or for its note to ride on the
 				// next human prompt: either way the agent still has to hear
 				// what died.

@@ -102,36 +102,11 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 	if state.Closed {
 		return nil, ""
 	}
-	// The newest turn is what a continuation resumes and counts on from;
-	// the newest one that reached the agent is what it last heard. A prompt
-	// the harness refused told it nothing.
-	acted := map[string]bool{}
-	for _, it := range state.Items {
-		if it.TurnID != "" && it.Role != "user" {
-			acted[it.TurnID] = true
-		}
-	}
-	var last, heard *projection.Turn
-	for i := len(state.Turns) - 1; i >= 0; i-- {
-		t := &state.Turns[i]
-		if last == nil {
-			last = t
-		}
-		if reached(t, acted) {
-			heard = t
-			break
-		}
-	}
-	var since int64
-	if heard != nil {
-		since = heard.StartedAt
-	}
-	dead := deadWork(state, since)
+	// The newest turn is what a continuation resumes and counts on from.
+	last, heard := lastHeard(state)
+	dead := deadWork(state, heardSince(heard), true)
 	list := deadWorkNote(dead)
-	note := list
-	if note != "" {
-		note = "[omniplex] " + list
-	}
+	note := ownNote(list)
 	cut := heard != nil && (!heard.Done || heard.Failure == proto.FailureRestart)
 	if !cut && !awaited(dead) {
 		return nil, note
@@ -157,6 +132,54 @@ func planRecovery(state *projection.State, now int64) (plan *recoveryPlan, held 
 	return plan, ""
 }
 
+// owedNote is the news of dead work the agent has not heard, for a thread
+// whose process is still running: what Resume or a harness exit interrupted
+// since the last prompt that reached the agent. Like planRecovery it reads
+// only the log, so a prompt that carried the note and was then refused — a
+// continuation that ran into a usage limit — owes it again.
+func owedNote(state *projection.State) string {
+	_, heard := lastHeard(state)
+	return ownNote(deadWorkNote(deadWork(state, heardSince(heard), false)))
+}
+
+// lastHeard is the newest turn, and the newest one whose prompt reached the
+// agent: what it last heard. A prompt the harness refused told it nothing.
+func lastHeard(state *projection.State) (last, heard *projection.Turn) {
+	acted := map[string]bool{}
+	for _, it := range state.Items {
+		if it.TurnID != "" && it.Role != "user" {
+			acted[it.TurnID] = true
+		}
+	}
+	for i := len(state.Turns) - 1; i >= 0; i-- {
+		t := &state.Turns[i]
+		if last == nil {
+			last = t
+		}
+		if reached(t, acted) {
+			return last, t
+		}
+	}
+	return last, nil
+}
+
+// heardSince is when the agent last heard anything: dead work from before
+// then it has already been told about.
+func heardSince(heard *projection.Turn) int64 {
+	if heard == nil {
+		return 0
+	}
+	return heard.StartedAt
+}
+
+// ownNote marks a dead-work list sent on its own as the server's.
+func ownNote(list string) string {
+	if list == "" {
+		return ""
+	}
+	return "[omniplex] " + list
+}
+
 // reached says whether the agent saw a turn's prompt. One still running, or
 // cut by a restart, was under way; one that ended in an error with nothing
 // from the agent in it was refused, so whatever it carried is still owed.
@@ -175,15 +198,15 @@ func awaited(dead []projection.Job) bool {
 }
 
 // deadWork is the background work that died with its process and that the
-// agent has not heard about since: still live in a state whose process is
-// gone, or interrupted after the last prompt it read. A job started inside another — a
-// shell a subagent ran — is reported under its parent: restarting the
-// subagent is what brings it back.
-func deadWork(state *projection.State, since int64) []projection.Job {
+// agent has not heard about since: interrupted after the last prompt it read,
+// or — when gone says the process that ran it is gone — still live. A job
+// started inside another — a shell a subagent ran — is reported under its
+// parent: restarting the subagent is what brings it back.
+func deadWork(state *projection.State, since int64, gone bool) []projection.Job {
 	dead := map[string]bool{}
 	byToolCall := map[string]string{}
 	for _, j := range state.Jobs {
-		unheard := !proto.JobDone(j.Status) || (j.Status == proto.JobInterrupted && j.FinishedAt > since)
+		unheard := (gone && !proto.JobDone(j.Status)) || (j.Status == proto.JobInterrupted && j.FinishedAt > since)
 		if unheard && j.Kind != proto.JobInert {
 			dead[j.ID] = true
 			if j.ToolCallID != "" {

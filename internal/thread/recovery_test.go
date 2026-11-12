@@ -696,6 +696,9 @@ func TestTransientRefusalIsRetriedThenDroppedForTheQueue(t *testing.T) {
 	}
 }
 
+// A continuation the harness refuses at a usage limit is not retried, and
+// the queue behind it is held like any other limit's: each queued prompt
+// would only hit the limit again.
 func TestLimitFailureIsNotRetried(t *testing.T) {
 	st := openRecoveryStore(t)
 	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
@@ -710,20 +713,26 @@ func TestLimitFailureIsNotRetried(t *testing.T) {
 	m := NewManager(st, func(string, ...any) {}, sa)
 	m.recoveryRetries = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond}
 	defer m.Shutdown()
-	if _, err := m.Get(context.Background(), id); err != nil {
+	a, err := m.Get(context.Background(), id)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if in := recvPrompt(t, sa.thread().prompts); in.Text != "after" {
-		t.Fatalf("first prompt the harness accepted = %q; want the queued one", in.Text)
-	}
+	waitFor(t, func() bool { return sa.callsWhere(isRestartContinuation) == 1 })
 	noPrompt(t, sa.thread().prompts, 50*time.Millisecond)
 	if n := sa.callsWhere(isRestartContinuation); n != 1 {
 		t.Fatalf("continuation tries after a limit failure = %d; want 1", n)
 	}
+	s, _ := a.State(context.Background())
+	if !s.QueueHeld() || len(s.Queued) != 1 || s.Queued[0].Prompt != "after" {
+		t.Fatalf("held %v, queue %+v; want the queued prompt held behind the limit", s.QueueHeld(), s.Queued)
+	}
 }
 
-func TestDroppedContinuationHandsItsNoteToTheNextPrompt(t *testing.T) {
+// A continuation that runs into a usage limit arms the limit's own
+// continuation, and that is what carries the dead-work note the refused one
+// never delivered. The queued prompt waits behind it, without the note.
+func TestLimitedContinuationHandsItsNoteToTheLimitContinuation(t *testing.T) {
 	st := openRecoveryStore(t)
 	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
 	mgr, actor := startRecoveryThread(t, st, sa)
@@ -740,6 +749,58 @@ func TestDroppedContinuationHandsItsNoteToTheNextPrompt(t *testing.T) {
 	id := actor.ID
 	mgr.Shutdown()
 
+	m := NewManager(st, func(string, ...any) {}, sa)
+	defer m.Shutdown()
+	a, err := m.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont := recvPrompt(t, sa.thread().prompts)
+	if !isRestartContinuation(cont) {
+		t.Fatalf("first prompt after the restart = %q; want the continuation", cont.Text)
+	}
+	reset := time.Now().Add(time.Hour).UnixMilli()
+	sa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
+		TurnID: cont.TurnID, StopReason: proto.StopError, Error: "usage limit reached",
+		Failure: proto.FailureLimit, ResetAt: reset,
+	}))
+	waitFor(t, func() bool { s, _ := a.State(ctx); return s.Phase == "idle" })
+	noPrompt(t, sa.thread().prompts, 50*time.Millisecond)
+
+	p := scheduled(t, a, limitScheduleID(cont.TurnID))
+	if p.Status != "pending" || p.DueAt != reset+limitDelay {
+		t.Fatalf("limit continuation = %+v; want it armed for the reset", p)
+	}
+	if err := a.scheduleTick(ctx, p.DueAt); err != nil {
+		t.Fatal(err)
+	}
+	in := recvPrompt(t, sa.thread().prompts)
+	if !strings.HasSuffix(in.Text, "\n\n"+limitContinuePrompt) || strings.Join(deadLines(in.Text), "|") != "- shell: dev server" {
+		t.Fatalf("limit continuation sent as %q; want the dead-work note in front of it", in.Text)
+	}
+	sa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: in.TurnID, StopReason: proto.StopEndTurn}))
+	if in := recvPrompt(t, sa.thread().prompts); in.Text != "after" {
+		t.Fatalf("queued prompt sent as %q; want it as written", in.Text)
+	}
+}
+
+// A continuation refused outright at a limit leaves its note held once, for
+// the prompt that goes past the held queue: not once for the refusal and
+// again for the dropped plan.
+func TestLimitRefusedContinuationHoldsItsNoteOnce(t *testing.T) {
+	st := openRecoveryStore(t)
+	sa := &scriptedAdapter{fakeAdapter: &fakeAdapter{}}
+	mgr, actor := startRecoveryThread(t, st, sa)
+	ctx := context.Background()
+	if _, err := actor.Prompt(ctx, "start", nil); err != nil {
+		t.Fatal(err)
+	}
+	recvPrompt(t, sa.thread().prompts)
+	startJob(sa.fakeAdapter, "j1", proto.JobShell, "dev server")
+	waitJobs(t, actor, 1)
+	id := actor.ID
+	mgr.Shutdown()
+
 	sa.script(func(in adapter.PromptInput) error {
 		if isRestartContinuation(in) {
 			return &adapter.FailureError{Kind: proto.FailureLimit, Err: errors.New("out of quota")}
@@ -748,15 +809,17 @@ func TestDroppedContinuationHandsItsNoteToTheNextPrompt(t *testing.T) {
 	})
 	m := NewManager(st, func(string, ...any) {}, sa)
 	defer m.Shutdown()
-	if _, err := m.Get(ctx, id); err != nil {
+	a, err := m.Get(ctx, id)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	// The continuation never ran, so the queued prompt is the agent's first
-	// word of the restart and has to carry the news.
+	waitFor(t, func() bool { s, _ := a.State(ctx); return s.QueueHeld() })
+	if _, err := a.Prompt(ctx, "by hand", nil); err != nil {
+		t.Fatal(err)
+	}
 	in := recvPrompt(t, sa.thread().prompts)
-	if !strings.HasSuffix(in.Text, "\n\nafter") || strings.Join(deadLines(in.Text), "|") != "- shell: dev server" {
-		t.Fatalf("queued prompt sent as %q; want the dead-work note in front of it", in.Text)
+	if !strings.HasSuffix(in.Text, "\n\nby hand") || strings.Join(deadLines(in.Text), "|") != "- shell: dev server" {
+		t.Fatalf("prompt sent by hand as %q; want the dead-work note once in front of it", in.Text)
 	}
 }
 
@@ -1053,6 +1116,32 @@ func TestPlanRecoveryPrompt(t *testing.T) {
 			t.Fatalf("note lines = %q", got)
 		}
 	})
+}
+
+// owedNote reads what is still owed from the log, while the process runs:
+// work interrupted since the agent last heard anything, and none still live.
+func TestOwedNote(t *testing.T) {
+	shell := interruptedJob("s1", proto.JobShell, "dev server", 30*time.Minute)
+	limited := refusedContinuation("c1")
+	limited.Failure = proto.FailureLimit
+	acted := erroredContinuation("c1")
+	acted.Failure = proto.FailureLimit
+	early := interruptedJob("s1", proto.JobShell, "dev server", 59*time.Minute)
+	cases := []struct {
+		name  string
+		state *projection.State
+		want  string
+	}{
+		{"a refused continuation still owes it", planState([]projection.Turn{restartClosedTurn("t1"), limited}, shell), "- shell: dev server"},
+		{"one the agent acted in delivered it", withItems(planState([]projection.Turn{restartClosedTurn("t1"), acted}, early), agentItem("c1")), ""},
+		{"live work is running, not dead", planState([]projection.Turn{doneTurn("t1"), refusedPrompt("t2")}, liveJob("s2", proto.JobShell, "watch")), ""},
+	}
+	for _, c := range cases {
+		got := owedNote(c.state)
+		if lines := strings.Join(deadLines(got), "|"); lines != c.want || (c.want != "" && !strings.HasPrefix(got, "[omniplex] ")) {
+			t.Errorf("%s: owedNote = %q; want lines %q", c.name, got, c.want)
+		}
+	}
 }
 
 func TestDeadWorkNoteListsWhatTheAgentHasToRestart(t *testing.T) {

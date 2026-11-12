@@ -40,6 +40,12 @@ Codex can fail a turn before it knows the reset. The adapter then reads the
 account's limits for up to 10 seconds. If that still says nothing, the first
 later rate-limit update that names the reset arms the continuation.
 
+A restart continuation that hits a limit is handled the same way: the queue is
+held and the limit's continuation is armed. A prompt the limit refused never
+reached the agent, so its note of background work the restart killed is still
+owed. The next turn past the held queue carries it, whether that is the
+continuation or a manual send. The queued prompts get none of it.
+
 ## Persistence
 
 Startup creates the SQLite `scheduled_prompts` table and `scheduled_due` index.

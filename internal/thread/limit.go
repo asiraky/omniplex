@@ -23,6 +23,11 @@ import (
 //
 // A Codex turn can finish before the harness knows the reset. The adapter
 // back-fills it with turn.limit_reset, and the continuation is armed then.
+//
+// A turn the limit refused never reached the agent, so news it carried of
+// work a restart killed is still owed. Whatever goes past the held queue
+// next — the continuation, a prompt sent by hand — carries it; the queue
+// waits behind that turn and gets none of it.
 
 // limitContinuePrompt is the continuation's text, in the style of the
 // recovery prompts: what the agent cannot know is which side effects landed.
@@ -50,6 +55,11 @@ func (a *Actor) followLimit(ev proto.Event) {
 	case proto.TurnFinished:
 		var p proto.TurnFinishedPayload
 		if json.Unmarshal(ev.Payload, &p) == nil && p.Failure == proto.FailureLimit {
+			if a.state.QueueHeld() {
+				// Read from the log, so it replaces rather than adds to
+				// a note already held: that is in it too.
+				a.heldNote = owedNote(a.state)
+			}
 			a.armLimit(p.TurnID, p.ResetAt, ev.Timestamp)
 		}
 	case proto.TurnLimitReset:
