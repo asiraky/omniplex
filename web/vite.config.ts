@@ -23,7 +23,7 @@ export default defineConfig({
     },
   ],
   resolve: {
-    // Mirrors the `~/*` path mapping in tsconfig.app.json; shadcn components
+    // Mirrors the `~/*` path mapping in tsconfig.json; shadcn components
     // are generated with this alias, so the two must agree.
     alias: {
       "~": fileURLToPath(new URL("./src", import.meta.url)),
