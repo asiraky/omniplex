@@ -75,6 +75,16 @@ describe("splitMarkdownBlocks", () => {
   ])("keeps text with document-wide syntax whole: %j", (text) => {
     expect(splitMarkdownBlocks(text)).toBeNull();
   });
+
+  // A list item can open a fence or close one, and the splitter does not
+  // follow list items, so it would lose track of which later lines are code.
+  it.each([
+    "1. ```sh\n   ls\n   ```\n\nnext\n\n```\nfoo\n\nbar\n```",
+    "- ```\n  ls\n  ```\n\nnext\n\n```\nfoo\n\nbar\n```",
+    "- item\n  ```\n  code\n\nPara.\n\n```\nreal\n\nmore\n```",
+  ])("keeps text with a fence opened off the margin whole: %j", (text) => {
+    expect(splitMarkdownBlocks(text)).toBeNull();
+  });
 });
 
 describe("closeOpenFence", () => {

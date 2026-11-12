@@ -21,6 +21,10 @@ function documentWide(line: string): boolean {
 }
 // After a blank line these still continue the previous block: a list item or indented content.
 const CONTINUATION_PATTERN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+// A fence behind indentation or a list marker. It may sit in a list item,
+// which this does not follow and which can close it, so where it ends is
+// unknown.
+const FENCE_OFF_MARGIN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])[ \t])[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*(?:`{3,}|~{3,})/;
 
 /**
  * The fence open after `line`, given the one open before it (null for none).
@@ -53,7 +57,8 @@ export function closeOpenFence(text: string): string {
 /**
  * Cuts Markdown at blank lines that close every open block, so each piece
  * renders exactly as it would inside the whole text. Returns null when the
- * text, outside its code, uses syntax that spans blocks.
+ * text, outside its code, uses syntax that spans blocks, or opens a fence
+ * anywhere but the margin.
  *
  * A cut is never made inside a fence, so a fence still open at the end of the
  * text is always in the last piece: `closeOpenFence` on that piece alone is
@@ -64,28 +69,23 @@ export function splitMarkdownBlocks(text: string): string[] | null {
   const blocks: string[] = [];
   let blockStart = 0;
   let lineStart = 0;
+  // Only ever a fence opened at the margin, so everything in it is code.
   let fence: string | null = null;
-  // Whether the open fence is certainly code. One opened at the margin is; an
-  // indented one may belong to a list item this does not follow, or be the
-  // close of a fence opened behind a list marker, so what follows it could be
-  // anything, and the guard still reads it.
-  let fenceIsCode = false;
   let afterBlankLine = false;
   for (const line of text.split("\n")) {
     if (fence !== null) {
-      if (!fenceIsCode && documentWide(line)) return null;
       fence = fenceAfter(line, fence);
     } else if (line.trim() === "") {
       afterBlankLine = true;
     } else {
       if (documentWide(line)) return null;
+      if (FENCE_OFF_MARGIN.test(line)) return null;
       if (afterBlankLine && lineStart > blockStart && !CONTINUATION_PATTERN.test(line)) {
         blocks.push(text.slice(blockStart, lineStart));
         blockStart = lineStart;
       }
       afterBlankLine = false;
       fence = fenceAfter(line, null);
-      fenceIsCode = fence !== null && !/^[ \t]/.test(line);
     }
     lineStart += line.length + 1;
   }
