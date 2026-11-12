@@ -80,7 +80,7 @@ func writeCheckpoint(ctx context.Context, root, ref string, seed bool) (string, 
 	_ = os.Remove(indexPath)
 	defer os.Remove(indexPath)
 
-	env := append(os.Environ(),
+	env := append(gitEnv(),
 		"GIT_INDEX_FILE="+indexPath,
 		// A snapshot is the server's own bookkeeping. Borrowing the person's
 		// identity for it would put their name on commits they never made,
@@ -288,8 +288,7 @@ func repoRoot(ctx context.Context, cwd string) string {
 }
 
 func runGitEnv(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
+	cmd := gitCmd(ctx, dir, args...)
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
