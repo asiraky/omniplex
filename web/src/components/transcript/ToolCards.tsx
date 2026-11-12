@@ -15,7 +15,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useState, type ComponentType } from "react";
+import { lazy, Suspense, useState, type ComponentType } from "react";
 
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
@@ -24,7 +24,8 @@ import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
 import { LiveTail } from "./LiveTail";
-import { useFullToolContent, type FullContent } from "./useFullToolContent";
+
+const LoadFullOutput = lazy(() => import("./LoadFullOutput"));
 
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
@@ -66,15 +67,14 @@ function joinOutput(content: ToolContent[] | undefined) {
 }
 
 // What a tool card shows: the full output once fetched, standing in for the
-// preview, else the preview. The full output is held by the hook only, so it
+// preview, else the preview. The full output is held by the card only, so it
 // goes when the card does.
-function useToolOutput(threadId: string, item: Item) {
-  const full = useFullToolContent(threadId, item.id);
-  const loaded = full.status === "ready";
+function useToolOutput(item: Item) {
+  const [full, setFull] = useState<ToolContent[]>();
   return {
-    full,
-    output: joinOutput(loaded ? full.content : item.content),
-    truncated: !!item.truncated && !loaded,
+    setFull,
+    output: joinOutput(full ?? item.content),
+    truncated: !!item.truncated && !full,
   };
 }
 
@@ -86,7 +86,7 @@ function outputLabel(open: boolean, truncated: boolean, output: string) {
 
 export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const [open, setOpen] = useState(false);
-  const { full, output, truncated } = useToolOutput(threadId, item);
+  const { setFull, output, truncated } = useToolOutput(item);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
   return (
@@ -131,36 +131,14 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
               {output}
             </pre>
           )}
-          {truncated && <LoadFullOutput full={full} />}
+          {truncated && (
+            <Suspense fallback={null}>
+              <LoadFullOutput threadId={threadId} itemId={item.id} onLoad={setFull} />
+            </Suspense>
+          )}
         </div>
       )}
     </div>
-  );
-}
-
-const textButton =
-  "text-muted-foreground hover:text-foreground focus-visible:ring-ring flex min-h-11 items-center gap-1.5 rounded-sm px-1 text-[12px] transition-colors outline-none focus-visible:ring-2 disabled:pointer-events-none md:min-h-0";
-
-/** The way from a truncated preview to the whole output, and back after 4G drops it. */
-function LoadFullOutput({ full }: { full: FullContent & { load: () => void } }) {
-  if (full.status === "error") {
-    return (
-      <div className="flex flex-wrap items-center gap-x-2">
-        <span role="alert" className="text-destructive text-[12px]">
-          {full.error}
-        </span>
-        <button type="button" onClick={full.load} className={textButton}>
-          Retry
-        </button>
-      </div>
-    );
-  }
-  const loading = full.status === "loading";
-  return (
-    <button type="button" onClick={full.load} disabled={loading} className={textButton}>
-      {loading && <Spinner className="text-primary size-3" />}
-      {loading ? "Loading full output…" : "Load full output"}
-    </button>
   );
 }
 

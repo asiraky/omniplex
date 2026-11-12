@@ -109,7 +109,7 @@ describe("a truncated tool card", () => {
     openCard(tool());
     expect(screen.getByText(/characters truncated/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load full output" }));
     expect(await screen.findByText("the whole output")).toBeTruthy();
     expect(String(fetch.mock.calls[0][0])).toBe(url);
     expect(screen.queryByText(/characters truncated/)).toBeNull();
@@ -120,7 +120,7 @@ describe("a truncated tool card", () => {
     serve(() => new Response(JSON.stringify({ error: "the disk is on fire" }), { status: 500 }), full("second time lucky"));
     openCard(tool());
 
-    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load full output" }));
     expect(await screen.findByText("the disk is on fire")).toBeTruthy();
     // The preview stays readable while the full output is out of reach.
     expect(screen.getByText(/characters truncated/)).toBeTruthy();
