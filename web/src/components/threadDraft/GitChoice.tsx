@@ -188,16 +188,14 @@ function ExistingWorktreeField({
   );
 }
 
-/** What the Git chip's popover holds: the checkout kind, then its fields. */
-export function GitChoice({
-  folder,
-  git,
-  userConfig,
-}: {
+export interface GitChoiceProps {
   folder: Folder;
   git: WorkspaceChoiceState;
   userConfig: UserConfig | null;
-}) {
+}
+
+/** What the Git chip's popover holds: the checkout kind, then its fields. */
+export function GitChoice({ folder, git, userConfig }: GitChoiceProps) {
   return (
     <>
       <KindChoice folder={folder} git={git} />
