@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,10 +67,13 @@ type child struct {
 }
 
 // pendingChild is what a thread did before the spawn naming it completed:
-// the turn it started, and that turn's completion if it got that far.
+// the turn it started, the turn of ours open then (which Stop on it stops
+// the thread too), and that turn's completion if it got that far.
 type pendingChild struct {
-	turn string
-	done json.RawMessage
+	turn         string
+	owner        string
+	interrupting bool
+	done         json.RawMessage
 }
 
 func (c *child) toolCall() string {
@@ -203,7 +207,7 @@ func (s *session) registerChild(thread, toolCallID, label, turn string, owner *c
 	}
 	var done json.RawMessage
 	if p := s.pendingChildren[thread]; p != nil {
-		c.serverTurn, done = p.turn, p.done
+		c.serverTurn, c.interrupting, done = p.turn, p.interrupting, p.done
 		delete(s.pendingChildren, thread)
 	}
 	s.children[thread] = c
@@ -350,7 +354,7 @@ func (s *session) unregisteredLocked(method, thread string, params json.RawMessa
 		}
 		_ = json.Unmarshal(params, &p)
 		if p.Turn.ID != "" {
-			*s.pendingChildLocked(thread) = pendingChild{turn: p.Turn.ID}
+			*s.pendingChildLocked(thread) = pendingChild{turn: p.Turn.ID, owner: s.turnID}
 		}
 		return
 	case "turn/completed", "turn/failed":
@@ -622,9 +626,11 @@ func (s *session) flushWake() {
 	}
 }
 
-// StopJob interrupts one subagent's running turn. Its job finishes through
-// the child's own turn/completed, as stopped, which never wakes the session.
-// A second stop while the first is in flight is coalesced, as Cancel's is.
+// StopJob interrupts one subagent's running turn, and its running
+// descendants': interrupting a thread does not stop the subagents it spawned.
+// Its job finishes through the child's own turn/completed, as stopped, which
+// never wakes the session. A second stop while the first is in flight is
+// coalesced, as Cancel's is.
 func (s *session) StopJob(ctx context.Context, jobID string) error {
 	s.mu.Lock()
 	c := s.children[jobID]
@@ -642,6 +648,51 @@ func (s *session) StopJob(ctx context.Context, jobID string) error {
 		return nil
 	}
 	c.interrupting = true
+	descendants := s.runningDescendantsLocked(c)
 	s.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for d, dturn := range descendants {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.interruptChild(ctx, d, dturn)
+		}()
+	}
+	defer wg.Wait()
 	return s.interruptChild(ctx, c, turn)
+}
+
+// runningDescendantsLocked claims, for interrupting, every running child
+// spawned below c, and returns each with its turn. s.mu must be held.
+func (s *session) runningDescendantsLocked(c *child) map[*child]string {
+	var out map[*child]string
+	for _, d := range s.children {
+		if d.serverTurn == "" || d.interrupting || !s.descendsLocked(d, c) {
+			continue
+		}
+		d.interrupting = true
+		if out == nil {
+			out = map[*child]string{}
+		}
+		out[d] = d.serverTurn
+	}
+	return out
+}
+
+// descendsLocked reports whether d was spawned, at any depth, by c. s.mu
+// must be held.
+func (s *session) descendsLocked(d, c *child) bool {
+	// Bounded by the registry's size, so a cycle cannot spin forever.
+	for range len(s.children) {
+		p := s.children[d.parentJobID]
+		if p == nil {
+			return false
+		}
+		if p == c {
+			return true
+		}
+		d = p
+	}
+	return false
 }

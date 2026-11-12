@@ -668,6 +668,7 @@ func (s *session) Cancel(ctx context.Context) error {
 		s.markStoppedLocked(s.turnID)
 	}
 	children := s.runningChildrenLocked(s.turnID)
+	unnamed := s.runningUnnamedLocked(s.turnID)
 	s.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -676,6 +677,13 @@ func (s *session) Cancel(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			_ = s.interruptChild(ctx, c, turn)
+		}()
+	}
+	for thread, turn := range unnamed {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.interruptUnnamed(ctx, thread, turn)
 		}()
 	}
 	defer wg.Wait()
@@ -769,20 +777,66 @@ func (s *session) runningChildrenLocked(owner string) map[*child]string {
 	return out
 }
 
+// runningUnnamedLocked is runningChildrenLocked for threads no spawn has
+// named yet: one whose turn started while owner was open is working for it,
+// even if the spawn that would name it was cut short. s.mu must be held.
+func (s *session) runningUnnamedLocked(owner string) map[string]string {
+	if owner == "" {
+		return nil
+	}
+	var out map[string]string
+	for thread, p := range s.pendingChildren {
+		if p.owner != owner || p.turn == "" || p.done != nil || p.interrupting {
+			continue
+		}
+		p.interrupting = true
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[thread] = p.turn
+	}
+	return out
+}
+
+// interruptThread sends turn/interrupt for a subagent thread's turn.
+func (s *session) interruptThread(ctx context.Context, thread, turn string) error {
+	err := s.conn.Call(ctx, "turn/interrupt", map[string]any{
+		"threadId": thread,
+		"turnId":   turn,
+	}, nil)
+	if err != nil {
+		s.host.Logf("codex: interrupting subagent %s turn %s: %v", thread, turn, err)
+	}
+	return err
+}
+
 // interruptChild stops one child's running turn, already claimed by setting
 // its interrupting flag. On failure the claim is released so a later stop can
 // try again, as Cancel does for its own turn.
 func (s *session) interruptChild(ctx context.Context, c *child, turn string) error {
-	err := s.conn.Call(ctx, "turn/interrupt", map[string]any{
-		"threadId": c.jobID,
-		"turnId":   turn,
-	}, nil)
+	err := s.interruptThread(ctx, c.jobID, turn)
 	if err == nil {
 		return nil
 	}
-	s.host.Logf("codex: interrupting subagent %s turn %s: %v", c.jobID, turn, err)
 	s.mu.Lock()
 	if c.serverTurn == turn {
+		c.interrupting = false
+	}
+	s.mu.Unlock()
+	return err
+}
+
+// interruptUnnamed is interruptChild for a thread still unnamed, or named
+// since the claim, which carried over to its child.
+func (s *session) interruptUnnamed(ctx context.Context, thread, turn string) error {
+	err := s.interruptThread(ctx, thread, turn)
+	if err == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if p := s.pendingChildren[thread]; p != nil && p.turn == turn {
+		p.interrupting = false
+	} else if c := s.children[thread]; c != nil && c.serverTurn == turn {
 		c.interrupting = false
 	}
 	s.mu.Unlock()

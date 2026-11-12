@@ -780,3 +780,51 @@ func TestGrandchildOfAReusedChildIsStoppedWithItsTurn(t *testing.T) {
 		t.Fatalf("interrupts = %v, want %v", got, want)
 	}
 }
+
+// A thread that started working during a turn but that no spawn has named
+// yet — the spawn was cut short by Stop — is stopped with the turn, and
+// once only if a spawn names it after all.
+func TestCancelStopsAThreadNoSpawnNamedYet(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-turn"
+	notify(s, "item/started", spawnItem("thread-1", "spawn-1", "one", "inProgress"))
+	childTurn(s, "sub-1", "sub-1-turn")
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	want := map[string]string{"thread-1": "codex-turn", "sub-1": "sub-1-turn"}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts = %v, want %v", got, want)
+	}
+
+	notify(s, "item/completed", spawnItem("thread-1", "spawn-1", "one", "completed", "sub-1"))
+	if err := s.Cancel(context.Background()); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts after naming = %v, want %v", got, want)
+	}
+}
+
+// Interrupting a thread leaves the subagents it spawned running, so stopping
+// a job stops its descendants too, and nothing beside it.
+func TestStopJobStopsItsDescendants(t *testing.T) {
+	s, rec := stopSession(t, nil)
+	s.turnID, s.serverTurnID = "turn-a", "codex-a"
+	spawn(s, "spawn-1", "one", "sub-1")
+	spawn(s, "spawn-2", "two", "sub-2")
+	childTurn(s, "sub-1", "sub-1-turn")
+	childTurn(s, "sub-2", "sub-2-turn")
+	spawnOn(s, "sub-1", "spawn-3", "deeper", "grand")
+	childTurn(s, "grand", "grand-turn")
+	spawnOn(s, "grand", "spawn-4", "deepest", "great")
+	childTurn(s, "great", "great-turn")
+
+	if err := s.StopJob(context.Background(), "sub-1"); err != nil {
+		t.Fatalf("StopJob: %v", err)
+	}
+	want := map[string]string{"sub-1": "sub-1-turn", "grand": "grand-turn", "great": "great-turn"}
+	if got := rec.interrupts(t); !maps.Equal(got, want) {
+		t.Fatalf("interrupts = %v, want %v", got, want)
+	}
+}
