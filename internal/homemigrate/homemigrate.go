@@ -146,6 +146,10 @@ type Account struct {
 	// Reverse undoes.
 	ConfigWritten bool `json:"configWritten,omitempty"`
 	Reversed      bool `json:"reversed,omitempty"`
+	// Gone are the account's threads whose conversation exists nowhere on
+	// disk (Claude's own cleanup deletes old transcripts). They do not hold
+	// the account back: there is nothing to move and nothing to lose.
+	Gone []GoneThread `json:"gone,omitempty"`
 
 	Moves   []*Conversation `json:"-"`
 	Skipped []*Conversation `json:"-"`
@@ -211,6 +215,17 @@ type ThreadCheck struct {
 	Status    string `json:"status"`
 	Where     string `json:"where,omitempty"`
 	Conflicts string `json:"conflicts,omitempty"`
+	// Gone is a conversation in no home at all: OK, with nothing to move.
+	Gone bool `json:"gone,omitempty"`
+}
+
+// statusGone is a thread check's status when its conversation is nowhere.
+const statusGone = "transcript exists nowhere on disk; nothing to move"
+
+// GoneThread is a thread whose conversation exists nowhere on disk.
+type GoneThread struct {
+	Thread  string `json:"thread"`
+	Session string `json:"session"`
 }
 
 // FSCheck says whether a machine home and the instances folder share a
@@ -332,6 +347,9 @@ func PlanMigration(ctx context.Context, opts Options) (*Plan, error) {
 			}
 			check := checkThread(a, r, scanned[a.Driver], locations[a.Driver])
 			p.Threads = append(p.Threads, check)
+			if check.Gone {
+				a.Gone = append(a.Gone, GoneThread{Thread: r.thread, Session: r.session})
+			}
 			if check.OK || a.Status == statusAborted {
 				continue
 			}
@@ -660,6 +678,18 @@ func homesByDriver(home string, cfg userconfig.Config, drivers map[string]Driver
 		}
 		add(d.ID, accounthome.InstanceHome(home, inst.ID))
 	}
+	// Every instance home, configured or not: a removed account's home still
+	// holds its conversations.
+	if entries, err := os.ReadDir(filepath.Join(home, ".omniplex", "instances")); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			for _, d := range drivers {
+				add(d.ID, accounthome.InstanceHome(home, e.Name()))
+			}
+		}
+	}
 	return out
 }
 
@@ -675,6 +705,14 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 		return check
 	}
 	atDest := locate(a.Driver, a.Home, r.session)
+	if atDest == "" {
+		// A sidecar with no transcript beside it is not the conversation
+		// being there, and not it being gone either.
+		if side := locateSidecar(a.Driver, a.Home, r.session); side != "" {
+			check.Status, check.Where = "only its sidecar folder is at the destination", side
+			return check
+		}
+	}
 	for _, c := range a.Moves {
 		if c.ID == r.session {
 			check.OK, check.Status, check.Where = true, "moves", c.Entries[len(c.Entries)-1].Src
@@ -709,7 +747,10 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 		check.Status, check.Where = origin, path
 		return check
 	}
-	check.Status = "not found"
+	if side := locateSidecar(a.Driver, a.Shared, r.session); side != "" {
+		check.Status, check.Where = "only its sidecar folder is in the machine home", side
+		return check
+	}
 	var elsewhere []string
 	for _, h := range homes {
 		if h == a.Shared || h == a.Home {
@@ -717,12 +758,16 @@ func checkThread(a *Account, r threadRef, scanned []*Conversation, homes []strin
 		}
 		if path := locate(a.Driver, h, r.session); path != "" {
 			elsewhere = append(elsewhere, path)
+		} else if side := locateSidecar(a.Driver, h, r.session); side != "" {
+			elsewhere = append(elsewhere, side)
 		}
 	}
 	if len(elsewhere) > 0 {
-		check.Status = "not in the machine home"
+		check.Status = "in another home, not the machine home"
 		check.Where = strings.Join(elsewhere, ", ")
+		return check
 	}
+	check.OK, check.Gone, check.Status = true, true, statusGone
 	return check
 }
 

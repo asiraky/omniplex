@@ -199,9 +199,9 @@ func main() {
 		logf("open secret store: %v (provider instances and read-aloud off)", err)
 	}
 
-	// Provider instances: configured accounts layered over the default
-	// (ambient-credential) instance each adapter already has. A broken or
-	// unknowable config degrades to defaults; it never stops the server.
+	// Provider instances: the accounts in the user config are the only ones;
+	// there is no built-in default per adapter. A broken or unreadable config
+	// leaves no accounts configured; it never stops the server.
 	configureProviders(mgr, secrets, logf)
 	speech := openSpeech(secrets, logf)
 	pushSvc := openPush(filepath.Dir(*dbPath), st, logf)

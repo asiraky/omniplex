@@ -211,6 +211,21 @@ func (c *Conversation) collect() error {
 // Modified is the newest modification time among the conversation's files.
 func (c *Conversation) Modified() time.Time { return c.modified }
 
+// locateSidecar finds a Claude conversation's <id>/ folder in a config home,
+// "" when there is none.
+func locateSidecar(driver, root, id string) string {
+	if driver != DriverClaude || root == "" || id == "" {
+		return ""
+	}
+	matches, _ := filepath.Glob(filepath.Join(root, "projects", "*", id))
+	for _, m := range matches {
+		if info, err := os.Lstat(m); err == nil && info.IsDir() {
+			return m
+		}
+	}
+	return ""
+}
+
 // locate finds conversation id in a config home, "" when it is not there.
 func locate(driver, root, id string) string {
 	if root == "" || id == "" {

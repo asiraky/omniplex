@@ -137,6 +137,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		line := fmt.Sprintf("home migration: account %s (%s) now has its own home %s: moved %d conversations (%s), skipped %d, manifest %s",
 			a.ID, a.Name, a.Home, moved, humanBytes(size), countSkipped(a), path)
+		if len(a.Gone) > 0 {
+			line += fmt.Sprintf("; %d threads' conversations exist nowhere on disk, nothing to move (%s)", len(a.Gone), goneList(a.Gone))
+		}
 		if a.After != nil {
 			line += "; it needs signing in"
 		}
@@ -467,4 +470,12 @@ func humanBytes(n int64) string {
 		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%d B", n)
+}
+
+func goneList(gone []GoneThread) string {
+	parts := make([]string, len(gone))
+	for i, g := range gone {
+		parts[i] = g.Thread + " " + g.Session
+	}
+	return strings.Join(parts, ", ")
 }

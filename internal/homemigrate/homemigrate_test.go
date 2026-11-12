@@ -632,12 +632,64 @@ func TestThreadWhoseConversationDoesNotMoveAbortsItsAccount(t *testing.T) {
 	_ = cfgPath
 }
 
-func TestThreadWhoseConversationIsMissingAbortsItsAccount(t *testing.T) {
+func TestThreadWhoseConversationExistsNowhereDoesNotHoldBackItsAccount(t *testing.T) {
 	f := newFixture(t)
-	f.thread("t6", "claude", "", "gone")
-	f.run()
-	if !exists(f.proj("s1.jsonl")) || envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR") != "" {
-		t.Error("claude migrated with a thread whose conversation is nowhere")
+	// Claude's own cleanup deleted the transcript t6 resumed.
+	f.thread("t6", "claude", "", "deleted")
+	res := f.run()
+	if exists(f.proj("s1.jsonl")) || envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR") != f.newClaude() {
+		t.Error("claude did not migrate")
+	}
+	var gone bool
+	for _, c := range res.Plan.Threads {
+		if c.Thread == "t6" {
+			gone = c.OK && c.Gone
+		}
+	}
+	if !gone {
+		t.Error("t6 not reported as gone")
+	}
+	b, err := os.ReadFile(res.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range m.Accounts {
+		if a.ID == "claude" && (len(a.Gone) != 1 || a.Gone[0] != (GoneThread{Thread: "t6", Session: "deleted"})) {
+			t.Errorf("manifest gone = %+v", a.Gone)
+		}
+	}
+}
+
+func TestThreadWhoseConversationIsInAnotherHomeAbortsItsAccount(t *testing.T) {
+	cases := map[string]func(f *fixture){
+		// A home left by an account no longer in the config.
+		"another instance home": func(f *fixture) {
+			f.write(filepath.Join(accounthome.InstanceHome(f.home, "removed"), "projects", projectKey, "o1.jsonl"), claudeTranscript("sdk-ts", "o1"))
+		},
+		// The transcript went but its subagents are still there.
+		"only a sidecar": func(f *fixture) {
+			f.write(f.proj("o1", "subagents", "agent-z.jsonl"), "{}\n")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			setup(f)
+			f.thread("t7", "claude", "", "o1")
+			res := f.run()
+			if !exists(f.proj("s1.jsonl")) || envValue(providers(t)["claude"], "CLAUDE_CONFIG_DIR") != "" {
+				t.Error("claude migrated with a thread whose conversation is somewhere else")
+			}
+			for _, c := range res.Plan.Threads {
+				if c.Thread == "t7" && (c.OK || c.Gone) {
+					t.Errorf("t7 check = %+v", c)
+				}
+			}
+		})
 	}
 }
 

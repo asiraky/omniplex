@@ -42,6 +42,9 @@ func (p *Plan) Print(w io.Writer) {
 			size += c.Bytes
 		}
 		fmt.Fprintf(w, "    move %d conversations (%d files, %s); skip %d", len(a.Moves), files, humanBytes(size), len(a.Skipped))
+		if len(a.Gone) > 0 {
+			fmt.Fprintf(w, "; %d threads' conversations gone", len(a.Gone))
+		}
 		if a.After != nil {
 			fmt.Fprint(w, "; config entry written; needs signing in")
 		}
@@ -84,7 +87,10 @@ func (p *Plan) Print(w io.Writer) {
 		fmt.Fprintln(w, "Threads:")
 		for _, t := range p.Threads {
 			mark := "ok  "
-			if !t.OK {
+			switch {
+			case t.Gone:
+				mark = "GONE"
+			case !t.OK:
 				mark = "FAIL"
 			}
 			fmt.Fprintf(w, "  %s %s account %s session %s: %s", mark, t.Thread, t.Account, t.Session, t.Status)
