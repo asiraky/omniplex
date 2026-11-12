@@ -2683,3 +2683,117 @@ func TestSendQueuedPromptWaitsForRestartRecovery(t *testing.T) {
 		t.Fatalf("queue = %+v, want the entry kept", s.Queued)
 	}
 }
+
+// idleBehindASettingsChange finishes a restarted thread's continuation, so
+// "after" waits held in an idle thread, and starts a mode change the harness
+// has yet to answer. Closing the returned channel answers it.
+func idleBehindASettingsChange(t *testing.T) (restarted, func()) {
+	t.Helper()
+	release, asked := make(chan struct{}), make(chan string, 1)
+	r := restartWithQueue(t, &fakeAdapter{modeGate: release, modeAsked: asked})
+	ctx := context.Background()
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: r.continuation, StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool { s, _ := r.actor.State(ctx); return s.Phase == "idle" })
+	switched := make(chan error, 1)
+	go func() { switched <- r.actor.SetMode(ctx, "acceptEdits") }()
+	<-asked
+	return r, func() {
+		close(release)
+		if err := <-switched; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestPromptBehindASettingsChangeRunsPastAHold: a message sent into an idle,
+// held thread while a mode change is on its way is a human starting a run.
+// It runs first once the change lands, and lets the holds go.
+func TestPromptBehindASettingsChangeRunsPastAHold(t *testing.T) {
+	r, answer := idleBehindASettingsChange(t)
+	ctx := context.Background()
+	if res, err := r.actor.Prompt(ctx, "by hand", nil); err != nil || !res.Queued() {
+		t.Fatalf("prompt behind a mode change = %+v, %v", res, err)
+	}
+	answer()
+	if in := nextInput(t, r.fa.thread()); in.Text != "by hand" {
+		t.Fatalf("first to run = %q, want the message sent by hand", in.Text)
+	}
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || s.Queued[0].Held {
+		t.Fatalf("queue = %+v, want \"after\" released behind it", s.Queued)
+	}
+}
+
+// TestSendNowBehindASettingsChangeStartsThatPrompt: Send now on a prompt
+// behind others starts that one once the control call answers, not the head.
+func TestSendNowBehindASettingsChangeStartsThatPrompt(t *testing.T) {
+	r, answer := idleBehindASettingsChange(t)
+	ctx := context.Background()
+	behind, err := r.actor.PromptWith(ctx, "behind", nil, proto.DeliveryQueue)
+	if err != nil || !behind.Queued() {
+		t.Fatalf("queued prompt = %+v, %v", behind, err)
+	}
+	if res, err := r.actor.SendQueuedPrompt(ctx, behind.QueueID); err != nil || res.QueueID != behind.QueueID {
+		t.Fatalf("send now = %+v, %v", res, err)
+	}
+	answer()
+	if in := nextInput(t, r.fa.thread()); in.Text != "behind" {
+		t.Fatalf("send now on %q started %q", "behind", in.Text)
+	}
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || s.Queued[0].Held {
+		t.Fatalf("queue = %+v, want \"after\" released", s.Queued)
+	}
+}
+
+// TestHarnessExitDoesNotHoldTheQueue: only a server restart holds the queue.
+// A thread whose harness died is brought back by the same server, and what
+// was queued runs as it would have.
+func TestHarnessExitDoesNotHoldTheQueue(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "exit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fa := &fakeAdapter{}
+	m := NewManager(st, func(string, ...any) {}, fa)
+	t.Cleanup(m.Shutdown)
+	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return a.Head() >= 1 })
+	if _, err := a.Prompt(ctx, "busy", nil); err != nil {
+		t.Fatal(err)
+	}
+	nextInput(t, fa.thread())
+	if res, _ := a.Prompt(ctx, "after", nil); !res.Queued() {
+		t.Fatal("prompt mid-turn was not queued")
+	}
+	fa.thread().Close()
+	waitFor(t, func() bool { _, ok := m.Peek(a.ID); return !ok })
+	if _, err := m.Get(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if in := nextInput(t, fa.thread()); in.Text != "after" {
+		t.Fatalf("first prompt after the harness came back = %q, want \"after\"", in.Text)
+	}
+}
+
+// TestContinueReleasesTheHolds: pressing Continue is a human starting a run,
+// so what was held for one runs after it.
+func TestContinueReleasesTheHolds(t *testing.T) {
+	r := restartWithQueue(t, &fakeAdapter{})
+	ctx := context.Background()
+	r.fa.thread().emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: r.continuation, StopReason: proto.StopError, Error: "boom"}))
+	waitFor(t, func() bool { s, _ := r.actor.State(ctx); return s.Phase == "idle" })
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || !s.Queued[0].Held {
+		t.Fatalf("setup: queue = %+v, want \"after\" held", s.Queued)
+	}
+	if _, err := r.actor.Continue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	nextInput(t, r.fa.thread())
+	if s, _ := r.actor.State(ctx); len(s.Queued) != 1 || s.Queued[0].Held {
+		t.Fatalf("queue after Continue = %+v, want \"after\" released", s.Queued)
+	}
+}

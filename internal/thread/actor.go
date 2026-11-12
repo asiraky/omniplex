@@ -54,11 +54,18 @@ type Actor struct {
 	preparing bool
 	// restored is true for an actor rebuilt from the log until its harness
 	// first starts. Whatever is queued then was written before the server
-	// went down, so that first start holds it; see cmdActivate.
+	// went down, so that first start holds it; see cmdActivate. One rebuilt
+	// after its harness exited is not a restart, and the manager clears it
+	// (adopt). Guarded by mu.
 	restored bool
-	ID       string
-	Harness  string
-	Cwd      string
+	// first is a prompt a human sent into an idle thread with holds on it
+	// while a control call was still on its way. It runs before anything
+	// held, the way it would have had the call not been there, and releases
+	// the holds when it starts (dispatchQueued).
+	first   string
+	ID      string
+	Harness string
+	Cwd     string
 
 	store   *store.Store
 	adapter adapter.Adapter
@@ -1184,8 +1191,11 @@ func (a *Actor) handle(c command) (stop bool) {
 		// a provision retried after a restart starts the harness fresh. The
 		// continuation of interrupted work is not held: that is the server
 		// finishing what it was asked to do.
-		if a.restored {
-			a.restored = false
+		a.mu.Lock()
+		restored := a.restored
+		a.restored = false
+		a.mu.Unlock()
+		if restored {
 			a.holdQueued()
 		}
 		c.reply <- cmdResult{}
@@ -1416,9 +1426,14 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		// A prompt cannot overtake a control call still on its way, so while one
 		// is it waits in the queue, which starts it once the call has answered.
+		// Behind holds, it is still a human starting a run: it goes first and
+		// is not held with them.
 		if (a.sess == nil && a.preparing || a.sess != nil && a.controlPending > 0) && c.recovery == nil {
 			queueID := uuid.NewString()
-			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images, Held: a.holding()}))
+			if a.first == "" && a.holding() {
+				a.first = queueID
+			}
+			a.append(proto.Emit(proto.PromptQueued, proto.PromptQueuedPayload{QueueID: queueID, Prompt: c.prompt, Images: c.images}))
 			c.reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 			return false
 		}
@@ -1453,8 +1468,9 @@ func (a *Actor) handle(c command) (stop bool) {
 		}
 		// Someone sending a message is someone paying attention, so what
 		// was held for a human waits no longer: it runs after this turn.
-		// The server's own continuation is not anyone looking.
-		if c.recovery == nil {
+		// The server's own continuation is not anyone looking; a human
+		// pressing Continue is.
+		if c.recovery == nil || c.recovery.Cause == proto.RecoveryContinue {
 			a.releaseHolds()
 		}
 		c.reply <- cmdResult{value: PromptResult{TurnID: turnID}}
@@ -1513,7 +1529,11 @@ func (a *Actor) handle(c command) (stop bool) {
 			return false
 		}
 		// Only the holds go here; the run loop starts the head once this
-		// returns, the same way it picks up any other queued prompt.
+		// returns, the same way it picks up any other queued prompt. Nor
+		// does a first activation still to come hold them again.
+		a.mu.Lock()
+		a.restored = false
+		a.mu.Unlock()
 		a.releaseHolds()
 		c.reply <- cmdResult{}
 
@@ -1850,6 +1870,13 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	if recovering {
 		return
 	}
+	if id := a.first; id != "" {
+		a.first = ""
+		if q := a.queuedEntry(id); q != nil && !a.sent[id] {
+			a.startQueued(ctx, *q, true)
+			return
+		}
+	}
 	// A prompt the harness already holds is its to run: it starts a turn
 	// with it itself, or reads it into one. Only what nobody has is started
 	// here. A held prompt stops the line: everything behind it was queued
@@ -1863,18 +1890,28 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 		if a.sent[next.QueueID] || a.state.HeldByLimit(next) {
 			continue
 		}
-		if _, err := a.startTurn(ctx, next.Prompt, a.resolveImages(next.Images), nil, next.QueueID); err != nil {
-			a.logf("queued prompt on %s: %v", a.ID, err)
-			// A harness that refused one prompt — a login that expired, a
-			// checkout that went away — refuses the next for the same
-			// reason, and every command would burn another. The rest wait
-			// for a human who has seen the error. A usage limit holds them
-			// itself, until its continuation.
-			if !a.state.QueueHeld() {
-				a.holdQueued()
-			}
+		a.startQueued(ctx, next, false)
+		return
+	}
+}
+
+// startQueued starts a queued prompt's turn. One a human sent ahead of the
+// holds (release) lets them go once it is running.
+func (a *Actor) startQueued(ctx context.Context, q projection.QueuedPrompt, release bool) {
+	if _, err := a.startTurn(ctx, q.Prompt, a.resolveImages(q.Images), nil, q.QueueID); err != nil {
+		a.logf("queued prompt on %s: %v", a.ID, err)
+		// A harness that refused one prompt — a login that expired, a
+		// checkout that went away — refuses the next for the same reason,
+		// and every command would burn another. The rest wait for a human
+		// who has seen the error. A usage limit holds them itself, until its
+		// continuation.
+		if !a.state.QueueHeld() {
+			a.holdQueued()
 		}
 		return
+	}
+	if release {
+		a.releaseHolds()
 	}
 }
 
@@ -1991,12 +2028,10 @@ func (a *Actor) sendQueued(ctx context.Context, queueID string, reply chan cmdRe
 		reply <- cmdResult{err: ErrBusy}
 		return
 	}
-	// As with any message a human sends into an idle thread, what was held
-	// waits no longer.
-	a.releaseHolds()
-	// A control call still on its way goes first; dispatch starts this, at
-	// the head of what is no longer held, once it has answered.
+	// A control call still on its way goes first; dispatch starts this
+	// ahead of the rest once it has answered.
 	if a.controlPending > 0 {
+		a.first = queueID
 		reply <- cmdResult{value: PromptResult{QueueID: queueID}}
 		return
 	}
@@ -2005,6 +2040,9 @@ func (a *Actor) sendQueued(ctx context.Context, queueID string, reply chan cmdRe
 		reply <- cmdResult{err: err}
 		return
 	}
+	// As with any message a human sends into an idle thread, what was held
+	// waits no longer.
+	a.releaseHolds()
 	reply <- cmdResult{value: PromptResult{TurnID: turnID}}
 }
 
