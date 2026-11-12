@@ -68,6 +68,9 @@ export interface Item {
   status?: ToolStatus | CardResult;
   input?: unknown;
   content?: ToolContent[];
+  /** The last lines a running tool has printed, until it finishes and
+      `content` carries the whole output. */
+  tail?: string;
   // notice
   noticeKind?: "compaction" | "account";
   /** For a compaction notice: whether the harness ("auto") or a human triggered it. */

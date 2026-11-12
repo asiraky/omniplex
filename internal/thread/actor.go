@@ -1787,6 +1787,24 @@ func (a *Actor) appendStreamed(em proto.Emission) {
 	}
 }
 
+// trimOutput cuts a tool call's output delta to what its tail can still
+// show. The projection keeps only that much, and the call's result carries
+// the whole output once it finishes; the rest of a noisy build would only
+// make the log and every client's connection pay for it twice. On an update
+// that finishes the call — output the coalescer joined to its result — the
+// tail is dropped anyway, so none of it is kept.
+func trimOutput(em proto.Emission) proto.Emission {
+	if p, ok := em.Payload.(proto.ToolCallUpdatedPayload); ok && p.OutputDelta != "" {
+		if proto.ToolDone(p.Status) {
+			p.OutputDelta = ""
+		} else {
+			p.OutputDelta = projection.TrimOutputDelta(p.OutputDelta)
+		}
+		em.Payload = p
+	}
+	return em
+}
+
 func (a *Actor) stopDeltaFlush() {
 	if a.deltaFlush != nil {
 		a.deltaFlush.Stop()
@@ -1814,6 +1832,7 @@ func (a *Actor) append(em proto.Emission) error {
 func (a *Actor) write(em proto.Emission) error {
 	ctx := context.Background()
 	em = a.redact(em)
+	em = trimOutput(em)
 
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {

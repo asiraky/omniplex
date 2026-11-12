@@ -170,6 +170,10 @@ type Item struct {
 	Status   string              `json:"status,omitempty"`
 	Input    json.RawMessage     `json:"input,omitempty"`
 	Content  []proto.ToolContent `json:"content,omitempty"`
+	// Tail is the last lines a running call has printed, folded from its
+	// output deltas and bounded (see appendTail). It is cleared the moment the
+	// call finishes: from then on Content holds the whole output.
+	Tail string `json:"tail,omitempty"`
 
 	// notice
 	NoticeKind string `json:"noticeKind,omitempty"` // compaction | account
@@ -193,6 +197,13 @@ type Item struct {
 	Steps       []proto.PlanStep `json:"steps,omitempty"`
 	Explanation string           `json:"explanation,omitempty"`
 	Superseded  bool             `json:"superseded,omitempty"`
+}
+
+// settle moves a tool call to a terminal status. The tail goes with it: it
+// only ever stands for output still arriving.
+func (it *Item) settle(status string) {
+	it.Status = status
+	it.Tail = ""
 }
 
 // Artefact is a file or folder the thread has shown, as it was the last time
@@ -566,11 +577,11 @@ func (s *State) applyJob(ev proto.Event, finished bool) {
 				if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
 					switch j.Status {
 					case proto.JobFailed:
-						it.Status = proto.StatusFailed
+						it.settle(proto.StatusFailed)
 					case proto.JobCompleted:
-						it.Status = proto.StatusCompleted
+						it.settle(proto.StatusCompleted)
 					default:
-						it.Status = proto.StatusCancelled
+						it.settle(proto.StatusCancelled)
 					}
 				}
 			}
@@ -847,10 +858,14 @@ func (s *State) Apply(ev proto.Event) {
 			s.Phase = "idle"
 			// Any tool of this turn left mid-flight was interrupted, not
 			// broken: it is cancelled, never failed. A call that is standing
-			// for a live job is left alone — it outlived its turn on purpose,
-			// and the job's own finish will settle it. Tools of other turns
-			// are left alone too: a stray finish must not touch unrelated
-			// running work.
+			// for a live job keeps its status — it outlived its turn on
+			// purpose, and the job's own finish will settle it — but not its
+			// tail: nothing streams a call's output past the end of its turn
+			// (the Claude adapter stops its tailers before it emits the
+			// finish; Codex reports no jobs), so the tail would sit there
+			// frozen. Tools of other turns are
+			// left alone too: a stray finish must not touch unrelated running
+			// work.
 			live := map[string]bool{}
 			for _, j := range s.Jobs {
 				if !proto.JobDone(j.Status) && j.ToolCallID != "" {
@@ -859,10 +874,13 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			for i := range s.Items {
 				it := &s.Items[i]
-				if it.Kind == ItemTool &&
-					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) &&
-					(it.TurnID == p.TurnID || it.TurnID == "") && !live[it.ID] {
-					it.Status = proto.StatusCancelled
+				if it.Kind != ItemTool || (it.TurnID != p.TurnID && it.TurnID != "") {
+					continue
+				}
+				if live[it.ID] {
+					it.Tail = ""
+				} else if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
+					it.settle(proto.StatusCancelled)
 				}
 			}
 		}
@@ -906,6 +924,9 @@ func (s *State) Apply(ev proto.Event) {
 			it.ToolKind = p.Kind
 			it.Title = p.Title
 			it.Status = p.Status
+			if proto.ToolDone(it.Status) {
+				it.Tail = ""
+			}
 			it.Input = p.RawInput
 			if p.ParentToolCallID != "" {
 				it.ParentID = p.ParentToolCallID
@@ -941,6 +962,19 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			if len(p.Content) > 0 {
 				it.Content = append(it.Content, p.Content...)
+			}
+			// Output lands in the tail only while the call is running, judged
+			// after this update's own status: a call that finished has its
+			// output in Content, so its tail is dropped, and a delta straggling
+			// in after the finish is dropped with it. Judging by the status
+			// before the update would be equally true to the events, but a
+			// coalesced in_progress-then-delta could then fold differently from
+			// the two apart on a call being reopened (see merge in
+			// internal/thread/coalesce.go).
+			if proto.ToolDone(it.Status) {
+				it.Tail = ""
+			} else if p.OutputDelta != "" {
+				it.Tail = appendTail(it.Tail, p.OutputDelta)
 			}
 		})
 
