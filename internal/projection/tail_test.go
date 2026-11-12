@@ -232,3 +232,18 @@ func TestSettledCallsDropTheTail(t *testing.T) {
 		t.Fatalf("after job.finished: status %q tail %q", it.Status, it.Tail)
 	}
 }
+
+// A call standing for a job that outlives the turn — a foreground Bash call
+// Stop interrupted before the harness reported its task ended — stays running
+// with the job, but its tail goes with the turn: nothing feeds it any more.
+// Mirrored by web/src/apply.test.ts.
+func TestTurnFinishDropsTheTailOfACallItsJobKeepsRunning(t *testing.T) {
+	s := New("s1")
+	seq := runningCall(t, s)
+	s.Apply(event(t, seq, proto.JobStarted, proto.JobPayload{JobID: "j1", ToolCallID: "c1", TaskType: "local_bash"}))
+	s.Apply(output(t, seq+1, "line 1\n"))
+	s.Apply(event(t, seq+2, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+	if it := call(t, s); it.Status != proto.StatusInProgress || it.Tail != "" {
+		t.Fatalf("after turn.finished with the job live: status %q tail %q", it.Status, it.Tail)
+	}
+}

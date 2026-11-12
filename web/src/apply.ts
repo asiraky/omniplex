@@ -336,18 +336,20 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
             : t,
         ),
         // Any tool of this turn left mid-flight was interrupted, not broken:
-        // cancelled, never failed. A call standing for a live job is left
-        // alone — the job's own finish settles it. Tools of other turns are
-        // left alone too.
+        // cancelled, never failed. A call standing for a live job keeps its
+        // status — the job's own finish settles it — but not its tail, which
+        // nothing streams to past the turn's end. Tools of other turns are
+        // left alone too. Mirrors internal/projection/state.go.
         items: match
-          ? s.items.map((it) =>
-              it.kind === "tool" &&
-              (it.status === "in_progress" || it.status === "pending") &&
-              (it.turnId === p.turnId || !it.turnId) &&
-              !s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)
-                ? settle(it, "cancelled")
-                : it,
-            )
+          ? s.items.map((it) => {
+              if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId)) return it;
+              if (s.jobs.some((j) => !jobDone(j.status) && j.toolCallId === it.id)) {
+                if (!("tail" in it)) return it;
+                const { tail: _tail, ...rest } = it;
+                return rest;
+              }
+              return it.status === "in_progress" || it.status === "pending" ? settle(it, "cancelled") : it;
+            })
           : s.items,
       };
     }

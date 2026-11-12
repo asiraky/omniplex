@@ -483,4 +483,13 @@ describe("a running call's output tail", () => {
     expect(call(s2).status).toBe("failed");
     expect(call(s2)).not.toHaveProperty("tail");
   });
+
+  it("drops the tail at the turn's finish of a call its live job keeps running", () => {
+    let s = runningCall();
+    s = applyEvent(s, ev(3, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "local_bash" }));
+    s = applyEvent(s, output(4, "line 1\n"));
+    s = applyEvent(s, ev(5, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+    expect(call(s).status).toBe("in_progress");
+    expect(call(s)).not.toHaveProperty("tail");
+  });
 });

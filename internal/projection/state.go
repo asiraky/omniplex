@@ -830,10 +830,12 @@ func (s *State) Apply(ev proto.Event) {
 			s.Phase = "idle"
 			// Any tool of this turn left mid-flight was interrupted, not
 			// broken: it is cancelled, never failed. A call that is standing
-			// for a live job is left alone — it outlived its turn on purpose,
-			// and the job's own finish will settle it. Tools of other turns
-			// are left alone too: a stray finish must not touch unrelated
-			// running work.
+			// for a live job keeps its status — it outlived its turn on
+			// purpose, and the job's own finish will settle it — but not its
+			// tail: nothing streams a call's output past the end of its turn,
+			// so the tail would sit there frozen. Tools of other turns are
+			// left alone too: a stray finish must not touch unrelated running
+			// work.
 			live := map[string]bool{}
 			for _, j := range s.Jobs {
 				if !proto.JobDone(j.Status) && j.ToolCallID != "" {
@@ -842,9 +844,12 @@ func (s *State) Apply(ev proto.Event) {
 			}
 			for i := range s.Items {
 				it := &s.Items[i]
-				if it.Kind == ItemTool &&
-					(it.Status == proto.StatusInProgress || it.Status == proto.StatusPending) &&
-					(it.TurnID == p.TurnID || it.TurnID == "") && !live[it.ID] {
+				if it.Kind != ItemTool || (it.TurnID != p.TurnID && it.TurnID != "") {
+					continue
+				}
+				if live[it.ID] {
+					it.Tail = ""
+				} else if it.Status == proto.StatusInProgress || it.Status == proto.StatusPending {
 					it.settle(proto.StatusCancelled)
 				}
 			}
