@@ -415,3 +415,81 @@ describe("turn.finished settles the turn's requests", () => {
     expect(s.pendingElicitations.map((x) => x.requestId)).toEqual(["q-untagged"]);
   });
 });
+
+// These mirror the tail tests in internal/projection/tail_test.go.
+describe("a running call's output tail", () => {
+  function lines(from: number, to: number): string {
+    let s = "";
+    for (let i = from; i <= to; i++) s += `line ${i}\n`;
+    return s;
+  }
+
+  // One running Bash call, c1, in an open turn.
+  function runningCall() {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "execute", title: "make", status: "in_progress" }));
+    return s;
+  }
+
+  const output = (seq: number, outputDelta: string) => ev(seq, "tool_call.updated", { toolCallId: "c1", outputDelta });
+  const call = (s: ReturnType<typeof emptyState>) => s.items.find((it) => it.id === "c1")!;
+
+  it("folds output deltas into a tail bounded to the last lines, leaving content alone", () => {
+    let s = runningCall();
+    s = applyEvent(s, output(3, "compiling a"));
+    s = applyEvent(s, output(4, "\ncompiling b\n"));
+    expect(call(s).tail).toBe("compiling a\ncompiling b\n");
+    expect(call(s).content).toBeUndefined();
+
+    for (let i = 1; i <= 100; i++) s = applyEvent(s, output(4 + i, `line ${i}\n`));
+    expect(call(s).tail).toBe(lines(81, 100));
+  });
+
+  it("does not reopen an idle thread on output alone", () => {
+    const s = applyEvent(emptyState("s1"), output(1, "late\n"));
+    expect(s.phase).toBe("idle");
+  });
+
+  it("drops the tail on finishing, and output straggling in after it", () => {
+    let s = runningCall();
+    s = applyEvent(s, output(3, "partial\n"));
+    s = applyEvent(s, ev(4, "tool_call.updated", { toolCallId: "c1", status: "completed", content: [{ type: "text", text: "partial\ndone\n" }] }));
+    // Absent, not empty: the server's projection omits it.
+    expect(call(s)).not.toHaveProperty("tail");
+    expect(call(s).content).toEqual([{ type: "text", text: "partial\ndone\n" }]);
+
+    s = applyEvent(s, output(5, "straggler\n"));
+    expect(call(s)).not.toHaveProperty("tail");
+    expect(call(s).status).toBe("completed");
+
+    // A delta carried on the finishing update itself is dropped with the rest.
+    let s2 = runningCall();
+    s2 = applyEvent(s2, ev(3, "tool_call.updated", { toolCallId: "c1", status: "failed", outputDelta: "exit 1\n" }));
+    expect(call(s2)).not.toHaveProperty("tail");
+  });
+
+  it("drops the tail of a call the turn's finish cancels or its job's finish settles", () => {
+    let s = runningCall();
+    s = applyEvent(s, output(3, "still going\n"));
+    s = applyEvent(s, ev(4, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+    expect(call(s).status).toBe("cancelled");
+    expect(call(s)).not.toHaveProperty("tail");
+
+    let s2 = runningCall();
+    s2 = applyEvent(s2, ev(3, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "local_bash" }));
+    s2 = applyEvent(s2, output(4, "serving\n"));
+    s2 = applyEvent(s2, ev(5, "job.finished", { jobId: "j1", status: "failed" }));
+    expect(call(s2).status).toBe("failed");
+    expect(call(s2)).not.toHaveProperty("tail");
+  });
+
+  it("drops the tail at the turn's finish of a call its live job keeps running", () => {
+    let s = runningCall();
+    s = applyEvent(s, ev(3, "job.started", { jobId: "j1", toolCallId: "c1", taskType: "local_bash" }));
+    s = applyEvent(s, output(4, "line 1\n"));
+    s = applyEvent(s, ev(5, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+    expect(call(s).status).toBe("in_progress");
+    expect(call(s)).not.toHaveProperty("tail");
+  });
+});

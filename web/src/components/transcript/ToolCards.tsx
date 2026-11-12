@@ -23,6 +23,8 @@ import { cn } from "~/lib/utils";
 import type { Item, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
+import { LiveTail } from "./LiveTail";
+
 // One icon per tool kind the protocol defines. Anything new falls through to
 // the neutral dot rather than rendering nothing.
 const TOOL_ICON: Record<string, ComponentType<{ className?: string }>> = {
@@ -51,6 +53,9 @@ export function StatusMark({ status }: { status?: ToolStatus }) {
     return <ShieldXIcon aria-label="Declined" className="text-muted-foreground size-3.5" />;
   return <CheckIcon aria-label="Done" className="text-success size-3.5" />;
 }
+
+const running = (item: Item | undefined) =>
+  item?.status === "in_progress" || item?.status === "pending";
 
 export function ToolCard({ item }: { item: Item }) {
   const [open, setOpen] = useState(false);
@@ -84,6 +89,11 @@ export function ToolCard({ item }: { item: Item }) {
           </span>
         )}
       </button>
+
+      {/* Outside the expander: the point of a tail is that it shows without
+          a tap. It only exists while the call runs, so a finished card is
+          unchanged. */}
+      {running(item) && <LiveTail tail={item.tail} className="mx-3 mb-2" />}
 
       {open && (
         <div className="space-y-2 border-t px-3 py-2">
@@ -136,9 +146,7 @@ function ExpandedItems({ items }: { items: Item[] }) {
 // disappears out from under the reader.
 export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
   const [open, setOpen] = useState(false);
-  const active =
-    items.filter((i) => i.status === "in_progress" || i.status === "pending").pop() ??
-    items[items.length - 1];
+  const active = items.filter(running).pop() ?? items[items.length - 1];
   const failed = items.some((i) => i.status === "failed");
   const declined = items.some((i) => i.status === "declined");
   const kinds = Array.from(new Set(items.map((i) => i.toolKind ?? "other")));
@@ -181,6 +189,13 @@ export function ToolRun({ items, live }: { items: Item[]; live: boolean }) {
           <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
         </span>
       </button>
+
+      {/* The tail of the call the row names, under it. Opened, the run's own
+          card for that call shows the same tail, so this one steps aside
+          rather than print it twice. */}
+      {live && !open && running(active) && (
+        <LiveTail tail={active?.tail} className="mt-1 ml-1.5" />
+      )}
 
       {open && <ExpandedItems items={items} />}
     </div>

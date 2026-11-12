@@ -15,8 +15,10 @@ const deltaWindow = 75 * time.Millisecond
 // coalescer holds one streamed delta for the current window and merges each
 // consecutive delta for the same item into it. It only ever merges what
 // folds the same either way: message chunks concatenate, and a tool update's
-// fields fold last-non-empty-wins with its content appended, which is exactly
-// how the projection applies them. So the merged event leaves every
+// fields fold last-non-empty-wins with its content appended and its output
+// deltas concatenated, which is exactly how the projection applies them (the
+// tail it keeps of that output is bounded from the end, so joined deltas cut
+// where the separate ones would). So the merged event leaves every
 // projection where the separate ones would have.
 //
 // Anything that does not merge — a delta for another item, an event of any
@@ -93,6 +95,16 @@ func merge(prev, next proto.Emission) (proto.Emission, bool) {
 		if a.Status != "" && b.Status != "" && a.Status != b.Status {
 			return prev, false
 		}
+		// The projection keeps output only for a running call, judged by the
+		// status the update leaves the call in. Output carrying no status is
+		// judged by the call's status as it stands, which the coalescer cannot
+		// see: on a finished call it is dropped. Merged into a following
+		// update that sets the call running again it would be judged by that
+		// status and kept, so that pair stays apart. Every other pairing is
+		// judged the same merged or not.
+		if a.Status == "" && a.OutputDelta != "" && b.Status != "" && !proto.ToolDone(b.Status) {
+			return prev, false
+		}
 		if b.Status != "" {
 			a.Status = b.Status
 		}
@@ -108,6 +120,7 @@ func merge(prev, next proto.Emission) (proto.Emission, bool) {
 		if len(b.Content) > 0 {
 			a.Content = append(append([]proto.ToolContent(nil), a.Content...), b.Content...)
 		}
+		a.OutputDelta += b.OutputDelta
 		return proto.Emit(prev.Type, a), true
 	}
 	return prev, false
