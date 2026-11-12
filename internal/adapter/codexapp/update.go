@@ -3,7 +3,6 @@ package codexapp
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"time"
 
@@ -31,7 +30,7 @@ func (a *Adapter) Update(ctx context.Context, env map[string]string) (adapter.Up
 	if !ok {
 		return adapter.UpdateResult{}, errors.New("the Codex CLI was not found on this machine")
 	}
-	cmdEnv := adapter.MergeEnv(os.Environ(), env)
+	cmdEnv := adapter.HarnessEnv(codexHomeEnv, env)
 	version := func(ctx context.Context) string {
 		path, ok := a.Executable()
 		if !ok {

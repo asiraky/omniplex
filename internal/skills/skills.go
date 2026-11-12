@@ -87,16 +87,14 @@ const (
 	CLIVersion = "1.7.0"
 )
 
-// DefaultRoots resolves the per-harness config dirs the way the harnesses do.
-// env is an overlay (a provider instance's env): a key present there wins,
-// even when empty; otherwise the process environment is consulted.
+// DefaultRoots resolves the per-harness config dirs the way the harnesses do
+// under env, a provider instance's overlay. A home the overlay does not set is
+// the harness's default under home, never the server process's own variable:
+// a server started from inside a harness session inherits that session's
+// home, and must not read or write it as some account's.
 func DefaultRoots(home string, env map[string]string, projectRoot string) Roots {
 	dir := func(key string, fallback ...string) string {
-		v, ok := env[key]
-		if !ok {
-			v = os.Getenv(key)
-		}
-		if p := accounthome.Resolve(home, v); p != "" {
+		if p := accounthome.Resolve(home, env[key]); p != "" {
 			return p
 		}
 		return filepath.Join(append([]string{home}, fallback...)...)

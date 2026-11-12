@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -331,6 +332,22 @@ func Unavailable(reason string, remedy ...Remedy) Availability {
 }
 
 func (a Availability) OK() bool { return a.State == StateReady }
+
+// HarnessEnv is the environment a harness process runs under: the server's
+// own without homeVar (the harness's config-home variable), then the
+// instance's overlay. A home the server inherited, say from a harness session
+// it was started in, is some terminal's login and never an account's; an
+// overlay without the variable gets the harness's default home.
+func HarnessEnv(homeVar string, overlay map[string]string) []string {
+	base := os.Environ()
+	kept := make([]string, 0, len(base))
+	for _, kv := range base {
+		if key, _, _ := strings.Cut(kv, "="); key != homeVar {
+			kept = append(kept, kv)
+		}
+	}
+	return MergeEnv(kept, overlay)
+}
 
 // MergeEnv applies an instance's overlay onto a base environment, replacing
 // any variable the overlay names. Overlay keys are applied in sorted order so

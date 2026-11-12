@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"reflect"
 	"regexp"
@@ -41,6 +40,9 @@ func New(bin string) *Adapter {
 
 func (a *Adapter) ID() string { return "codex" }
 
+// codexHomeEnv is the variable that points Codex at an account's home.
+const codexHomeEnv = "CODEX_HOME"
+
 // ConfigFields declares how an instance of Codex is configured. CODEX_HOME is
 // the whole mechanism: it holds the login, so pointing a second instance at
 // its own directory is what makes it a second account. The user's
@@ -48,9 +50,9 @@ func (a *Adapter) ID() string { return "codex" }
 func (a *Adapter) ConfigFields() []adapter.ConfigField {
 	return []adapter.ConfigField{
 		{
-			Env:         "CODEX_HOME",
+			Env:         codexHomeEnv,
 			Label:       "Codex home",
-			Description: "Directory holding this account's Codex login and conversations. config.toml, AGENTS.md, skills, agents, rules and plugins are shared from ~/.codex. Leave empty on the default instance to use the machine's own login.",
+			Description: "Directory holding this account's Codex login and conversations. config.toml, AGENTS.md, skills, agents, rules and plugins are shared from ~/.codex.",
 			Placeholder: "~/.codex",
 			Kind:        adapter.FieldPath,
 			Isolates:    true,
@@ -86,7 +88,7 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, path, "--version")
-	probe.Env = adapter.MergeEnv(os.Environ(), env)
+	probe.Env = adapter.HarnessEnv(codexHomeEnv, env)
 	out, err := probe.Output()
 	if err != nil {
 		return adapter.Unavailable(
@@ -105,10 +107,14 @@ func (a *Adapter) Probe(ctx context.Context, env map[string]string) adapter.Avai
 		)
 	}
 
-	return adapter.Ready(map[string]string{
+	facts := map[string]string{
 		"codex":             path,
 		adapter.FactVersion: adapter.VersionNumber(string(out)),
-	})
+	}
+	if email := signedInEmail(env); email != "" {
+		facts["account"] = email
+	}
+	return adapter.Ready(facts)
 }
 
 // signedOut reports whether `codex login status` positively says nobody is
@@ -119,7 +125,7 @@ func signedOut(ctx context.Context, path string, env map[string]string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "login", "status")
-	cmd.Env = adapter.MergeEnv(os.Environ(), env)
+	cmd.Env = adapter.HarnessEnv(codexHomeEnv, env)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return false
@@ -134,7 +140,7 @@ func (a *Adapter) LoginCommand(ctx context.Context, overlay map[string]string) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("the Codex CLI was not found on this machine")
 	}
-	return []string{path, "login"}, adapter.MergeEnv(os.Environ(), overlay), nil
+	return []string{path, "login"}, adapter.HarnessEnv(codexHomeEnv, overlay), nil
 }
 
 // PermissionModes are omniplex's presets over Codex's two orthogonal axes (approval
@@ -295,7 +301,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	for k, v := range secrets {
 		overlay[k] = v
 	}
-	cmd.Env = adapter.MergeEnv(os.Environ(), overlay)
+	cmd.Env = adapter.HarnessEnv(codexHomeEnv, overlay)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

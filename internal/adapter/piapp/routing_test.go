@@ -187,3 +187,17 @@ func TestModelsFileFollowsTheAgentDirectory(t *testing.T) {
 		t.Errorf("modelsFile = %q", got)
 	}
 }
+
+// The server's own PI_CODING_AGENT_DIR is never an account's directory.
+func TestAgentDirIgnoresTheProcessEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(t.TempDir(), "terminal"))
+	if got, want := agentDir(nil), filepath.Join(home, ".pi", "agent"); got != want {
+		t.Errorf("agentDir = %q, want the default %q", got, want)
+	}
+	account := filepath.Join(home, "account")
+	if got := agentDir(map[string]string{"PI_CODING_AGENT_DIR": account}); got != account {
+		t.Errorf("agentDir = %q, want the account's %q", got, account)
+	}
+}

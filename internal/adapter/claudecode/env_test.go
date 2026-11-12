@@ -6,8 +6,9 @@ import (
 )
 
 // A server started from inside a Claude Code session carries that session's
-// CLAUDECODE and CLAUDE_* variables; Claude threads must not inherit them, but
-// must keep the ones that pick the account, and anything the instance sets.
+// CLAUDECODE and CLAUDE_* variables; Claude threads must not inherit them,
+// its config dir included (only the instance's overlay picks the account's
+// home), but keep a server-wide OAuth token and anything the instance sets.
 func TestClaudeEnv(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin",
@@ -30,6 +31,7 @@ func TestClaudeEnv(t *testing.T) {
 		"CLAUDE_CODE_MESSAGING_SOCKET",
 		"CLAUDE_CODE_MESSAGING_TOKEN",
 	}
+	unset := append([]string{"CLAUDE_EFFORT", "CLAUDE_CONFIG_DIR"}, dropped...)
 
 	for _, tc := range []struct {
 		name    string
@@ -44,19 +46,17 @@ func TestClaudeEnv(t *testing.T) {
 				"ANTHROPIC_API_KEY":       "sk-ambient",
 				"MY_CLAUDE_X":             "kept",
 				"CLAUDECODEX":             "kept",
-				"CLAUDE_CONFIG_DIR":       "/home/ambient/.claude",
 				"CLAUDE_CODE_OAUTH_TOKEN": "ambient-oauth",
 			},
-			absent: append([]string{"CLAUDE_EFFORT"}, dropped...),
+			absent: unset,
 		},
 		{
 			name:    "empty overlay",
 			overlay: map[string]string{},
 			want: map[string]string{
-				"PATH":              "/usr/bin",
-				"CLAUDE_CONFIG_DIR": "/home/ambient/.claude",
+				"PATH": "/usr/bin",
 			},
-			absent: append([]string{"CLAUDE_EFFORT"}, dropped...),
+			absent: unset,
 		},
 		{
 			// The instance's own CLAUDE_* settings are applied after the

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -210,8 +211,40 @@ func scopedLimitName(raw json.RawMessage) string {
 // with it.
 func (s *session) reportQuota(snap adapter.QuotaSnapshot) {
 	if reporter, ok := s.host.(adapter.QuotaReporter); ok {
+		snap.AccountID = s.accountID()
 		reporter.ReportQuota(snap)
 	}
+}
+
+// accountID is the session's signed-in account, read once: a running
+// process's login does not change, and .claude.json can run to megabytes.
+func (s *session) accountID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.account == "" && s.accountFile != "" {
+		s.account = claudeAccountID(s.accountFile)
+	}
+	return s.account
+}
+
+// claudeAccountID is the Anthropic account signed in to the config whose
+// .claude.json is at path (oauthAccount.accountUuid), or "" when signed out
+// or unreadable. Limits are kept per account, so two Omniplex accounts with
+// the same id are one login and show the same windows.
+func claudeAccountID(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		OAuthAccount struct {
+			AccountUUID string `json:"accountUuid"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return ""
+	}
+	return doc.OAuthAccount.AccountUUID
 }
 
 // Quota asks the running CLI for the account's usage limits through the
@@ -226,6 +259,7 @@ func (s *session) Quota(ctx context.Context) (adapter.QuotaSnapshot, error) {
 	if err != nil {
 		return snap, err
 	}
+	snap.AccountID = s.accountID()
 	s.mu.Lock()
 	s.scopedLimit = scopedLimitName(raw)
 	s.mu.Unlock()
@@ -291,7 +325,11 @@ func (a *Adapter) ReadQuota(ctx context.Context, env map[string]string) (adapter
 	}
 	switch {
 	case usage != nil:
-		return parseClaudeUsage(usage)
+		snap, err := parseClaudeUsage(usage)
+		if err == nil {
+			snap.AccountID = claudeAccountID(claudeJSON(env))
+		}
+		return snap, err
 	case fatal != "":
 		return adapter.QuotaSnapshot{}, fmt.Errorf("claude usage read failed: %s", firstLine(strings.TrimSpace(fatal)))
 	case ctx.Err() != nil:

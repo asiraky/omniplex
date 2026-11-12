@@ -26,11 +26,10 @@ type Options struct {
 	HomeDir string
 	// ClaudeConfigDirs holds CLAUDE_CONFIG_DIR values by provider instance.
 	// Values may be absolute or relative to each thread's working directory.
+	// An instance without one uses ~/.claude, as its sessions do; the
+	// relocating process's own CLAUDE_CONFIG_DIR is never an account's.
 	ClaudeConfigDirs map[string]string
-	// ClaudeConfigDir is the ambient CLAUDE_CONFIG_DIR used when an instance
-	// does not override it.
-	ClaudeConfigDir string
-	GitBin          string
+	GitBin           string
 }
 
 type Report struct {
@@ -231,10 +230,7 @@ func planClaudeMoves(options Options, threads []store.ThreadMeta, mappings []sto
 		if instance == "" {
 			instance = "claude"
 		}
-		configured, overridden := options.ClaudeConfigDirs[instance]
-		if !overridden {
-			configured = options.ClaudeConfigDir
-		}
+		configured := options.ClaudeConfigDirs[instance]
 		oldConfig := claudeConfigDir(options.HomeDir, oldCwd, configured)
 		// A relative or in-project config directory moved with the checkout.
 		if relocated, ok := replacePath(oldConfig, mappings); ok {
