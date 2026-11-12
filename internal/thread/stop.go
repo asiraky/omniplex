@@ -252,8 +252,15 @@ func (a *Actor) newHost() hostServices {
 
 // releaseAsks unblocks every adapter goroutine waiting on a human, for a
 // process that will never hear the answer.
-func (a *Actor) releaseAsks() {
+func (a *Actor) releaseAsks() { a.releaseAsksExcept(nil) }
+
+// releaseAsksExcept answers cancelled every ask whose request id open does
+// not hold.
+func (a *Actor) releaseAsksExcept(open map[string]bool) {
 	for id, ch := range a.pendingPerm {
+		if open[id] {
+			continue
+		}
 		select {
 		case ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}:
 		default:
@@ -261,6 +268,9 @@ func (a *Actor) releaseAsks() {
 		delete(a.pendingPerm, id)
 	}
 	for id, ch := range a.pendingElicit {
+		if open[id] {
+			continue
+		}
 		select {
 		case ch <- adapter.ElicitationResult{Action: "cancel"}:
 		default:

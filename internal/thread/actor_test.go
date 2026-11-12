@@ -2178,3 +2178,40 @@ func TestTurnFinishedReleasesItsPendingRequest(t *testing.T) {
 		t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
 	}
 }
+
+// An ask that reaches the actor after its turn's finish is answered cancelled
+// and never recorded: the finish that would have settled it has been folded
+// already, so a card raised now would stay up for ever.
+func TestAskAfterItsTurnFinishedIsCancelled(t *testing.T) {
+	for _, kind := range []string{"permission", "elicitation"} {
+		t.Run(kind, func(t *testing.T) {
+			actor, fa, _ := newTestActor(t)
+			sess := fa.thread()
+			sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1"}))
+			sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+			waitFor(t, func() bool {
+				st, err := actor.State(context.Background())
+				return err == nil && len(st.Turns) == 1 && st.Turns[0].Done
+			})
+
+			if kind == "permission" {
+				out, err := sess.host.RequestPermission(context.Background(), adapter.PermissionRequest{TurnID: "t1", Title: "rm -rf /"})
+				if err != nil || out.Outcome != proto.OutcomeCancelled {
+					t.Fatalf("outcome = %q, %v; want cancelled", out.Outcome, err)
+				}
+			} else {
+				out, err := sess.host.Elicit(context.Background(), adapter.ElicitationRequest{TurnID: "t1", Prompt: "which?"})
+				if err != nil || out.Action != "cancel" {
+					t.Fatalf("action = %q, %v; want cancel", out.Action, err)
+				}
+			}
+			st, _ := actor.State(context.Background())
+			if len(st.Pending)+len(st.Elicitations) != 0 {
+				t.Fatalf("a late ask was recorded: pending=%+v elicitations=%+v", st.Pending, st.Elicitations)
+			}
+			if got := st.Attention(); got != projection.AttentionNeedsPrompt {
+				t.Fatalf("attention = %q, want %q", got, projection.AttentionNeedsPrompt)
+			}
+		})
+	}
+}

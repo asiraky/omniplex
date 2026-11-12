@@ -1342,6 +1342,13 @@ func (a *Actor) handle(c command) (stop bool) {
 			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
 			return false
 		}
+		if a.turnOver(c.perm.req.TurnID) {
+			// Asked as its turn ended, and overtaken by the finish: the
+			// harness is not waiting on it, and the finish that would have
+			// settled it has already been folded.
+			c.perm.ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}
+			return false
+		}
 		req := c.perm.req
 		requestID := c.reqID
 		a.pendingPerm[requestID] = c.perm.ch
@@ -1379,6 +1386,10 @@ func (a *Actor) handle(c command) (stop bool) {
 	case cmdAskElicit:
 		if c.process != a.process {
 			// As for a permission.
+			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
+			return false
+		}
+		if a.turnOver(c.elicit.req.TurnID) {
 			c.elicit.ch <- adapter.ElicitationResult{Action: "cancel"}
 			return false
 		}
@@ -1940,6 +1951,20 @@ func (a *Actor) fanout(ev proto.Event) {
 	}
 }
 
+// turnOver reports whether the log has already finished turn. An ask that
+// names no turn is never over.
+func (a *Actor) turnOver(turn string) bool {
+	if turn == "" {
+		return false
+	}
+	for _, t := range a.state.Turns {
+		if t.ID == turn {
+			return t.Done
+		}
+	}
+	return false
+}
+
 // releaseSettled unblocks the asker of every request the projection no longer
 // holds open. A finished turn takes its requests with it, whether or not the
 // harness said it withdrew them, and the adapter goroutine waiting on one
@@ -1952,24 +1977,7 @@ func (a *Actor) releaseSettled() {
 	for _, p := range a.state.Elicitations {
 		open[p.RequestID] = true
 	}
-	for id, ch := range a.pendingPerm {
-		if !open[id] {
-			delete(a.pendingPerm, id)
-			select {
-			case ch <- adapter.PermissionOutcome{Outcome: proto.OutcomeCancelled}:
-			default:
-			}
-		}
-	}
-	for id, ch := range a.pendingElicit {
-		if !open[id] {
-			delete(a.pendingElicit, id)
-			select {
-			case ch <- adapter.ElicitationResult{Action: "cancel"}:
-			default:
-			}
-		}
-	}
+	a.releaseAsksExcept(open)
 }
 
 // ---- host services exposed to adapters ----
