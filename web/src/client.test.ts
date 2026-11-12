@@ -211,6 +211,20 @@ describe("loading all jobs", () => {
     expect(published).toEqual([next]);
   });
 
+  it("fetches the list when a job it does not hold comes back to life", async () => {
+    const { frame, published } = attached({ jobs: [job("j9", { status: "running" })], jobsBefore: 2 });
+    const fetch = serve({ jobs: [job("old", { status: "running", name: "reopened" }), job("j9", { status: "running" })] });
+    const row = (seq: number, payload: Record<string, unknown>) => ({ threadId: "a", seq, timestamp: 0, type: "job.updated", payload });
+    // Activity alone, or a finish, is history the list can wait for.
+    frame({ type: "event", threadId: "a", event: row(1, { jobId: "old", activity: "Read" }) });
+    frame({ type: "event", threadId: "a", event: row(2, { jobId: "old", status: "completed" }) });
+    expect(fetch).not.toHaveBeenCalled();
+
+    frame({ type: "event", threadId: "a", event: row(3, { jobId: "old", status: "running" }) });
+    await vi.waitFor(() => expect(published.at(-1)?.jobs.map((j) => j.name)).toContain("reopened"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves null and publishes nothing when the fetch fails", async () => {
     const { client, published } = attached({ jobsBefore: 2 });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));

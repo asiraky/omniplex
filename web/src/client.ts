@@ -2,7 +2,7 @@
 // here: backoff, cursor tracking, reattach with afterSeq, resync handling, and
 // command idempotency across reconnects.
 
-import { applyEvent, emptyState, prependItems } from "./apply";
+import { applyEvent, emptyState, prependItems, revivesUnheldJob } from "./apply";
 import { checkBuild } from "./boot";
 import type { Access, AuthFlowEvent, HarnessMeta, Item, Job, Project, QuotaStatus, ServerFrame, ThreadMeta, ThreadState } from "./protocol";
 
@@ -404,9 +404,14 @@ export class Client {
       case "replay": {
         if (f.threadId !== this.threadId || !f.events?.length) return;
         let next = this.state ?? emptyState(f.threadId);
-        for (const ev of f.events) next = applyEvent(next, ev);
+        let revived = false;
+        for (const ev of f.events) {
+          revived ||= revivesUnheldJob(next, ev);
+          next = applyEvent(next, ev);
+        }
         this.state = next;
         this.cursor = next.seq;
+        if (revived) void this.loadAllJobs();
         break;
       }
 
@@ -419,6 +424,7 @@ export class Client {
         this.state = next;
         this.cursor = next.seq;
         this.events.onState(f.threadId, next);
+        if (revivesUnheldJob(base, f.event)) void this.loadAllJobs();
         break;
       }
 

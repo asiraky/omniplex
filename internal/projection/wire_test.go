@@ -153,21 +153,39 @@ func TestWireCopyKeepsLiveChildrenBeyondTail(t *testing.T) {
 	}
 }
 
-// A finished job goes over the wire without its activity; a running one keeps
-// it. The live state keeps both.
-func TestWireJobsDropFinishedActivity(t *testing.T) {
+// A background agent's spawn call settles as soon as the agent starts, but
+// its work goes on under that call: while the job runs, its running children
+// and streaming message ride along as a running call's would.
+func TestWireCopyKeepsChildrenOfARunningJob(t *testing.T) {
 	s := New("s")
-	live, done := job("live", proto.JobRunning), job("done", proto.JobCompleted)
-	live.Activity, done.Activity = "Read", "Edit"
-	s.Jobs = []Job{live, done}
-	s.reindex()
-	for name, got := range map[string][]Job{"WireCopy": s.WireCopy(0).Jobs, "WireJobs": s.WireJobs()} {
-		if len(got) != 2 || got[0].Activity != "Read" || got[1].Activity != "" {
-			t.Fatalf("%s: jobs = %+v", name, got)
-		}
+	cmd := tool("cmd", "t1", proto.StatusInProgress)
+	cmd.ParentID = "spawn"
+	old := tool("old", "t1", proto.StatusCompleted)
+	old.ParentID = "spawn"
+	s.Items = []Item{tool("spawn", "t1", proto.StatusCompleted), old, cmd, item("msg", "t1", "spawn")}
+	for i := range WireChildTail {
+		c := tool("l"+strconv.Itoa(i), "t1", proto.StatusCompleted)
+		c.ParentID = "spawn"
+		s.Items = append(s.Items, c)
 	}
-	if s.Jobs[1].Activity != "Edit" {
-		t.Fatal("the live state lost its activity")
+	agent := job("j", proto.JobRunning)
+	agent.ToolCallID = "spawn"
+	s.Jobs = []Job{agent}
+	s.reindex()
+
+	w := s.WireCopy(0)
+	if got := ids(w.Items[:3]); !reflect.DeepEqual(got, []string{"spawn", "cmd", "msg"}) || len(w.Items) != WireChildTail+3 {
+		t.Fatalf("items = %v", ids(w.Items))
+	}
+	if w.Items[0].ChildrenBefore != 1 {
+		t.Fatalf("ChildrenBefore = %d, want 1", w.Items[0].ChildrenBefore)
+	}
+
+	// Once the job is over, the call's children go to the drill-down.
+	s.Jobs[0].Status = proto.JobCompleted
+	w = s.WireCopy(0)
+	if got := ids(w.Items); !reflect.DeepEqual(got, []string{"spawn"}) || w.Items[0].ChildrenBefore != WireChildTail+3 {
+		t.Fatalf("items = %v, ChildrenBefore = %d", got, w.Items[0].ChildrenBefore)
 	}
 }
 

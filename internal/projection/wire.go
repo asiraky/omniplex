@@ -79,23 +79,9 @@ func (s *State) WireChildren(parentID string) []Item {
 	return out
 }
 
-// WireJobs returns a wire copy of every job (see wireJob).
+// WireJobs returns a copy of every job.
 func (s *State) WireJobs() []Job {
-	out := make([]Job, len(s.Jobs))
-	for i, j := range s.Jobs {
-		out[i] = wireJob(j)
-	}
-	return out
-}
-
-// wireJob returns j as a client should see it: a finished job goes without
-// its Activity, which a presenter shows only while the job runs and which is
-// most of a long-running agent's bytes.
-func wireJob(j Job) Job {
-	if proto.JobDone(j.Status) {
-		j.Activity = ""
-	}
-	return j
+	return append([]Job{}, s.Jobs...)
 }
 
 // WireEvent returns ev as a client should see it: a tool_call.started or
@@ -145,7 +131,9 @@ func WireEvent(ev proto.Event) proto.Event {
 }
 
 // wireItems copies s.Items[lo:hi] for a client, Input-capped. A child item
-// rides along only while its parent is still running, and then only if it is
+// rides along only while its parent is still running — the call itself, or a
+// job it spawned, since a background agent's call settles as soon as the agent
+// starts and its children keep coming — and then only if it is
 // among the parent's last WireChildTail children, is itself still running, or
 // is the parent's newest message. The client drops an update for an item it
 // does not hold, so a running child left out would never settle. A chunk
@@ -173,7 +161,7 @@ func (s *State) wireItems(lo, hi int) []Item {
 		children[p]++
 	}
 
-	running := map[string]bool{}
+	running := s.liveJobCalls()
 	carried := map[string]int{}
 	out := make([]Item, 0, hi-lo)
 	for i := lo; i < hi; i++ {
@@ -259,7 +247,7 @@ func (s *State) keptJobs(keep []bool) []Job {
 	out := []Job{}
 	for i, k := range keep {
 		if k {
-			out = append(out, wireJob(s.Jobs[i]))
+			out = append(out, s.Jobs[i])
 		}
 	}
 	return out

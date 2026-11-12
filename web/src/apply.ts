@@ -191,6 +191,17 @@ function applyArtefact(s: ThreadState, ts: number, seq: number, p: ArtefactShown
   };
 }
 
+// revivesUnheldJob says whether ev brings back to life a job the snapshot left
+// out: a Codex subagent reopened long after it finished. applyJob drops the
+// row like any straggler, so the caller fetches the whole list, which the
+// server has already folded the row into; otherwise the running agent would be
+// missing from the roster, and its Stop with it, until the next attach.
+export function revivesUnheldJob(s: ThreadState, ev: Event): boolean {
+  if (ev.type !== "job.updated" || !(s.jobsBefore ?? 0)) return false;
+  const p = (ev.payload ?? {}) as JobPayload;
+  return !!p.status && !jobDone(p.status) && !s.jobs.some((j) => j.id === p.jobId);
+}
+
 // applyJob folds one job.* row. Every row carries the linkage bundle, so a
 // job whose start was never seen is created from whatever arrives first.
 // Mirrors State.applyJob in internal/projection/state.go.
