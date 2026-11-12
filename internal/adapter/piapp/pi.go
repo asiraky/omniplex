@@ -409,18 +409,9 @@ func (r rpcResponse) err() error {
 	return fmt.Errorf("%s: %s", r.Command, r.Error)
 }
 
-// died swaps a command's error for the reason pi is gone, when it is. A pi
-// that dies on a command — a bad flag at the handshake, a broken pipe on the
-// prompt — fails the command, and that error can be the first or only word
-// anyone gets: the handshake has no turn, and a prompt whose write fails
-// clears its turn before watchExit can close it.
+// died swaps a command's error for the reason pi is gone, when it is.
 func (s *session) died(err error) error {
-	select {
-	case <-s.rpcDone:
-		return errors.New(s.proc.ExitReason(s.readErr))
-	default:
-		return err
-	}
+	return s.proc.Explain(err, s.rpcDone, func() error { return s.readErr })
 }
 
 // maxLine is the longest event readLoop takes. A message_end can carry a

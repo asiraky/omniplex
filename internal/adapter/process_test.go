@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // start runs script under sh with stderr watched.
@@ -97,5 +99,32 @@ func TestStderrLongLines(t *testing.T) {
 	}
 	if want := strings.Repeat("a", tailLineMax) + "…"; lines[0] != want {
 		t.Fatalf("long line kept as %d bytes, want %d + ellipsis", len(lines[0]), tailLineMax)
+	}
+}
+
+// A prompt written as the harness dies can fail with a broken pipe before its
+// output is seen to end. That error must still become the reason, or the
+// prompt clears its turn and the death goes unexplained.
+func TestExplainWaitsOutABrokenPipe(t *testing.T) {
+	_, p := start(t, `echo "dying" >&2; exit 3`)
+	done := make(chan struct{})
+	time.AfterFunc(50*time.Millisecond, func() { close(done) })
+
+	err := p.Explain(fmt.Errorf("write |1: %w", syscall.EPIPE), done, func() error { return nil })
+	if want := "pi exited (exit status 3)\ndying"; err == nil || err.Error() != want {
+		t.Fatalf("Explain = %v, want %q", err, want)
+	}
+}
+
+// A live harness's refusal is its answer, passed through at once.
+func TestExplainPassesALiveRefusalThrough(t *testing.T) {
+	_, p := start(t, `sleep 10`)
+	refusal := errors.New("jsonrpc -32600: bad request")
+	began := time.Now()
+	if got := p.Explain(refusal, make(chan struct{}), func() error { return nil }); got != refusal {
+		t.Fatalf("Explain = %v, want the refusal", got)
+	}
+	if waited := time.Since(began); waited >= pipeGrace {
+		t.Fatalf("Explain held a live refusal for %v", waited)
 	}
 }

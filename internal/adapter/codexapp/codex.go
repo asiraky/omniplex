@@ -396,7 +396,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 			Model string `json:"model"`
 		} `json:"thread"`
 	}
-	if err := s.conn.Call(ctx, method, startParams, &startRes); err != nil {
+	if err := s.died(s.conn.Call(ctx, method, startParams, &startRes)); err != nil {
 		// A rollout too large to read back is not a missing thread: starting
 		// a fresh one would quietly drop the whole conversation.
 		if o.HarnessSessionID == "" || jsonrpc.TooLarge(err) {
@@ -407,7 +407,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		// to a fresh one rather than leaving the session unusable.
 		host.Logf("codex thread/resume failed, starting a new thread: %v", err)
 		delete(startParams, "threadId")
-		if err := s.conn.Call(ctx, "thread/start", startParams, &startRes); err != nil {
+		if err := s.died(s.conn.Call(ctx, "thread/start", startParams, &startRes)); err != nil {
 			_ = s.Close()
 			return nil, fmt.Errorf("codex thread/start: %w", err)
 		}
@@ -643,20 +643,9 @@ func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 	return s.died(s.conn.Call(ctx, "turn/start", params, &res))
 }
 
-// died swaps a call's error for the reason codex is gone, when it is. A codex
-// that dies on a call fails it, and that error can be the first or only word
-// anyone gets: initialize has no turn, and turn/start's error races
-// watchExit's.
+// died swaps a call's error for the reason codex is gone, when it is.
 func (s *session) died(err error) error {
-	if err == nil {
-		return nil
-	}
-	select {
-	case <-s.conn.Done():
-		return errors.New(s.proc.ExitReason(s.conn.Err()))
-	default:
-		return err
-	}
+	return s.proc.Explain(err, s.conn.Done(), s.conn.Err)
 }
 
 // promptInput is a turn's input items. Images lead, the way every chat UI

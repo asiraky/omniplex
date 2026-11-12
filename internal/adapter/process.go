@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/asiraky/omniplex/internal/jsonrpc"
@@ -40,6 +42,9 @@ const (
 	// exitGrace is how long ExitReason waits for a process whose stdout has
 	// closed to actually exit.
 	exitGrace = 2 * time.Second
+	// pipeGrace is how long Explain lets a harness whose stdin broke be seen
+	// to close its stdout.
+	pipeGrace = time.Second
 )
 
 // WatchProcess starts draining stderr, logging each line and keeping the last
@@ -121,6 +126,33 @@ func (p *Process) ExitReason(readErr error) string {
 		status += "\n" + tail
 	}
 	return status
+}
+
+// Explain swaps err, a failed call to the harness, for the reason the harness
+// is gone, when it is: such an error can be the first or only word anyone
+// gets, as when the handshake fails, or a prompt whose write failed clears
+// its turn before the turn can say why. done closes when the harness's
+// output ends, and readErr is what ended it.
+//
+// A write the harness's death broke can fail before its output is seen to
+// end, so a broken pipe waits a moment for done; any other error is the
+// harness's own answer and is returned at once while it lives.
+func (p *Process) Explain(err error, done <-chan struct{}, readErr func() error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, os.ErrClosed) {
+		select {
+		case <-done:
+		case <-time.After(pipeGrace):
+		}
+	}
+	select {
+	case <-done:
+		return errors.New(p.ExitReason(readErr()))
+	default:
+		return err
+	}
 }
 
 func exitStatus(name string, err error) string {
