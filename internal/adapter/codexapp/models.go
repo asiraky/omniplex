@@ -25,10 +25,11 @@ const modelListTimeout = 20 * time.Second
 // model — so naming any of them here would be guessing at what the installed
 // CLI serves, and sending a guess is how a session fails to start. The one row
 // therefore has no id: an empty model is "whatever Codex picks", which no
-// version of the CLI can reject, and it says as much.
+// version of the CLI can reject, and it says as much. It carries no Version,
+// because the picker's trigger runs label and version together.
 func (a *Adapter) Models() []adapter.ModelMeta {
 	return []adapter.ModelMeta{
-		{ID: "", Label: "Default", Version: "chosen by Codex", Description: "No model is named, so the harness starts whatever it is set to use", Default: true},
+		{ID: "", Label: "Codex's default", Description: "Codex has not said which model yet, so it starts whatever it is set to use", Default: true},
 	}
 }
 

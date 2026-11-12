@@ -124,11 +124,134 @@ func TestMapClaudeModelsIgnoresEmptyAndUnlisted(t *testing.T) {
 	if len(got) != 1+len(legacyModels) {
 		t.Fatalf("len = %d, want the one real row plus legacy", len(got))
 	}
-	sonnet := findModel(t, got, "claude-sonnet-5")
-	// No " · " separator means no generation to read, so the label falls back
-	// to the harness's display name rather than inventing one.
-	if sonnet.Label != "Sonnet" {
-		t.Errorf("label = %q, want the display-name fallback Sonnet", sonnet.Label)
+	if sonnet := findModel(t, got, "claude-sonnet-5"); sonnet.Label != "Sonnet 5" {
+		t.Errorf("label = %q, want Sonnet 5", sonnet.Label)
+	}
+}
+
+// A CLI that words its descriptions differently, or sends none, must not
+// change what a row is called: the label comes from the resolved id, so the
+// recommended alias still reads "Opus 5" rather than its display name
+// "Default (recommended)".
+func TestMapClaudeModelsLabelsFromIDWhateverTheProse(t *testing.T) {
+	for name, desc := range map[string]string{
+		"no separator":   "Opus 5 with 1M context — best for everyday, complex tasks",
+		"no description": "",
+		"other language": "Opus 5 mit 1M Kontext · Für alltägliche Aufgaben",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := mapClaudeModels([]modelInfo{
+				{Value: "default", ResolvedModel: "claude-opus-5[1m]", DisplayName: "Default (recommended)", Description: desc},
+			})
+			if opus := findModel(t, got, "claude-opus-5"); opus.Label != "Opus 5" {
+				t.Errorf("label = %q, want Opus 5", opus.Label)
+			}
+		})
+	}
+}
+
+// An id modelLabel cannot name falls back to the description's generation for
+// a named alias, then to the id itself — never to the display name. The
+// "default" alias's prose describes the alias, so it is never read, and an
+// unresolved "default" says plainly that no model is known.
+func TestMapClaudeModelsLabelFallbacks(t *testing.T) {
+	cases := []struct {
+		name string
+		in   modelInfo
+		id   string
+		want string
+	}{
+		{"unknown id, prose generation", modelInfo{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus", Description: "Opus Next with 1M context · Best for everyday tasks"}, "claude-opus-next", "Opus Next"},
+		{"unknown id, no prose", modelInfo{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus"}, "claude-opus-next", "claude-opus-next"},
+		{"unknown id, prose names no model", modelInfo{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus", Description: "Best for complex tasks · 1M context"}, "claude-opus-next", "claude-opus-next"},
+		{"bare alias, prose generation", modelInfo{Value: "opus", DisplayName: "Opus", Description: "Opus 5 · Best for everyday tasks"}, "opus", "Opus 5"},
+		{"bare alias, marketing prose", modelInfo{Value: "opus", DisplayName: "Opus", Description: "Best for complex tasks · 1M context"}, "opus", "opus"},
+		{"default alias, unknown id", modelInfo{Value: "default", ResolvedModel: "claude-opus-next", DisplayName: "Default (recommended)", Description: "Use the default model (currently Opus Next) · $5/$25 per Mtok"}, "claude-opus-next", "claude-opus-next"},
+		{"default alias, unresolved", modelInfo{Value: "default", DisplayName: "Default (recommended)", Description: "Use the default model · $5/$25 per Mtok"}, "default", defaultLabel},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if m := findModel(t, mapClaudeModels([]modelInfo{c.in}), c.id); m.Label != c.want {
+				t.Errorf("label = %q, want %q", m.Label, c.want)
+			}
+		})
+	}
+}
+
+// Two aliases for one model collapse into a row, and when only one of them
+// could name it, the row keeps that name rather than the raw id.
+func TestMapClaudeModelsMergeKeepsTheNameEitherAliasFound(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "opus", ResolvedModel: "claude-opus-next", DisplayName: "Opus"},
+		{Value: "opus[1m]", ResolvedModel: "claude-opus-next[1m]", DisplayName: "Opus (1M context)", Description: "Opus Next with 1M context · Best for everyday tasks"},
+	})
+	if m := findModel(t, got, "claude-opus-next"); m.Label != "Opus Next" {
+		t.Errorf("label = %q, want Opus Next", m.Label)
+	}
+}
+
+// A newer CLI (2.1.300) lists concrete models alongside an "opus[1m]" alias it
+// resolves only to itself, or not at all. The alias runs the Opus already
+// listed, so it folds into that row — one "Opus 5.5", carrying the alias's
+// flags — instead of standing beside it under the same name. An alias that
+// names no listed model stays.
+func TestMapClaudeModelsFoldsAnUnresolvedAliasIntoItsModel(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "claude-opus-5-5", ResolvedModel: "claude-opus-5-5", DisplayName: "Opus 5.5", Description: "For complex work and everyday tasks"},
+		{Value: "opus[1m]", ResolvedModel: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Opus 5.5 with 1M context · Best for everyday, complex tasks"},
+		{Value: "sonnet", DisplayName: "Sonnet", Description: "Sonnet Next · Efficient for routine tasks"},
+	})
+
+	var opus []adapter.ModelMeta
+	for _, m := range got {
+		if m.Label == "Opus 5.5" {
+			opus = append(opus, m)
+		}
+	}
+	if len(opus) != 1 || opus[0].ID != "claude-opus-5-5" {
+		t.Fatalf("Opus 5.5 rows = %+v, want one, claude-opus-5-5", opus)
+	}
+	if !opus[0].Supports1M {
+		t.Error("the folded alias's 1M flag was dropped")
+	}
+	if m := findModel(t, got, "sonnet"); m.Label != "Sonnet Next" {
+		t.Errorf("unmatched alias label = %q, want Sonnet Next", m.Label)
+	}
+}
+
+// A legacy model the harness still lists is offered once, as the live row.
+func TestMapClaudeModelsDoesNotRepeatALiveLegacyModel(t *testing.T) {
+	got := mapClaudeModels([]modelInfo{
+		{Value: "claude-opus-4-8", ResolvedModel: "claude-opus-4-8", DisplayName: "Opus 4.8"},
+	})
+	n := 0
+	for _, m := range got {
+		if m.ID == "claude-opus-4-8" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("claude-opus-4-8 offered %d times, want 1", n)
+	}
+}
+
+func TestModelLabel(t *testing.T) {
+	for id, want := range map[string]string{
+		"claude-opus-5":             "Opus 5",
+		"claude-opus-5[1m]":         "Opus 5",
+		"claude-opus-4-8":           "Opus 4.8",
+		"claude-haiku-4-5-20251001": "Haiku 4.5",
+		"claude-sonnet-5-20260101":  "Sonnet 5",
+		"claude-opus-5-preview":     "",
+		"claude-3-5-sonnet":         "",
+		"gpt-5.6":                   "",
+		"opus":                      "",
+		"default":                   "",
+		"":                          "",
+	} {
+		if got := modelLabel(id); got != want {
+			t.Errorf("modelLabel(%q) = %q, want %q", id, got, want)
+		}
 	}
 }
 

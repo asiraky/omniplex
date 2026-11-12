@@ -56,8 +56,7 @@ const claude: HarnessMeta = {
       models: [
         {
           id: "default",
-          label: "Default (recommended)",
-          version: "Opus 5 with 1M context",
+          label: "Opus 5",
           description: "Best for everyday, complex tasks",
           resolves: "claude-opus-5[1m]",
           default: true,
@@ -137,7 +136,7 @@ function open(props: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
 }
 
 describe("ModelPicker", () => {
-  it("names the model the harness would pick, never a bare 'Default'", () => {
+  it("names the preselected model and adds nothing when it has no version", () => {
     render(
       <ModelPicker
         harnesses={[claude]}
@@ -147,9 +146,8 @@ describe("ModelPicker", () => {
     );
 
     const trigger = screen.getByRole("combobox");
-    expect(trigger.textContent).toContain("Default (recommended)");
-    // The label alone says nothing about which model that is.
-    expect(trigger.textContent).toContain("Opus 5 with 1M context");
+    // The logo's title comes first; nothing may follow the label.
+    expect(trigger.textContent?.trim()).toMatch(/Opus 5$/);
   });
 
   it("shows every row as name, version, and what the model is for", () => {
