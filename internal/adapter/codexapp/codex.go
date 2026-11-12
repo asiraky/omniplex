@@ -398,8 +398,9 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 	if err := s.died(s.conn.Call(ctx, method, startParams, &startRes)); err != nil {
 		// A rollout too large to read back is not a missing thread: starting
-		// a fresh one would quietly drop the whole conversation.
-		if o.HarnessSessionID == "" || jsonrpc.TooLarge(err) {
+		// a fresh one would quietly drop the whole conversation. Nor is a
+		// codex that died on the resume.
+		if o.HarnessSessionID == "" || jsonrpc.TooLarge(err) || s.gone() {
 			_ = s.Close()
 			return nil, fmt.Errorf("codex %s: %w", method, err)
 		}
@@ -646,6 +647,16 @@ func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 // died swaps a call's error for the reason codex is gone, when it is.
 func (s *session) died(err error) error {
 	return s.proc.Explain(err, s.conn.Done(), s.conn.Err)
+}
+
+// gone reports whether codex's output has ended.
+func (s *session) gone() bool {
+	select {
+	case <-s.conn.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // promptInput is a turn's input items. Images lead, the way every chat UI

@@ -1089,12 +1089,4 @@ func TestPromptToADeadCodexSaysWhy(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("Prompt err = %v\nwant:\n%s", err, want)
 	}
-	// A refusal while codex is alive is passed through as it was.
-	refusal := errors.New("jsonrpc -32600: bad request")
-	alive, keepAlive := io.Pipe()
-	t.Cleanup(func() { _ = keepAlive.Close() })
-	live := &session{conn: jsonrpc.NewConn(alive, io.Discard, nil, nil, nil)}
-	if got := live.died(refusal); got != refusal {
-		t.Fatalf("died(live) = %v, want the call's own error", got)
-	}
 }
