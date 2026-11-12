@@ -383,15 +383,14 @@ describe("an edit in a tool result", () => {
     expect(screen.getByText(/export const a = 1;\s+export const b = 2;/)).toBeTruthy();
   });
 
-  it("counts the change on the closed card", () => {
+  it("counts a patch's lines on the closed card, not the newline that ends it", () => {
     render(
       <ToolCard
         threadId="t1"
         item={result([{ type: "diff", path: "a.ts", text: "@@ -1,2 +1,3 @@\n-x\n+y\n+z\n w\n" }], { title: "Edit a.ts" })}
       />,
     );
-    expect(screen.getByText("+2")).toBeTruthy();
-    expect(screen.getByText("−1")).toBeTruthy();
+    expect(screen.getByText("5 lines")).toBeTruthy();
   });
 
   it("shows where a capped preview cut the patch, and says truncated rather than counting the preview", async () => {
@@ -403,7 +402,7 @@ describe("an edit in a tool result", () => {
       />,
     );
     expect(screen.getByText("truncated")).toBeTruthy();
-    expect(screen.queryByText("+2")).toBeNull();
+    expect(screen.queryByText(/lines/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Edit a\.ts/ }));
     const rows = await diffRows(view.container);
     expect(rows).toContain("[… 9000 characters truncated …]");

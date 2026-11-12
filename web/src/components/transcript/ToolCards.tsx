@@ -19,7 +19,6 @@ import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType } from
 
 import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
-import { parsePatch } from "~/lib/patch";
 import { toolImages } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
 import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
@@ -188,22 +187,12 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   const images = useMemo(() => toolImages([{ ...item, content }]), [item, content]);
   const Icon = TOOL_ICON[item.toolKind ?? "other"] ?? CircleIcon;
 
-  // What opening the card would show, said on the closed card: how much text,
-  // and for an edit, how much it changed.
-  const { lines, added, removed } = useMemo(() => {
-    let lines = 0;
-    let added = 0;
-    let removed = 0;
-    for (const b of body) {
-      if (b.kind === "text") lines += b.text.split("\n").length;
-      else
-        for (const l of parsePatch(b.patch)) {
-          if (l.kind === "add") added++;
-          else if (l.kind === "del") removed++;
-        }
-    }
-    return { lines, added, removed };
-  }, [body]);
+  // How much opening the card would show, said on the closed card. A patch's
+  // closing newline ends its last line rather than starting another.
+  const lines = useMemo(
+    () => body.reduce((n, b) => n + (b.kind === "text" ? b.text : b.patch.replace(/\n$/, "")).split("\n").length, 0),
+    [body],
+  );
 
   return (
     <div className="fade-in bg-card/60 rounded-lg border">
@@ -231,15 +220,7 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
             ) : truncated ? (
               "truncated"
             ) : (
-              <>
-                {(added > 0 || removed > 0) && (
-                  <>
-                    <span className="text-success">+{added}</span>
-                    <span className="text-destructive">−{removed}</span>
-                  </>
-                )}
-                {lines > 0 && <span>{lines} {lines === 1 ? "line" : "lines"}</span>}
-              </>
+              lines > 0 && `${lines} ${lines === 1 ? "line" : "lines"}`
             )}
             <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
           </span>
