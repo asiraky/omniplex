@@ -9,6 +9,8 @@
  * can badge an artefact without pulling the viewers into the first bundle.
  */
 
+import { postFile } from "~/lib/postFile";
+
 /**
  * A file or folder the thread has shown: a file on the server, read live.
  * The agent revises it in place and shows it again, which updates this record
@@ -122,57 +124,18 @@ export interface UploadedArtefact {
   artefact: Artefact;
 }
 
-/**
- * Uploads one file as a new artefact. XHR rather than fetch because fetch
- * reports nothing about an upload until it is over, and a 40 MB PDF on a train
- * is minutes of nothing without a progress bar.
- */
+/** Uploads one file as a new artefact, reporting progress as it goes. */
 export function uploadArtefact(
   threadId: string,
   file: File,
   opts: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
 ): Promise<UploadedArtefact> {
-  return new Promise((resolve, reject) => {
-    if (opts.signal?.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const xhr = new XMLHttpRequest();
-    const name = file.name || "file";
-    xhr.open("POST", `/api/threads/${encodeURIComponent(threadId)}/artefacts?name=${encodeURIComponent(name)}`);
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    xhr.responseType = "text";
-    const onAbort = () => xhr.abort();
-    opts.signal?.addEventListener("abort", onAbort, { once: true });
-    const done = () => opts.signal?.removeEventListener("abort", onAbort);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && e.total > 0) opts.onProgress?.(e.loaded / e.total);
-    };
-    xhr.onload = () => {
-      done();
-      let body: unknown;
-      try {
-        body = JSON.parse(xhr.responseText);
-      } catch {
-        body = undefined;
-      }
-      if (xhr.status >= 200 && xhr.status < 300 && body) {
-        resolve(body as UploadedArtefact);
-        return;
-      }
-      const message = (body as { error?: string } | undefined)?.error;
-      reject(new Error(message || `upload failed (${xhr.status})`));
-    };
-    xhr.onerror = () => {
-      done();
-      reject(new Error("upload failed: the connection dropped"));
-    };
-    xhr.onabort = () => {
-      done();
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    xhr.send(file);
-  });
+  const name = file.name || "file";
+  return postFile<UploadedArtefact>(
+    `/api/threads/${encodeURIComponent(threadId)}/artefacts?name=${encodeURIComponent(name)}`,
+    file,
+    opts,
+  );
 }
 
 // ---- types: badge, family, viewer ----

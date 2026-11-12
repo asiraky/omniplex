@@ -1,7 +1,17 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MAX_IMAGE_BYTES, MAX_PDF_BYTES, sendPayload, stageFile, uploadStaged, type Attachment, type UploadDeps } from "~/lib/attachments";
+import {
+  MAX_IMAGE_BYTES,
+  MAX_PDF_BYTES,
+  UPLOAD_STALLED,
+  sendPayload,
+  stageFile,
+  uploadStaged,
+  withStallTimeout,
+  type Attachment,
+  type UploadDeps,
+} from "~/lib/attachments";
 import { makeArtefact } from "~/test/artefact";
 
 const file = (name: string, type: string, size = 3) => {
@@ -46,7 +56,7 @@ describe("uploadStaged", () => {
     const doc = file("spec.pdf", "application/pdf", 9);
     expect(await uploadStaged("s1", doc, {}, d)).toMatchObject({ status: "ready", id: "doc-1", size: 9 });
     expect(d.prepare).not.toHaveBeenCalled();
-    expect(d.uploadImage).toHaveBeenCalledWith("s1", doc, undefined);
+    expect(d.uploadImage).toHaveBeenCalledWith("s1", doc, expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     const big = file("scan.pdf", "application/pdf", MAX_PDF_BYTES + 1);
     expect(await uploadStaged("s1", big, {}, d)).toMatchObject({ kind: "file", artefactId: "art-1" });
@@ -75,6 +85,154 @@ describe("uploadStaged", () => {
       /too large/,
     );
     expect(d.uploadFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("withStallTimeout", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A run that never finishes on its own and rejects with an AbortError once
+      its signal fires, as an XHR upload does. Hands back what it was given. */
+  function hangingRun() {
+    const got: { signal?: AbortSignal; onProgress?: (f: number) => void } = {};
+    const run = (o: { signal: AbortSignal; onProgress: (f: number) => void }) => {
+      Object.assign(got, o);
+      return new Promise<string>((_resolve, reject) => {
+        o.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    };
+    return { run, got };
+  }
+
+  it("fails an upload that sends nothing for stallMs, and aborts it", async () => {
+    const { run, got } = hangingRun();
+    const p = withStallTimeout(run, { stallMs: 1000 });
+    const settled = vi.fn();
+    p.catch(settled);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await p.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(UPLOAD_STALLED);
+    expect((err as Error).name).toBe("UploadStalled");
+    expect(got.signal?.aborted).toBe(true);
+  });
+
+  it("keeps an upload that is still moving alive past stallMs in total", async () => {
+    const onProgress = vi.fn();
+    let finish!: (v: string) => void;
+    let signal!: AbortSignal;
+    let report!: (f: number) => void;
+    const p = withStallTimeout(
+      (o) => {
+        signal = o.signal;
+        report = o.onProgress;
+        return new Promise<string>((resolve) => (finish = resolve));
+      },
+      { stallMs: 1000, onProgress },
+    );
+    for (let i = 1; i <= 5; i++) {
+      await vi.advanceTimersByTimeAsync(900);
+      report(i / 5);
+    }
+    finish("done");
+    await expect(p).resolves.toBe("done");
+    expect(onProgress).toHaveBeenLastCalledWith(1);
+    expect(onProgress).toHaveBeenCalledTimes(5);
+    expect(signal.aborted).toBe(false);
+  });
+
+  it("rejects with an AbortError, not a stall, when the caller takes the file back", async () => {
+    const { run, got } = hangingRun();
+    const outer = new AbortController();
+    const p = withStallTimeout(run, { signal: outer.signal, stallMs: 1000 });
+    outer.abort();
+    const err = await p.catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AbortError");
+    expect(got.signal?.aborted).toBe(true);
+    // The watchdog is gone too, so nothing fires later.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects at once without running when the caller has already aborted", async () => {
+    const outer = new AbortController();
+    outer.abort();
+    const run = vi.fn(async () => "never");
+    const err = await withStallTimeout(run, { signal: outer.signal }).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AbortError");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("disarms the watchdog once the upload succeeds", async () => {
+    let signal!: AbortSignal;
+    const outer = new AbortController();
+    const p = withStallTimeout(
+      async (o) => {
+        signal = o.signal;
+        return "ok";
+      },
+      { signal: outer.signal, stallMs: 1000 },
+    );
+    await expect(p).resolves.toBe("ok");
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    // Neither a late stall nor a late caller abort reaches the finished upload.
+    outer.abort();
+    expect(signal.aborted).toBe(false);
+  });
+
+  it("passes on what the upload rejects with when it fails by itself", async () => {
+    const p = withStallTimeout(async () => {
+      throw new Error("upload failed (500)");
+    });
+    await expect(p).rejects.toThrow("upload failed (500)");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("uploadStaged under the watchdog", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fails a stalled image upload, aborting the request", async () => {
+    let signal: AbortSignal | undefined;
+    const d = deps({
+      uploadImage: vi.fn((_t: string, _f: File, o: { signal?: AbortSignal }) => {
+        signal = o.signal;
+        return new Promise<never>((_resolve, reject) => {
+          o.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        });
+      }),
+    });
+    const p = uploadStaged("s1", file("shot.png", "image/png"), { stallMs: 1000 }, d);
+    const caught = p.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1000);
+    const err = (await caught) as Error;
+    expect(err.name).toBe("UploadStalled");
+    expect(err.message).toBe(UPLOAD_STALLED);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("forwards a PDF's progress to the caller", async () => {
+    const onProgress = vi.fn();
+    const d = deps({
+      uploadImage: vi.fn(async (_t: string, _f: File, o: { onProgress?: (f: number) => void }) => {
+        o.onProgress?.(0.3);
+        return { id: "doc-1", mediaType: "application/pdf", size: 9 };
+      }),
+    });
+    await uploadStaged("s1", file("spec.pdf", "application/pdf", 9), { onProgress }, d);
+    expect(onProgress).toHaveBeenCalledWith(0.3);
   });
 });
 
