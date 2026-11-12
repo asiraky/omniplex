@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { applyEvent, capToolText, emptyState, prependItems, TOOL_HEAD, TOOL_MAX_ENTRIES, TOOL_MAX_TEXT, TOOL_TAIL } from "./apply";
-import type { Event, Item } from "./protocol";
+import type { Event, Item, ThreadState } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
   return { threadId: "s1", seq, timestamp, type, payload } as Event;
@@ -130,6 +130,76 @@ describe("applyEvent config changes", () => {
     s = applyEvent(s, ev(2, "thread.config_changed", { model: "sonnet" }));
     expect(s.effort).toBe("high");
     expect(s.model).toBe("sonnet");
+  });
+});
+
+// Mirrors internal/projection/state_test.go: a switch is marked where the next
+// turn starts, against the settings the last turn ran on.
+describe("applyEvent model notices", () => {
+  const turn = (seq: number, id: string) => ev(seq, "turn.started", { turnId: id, prompt: "go" }, seq * 1000);
+  const config = (seq: number, payload: Record<string, unknown>) => ev(seq, "thread.config_changed", payload);
+  const notices = (s: ReturnType<typeof emptyState>) =>
+    s.items.filter((it) => it.kind === "notice" && it.noticeKind === "model").map((it) => [it.id, it.model, it.effort]);
+  const replay = (...events: Event[]) => events.reduce(applyEvent, emptyState("s1"));
+
+  it("marks a switch above the next turn's prompt, naming what it runs on", () => {
+    let s = replay(ev(1, "thread.created", { model: "opus", effort: "high" }), turn(2, "t1"), config(3, { model: "sonnet" }));
+    expect(notices(s)).toEqual([]);
+    s = [turn(4, "t2"), config(5, { effort: "low" }), turn(6, "t3")].reduce(applyEvent, s);
+    expect(notices(s)).toEqual([
+      ["model:4", "sonnet", "high"],
+      ["model:6", "sonnet", "low"],
+    ]);
+    expect(s.items.map((it) => it.id)).toEqual(["prompt:t1", "model:4", "prompt:t2", "model:6", "prompt:t3"]);
+    expect(s.items[1].receivedAt).toBe(4000);
+    expect(s.items[1].from).toEqual({ model: "opus", effort: "high" });
+  });
+
+  it("does not mark the first turn", () => {
+    const s = replay(ev(1, "thread.created", { model: "opus" }), config(2, { model: "sonnet" }), turn(3, "t1"));
+    expect(notices(s)).toEqual([]);
+  });
+
+  it("treats switches between turns as one change, and switching back as none", () => {
+    let s = replay(
+      ev(1, "thread.created", { model: "opus", effort: "high" }),
+      turn(2, "t1"),
+      config(3, { model: "sonnet" }),
+      config(4, { model: "opus" }),
+      turn(5, "t2"),
+    );
+    expect(notices(s)).toEqual([]);
+    s = [config(6, { model: "sonnet" }), config(7, { model: "haiku" }), config(8, { effort: "low" }), turn(9, "t3")].reduce(
+      applyEvent,
+      s,
+    );
+    expect(notices(s)).toEqual([["model:9", "haiku", "low"]]);
+  });
+
+  it("does not take the harness reporting its own model for a switch, nor let it swallow one", () => {
+    let s = replay(
+      ev(1, "thread.created", { model: "opus" }),
+      turn(2, "t1"),
+      config(3, { model: "claude-opus-5", harnessSessionId: "h1" }),
+      turn(4, "t2"),
+    );
+    expect(notices(s)).toEqual([]);
+    expect(s.model).toBe("claude-opus-5");
+
+    s = [config(5, { model: "sonnet" }), config(6, { model: "claude-sonnet-5", harnessSessionId: "h2" }), turn(7, "t3")].reduce(
+      applyEvent,
+      s,
+    );
+    expect(notices(s)).toEqual([["model:7", "claude-sonnet-5", ""]]);
+  });
+
+  it("marks the next turn after a snapshot taken between a switch and it", () => {
+    const snapshot: ThreadState = JSON.parse(
+      JSON.stringify(replay(ev(1, "thread.created", { model: "opus" }), turn(2, "t1"), config(3, { model: "sonnet" }))),
+    );
+    expect(notices(applyEvent(snapshot, turn(4, "t2")))).toEqual([["model:4", "sonnet", ""]]);
+    // A snapshot from before the baseline existed has none to measure from.
+    expect(notices(applyEvent({ ...snapshot, ranWith: undefined }, turn(4, "t2")))).toEqual([]);
   });
 });
 

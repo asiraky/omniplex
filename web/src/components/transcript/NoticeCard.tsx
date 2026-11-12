@@ -1,12 +1,38 @@
-import { ArchiveIcon, ArrowRightLeftIcon } from "lucide-react";
+import { ArchiveIcon, ArrowRightLeftIcon, SparklesIcon } from "lucide-react";
 
 import { fmtTokens } from "~/lib/format";
 import type { Item } from "~/protocol";
 
-// A compaction boundary, as one quiet centered line in the flow. The harness
-// compressed the conversation to reclaim window; the reader mostly needs to
-// know it happened and roughly how much it recovered.
-export function NoticeCard({ item }: { item: Item }) {
+// A system event as one quiet centered line in the flow: a switch of model or
+// effort, of account, or a compaction boundary. For a compaction the reader
+// mostly needs to know it happened and roughly how much it recovered.
+export function NoticeCard({
+  item,
+  describeSettings,
+}: {
+  item: Item;
+  /** Names a model and effort for a model notice; the raw id without it. */
+  describeSettings?: (model: string, effort: string) => string;
+}) {
+  if (item.noticeKind === "model") {
+    // Replies below this line came from these settings.
+    const describe = describeSettings ?? ((model: string, effort: string) => [model, effort].filter(Boolean).join(" · "));
+    const to = describe(item.model ?? "", item.effort ?? "");
+    // The log can name one model two ways, by an alias and by the id it
+    // resolves to; read through the catalogue they say the same, and that
+    // is no switch.
+    if (item.from && describe(item.from.model, item.from.effort) === to) return null;
+    return (
+      <div className="fade-in flex justify-center">
+        <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 rounded-full border px-3 py-1 text-[12px]">
+          <SparklesIcon className="size-3.5 shrink-0" />
+          <span className="truncate">
+            Switched to {to}
+          </span>
+        </div>
+      </div>
+    );
+  }
   if (item.noticeKind === "account") {
     return (
       <div className="fade-in flex justify-center">

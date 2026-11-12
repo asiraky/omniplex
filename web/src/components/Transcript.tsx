@@ -118,6 +118,8 @@ type TranscriptProps = {
   onDequeue?: (queueId: string) => void;
   /** Opens the sign-in a saved card offers. */
   onCardSignIn?: (target: CardSignIn) => void;
+  /** Names a model and effort, for the line where the thread switched. */
+  describeSettings?: (model: string, effort: string) => string;
 };
 
 // Anchored to the scroller rather than to the content, so it sits in
@@ -168,6 +170,7 @@ export function Transcript({
   onPickRecent,
   onDequeue,
   onCardSignIn,
+  describeSettings,
   ...interruptedProps
 }: TranscriptProps) {
   // Follow the tail unless the reader has scrolled up; the button below is
@@ -267,6 +270,7 @@ export function Transcript({
               onOpenJobs={onOpenJobs}
               recoveredTurns={recoveredTurns}
               onCardSignIn={onCardSignIn}
+              describeSettings={describeSettings}
             />
           ))}
 

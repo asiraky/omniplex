@@ -2,6 +2,7 @@ package projection
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -825,5 +826,166 @@ func TestJobsFoundByIDAcrossSnapshotAndClone(t *testing.T) {
 	c.Apply(event(t, next(), proto.JobStarted, proto.JobPayload{JobID: "only-in-clone", TaskType: "local_bash"}))
 	if c.job("only-in-clone") == nil || back.job("only-in-clone") != nil {
 		t.Fatal("clone shares its job index with the original")
+	}
+}
+
+func modelNotices(s *State) []Item {
+	var out []Item
+	for _, it := range s.Items {
+		if it.Kind == ItemNotice && it.NoticeKind == "model" {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func startTurn(t *testing.T, seq int64, id string) proto.Event {
+	return event(t, seq, proto.TurnStarted, proto.TurnStartedPayload{TurnID: id, Prompt: "go"})
+}
+
+func pickModel(t *testing.T, seq int64, model string) proto.Event {
+	return event(t, seq, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: model})
+}
+
+func pickEffort(t *testing.T, seq int64, effort string) proto.Event {
+	return event(t, seq, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Effort: &effort})
+}
+
+func noticeSettings(items []Item) [][3]string {
+	var out [][3]string
+	for _, it := range items {
+		out = append(out, [3]string{it.ID, it.Model, it.Effort})
+	}
+	return out
+}
+
+// A switch is marked where the next turn starts, just above its prompt, naming
+// the settings that turn runs on: the replies below the line came from them.
+// Mirrored by web/src/apply.test.ts.
+func TestSwitchIsMarkedAtTheNextTurn(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus", Effort: "high"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(pickModel(t, 3, "sonnet"))
+	if got := modelNotices(s); len(got) != 0 {
+		t.Fatalf("notices before the next turn = %+v, want none", got)
+	}
+	s.Apply(startTurn(t, 4, "t2"))
+	s.Apply(pickEffort(t, 5, "low"))
+	s.Apply(startTurn(t, 6, "t3"))
+
+	want := [][3]string{{"model:4", "sonnet", "high"}, {"model:6", "sonnet", "low"}}
+	if got := noticeSettings(modelNotices(s)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %v, want %v", got, want)
+	}
+	var order []string
+	for _, it := range s.Items {
+		order = append(order, it.ID)
+	}
+	wantOrder := []string{"prompt:t1", "model:4", "prompt:t2", "model:6", "prompt:t3"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("items = %v, want %v", order, wantOrder)
+	}
+	if from := s.Items[1].From; from == nil || *from != (TurnSettings{Model: "opus", Effort: "high"}) {
+		t.Fatalf("first notice from = %+v, want opus/high", from)
+	}
+}
+
+// The first turn has nothing above it to divide from: whatever it runs on is
+// where the thread starts. Mirrored by web/src/apply.test.ts.
+func TestFirstTurnIsNotMarked(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus"}))
+	s.Apply(pickModel(t, 2, "sonnet"))
+	s.Apply(startTurn(t, 3, "t1"))
+	if got := modelNotices(s); len(got) != 0 {
+		t.Fatalf("notices = %+v, want none", got)
+	}
+}
+
+// Switching away and back before the next turn is no change, and several
+// switches in a row are one: the line names where they ended up. Mirrored by
+// web/src/apply.test.ts.
+func TestSwitchesBetweenTurnsAreOneChange(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus", Effort: "high"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(pickModel(t, 3, "sonnet"))
+	s.Apply(pickModel(t, 4, "opus"))
+	s.Apply(startTurn(t, 5, "t2"))
+	if got := modelNotices(s); len(got) != 0 {
+		t.Fatalf("after switching back: notices = %+v, want none", got)
+	}
+
+	s.Apply(pickModel(t, 6, "sonnet"))
+	s.Apply(pickModel(t, 7, "haiku"))
+	s.Apply(pickEffort(t, 8, "low"))
+	s.Apply(startTurn(t, 9, "t3"))
+	want := [][3]string{{"model:9", "haiku", "low"}}
+	if got := noticeSettings(modelNotices(s)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %v, want %v", got, want)
+	}
+}
+
+// The harness reporting its own settings as it starts or resumes carries its
+// session id and names the bare model id for the alias that was picked. That
+// is not a switch; but it must not swallow a real switch still waiting for its
+// turn either. Mirrored by web/src/apply.test.ts.
+func TestHarnessReportIsNotASwitch(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(event(t, 3, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "claude-opus-5", HarnessSessionID: "h1"}))
+	s.Apply(startTurn(t, 4, "t2"))
+	if got := modelNotices(s); len(got) != 0 {
+		t.Fatalf("after a harness report: notices = %+v, want none", got)
+	}
+	if s.Model != "claude-opus-5" {
+		t.Fatalf("model = %q, want the reported claude-opus-5", s.Model)
+	}
+
+	s.Apply(pickModel(t, 5, "sonnet"))
+	s.Apply(event(t, 6, proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{Model: "claude-sonnet-5", HarnessSessionID: "h2"}))
+	s.Apply(startTurn(t, 7, "t3"))
+	want := [][3]string{{"model:7", "claude-sonnet-5", ""}}
+	if got := noticeSettings(modelNotices(s)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after a switch and a restart: notices = %v, want %v", got, want)
+	}
+}
+
+// A reload resumes from a stored snapshot, so a switch made before it must
+// still be marked at the turn after it. A snapshot stored before the baseline
+// existed has none, and must not mark its next turn as a switch. Mirrored by
+// web/src/apply.test.ts.
+func TestSwitchSurvivesASnapshot(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(pickModel(t, 3, "sonnet"))
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.Apply(startTurn(t, 4, "t2"))
+	want := [][3]string{{"model:4", "sonnet", ""}}
+	if got := noticeSettings(modelNotices(restored)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored notices = %v, want %v", got, want)
+	}
+
+	s.RanWith = nil
+	if blob, err = json.Marshal(s); err != nil {
+		t.Fatal(err)
+	}
+	old, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Apply(startTurn(t, 4, "t2"))
+	if got := modelNotices(old); len(got) != 0 {
+		t.Fatalf("old snapshot notices = %+v, want none", got)
 	}
 }

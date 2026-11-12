@@ -81,7 +81,13 @@ export interface Item {
       /api/threads/{id}/items/{itemId}/content. */
   truncated?: boolean;
   // notice
-  noticeKind?: "compaction" | "account";
+  noticeKind?: "compaction" | "account" | "model";
+  /** For a model notice: the model and effort the thread switched to. */
+  model?: string;
+  effort?: string;
+  /** For a model notice: what the turn before ran on. An alias and the id
+      it resolves to can differ here and still be one model. */
+  from?: TurnSettings;
   /** For a compaction notice: whether the harness ("auto") or a human triggered it. */
   trigger?: string;
   preTokens?: number;
@@ -412,6 +418,12 @@ export interface Usage {
   contextCategories?: { name: string; tokens: number }[];
 }
 
+/** The model and effort a turn runs on. */
+export interface TurnSettings {
+  model: string;
+  effort: string;
+}
+
 export interface ThreadState {
   threadId: string;
   seq: number;
@@ -431,6 +443,9 @@ export interface ThreadState {
       the timeline is complete. */
   itemsBefore?: number;
   turns: Turn[];
+  /** The model and effort the latest turn started on, which the next turn
+      is measured against to mark a switch. Absent until a turn has started. */
+  ranWith?: TurnSettings;
   /** Snapshots carry running jobs, the latest finished ones and those the
       window's items spawned, not the whole history. */
   jobs: Job[];
