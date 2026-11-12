@@ -1205,6 +1205,7 @@ export interface ServerFrame {
     | "projects"
     | "quotas"
     | "composer_items_changed"
+    | "turn_status"
     | "snapshot"
     | "event"
     | "replay"
@@ -1236,6 +1237,24 @@ export interface ServerFrame {
   error?: string;
   /** Narration of a running auth flow; sent only to the initiating connection. */
   authFlow?: AuthFlowEvent;
+  /** On a turn_status frame: why the running turn has gone quiet. Absent clears it. */
+  turnStatus?: TurnStatus;
+}
+
+/**
+ * Why a running turn has gone quiet: the harness is retrying a failed model
+ * request, or compacting context. Transient — pushed to attached clients,
+ * never logged, never in ThreadState. Every field may be absent.
+ */
+export interface TurnStatus {
+  state?: "retrying" | "compacting";
+  /** 1-based; absent when the harness does not say. */
+  attempt?: number;
+  max?: number;
+  /** The harness's short cause: "overloaded", "rate limit". */
+  reason?: string;
+  /** When the next attempt is due, Unix ms; absent when unknown. */
+  retryAt?: number;
 }
 
 export interface ScheduledPrompt {

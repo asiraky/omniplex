@@ -77,6 +77,9 @@ type serverFrame struct {
 	// Events is a whole catch-up ("replay" frames), already capped for the
 	// wire like a live event.
 	Events []proto.Event `json:"events,omitempty"`
+	// TurnStatus rides "turn_status" frames: why the running turn has gone
+	// quiet. Never in the log; nil clears it.
+	TurnStatus *proto.TurnStatusPayload `json:"turnStatus,omitempty"`
 
 	CommandID string          `json:"commandId,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`

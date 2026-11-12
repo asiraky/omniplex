@@ -513,6 +513,10 @@ type session struct {
 	// an id that drops out without a terminal row of its own was reaped, and
 	// the job is finished here so it cannot spin forever.
 	background map[string]bool
+	// compacting is set while the harness reports it is compacting, so the
+	// null status that ends it clears the line and a null that only reports
+	// a permission-mode change leaves a live retry alone.
+	compacting bool
 	// todos holds the ids of the main agent's TodoWrite calls, which go out
 	// as plan.updated rather than tool calls. The id is remembered from the
 	// stream until the tool result arrives, so neither the start nor the
@@ -1106,6 +1110,13 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 		switch str(msg["type"]) {
 		case "stream_event", "assistant":
 			return
+		case "system":
+			// A retry or compaction inside the discarded turn is not the
+			// status of any turn the user can see.
+			switch str(msg["subtype"]) {
+			case "api_retry", "status":
+				return
+			}
 		}
 	}
 	switch str(msg["type"]) {
@@ -1239,6 +1250,26 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 	case "task_started", "task_progress", "task_updated", "task_notification", "background_tasks_changed":
 		s.handleTask(msg)
 		s.followTask(msg)
+	case "api_retry":
+		s.handleAPIRetry(msg)
+	case "status":
+		var st struct {
+			Status *string `json:"status"`
+		}
+		remarshal(msg, &st)
+		s.mu.Lock()
+		wasCompacting := s.compacting
+		s.compacting = st.Status != nil && *st.Status == "compacting"
+		s.mu.Unlock()
+		switch {
+		case st.Status == nil && wasCompacting:
+			// The compaction is over, failed or not.
+			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
+		case st.Status != nil && *st.Status == "compacting":
+			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnCompacting}))
+		}
+		// "requesting" is a retried request going out too, so it must not
+		// clear a retry: the line stays until the model answers.
 	case "compact_boundary":
 		var b struct {
 			Meta struct {
@@ -1248,12 +1279,54 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 			} `json:"compact_metadata"`
 		}
 		remarshal(msg, &b)
+		// The boundary ends the compaction and clears the line itself.
+		s.mu.Lock()
+		s.compacting = false
+		s.mu.Unlock()
 		s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{
 			Trigger:    b.Meta.Trigger,
 			PreTokens:  b.Meta.PreTokens,
 			PostTokens: b.Meta.PostTokens,
 		}))
 	}
+}
+
+// handleAPIRetry is the harness waiting out a failed model request before
+// trying again. Without it a turn stuck behind an overloaded API looks hung.
+func (s *session) handleAPIRetry(msg map[string]json.RawMessage) {
+	var r struct {
+		Attempt      int    `json:"attempt"`
+		MaxRetries   int    `json:"max_retries"`
+		RetryDelayMs int64  `json:"retry_delay_ms"`
+		ErrorStatus  *int   `json:"error_status"`
+		Error        string `json:"error"`
+	}
+	remarshal(msg, &r)
+	var at int64
+	if r.RetryDelayMs > 0 {
+		at = time.Now().UnixMilli() + r.RetryDelayMs
+	}
+	s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{
+		State:   proto.TurnRetrying,
+		Attempt: r.Attempt,
+		Max:     r.MaxRetries,
+		Reason:  retryReason(r.Error, r.ErrorStatus),
+		RetryAt: at,
+	}))
+}
+
+// retryReason is the short cause shown beside a retry. The SDK's error class
+// reads fine with its underscores dropped ("rate limit"); when it has no
+// class to give, the HTTP status says more than "unknown", and no status at
+// all means the request never got a response.
+func retryReason(class string, status *int) string {
+	if class != "" && class != "unknown" {
+		return strings.ReplaceAll(class, "_", " ")
+	}
+	if status != nil {
+		return fmt.Sprintf("HTTP %d", *status)
+	}
+	return "connection error"
 }
 
 // handleContextUsage folds the harness's own occupancy report — the structured

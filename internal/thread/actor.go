@@ -40,6 +40,9 @@ type Subscriber struct {
 	Ch              chan proto.Event
 	Resync          chan struct{}
 	ComposerChanged chan struct{}
+	// StatusChanged signals that TurnStatus moved. It carries no value: the
+	// reader asks for the current one, so a burst coalesces into one frame.
+	StatusChanged chan struct{}
 
 	dropped bool
 }
@@ -119,6 +122,9 @@ type Actor struct {
 	// thread list wants it without a round trip through the inbox. Written
 	// only by the actor goroutine; the projection stays the source of truth.
 	attention string
+	// turnStatus is the running turn's transient status (see TurnStatus).
+	// Written only by the actor goroutine, under mu; nil means none.
+	turnStatus *proto.TurnStatusPayload
 
 	// onExit lets the manager forget a disposed actor, so the next attach
 	// resumes the thread from the log instead of finding a dead one.
@@ -649,6 +655,7 @@ func (a *Actor) Subscribe() *Subscriber {
 		Ch:              make(chan proto.Event, SubscriberQueue),
 		Resync:          make(chan struct{}),
 		ComposerChanged: make(chan struct{}, 1),
+		StatusChanged:   make(chan struct{}, 1),
 	}
 	a.mu.Lock()
 	select {
@@ -1784,6 +1791,7 @@ func (a *Actor) stop(drop bool) {
 	close(a.quit)
 
 	a.mu.Lock()
+	a.turnStatus = nil
 	subs := a.subs
 	a.subs = map[string]*Subscriber{}
 	a.mu.Unlock()
@@ -2254,6 +2262,13 @@ func (a *Actor) write(em proto.Emission) error {
 	em = a.redact(em)
 	em = trimOutput(em)
 
+	// A turn status is about this moment only: held in memory and pushed to
+	// whoever is attached, never logged or folded.
+	if em.Type == proto.TurnStatus {
+		a.holdTurnStatus(em)
+		return nil
+	}
+
 	ev, err := a.store.Append(ctx, a.ID, em)
 	if err != nil {
 		a.logf("append %s on %s: %v", em.Type, a.ID, err)
@@ -2352,6 +2367,9 @@ func (a *Actor) write(em proto.Emission) error {
 		}
 	}
 	a.fanout(ev)
+	if a.turnActive == "" || clearsTurnStatus(em) {
+		a.setTurnStatus(nil)
+	}
 
 	if ev.Seq-a.lastSnapAt >= SnapshotEvery || em.Type == proto.TurnFinished {
 		a.lastSnapAt = ev.Seq

@@ -306,6 +306,10 @@ func TestContextCompactionCountsPerTurn(t *testing.T) {
 			}
 			n := 0
 			for _, e := range drain(s) {
+				// A repeat sends no boundary, so it clears the status itself.
+				if e.Type == proto.TurnStatus && e.Payload.(proto.TurnStatusPayload).State == "" {
+					continue
+				}
 				if e.Type != proto.ContextCompacted {
 					t.Fatalf("unexpected emission %+v", e)
 				}

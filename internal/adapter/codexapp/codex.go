@@ -14,10 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -1609,17 +1611,25 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 			p.Error = &codexTurnError{Message: p.Message}
 		}
 		s.host.Logf("codex error: %s", p.Error.Message)
-		// An error codex is retrying is not the turn's failure yet. One it is
-		// not retrying is, and the completion that follows repeats it with
-		// less: remember it for that completion.
+		// Before turn/start answers, codex's id for the open turn is unknown,
+		// but it is not the one that just completed.
+		s.mu.Lock()
+		current := s.turnID != "" && (p.TurnID == "" || p.TurnID == s.serverTurnID ||
+			(s.serverTurnID == "" && p.TurnID != s.lastServerTurn))
+		s.mu.Unlock()
+		if !current {
+			return
+		}
+		// An error codex is retrying is not the turn's failure yet, only a
+		// retrying status. One it is not retrying is, and the completion that
+		// follows repeats it with less: remember it for that completion.
 		if p.WillRetry {
+			s.emit(proto.Emit(proto.TurnStatus, retryStatus(*p.Error)))
 			return
 		}
 		f := errorFailure(*p.Error)
 		s.mu.Lock()
-		if s.turnID != "" && (p.TurnID == "" || s.serverTurnID == "" || p.TurnID == s.serverTurnID) {
-			s.turnFailure = &f
-		}
+		s.turnFailure = &f
 		s.mu.Unlock()
 	}
 }
@@ -1678,6 +1688,68 @@ func (e codexTurnError) code() string {
 		}
 	}
 	return ""
+}
+
+// retryStatus is the retrying status for an error codex will retry. A stream
+// error it retries arrives as "Reconnecting... 2/5" (codex core,
+// responses_retry.rs) with the cause in additionalDetails. Codex says nothing
+// of the delay, so there is no retryAt.
+func retryStatus(e codexTurnError) proto.TurnStatusPayload {
+	status := proto.TurnStatusPayload{State: proto.TurnRetrying, Reason: retryReason(e)}
+	if m := attemptOfMax.FindStringSubmatch(e.Message); m != nil {
+		status.Attempt, _ = strconv.Atoi(m[1])
+		status.Max, _ = strconv.Atoi(m[2])
+	}
+	return status
+}
+
+// attemptOfMax is codex's "attempt/max" in a retry message.
+var attemptOfMax = regexp.MustCompile(`\b(\d+)/(\d+)\b`)
+
+// retryReason is the short cause of a retry: codex's error code in words, else
+// the first clause of the details or the message, minus the retry counter.
+func retryReason(e codexTurnError) string {
+	if r := humaniseCode(e.code()); r != "" {
+		return r
+	}
+	for _, text := range []string{e.AdditionalDetails, e.Message} {
+		text = attemptOfMax.ReplaceAllString(text, "")
+		text = strings.TrimPrefix(strings.TrimSpace(text), "Reconnecting...")
+		// "Reconnecting... 2/5 (stream disconnected: …)" puts the cause in
+		// the brackets, so open them before cutting at the first clause.
+		text = strings.TrimLeft(text, " (")
+		if i := strings.IndexAny(text, ":()\n"); i >= 0 {
+			text = text[:i]
+		}
+		text = strings.TrimSpace(text)
+		if r := []rune(text); len(r) > 60 {
+			text = strings.TrimSpace(string(r[:59])) + "…"
+		}
+		if text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// humaniseCode turns a camelCase codexErrorInfo code into lower-case words:
+// "serverOverloaded" is "server overloaded". "other" says nothing, so it reads
+// as no code at all.
+func humaniseCode(code string) string {
+	if code == "other" {
+		return ""
+	}
+	var b strings.Builder
+	for i, r := range code {
+		if unicode.IsUpper(r) {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // exhaustionStatus is the last attempt's HTTP status when codex gave up
@@ -1935,10 +2007,17 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 
 	switch it.Type {
 	case "contextCompaction":
+		// Compaction runs between model requests and can take a while with
+		// nothing else to show, so it is a status until it lands. The
+		// boundary clears it; when the boundary is a duplicate
+		// (thread/compacted already named it) and goes unsent, clear it here.
 		if !completed {
+			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{State: proto.TurnCompacting}))
 			return
 		}
-		s.emitContextCompacted(p.TurnID, compactionItem)
+		if !s.emitContextCompacted(p.TurnID, compactionItem) {
+			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
+		}
 
 	case "userMessage":
 		// The turn's own prompt is already in the log via turn.started. A
@@ -1973,8 +2052,12 @@ func (s *session) handleItem(method, turn string, owner *child, params json.RawM
 		}
 
 	case "reasoning":
-		// Reasoning text arrives as thought deltas; nothing to do on the
-		// item boundaries.
+		// Reasoning text arrives as thought deltas, and may not arrive at
+		// all, so the item starting is the model answering: whatever retry
+		// came before it is over.
+		if !completed && owner == nil {
+			s.emit(proto.Emit(proto.TurnStatus, proto.TurnStatusPayload{}))
+		}
 
 	case "commandExecution":
 		if !completed {
@@ -2166,8 +2249,9 @@ func webSearchTitle(it codexItem) string {
 // New app-servers emit a contextCompaction item; older ones emit the
 // thread/compacted notification, and transitional versions may emit both.
 // Within a turn, the nth compaction is announced by whichever signal reports
-// it first, so both signals count but neither repeats the other.
-func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
+// it first, so both signals count but neither repeats the other. It reports
+// whether it emitted the boundary, false for a repeat.
+func (s *session) emitContextCompacted(turnID string, signal compactionSignal) bool {
 	s.mu.Lock()
 	if turnID != "" {
 		c := &s.compaction
@@ -2181,7 +2265,7 @@ func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 		}
 		if max(c.items, c.notices) <= c.emitted {
 			s.mu.Unlock()
-			return
+			return false
 		}
 		c.emitted++
 	}
@@ -2193,6 +2277,7 @@ func (s *session) emitContextCompacted(turnID string, signal compactionSignal) {
 		trigger = "manual"
 	}
 	s.emit(proto.Emit(proto.ContextCompacted, proto.ContextCompactedPayload{Trigger: trigger}))
+	return true
 }
 
 // handlePlan records codex's update_plan list: the whole plan as it stands,

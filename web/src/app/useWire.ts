@@ -8,6 +8,7 @@ import type {
   QuotaStatus,
   ThreadMeta,
   ThreadState,
+  TurnStatus,
   UserConfig,
   UserConfigReply,
 } from "~/protocol";
@@ -78,6 +79,11 @@ export function useWire() {
   // Bumped when the attached thread's adapter says its slash commands and
   // skills changed, so the composer knows to ask for them again.
   const [composerRevision, setComposerRevision] = useState(0);
+  // Why the attached thread's running turn has gone quiet (retrying a model
+  // request, compacting context). Transient: never in ThreadState, never
+  // persisted. Tagged with its thread so a switch can never show the last
+  // thread's status on the next one, even before the client's clear lands.
+  const [heldStatus, setHeldStatus] = useState<{ threadId: string; status: TurnStatus } | null>(null);
   const clientRef = useRef<Client | null>(null);
 
   useEffect(() => {
@@ -98,6 +104,7 @@ export function useWire() {
       onState: (id, s) => {
         if (id === activeRef.current) setState(s);
       },
+      onTurnStatus: (id, s) => setHeldStatus(s ? { threadId: id, status: s } : null),
       onAccess: setAccess,
     });
     clientRef.current = client;
@@ -147,6 +154,8 @@ export function useWire() {
     if (resume && hasThread) setResume(null);
   }, [resume, hasThread]);
 
+  const turnStatus = heldStatus && heldStatus.threadId === state?.threadId ? heldStatus.status : null;
+
   return {
     clientRef,
     /** The thread the page's /thread/<id> URL named at load, if any. */
@@ -172,5 +181,6 @@ export function useWire() {
     setState,
     stateRef,
     composerRevision,
+    turnStatus,
   };
 }

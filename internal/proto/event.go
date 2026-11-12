@@ -71,6 +71,13 @@ const (
 	// conversation to reclaim context window. It carries the token counts
 	// either side of the boundary so the transcript can show what happened.
 	ContextCompacted = "context.compacted"
+	// TurnStatus is the harness saying why a running turn has gone quiet: it
+	// is retrying a failed model request, or compacting context. It is
+	// transient: the actor keeps only the latest one in memory and pushes it
+	// to attached clients, and it never reaches the log. A payload with no
+	// State clears it, and so does the harness moving on (see
+	// clearsTurnStatus in internal/thread).
+	TurnStatus = "turn.status"
 
 	// Jobs are work that runs beside the conversation rather than as part of
 	// it: a subagent, a background shell, a monitor. One entity, several kinds
@@ -694,6 +701,24 @@ type ContextCompactedPayload struct {
 	Trigger    string `json:"trigger,omitempty"`
 	PreTokens  int64  `json:"preTokens,omitempty"`
 	PostTokens int64  `json:"postTokens,omitempty"`
+}
+
+// Turn status states. The empty state clears the status.
+const (
+	TurnRetrying   = "retrying"
+	TurnCompacting = "compacting"
+)
+
+// TurnStatusPayload is the latest transient status of a running turn.
+// Attempt and Max are 1-based and zero when the harness does not say; Reason
+// is the harness's short cause ("overloaded", "rate limit"); RetryAt is when
+// the next attempt is due, in Unix milliseconds, zero when unknown.
+type TurnStatusPayload struct {
+	State   string `json:"state,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
+	Max     int    `json:"max,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	RetryAt int64  `json:"retryAt,omitempty"`
 }
 
 // JobUsage is what a job has cost so far.

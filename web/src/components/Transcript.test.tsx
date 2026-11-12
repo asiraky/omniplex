@@ -912,3 +912,40 @@ describe("a held queue", () => {
     expect(onSendQueued).toHaveBeenCalledWith("q1");
   });
 });
+
+describe("a turn gone quiet", () => {
+  // A turn whose tail is a tool call still running: the case where the
+  // thinking line stands aside, and a retry would otherwise look hung.
+  const running = (phase: "turn" | "idle"): any => ({
+    ...state("working"),
+    phase,
+    items: [
+      { id: "u1", kind: "message", role: "user", contentKind: "text", text: "go", turnId: "t1", receivedAt: 1 },
+      { id: "x1", kind: "tool", toolKind: "execute", status: "in_progress", title: "npm test", turnId: "t1" },
+    ],
+    turns: [{ id: "t1", status: phase === "turn" ? "running" : "done" }],
+  });
+  const view = (phase: "turn" | "idle") => (
+    <Transcript
+      state={running(phase)}
+      turnStatus={{ state: "compacting" }}
+      onRetryProvision={() => {}}
+      onCleanup={() => {}}
+      onForceDelete={() => {}}
+      onContinue={() => {}}
+      onOpenDiff={() => {}}
+      onFinish={() => {}}
+    />
+  );
+
+  it("says why while a tool run is live", () => {
+    render(view("turn"));
+    expect(screen.queryByText("thinking…")).toBeNull();
+    expect(screen.getByText("Compacting context…").closest("[role=status]")).not.toBeNull();
+  });
+
+  it("says nothing once the thread is idle", () => {
+    render(view("idle"));
+    expect(screen.queryByText("Compacting context…")).toBeNull();
+  });
+});
