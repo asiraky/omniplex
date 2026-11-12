@@ -4,7 +4,6 @@
 package jsonrpc
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -57,13 +56,23 @@ type Conn struct {
 	handler  Handler
 	notifier Notifier
 
+	logf      func(format string, args ...any)
 	closeOnce sync.Once
 	done      chan struct{}
 	readErr   error
 }
 
-func NewConn(r io.Reader, w io.Writer, h Handler, n Notifier) *Conn {
-	c := &Conn{w: w, handler: h, notifier: n, done: make(chan struct{})}
+// maxLine is the longest message Conn reads; a longer one is skipped. A codex
+// thread/resume answers with the whole rollout, and rollouts run to 95 MB.
+const maxLine = 128 << 20
+
+// NewConn starts reading r. logf, when not nil, hears about the lines Conn
+// had to skip.
+func NewConn(r io.Reader, w io.Writer, h Handler, n Notifier, logf func(format string, args ...any)) *Conn {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	c := &Conn{w: w, handler: h, notifier: n, logf: logf, done: make(chan struct{})}
 	c.life, c.endLife = context.WithCancel(context.Background())
 	go c.readLoop(r)
 	return c
@@ -72,26 +81,33 @@ func NewConn(r io.Reader, w io.Writer, h Handler, n Notifier) *Conn {
 // Done is closed when the peer's stream ends.
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-func (c *Conn) readLoop(r io.Reader) {
-	defer c.closeOnce.Do(func() { close(c.done) })
+// Err is the read error that ended the peer's stream, or nil when it ended
+// cleanly. It is only meaningful once Done is closed.
+func (c *Conn) Err() error {
+	select {
+	case <-c.done:
+		return c.readErr
+	default:
+		return nil
+	}
+}
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+func (c *Conn) readLoop(r io.Reader) {
+	c.readErr = ReadLines(r, maxLine, func(line []byte) {
 		var m Message
 		if err := json.Unmarshal(line, &m); err != nil {
-			continue // a harness writing non-JSON on stdout is not fatal
+			// A harness writing non-JSON on stdout is not fatal.
+			c.logf("jsonrpc: skipped a line that is not JSON: %s", Brief(line))
+			return
 		}
 		c.dispatch(m)
-	}
-	c.readErr = sc.Err()
+	}, c.skipped)
 	c.endLife()
 
-	// Fail every in-flight call so no caller waits on a dead process.
+	// Done closes first, so a caller whose call fails here already sees the
+	// connection as gone. Then fail every in-flight call so no caller waits on
+	// a dead process.
+	c.closeOnce.Do(func() { close(c.done) })
 	c.pending.Range(func(k, v any) bool {
 		ch := v.(chan Message)
 		select {
@@ -100,6 +116,77 @@ func (c *Conn) readLoop(r io.Reader) {
 		}
 		return true
 	})
+}
+
+// skipped handles a message too large to read. When it is a response, the
+// call waiting on it is failed rather than left to hang: codex writes the id
+// first, so it is in the head.
+func (c *Conn) skipped(head []byte, size int) {
+	c.logf("jsonrpc: skipped a %d-byte message over the %d-byte limit: %s", size, maxLine, Brief(head))
+	id := leadingID(head)
+	if id == "" {
+		return
+	}
+	if ch, ok := c.pending.LoadAndDelete(id); ok {
+		select {
+		case ch.(chan Message) <- Message{Error: &RPCError{Code: codeTooLarge, Message: fmt.Sprintf("response too large to read (%d bytes)", size)}}:
+		default:
+		}
+	}
+}
+
+// codeTooLarge marks the error a call gets when its response was skipped. It
+// is in the range JSON-RPC leaves to implementations, and never crosses the
+// wire.
+const codeTooLarge = -32099
+
+// TooLarge reports whether err is a call failed because its response was
+// over maxLine.
+func TooLarge(err error) bool {
+	var re *RPCError
+	return errors.As(err, &re) && re.Code == codeTooLarge
+}
+
+// leadingID is the id of a response whose head is all there is, when the
+// head reaches "result" or "error" with nothing but "jsonrpc" and "id" before
+// it — the order codex and the claude bridge write. Anything else — a
+// request, a notification, an id further in — gives "": a request's id is the
+// peer's, and could match one of ours.
+func leadingID(head []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(head))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	var id json.RawMessage
+	for {
+		key, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		switch key {
+		case "jsonrpc":
+			var v string
+			if err := dec.Decode(&v); err != nil {
+				return ""
+			}
+		case "id":
+			if err := dec.Decode(&id); err != nil {
+				return ""
+			}
+		case "result", "error":
+			return string(id)
+		default:
+			return ""
+		}
+	}
+}
+
+// Brief is the start of b, for a log line.
+func Brief(b []byte) string {
+	if len(b) > 200 {
+		return string(b[:200]) + "…"
+	}
+	return string(b)
 }
 
 func (c *Conn) dispatch(m Message) {

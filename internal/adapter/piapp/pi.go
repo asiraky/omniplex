@@ -2,13 +2,12 @@
 // canonical event model.
 //
 // Pi's RPC mode is typed commands with an optional echoed id, not JSON-RPC, so
-// this package carries its own line framing instead of internal/jsonrpc. The
-// TUI is never scraped. Verified against @earendil-works/pi-coding-agent
-// 0.84.4.
+// this package carries its own message framing and takes only the line reader
+// from internal/jsonrpc. The TUI is never scraped. Verified against
+// @earendil-works/pi-coding-agent 0.84.4.
 package piapp
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -26,6 +25,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/jsonrpc"
 	"github.com/asiraky/omniplex/internal/procgroup"
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -237,6 +237,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	s := &session{
 		host:    host,
 		cmd:     cmd,
+		proc:    adapter.WatchProcess(cmd, stderr, host.Logf, "pi"),
 		tree:    tree,
 		stdin:   stdin,
 		events:  make(chan proto.Emission, 256),
@@ -247,7 +248,6 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 
 	go s.readLoop(stdout)
-	go s.drainStderr(stderr)
 	go s.watchExit()
 
 	// get_state is the handshake: it proves the process actually reached RPC
@@ -289,6 +289,7 @@ type rpcResponse struct {
 type session struct {
 	host  adapter.HostServices
 	cmd   *exec.Cmd
+	proc  *adapter.Process
 	tree  procgroup.Group
 	stdin io.WriteCloser
 
@@ -296,8 +297,9 @@ type session struct {
 	done   chan struct{}
 	// rpcDone closes when the read loop ends — the process is gone or its
 	// stdout broke — so a call waiting for a response that will never come
-	// unblocks.
+	// unblocks. readErr is what broke it, if anything; set before the close.
 	rpcDone chan struct{}
+	readErr error
 	closed  sync.Once
 
 	// emitMu orders every send on events before the close in watchExit. The
@@ -334,9 +336,6 @@ type session struct {
 	totIn, totOut, totCacheR, totCacheW int64
 	totCost                             float64
 	contextWindow                       int64
-	// stderrTail keeps the last few stderr lines so an unexplained exit can at
-	// least quote the harness's dying words.
-	stderrTail []string
 }
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
@@ -374,7 +373,7 @@ func (s *session) call(ctx context.Context, cmd map[string]any, out any) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-s.rpcDone:
-		return errors.New("pi exited before responding")
+		return s.died(errors.New("pi exited before responding"))
 	}
 }
 
@@ -397,7 +396,7 @@ func (s *session) request(cmd map[string]any) (<-chan rpcResponse, func(), error
 	}
 	if err := s.send(cmd); err != nil {
 		release()
-		return nil, nil, err
+		return nil, nil, s.died(err)
 	}
 	return ch, release, nil
 }
@@ -410,39 +409,48 @@ func (r rpcResponse) err() error {
 	return fmt.Errorf("%s: %s", r.Command, r.Error)
 }
 
+// died swaps a command's error for the reason pi is gone, when it is.
+func (s *session) died(err error) error {
+	return s.proc.Explain(err, s.rpcDone, func() error { return s.readErr })
+}
+
+// maxLine is the longest event readLoop takes. A message_end can carry a
+// whole assistant message and a tool result a file, so it is generous; what
+// goes over it in practice is agent_end and turn_end, which repeat every
+// message of the run, screenshots and all, and which nothing here reads.
+const maxLine = 16 << 20
+
 func (s *session) readLoop(r io.Reader) {
 	defer close(s.rpcDone)
-	sc := bufio.NewScanner(r)
-	// A single message_end can carry a whole assistant message, and a tool
-	// result can carry a file; the default 64K token limit is far too small.
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var head struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-		}
-		if err := json.Unmarshal(line, &head); err != nil {
-			continue
-		}
-		if head.Type == "response" {
-			var res rpcResponse
-			if err := json.Unmarshal(line, &res); err != nil {
-				continue
-			}
-			s.mu.Lock()
-			ch := s.pending[head.ID]
-			s.mu.Unlock()
-			if ch != nil {
-				ch <- res
-			}
-			continue
-		}
-		s.handleEvent(head.Type, append([]byte(nil), line...))
+	s.readErr = jsonrpc.ReadLines(r, maxLine, s.handleLine, func(head []byte, size int) {
+		s.host.Logf("pi: skipped a %d-byte event over the %d-byte limit: %s", size, maxLine, jsonrpc.Brief(head))
+	})
+}
+
+func (s *session) handleLine(line []byte) {
+	var head struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
 	}
+	if err := json.Unmarshal(line, &head); err != nil {
+		s.host.Logf("pi: skipped a line that is not JSON: %s", jsonrpc.Brief(line))
+		return
+	}
+	if head.Type == "response" {
+		var res rpcResponse
+		if err := json.Unmarshal(line, &res); err != nil {
+			s.host.Logf("pi: skipped a response that does not parse: %v: %s", err, jsonrpc.Brief(line))
+			return
+		}
+		s.mu.Lock()
+		ch := s.pending[head.ID]
+		s.mu.Unlock()
+		if ch != nil {
+			ch <- res
+		}
+		return
+	}
+	s.handleEvent(head.Type, append([]byte(nil), line...))
 }
 
 func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
@@ -597,7 +605,7 @@ func (s *session) Close() error {
 			_ = s.cmd.Process.Kill()
 		}
 		s.tree.Kill()
-		_ = s.cmd.Wait()
+		_ = s.proc.Wait()
 	})
 	return nil
 }
@@ -610,39 +618,17 @@ func (s *session) watchExit() {
 	s.mu.Lock()
 	turn := s.turnID
 	s.turnID = ""
-	tail := strings.Join(s.stderrTail, "\n")
 	s.mu.Unlock()
 	if turn != "" {
-		msg := "harness exited"
-		if tail != "" {
-			msg = "harness exited: " + tail
-		}
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: turn, StopReason: proto.StopError, Error: msg,
-			Failure: failureKind(tail),
+			TurnID: turn, StopReason: proto.StopError, Error: s.proc.ExitReason(s.readErr),
+			Failure: failureKind(s.proc.Tail()),
 		}))
 	}
 	s.emitMu.Lock()
 	s.eventsClosed = true
 	close(s.events)
 	s.emitMu.Unlock()
-}
-
-func (s *session) drainStderr(r io.ReadCloser) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		s.host.Logf("pi stderr: %s", line)
-		s.mu.Lock()
-		s.stderrTail = append(s.stderrTail, line)
-		if len(s.stderrTail) > 5 {
-			s.stderrTail = s.stderrTail[1:]
-		}
-		s.mu.Unlock()
-	}
 }
 
 func (s *session) emit(e proto.Emission) {

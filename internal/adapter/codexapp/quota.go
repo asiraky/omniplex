@@ -461,6 +461,7 @@ func (a *Adapter) ReadQuota(ctx context.Context, env map[string]string) (adapter
 			return nil, fmt.Errorf("this connection only reads usage limits")
 		},
 		func(string, json.RawMessage) {},
+		nil,
 	)
 
 	if err := conn.Call(ctx, "initialize", map[string]any{

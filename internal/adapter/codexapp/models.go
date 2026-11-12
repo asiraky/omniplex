@@ -84,6 +84,7 @@ func (a *Adapter) ListModels(ctx context.Context, env map[string]string) ([]adap
 			return nil, fmt.Errorf("this connection only lists models")
 		},
 		func(string, json.RawMessage) {},
+		nil,
 	)
 
 	if err := conn.Call(ctx, "initialize", map[string]any{

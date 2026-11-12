@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -114,8 +115,8 @@ func pairedConn(t *testing.T, reply map[string]any) (*jsonrpc.Conn, *recorder) {
 		}
 		return map[string]any{}, nil
 	}
-	_ = jsonrpc.NewConn(sr, sw, handler, nil)
-	client := jsonrpc.NewConn(cr, cw, nil, nil)
+	_ = jsonrpc.NewConn(sr, sw, handler, nil, nil)
+	client := jsonrpc.NewConn(cr, cw, nil, nil, nil)
 	t.Cleanup(func() { _ = cw.Close(); _ = sw.Close() })
 	return client, rec
 }
@@ -381,7 +382,7 @@ func TestResolvedRequestReleasesItsPrompt(t *testing.T) {
 			sessionRead, peerWrite := io.Pipe()
 			peerRead, sessionWrite := io.Pipe()
 			s := &session{host: host, threadID: "thread-1", turnID: "omniplex-turn"}
-			s.conn = jsonrpc.NewConn(sessionRead, sessionWrite, s.handleRequest, s.handleNotification)
+			s.conn = jsonrpc.NewConn(sessionRead, sessionWrite, s.handleRequest, s.handleNotification, nil)
 			t.Cleanup(func() { _ = peerWrite.Close(); _ = peerRead.Close() })
 
 			send := func(line string) {
@@ -1060,5 +1061,32 @@ func TestReusedSubagentIsStoppedWithTheTurnReusingIt(t *testing.T) {
 	want := map[string]string{"thread-1": "codex-b", "sub-1": "sub-1-reused"}
 	if got := rec.interrupts(t); !maps.Equal(got, want) {
 		t.Fatalf("interrupts = %v, want %v", got, want)
+	}
+}
+
+// A codex that dies on turn/start fails the prompt before watchExit can finish
+// the turn, so the prompt's own error has to say why codex is gone.
+func TestPromptToADeadCodexSaysWhy(t *testing.T) {
+	cmd := exec.Command("sh", "-c", `echo "thread 'main' panicked at codex-rs/core" >&2; exit 101`)
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	s := &session{
+		conn:     jsonrpc.NewConn(pr, io.Discard, nil, nil, nil),
+		proc:     adapter.WatchProcess(cmd, stderr, func(string, ...any) {}, "codex"),
+		threadID: "thread-1",
+	}
+	_ = pw.Close()
+	<-s.conn.Done()
+
+	err = s.Prompt(context.Background(), adapter.PromptInput{TurnID: "t1", Text: "hi"})
+	want := "codex exited (exit status 101)\nthread 'main' panicked at codex-rs/core"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Prompt err = %v\nwant:\n%s", err, want)
 	}
 }

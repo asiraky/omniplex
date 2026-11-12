@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,7 +48,7 @@ func newPair(t *testing.T, h Handler) (*Conn, peer) {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	c := NewConn(inR, outW, h, nil)
+	c := NewConn(inR, outW, h, nil, nil)
 	t.Cleanup(func() { _ = inW.Close(); _ = outR.Close() })
 	return c, peer{in: inW, out: bufio.NewScanner(outR)}
 }
@@ -148,12 +150,94 @@ func TestWithdrawalRightBehindItsRequestIsNotLost(t *testing.T) {
 		var p struct{ ID json.RawMessage }
 		_ = json.Unmarshal(params, &p)
 		c.CancelInbound(p.ID)
-	})
+	}, nil)
 	close(ready)
 	t.Cleanup(func() { _ = inW.Close() })
 
 	_, _ = io.WriteString(inW, `{"jsonrpc":"2.0","id":3,"method":"approve"}`+"\n"+`{"jsonrpc":"2.0","method":"withdraw","params":{"id":3}}`+"\n")
 	if err := wait(t, stopped); err != context.Canceled {
 		t.Fatalf("handler stopped with %v, want context.Canceled", err)
+	}
+}
+
+// A harness whose stdout breaks must say how, or its death is a shrug.
+func TestConnErrReportsReadError(t *testing.T) {
+	boom := errors.New("boom")
+	c := NewConn(errReader{boom}, io.Discard, nil, nil, nil)
+	wait(t, c.Done())
+	if !errors.Is(c.Err(), boom) {
+		t.Fatalf("Err() = %v, want boom", c.Err())
+	}
+
+	c = NewConn(strings.NewReader(`{"method":"x"}`+"\n"), io.Discard, nil, nil, nil)
+	wait(t, c.Done())
+	if c.Err() != nil {
+		t.Fatalf("clean EOF: Err() = %v, want nil", c.Err())
+	}
+}
+
+// A response too big to read must fail its call, not leave it waiting for an
+// answer that was already thrown away. Pushing maxLine through a pipe takes
+// seconds under -race, so the read loop's skip is called directly.
+func TestOversizedResponseFailsItsCall(t *testing.T) {
+	c, p := newPair(t, nil)
+	errc := make(chan error, 1)
+	go func() { errc <- c.Call(context.Background(), "thread/resume", nil, nil) }()
+	req := p.read(t)
+
+	// A request from the peer that happens to reuse our id is not our answer.
+	c.skipped([]byte(`{"id":`+string(req.ID)+`,"method":"item/permission","params":{`), maxLine+1)
+	select {
+	case err := <-errc:
+		t.Fatalf("a skipped peer request failed our call: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	c.skipped([]byte(`{"id":`+string(req.ID)+`,"result":{"rollout":"rrrr`), maxLine+1)
+	select {
+	case err := <-errc:
+		if !TooLarge(err) || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("Call err = %v, want a too-large error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("call still waiting after its response was skipped")
+	}
+}
+
+// Only a response whose id leads can be matched from its head: a request's id
+// is the peer's own numbering and could collide with one of ours.
+func TestLeadingID(t *testing.T) {
+	cases := map[string]string{
+		`{"id":7,"result":{"rollout":"trunc`:        "7",
+		`{"id":"abc","error":{"code":1`:             `"abc"`,
+		`{"id":1,"method":"item/permission","param`: "",
+		`{"jsonrpc":"2.0","id":7,"result":{`:        "7",
+		`{"result":{"a":1},"id":7}`:                 "",
+		`{"method":"turn/started","params":{`:       "",
+		`[1,2,3`:                                    "",
+		`not json at all`:                           "",
+	}
+	for head, want := range cases {
+		if got := leadingID([]byte(head)); got != want {
+			t.Errorf("leadingID(%s) = %q, want %q", head, got, want)
+		}
+	}
+}
+
+// A harness that prints something stray on stdout must not lose the messages
+// after it.
+func TestMalformedLineIsSkipped(t *testing.T) {
+	got := make(chan string, 1)
+	inR, inW := io.Pipe()
+	NewConn(inR, io.Discard, nil, func(method string, _ json.RawMessage) { got <- method }, nil)
+	t.Cleanup(func() { _ = inW.Close() })
+	_, _ = io.WriteString(inW, "Debugger attached.\n{\"method\":\"turn/started\"}\n")
+	select {
+	case m := <-got:
+		if m != "turn/started" {
+			t.Fatalf("notified %q", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("message after a malformed line was never dispatched")
 	}
 }
