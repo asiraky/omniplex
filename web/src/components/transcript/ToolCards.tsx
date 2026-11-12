@@ -155,7 +155,14 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
           )}
           {truncated && (
             <Suspense fallback={<Spinner className="text-primary size-3" />}>
-              <LoadFullOutput threadId={threadId} itemId={item.id} onLoad={setFull} />
+              {/* Keyed on the output it was asked over: more landing mid-request
+                  remounts it, dropping a body that predates the new output. */}
+              <LoadFullOutput
+                key={item.content?.length ?? 0}
+                threadId={threadId}
+                itemId={item.id}
+                onLoad={setFull}
+              />
             </Suspense>
           )}
         </div>

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { render, wrap } from "~/test/harness";
@@ -156,6 +156,21 @@ describe("a tool card whose input was cut", () => {
 
     rerender(wrap(<ToolCard threadId="s1" item={{ ...running, status: "completed", content: [{ type: "text", text: preview }] }} />));
     expect(screen.getByText(/characters truncated/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Load full output" })).toBeTruthy();
+  });
+
+  it("drops a body asked for before more output landed", async () => {
+    let answer!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))));
+    const running = tool({ status: "in_progress" });
+    const { rerender } = render(<ToolCard threadId="s1" item={running} />);
+    fireEvent.click(screen.getByRole("button", { name: /go test/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+
+    const more = [...running.content!, { type: "text" as const, text: "a later line" }];
+    rerender(wrap(<ToolCard threadId="s1" item={{ ...running, content: more }} />));
+    await act(async () => answer(full("the output before that line")()));
+    expect(screen.queryByText("the output before that line")).toBeNull();
     expect(screen.getByRole("button", { name: "Load full output" })).toBeTruthy();
   });
 

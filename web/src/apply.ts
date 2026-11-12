@@ -212,9 +212,10 @@ export function dropsJobRow(s: ThreadState, ev: Event): boolean {
 }
 
 // applyJobRow folds a job row the state's cursor is already past: one
-// dropped while the job list was on its way, re-applied over the list.
+// dropsJobRow dropped while the job list was on its way, applied over the
+// list. Never a start, which is never dropped.
 export function applyJobRow(s: ThreadState, ev: Event): ThreadState {
-  const row = ev.type === "job.started" ? "started" : ev.type === "job.finished" ? "finished" : "updated";
+  const row = ev.type === "job.finished" ? "finished" : "updated";
   return applyJob(s, ev.timestamp, (ev.payload ?? {}) as JobPayload, row);
 }
 

@@ -415,7 +415,7 @@ export class Client {
         let revived = false;
         for (const ev of f.events) {
           revived ||= revivesUnheldJob(next, ev);
-          if (this.jobsInFlight && dropsJobRow(next, ev)) this.droppedJobRows.push(ev);
+          if (this.jobsInFlight && ev.seq > next.seq && dropsJobRow(next, ev)) this.droppedJobRows.push(ev);
           next = applyEvent(next, ev);
         }
         this.state = next;
