@@ -518,6 +518,8 @@ function ThreadComposer({
         (() =>
           onSendAndNewThread({
             projectId: meta?.projectId,
+            // Absent is the whole project, which the draft takes as "".
+            folderId: meta?.folderId ?? "",
             agent: {
               harness: state.harness,
               instance: meta?.providerInstance ?? "",

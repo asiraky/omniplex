@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createRef, useRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -1275,6 +1275,18 @@ describe("sending and starting a new thread", () => {
     const { rerender } = mount({ ...over, draft: "/compact" });
     act(() => ref.current!.sendAndNewThread());
     rerender({ ...over, draft: "the next thing" });
+    await act(async () => finish());
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+
+  it("stays put when the composer is gone before the adapter command returns", async () => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    let finish!: () => void;
+    const onRunComposerAction = vi.fn(() => new Promise<void>((r) => (finish = r)));
+    mount({ ref, draft: "/compact", catalogue: catalogue(), onRunComposerAction, onSendAndNewThread });
+    act(() => ref.current!.sendAndNewThread());
+    cleanup();
     await act(async () => finish());
     expect(onSendAndNewThread).not.toHaveBeenCalled();
   });

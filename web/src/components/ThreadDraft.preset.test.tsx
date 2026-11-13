@@ -324,6 +324,7 @@ describe("a draft opened beside a thread", () => {
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /^garden/ }));
 
     expect(await start(onStart)).toMatchObject({ projectId: "p2", harness: "claude", model: "claude-basic" });
+    expect(JSON.parse(localStorage.getItem(KEY)!).p1).toEqual(saved.p1);
   });
 
   it("falls back to the account's default for a model it no longer offers", async () => {

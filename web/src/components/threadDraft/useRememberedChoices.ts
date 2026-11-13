@@ -30,17 +30,23 @@ export interface ChoiceSeed {
  * the model, mode and effort. Saved as they are picked, not on thread start.
  *
  * A seed is laid over what was read, as if it had been read: opening on it
- * writes nothing, and a pick saves on top of it.
+ * writes nothing, and a pick saves on top of it. Left untouched, it is never
+ * written: a pick or a start in another project saves that project, not the
+ * seed in its place.
  */
 export function useRememberedChoices(seed?: ChoiceSeed) {
-  const [loaded] = useState(() => withSeed(loadThreadPrefs(), seed));
+  const [opened] = useState(() => {
+    const read = loadThreadPrefs();
+    return { read, loaded: withSeed(read, seed), seeded: seed?.projectId };
+  });
+  const { loaded } = opened;
   const [preferences, setPreferences] = useState(loaded);
 
   // Written after the pick lands rather than inside the updater, which React
   // may run twice. What was just read back needs no writing.
   useEffect(() => {
-    if (preferences !== loaded) saveThreadPrefs(preferences);
-  }, [preferences, loaded]);
+    if (preferences !== loaded) saveThreadPrefs(unseeded(preferences, opened));
+  }, [preferences, loaded, opened]);
 
   // A patch over the latest saved choices, not this render's: one pick can
   // change the model and then the effort, and the second must not undo the
@@ -74,7 +80,7 @@ export function useRememberedChoices(seed?: ChoiceSeed) {
   ) => {
     const { harness, folderId, copy } = started;
     const byHarness = preferences[projectId]?.byHarness ?? {};
-    saveThreadPrefs({ ...preferences, [projectId]: { harness, byHarness, folderId, copy } });
+    saveThreadPrefs(unseeded({ ...preferences, [projectId]: { harness, byHarness, folderId, copy } }, opened));
   };
 
   return { preferences, patch, recordStart };
@@ -95,4 +101,16 @@ function withSeed(saved: ThreadPrefs, seed: ChoiceSeed | undefined): ThreadPrefs
       byHarness: { ...project?.byHarness, [harness]: { ...prefs, mode } },
     },
   };
+}
+
+// The seeded project as it was read, while the seed is all it holds.
+function unseeded(
+  prefs: ThreadPrefs,
+  { read, loaded, seeded }: { read: ThreadPrefs; loaded: ThreadPrefs; seeded?: string },
+): ThreadPrefs {
+  if (!seeded || prefs[seeded] !== loaded[seeded]) return prefs;
+  const out = { ...prefs };
+  if (read[seeded]) out[seeded] = read[seeded];
+  else delete out[seeded];
+  return out;
 }

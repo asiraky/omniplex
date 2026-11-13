@@ -2129,13 +2129,13 @@ describe("send and start a new thread", () => {
       },
     ],
   };
-  const boot = async (kind: "phone" | "desktop" = "desktop") => {
+  const boot = async (kind: "phone" | "desktop" = "desktop", where = { project, thread: thread("a") }) => {
     viewport(kind);
     render(<App />);
     await act(async () => {
-      events.onProjects([project]);
+      events.onProjects([where.project]);
       events.onHarnesses([claude]);
-      events.onThreads([thread("a")]);
+      events.onThreads([where.thread]);
     });
     await act(async () => {
       fireEvent.click(screen.getByText("Thread a"));
@@ -2175,6 +2175,22 @@ describe("send and start a new thread", () => {
     expect(composer().value).toBe("");
     expect(picker().textContent).toContain("Advanced");
     await waitFor(() => expect(document.activeElement).toBe(composer()));
+  });
+
+  it("opens the draft on the thread's folder, not the one the project last used", async () => {
+    localStorage.setItem(
+      "omniplex.threadChoices.v1",
+      JSON.stringify({ p1: { harness: "claude", byHarness: {}, folderId: "f1" } }),
+    );
+    const notes = { ...project.folders[0], id: "f2", path: "/tmp/notes", git: false };
+    await boot("desktop", {
+      project: { ...project, folders: [project.folders[0], notes] },
+      thread: { ...thread("a"), folderId: "f2" },
+    });
+    await type("first task");
+    await sendAndNew();
+
+    expect(screen.getByRole("button", { name: /^Scope:/ }).textContent).toBe("notes");
   });
 
   it("leaves the keyboard down on a phone", async () => {

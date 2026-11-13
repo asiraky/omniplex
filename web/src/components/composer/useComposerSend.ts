@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 import { overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
 import { submittedComposerAction } from "~/lib/composerItems";
@@ -63,8 +63,17 @@ export function useComposerSend({
     (!draft.trim() && sendableAttachments === 0);
 
   // `delivery` reaches only a prompt: a command runs now or not at all.
-  // `then` runs once the message has actually gone, and never for one held
-  // back: send-and-start-a-new-thread must not leave a draft behind unsent.
+  // `then` runs once the message is handed off (a prompt to the outbox, an
+  // action once it returns), and never for one held back:
+  // send-and-start-a-new-thread must not leave a draft behind unsent.
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
   const send = async (delivery?: Delivery, then?: () => void) => {
     const t = draft.trim();
     // A message may be nothing but attachments: "what is this?" is often the
@@ -98,7 +107,9 @@ export function useComposerSend({
         // it stays, and so do they.
         if (draftRef.current !== submittedDraft) return;
         changeDraft("");
-        then?.();
+        // Gone to another thread while it ran: they have moved on already,
+        // and a new draft now would pull them out of wherever they went.
+        if (live.current) then?.();
       } catch {
         // App reports the provider error. Retain the command so it can be
         // retried or edited, without leaving a rejected promise behind.
