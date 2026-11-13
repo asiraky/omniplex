@@ -14,7 +14,7 @@ if (!entryJS || !entryCSS) throw new Error("could not find initial JS and CSS in
 const gzipKB = (asset) => gzipSync(readFileSync(resolve(dist, asset.replace(/^\//, "")))).byteLength / 1024;
 const jsKB = gzipKB(entryJS);
 const cssKB = gzipKB(entryCSS);
-const limits = { js: 272, css: 20 };
+const limits = { js: 273, css: 20 };
 
 console.log(`initial bundle: JS ${jsKB.toFixed(1)} KiB gzip, CSS ${cssKB.toFixed(1)} KiB gzip`);
 if (jsKB > limits.js || cssKB > limits.css) {

@@ -2,10 +2,10 @@ import { Maximize2Icon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
 
 import { inlineFrameHeight } from "~/components/artefacts/inlineFrame";
-import { usePreview } from "~/components/artefacts/usePreview";
+import { PAGE_SANDBOX, usePreview } from "~/components/artefacts/usePreview";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
-import { PAGE_SANDBOX, type Artefact } from "~/lib/artefacts";
+import type { Artefact } from "~/lib/artefacts";
 import { useIsDesktop } from "~/useMediaQuery";
 
 // The last height each revision of a page reported, so a frame that unmounts

@@ -2,6 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 
 import { requestPreview, type ExpiringUrl } from "~/lib/artefacts";
 
+/** The sandbox every frame showing an agent's page runs in. Kept out of
+    ~/lib/artefacts so it loads with the frames, not the first paint. Never
+    allow-same-origin: with it, the page and this app would share an origin,
+    and the agent's HTML could drive the API. */
+export const PAGE_SANDBOX = "allow-scripts allow-forms allow-popups allow-modals allow-downloads";
+
 // Refresh a preview token this long before it lapses, so "open in a new tab"
 // never hands out a dead link and a frame mounted later starts on a live one.
 // A frame already showing is not reloaded for it.

@@ -21,7 +21,8 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Spinner } from "~/components/ui/spinner";
-import { bundlePath, PAGE_SANDBOX, retoken, type ExpiringUrl } from "~/lib/artefacts";
+import { PAGE_SANDBOX } from "~/components/artefacts/usePreview";
+import { bundlePath, retoken, type ExpiringUrl } from "~/lib/artefacts";
 import { cn } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
