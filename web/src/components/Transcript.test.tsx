@@ -7,6 +7,7 @@ import { Transcript } from "./Transcript";
 import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import { render, viewport } from "~/test/harness";
 import { shortTime } from "~/lib/scheduleTime";
+import type { ThreadFindControls } from "~/lib/threadFind";
 import type { PullRequest, ScheduledPrompt, Turn } from "~/protocol";
 
 // Every message the transcript draws, counted by item id and then drawn for
@@ -1181,5 +1182,85 @@ describe("a turn's changed-files card", () => {
     expect(onOpenDiff).toHaveBeenLastCalledWith("a.ts", expect.objectContaining({ id: "t1", number: 1 }));
     fireEvent.click(last);
     expect(onOpenDiff).toHaveBeenLastCalledWith("c.ts", expect.objectContaining({ id: "t3", number: 3 }));
+  });
+});
+
+// Find in thread: the bar asks the server, and the transcript has to put the
+// match on screen, wherever the projection or a fold has it.
+describe("find in thread", () => {
+  const finished = (extra: any[] = [], itemsBefore = 0): any => ({
+    ...state(""),
+    itemsBefore,
+    items: [
+      ...extra,
+      { id: "u1", kind: "message", role: "user", text: "check the build", turnId: "t1", receivedAt: 1 },
+      { id: "mid", kind: "message", role: "agent", contentKind: "text", text: "Looking for the needle", turnId: "t1", receivedAt: 2 },
+      { id: "x1", kind: "tool", toolKind: "execute", title: "make", status: "completed", turnId: "t1", receivedAt: 3 },
+      { id: "a1", kind: "message", role: "agent", contentKind: "text", text: "All green.", turnId: "t1", receivedAt: 4 },
+    ],
+    turns: [{ id: "t1", prompt: "check the build", done: true, stopReason: "end_turn" }],
+  });
+  const controls = (over: Partial<ThreadFindControls> = {}): ThreadFindControls => ({
+    open: true,
+    nonce: 1,
+    close: () => {},
+    search: async () => ({ matches: [{ id: "mid", index: 1 }], total: 1 }),
+    loadTo: async () => true,
+    ...over,
+  });
+  const scrolledTo = () =>
+    vi.mocked(Element.prototype.scrollIntoView).mock.contexts.map((el) => (el as Element).getAttribute("data-item-id"));
+
+  it("opens the fold hiding the match and scrolls to it", async () => {
+    attach(finished(), <Transcript {...view().props} find={controls()} />);
+    // Folded: the turn's middle is not drawn.
+    expect(screen.queryByText("Looking for the needle")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Find in thread"), { target: { value: "needle" } });
+
+    await waitFor(() => expect(screen.getByText("Looking for the needle")).toBeTruthy());
+    expect(screen.getByRole("button", { expanded: true })).toBeTruthy();
+    expect(scrolledTo()).toContain("mid");
+    expect(screen.getByText("1 of 1")).toBeTruthy();
+  });
+
+  it("pages a match above the loaded window in before jumping to it", async () => {
+    const older = { id: "old", kind: "message", role: "agent", contentKind: "text", text: "the old needle", receivedAt: 0 };
+    let land: (() => void) | undefined;
+    const loadTo = vi.fn(
+      (_: number) =>
+        new Promise<boolean>((resolve) => {
+          land = () => {
+            frame(finished([older], 0));
+            resolve(true);
+          };
+        }),
+    );
+    const { frame } = attach(
+      finished([], 3),
+      <Transcript
+        {...view().props}
+        find={controls({ loadTo, search: async () => ({ matches: [{ id: "old", index: 0 }], total: 1 }) })}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Find in thread"), { target: { value: "needle" } });
+    await waitFor(() => expect(loadTo).toHaveBeenCalledWith(0));
+    expect(scrolledTo()).not.toContain("old");
+
+    await act(async () => land?.());
+    await waitFor(() => expect(scrolledTo()).toContain("old"));
+  });
+
+  it("closes on Escape", () => {
+    const close = vi.fn();
+    attach(finished(), <Transcript {...view().props} find={controls({ close })} />);
+    fireEvent.keyDown(screen.getByLabelText("Find in thread"), { key: "Escape" });
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("draws no bar while closed", () => {
+    attach(finished(), <Transcript {...view().props} find={controls({ open: false })} />);
+    expect(screen.queryByLabelText("Find in thread")).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import type { Item } from "~/protocol";
 import { useSmoothText } from "~/useSmoothText";
 
 import type { OpenArtefact } from "./Attachments";
+import { FIND_TEXT_ATTR } from "./findReveal";
 import { MessageMeta } from "./MessageMeta";
 import { UserMessage } from "./UserMessage";
 
@@ -42,7 +43,7 @@ export function Message({
   // prompt goes out when a human continues a turn that simply failed.
   if (recovered && item.role === "user") {
     return (
-      <div className="fade-in flex justify-center">
+      <div data-item-id={item.id} className="fade-in flex justify-center">
         <div className="text-muted-foreground rounded-full border px-3 py-1 text-[12px]">
           {recovered === "restart"
             ? "Server restarted — the agent was asked to pick the work back up"
@@ -75,8 +76,8 @@ export function Message({
   }
 
   return (
-    <div className="group flex flex-col gap-2">
-      <div ref={speakRef} {...{ [SPEAK_ROOT_ATTR]: "" }} className="min-w-0">
+    <div data-item-id={item.id} className="group flex flex-col gap-2">
+      <div ref={speakRef} {...{ [SPEAK_ROOT_ATTR]: "", [FIND_TEXT_ATTR]: "" }} className="min-w-0">
         <Markdown
           text={text}
           className={cn(

@@ -6,6 +6,7 @@ import { cn } from "~/lib/utils";
 import type { Item } from "~/protocol";
 
 import { PromptFiles, PromptImages, type OpenArtefact } from "./Attachments";
+import { FIND_TEXT_ATTR, useRevealOpen } from "./findReveal";
 import { MessageMeta } from "./MessageMeta";
 
 // A user message longer than this many lines collapses behind a fade until the
@@ -38,7 +39,9 @@ export function UserMessage({
   onOpenArtefact?: OpenArtefact;
 }) {
   const { text, files } = useMemo(() => parseAttachedFiles(item.text ?? ""), [item.text]);
-  const [expanded, setExpanded] = useState(false);
+  // Unclamped when find in thread jumps here, or the match could sit under
+  // the fade.
+  const [expanded, setExpanded] = useRevealOpen((id) => id === item.id);
   const [overflowing, setOverflowing] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -78,7 +81,7 @@ export function UserMessage({
   };
 
   return (
-    <div ref={wrapRef} data-msg-id={item.id} className="group fade-in flex flex-col items-end">
+    <div ref={wrapRef} data-msg-id={item.id} data-item-id={item.id} className="group fade-in flex flex-col items-end">
       {item.images && item.images.length > 0 && (
         <PromptImages threadId={threadId} images={item.images} />
       )}
@@ -90,7 +93,7 @@ export function UserMessage({
       {(text || (!item.images?.length && files.length === 0)) && (
         <div
           ref={bodyRef}
-          {...{ [SPEAK_ROOT_ATTR]: "" }}
+          {...{ [SPEAK_ROOT_ATTR]: "", [FIND_TEXT_ATTR]: "" }}
           style={
             clamped
               ? {

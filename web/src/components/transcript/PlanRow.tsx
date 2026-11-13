@@ -1,9 +1,9 @@
 import { ChevronDownIcon, ListTodoIcon } from "lucide-react";
-import { useState } from "react";
-
 import { planSummary } from "~/lib/plans";
 import { cn } from "~/lib/utils";
 import type { Item, PlanStep } from "~/protocol";
+
+import { useRevealOpen } from "./findReveal";
 
 const GLYPH: Record<PlanStep["status"], string> = { completed: "✓", running: "◉", pending: "○" };
 
@@ -11,12 +11,13 @@ const GLYPH: Record<PlanStep["status"], string> = { completed: "✓", running: "
 // steps. A TodoWrite list a later one replaced is dimmed: still history, no
 // longer the plan.
 export function PlanRow({ item }: { item: Item }) {
-  const [open, setOpen] = useState(false);
+  // Opens itself when find in thread jumps to this plan.
+  const [open, setOpen] = useRevealOpen((id) => id === item.id);
   const steps = item.steps ?? [];
   const label = planSummary(steps);
 
   return (
-    <div className={cn("fade-in", item.superseded && "opacity-60")}>
+    <div data-item-id={item.id} className={cn("fade-in", item.superseded && "opacity-60")}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

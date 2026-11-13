@@ -225,6 +225,16 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
     [applyAnchor, setPin],
   );
 
+  /**
+   * Let go of the view: no pin, no anchor. For a caller about to move the view
+   * somewhere itself (a find jump), which the next stick or anchor pass would
+   * otherwise drag straight back.
+   */
+  const release = useCallback(() => {
+    clearAnchor();
+    setPin(false);
+  }, [clearAnchor, setPin]);
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -339,5 +349,5 @@ export function useAutoScroll<S extends HTMLElement, C extends HTMLElement>(
     return () => ro.disconnect();
   }, [applyAnchor, stick]);
 
-  return { scrollerRef, contentRef, pinned, stick, scrollToBottom, anchorTo };
+  return { scrollerRef, contentRef, pinned, stick, scrollToBottom, anchorTo, release };
 }
