@@ -50,7 +50,7 @@ export function useScreens() {
   // Replaces rather than pushes: leaving setup is moving on, and Back landing
   // on it again would be a step backwards.
   const leaveSetup = useCallback(() => {
-    window.history.replaceState(null, "", "/");
+    window.history.replaceState(window.history.state, "", "/");
     setSetup(false);
   }, []);
 

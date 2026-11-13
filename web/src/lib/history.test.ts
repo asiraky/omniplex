@@ -79,6 +79,22 @@ describe("Back with a sheet open", () => {
     expect(layerDepth()).toBe(0);
   });
 
+  it("is not a move: the app does not hear it", async () => {
+    const heard: string[] = [];
+    const stop = onMove(() => heard.push(window.location.pathname));
+    try {
+      navigate("/");
+      const a = sheet();
+      mount(a);
+
+      await back();
+      expect(a.open).toBe(false);
+      expect(heard).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+
   it("closes nested sheets top first, one Back at a time", async () => {
     navigate("/thread/a");
     const lower = sheet();
@@ -262,6 +278,53 @@ describe("navigate", () => {
 
     await back();
     expect(window.location.pathname).toBe("/thread/a");
+  });
+
+  it("closes the sheets over the old place", async () => {
+    navigate("/thread/a");
+    const a = sheet();
+    mount(a);
+
+    act(() => navigate("/thread/b"));
+    expect(a.open).toBe(false);
+    await settle();
+
+    await back();
+    expect(window.location.pathname).toBe("/thread/a");
+  });
+
+  it("puts back the entry of a sheet that will not close for it", async () => {
+    navigate("/thread/a");
+    const a = sheet();
+    mount(a);
+    a.busy = true;
+
+    act(() => navigate("/thread/b"));
+    expect(a.open).toBe(true);
+    await landsAt(1);
+    expect(window.location.pathname).toBe("/thread/b");
+
+    a.busy = false;
+    await back();
+    expect(a.open).toBe(false);
+    expect(window.location.pathname).toBe("/thread/b");
+  });
+
+  it("from sheets over a draft, replaces the draft", async () => {
+    navigate("/thread/a");
+    navigate("/", { draft: true });
+    const lower = sheet();
+    const upper = sheet();
+    mount(lower, upper);
+
+    act(() => navigate("/thread/b"));
+    await waitFor(() => expect(window.location.pathname).toBe("/thread/b"));
+    await settle();
+    expect(layerDepth()).toBe(0);
+
+    await back();
+    expect(window.location.pathname).toBe("/thread/a");
+    expect(isDraftEntry()).toBe(false);
   });
 
   it("replaces a draft's entry", async () => {
