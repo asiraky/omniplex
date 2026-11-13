@@ -272,11 +272,9 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   // are ready. One still uploading, or failed, stays in the composer, since
   // an entry outlives the page and its upload would not.
   const composerEntry = useCallback(
-    (threadId: string, withAttachments = true): StashEntry | undefined => {
+    (threadId: string, textOnly = false): StashEntry | undefined => {
       const text = draftStore.get(threadId);
-      const files = withAttachments
-        ? (attachmentsNow.current[threadId] ?? []).filter((a) => a.status === "ready")
-        : [];
+      const files = textOnly ? [] : (attachmentsNow.current[threadId] ?? []).filter((a) => a.status === "ready");
       if (!text.trim() && files.length === 0) return undefined;
       return { id: uuid(), text, attachments: files, at: Date.now() };
     },
@@ -289,7 +287,7 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   // prompt to go out with.
   const stashDraft = useCallback(
     (threadId: string, textOnly = false) => {
-      const entry = composerEntry(threadId, !textOnly);
+      const entry = composerEntry(threadId, textOnly);
       if (!entry) return false;
       const { next, evicted } = pushStash(stashStore.all(), threadId, entry);
       stashStore.update(() => next);

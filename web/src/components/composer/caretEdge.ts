@@ -1,19 +1,26 @@
 /**
- * Whether the caret is on the textarea's top or bottom line as drawn, counting
- * the lines a long paragraph wraps onto and not just its line breaks. Measured
- * on a hidden copy of the textarea, so the real one keeps its value and its
- * undo history. Without layout (a test's DOM) every height is zero and this
- * says yes.
+ * Whether the caret is on the textarea's top or bottom line, so ArrowUp or
+ * ArrowDown can step through history there and move the caret everywhere
+ * else. Lines are counted as drawn: a long paragraph wrapped over three lines
+ * has three, not one. A selection is judged by its start for the top and its
+ * end for the bottom.
  */
-export function caretOnVisualEdge(el: HTMLTextAreaElement, edge: "top" | "bottom"): boolean {
+export function caretOnEdge(el: HTMLTextAreaElement, edge: "top" | "bottom"): boolean {
+  const { value } = el;
+  const caret = edge === "top" ? el.selectionStart : el.selectionEnd;
+  const breakBetween = edge === "top" ? value.slice(0, caret).includes("\n") : value.slice(caret).includes("\n");
+  if (breakBetween) return false;
   const parent = el.parentNode;
   if (!parent) return true;
-  const caret = edge === "top" ? el.selectionStart : el.selectionEnd;
+
   // Out to the end of the word under the caret: a word that wraps whole
   // takes the caret down a line with it.
-  const wordEnd = el.value.slice(caret).search(/\s/);
-  const upToCaret = el.value.slice(0, wordEnd === -1 ? undefined : caret + wordEnd);
+  const wordEnd = value.slice(caret).search(/\s/);
+  const upToCaret = value.slice(0, wordEnd === -1 ? undefined : caret + wordEnd);
 
+  // Measured on a hidden copy, so the real textarea keeps its value and its
+  // undo history. Without layout (a test's DOM) every height is zero, and
+  // only the line breaks above decide.
   const probe = el.cloneNode() as HTMLTextAreaElement;
   probe.removeAttribute("id");
   probe.setAttribute("aria-hidden", "true");
@@ -34,7 +41,7 @@ export function caretOnVisualEdge(el: HTMLTextAreaElement, edge: "top" | "bottom
     return probe.scrollHeight;
   };
   try {
-    return edge === "top" ? height(upToCaret) <= height("") : height(upToCaret) >= height(el.value);
+    return edge === "top" ? height(upToCaret) <= height("") : height(upToCaret) >= height(value);
   } finally {
     probe.remove();
   }

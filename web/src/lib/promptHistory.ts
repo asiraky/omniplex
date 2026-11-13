@@ -63,7 +63,8 @@ export function stepHistory(input: {
 
   if (direction === "back") {
     if (entries.length === 0) return null;
-    if (at === -1) return current === "" ? to(entries.length - 1) : null;
+    // A stray space or newline is not a draft worth keeping from ArrowUp.
+    if (at === -1) return current.trim() === "" ? to(entries.length - 1) : null;
     return at === 0 ? null : to(at - 1);
   }
 
@@ -81,17 +82,4 @@ export function recentPrompts(entries: readonly string[], limit: number): string
     out.push(entries[i]);
   }
   return out;
-}
-
-/**
- * Whether the caret is on the first line. ArrowUp only recalls from there, so
- * in a multi-line draft it still moves the caret up a line first.
- */
-export function caretOnFirstLine(value: string, start: number, _end: number): boolean {
-  return !value.slice(0, start).includes("\n");
-}
-
-/** Whether the caret is on the last line, where ArrowDown steps forward instead of moving down. */
-export function caretOnLastLine(value: string, _start: number, end: number): boolean {
-  return !value.slice(end).includes("\n");
 }

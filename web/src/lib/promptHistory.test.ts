@@ -3,8 +3,6 @@ import { describe, expect, it } from "vitest";
 import type { Item, Turn } from "~/protocol";
 
 import {
-  caretOnFirstLine,
-  caretOnLastLine,
   promptHistory,
   recentPrompts,
   sameHistory,
@@ -71,6 +69,10 @@ describe("stepHistory", () => {
 
   it("recalls the newest prompt into an empty composer", () => {
     expect(back(null, "")).toEqual({ position: { index: 2, recalled: "three" }, text: "three" });
+  });
+
+  it("counts a composer holding only whitespace as empty", () => {
+    expect(back(null, " \n")?.text).toBe("three");
   });
 
   it("leaves a typed draft alone", () => {
@@ -143,37 +145,5 @@ describe("recentPrompts", () => {
 
   it("is empty with no history", () => {
     expect(recentPrompts([], 5)).toEqual([]);
-  });
-});
-
-describe("caret line checks", () => {
-  const value = "first\nsecond\nthird";
-
-  it("is on the first line up to and including the end of that line", () => {
-    expect(caretOnFirstLine(value, 0, 0)).toBe(true);
-    expect(caretOnFirstLine(value, 5, 5)).toBe(true);
-    expect(caretOnFirstLine(value, 6, 6)).toBe(false);
-  });
-
-  it("judges the first line by where a selection starts", () => {
-    expect(caretOnFirstLine(value, 2, 15)).toBe(true);
-  });
-
-  it("is on the last line from just after the last newline", () => {
-    expect(caretOnLastLine(value, 13, 13)).toBe(true);
-    expect(caretOnLastLine(value, value.length, value.length)).toBe(true);
-    expect(caretOnLastLine(value, 12, 12)).toBe(false);
-  });
-
-  it("judges the last line by where a selection ends", () => {
-    expect(caretOnLastLine(value, 0, 15)).toBe(true);
-    expect(caretOnLastLine(value, 0, 4)).toBe(false);
-  });
-
-  it("treats a single-line value as both first and last line", () => {
-    expect(caretOnFirstLine("", 0, 0)).toBe(true);
-    expect(caretOnLastLine("", 0, 0)).toBe(true);
-    expect(caretOnFirstLine("one line", 3, 3)).toBe(true);
-    expect(caretOnLastLine("one line", 3, 3)).toBe(true);
   });
 });

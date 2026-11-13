@@ -19,7 +19,7 @@ import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
 import { isComposing } from "~/lib/ime";
-import { caretOnFirstLine, caretOnLastLine, recentPrompts, stepHistory, type HistoryPosition } from "~/lib/promptHistory";
+import { recentPrompts, stepHistory, type HistoryPosition } from "~/lib/promptHistory";
 import { typeInto } from "~/lib/typeInto";
 import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
@@ -30,7 +30,7 @@ import { useIsDesktop } from "~/useMediaQuery";
 import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
-import { caretOnVisualEdge } from "./composer/caretEdge";
+import { caretOnEdge } from "./composer/caretEdge";
 import { ComposerHistoryMenu, MENU_RECENT } from "./composer/ComposerHistoryMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
 import { ComposerNotes } from "./composer/ComposerNotes";
@@ -357,15 +357,13 @@ export function Composer({
     if (!back && e.key !== "ArrowDown") return false;
     if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey || history.length === 0) return false;
     const el = e.currentTarget;
-    const onEdgeLine = (back ? caretOnFirstLine : caretOnLastLine)(el.value, el.selectionStart, el.selectionEnd);
-    if (!onEdgeLine) return false;
     const step = stepHistory({
       direction: back ? "back" : "forward",
       entries: history,
       position: recall,
       current: el.value,
     });
-    if (!step || !caretOnVisualEdge(el, back ? "top" : "bottom")) return false;
+    if (!step || !caretOnEdge(el, back ? "top" : "bottom")) return false;
     e.preventDefault();
     setRecall(step.position);
     replaceDraft(step.text, true);
@@ -540,11 +538,11 @@ export function Composer({
               onDrop={stash.drop}
               onRecall={(text) => {
                 // Words typed in the composer are parked rather than lost: a
-                // phone has no undo to get them back. A prompt already sent
-                // is still in this menu, so it is not parked again, and the
-                // attachments stay to go out with the recalled prompt.
+                // phone has no undo to get them back. A prompt still listed
+                // in this menu is not parked again, and the attachments stay
+                // to go out with the recalled prompt.
                 const current = draftRef.current.trim();
-                if (current && !history.includes(current)) stash.save(true);
+                if (current && !recent.includes(current)) stash.save(true);
                 setRecall(null);
                 replaceDraft(text, isDesktop);
               }}
