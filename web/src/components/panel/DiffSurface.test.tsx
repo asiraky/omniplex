@@ -17,7 +17,9 @@ const CHANGES: ThreadChanges = {
   baseRef: "main",
   additions: 1,
   deletions: 0,
-  files: [{ path: "web/src/long.ts", status: "modified", additions: 1, deletions: 0 }],
+  files: [
+    { path: "web/src/long.ts", status: "modified", additions: 1, deletions: 0 },
+  ],
 };
 
 const DIFF: FileDiff = {
@@ -88,7 +90,9 @@ describe("DiffSurface comparison", () => {
     renderSurface(change);
 
     fireEvent.click(screen.getByRole("combobox", { name: "Diff comparison" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Uncommitted changes" }));
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Uncommitted changes" }),
+    );
     expect(change).toHaveBeenCalledWith("uncommitted");
   });
 });
@@ -99,7 +103,10 @@ describe("DiffSurface turn comparison", () => {
     Element.prototype.scrollIntoView = vi.fn();
   });
 
-  const surface = (turn: { id: string; number: number } | null, change = () => {}) => (
+  const surface = (
+    turn: { id: string; number: number } | null,
+    change = () => {},
+  ) => (
     <DiffSurface
       changes={CHANGES}
       loading={false}
@@ -135,7 +142,8 @@ describe("DiffSurface refresh", () => {
   });
 
   it("drops a diff read against a replaced change list, and reads again against the new one", async () => {
-    const reads: { changes: ThreadChanges; resolve: (d: FileDiff) => void }[] = [];
+    const reads: { changes: ThreadChanges; resolve: (d: FileDiff) => void }[] =
+      [];
     const loadDiff = (_path: string, changes: ThreadChanges) =>
       new Promise<FileDiff>((resolve) => reads.push({ changes, resolve }));
     const surface = (changes: ThreadChanges) => (

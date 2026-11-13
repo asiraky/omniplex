@@ -14,8 +14,11 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
     isWrapped: wrapped,
     length: text.length,
     getCell: (x: number) =>
-      x < text.length ? { getChars: () => text[x], getWidth: () => 1 } : undefined,
-    translateToString: (trim?: boolean) => (trim ? text.replace(/\s+$/, "") : text),
+      x < text.length
+        ? { getChars: () => text[x], getWidth: () => 1 }
+        : undefined,
+    translateToString: (trim?: boolean) =>
+      trim ? text.replace(/\s+$/, "") : text,
   });
 
   class FakeTerminal {
@@ -87,17 +90,29 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
     reset() {}
     dispose() {}
   }
-  const socket = { resize() {}, send() {}, dispose() {}, restart() {}, where: vi.fn() };
+  const socket = {
+    resize() {},
+    send() {},
+    dispose() {},
+    restart() {},
+    where: vi.fn(),
+  };
   return { FakeTerminal, socket, toast: { info: vi.fn() } };
 });
 
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit() {}
+  },
+}));
 vi.mock("~/lib/termSocket", () => ({ openTermSocket: () => socket }));
 vi.mock("~/lib/toast", () => ({ toast }));
 
 function mount(props: Partial<Parameters<typeof TerminalSurface>[0]> = {}) {
-  const { unmount } = render(<TerminalSurface termId="t1" target={{ thread: "s1" }} {...props} />);
+  const { unmount } = render(
+    <TerminalSurface termId="t1" target={{ thread: "s1" }} {...props} />,
+  );
   return Object.assign(FakeTerminal.last, { unmount });
 }
 
@@ -109,7 +124,13 @@ function linksOn(term: InstanceType<typeof FakeTerminal>, y: number) {
 
 function tap(x: number, y: number) {
   const host = FakeTerminal.last.element.parentElement!;
-  const at = { pointerType: "touch", isPrimary: true, pointerId: 1, clientX: x, clientY: y };
+  const at = {
+    pointerType: "touch",
+    isPrimary: true,
+    pointerId: 1,
+    clientX: x,
+    clientY: y,
+  };
   fireEvent.pointerDown(host, at);
   fireEvent.pointerUp(host, at);
 }
@@ -131,7 +152,9 @@ describe("TerminalSurface: add to chat", () => {
     act(() => term.select("$ make\nok\n"));
     fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
 
-    expect(onAddToChat).toHaveBeenCalledWith(quoteTerminalOutput("$ make\nok\n"));
+    expect(onAddToChat).toHaveBeenCalledWith(
+      quoteTerminalOutput("$ make\nok\n"),
+    );
     expect(term.selection).toBe("");
     expect(screen.queryByRole("button", { name: "Add to chat" })).toBeNull();
   });
@@ -152,14 +175,19 @@ describe("TerminalSurface: add to chat", () => {
     const term = mount();
     act(() => term.select("text"));
     expect(screen.queryByRole("button", { name: "Add to chat" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Send recent output to chat" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Send recent output to chat" }),
+    ).toBeNull();
   });
 
   async function sendLast(label: string) {
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Send recent output to chat" }), {
-      button: 0,
-      ctrlKey: false,
-    });
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Send recent output to chat" }),
+      {
+        button: 0,
+        ctrlKey: false,
+      },
+    );
     fireEvent.click(await screen.findByRole("menuitem", { name: label }));
   }
 
@@ -170,7 +198,9 @@ describe("TerminalSurface: add to chat", () => {
 
     await sendLast("Last 20 lines");
 
-    const expected = Array.from({ length: 20 }, (_, i) => `line ${i + 5}`).join("\n");
+    const expected = Array.from({ length: 20 }, (_, i) => `line ${i + 5}`).join(
+      "\n",
+    );
     expect(onAddToChat).toHaveBeenCalledWith(quoteTerminalOutput(expected));
   });
 
@@ -199,13 +229,21 @@ describe("TerminalSurface: links", () => {
     term.show("see https://a.io and src/app.ts:12");
 
     const links = linksOn(term, 1)!;
-    links.find((l) => l.text === "https://a.io").activate(new MouseEvent("mouseup"), "https://a.io");
-    expect(open).toHaveBeenCalledWith("https://a.io", "_blank", "noopener,noreferrer");
+    links
+      .find((l) => l.text === "https://a.io")
+      .activate(new MouseEvent("mouseup"), "https://a.io");
+    expect(open).toHaveBeenCalledWith(
+      "https://a.io",
+      "_blank",
+      "noopener,noreferrer",
+    );
 
     const path = links.find((l) => l.text.startsWith("src/"));
     path.activate(new MouseEvent("mouseup"), path.text);
     // The shell's directory is not known, so the path goes as printed.
-    await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("src/app.ts", 12));
+    await waitFor(() =>
+      expect(onOpenPath).toHaveBeenCalledWith("src/app.ts", 12),
+    );
   });
 
   // The thread sits in /r/web of a repo at /r: the shell starts at /r, and
@@ -216,14 +254,18 @@ describe("TerminalSurface: links", () => {
     const onOpenPath = vi.fn();
     const term = mount({ onOpenPath });
     term.show(text);
-    for (const link of linksOn(term, 1)!) link.activate(new MouseEvent("mouseup"), link.text);
+    for (const link of linksOn(term, 1)!)
+      link.activate(new MouseEvent("mouseup"), link.text);
     await waitFor(() => expect(onOpenPath).toHaveBeenCalled());
     term.unmount();
     return onOpenPath;
   }
 
   it("opens a relative path where the shell is, as a path under its start directory", async () => {
-    const onOpenPath = await click("../go.mod:3 and src/app.ts and dist/", inWeb);
+    const onOpenPath = await click(
+      "../go.mod:3 and src/app.ts and dist/",
+      inWeb,
+    );
     await waitFor(() => expect(onOpenPath).toHaveBeenCalledTimes(3));
     expect(onOpenPath).toHaveBeenCalledWith("go.mod", 3);
     expect(onOpenPath).toHaveBeenCalledWith("web/src/app.ts", undefined);
@@ -236,23 +278,37 @@ describe("TerminalSurface: links", () => {
   });
 
   it("hands on a path outside the start directory absolute", async () => {
-    expect(await click("/etc/hosts", inWeb)).toHaveBeenCalledWith("/etc/hosts", undefined);
+    expect(await click("/etc/hosts", inWeb)).toHaveBeenCalledWith(
+      "/etc/hosts",
+      undefined,
+    );
     // A sibling whose name starts with the root's is still outside it.
-    expect(await click("/r-old/a.ts", inWeb)).toHaveBeenCalledWith("/r-old/a.ts", undefined);
+    expect(await click("/r-old/a.ts", inWeb)).toHaveBeenCalledWith(
+      "/r-old/a.ts",
+      undefined,
+    );
     // Printed after a cd out of the checkout.
-    expect(await click("logs/out.txt", { cwd: "/tmp", root: "/r" })).toHaveBeenCalledWith(
-      "/tmp/logs/out.txt",
+    expect(
+      await click("logs/out.txt", { cwd: "/tmp", root: "/r" }),
+    ).toHaveBeenCalledWith("/tmp/logs/out.txt", undefined);
+  });
+
+  it("hands on a path as printed when the shell cannot say where it is", async () => {
+    expect(await click("src/app.ts:12", null)).toHaveBeenCalledWith(
+      "src/app.ts",
+      12,
+    );
+    expect(await click("/r/go.mod", null)).toHaveBeenCalledWith(
+      "/r/go.mod",
       undefined,
     );
   });
 
-  it("hands on a path as printed when the shell cannot say where it is", async () => {
-    expect(await click("src/app.ts:12", null)).toHaveBeenCalledWith("src/app.ts", 12);
-    expect(await click("/r/go.mod", null)).toHaveBeenCalledWith("/r/go.mod", undefined);
-  });
-
   it("asks the shell nothing for a home path", async () => {
-    expect(await click("~/notes.md", inWeb)).toHaveBeenCalledWith("~/notes.md", undefined);
+    expect(await click("~/notes.md", inWeb)).toHaveBeenCalledWith(
+      "~/notes.md",
+      undefined,
+    );
     expect(socket.where).not.toHaveBeenCalled();
   });
 
@@ -302,7 +358,9 @@ describe("TerminalSurface: links", () => {
     const term = mount({ onOpenPath });
     term.show("at src/app.ts:12");
     tap(55, 10);
-    await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("web/src/app.ts", 12));
+    await waitFor(() =>
+      expect(onOpenPath).toHaveBeenCalledWith("web/src/app.ts", 12),
+    );
   });
 
   it("ignores a tap beside a link, a drag, and a tap while an app reads the mouse", () => {
@@ -311,9 +369,21 @@ describe("TerminalSurface: links", () => {
     const host = term.element.parentElement!;
 
     tap(10, 10); // "g"
-    fireEvent.pointerDown(host, { pointerType: "touch", isPrimary: true, pointerId: 1, clientX: 55, clientY: 10 });
+    fireEvent.pointerDown(host, {
+      pointerType: "touch",
+      isPrimary: true,
+      pointerId: 1,
+      clientX: 55,
+      clientY: 10,
+    });
     // A scroll that starts and ends on the link.
-    fireEvent.pointerUp(host, { pointerType: "touch", isPrimary: true, pointerId: 1, clientX: 85, clientY: 10 });
+    fireEvent.pointerUp(host, {
+      pointerType: "touch",
+      isPrimary: true,
+      pointerId: 1,
+      clientX: 85,
+      clientY: 10,
+    });
     term.modes.mouseTrackingMode = "vt200";
     tap(55, 10);
 

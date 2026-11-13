@@ -1,18 +1,38 @@
-import { ChevronRightIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Diff } from "~/components/Diff";
 import { IconButton } from "~/components/IconButton";
 import { Checkbox } from "~/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { Spinner } from "~/components/ui/spinner";
 import { useDiffWrap } from "~/lib/diffWrap";
 import { cn } from "~/lib/utils";
-import type { ChangedFile, DiffComparison, DiffTurn, FileDiff, PullRequest, ThreadChanges } from "~/protocol";
+import type {
+  ChangedFile,
+  DiffComparison,
+  DiffTurn,
+  FileDiff,
+  PullRequest,
+  ThreadChanges,
+} from "~/protocol";
 import { useLatest } from "~/useLatest";
 
 type DiffEntry = { diff?: FileDiff; loading: boolean; error?: string };
-type DiffsRead = { changes: ThreadChanges | null; diffs: Record<string, DiffEntry> };
+type DiffsRead = {
+  changes: ThreadChanges | null;
+  diffs: Record<string, DiffEntry>;
+};
 const NO_DIFFS: Record<string, DiffEntry> = {};
 
 const STATUS_LABEL: Record<string, string> = {
@@ -31,8 +51,21 @@ const STATUS_TONE: Record<string, string> = {
   copied: "text-muted-foreground",
 };
 
-function Counts({ additions, deletions, binary }: { additions: number; deletions: number; binary?: boolean }) {
-  if (binary) return <span className="text-muted-foreground font-mono text-[10px]">binary</span>;
+function Counts({
+  additions,
+  deletions,
+  binary,
+}: {
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+}) {
+  if (binary)
+    return (
+      <span className="text-muted-foreground font-mono text-[10px]">
+        binary
+      </span>
+    );
   return (
     <span className="shrink-0 font-mono text-[10px] tabular-nums">
       <span className="text-success">+{additions}</span>{" "}
@@ -73,22 +106,35 @@ function FileRow({
         className="hover:bg-accent/40 focus-visible:ring-ring flex min-h-11 w-full items-center gap-2 px-2 py-1.5 text-left outline-none focus-visible:ring-2 md:min-h-0"
       >
         <ChevronRightIcon
-          className={cn("text-muted-foreground size-3.5 shrink-0 transition-transform", expanded && "rotate-90")}
+          className={cn(
+            "text-muted-foreground size-3.5 shrink-0 transition-transform",
+            expanded && "rotate-90",
+          )}
         />
         <span
-          className={cn("w-3 shrink-0 text-center font-mono text-[11px]", STATUS_TONE[file.status])}
+          className={cn(
+            "w-3 shrink-0 text-center font-mono text-[11px]",
+            STATUS_TONE[file.status],
+          )}
           title={file.status}
         >
           {STATUS_LABEL[file.status] ?? "M"}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px]" title={file.path}>
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-[12px]"
+          title={file.path}
+        >
           <span className="text-muted-foreground">{dir}</span>
           {name}
           {file.oldPath && (
             <span className="text-muted-foreground"> ← {file.oldPath}</span>
           )}
         </span>
-        <Counts additions={file.additions} deletions={file.deletions} binary={file.binary} />
+        <Counts
+          additions={file.additions}
+          deletions={file.deletions}
+          binary={file.binary}
+        />
       </button>
 
       {expanded && (
@@ -98,7 +144,11 @@ function FileRow({
               <Spinner className="text-primary size-3.5" /> Reading the diff…
             </p>
           )}
-          {error && <p className="text-destructive px-3 py-2 font-mono text-[11px]">{error}</p>}
+          {error && (
+            <p className="text-destructive px-3 py-2 font-mono text-[11px]">
+              {error}
+            </p>
+          )}
           {diff && !loading && !error && (
             <div
               className={cn(
@@ -115,7 +165,8 @@ function FileRow({
                   <Diff patch={diff.patch} wrap={wrap} />
                   {diff.truncated && (
                     <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
-                      Diff truncated — open the file in the worktree to see the rest.
+                      Diff truncated — open the file in the worktree to see the
+                      rest.
                     </p>
                   )}
                 </>
@@ -172,24 +223,40 @@ export function DiffSurface({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const diffRef = useLatest(loadDiff);
 
-  const toggle = useCallback((path: string, forceOpen = false) => {
-    setExpanded((current) => (current === path && !forceOpen ? null : path));
-    // Expanding a row twice does not re-read it; a failed read may be retried.
-    const known = diffs[path];
-    if (known && !known.error) return;
-    // The first entry for a new list starts it afresh.
-    setRead((r) => ({
-      changes,
-      diffs: { ...(r.changes === changes ? r.diffs : NO_DIFFS), [path]: { loading: true } },
-    }));
-    if (!changes) return;
-    // An answer for a list that has since been replaced is dropped.
-    const land = (entry: DiffEntry) =>
-      setRead((r) => (r.changes === changes ? { changes, diffs: { ...r.diffs, [path]: entry } } : r));
-    void diffRef.current(path, changes)
-      .then((diff) => land({ diff, loading: false }))
-      .catch((e) => land({ loading: false, error: e instanceof Error ? e.message : String(e) }));
-  }, [changes, diffs, diffRef]);
+  const toggle = useCallback(
+    (path: string, forceOpen = false) => {
+      setExpanded((current) => (current === path && !forceOpen ? null : path));
+      // Expanding a row twice does not re-read it; a failed read may be retried.
+      const known = diffs[path];
+      if (known && !known.error) return;
+      // The first entry for a new list starts it afresh.
+      setRead((r) => ({
+        changes,
+        diffs: {
+          ...(r.changes === changes ? r.diffs : NO_DIFFS),
+          [path]: { loading: true },
+        },
+      }));
+      if (!changes) return;
+      // An answer for a list that has since been replaced is dropped.
+      const land = (entry: DiffEntry) =>
+        setRead((r) =>
+          r.changes === changes
+            ? { changes, diffs: { ...r.diffs, [path]: entry } }
+            : r,
+        );
+      void diffRef
+        .current(path, changes)
+        .then((diff) => land({ diff, loading: false }))
+        .catch((e) =>
+          land({
+            loading: false,
+            error: e instanceof Error ? e.message : String(e),
+          }),
+        );
+    },
+    [changes, diffs, diffRef],
+  );
 
   const toggleRef = useLatest(toggle);
 
@@ -211,8 +278,14 @@ export function DiffSurface({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-1.5">
-        <Select value={comparison} onValueChange={(value) => onComparisonChange(value as DiffComparison)}>
-          <SelectTrigger aria-label="Diff comparison" className="h-8 min-w-0 max-w-52 text-[12px]">
+        <Select
+          value={comparison}
+          onValueChange={(value) => onComparisonChange(value as DiffComparison)}
+        >
+          <SelectTrigger
+            aria-label="Diff comparison"
+            className="h-8 min-w-0 max-w-52 text-[12px]"
+          >
             <SelectValue>
               {comparison === "uncommitted" && (
                 <>
@@ -221,14 +294,21 @@ export function DiffSurface({
                 </>
               )}
               {comparison === "branch" && "Branch changes"}
-              {comparison === "pull_request" && (pr ? `PR #${pr.number}` : "Attached PR")}
+              {comparison === "pull_request" &&
+                (pr ? `PR #${pr.number}` : "Attached PR")}
               {comparison === "turn" && (turn ? `Turn ${turn.number}` : "Turn")}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="uncommitted">Uncommitted changes</SelectItem>
             <SelectItem value="branch">Branch changes</SelectItem>
-            {(pr || comparison === "pull_request") && <SelectItem value="pull_request">{pr ? `PR #${pr.number} vs ${pr.baseRefName || "base"}` : "Attached PR"}</SelectItem>}
+            {(pr || comparison === "pull_request") && (
+              <SelectItem value="pull_request">
+                {pr
+                  ? `PR #${pr.number} vs ${pr.baseRefName || "base"}`
+                  : "Attached PR"}
+              </SelectItem>
+            )}
             {turn && <SelectItem value="turn">Turn {turn.number}</SelectItem>}
           </SelectContent>
         </Select>
@@ -236,9 +316,15 @@ export function DiffSurface({
           {files.length} file{files.length === 1 ? "" : "s"}
         </span>
         <span className="flex-1" />
-        {changes && <Counts additions={changes.additions} deletions={changes.deletions} />}
+        {changes && (
+          <Counts additions={changes.additions} deletions={changes.deletions} />
+        )}
         <label className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 text-[11px] select-none md:min-h-0">
-          <Checkbox checked={wrap} onCheckedChange={(v) => setWrap(v === true)} className="size-3.5" />
+          <Checkbox
+            checked={wrap}
+            onCheckedChange={(v) => setWrap(v === true)}
+            className="size-3.5"
+          />
           Wrap text
         </label>
         <IconButton label="Re-read the worktree" onClick={onRefresh}>
@@ -254,7 +340,9 @@ export function DiffSurface({
           </div>
         )}
         {!error && changes?.warning && (
-          <p className="text-muted-foreground px-3 py-6 text-center text-[12px]">{changes.warning}</p>
+          <p className="text-muted-foreground px-3 py-6 text-center text-[12px]">
+            {changes.warning}
+          </p>
         )}
         {!error && !changes?.warning && files.length === 0 && (
           <p className="text-muted-foreground px-3 py-10 text-center text-[12px]">
@@ -283,7 +371,8 @@ export function DiffSurface({
         ))}
         {changes?.truncated && (
           <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
-            Only the first files are listed; this {comparison === "turn" ? "turn" : "thread"} changed more than the
+            Only the first files are listed; this{" "}
+            {comparison === "turn" ? "turn" : "thread"} changed more than the
             panel will show.
           </p>
         )}

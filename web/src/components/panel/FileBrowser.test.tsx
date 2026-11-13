@@ -6,7 +6,10 @@ import { FileBrowser } from "./FileBrowser";
 import { render, wrap } from "~/test/harness";
 import type { FileTree } from "~/protocol";
 
-const TREE: FileTree = { root: "/wt", files: ["src/lib/deep.ts", "src/top.ts", "README.md"] };
+const TREE: FileTree = {
+  root: "/wt",
+  files: ["src/lib/deep.ts", "src/top.ts", "README.md"],
+};
 
 function browser(selectedPath?: string) {
   return (

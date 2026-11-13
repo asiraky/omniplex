@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { cn } from "~/lib/utils";
 import { formatDuration } from "~/rows";
 
 // A live elapsed timer written straight to the DOM: re-rendering a list once a
@@ -28,5 +29,5 @@ export function Elapsed({
     return () => window.clearInterval(t);
   }, [since, finishedAt]);
   if (!since) return null;
-  return <span ref={ref} className={className ?? "tabular-nums"} />;
+  return <span ref={ref} className={cn("tabular-nums", className)} />;
 }

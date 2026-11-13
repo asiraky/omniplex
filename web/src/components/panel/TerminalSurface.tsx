@@ -4,8 +4,18 @@ import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 
 import type { OpenPath } from "~/lib/openPath";
-import { bufferRows, lastTerminalLines, quoteTerminalOutput } from "~/lib/terminalQuote";
-import { openTermSocket, type TermEnd, type TermSocket, type TermStatus, type TerminalTarget } from "~/lib/termSocket";
+import {
+  bufferRows,
+  lastTerminalLines,
+  quoteTerminalOutput,
+} from "~/lib/terminalQuote";
+import {
+  openTermSocket,
+  type TermEnd,
+  type TermSocket,
+  type TermStatus,
+  type TerminalTarget,
+} from "~/lib/termSocket";
 import { toast } from "~/lib/toast";
 import { cn } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
@@ -69,7 +79,8 @@ export function TerminalSurface({
   const [selected, setSelected] = useState(false);
   const onEndedRef = useLatest(onEnded);
   const onOpenPathRef = useLatest(onOpenPath);
-  const targetKey = "thread" in target ? `thread:${target.thread}` : `login:${target.login}`;
+  const targetKey =
+    "thread" in target ? `thread:${target.thread}` : `login:${target.login}`;
   const login = "login" in target;
 
   useEffect(() => {
@@ -99,7 +110,9 @@ export function TerminalSurface({
     term.open(host);
     fit.fit();
 
-    const selection = term.onSelectionChange(() => setSelected(term.hasSelection()));
+    const selection = term.onSelectionChange(() =>
+      setSelected(term.hasSelection()),
+    );
 
     const socket = openTermSocket(termId, target, {
       onData: (bytes) => term.write(bytes),
@@ -161,7 +174,9 @@ export function TerminalSurface({
   const sendLast = (n: number) => {
     const term = termRef.current;
     if (!term) return false;
-    const quoted = quoteTerminalOutput(lastTerminalLines(bufferRows(term.buffer.active), n));
+    const quoted = quoteTerminalOutput(
+      lastTerminalLines(bufferRows(term.buffer.active), n),
+    );
     if (!quoted) {
       toast.info("Nothing in the terminal to send");
       return false;
@@ -185,10 +200,14 @@ export function TerminalSurface({
         <div
           className={cn(
             "absolute flex items-center justify-center gap-3 bg-black/70 text-center",
-            login ? "inset-x-0 bottom-0 flex-row px-3 py-2" : "inset-0 flex-col px-4",
+            login
+              ? "inset-x-0 bottom-0 flex-row px-3 py-2"
+              : "inset-0 flex-col px-4",
           )}
         >
-          <p className="text-[13px] text-white/80">{(login ? LOGIN_ENDED : SHELL_ENDED)[ended]}</p>
+          <p className="text-[13px] text-white/80">
+            {(login ? LOGIN_ENDED : SHELL_ENDED)[ended]}
+          </p>
           <button
             type="button"
             onClick={restart}

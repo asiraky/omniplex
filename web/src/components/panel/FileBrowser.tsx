@@ -1,4 +1,13 @@
-import { ChevronRightIcon, EyeIcon, EyeOffIcon, FolderIcon, PanelRightCloseIcon, PanelRightOpenIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  EyeIcon,
+  EyeOffIcon,
+  FolderIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { IconButton } from "~/components/IconButton";
@@ -37,16 +46,25 @@ function FileRow({
       )}
     >
       <span className="size-3.5 shrink-0" aria-hidden />
-      <Icon className={cn("size-3.5 shrink-0", tone || "text-muted-foreground/70")} />
+      <Icon
+        className={cn("size-3.5 shrink-0", tone || "text-muted-foreground/70")}
+      />
       <span
         className={cn(
           "min-w-0 flex-1 truncate font-mono text-[11px]",
-          selected ? "text-foreground" : "text-muted-foreground/90 group-hover:text-foreground",
+          selected
+            ? "text-foreground"
+            : "text-muted-foreground/90 group-hover:text-foreground",
         )}
       >
         {node.name}
       </span>
-      {changed && <span className="bg-attention-foreground/70 size-1.5 shrink-0 rounded-full" title="Changed in this thread" />}
+      {changed && (
+        <span
+          className="bg-attention-foreground/70 size-1.5 shrink-0 rounded-full"
+          title="Changed in this thread"
+        />
+      )}
     </button>
   );
 }
@@ -79,10 +97,15 @@ function DirectoryRow({
         className="hover:bg-accent/50 focus-visible:ring-ring flex min-h-11 w-full items-center gap-2 rounded-md py-1 pr-2 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
       >
         <ChevronRightIcon
-          className={cn("text-muted-foreground size-3.5 shrink-0 transition-transform", open && "rotate-90")}
+          className={cn(
+            "text-muted-foreground size-3.5 shrink-0 transition-transform",
+            open && "rotate-90",
+          )}
         />
         <FolderIcon className="text-muted-foreground/70 size-3.5 shrink-0" />
-        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[11px]">{node.name}</span>
+        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[11px]">
+          {node.name}
+        </span>
       </button>
       {open &&
         node.children?.map((child) =>
@@ -137,7 +160,15 @@ function ancestors(path: string | undefined): string[] {
   return segments.slice(1).map((_, i) => segments.slice(0, i + 1).join("/"));
 }
 
-function FileView({ path, loadFile, line }: { path: string; loadFile: (path: string) => Promise<FileContent>; line?: number }) {
+function FileView({
+  path,
+  loadFile,
+  line,
+}: {
+  path: string;
+  loadFile: (path: string) => Promise<FileContent>;
+  line?: number;
+}) {
   const [file, setFile] = useState<FileContent | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -148,7 +179,8 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
     let stale = false;
     setLoading(true);
     setError("");
-    loadRef.current(path)
+    loadRef
+      .current(path)
       .then((f) => {
         if (stale) return;
         setFile(f);
@@ -187,7 +219,11 @@ function FileView({ path, loadFile, line }: { path: string; loadFile: (path: str
   }
   if (!file) return null;
   if (file.binary) {
-    return <p className="text-muted-foreground px-3 py-4 text-[12px]">Binary file — nothing to show as text.</p>;
+    return (
+      <p className="text-muted-foreground px-3 py-4 text-[12px]">
+        Binary file — nothing to show as text.
+      </p>
+    );
   }
 
   const lines = keyedLines(file.content);
@@ -262,11 +298,16 @@ export function FileBrowser({
   // A selected file's ancestors open themselves, so the tree shows where the
   // file lives rather than a closed top level. That happens during render
   // when the selection changes, so the tree never paints closed first.
-  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set(ancestors(selectedPath)));
+  const [openDirs, setOpenDirs] = useState<Set<string>>(
+    () => new Set(ancestors(selectedPath)),
+  );
   const [openedFor, setOpenedFor] = useState(selectedPath);
   if (openedFor !== selectedPath) {
     setOpenedFor(selectedPath);
-    if (selectedPath) setOpenDirs((current) => new Set([...current, ...ancestors(selectedPath)]));
+    if (selectedPath)
+      setOpenDirs(
+        (current) => new Set([...current, ...ancestors(selectedPath)]),
+      );
   }
 
   const toggle = (path: string) =>
@@ -286,7 +327,9 @@ export function FileBrowser({
         </div>
       )}
       {!error && tree?.warning && (
-        <p className="text-muted-foreground px-2 py-6 text-center text-[12px]">{tree.warning}</p>
+        <p className="text-muted-foreground px-2 py-6 text-center text-[12px]">
+          {tree.warning}
+        </p>
       )}
       {!error && !tree?.warning && nodes.length === 0 && (
         <p className="text-muted-foreground px-2 py-10 text-center text-[12px]">
@@ -318,7 +361,8 @@ export function FileBrowser({
       )}
       {tree?.truncated && (
         <p className="text-muted-foreground px-2 py-2 text-[11px] italic">
-          Only the first files are listed; the worktree holds more than the tree will show.
+          Only the first files are listed; the worktree holds more than the tree
+          will show.
         </p>
       )}
     </div>
@@ -327,7 +371,10 @@ export function FileBrowser({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-1 border-b px-2 py-1">
-        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]" title={selectedPath ?? tree?.root}>
+        <span
+          className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]"
+          title={selectedPath ?? tree?.root}
+        >
           {selectedPath ?? tree?.root ?? "…"}
         </span>
         {selectedPath && (
@@ -339,7 +386,9 @@ export function FileBrowser({
           </IconButton>
         )}
         <IconButton
-          label={includeIgnored ? "Hide gitignored files" : "Show gitignored files"}
+          label={
+            includeIgnored ? "Hide gitignored files" : "Show gitignored files"
+          }
           onClick={onToggleIgnored}
         >
           {includeIgnored ? <EyeIcon /> : <EyeOffIcon />}
@@ -357,7 +406,9 @@ export function FileBrowser({
             <FileView path={selectedPath} loadFile={loadFile} line={line} />
           </div>
           {!treeHidden && (
-            <div className="flex w-[min(16rem,44%)] shrink-0 flex-col border-l">{treePane}</div>
+            <div className="flex w-[min(16rem,44%)] shrink-0 flex-col border-l">
+              {treePane}
+            </div>
           )}
         </div>
       ) : (
