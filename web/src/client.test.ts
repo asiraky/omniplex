@@ -580,7 +580,7 @@ describe("loading down to a match", () => {
   }
 
   it("pages in from the match's turn in one request and publishes the merge", async () => {
-    const { client, published } = attached({ itemsBefore: 40, items: [{ id: "x", kind: "user" }] as ThreadState["items"] });
+    const { client, published } = attached({ itemsBefore: 40, items: [{ id: "x", kind: "message", role: "user" }] as ThreadState["items"] });
     const fetch = serve({ items: [{ id: "m", kind: "agent" }], itemsBefore: 10 });
     const next = await client.loadTo(12);
     expect(String(fetch.mock.calls[0][0])).toBe("/api/threads/a/items?before=40&from=12");
