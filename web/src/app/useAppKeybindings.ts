@@ -1,12 +1,12 @@
 import type { RefObject } from "react";
 
 import type { ComposerHandle } from "~/components/Composer";
-import { COMMAND_IDS, jumpIndex } from "~/lib/keybindings";
+import { COMMAND_IDS, DIFF_FIND_EVENT, jumpIndex } from "~/lib/keybindings";
 import type { Project, ThreadMeta } from "~/protocol";
 import { sidebarOrder, type SidebarView } from "~/sidebarOrder";
 import { rowStatus } from "~/threadStatus";
 
-import { useKeybindings, type AppKeyState, type KeyHandlers } from "./useKeybindings";
+import { focusedDiff, useKeybindings, type AppKeyState, type KeyHandlers } from "./useKeybindings";
 
 /** Wants a look: failed, unread since it stopped, or waiting on an answer. */
 export function needsAttention(s: ThreadMeta): boolean {
@@ -53,6 +53,7 @@ export function useAppKeybindings({
   onNewThreadIn,
   onNewThreadHere,
   onCopyTranscript,
+  onFindInThread,
   onStopTurn,
   onToggleSidebar,
   onTogglePanel,
@@ -73,6 +74,7 @@ export function useAppKeybindings({
   onNewThreadIn: () => void;
   onNewThreadHere: () => void;
   onCopyTranscript: () => void;
+  onFindInThread: () => void;
   onStopTurn: () => void;
   onToggleSidebar: () => void;
   onTogglePanel: () => void;
@@ -99,6 +101,11 @@ export function useAppKeybindings({
     nextAttention: () =>
       go(nextAttention(sidebarOrder(threads, projects, view, { includeCollapsed: true }), activeId)),
     copyTranscript: onCopyTranscript,
+    findInThread: onFindInThread,
+    // The surface holding focus opens its own find bar; there can be more
+    // than one mounted (docked and expanded), so it is asked, not looked up.
+    findInDiff: () =>
+      focusedDiff()?.dispatchEvent(new CustomEvent(DIFF_FIND_EVENT)),
     stopTurn: onStopTurn,
     stopTurnEscape: onStopTurn,
     focusComposer: () => composerRef.current?.focusEnd(),

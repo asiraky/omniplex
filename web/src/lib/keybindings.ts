@@ -42,7 +42,20 @@ export interface KeyContext {
   threadOpen: boolean;
   turnRunning: boolean;
   panelOpen: boolean;
+  /** The open thread's transcript is on screen, not covered by a full-page
+      screen (usage, tools) whose page the browser's own find should search. */
+  transcriptShown: boolean;
+  /** Focus is in a terminal, whose own Ctrl/⌘+F is left to the browser. */
+  terminalFocus: boolean;
+  /** Focus is in the diff panel, whose find takes Ctrl/⌘+F. */
+  diffFocus: boolean;
 }
+
+/**
+ * Asks the diff surface holding focus to open its find bar. Dispatched on the
+ * `[data-diff-surface]` root, which listens for it.
+ */
+export const DIFF_FIND_EVENT = "omniplex:diff-find";
 
 export type CommandGroup = "Threads" | "Composer" | "Panels" | "App";
 
@@ -144,6 +157,16 @@ export const COMMANDS = {
     app: [{ key: "arrowdown", alt: true, shift: true }],
     browser: [{ key: "arrowdown", alt: true, shift: true }],
   },
+  // Both take Ctrl/⌘+F, split by where focus is: the diff panel's find in the
+  // diff, thread find everywhere else in an open thread, and in a terminal
+  // neither, so the browser's own find runs.
+  findInThread: {
+    label: "Find in thread",
+    group: "Threads",
+    app: [mod("f")],
+    browser: [mod("f")],
+    guard: (ctx) => ctx.transcriptShown && !ctx.terminalFocus && !ctx.diffFocus,
+  },
   copyTranscript: {
     label: "Copy transcript",
     group: "Threads",
@@ -219,6 +242,15 @@ export const COMMANDS = {
     app: [mod("d", { shift: true })],
     browser: [mod("d", { shift: true })],
     guard: (ctx) => ctx.threadOpen,
+  },
+  findInDiff: {
+    label: "Find in diff",
+    group: "Panels",
+    app: [mod("f")],
+    browser: [mod("f")],
+    guard: (ctx) => ctx.diffFocus,
+    // On a phone the panel is a sheet, a dialog; focus inside it is in the diff.
+    inDialog: (ctx) => ctx.diffFocus,
   },
   closePanel: {
     // The desktop app owns ⌘W. Closing the window would lose an unsent draft's

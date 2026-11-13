@@ -7,6 +7,7 @@ import { useAddToChat, useAppendToChat } from "./app/useAddToChat";
 import { useAppKeybindings } from "./app/useAppKeybindings";
 import { useBackgroundAlerts } from "./app/useBackgroundAlerts";
 import { useComposerDrafts } from "./app/useComposerDrafts";
+import { useFindBar } from "./app/useFindBar";
 import { useCompareThreads, useNewThread } from "./app/useNewThread";
 import { usePalette } from "./app/usePalette";
 import { usePaletteActions } from "./app/usePaletteActions";
@@ -189,12 +190,17 @@ export function App() {
     screens.setSettings({});
   };
   const copyTranscript = () => void copy.copyAll();
+  // The open thread's find bar: the header's phone menu, the palette and
+  // Ctrl/⌘+F all open it, and a thread switch closes it.
+  const find = useFindBar(activeId);
+  const transcriptShown = attached && !screens.fullPage;
 
   useAppKeybindings({
     app: {
       paletteOpen: palette.open,
       helpOpen: palette.helpOpen,
       threadOpen: attached,
+      transcriptShown,
       turnRunning,
       panelOpen: panel.open,
     },
@@ -208,6 +214,7 @@ export function App() {
     onNewThreadIn: newThreadIn,
     onNewThreadHere: newThreadHere,
     onCopyTranscript: copyTranscript,
+    onFindInThread: find.show,
     onStopTurn: commands.cancel,
     onToggleSidebar: toggleSidebar,
     onTogglePanel: panel.toggle,
@@ -222,6 +229,7 @@ export function App() {
   const actions = usePaletteActions({
     meta,
     threadOpen: attached,
+    transcriptShown,
     turnRunning,
     // The full-page screens unmount the composer; Settings is a dialog over it.
     composerOpen: (attached || !!nav.creating) && !screens.fullPage,
@@ -229,6 +237,7 @@ export function App() {
     onSetPinned: setPinned,
     onSetUnread: setThreadUnread,
     onCopyTranscript: copyTranscript,
+    onFindInThread: find.show,
     onCopyLink: copyThreadLink,
     onDelete: deletion.deleteFlow.ask,
     onTogglePanel: panel.toggle,
@@ -406,6 +415,7 @@ export function App() {
             link={{ copied: linkCopied, copy: copyThreadLink }}
             panel={panel}
             onShowMcp={() => screens.setTools({ tab: "mcp" })}
+            onFind={find.show}
           />
 
           {attached ? (
@@ -431,6 +441,7 @@ export function App() {
               turnStatus={wire.turnStatus}
               // Not on a phone: the cursor there would raise the keyboard over the new draft.
               onSendAndNewThread={(preset) => startNew({ ...preset, focus: isDesktop })}
+              find={find}
             />
           ) : nav.creating ? (
             <ThreadDraft

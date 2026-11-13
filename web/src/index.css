@@ -51,6 +51,9 @@
   --attention-foreground: oklch(0.42 0.11 70);
   --attention-surface: oklch(0.97 0.03 80);
   --success: oklch(0.6 0.13 155);
+  /* Find in thread's highlighter: a yellow that reads over the canvas, a
+     card and the user bubble alike, under text left its own colour. */
+  --find-match: oklch(0.89 0.15 95);
 
   --chart-1: oklch(0.52 0.17 275);
   --chart-2: oklch(0.6 0.13 185);
@@ -97,6 +100,7 @@
   --attention-foreground: oklch(0.84 0.11 78);
   --attention-surface: oklch(0.31 0.05 75);
   --success: oklch(0.74 0.14 160);
+  --find-match: oklch(0.58 0.12 85 / 0.75);
 
   --chart-1: oklch(0.7 0.17 275);
   --chart-2: oklch(0.7 0.13 185);
@@ -235,6 +239,12 @@
 
   ::selection {
     background: color-mix(in oklch, var(--primary) 30%, transparent);
+  }
+
+  /* The current match's occurrences, painted by findReveal.tsx without
+     touching the DOM the Markdown renderer owns. */
+  ::highlight(thread-find) {
+    background-color: var(--find-match);
   }
 }
 
@@ -432,6 +442,25 @@
   [data-setting][data-found] {
     border-radius: 0.375rem;
     animation: settingFound 1.8s ease-out;
+  }
+
+  /* Find in thread's fallback where the Custom Highlight API is missing (or
+     the match is not in the drawn text): the same soft wash, on the item. */
+  [data-find-flash] {
+    border-radius: 0.5rem;
+    animation: findFlash 1.4s ease-out;
+  }
+
+  @keyframes findFlash {
+    0%,
+    40% {
+      background-color: var(--find-match);
+      box-shadow: 0 0 0 6px var(--find-match);
+    }
+    to {
+      background-color: transparent;
+      box-shadow: 0 0 0 6px transparent;
+    }
   }
 
   @keyframes settingFound {

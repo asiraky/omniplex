@@ -71,6 +71,36 @@ func (s *State) WirePage(before, maxTop int) ([]Item, int, []Job) {
 	return page, start, s.keptJobs(s.jobsSpawnedBy(page))
 }
 
+// WireRange returns every item from the start of the turn holding index
+// `from` up to index `before`, trimmed like WirePage, the index it starts at,
+// and the jobs its items spawned. It is how a client jumps to an item above
+// its window in one fetch. A child item at `from` counts as its top-level
+// ancestor's position, so the row it folds under comes along. A `from` at or
+// past `before` is already in the client's window: the range is empty and
+// starts at `before`.
+func (s *State) WireRange(from, before int) ([]Item, int, []Job) {
+	before = min(max(before, 0), len(s.Items))
+	from = max(from, 0)
+	if from >= before {
+		return []Item{}, before, []Job{}
+	}
+	if s.itemIndex == nil {
+		s.reindex()
+	}
+	for from > 0 && s.Items[from].ParentID != "" {
+		// A parent always precedes its children; one missing from the
+		// timeline leaves the nearest earlier item to stand in.
+		if p, ok := s.itemIndex[s.Items[from].ParentID]; ok && p < from {
+			from = p
+		} else {
+			from--
+		}
+	}
+	start := turnStart(s.Items, from)
+	page := s.wireItems(start, before)
+	return page, start, s.keptJobs(s.jobsSpawnedBy(page))
+}
+
 // WireChildren returns every child item of parentID, Input-capped, in
 // timeline order.
 func (s *State) WireChildren(parentID string) []Item {

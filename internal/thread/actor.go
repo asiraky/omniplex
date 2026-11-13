@@ -659,6 +659,45 @@ func (a *Actor) ItemsPage(ctx context.Context, before, maxTop int) ([]projection
 	return p.items, p.start, p.jobs, nil
 }
 
+// ItemsRange is every item from the start of the turn holding index `from` up
+// to `before`, the index it starts at, and the jobs its items spawned. See
+// projection.State.WireRange.
+func (a *Actor) ItemsRange(ctx context.Context, from, before int) ([]projection.Item, int, []projection.Job, error) {
+	type page struct {
+		items []projection.Item
+		start int
+		jobs  []projection.Job
+	}
+	v, err := a.read(ctx, func(s *projection.State) any {
+		items, start, jobs := s.WireRange(from, before)
+		return page{items, start, jobs}
+	})
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	p := v.(page)
+	return p.items, p.start, p.jobs, nil
+}
+
+// Search finds the items whose text holds q over the whole timeline: the
+// newest projection.SearchMatchCap matches, oldest first, and the true count.
+// See projection.State.Search.
+func (a *Actor) Search(ctx context.Context, q string) ([]projection.Match, int, error) {
+	type result struct {
+		matches []projection.Match
+		total   int
+	}
+	v, err := a.read(ctx, func(s *projection.State) any {
+		matches, total := s.Search(q, projection.SearchMatchCap)
+		return result{matches, total}
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	r := v.(result)
+	return r.matches, r.total, nil
+}
+
 // Children is every child item of one parent, which a wire copy leaves out
 // or trims. See projection.State.WireChildren.
 func (a *Actor) Children(ctx context.Context, parentID string) ([]projection.Item, error) {

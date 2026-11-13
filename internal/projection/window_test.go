@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/proto"
@@ -145,4 +146,79 @@ func ids(items []Item) []string {
 		out[i] = it.ID
 	}
 	return out
+}
+
+// A jump lands at the start of the turn holding its target, never mid-turn.
+func TestWireRangeSnapsToTurnStart(t *testing.T) {
+	s := New("s")
+	s.Items = []Item{
+		item("a", "t1", ""),
+		item("b", "t2", ""),
+		item("compact", "", ""), // mid-turn compaction notice
+		item("c", "t2", ""),
+		item("d", "t3", ""),
+		item("e", "t4", ""),
+	}
+	s.reindex()
+	// d is t3's first item: nothing to snap.
+	if page, start, _ := s.WireRange(4, 5); start != 4 || !slices.Equal(ids(page), []string{"d"}) {
+		t.Fatalf("page=%v start=%d", ids(page), start)
+	}
+	// c is mid-t2, past a turnless notice: the walk hops it to b.
+	if page, start, _ := s.WireRange(3, 5); start != 1 || !slices.Equal(ids(page), []string{"b", "compact", "c", "d"}) {
+		t.Fatalf("page=%v start=%d", ids(page), start)
+	}
+}
+
+func TestWireRangeLeavesBetweenTurnNoticesOut(t *testing.T) {
+	s := New("s")
+	s.Items = []Item{
+		item("a", "t1", ""),
+		item("compact", "", ""),
+		item("b", "t2", ""),
+		item("c", "t2", ""),
+	}
+	s.reindex()
+	if page, start, _ := s.WireRange(3, 4); start != 2 || !slices.Equal(ids(page), []string{"b", "c"}) {
+		t.Fatalf("page=%v start=%d", ids(page), start)
+	}
+}
+
+// A child item can sit in a later turn than the call that spawned it — a
+// background agent keeps going — so the range reaches back to the parent's
+// turn, not the child's.
+func TestWireRangeFromAChildReachesItsParent(t *testing.T) {
+	s := New("s")
+	s.Items = []Item{
+		item("a", "t1", ""),
+		tool("task", "t2", proto.StatusInProgress),
+		item("b", "t3", ""),
+		item("inner", "t3", "task"),
+	}
+	s.reindex()
+	if page, start, _ := s.WireRange(3, 4); start != 1 || page[0].ID != "task" {
+		t.Fatalf("page=%v start=%d", ids(page), start)
+	}
+}
+
+// What the client already holds is never sent again, and cursors out of
+// range clamp rather than panic.
+func TestWireRangeClamps(t *testing.T) {
+	s := New("s")
+	s.Items = []Item{item("a", "t1", ""), item("b", "t2", ""), item("c", "t3", "")}
+	s.reindex()
+	for _, tc := range []struct{ from, before, start int }{
+		{2, 2, 2}, // target is the first loaded item
+		{5, 1, 1}, // target below the cursor
+		{1, -3, 0},
+		{9, 99, 3},
+	} {
+		page, start, jobs := s.WireRange(tc.from, tc.before)
+		if start != tc.start || len(page) != 0 || page == nil || jobs == nil {
+			t.Errorf("WireRange(%d, %d) = %v start %d jobs %v, want empty at %d", tc.from, tc.before, ids(page), start, jobs, tc.start)
+		}
+	}
+	if page, start, _ := s.WireRange(-4, 99); start != 0 || len(page) != 3 {
+		t.Fatalf("negative from: page=%v start=%d", ids(page), start)
+	}
 }

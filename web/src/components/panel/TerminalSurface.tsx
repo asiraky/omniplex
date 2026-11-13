@@ -176,7 +176,8 @@ export function TerminalSurface({
   };
 
   return (
-    <div className="group/terminal relative h-full min-h-0 bg-black/90 p-1.5">
+    // Marked so Ctrl/⌘+F in here is left to the browser, not thread find.
+    <div data-terminal="" className="group/terminal relative h-full min-h-0 bg-black/90 p-1.5">
       <div ref={hostRef} className="h-full min-h-0 [&_.xterm]:h-full" />
       <TerminalActions
         reconnecting={status === "reconnecting" && !ended}

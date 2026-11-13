@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -26,6 +27,7 @@ import (
 	"github.com/asiraky/omniplex/internal/endpoints"
 	"github.com/asiraky/omniplex/internal/mcp"
 	"github.com/asiraky/omniplex/internal/overlay"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/push"
 	"github.com/asiraky/omniplex/internal/setup"
 	"github.com/asiraky/omniplex/internal/skills"
@@ -315,24 +317,64 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, "before must be a non-negative integer", http.StatusBadRequest)
 			return
 		}
+		from := -1
+		if v := r.URL.Query().Get("from"); v != "" {
+			if from, err = strconv.Atoi(v); err != nil || from < 0 {
+				http.Error(w, "from must be a non-negative integer", http.StatusBadRequest)
+				return
+			}
+		}
 		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		count := PageItems
-		if r.URL.Query().Get("count") == "all" {
-			// No more top-level items than items sit above the cursor.
-			count = before
+		var items []projection.Item
+		var start int
+		var jobs []projection.Job
+		if from >= 0 {
+			items, start, jobs, err = actor.ItemsRange(r.Context(), from, before)
+		} else {
+			count := PageItems
+			if r.URL.Query().Get("count") == "all" {
+				// No more top-level items than items sit above the cursor.
+				count = before
+			}
+			items, start, jobs, err = actor.ItemsPage(r.Context(), before, count)
 		}
-		items, start, jobs, err := actor.ItemsPage(r.Context(), before, count)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		n := writeSized(w, map[string]any{"items": orEmpty(items), "itemsBefore": start, "jobs": orEmpty(jobs)})
-		s.logf("thread_items thread=%s duration_ms=%d before=%d items=%d items_before=%d jobs=%d payload_bytes=%d",
-			r.PathValue("id"), time.Since(started).Milliseconds(), before, len(items), start, len(jobs), n)
+		s.logf("thread_items thread=%s duration_ms=%d before=%d from=%d items=%d items_before=%d jobs=%d payload_bytes=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), before, from, len(items), start, len(jobs), n)
+	})
+
+	// Find in thread: the items whose text holds q, over the whole timeline
+	// rather than the client's window. Positions only — the client jumps to
+	// one with /items?from= — so the reply stays a few KB.
+	mux.HandleFunc("GET /api/threads/{id}/search", func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		q := r.URL.Query().Get("q")
+		if utf8.RuneCountInString(q) < searchMinRunes {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("q must be at least %d characters", searchMinRunes))
+			return
+		}
+		actor, err := s.mgr.View(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		matches, total, err := actor.Search(r.Context(), q)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		n := writeSized(w, map[string]any{"matches": orEmpty(matches), "total": total})
+		// The query is the user's own words, so only its length is logged.
+		s.logf("thread_search thread=%s duration_ms=%d query_runes=%d matches=%d total=%d payload_bytes=%d",
+			r.PathValue("id"), time.Since(started).Milliseconds(), utf8.RuneCountInString(q), len(matches), total, n)
 	})
 
 	// Every child item of one parent: a wire copy keeps only the tail of a
@@ -515,6 +557,10 @@ func wantsHTML(r *http.Request) bool {
 // Images do not ride this path — they are uploaded over HTTP and referenced by
 // id — so this bounds text alone.
 const maxWSMessageBytes = 1 << 20
+
+// searchMinRunes is the shortest query find in thread runs. One character
+// matches nearly every message and tells the reader nothing.
+const searchMinRunes = 2
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	// Thread snapshots and tool output are highly repetitive JSON. Context

@@ -1325,7 +1325,7 @@ describe("sending and starting a new thread", () => {
 });
 
 describe("⇧⌘↵ from an open thread's composer", () => {
-  const app = { paletteOpen: false, helpOpen: false, threadOpen: true, turnRunning: false, panelOpen: false };
+  const app = { paletteOpen: false, helpOpen: false, threadOpen: true, transcriptShown: true, turnRunning: false, panelOpen: false };
 
   function Keyed(props: React.ComponentProps<typeof Composer>) {
     const ref = useRef<ComposerHandle>(null);

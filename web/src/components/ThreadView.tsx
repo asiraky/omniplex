@@ -5,6 +5,7 @@ import { useStash } from "~/app/stashStore";
 import { useFailedSend, useWaitingSend } from "~/app/outbox";
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { ComposerDrafts } from "~/app/useComposerDrafts";
+import type { FindBar } from "~/app/useFindBar";
 import { useOverlayHeight } from "~/app/useOverlayHeight";
 import type { PanelControls } from "~/app/usePanel";
 import type { RecentSkills } from "~/app/useRecentSkills";
@@ -22,6 +23,7 @@ import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
 import { quoteInto, ReplyContext } from "~/lib/reply";
 import { RewindContext, rewindTarget, type RewindTarget } from "~/lib/rewind";
+import type { ThreadFindControls } from "~/lib/threadFind";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
 import { phaseTakesMessages } from "~/threadStatus";
@@ -94,6 +96,7 @@ export function ThreadView({
   status,
   turnStatus,
   onSendAndNewThread,
+  find,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -123,6 +126,8 @@ export function ThreadView({
   turnStatus: TurnStatus | null;
   /** A message just went: open a new draft on this thread's project and agent. */
   onSendAndNewThread?: (preset: DraftPreset) => void;
+  /** The find bar, opened from the header menu, the palette or Ctrl/⌘+F. */
+  find: FindBar;
 }) {
   const { layoutRef, overlayRef } = useOverlayHeight(activeId);
   const stateTitle = useThread(useThreadStore(), titleOf);
@@ -224,6 +229,12 @@ export function ThreadView({
   const onFinishThread = useCallback(() => {
     if (metaRef.current) onFinish(metaRef.current);
   }, [metaRef, onFinish]);
+  const { searchThread, loadItemsTo } = commands;
+  const { open: findOpen, nonce: findNonce, close: closeFind } = find;
+  const findControls = useMemo<ThreadFindControls>(
+    () => ({ open: findOpen, nonce: findNonce, close: closeFind, search: searchThread, loadTo: loadItemsTo }),
+    [findOpen, findNonce, closeFind, searchThread, loadItemsTo],
+  );
   // Where this thread was scrolled when it was opened, which is all the
   // transcript reads of it, on mount. Asked again only for a new thread (the
   // transcript is keyed on it), so a scroll recorded since does not hand the
@@ -278,6 +289,7 @@ export function ThreadView({
                 onCardSignIn={setSignIn}
                 describeSettings={describe}
                 turnStatus={turnStatus}
+                find={findControls}
               />
             </RewindContext.Provider>
           </ReplyContext.Provider>

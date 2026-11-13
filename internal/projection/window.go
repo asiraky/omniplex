@@ -24,23 +24,29 @@ func windowStart(items []Item, end, maxTop int) int {
 		}
 		start--
 	}
-	if start == 0 || start >= len(items) {
-		return start
+	return turnStart(items, start)
+}
+
+// turnStart walks back from i to the start of the turn items[i] belongs to.
+// A compaction notice has no turn and can land mid-turn, so the walk hops
+// over turnless runs: if what lies beyond one is the same turn, the notice
+// and everything back to the turn's start come along. If it is a different
+// turn — the notice sat between turns — the walk stops and leaves it out. An
+// i outside the timeline, or on a turnless item, comes back unchanged.
+func turnStart(items []Item, i int) int {
+	if i <= 0 || i >= len(items) {
+		return i
 	}
-	// A compaction notice has no turn and can land mid-turn, so the walk hops
-	// over turnless runs: if what lies beyond one is the same turn, the notice
-	// and everything back to the turn's start come along. If it is a different
-	// turn — the notice sat between turns — the walk stops and leaves it out.
-	t := items[start].TurnID
-	for start > 0 && t != "" {
-		j := start - 1
+	t := items[i].TurnID
+	for i > 0 && t != "" {
+		j := i - 1
 		for j >= 0 && items[j].TurnID == "" {
 			j--
 		}
 		if j < 0 || items[j].TurnID != t {
 			break
 		}
-		start = j
+		i = j
 	}
-	return start
+	return i
 }

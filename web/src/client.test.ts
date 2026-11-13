@@ -567,6 +567,105 @@ describe("loading older items", () => {
   });
 });
 
+describe("loading down to a match", () => {
+  /** A fetch that answers each call only when the test says so. */
+  function deferredFetch() {
+    const answers: ((body: unknown) => void)[] = [];
+    const fetch = vi.fn(
+      (_input: RequestInfo | URL) =>
+        new Promise<Response>((resolve) => answers.push((body) => resolve(new Response(JSON.stringify(body))))),
+    );
+    vi.stubGlobal("fetch", fetch);
+    return { fetch, answer: (i: number, body: unknown) => answers[i](body) };
+  }
+
+  it("pages in from the match's turn in one request and publishes the merge", async () => {
+    const { client, published } = attached({ itemsBefore: 40, items: [{ id: "x", kind: "message", role: "user" }] as ThreadState["items"] });
+    const fetch = serve({ items: [{ id: "m", kind: "agent" }], itemsBefore: 10 });
+    const next = await client.loadTo(12);
+    expect(String(fetch.mock.calls[0][0])).toBe("/api/threads/a/items?before=40&from=12");
+    expect(next?.itemsBefore).toBe(10);
+    expect(next?.items.map((i) => i.id)).toEqual(["m", "x"]);
+    expect(published).toEqual([next]);
+  });
+
+  it("resolves the current state without fetching when the match is already loaded", async () => {
+    const { client, published } = attached({ itemsBefore: 5 });
+    const fetch = serve({});
+    expect((await client.loadTo(5))?.itemsBefore).toBe(5);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(published).toHaveLength(0);
+  });
+
+  it("drops a page whose cursor a snapshot moved while it was on its way", async () => {
+    const { client, published, frame } = attached({ itemsBefore: 40 });
+    const { fetch, answer } = deferredFetch();
+    const request = client.loadTo(3);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    frame({ type: "snapshot", threadId: "a", seq: 9, state: { ...emptyState("a"), seq: 9, itemsBefore: 60 } });
+    answer(0, { items: [{ id: "m", kind: "agent" }], itemsBefore: 0 });
+    expect(await request).toBeNull();
+    expect(published).toHaveLength(0);
+  });
+
+  it("waits out a scroll page in flight, re-reads the cursor, and holds the slot against the next", async () => {
+    const { client } = attached({ itemsBefore: 50 });
+    const { fetch, answer } = deferredFetch();
+    void client.loadOlder();
+    const request = client.loadTo(10);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    answer(0, { items: [{ id: "p1", kind: "agent" }], itemsBefore: 30 });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(String(fetch.mock.calls[1][0])).toBe("/api/threads/a/items?before=30&from=10");
+    // A scroll page now would splice in under the jump's.
+    expect(await client.loadOlder()).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    answer(1, { items: [{ id: "p0", kind: "agent" }], itemsBefore: 5 });
+    const next = await request;
+    expect(next?.itemsBefore).toBe(5);
+    expect(next?.items.map((i) => i.id)).toEqual(["p0", "p1"]);
+  });
+
+  it("fetches nothing for a thread switched to while it waited", async () => {
+    const { client } = attached({ itemsBefore: 50 });
+    const { fetch, answer } = deferredFetch();
+    void client.loadOlder();
+    const request = client.loadTo(10);
+    client.prime({ ...emptyState("b"), itemsBefore: 50 });
+    answer(0, { items: [{ id: "p1", kind: "agent" }], itemsBefore: 30 });
+    expect(await request).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("needs no request when the scroll page it waited on already covered the match", async () => {
+    const { client } = attached({ itemsBefore: 50 });
+    const { fetch, answer } = deferredFetch();
+    void client.loadOlder();
+    const request = client.loadTo(35);
+    answer(0, { items: [{ id: "p1", kind: "agent" }], itemsBefore: 30 });
+    expect((await request)?.itemsBefore).toBe(30);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("search", () => {
+  it("asks for the attached thread with the query encoded", async () => {
+    const { client } = attached();
+    const fetch = serve({ matches: [{ id: "m", index: 3 }], total: 7 });
+    const result = await client.search("a b&c", new AbortController().signal);
+    expect(String(fetch.mock.calls[0][0])).toBe("/api/threads/a/search?q=a%20b%26c");
+    expect(result).toEqual({ matches: [{ id: "m", index: 3 }], total: 7 });
+  });
+
+  it("throws when the server refuses", async () => {
+    const { client } = attached();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 400 })));
+    await expect(client.search("a", new AbortController().signal)).rejects.toThrow("400");
+  });
+});
+
 describe("loading all jobs", () => {
   it("takes the server's list, prefers the client's copies, keeps jobs it did not list", async () => {
     const { client, published } = attached({

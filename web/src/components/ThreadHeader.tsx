@@ -9,8 +9,9 @@ import {
   PinIcon,
   PinOffIcon,
   PlugIcon,
+  SearchIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import type { PanelControls } from "~/app/usePanel";
@@ -52,6 +53,8 @@ type Actions = {
   panel: PanelControls;
   /** The Skills page on its MCP tab, which asks this thread's session. */
   onShowMcp: () => void;
+  /** Opens the transcript's find bar, which takes focus. */
+  onFind: () => void;
 };
 
 /** Copying a thread's /thread/<id> link, and whether one was just copied. */
@@ -72,6 +75,7 @@ export function ThreadHeader({
   link,
   panel,
   onShowMcp,
+  onFind,
 }: {
   sidebarOpen: boolean;
   onShowSidebar: () => void;
@@ -86,6 +90,7 @@ export function ThreadHeader({
   link: ThreadLinkCopy;
   panel: PanelControls;
   onShowMcp: () => void;
+  onFind: () => void;
 }) {
   // The thread the title field is open on: switching threads closes it rather
   // than opening the next thread's name for editing.
@@ -93,7 +98,7 @@ export function ThreadHeader({
   // The attached thread, as far as the bar shows it: a frame that changes
   // neither field leaves the header alone.
   const thread = useThread(useThreadStore(), headerFields, shallow);
-  const actions = thread && { activeId, meta, onSetPinned, copy, link, panel, onShowMcp };
+  const actions = thread && { activeId, meta, onSetPinned, copy, link, panel, onShowMcp, onFind };
   return (
     <header className="px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       <div className="flex items-center gap-2">
@@ -275,8 +280,10 @@ function DesktopActions({ actions }: { actions: Actions }) {
 // A phone has no room for a row of buttons, so the same actions sit in one
 // overflow menu.
 function PhoneActions({ actions }: { actions: Actions }) {
-  const { activeId, copy, link, panel, onShowMcp } = actions;
+  const { activeId, copy, link, panel, onShowMcp, onFind } = actions;
   const pin = threadPin(actions);
+  // Set by "Find in thread", read as the menu closes in its wake.
+  const finding = useRef(false);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -290,7 +297,29 @@ function PhoneActions({ actions }: { actions: Actions }) {
           <JobsBadge className="top-0.5 right-0.5" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-48">
+      <DropdownMenuContent
+        align="end"
+        className="min-w-48"
+        onCloseAutoFocus={(e) => {
+          // The menu traps focus while open, so the field the bar focused on
+          // opening lost it straight back; and closing would hand it to the
+          // trigger. Ask again now the menu has let go: the bar refocuses its
+          // field on every ask.
+          if (!finding.current) return;
+          finding.current = false;
+          e.preventDefault();
+          onFind();
+        }}
+      >
+        <DropdownMenuItem
+          onSelect={() => {
+            finding.current = true;
+            onFind();
+          }}
+        >
+          <SearchIcon /> Find in thread
+          <ItemShortcut command="findInThread" />
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={panel.show}>
           <PanelRightIcon /> Open panel
           <ItemShortcut command="togglePanel" />

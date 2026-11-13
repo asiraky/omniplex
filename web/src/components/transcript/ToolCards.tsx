@@ -24,6 +24,7 @@ import { cn } from "~/lib/utils";
 import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
+import { useRevealOpen } from "./findReveal";
 import { LiveTail } from "./LiveTail";
 import type { FullToolBody } from "./LoadFullOutput";
 import { ToolImages } from "./ToolImages";
@@ -276,14 +277,16 @@ function ExpandedItems({ threadId, items }: { threadId: string; items: Item[] })
         item.kind === "tool" ? (
           <ToolCard key={item.id} threadId={threadId} item={item} />
         ) : (
-          <Markdown
-            key={item.id}
-            text={item.text ?? ""}
-            className={cn(
-              "text-[13px] leading-relaxed break-words",
-              item.contentKind === "thought" ? "text-thought italic" : "text-muted-foreground",
-            )}
-          />
+          // Wrapped only to carry the id find in thread jumps to.
+          <div key={item.id} data-item-id={item.id}>
+            <Markdown
+              text={item.text ?? ""}
+              className={cn(
+                "text-[13px] leading-relaxed break-words",
+                item.contentKind === "thought" ? "text-thought italic" : "text-muted-foreground",
+              )}
+            />
+          </div>
         ),
       )}
     </div>
@@ -381,7 +384,8 @@ export function TurnFold({
   items: Item[];
   continued?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  // Opens itself when find in thread jumps to something in its hidden middle.
+  const [open, setOpen] = useRevealOpen((id) => items.some((i) => i.id === id));
   const images = useMemo(() => toolImages(items), [items]);
 
   return (

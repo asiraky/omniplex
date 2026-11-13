@@ -15,7 +15,7 @@ export type KeyHandlers = Partial<Record<CommandId, () => void>>;
 /** The part of the context only the app knows; the rest is read off the DOM. */
 export type AppKeyState = Pick<
   KeyContext,
-  "paletteOpen" | "helpOpen" | "threadOpen" | "turnRunning" | "panelOpen"
+  "paletteOpen" | "helpOpen" | "threadOpen" | "transcriptShown" | "turnRunning" | "panelOpen"
 >;
 
 /**
@@ -54,6 +54,20 @@ export function keyboardLayerOpen(): boolean {
   return !!document.querySelector(DIALOGS);
 }
 
+/**
+ * The diff surface focus is in, if any. Clicking diff text focuses the
+ * surface itself; on a phone the panel is a sheet that takes focus on open,
+ * and while it shows the diff, focus on the sheet is focus in the diff.
+ */
+export function focusedDiff(): Element | null {
+  const active = document.activeElement;
+  if (!active) return null;
+  return (
+    active.closest("[data-diff-surface]") ??
+    (active.matches('[role="dialog"]') ? active.querySelector("[data-diff-surface]") : null)
+  );
+}
+
 /** Reads the moment's context: focus and open layers from the DOM, the rest from the app. */
 export function readKeyContext(app: AppKeyState): KeyContext {
   const active = document.activeElement;
@@ -62,6 +76,8 @@ export function readKeyContext(app: AppKeyState): KeyContext {
     electronApp: isElectronApp(),
     editableFocus: isEditable(active),
     composerFocus: !!active?.matches("[data-composer-input]"),
+    terminalFocus: !!active?.closest(".xterm, [data-terminal]"),
+    diffFocus: !!focusedDiff(),
     dialogOpen: keyboardLayerOpen(),
     modelPickerOpen: !!document.querySelector('[aria-label="Harness and model"][aria-expanded="true"]'),
   };

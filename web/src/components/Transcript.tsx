@@ -1,9 +1,13 @@
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, XIcon } from "lucide-react";
 import {
   lazy,
   memo,
   Suspense,
+  useCallback,
+  useEffect,
   useLayoutEffect,
+  useRef,
+  useState,
   type ComponentProps,
   type ComponentType,
 } from "react";
@@ -13,6 +17,8 @@ import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
+import { chunk } from "~/lib/chunk";
+import type { ThreadFindControls, ThreadMatch } from "~/lib/threadFind";
 import { cn } from "~/lib/utils";
 import type {
   ComposerItem,
@@ -25,9 +31,12 @@ import type {
 } from "~/protocol";
 import { rowKey, rowTurnID } from "~/rows";
 import { useAutoScroll } from "~/useAutoScroll";
+import { useChunk, useIdlePrefetch } from "~/useChunk";
+import { useLatest } from "~/useLatest";
 
 import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
+import { FindRevealProvider, type Reveal } from "./transcript/findReveal";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import type { ScrollPosition } from "./transcript/scrollAnchor";
@@ -57,6 +66,29 @@ const InterruptedCard = lazy(() =>
     () => ({ default: CardUnavailable }),
   ),
 );
+
+// The find bar opens on demand, so its code stays out of the initial bundle.
+// It is fetched once the page settles, so opening it mounts the field at once
+// (the phone keyboard only comes up for a field focused straight away).
+const findBar = chunk(() => import("./transcript/FindBar").then((m) => m.ThreadFindBar));
+// What paints a jump's match; every jump waits for it, as it does a page.
+const findPaint = chunk(() => import("./transcript/findPaint"));
+
+function FindBarSlot(props: ComponentProps<typeof import("./transcript/FindBar").ThreadFindBar>) {
+  useIdlePrefetch(findBar, findPaint);
+  const { loaded: Bar, failed } = useChunk(findBar, props.controls.open);
+  if (!props.controls.open) return null;
+  if (Bar) return <Bar {...props} />;
+  if (!failed) return null;
+  return (
+    <div className="bg-background flex shrink-0 items-center gap-1 border-b px-2 py-1 md:px-3">
+      <p className="text-destructive flex-1 text-[13px]">Find didn't load. Reload to try again.</p>
+      <IconButton label="Close find" onClick={props.controls.close}>
+        <XIcon />
+      </IconButton>
+    </div>
+  );
+}
 
 // Room reserved beneath the transcript's tail: the overlay's measured height
 // (`--composer-h`, published by App from a ResizeObserver) plus a headroom band
@@ -143,6 +175,8 @@ type TranscriptProps = {
   describeSettings?: (model: string, effort: string) => string;
   /** Why the running turn has gone quiet (retrying, compacting), if it has. */
   turnStatus?: TurnStatus | null;
+  /** Find in thread. Omitted or closed, there is no bar and no searching. */
+  find?: ThreadFindControls;
 };
 
 // Anchored to the scroller rather than to the content, so it sits in
@@ -171,6 +205,100 @@ function ScrollToBottom({ onClick }: { onClick: () => void }) {
       </IconButton>
     </div>
   );
+}
+
+/**
+ * Find in thread's jumps, on the transcript's side. A match above the loaded
+ * window is paged in first, in one request. The jump then sets `reveal`, which
+ * opens whatever hides the item (a fold, a plan, a clamped prompt) in the same
+ * render; once that has committed, the item is scrolled to the middle of the
+ * view and its occurrences painted, or flashed where they cannot be.
+ *
+ * The paint is redone on every redraw while the jump stands, because a
+ * re-rendered message has new text nodes and the old ranges are dead with
+ * them. Text streaming in between redraws can still lose it until the next.
+ */
+function useFindJump(
+  scrollerRef: { current: HTMLDivElement | null },
+  state: TranscriptState,
+  find: ThreadFindControls | undefined,
+  release: () => void,
+) {
+  const [reveal, setReveal] = useState<Reveal | null>(null);
+  const query = useRef("");
+  const jumped = useRef<Reveal | null>(null);
+  // Bumped by every jump and every clear, so a page that lands after either
+  // has been superseded is not jumped to.
+  const seq = useRef(0);
+  const itemsBefore = useLatest(state.itemsBefore ?? 0);
+  const loadTo = useLatest(find?.loadTo);
+
+  // Resolves false when the match's page could not be loaded (a failed fetch,
+  // or a page dropped as stale after a resync), or the painter's code could
+  // not, so the bar can say so. A jump superseded by a newer one or a clear is
+  // not a failure.
+  const onJump = useCallback(
+    async (match: ThreadMatch, q: string): Promise<boolean> => {
+      const mine = ++seq.current;
+      const [loaded, paint] = await Promise.all([
+        match.index < itemsBefore.current ? loadTo.current?.(match.index) : true,
+        findPaint.load(),
+      ]);
+      if (mine !== seq.current) return true;
+      if (!loaded || !paint) return false;
+      query.current = q;
+      setReveal({ id: match.id });
+      return true;
+    },
+    [itemsBefore, loadTo],
+  );
+
+  const onClear = useCallback(() => {
+    seq.current++;
+    jumped.current = null;
+    findPaint.get()?.clearHighlight();
+    setReveal(null);
+  }, []);
+
+  // Nothing was painted if the painter never loaded.
+  useEffect(() => () => findPaint.get()?.clearHighlight(), []);
+
+  // On the state as well as the reveal: a paged-in match may not have drawn
+  // yet when the jump is asked for, and a redraw kills the painted ranges.
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    // A reveal is only set once the painter has loaded.
+    const paint = findPaint.get();
+    if (!reveal || !scroller || !paint) return;
+    const el = paint.findItem(scroller, reveal.id);
+    if (!el) return;
+    const { ranges, painted } = paint.highlightIn(el, query.current);
+    if (jumped.current === reveal) return;
+    jumped.current = reveal;
+    // The pin would snap the view back to the tail on the next redraw.
+    release();
+    el.scrollIntoView({ block: "center" });
+    // An item taller than the view can be centred with its match off screen.
+    if (ranges[0]) paint.centreIfHidden(scroller, ranges[0]);
+    if (!painted) paint.flash(el);
+  }, [reveal, state, scrollerRef, release]);
+
+  return { reveal, onJump, onClear };
+}
+
+// Counts the times the timeline lost turns: a rewind cutting it back. Live
+// events and older pages only ever append turns, and the list is the whole
+// thread's, not the window's, so the cut shows as the newest turn seen being
+// gone — whatever arrived since, as after a reconnect's catch-up.
+function useTimelineCuts(turns: readonly { id: string }[]): number {
+  const last = turns[turns.length - 1]?.id;
+  const [seen, setSeen] = useState(last);
+  const [cuts, setCuts] = useState(0);
+  if (last !== seen) {
+    setSeen(last);
+    if (seen !== undefined && !turns.some((t) => t.id === seen)) setCuts((c) => c + 1);
+  }
+  return cuts;
 }
 
 /**
@@ -216,12 +344,13 @@ function TranscriptBody({
   onCardSignIn,
   describeSettings,
   turnStatus,
+  find,
   ...interruptedProps
 }: TranscriptProps & { state: TranscriptState; store: ThreadStore }) {
   // Follow the tail unless the reader has scrolled up; the button below is
   // how they get back. A restore that was scrolled up mounts unpinned, or the
   // first stick would snap it to the bottom over the restored position.
-  const { scrollerRef, contentRef, pinned, stick, scrollToBottom, anchorTo } = useAutoScroll<
+  const { scrollerRef, contentRef, pinned, stick, scrollToBottom, anchorTo, release } = useAutoScroll<
     HTMLDivElement,
     HTMLDivElement
   >(initialScroll?.atBottom ?? true);
@@ -231,6 +360,8 @@ function TranscriptBody({
   useScrollMemory(scrollerRef, state.threadId, store, initialScroll, onScrollChange);
   const hasOlder = (state.itemsBefore ?? 0) > 0;
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
+  const { reveal, onJump, onClear } = useFindJump(scrollerRef, state, find, release);
+  const cuts = useTimelineCuts(state.turns);
 
   const {
     activity,
@@ -254,128 +385,131 @@ function TranscriptBody({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollerRef}
-        data-transcript-scroller
-        className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
-        // So a programmatic scrollIntoView lands the target above the floating
-        // composer rather than behind it, matching the padding below.
-        // overflow-anchor is off because prepending older pages is corrected
-        // by hand in useOlderPages — Chrome's native anchoring would correct it
-        // too and the view would jump a page down, while Safari has no native
-        // anchoring at all. One mechanism, ours, on every browser.
-        style={{ scrollPaddingBottom: TAIL_RESERVE, overflowAnchor: "none" }}
-      >
-        {/* The floating composer overlays the tail, so the content reserves
-            real room below it — its measured height plus headroom — and grows
-            that room as the composer does, so the tail can always scroll clear
-            and rests with breathing space rather than jammed against the input. */}
+      {find && <FindBarSlot controls={find} cuts={cuts} onJump={onJump} onClear={onClear} />}
+      <FindRevealProvider value={reveal}>
         <div
-          ref={contentRef}
-          className={cn("mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-6 md:px-5", empty && "min-h-full")}
-          style={{ paddingBottom: empty ? EMPTY_RESERVE : CONTENT_RESERVE }}
+          ref={scrollerRef}
+          data-transcript-scroller
+          className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          // So a programmatic scrollIntoView lands the target above the floating
+          // composer rather than behind it, matching the padding below.
+          // overflow-anchor is off because prepending older pages is corrected
+          // by hand in useOlderPages — Chrome's native anchoring would correct it
+          // too and the view would jump a page down, while Safari has no native
+          // anchoring at all. One mechanism, ours, on every browser.
+          style={{ scrollPaddingBottom: TAIL_RESERVE, overflowAnchor: "none" }}
         >
-          <WorkspaceCard
-            state={state}
-            onRetry={onRetryProvision}
-            onCleanup={onCleanup}
-            onForceDelete={onForceDelete}
-          />
-          {/* The top of the loaded window, not of the conversation: scrolling
-              up to here fetches the page above (the observer's margin means
-              the fetch usually starts before this row is even seen). */}
-          {hasOlder && (
-            <div
-              ref={sentinelRef}
-              className="text-muted-foreground flex items-center justify-center gap-2 py-3 text-[13px]"
-            >
-              <Spinner className="size-3.5" /> Loading earlier…
-            </div>
-          )}
-          {/* The empty state used to hide behind any workspace phase at all,
-              which left a dismissed-but-ready workspace showing nothing
-              whatever. It only needs to stand aside while the provisioner is
-              still working or is asking for a decision — once the workspace is
-              ready, an empty transcript is an empty transcript. */}
-          {empty && (
-            <EmptyTranscript
-              recents={recents}
-              recentsSeeded={recentsSeeded}
-              onPickRecent={onPickRecent}
+          {/* The floating composer overlays the tail, so the content reserves
+              real room below it — its measured height plus headroom — and grows
+              that room as the composer does, so the tail can always scroll clear
+              and rests with breathing space rather than jammed against the input. */}
+          <div
+            ref={contentRef}
+            className={cn("mx-auto flex max-w-3xl flex-col gap-3.5 px-4 pt-6 md:px-5", empty && "min-h-full")}
+            style={{ paddingBottom: empty ? EMPTY_RESERVE : CONTENT_RESERVE }}
+          >
+            <WorkspaceCard
+              state={state}
+              onRetry={onRetryProvision}
+              onCleanup={onCleanup}
+              onForceDelete={onForceDelete}
             />
-          )}
-
-          {rows.map((row, i) => {
-            // Each row is memoised, so it is handed only what it draws, worked
-            // out here: a value it would have to look up across the thread is
-            // a value that changes for every row whenever it does for one.
-            // The changed-files card goes after the last row of the turn it
-            // describes, the row whose successor belongs to a different turn.
-            const turnID = rowTurnID(row);
-            const nextTurnID = i + 1 < rows.length ? rowTurnID(rows[i + 1]) : undefined;
-            const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
-            const item = row.kind === "item" ? row.item : undefined;
-            // Only a prompt shows attachments, so only a prompt or an
-            // artefacts row redraws when a new artefact is shown. The jobs are
-            // not handed down at all: a spawn card selects its own from the
-            // store, as they tick far more often than anything else.
-            const showsArtefacts =
-              row.kind === "artefacts" || (item?.kind === "message" && item.role === "user");
-            return (
-              <TranscriptRow
-                key={rowKey(row)}
-                row={row}
-                diff={diff}
-                turnNumber={diff && turnID ? (turnNumbers.get(turnID) ?? 0) : 0}
-                latest={diff !== undefined && turnID === lastTurnID}
-                onOpenDiff={onOpenDiff}
-                threadId={state.threadId}
-                streaming={item !== undefined && item.id === streamingId}
-                artefacts={showsArtefacts ? artefacts : NO_ARTEFACTS}
-                onOpenArtefact={onOpenArtefact}
-                onOpenJobs={onOpenJobs}
-                recovered={item?.turnId ? recoveredTurns.get(item.turnId) : undefined}
-                onCardSignIn={onCardSignIn}
-                describeSettings={describeSettings}
-                previewed={item !== undefined && item === activity?.thought}
+            {/* The top of the loaded window, not of the conversation: scrolling
+                up to here fetches the page above (the observer's margin means
+                the fetch usually starts before this row is even seen). */}
+            {hasOlder && (
+              <div
+                ref={sentinelRef}
+                className="text-muted-foreground flex items-center justify-center gap-2 py-3 text-[13px]"
+              >
+                <Spinner className="size-3.5" /> Loading earlier…
+              </div>
+            )}
+            {/* The empty state used to hide behind any workspace phase at all,
+                which left a dismissed-but-ready workspace showing nothing
+                whatever. It only needs to stand aside while the provisioner is
+                still working or is asking for a decision — once the workspace is
+                ready, an empty transcript is an empty transcript. */}
+            {empty && (
+              <EmptyTranscript
+                recents={recents}
+                recentsSeeded={recentsSeeded}
+                onPickRecent={onPickRecent}
               />
-            );
-          })}
+            )}
 
-          {activity && <WorkingLine activity={activity} />}
-          {/* Shown whatever else the tail is doing: a retry or a compaction is
-              exactly when a live tool line or half-streamed text looks hung. */}
-          <TurnStatusLine status={turnStatus} running={state.phase === "turn"} />
+            {rows.map((row, i) => {
+              // Each row is memoised, so it is handed only what it draws, worked
+              // out here: a value it would have to look up across the thread is
+              // a value that changes for every row whenever it does for one.
+              // The changed-files card goes after the last row of the turn it
+              // describes, the row whose successor belongs to a different turn.
+              const turnID = rowTurnID(row);
+              const nextTurnID = i + 1 < rows.length ? rowTurnID(rows[i + 1]) : undefined;
+              const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
+              const item = row.kind === "item" ? row.item : undefined;
+              // Only a prompt shows attachments, so only a prompt or an
+              // artefacts row redraws when a new artefact is shown. The jobs are
+              // not handed down at all: a spawn card selects its own from the
+              // store, as they tick far more often than anything else.
+              const showsArtefacts =
+                row.kind === "artefacts" || (item?.kind === "message" && item.role === "user");
+              return (
+                <TranscriptRow
+                  key={rowKey(row)}
+                  row={row}
+                  diff={diff}
+                  turnNumber={diff && turnID ? (turnNumbers.get(turnID) ?? 0) : 0}
+                  latest={diff !== undefined && turnID === lastTurnID}
+                  onOpenDiff={onOpenDiff}
+                  threadId={state.threadId}
+                  streaming={item !== undefined && item.id === streamingId}
+                  artefacts={showsArtefacts ? artefacts : NO_ARTEFACTS}
+                  onOpenArtefact={onOpenArtefact}
+                  onOpenJobs={onOpenJobs}
+                  recovered={item?.turnId ? recoveredTurns.get(item.turnId) : undefined}
+                  onCardSignIn={onCardSignIn}
+                  describeSettings={describeSettings}
+                  previewed={item !== undefined && item === activity?.thought}
+                />
+              );
+            })}
 
-          {interrupted && (
-            <Suspense fallback={null}>
-              <InterruptedCard
-                turn={interrupted}
-                switchedTo={switchedTo}
-                continuation={continuation}
-                {...interruptedProps}
-              />
-            </Suspense>
-          )}
+            {activity && <WorkingLine activity={activity} />}
+            {/* Shown whatever else the tail is doing: a retry or a compaction is
+                exactly when a live tool line or half-streamed text looks hung. */}
+            <TurnStatusLine status={turnStatus} running={state.phase === "turn"} />
 
-          <QueuedPrompts
-            queued={state.queuedPrompts ?? NO_QUEUED}
-            threadId={state.threadId}
-            artefacts={artefacts}
-            heldFor={heldFor}
-            busy={state.phase === "turn"}
-            steers={steers}
-            onDequeue={onDequeue}
-            onEdit={onEditQueued}
-            onSend={onSendQueued}
-            onResume={onResumeQueue}
-            onEditLost={onQueuedEditLost}
-          />
+            {interrupted && (
+              <Suspense fallback={null}>
+                <InterruptedCard
+                  turn={interrupted}
+                  switchedTo={switchedTo}
+                  continuation={continuation}
+                  {...interruptedProps}
+                />
+              </Suspense>
+            )}
 
-          {/* Last, because it is the latest news about the work above it. */}
-          {pr?.merged && <MergedCard pr={pr} onFinish={onFinish} />}
+            <QueuedPrompts
+              queued={state.queuedPrompts ?? NO_QUEUED}
+              threadId={state.threadId}
+              artefacts={artefacts}
+              heldFor={heldFor}
+              busy={state.phase === "turn"}
+              steers={steers}
+              onDequeue={onDequeue}
+              onEdit={onEditQueued}
+              onSend={onSendQueued}
+              onResume={onResumeQueue}
+              onEditLost={onQueuedEditLost}
+            />
+
+            {/* Last, because it is the latest news about the work above it. */}
+            {pr?.merged && <MergedCard pr={pr} onFinish={onFinish} />}
+          </div>
         </div>
-      </div>
+      </FindRevealProvider>
 
       {!pinned && <ScrollToBottom onClick={scrollToBottom} />}
     </div>

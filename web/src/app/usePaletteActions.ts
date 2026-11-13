@@ -20,12 +20,14 @@ const THEMES: { value: Theme; label: string }[] = [
 export function usePaletteActions({
   meta,
   threadOpen,
+  transcriptShown,
   turnRunning,
   composerOpen,
   composerRef,
   onSetPinned,
   onSetUnread,
   onCopyTranscript,
+  onFindInThread,
   onCopyLink,
   onDelete,
   onTogglePanel,
@@ -42,6 +44,8 @@ export function usePaletteActions({
   /** The open thread, once the list has it. */
   meta: ThreadMeta | undefined;
   threadOpen: boolean;
+  /** The open thread's transcript is on screen, not behind a full-page screen. */
+  transcriptShown: boolean;
   turnRunning: boolean;
   /** A composer is on screen: the open thread's or a draft's. */
   composerOpen: boolean;
@@ -49,6 +53,7 @@ export function usePaletteActions({
   onSetPinned: (threadId: string, pinned: boolean) => void;
   onSetUnread: (threadId: string, unread: boolean) => void;
   onCopyTranscript: () => void;
+  onFindInThread: () => void;
   onCopyLink: (threadId: string) => void;
   onDelete: (meta: ThreadMeta) => void;
   onTogglePanel: () => void;
@@ -86,6 +91,17 @@ export function usePaletteActions({
         run: () => onSetUnread(meta.id, true),
       });
     }
+  }
+  if (transcriptShown) {
+    thread({
+      id: "find",
+      label: "Find in thread",
+      command: "findInThread",
+      keywords: ["search", "match"],
+      // A frame later the palette has handed focus back to where it was
+      // opened from, and the find field can take it.
+      run: () => window.requestAnimationFrame(onFindInThread),
+    });
   }
   if (threadOpen) {
     thread({
