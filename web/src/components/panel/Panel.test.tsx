@@ -422,3 +422,35 @@ describe("Panel width", () => {
     expect(screen.getByRole("complementary", { name: "Thread panel" }).style.width).toBe("500px");
   });
 });
+
+describe("Panel as a sheet", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("leaves Escape in a line's comment box to the box, and stays open", async () => {
+    viewport("phone");
+    const onClose = vi.fn();
+    const diff = { path: "src/a.ts", status: "modified" as const, patch: "@@ -1 +1 @@\n-old\n+new line\n" };
+    render(
+      <Panel
+        {...props({
+          onClose,
+          loadChanges: () => Promise.resolve(changesWith("src/a.ts")),
+          loadDiff: () => Promise.resolve(diff),
+          request: { kind: "path", path: "src/a.ts", nonce: 1 },
+          onAddComment: () => {},
+        })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByText("new line"));
+    const box = screen.getByRole("textbox", { name: "Comment on this line" });
+    fireEvent.keyDown(box, { key: "Escape" });
+
+    expect(screen.queryByRole("textbox", { name: "Comment on this line" })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("new line")).toBeTruthy();
+  });
+});

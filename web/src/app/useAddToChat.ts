@@ -49,3 +49,20 @@ export function useAddToChat({
     [activeId, setDrafts, getDraft, docked, close, expanded, toggleExpanded, composerRef],
   );
 }
+
+/**
+ * A comment on a diff line on its way to the thread's composer, after whatever
+ * is there. Unlike a terminal quote, the panel stays as it is and the composer
+ * is left alone: the next thing done is usually commenting on another line, so
+ * the composer draft fills up as a pending review and is sent once, at the end.
+ */
+export function useAppendToChat({ activeId, store }: { activeId: string | null; store: ComposerDrafts }) {
+  const { setDrafts } = store;
+  return useCallback(
+    (text: string) => {
+      if (!activeId) return;
+      setDrafts((d) => appendDraft(d, activeId, text));
+    },
+    [activeId, setDrafts],
+  );
+}

@@ -30,6 +30,7 @@ export function ThreadPanel({
   panel,
   pr,
   onAddToChat,
+  onAddComment,
 }: {
   clientRef: RefObject<Client | null>;
   threadId: string;
@@ -37,6 +38,8 @@ export function ThreadPanel({
   pr: PullRequest | null;
   /** Terminal output quoted for the composer. */
   onAddToChat: (quoted: string) => void;
+  /** A comment on a diff line, as a block for the composer. */
+  onAddComment: (block: string) => void;
 }) {
   const threadStore = useThreadStore();
 
@@ -161,6 +164,7 @@ export function ThreadPanel({
         onRequestRouted={panel.requestRouted}
         pr={pr}
         onAddToChat={onAddToChat}
+        onAddComment={onAddComment}
         onOpenPath={openTerminalPath}
       />
     </Suspense>

@@ -6,7 +6,7 @@ import type { ComposerHandle } from "~/components/Composer";
 import { viewport } from "~/test/harness";
 
 import { createDraftStore } from "./draftStore";
-import { useAddToChat } from "./useAddToChat";
+import { useAddToChat, useAppendToChat } from "./useAddToChat";
 import type { ComposerDrafts } from "./useComposerDrafts";
 import type { PanelControls } from "./usePanel";
 
@@ -51,5 +51,29 @@ describe("useAddToChat", () => {
     add("```\nboom\n```");
     expect(panel.toggleExpanded).not.toHaveBeenCalled();
     expect(composer.focusEnd).toHaveBeenCalledOnce();
+  });
+});
+
+// It is never handed the panel or the composer, so it cannot close, expand or
+// focus either; what is left to check is the draft.
+describe("useAppendToChat", () => {
+  function setupAppend(activeId: string | null) {
+    const drafts = createDraftStore({ s1: "first comment" });
+    const store = { setDrafts: drafts.update, getDraft: drafts.get } as unknown as ComposerDrafts;
+    const { result } = renderHook(() => useAppendToChat({ activeId, store }));
+    return { append: result.current, drafts };
+  }
+
+  it("piles each block up after the draft, a paragraph apart", () => {
+    const { append, drafts } = setupAppend("s1");
+    append("second");
+    append("third");
+    expect(drafts.get("s1")).toBe("first comment\n\nsecond\n\nthird");
+  });
+
+  it("does nothing with no thread open", () => {
+    const { append, drafts } = setupAppend(null);
+    append("lost");
+    expect(drafts.get("s1")).toBe("first comment");
   });
 });
