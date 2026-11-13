@@ -1570,10 +1570,15 @@ func (m *Manager) List(ctx context.Context) ([]store.ThreadMeta, error) {
 	// projection (which knows about pending permissions and questions), and a
 	// thread with no actor answers from its phase — a dead actor cancelled
 	// its pending requests on the way down, so the phase is the whole story.
+	// TurnFailed is derived the same way but only a live actor knows it; a
+	// thread with no actor leaves it false. The client only reads it to
+	// classify a working → idle edge it saw live, and an actor is running for
+	// that edge.
 	m.mu.Lock()
 	for i := range metas {
 		if a, ok := m.actors[metas[i].ID]; ok {
 			metas[i].Attention = a.Attention()
+			metas[i].TurnFailed = a.TurnFailed()
 		} else {
 			metas[i].Attention = projection.AttentionForPhase(metas[i].Phase)
 		}

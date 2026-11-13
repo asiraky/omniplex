@@ -123,6 +123,10 @@ type Actor struct {
 	// thread list wants it without a round trip through the inbox. Written
 	// only by the actor goroutine; the projection stays the source of truth.
 	attention string
+	// turnFailed caches state.LastTurnFailed() the same way, so the thread
+	// list can tell a turn that failed from one that finished — both leave
+	// attention at needs_prompt.
+	turnFailed bool
 	// turnStatus is the running turn's transient status (see TurnStatus).
 	// Written only by the actor goroutine, under mu; nil means none.
 	turnStatus *proto.TurnStatusPayload
@@ -587,6 +591,14 @@ func (a *Actor) Attention() string {
 	return a.attention
 }
 
+// TurnFailed reports whether the thread's latest turn ended in an error — see
+// projection.State.LastTurnFailed. Safe from any goroutine.
+func (a *Actor) TurnFailed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.turnFailed
+}
+
 // State returns a snapshot of the projection as of Head. It is produced inside
 // the actor loop so it can never observe a half-applied event.
 func (a *Actor) State(ctx context.Context) (*projection.State, error) {
@@ -1033,6 +1045,7 @@ func (a *Actor) run() {
 	// before starting this goroutine, so this is the first read.
 	a.mu.Lock()
 	a.attention = a.state.Attention()
+	a.turnFailed = a.state.LastTurnFailed()
 	a.mu.Unlock()
 	for {
 		var flush <-chan time.Time
@@ -2403,15 +2416,18 @@ func (a *Actor) write(em proto.Emission) error {
 
 	// Attention is the derived whose-turn-is-it signal. Any event that moves
 	// it — turn boundaries, a permission being asked or answered, activity
-	// while idle — re-notifies the thread list.
-	if att := a.state.Attention(); att != a.Attention() {
-		a.mu.Lock()
-		a.attention = att
-		onPhase := a.onPhase
-		a.mu.Unlock()
-		if onPhase != nil {
-			onPhase()
-		}
+	// while idle — re-notifies the thread list. So does the latest turn
+	// failing or being superseded: a failed turn moves attention exactly as a
+	// finished one does, and the list carries which it was. Both move on the
+	// same TurnFinished, so one notification carries both.
+	att, failed := a.state.Attention(), a.state.LastTurnFailed()
+	a.mu.Lock()
+	changed := att != a.attention || failed != a.turnFailed
+	a.attention, a.turnFailed = att, failed
+	onPhase := a.onPhase
+	a.mu.Unlock()
+	if changed && onPhase != nil {
+		onPhase()
 	}
 
 	if em.Type == proto.PromptScheduled {

@@ -2465,6 +2465,77 @@ func TestWithdrawnRequestIsResolvedCancelled(t *testing.T) {
 	}
 }
 
+// A failed turn goes idle like a finished one, so the thread list says which
+// it was: the failure reaches the list with a broadcast, and the next turn
+// clears it.
+func TestListReportsTheFailedTurn(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fa := &fakeAdapter{}
+	mgr := newManager(st, func(string, ...any) {}, fa)
+	t.Cleanup(func() { mgr.Shutdown() })
+	ctx := context.Background()
+	actor, err := mgr.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return actor.Head() >= 1 })
+
+	listed := func() store.ThreadMeta {
+		t.Helper()
+		metas, err := mgr.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range metas {
+			if m.ID == actor.ID {
+				return m
+			}
+		}
+		t.Fatalf("thread %s is not in the list", actor.ID)
+		return store.ThreadMeta{}
+	}
+	sub, ch := mgr.SubscribeList()
+	defer mgr.UnsubscribeList(sub)
+	drain := func() {
+		select {
+		case <-ch:
+		default:
+		}
+	}
+
+	sess := fa.thread()
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
+	waitFor(t, func() bool { s, _ := actor.State(ctx); return len(s.Turns) == 1 && s.Turns[0].Done })
+	if m := listed(); m.TurnFailed || m.Attention != projection.AttentionNeedsPrompt {
+		t.Fatalf("after a clean turn: attention %q, turnFailed %v", m.Attention, m.TurnFailed)
+	}
+
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "again"}))
+	waitFor(t, func() bool { return listed().Attention == projection.AttentionWorking })
+	drain()
+	sess.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopError, Error: "boom"}))
+	waitFor(t, func() bool { return actor.TurnFailed() })
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the failed turn never reached the list broadcast")
+	}
+	if m := listed(); !m.TurnFailed || m.Attention != projection.AttentionNeedsPrompt {
+		t.Fatalf("after a failed turn: attention %q, turnFailed %v", m.Attention, m.TurnFailed)
+	}
+
+	sess.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t3", Prompt: "retry"}))
+	waitFor(t, func() bool { return listed().Attention == projection.AttentionWorking })
+	if listed().TurnFailed {
+		t.Fatal("a new turn after the failed one still lists it as failed")
+	}
+}
+
 // A turn that ends while a request of its own is pending releases the adapter
 // waiting on it, even when the harness never said it withdrew the request.
 func TestTurnFinishedReleasesItsPendingRequest(t *testing.T) {

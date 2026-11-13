@@ -67,6 +67,18 @@ func (s *State) Attention() string {
 	}
 }
 
+// LastTurnFailed reports whether the thread's latest turn ended in an error.
+// Only the last turn counts: a newer turn starting clears it, because that
+// turn is not done yet. Attention cannot carry this — a failed turn goes
+// idle exactly like a finished one — so the thread list sends it alongside.
+func (s *State) LastTurnFailed() bool {
+	if len(s.Turns) == 0 {
+		return false
+	}
+	t := s.Turns[len(s.Turns)-1]
+	return t.Done && t.StopReason == proto.StopError
+}
+
 // JobCounts is how many jobs of each kind are live right now.
 type JobCounts struct {
 	Agents   int `json:"agents"`
