@@ -38,7 +38,7 @@ import (
 // since is the stream offset the client already holds. tail is how many lines
 // of scrollback the client keeps: a socket with no since is sent only the last
 // tail lines the ring holds, not the whole ring. It is ignored when since is
-// given, since a reconnect needs exactly the gap.
+// non-zero, since a reconnect needs exactly the gap.
 //
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
 // to type, {"type":"resize","cols","rows"} on layout change, {"type":"cwd"} to

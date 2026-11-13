@@ -174,10 +174,10 @@ func TestRingTailStartAcrossTheWrap(t *testing.T) {
 	}
 }
 
-func TestRingTailStartOfNoLinesIsTotal(t *testing.T) {
+func TestRingTailStartOfNoLinesIsTheWholeRing(t *testing.T) {
 	r := newTermRing(8)
 	r.Write([]byte("a\nb\n"))
-	if got := r.TailStart(0); got != r.Total() {
-		t.Fatalf("TailStart(0) = %d, want Total %d", got, r.Total())
+	if got := r.TailStart(0); got != r.Start() {
+		t.Fatalf("TailStart(0) = %d, want Start %d", got, r.Start())
 	}
 }
