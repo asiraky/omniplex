@@ -19,26 +19,26 @@ export function useFileDrop(attach: (files: File[]) => void, accepts = true) {
   // Depth counts enters against leaves instead, and only zero means the drag
   // has gone.
   const dragDepth = useRef(0);
-  const [over, setOver] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   const handlers = {
     onDragEnter: (e: DragEvent) => {
       if (!dragHasFiles(e.dataTransfer)) return;
       if (accepts) e.preventDefault();
       dragDepth.current++;
-      setOver(true);
+      setDragging(true);
     },
     onDragOver: (e: DragEvent) => {
       if (accepts && dragHasFiles(e.dataTransfer)) e.preventDefault();
     },
     onDragLeave: () => {
       if (dragDepth.current > 0) dragDepth.current--;
-      if (dragDepth.current === 0) setOver(false);
+      if (dragDepth.current === 0) setDragging(false);
     },
     onDrop: (e: DragEvent) => {
       if (!dragHasFiles(e.dataTransfer)) return;
       dragDepth.current = 0;
-      setOver(false);
+      setDragging(false);
       if (!accepts) return;
       e.preventDefault();
       const files = filesFrom(e.dataTransfer);
@@ -46,7 +46,7 @@ export function useFileDrop(attach: (files: File[]) => void, accepts = true) {
     },
   };
 
-  return { dragging: over && accepts, handlers };
+  return { dragging: dragging && accepts, handlers };
 }
 
 /**
@@ -57,18 +57,18 @@ export function useFileDrop(attach: (files: File[]) => void, accepts = true) {
  * themselves before it bubbles up here. Returns the cleanup.
  */
 export function guardFileDrops(target: Window) {
-  const over = (e: globalThis.DragEvent) => {
+  const refuseOver = (e: globalThis.DragEvent) => {
     if (e.defaultPrevented || !dragHasFiles(e.dataTransfer)) return;
     e.preventDefault();
     e.dataTransfer!.dropEffect = "none";
   };
-  const drop = (e: globalThis.DragEvent) => {
+  const refuseDrop = (e: globalThis.DragEvent) => {
     if (dragHasFiles(e.dataTransfer)) e.preventDefault();
   };
-  target.addEventListener("dragover", over);
-  target.addEventListener("drop", drop);
+  target.addEventListener("dragover", refuseOver);
+  target.addEventListener("drop", refuseDrop);
   return () => {
-    target.removeEventListener("dragover", over);
-    target.removeEventListener("drop", drop);
+    target.removeEventListener("dragover", refuseOver);
+    target.removeEventListener("drop", refuseDrop);
   };
 }

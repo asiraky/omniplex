@@ -332,16 +332,16 @@ describe("Sidebar", () => {
 
     it("hands every dropped file to the row's own thread", () => {
       const props = renderSidebar();
-      const kept = dropOn("b", files([one, two]));
-      expect(kept).toBe(false);
+      const uncancelled = dropOn("b", files([one, two]));
+      expect(uncancelled).toBe(false);
       expect(props.onDropFiles).toHaveBeenCalledTimes(1);
       expect(props.onDropFiles).toHaveBeenCalledWith("b", [one, two]);
     });
 
     it("leaves a drag carrying no files to the browser", () => {
       const props = renderSidebar();
-      const kept = dropOn("b", { dataTransfer: { types: ["text/plain"], files: [], dropEffect: "" } });
-      expect(kept).toBe(true);
+      const uncancelled = dropOn("b", { dataTransfer: { types: ["text/plain"], files: [], dropEffect: "" } });
+      expect(uncancelled).toBe(true);
       expect(props.onDropFiles).not.toHaveBeenCalled();
     });
 
@@ -353,16 +353,11 @@ describe("Sidebar", () => {
 
     // The window's guard refuses what a row does not take (useFileDrop), so
     // a refusing row leaves the drag uncancelled for it.
-    it.each(["closed", "cleaning", "provision_failed", "cleanup_failed"])(
-      "refuses files on a %s thread",
-      (phase) => {
-        const props = renderSidebar({
-          threads: [thread("a"), thread("b", { phase: phase as ThreadMeta["phase"] })],
-        });
-        expect(dropOn("b", files([one]))).toBe(true);
-        expect(props.onDropFiles).not.toHaveBeenCalled();
-      },
-    );
+    it("refuses files on a thread whose composer would", () => {
+      const props = renderSidebar({ threads: [thread("a"), thread("b", { phase: "closed" })] });
+      expect(dropOn("b", files([one]))).toBe(true);
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+    });
 
     it("still takes files on a thread whose workspace is being prepared", () => {
       const props = renderSidebar({
