@@ -31,7 +31,7 @@ export function QuestionRecord({ item }: { item: Item }) {
       <MessageCircleQuestionIcon aria-hidden className="text-muted-foreground mt-0.5 size-4 shrink-0" />
       <span className="block min-w-0 flex-1 space-y-1.5">
         {questions.map((q) => (
-          // Only a bare prompt has no key, and it is then the one entry.
+          // Keys are unique: the fold keeps one entry per schema property.
           <span key={q.key} className="block space-y-0.5">
             <span className="block text-[13px] leading-snug text-pretty break-words">{q.question}</span>
             {answered && !bare && (

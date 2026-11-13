@@ -1788,6 +1788,28 @@ func TestMalformedSchemaAttributes(t *testing.T) {
 	}
 }
 
+// Only "properties", spelt exactly, lists the fields, as JSON.parse reads it
+// on the client: a look-alike key neither adds fields nor unmasks a secret.
+// Mirrored by web/src/apply.test.ts.
+func TestQuestionPropertiesKeyIsExact(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+		RequestID: "q1", Prompt: "Pick one", Schema: json.RawMessage(`{"Properties":{"a":{}}}`),
+	}))
+	s.Apply(event(t, 2, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+		RequestID: "q2", Prompt: "Token", Schema: json.RawMessage(`{"properties":{"pw":{"format":"password"}},"Properties":{"pw":{}}}`),
+	}))
+	value, _ := json.Marshal(map[string]string{"pw": "hunter2"})
+	s.Apply(event(t, 3, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q2", Action: "accept", Value: value}))
+
+	if got, want := itemOf(t, s, QuestionID("q1")).Questions, []QuestionAnswer{{Key: "", Question: "Pick one"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("look-alike key: questions = %+v, want %+v", got, want)
+	}
+	if got, want := itemOf(t, s, QuestionID("q2")).Questions, []QuestionAnswer{{Key: "pw", Question: "Token", Secret: true}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("secret: questions = %+v, want %+v", got, want)
+	}
+}
+
 // Fields come in the order the client's Object.entries gives: array-index
 // keys first by number, then the rest as written; a repeated key keeps its
 // first place and its last value. Mirrored by web/src/apply.test.ts.

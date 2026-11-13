@@ -914,6 +914,23 @@ describe("question records", () => {
     ]);
   });
 
+  it("reads fields only from properties spelt exactly, so a look-alike neither adds fields nor unmasks a secret", () => {
+    let s = applyEvent(emptyState("s1"), ask(1, { requestId: "q1", schema: JSON.parse(`{"Properties":{"a":{}}}`) }));
+    s = applyEvent(
+      s,
+      ask(2, {
+        requestId: "q2",
+        prompt: "Token",
+        schema: JSON.parse(`{"properties":{"pw":{"format":"password"}},"Properties":{"pw":{}}}`),
+      }),
+    );
+    s = applyEvent(s, ev(3, "elicitation.resolved", { requestId: "q2", action: "accept", value: { pw: "hunter2" } }));
+    expect(s.items.map((i) => i.questions)).toEqual([
+      [{ key: "", question: "Pick one" }],
+      [{ key: "pw", question: "Token", secret: true }],
+    ]);
+  });
+
   it("asks only the prompt when properties is not an object", () => {
     for (const properties of [["a", "b"], "ab"]) {
       const s = applyEvent(emptyState("s1"), ask(1, { schema: { properties } }));

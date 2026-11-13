@@ -1601,12 +1601,16 @@ const AnswerCap = 280
 // the order the client's form walks them. A schema with no properties is the
 // prompt alone. Mirrored in web/src/apply.ts.
 func questionsFor(prompt string, schema json.RawMessage) []QuestionAnswer {
-	var top struct {
-		Properties json.RawMessage `json:"properties"`
+	// Member by member, not into a struct: encoding/json matches field names
+	// case-insensitively, and JSON.parse on the web does not.
+	var properties json.RawMessage
+	for _, p := range jsProperties(schema) {
+		if p.key == "properties" {
+			properties = p.value
+		}
 	}
-	decode(schema, &top)
 	var out []QuestionAnswer
-	for _, p := range jsProperties(top.Properties) {
+	for _, p := range jsProperties(properties) {
 		f := readField(p.value)
 		q := cmp.Or(f.title, f.description, prompt, p.key)
 		out = append(out, QuestionAnswer{Key: p.key, Question: q, Secret: f.format == "password" || f.writeOnly})
