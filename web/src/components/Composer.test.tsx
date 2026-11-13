@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { createRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
 import { Composer, type ComposerHandle } from "./Composer";
 import type { Attachment } from "~/lib/attachments";
@@ -551,9 +552,7 @@ describe("the command catalogue", () => {
   });
 });
 
-// Picks are typed in through execCommand so the browser can undo them (#381).
-// jsdom has none; this one edits the focused textarea's selection the way a
-// browser does and fires the textarea's own input event.
+// Picks are typed in through execCommand so the browser can undo them.
 describe("typing a pick in where undo can take it back", () => {
   const review = {
     id: "skill:review",
@@ -564,29 +563,11 @@ describe("typing a pick in where undo can take it back", () => {
     origin: "project" as const,
     behavior: "prompt" as const,
   };
-  const original = document.execCommand;
-  const browserEditing = () => {
-    const exec = vi.fn((command: string, _ui?: boolean, text?: string) => {
-      const el = document.activeElement;
-      if (!(el instanceof HTMLTextAreaElement)) return false;
-      el.setRangeText(command === "insertText" ? (text ?? "") : "", el.selectionStart, el.selectionEnd, "end");
-      el.dispatchEvent(new InputEvent("input", { bubbles: true }));
-      return true;
-    });
-    document.execCommand = exec;
-    return exec;
-  };
-  const noExecCommand = () => {
-    // @ts-expect-error: a browser without it
-    document.execCommand = undefined;
-  };
-  afterEach(() => {
-    document.execCommand = original;
-  });
+  const exec = stubExecCommand();
 
   // The draft has to follow onDraftChange, as it does in the app: a fixed
   // draft prop would have React put the old value straight back.
-  function live(initial: string, over: Partial<React.ComponentProps<typeof Composer>> = {}) {
+  function renderControlled(initial: string, over: Partial<React.ComponentProps<typeof Composer>> = {}) {
     const onDraftChange = vi.fn();
     const ref = createRef<ComposerHandle>();
     function Host() {
@@ -613,19 +594,19 @@ describe("typing a pick in where undo can take it back", () => {
   }
 
   it("types a picked command over the slash token", async () => {
-    const exec = browserEditing();
-    const { onDraftChange } = live("/rev");
+    const edit = exec.editing();
+    const { onDraftChange } = renderControlled("/rev");
     fireEvent.focus(box());
     fireEvent.click(await screen.findByText("/review"));
 
-    expect(exec).toHaveBeenCalledWith("insertText", false, "/review ");
+    expect(edit).toHaveBeenCalledWith("insertText", false, "/review ");
     expect(onDraftChange.mock.calls).toEqual([["/review "]]);
     expect(box()).toHaveProperty("value", "/review ");
   });
 
   it("writes the pick into the draft when the browser cannot type it", async () => {
-    noExecCommand();
-    const { onDraftChange } = live("/rev");
+    exec.absent();
+    const { onDraftChange } = renderControlled("/rev");
     fireEvent.focus(box());
     fireEvent.click(await screen.findByText("/review"));
 
@@ -633,27 +614,25 @@ describe("typing a pick in where undo can take it back", () => {
   });
 
   it("clears an adapter command that finishes after the textarea was left, without taking focus back", async () => {
-    const exec = browserEditing();
+    const edit = exec.editing();
     let finish = () => {};
     const onRunComposerAction = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
-    const { onDraftChange } = live("/comp", { onRunComposerAction });
+    const { onDraftChange } = renderControlled("/comp", { onRunComposerAction });
     fireEvent.focus(box());
     fireEvent.click(await screen.findByText("/compact"));
 
-    const elsewhere = document.createElement("button");
-    document.body.appendChild(elsewhere);
+    const elsewhere = screen.getByRole("button", { name: "Send" });
     elsewhere.focus();
     await act(async () => finish());
 
     expect(onDraftChange).toHaveBeenCalledWith("");
-    expect(exec).not.toHaveBeenCalled();
+    expect(edit).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(elsewhere);
-    elsewhere.remove();
   });
 
   it("types at the end of the draft through the handle", () => {
-    const exec = browserEditing();
-    const { onDraftChange, ref } = live("fix the bug");
+    const edit = exec.editing();
+    const { onDraftChange, ref } = renderControlled("fix the bug");
 
     let typed = false;
     act(() => {
@@ -661,13 +640,13 @@ describe("typing a pick in where undo can take it back", () => {
     });
 
     expect(typed).toBe(true);
-    expect(exec).toHaveBeenCalledWith("insertText", false, " /review ");
+    expect(edit).toHaveBeenCalledWith("insertText", false, " /review ");
     expect(onDraftChange.mock.calls).toEqual([["fix the bug /review "]]);
   });
 
   it("leaves the draft to the caller when the handle cannot type", () => {
-    noExecCommand();
-    const { onDraftChange, ref } = live("fix the bug");
+    exec.absent();
+    const { onDraftChange, ref } = renderControlled("fix the bug");
 
     expect(ref.current!.typeAtEnd(" /review ")).toBe(false);
     expect(onDraftChange).not.toHaveBeenCalled();

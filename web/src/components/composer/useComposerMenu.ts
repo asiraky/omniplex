@@ -127,15 +127,15 @@ export function useComposerMenu({
 
   // Typed in where the browser will take it, so a pick can be undone like a
   // keystroke; the draft then follows from the textarea's own change event.
-  // `focus` false leaves a textarea the person has since left alone.
-  const replaceTrigger = useCallback(
-    (from: string, at: ComposerTrigger, text: string, focus: boolean) => {
+  // Without `takeFocus` it leaves alone a textarea the person has since left.
+  const typeOverTrigger = useCallback(
+    (from: string, at: ComposerTrigger, text: string, { takeFocus }: { takeFocus: boolean }) => {
       const next = replaceComposerTrigger(from, at, text);
       const el = textareaRef.current;
       const typed =
         !!el &&
         el.value === from &&
-        (focus || document.activeElement === el) &&
+        (takeFocus || document.activeElement === el) &&
         typeInto(el, at.start, at.end, text);
       if (!typed) changeDraft(next.value);
       return { ...next, typed };
@@ -147,7 +147,7 @@ export function useComposerMenu({
     (item: ComposerItem) => {
       if (!trigger) return;
       if (item.behavior === "client-action" && item.action) {
-        replaceTrigger(draft, trigger, "", true);
+        typeOverTrigger(draft, trigger, "", { takeFocus: true });
         setDismissedTrigger(triggerKey);
         runClientAction(item.action);
         return;
@@ -162,12 +162,13 @@ export function useComposerMenu({
         const submittedDraft = draft;
         void onRunComposerAction?.(item.action, "", item.insertText)
           .then(() => {
-            if (draftRef.current === submittedDraft) replaceTrigger(submittedDraft, trigger, "", false);
+            if (draftRef.current !== submittedDraft) return;
+            typeOverTrigger(submittedDraft, trigger, "", { takeFocus: false });
           })
           .catch(() => {});
         return;
       }
-      const next = replaceTrigger(draft, trigger, `${item.insertText} `, true);
+      const next = typeOverTrigger(draft, trigger, `${item.insertText} `, { takeFocus: true });
       setDismissedTrigger(triggerKey);
       if (!next.typed) focusAt(next.cursor);
     },
@@ -176,7 +177,7 @@ export function useComposerMenu({
       draftRef,
       focusAt,
       onRunComposerAction,
-      replaceTrigger,
+      typeOverTrigger,
       runClientAction,
       sendDisabled,
       trigger,
