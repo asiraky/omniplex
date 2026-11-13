@@ -403,8 +403,8 @@ describe("DiffSurface on a phone", () => {
 
     fireEvent.click(row(/long\.ts/));
     const line = await screen.findByText("line in web/src/long.ts");
-    // Split view lays both sides out in one grid; unified is a stack of rows.
-    expect(line.closest(".grid")).toBeNull();
+    // Split view puts each line on a side; unified has no sides.
+    expect(line.closest("[data-side]")).toBeNull();
   });
 
   it("splits on a desktop when asked", async () => {
@@ -413,7 +413,7 @@ describe("DiffSurface on a phone", () => {
     expect(screen.getByRole("button", { name: "Split view" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(row(/long\.ts/));
     const line = await screen.findByText("line in web/src/long.ts");
-    expect(line.closest(".grid")).not.toBeNull();
+    expect(line.closest("[data-side]")).not.toBeNull();
     // Split always wraps, so the wrap toggle is not offered beside it.
     expect(screen.queryByRole("button", { name: "Wrap text" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Split view" }));

@@ -230,29 +230,40 @@ func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path string, req
 		return out, nil
 	}
 
-	var shape []string
-	if opts.IgnoreWhitespace {
-		shape = append(shape, "-w")
-	}
-	if opts.FullContext {
-		shape = append(shape, "-U"+strconv.Itoa(fullContextLines))
-	}
-	var args []string
-	if target.Untracked {
-		args = append([]string{"diff", "--no-index", "--no-color"}, shape...)
-		args = append(args, "--", devNull, "./"+target.Path)
-	} else {
-		args = append([]string{"diff", "-M", "--no-color"}, shape...)
-		args = append(args, changes.Base)
-		if changes.Head != "" {
-			args = append(args, changes.Head)
+	read := func(fullContext bool) ([]byte, bool, error) {
+		var args []string
+		if target.Untracked {
+			args = []string{"diff", "--no-index", "--no-color"}
+		} else {
+			args = []string{"diff", "-M", "--no-color"}
 		}
-		args = append(args, "--", target.Path)
-		if target.OldPath != "" {
-			args = append(args, target.OldPath)
+		if opts.IgnoreWhitespace {
+			args = append(args, "-w")
 		}
+		if fullContext {
+			args = append(args, "-U"+strconv.Itoa(fullContextLines))
+		}
+		if target.Untracked {
+			args = append(args, "--", devNull, "./"+target.Path)
+		} else {
+			args = append(args, changes.Base)
+			if changes.Head != "" {
+				args = append(args, changes.Head)
+			}
+			args = append(args, "--", target.Path)
+			if target.OldPath != "" {
+				args = append(args, target.OldPath)
+			}
+		}
+		return gitBounded(ctx, changes.Root, maxPatchBytes, args...)
 	}
-	raw, truncated, err := gitBounded(ctx, changes.Root, maxPatchBytes, args...)
+	raw, truncated, err := read(opts.FullContext)
+	// A whole file too big for the cap would be cut off in its unchanged
+	// lines, perhaps before the first change. The changes matter more than
+	// their surroundings, so it is read again with the usual context.
+	if err == nil && truncated && opts.FullContext {
+		raw, truncated, err = read(false)
+	}
 	if err != nil {
 		return FileDiff{}, err
 	}

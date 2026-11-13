@@ -446,6 +446,29 @@ func TestFileDiffWithFullContextShowsFarAwayLines(t *testing.T) {
 	}
 }
 
+func TestFileDiffWithFullContextKeepsTheChangesOfAFileTooBigToShowWhole(t *testing.T) {
+	mgr, id := changesFixture(t)
+	meta, err := mgr.store.Thread(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Well past the patch cap in unchanged lines, with the one edit at the end.
+	rows := make([]string, 30000)
+	for i := range rows {
+		rows[i] = fmt.Sprintf("unchanged row %05d", i)
+	}
+	write(t, meta.Cwd, "big.txt", strings.Join(rows, "\n")+"\n")
+	gitRun(t, meta.Cwd, "add", "big.txt")
+	gitRun(t, meta.Cwd, "commit", "-m", "big file")
+	rows[len(rows)-1] = "the edit"
+	write(t, meta.Cwd, "big.txt", strings.Join(rows, "\n")+"\n")
+
+	full := filePatch(t, mgr, id, "big.txt", PatchOptions{FullContext: true})
+	if !strings.Contains(full, "+the edit") || strings.Contains(full, "unchanged row 00000") {
+		t.Fatalf("expected the edit with the usual context, got %d bytes", len(full))
+	}
+}
+
 // findFixture adds a staged file and an untracked one whose text has regex
 // metacharacters in it, on top of the changes fixture.
 func findFixture(t *testing.T) (*Manager, string, ThreadChanges) {
