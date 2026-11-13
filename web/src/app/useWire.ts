@@ -64,13 +64,14 @@ export function useWire() {
   const [link] = useState(() => threadIdFromPath(window.location.pathname));
   const [boot] = useState(() => {
     let last: string | null = null;
+    let resume: ReturnType<typeof loadResume> = null;
     try {
       last = localStorage.getItem(LAST_THREAD);
-      const resume = link && link !== last ? null : loadResume(last);
-      return { resume, thread: resume?.state.threadId ?? link ?? last };
+      if (!link || link === last) resume = loadResume(last);
     } catch {
-      return { resume: null, thread: link ?? last };
+      // Storage denied: boot from the link alone.
     }
+    return { resume, thread: resume?.state.threadId ?? link ?? last };
   });
   const [resume, setResume] = useState(boot.resume);
   const dropResume = useCallback(() => setResume(null), []);
