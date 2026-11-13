@@ -11,6 +11,15 @@ import type { Wire } from "./useWire";
 
 export type ThreadSelection = ReturnType<typeof useThreadSelection>;
 
+/** The agent a running thread is on, as its state reports it. */
+export interface ThreadAgent {
+  harness: string;
+  instance: string;
+  model: string;
+  effort: string;
+  serviceTier: string;
+}
+
 /** Where a new thread should open, when the request says (as "New thread in…" does). */
 export interface DraftPreset {
   projectId?: string;
@@ -19,6 +28,12 @@ export interface DraftPreset {
   kind?: WorkspaceKind;
   /** With kind "attach": the existing worktree's path. */
   attachPath?: string;
+  /**
+   * The agent of the thread being left, as it was running: send-and-new-thread
+   * opens the next one on it rather than on what the project last remembered.
+   * Applies only in `projectId`.
+   */
+  agent?: ThreadAgent;
   /** Put the cursor in the draft's composer as it opens. */
   focus?: boolean;
 }

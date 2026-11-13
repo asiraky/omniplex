@@ -1,5 +1,12 @@
+import type { ThreadAgent } from "~/app/useThreadSelection";
 import type { ModelSelection } from "~/components/ModelPicker";
-import { defaultModel, pickerInstances, resolveInstance, type PickerInstance } from "~/lib/models";
+import {
+  defaultModel,
+  pickerInstances,
+  resolveInstance,
+  resolveModel as matchModel,
+  type PickerInstance,
+} from "~/lib/models";
 import { modeForLevel } from "~/lib/permissions";
 import type { HarnessPrefs, ProjectPrefs } from "~/lib/threadPrefs";
 import type { HarnessMeta, Project, ProjectDefaults, UserConfig } from "~/protocol";
@@ -77,6 +84,17 @@ function resolveModel(
   };
 }
 
+/** The mode for a harness with none saved: the project's seed, else the level from settings. */
+function unsavedMode(
+  selected: HarnessMeta | undefined,
+  harnessDefaults: Seed | undefined,
+  userConfig: UserConfig | null,
+) {
+  return (
+    harnessDefaults?.mode ?? modeForLevel(selected?.permissionModes ?? [], userConfig?.defaultLevel)
+  );
+}
+
 /** The permission mode, as sent and as shown. */
 function resolveMode(
   selected: HarnessMeta | undefined,
@@ -87,8 +105,7 @@ function resolveMode(
   // Only an expressed preference is sent; otherwise the harness's own
   // configured default wins.
   const modes = selected?.permissionModes ?? [];
-  const preferredMode =
-    chosen?.mode ?? harnessDefaults?.mode ?? modeForLevel(modes, userConfig?.defaultLevel);
+  const preferredMode = chosen?.mode ?? unsavedMode(selected, harnessDefaults, userConfig);
   const mode = modes.some((m) => m.id === preferredMode) ? preferredMode : "";
   const displayModeId = mode || (modes.find((m) => m.default)?.id ?? modes[0]?.id ?? "");
   const modeMeta = modes.find((m) => m.id === displayModeId);
@@ -156,5 +173,30 @@ export function useAgentChoice(sources: Sources, { patch }: Pick<RememberedChoic
       const target = instances.find((i) => i.id === id);
       if (target) selectModel({ harness: target.driver, instance: id, model });
     },
+  };
+}
+
+/**
+ * A thread's agent as the choices a draft in its project opens on. A thread
+ * records the model as it ran, which can be the concrete model under an alias
+ * or carry the "[1m]" window tag, so it is matched back to the catalogue's id
+ * the way the thread's own picker does.
+ */
+export function threadChoices(
+  agent: ThreadAgent,
+  project: Project | undefined,
+  harnesses: HarnessMeta[],
+  userConfig: UserConfig | null,
+): HarnessPrefs {
+  const instance = resolveInstance(pickerInstances(harnesses), agent.instance, agent.harness);
+  const selected = harnesses.find((h) => h.id === agent.harness);
+  return {
+    instance: instance?.id ?? agent.instance,
+    // An empty model was the harness's default, and stays that.
+    model: agent.model ? (matchModel(instance, agent.model)?.id ?? "") : "",
+    mode: unsavedMode(selected, project?.defaults.harnesses?.[agent.harness], userConfig),
+    effort: agent.effort,
+    want1m: agent.model.endsWith("[1m]"),
+    fast: agent.serviceTier !== "",
   };
 }

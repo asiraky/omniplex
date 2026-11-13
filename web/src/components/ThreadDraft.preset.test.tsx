@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { createRef } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -213,5 +213,128 @@ describe("the cursor on opening", () => {
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message" })),
     );
+  });
+});
+
+describe("a draft opened beside a thread", () => {
+  const ready = { state: "ready" } as const;
+  const agents = ["claude", "codex"].map((id) => ({
+    id,
+    name: id,
+    availability: ready,
+    permissionModes: [
+      { id: "ask", label: "Ask", default: true },
+      { id: `${id}-bypass`, label: "Bypass" },
+    ],
+    instances: [
+      {
+        id,
+        driver: id,
+        displayName: id,
+        enabled: true,
+        availability: ready,
+        models: [
+          { id: `${id}-basic`, label: `${id} Basic`, default: true, efforts: ["low", "high"] },
+          {
+            id: `${id}-advanced`,
+            label: `${id} Advanced`,
+            efforts: ["low", "high"],
+            supports1m: true,
+            fastTier: "priority",
+          },
+        ],
+      },
+    ],
+  })) as unknown as HarnessMeta[];
+  const KEY = "omniplex.threadChoices.v1";
+  // The project last ran Claude here, and Codex with its permissions bypassed.
+  const saved = {
+    p1: {
+      harness: "claude",
+      byHarness: {
+        claude: { instance: "claude", model: "claude-basic", mode: "ask", effort: "", want1m: false, fast: false },
+        codex: { instance: "codex", model: "codex-basic", mode: "codex-bypass", effort: "low", want1m: false, fast: false },
+      },
+    },
+  };
+  // What the thread being left runs: Codex's advanced model on the 1M
+  // window, at high effort, Fast.
+  const thread = {
+    harness: "codex",
+    instance: "codex",
+    model: "codex-advanced[1m]",
+    effort: "high",
+    serviceTier: "priority",
+  };
+  const picker = () => screen.getByRole("combobox", { name: "Harness and model" });
+
+  beforeEach(() => localStorage.setItem(KEY, JSON.stringify(saved)));
+
+  it("opens on the thread's agent and starts the new thread on it, keeping the remembered permissions", async () => {
+    const onStart = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onStart, harnesses: agents, preset: { projectId: "p1", agent: thread } });
+
+    expect(picker().textContent).toContain("codex Advanced");
+    expect(chip("Permissions").textContent).toBe("Bypass");
+    expect(await start(onStart)).toMatchObject({
+      projectId: "p1",
+      harness: "codex",
+      instance: "codex",
+      model: "codex-advanced[1m]",
+      effort: "high",
+      serviceTier: "priority",
+      mode: "codex-bypass",
+    });
+  });
+
+  it("opens on what the project remembers without one", async () => {
+    const onStart = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onStart, harnesses: agents, preset: { projectId: "p1" } });
+
+    expect(await start(onStart)).toMatchObject({ harness: "claude", model: "claude-basic" });
+  });
+
+  it("writes nothing just by opening on it", async () => {
+    open({ harnesses: agents, preset: { projectId: "p1", agent: thread } });
+    await waitFor(() => expect(picker().textContent).toContain("codex Advanced"));
+
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual(saved);
+  });
+
+  it("keeps a pick made over it, for this draft and the next", async () => {
+    open({ harnesses: agents, preset: { projectId: "p1", agent: thread } });
+    fireEvent.click(picker());
+    fireEvent.click(screen.getByRole("radio", { name: "Low" }));
+    cleanup();
+
+    const onStart = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onStart, harnesses: agents, preset: { projectId: "p1" } });
+    expect(await start(onStart)).toMatchObject({
+      harness: "codex",
+      model: "codex-advanced[1m]",
+      effort: "low",
+      serviceTier: "priority",
+    });
+  });
+
+  it("stays in the thread's project when the draft moves to another", async () => {
+    const onStart = vi.fn(async (_input: NewThreadInput) => {});
+    open({ onStart, harnesses: agents, preset: { projectId: "p1", agent: thread } });
+    menu("Project");
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^garden/ }));
+
+    expect(await start(onStart)).toMatchObject({ projectId: "p2", harness: "claude", model: "claude-basic" });
+    expect(JSON.parse(localStorage.getItem(KEY)!).p1).toEqual(saved.p1);
+  });
+
+  it("falls back to the account's default for a model it no longer offers", async () => {
+    const onStart = vi.fn(async (_input: NewThreadInput) => {});
+    open({
+      onStart,
+      harnesses: agents,
+      preset: { projectId: "p1", agent: { ...thread, model: "codex-retired" } },
+    });
+
+    expect(await start(onStart)).toMatchObject({ harness: "codex", model: "codex-basic" });
   });
 });

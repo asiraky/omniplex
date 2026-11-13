@@ -25,6 +25,7 @@ import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import type { Delivery, HarnessMeta, Usage } from "~/protocol";
+import { useLatest } from "~/useLatest";
 import { useIsDesktop } from "~/useMediaQuery";
 
 import { AttachButton } from "./composer/AttachButton";
@@ -63,6 +64,9 @@ export interface ComposerHandle {
   typeAtEnd: (text: string) => boolean;
   /** Opens the model picker; "effort" puts focus on the effort control. Already open: moves focus there. */
   openModelPicker: (focus?: PickerFocus) => void;
+  /** Sends the default way, then opens a new thread's draft, as ⇧⌘↵ does.
+      Does nothing where the composer has no `onSendAndNewThread`. */
+  sendAndNewThread: () => void;
 }
 
 /** A thread's parked drafts, and what the composer's menu can do with them. */
@@ -100,6 +104,11 @@ interface ComposerProps {
   steers?: boolean;
   /** `delivery` is set only for a send the other way from the default. */
   onSend: (text: string, attached: ComposerAttachments, delivery?: Delivery) => void;
+  /** Opens a new thread's draft once a send from here has gone. Present only
+      on an existing thread's composer, where it puts "send and start a new
+      thread" under Send: held on a phone, ⇧⌘↵ on a keyboard. Never called for
+      a send that was held back. */
+  onSendAndNewThread?: () => void;
   onSchedule?: () => void;
   onCancel: () => void;
   /** Images and files staged for the next message. Owned by the parent for
@@ -215,6 +224,7 @@ export function Composer({
   busy,
   steers = false,
   onSend,
+  onSendAndNewThread,
   onSchedule,
   onCancel,
   attachments = NO_ATTACHMENTS,
@@ -318,6 +328,9 @@ export function Composer({
     runClientAction,
     onRunComposerAction,
   });
+  const sendAndNew = onSendAndNewThread && (() => void send(undefined, onSendAndNewThread));
+  // Through a ref, so the handle is not rebuilt every render, as `send` is.
+  const latestSendAndNew = useLatest(sendAndNew);
 
   // Grow with the content, up to a cap. Runs on mount too, so a restored draft
   // opens at the right height instead of a single collapsed row.
@@ -438,8 +451,9 @@ export function Composer({
         setPickerFocus({ target: focus });
         setModelPickerOpen(true);
       },
+      sendAndNewThread: () => latestSendAndNew.current?.(),
     }),
-    [draftRef, focusAt, hasPicker],
+    [draftRef, focusAt, hasPicker, latestSendAndNew],
   );
 
   const textarea = (
@@ -474,7 +488,8 @@ export function Composer({
         if (menu.onKey(e)) return;
         if (stepRecall(e)) return;
         if (e.key !== "Enter") return;
-        // Shift+Enter is the newline; let the textarea handle it.
+        // Shift+Enter is the newline; let the textarea handle it. ⇧⌘↵ in an
+        // open thread never gets here: the app's shortcut takes it first.
         if (e.shiftKey) return;
         e.preventDefault();
         // ⌘↵ (Ctrl↵ off a Mac) sends the other way from the default.
@@ -581,6 +596,7 @@ export function Composer({
             cannotSend={cannotSend}
             scheduleBlock={scheduleBlock}
             onSend={(delivery) => void send(delivery)}
+            onSendAndNew={sendAndNew}
             onSchedule={onSchedule}
             onCancel={onCancel}
           />

@@ -1,4 +1,12 @@
-import { ArrowUpIcon, ChevronDownIcon, ClockIcon, ListEndIcon, SquareIcon, ZapIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  ChevronDownIcon,
+  ClockIcon,
+  ListEndIcon,
+  SquareIcon,
+  SquarePenIcon,
+  ZapIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -6,6 +14,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { cn } from "~/lib/utils";
@@ -44,16 +53,37 @@ function DeliveryItems({ onSend }: { onSend: (delivery?: Delivery) => void }) {
   });
 }
 
+// Sends the default way, then leaves for a fresh draft in the same project,
+// for firing off one task and getting straight on with the next.
+function SendAndNewItem({ onSelect }: { onSelect: () => void }) {
+  // Only where hints show at all, which a phone's held menu never does.
+  const chord = useShortcutLabel("sendAndNewThread");
+  return (
+    <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSelect}>
+      <SquarePenIcon />
+      <span className="flex flex-col">
+        Send and start a new thread
+        <span className="text-muted-foreground text-xs">Opens a new thread here</span>
+      </span>
+      {chord && <DropdownMenuShortcut>{chord}</DropdownMenuShortcut>}
+    </DropdownMenuItem>
+  );
+}
+
 // Opened by holding Send, not by pressing it, so its trigger is only an
 // anchor laid over the button, out of the pointer's way.
 function HeldMenu({
   open,
   onOpenChange,
+  choice,
   onSend,
+  onSendAndNew,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  choice: boolean;
   onSend: (delivery?: Delivery) => void;
+  onSendAndNew?: () => void;
 }) {
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
@@ -61,25 +91,37 @@ function HeldMenu({
         <span aria-hidden className="pointer-events-none absolute inset-0" />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="end">
-        <DeliveryItems onSend={onSend} />
+        {choice ? (
+          <DeliveryItems onSend={onSend} />
+        ) : (
+          // Held only for the new thread. The hold swallowed the tap that
+          // would have sent, so a plain send is offered beside it.
+          <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={() => onSend()}>
+            <ArrowUpIcon />
+            Send
+          </DropdownMenuItem>
+        )}
+        {onSendAndNew && <SendAndNewItem onSelect={onSendAndNew} />}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
 // The chevron on Send's edge: the steer-or-queue choice while there is one,
-// else a plain send, and scheduling under either.
+// else a plain send, then sending into a new thread and scheduling.
 function MoreSendOptions({
   choice,
   cannotSend,
   scheduleBlock,
   onSend,
+  onSendAndNew,
   onSchedule,
 }: {
   choice: boolean;
   cannotSend: boolean;
   scheduleBlock?: string;
   onSend: (delivery?: Delivery) => void;
+  onSendAndNew?: () => void;
   onSchedule?: () => void;
 }) {
   return (
@@ -108,6 +150,7 @@ function MoreSendOptions({
             Send now
           </DropdownMenuItem>
         )}
+        {onSendAndNew && <SendAndNewItem onSelect={onSendAndNew} />}
         {onSchedule && (
           <DropdownMenuItem className="min-h-11 md:min-h-0" onSelect={onSchedule} disabled={!!scheduleBlock}>
             <ClockIcon />
@@ -131,6 +174,7 @@ export function SendButtons({
   cannotSend,
   scheduleBlock,
   onSend,
+  onSendAndNew,
   onSchedule,
   onCancel,
 }: {
@@ -144,12 +188,15 @@ export function SendButtons({
   scheduleBlock?: string;
   /** Undefined sends the server's default way. */
   onSend: (delivery?: Delivery) => void;
+  /** Sends the default way, then opens a new thread's draft. Only for an
+      existing thread's composer. */
+  onSendAndNew?: () => void;
   onSchedule?: () => void;
   onCancel: () => void;
 }) {
   const stopChord = useShortcutLabel("stopTurn");
   const choice = offersChoice(busy, steers);
-  const more = !!onSchedule || choice;
+  const more = !!onSchedule || choice || !!onSendAndNew;
 
   return (
     <>
@@ -176,13 +223,21 @@ export function SendButtons({
         // Scheduling rides on send's edge rather than taking its own slot:
         // a phone-width row has no room for a third round button.
         <div className="ml-1.5 flex shrink-0 md:ml-2">
-          <SendButton busy={busy} steers={steers} cannotSend={cannotSend} edged={more} onSend={onSend} />
+          <SendButton
+            busy={busy}
+            steers={steers}
+            cannotSend={cannotSend}
+            edged={more}
+            onSend={onSend}
+            onSendAndNew={onSendAndNew}
+          />
           {more && (
             <MoreSendOptions
               choice={choice}
               cannotSend={cannotSend}
               scheduleBlock={scheduleBlock}
               onSend={onSend}
+              onSendAndNew={onSendAndNew}
               onSchedule={onSchedule}
             />
           )}
@@ -193,13 +248,14 @@ export function SendButtons({
 }
 
 // Send itself. A tap sends the default way; holding it, where there is a
-// choice, opens the menu that sends the other way.
+// choice or a new thread to send into, opens the menu with the other ways.
 function SendButton({
   busy,
   steers,
   cannotSend,
   edged,
   onSend,
+  onSendAndNew,
 }: {
   busy: boolean;
   steers: boolean;
@@ -207,16 +263,20 @@ function SendButton({
   /** The options chevron sits against its right edge. */
   edged: boolean;
   onSend: (delivery?: Delivery) => void;
+  onSendAndNew?: () => void;
 }) {
   const choice = offersChoice(busy, steers);
   // A harness that cannot take a message mid-turn has only the queue.
   const fallback = SEND_LABEL[steers ? "steer" : "queue"];
-  // Holding Send is the phone's way to the choice ⌘↵ makes on a keyboard.
+  // Holding Send is the phone's way to what ⌘↵ and ⇧⌘↵ do on a keyboard.
+  const holdable = choice || !!onSendAndNew;
   const [held, setHeld] = useState(false);
-  const hold = useLongPress(choice && !cannotSend, () => setHeld(true));
-  // A turn that ends with the menu open takes the menu with it; it must not
-  // spring back open when the next turn starts.
-  if (held && !choice) setHeld(false);
+  const hold = useLongPress(holdable && !cannotSend, () => setHeld(true));
+  // The menu goes once nothing in it could send: a turn that ends takes the
+  // steer-or-queue choice with it, and the menu must not spring back open
+  // when the next one starts. A turn ending under a menu that also sends into
+  // a new thread leaves it open, now offering a plain send.
+  if (held && (!holdable || cannotSend)) setHeld(false);
 
   return (
     <span className="relative flex">
@@ -231,12 +291,20 @@ function SendButton({
           "size-11 shrink-0 rounded-full md:size-8",
           edged && "rounded-r-none",
           // No text selection or iOS callout under a held thumb.
-          choice && "select-none [-webkit-touch-callout:none]",
+          holdable && "select-none [-webkit-touch-callout:none]",
         )}
       >
         <ArrowUpIcon />
       </Button>
-      {choice && <HeldMenu open={held} onOpenChange={setHeld} onSend={onSend} />}
+      {holdable && (
+        <HeldMenu
+          open={held}
+          onOpenChange={setHeld}
+          choice={choice}
+          onSend={onSend}
+          onSendAndNew={onSendAndNew}
+        />
+      )}
     </span>
   );
 }

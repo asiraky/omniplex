@@ -102,6 +102,7 @@ export function useAppKeybindings({
     stopTurn: onStopTurn,
     stopTurnEscape: onStopTurn,
     focusComposer: () => composerRef.current?.focusEnd(),
+    sendAndNewThread: () => composerRef.current?.sendAndNewThread(),
     modelPicker: () => composerRef.current?.openModelPicker("model"),
     effort: () => composerRef.current?.openModelPicker("effort"),
     toggleSidebar: onToggleSidebar,

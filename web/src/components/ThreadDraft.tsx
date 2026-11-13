@@ -25,7 +25,7 @@ import { InstanceAlerts } from "./threadDraft/InstanceAlerts";
 import { PinToggle } from "./threadDraft/PinToggle";
 import { FolderChip, ProjectChip } from "./threadDraft/ScopeChips";
 import { toolClass } from "./threadDraft/shared";
-import { useAgentChoice } from "./threadDraft/useAgentChoice";
+import { threadChoices, useAgentChoice } from "./threadDraft/useAgentChoice";
 import { useDraftScope } from "./threadDraft/useDraftScope";
 import { useRememberedChoices } from "./threadDraft/useRememberedChoices";
 import {
@@ -176,8 +176,17 @@ export function ThreadDraft({
     (text: string) => drafts.set(NEW_THREAD, text),
     [drafts],
   );
-  const remembered = useRememberedChoices();
   const presetProject = preset?.projectId ?? activeProjectId;
+  // Opened from a thread to carry on beside it: the same agent, in its
+  // project only. Worked out once, like everything else the preset says.
+  const [seed] = useState(() => {
+    const agent = preset?.agent;
+    if (!agent || !presetProject) return undefined;
+    const project = projects.find((p) => p.id === presetProject);
+    const prefs = threadChoices(agent, project, harnesses, userConfig);
+    return { projectId: presetProject, harness: agent.harness, prefs };
+  });
+  const remembered = useRememberedChoices(seed);
   const where = useDraftScope(
     projects,
     presetProject,

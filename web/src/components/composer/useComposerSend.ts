@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 import { overPromptLimit, sendPayload, type Attachment } from "~/lib/attachments";
 import { submittedComposerAction } from "~/lib/composerItems";
@@ -63,7 +63,18 @@ export function useComposerSend({
     (!draft.trim() && sendableAttachments === 0);
 
   // `delivery` reaches only a prompt: a command runs now or not at all.
-  const send = async (delivery?: Delivery) => {
+  // `then` runs once the message is handed off (a prompt to the outbox, an
+  // action once it returns), and never for one held back:
+  // send-and-start-a-new-thread must not leave a draft behind unsent.
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
+  const send = async (delivery?: Delivery, then?: () => void) => {
     const t = draft.trim();
     // A message may be nothing but attachments: "what is this?" is often the
     // whole question, and the picture or the file is the rest of it.
@@ -83,6 +94,8 @@ export function useComposerSend({
     const intercepted = submittedComposerAction(t, items);
     if (intercepted?.item.behavior === "client-action") {
       changeDraft("");
+      // Nothing went to the thread: the action is this screen's, and leaving
+      // for a new thread would take away whatever it just opened.
       if (intercepted.item.action) runClientAction(intercepted.item.action);
       return;
     }
@@ -90,7 +103,13 @@ export function useComposerSend({
       try {
         const submittedDraft = draftRef.current;
         await onRunComposerAction?.(intercepted.item.action, intercepted.args, t);
-        if (draftRef.current === submittedDraft) changeDraft("");
+        // Written over while it ran, the composer is someone's next message:
+        // it stays, and so do they.
+        if (draftRef.current !== submittedDraft) return;
+        changeDraft("");
+        // Gone to another thread while it ran: they have moved on already,
+        // and a new draft now would pull them out of wherever they went.
+        if (live.current) then?.();
       } catch {
         // App reports the provider error. Retain the command so it can be
         // retried or edited, without leaving a rejected promise behind.
@@ -99,6 +118,7 @@ export function useComposerSend({
     }
     onSend(t, sendPayload(attachments), delivery);
     changeDraft("");
+    then?.();
   };
 
   return { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch };
