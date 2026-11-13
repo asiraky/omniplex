@@ -1,4 +1,4 @@
-import type { DraftPreset } from "~/app/useThreadSelection";
+import type { ThreadAgent } from "~/app/useThreadSelection";
 import type { ModelSelection } from "~/components/ModelPicker";
 import {
   defaultModel,
@@ -183,7 +183,7 @@ export function useAgentChoice(sources: Sources, { patch }: Pick<RememberedChoic
  * the way the thread's own picker does.
  */
 export function threadChoices(
-  agent: NonNullable<DraftPreset["agent"]>,
+  agent: ThreadAgent,
   project: Project | undefined,
   harnesses: HarnessMeta[],
   userConfig: UserConfig | null,
