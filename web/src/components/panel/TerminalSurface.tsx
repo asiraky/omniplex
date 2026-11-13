@@ -109,7 +109,7 @@ export function TerminalSurface({
         setEnded(reason);
         onEndedRef.current?.();
       },
-    });
+    }, () => (term.options.scrollback ?? 1000) + term.rows);
     socketRef.current = socket;
     socket.resize(term.cols, term.rows);
 
