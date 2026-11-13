@@ -114,6 +114,11 @@ interface SidebarProps {
   /** Copies the thread's /thread/<id> link. */
   onCopyLink: (threadId: string) => void;
   /**
+   * Files dragged from the OS and dropped on a thread's row: they go on that
+   * thread's composer, and the thread opens. Never called with none.
+   */
+  onDropFiles: (threadId: string, files: File[]) => void;
+  /**
    * Whether Back on a phone closes the drawer. With nothing selected the
    * drawer is the landing screen and there is nothing behind it, so Back has
    * to leave it alone and do whatever Back did before.
@@ -217,6 +222,7 @@ function ThreadList({
   onSetUnread,
   onRename,
   onCopyLink,
+  onDropFiles,
   onReorder,
   reordering,
   showJumpHints,
@@ -232,6 +238,7 @@ function ThreadList({
   | "onSetUnread"
   | "onRename"
   | "onCopyLink"
+  | "onDropFiles"
   | "onReorder"
 > & {
   flow: DeleteFlow;
@@ -309,6 +316,7 @@ function ThreadList({
       onRename={onRename}
       onCopyLink={onCopyLink}
       onDelete={ask}
+      onDropFiles={onDropFiles}
       jumpHint={jumps.get(s.id)}
     />
   );
@@ -486,6 +494,7 @@ function SidebarPanel({
           onSetUnread={props.onSetUnread}
           onRename={props.onRename}
           onCopyLink={props.onCopyLink}
+          onDropFiles={props.onDropFiles}
           onReorder={props.onReorder}
           reordering={reordering}
           showJumpHints={props.showJumpHints}

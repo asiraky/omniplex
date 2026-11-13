@@ -14,6 +14,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/artefact"
 	"github.com/asiraky/omniplex/internal/auth"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/store"
 )
 
@@ -74,7 +75,13 @@ func (r *artefactRig) write(t *testing.T, name string, files map[string]string) 
 
 func (r *artefactRig) show(t *testing.T, token, path string) (*http.Response, map[string]any) {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"path": path})
+	return r.showWith(t, token, map[string]any{"path": path})
+}
+
+// showWith is show with the rest of the tool's arguments.
+func (r *artefactRig) showWith(t *testing.T, token string, args map[string]any) (*http.Response, map[string]any) {
+	t.Helper()
+	body, _ := json.Marshal(args)
 	req, _ := http.NewRequest("POST", r.remote.URL+"/api/agent/artefacts", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := http.DefaultClient.Do(req)
@@ -165,6 +172,81 @@ func TestAgentShowNeedsItsTokenAndAPathInTheThread(t *testing.T) {
 	_, other := r.show(t, r.agent, r.write(t, "notes.md", map[string]string{"": "# n"}))
 	if other["artefactId"] == first["artefactId"] {
 		t.Fatalf("another path must be another artefact: %v", other)
+	}
+}
+
+func TestAgentShowsOnlyHTMLInlineAndOnlyUntilShownWithout(t *testing.T) {
+	r := newArtefactRig(t)
+	ctx := context.Background()
+	actor, err := r.srv.mgr.View(ctx, r.thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// lastShow is what the thread holds after a show: the artefact's record,
+	// and the transcript item that show added.
+	lastShow := func(id string) (projection.Artefact, projection.Item) {
+		t.Helper()
+		st, err := actor.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, _ := st.ArtefactByID(id)
+		var last projection.Item
+		for _, it := range st.Items {
+			if it.Kind == projection.ItemArtefact && it.ArtefactID == id {
+				last = it
+			}
+		}
+		return rec, last
+	}
+	show := func(path string, inline bool) (string, bool) {
+		t.Helper()
+		res, out := r.showWith(t, r.agent, map[string]any{"path": path, "inline": inline})
+		if res.StatusCode != 200 {
+			t.Fatalf("show %s: %d %v", path, res.StatusCode, out)
+		}
+		got, _ := out["inline"].(bool)
+		id := out["artefactId"].(string)
+		rec, item := lastShow(id)
+		if rec.Inline != got || item.Inline != got {
+			t.Fatalf("%s: reply inline=%v, record %v, item %v", path, got, rec.Inline, item.Inline)
+		}
+		return id, got
+	}
+
+	chart := r.write(t, "chart.html", map[string]string{"": "<svg></svg>"})
+	id, inline := show(chart, true)
+	if !inline {
+		t.Fatal("an HTML page shown inline is a card")
+	}
+	if again, inline := show(chart, true); again != id || !inline {
+		t.Fatalf("shown inline again: %s inline=%v", again, inline)
+	}
+	// The record is the latest show: without inline it is a card again. The
+	// earlier shows keep their own flag, and the record's decides how they draw.
+	if _, inline := show(chart, false); inline {
+		t.Fatal("shown again without inline is still inline")
+	}
+	st, _ := actor.State(ctx)
+	var frames int
+	for _, it := range st.Items {
+		if it.ArtefactID == id && it.Inline {
+			frames++
+		}
+	}
+	if frames != 2 {
+		t.Fatalf("earlier inline shows = %d, want both kept", frames)
+	}
+
+	if _, inline := show(r.write(t, "notes.md", map[string]string{"": "# n"}), true); inline {
+		t.Fatal("markdown shown inline")
+	}
+	// A folder is what it opens on.
+	if _, inline := show(r.write(t, "site", map[string]string{"index.html": "<h1>", "logo.png": "x"}), true); !inline {
+		t.Fatal("a folder opening on index.html shown inline is a card")
+	}
+	if _, inline := show(r.write(t, "data", map[string]string{"a.csv": "1", "b.csv": "2"}), true); inline {
+		t.Fatal("a folder with no page shown inline")
 	}
 }
 

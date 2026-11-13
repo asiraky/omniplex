@@ -49,7 +49,7 @@ func serverInstructions(home string) string {
 - A request that changes how a codebase behaves (a fix, a feature, a refactor): code change.
 - In a repository, a design request can be either a new look to explore (artefact) or a change to the app's UI (code change). Judge from the request, and ask the user when it could be either.
 
-Artefacts live in ` + where + `. Use markdown for documents, HTML for anything visual or interactive, CSV for tables, SVG for diagrams. An HTML artefact opens directly in a browser: one file with inline CSS and JS, or a folder with index.html when it needs images. Write it there, then present it with mcp__omniplex__` + mcpShowTool + `.
+Artefacts live in ` + where + `. Use markdown for documents, HTML for anything visual or interactive, CSV for tables, SVG for diagrams. An HTML artefact opens directly in a browser: one file with inline CSS and JS, or a folder with index.html when it needs images. Write it there, then present it with mcp__omniplex__` + mcpShowTool + `. When a small HTML page is the answer itself (a chart, a table, a diagram, a small mockup), show it with inline set so it renders in the conversation above your reply instead of as a card.
 
 MCP servers, skills and CLI sign-ins are Omniplex's to manage: when the user asks to add or remove one, use the omniplex tools for it (list_mcp_servers, add_mcp_server, install_skill, add_sign_in and the rest) rather than editing config or skills folders, and load the omniplex skill first.
 
@@ -63,6 +63,8 @@ const showDescription = `Present an artefact to the user: a file or folder you m
 The file stays where it is and the viewer reads it live. There are no copies and no versions. To revise it, edit the same file in place, then call show_file again with the same path and a note saying what changed: overwrite report.md rather than writing report-v2.md beside it.
 
 For a folder, show the folder: it opens on its index.html, and relative links, scripts, styles and images work. Hidden files and node_modules are never part of a folder.
+
+Set inline for a small HTML page that is the answer itself, such as a chart or a table: it renders in the conversation above your reply instead of as a card.
 
 A file the user attached is already in front of them; show it again only after you have changed it.
 
@@ -227,9 +229,10 @@ func toolList() []any {
 			"type":     "object",
 			"required": []string{"path"},
 			"properties": map[string]any{
-				"path":  map[string]any{"type": "string", "description": "File or folder to show. Relative paths resolve against the working directory. Showing a path again updates the same card."},
-				"title": map[string]any{"type": "string", "description": "Title the user sees. Defaults to the file or folder name."},
-				"note":  map[string]any{"type": "string", "description": "One line on what this is or, when showing it again, what changed."},
+				"path":   map[string]any{"type": "string", "description": "File or folder to show. Relative paths resolve against the working directory. Showing a path again updates the same card."},
+				"title":  map[string]any{"type": "string", "description": "Title the user sees. Defaults to the file or folder name."},
+				"note":   map[string]any{"type": "string", "description": "One line on what this is or, when showing it again, what changed."},
+				"inline": map[string]any{"type": "boolean", "description": "Render the page inside the conversation, above your reply, instead of as a card. Use it for a small page that is the answer itself (a chart, a table, a diagram, a small mockup) and reads at phone width. Leave it off for reports, specs and anything long: those stay cards. Only HTML renders inline; anything else ignores it. Showing the path again without it turns it back into a card."},
 			},
 		},
 	}}
@@ -386,16 +389,17 @@ func idKey(id json.RawMessage) string {
 func callTool(ctx context.Context, base, token, name string, args json.RawMessage) (string, error) {
 	if name == mcpShowTool {
 		var a struct {
-			Path  string `json:"path"`
-			Title string `json:"title"`
-			Note  string `json:"note"`
+			Path   string `json:"path"`
+			Title  string `json:"title"`
+			Note   string `json:"note"`
+			Inline bool   `json:"inline"`
 		}
 		if len(args) > 0 {
 			if err := json.Unmarshal(args, &a); err != nil {
 				return "", fmt.Errorf("arguments: %w", err)
 			}
 		}
-		return showFile(ctx, base, token, a.Path, a.Title, a.Note)
+		return showFile(ctx, base, token, a.Path, a.Title, a.Note, a.Inline)
 	}
 	return agentCall(ctx, base, token, name, args)
 }
@@ -439,7 +443,7 @@ func agentCall(ctx context.Context, base, token, name string, args json.RawMessa
 	return got.Text, nil
 }
 
-func showFile(ctx context.Context, base, token, p, title, note string) (string, error) {
+func showFile(ctx context.Context, base, token, p, title, note string, inline bool) (string, error) {
 	if base == "" || token == "" {
 		return "", errors.New("omniplex did not configure this tool (OMNIPLEX_URL / OMNIPLEX_AGENT_TOKEN unset)")
 	}
@@ -450,7 +454,7 @@ func showFile(ctx context.Context, base, token, p, title, note string) (string, 
 	if err != nil {
 		return "", err
 	}
-	reqBody, _ := json.Marshal(map[string]string{"path": abs, "title": title, "note": note})
+	reqBody, _ := json.Marshal(map[string]any{"path": abs, "title": title, "note": note, "inline": inline})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/api/agent/artefacts", bytes.NewReader(reqBody))
 	if err != nil {
 		return "", err
@@ -474,14 +478,24 @@ func showFile(ctx context.Context, base, token, p, title, note string) (string, 
 		return "", fmt.Errorf("omniplex could not show %s (%d): %s", p, res.StatusCode, e.Error)
 	}
 	var shown struct {
-		Name  string `json:"name"`
-		Entry string `json:"entry"`
-		Files int    `json:"files"`
+		Name   string `json:"name"`
+		Entry  string `json:"entry"`
+		Files  int    `json:"files"`
+		Inline bool   `json:"inline"`
 	}
 	json.Unmarshal(body, &shown)
 	what := shown.Entry
 	if shown.Files > 1 {
 		what = fmt.Sprintf("%d files, opens on %s", shown.Files, shown.Entry)
 	}
-	return fmt.Sprintf("Showing %q (%s). The user can open it from the conversation. To revise it, edit the file in place and show it again.", shown.Name, what), nil
+	// Omniplex drops inline for anything that is not HTML. Saying so stops
+	// the agent writing its reply as if the page were on screen.
+	where := "The user can open it from the conversation."
+	switch {
+	case shown.Inline:
+		where = "It renders in the conversation, above your reply."
+	case inline:
+		where = "Only HTML renders inline, so it shows as a card the user can open."
+	}
+	return fmt.Sprintf("Showing %q (%s). %s To revise it, edit the file in place and show it again.", shown.Name, what, where), nil
 }

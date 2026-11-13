@@ -216,6 +216,11 @@ type Item struct {
 	ArtefactID string `json:"artefactId,omitempty"`
 	MediaType  string `json:"mediaType,omitempty"`
 	Size       int64  `json:"size,omitempty"`
+	// Inline is whether this show asked for the page to be drawn in the
+	// transcript rather than as a card. It is drawn so only while the
+	// artefact's latest show asked the same: showing the page again without
+	// it turns this frame into a card too.
+	Inline bool `json:"inline,omitempty"`
 
 	// card: what was proposed, and once answered what became of it. Status
 	// is the outcome's result.
@@ -259,6 +264,9 @@ type Artefact struct {
 	Note       string `json:"note,omitempty"`
 	TurnID     string `json:"turnId,omitempty"`
 	ShownAt    int64  `json:"shownAt"`
+	// Inline is whether the latest show asked for the page in the
+	// conversation, so a re-show without it makes it a card again.
+	Inline bool `json:"inline,omitempty"`
 }
 
 // Job is work running beside the conversation: a subagent, a background
@@ -1527,7 +1535,7 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 	a := Artefact{
 		ID: p.ArtefactID, Name: p.Name, Path: p.Path, Dir: p.Dir, MediaType: p.MediaType, Size: p.Size,
 		Entry: p.Entry, Files: p.Files, ModifiedAt: p.ModifiedAt, Source: p.Source, Note: p.Note,
-		TurnID: p.TurnID, ShownAt: ev.Timestamp,
+		TurnID: p.TurnID, ShownAt: ev.Timestamp, Inline: p.Inline,
 	}
 	found := false
 	for i := range s.Artefacts {
@@ -1553,6 +1561,7 @@ func (s *State) applyArtefact(p proto.ArtefactShownPayload, ev proto.Event) {
 		it.ArtefactID = p.ArtefactID
 		it.MediaType = p.MediaType
 		it.Size = p.Size
+		it.Inline = p.Inline
 	})
 }
 

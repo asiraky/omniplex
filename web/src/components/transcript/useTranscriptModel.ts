@@ -64,6 +64,7 @@ export function useTranscriptModel(
     | "items"
     | "itemsBefore"
     | "turns"
+    | "artefacts"
     | "scheduledPrompts"
     | "pendingPermissions"
     | "pendingElicitations"
@@ -122,8 +123,8 @@ export function useTranscriptModel(
   // an interrupted transition) never becomes what the next one matches against.
   const prevRows = useRef<Row[]>([]);
   const rows = useMemo(
-    () => reuseRows(prevRows.current, buildRows(ownItems, state.turns, state.phase)),
-    [ownItems, state.turns, state.phase],
+    () => reuseRows(prevRows.current, buildRows(ownItems, state.turns, state.phase, state.artefacts)),
+    [ownItems, state.turns, state.phase, state.artefacts],
   );
   useLayoutEffect(() => {
     prevRows.current = rows;

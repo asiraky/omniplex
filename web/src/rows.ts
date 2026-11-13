@@ -18,6 +18,7 @@
 // one-line summary. Nothing the reader is looking at is ever reclassified
 // out from under them: rows accrete and morph in place, they do not vanish.
 
+import { drawsInline, type Artefact } from "./lib/artefacts";
 import type { Item, Turn } from "./protocol";
 
 // A harness can open a message block it never fills — a thought whose text the
@@ -51,8 +52,10 @@ export type Row =
   // in view without scrolling back up to where they were started.
   | { kind: "jobs"; id: string; items: Item[]; recap?: true }
   // Artefacts the agent showed. Never folded: they are what the turn was
-  // for. A finished turn shows them under its answer, one card per artefact
-  // however many times it was shown.
+  // for. A finished turn shows one per artefact however many times it was
+  // shown: pages shown inline sit above its answer, as the visual reply the
+  // answer goes with, and the cards sit under it. A running turn shows them
+  // where they were shown, which is before the text that follows.
   | { kind: "artefacts"; id: string; items: Item[] };
 
 /** A row's identity: its React key, and the id the scroll memory finds it by. */
@@ -75,8 +78,9 @@ function spawnBatch(items: Item[], i: number): Item[] {
   return items.slice(i, j);
 }
 
-export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
+export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts: readonly Artefact[] = []): Row[] {
   const turnById = new Map(turns.map((t) => [t.id, t]));
+  const artefactById = new Map(artefacts.map((a) => [a.id, a]));
   // A turn this projection has never heard of cannot be shown to be over, so
   // it is treated as still running rather than folded away mid-flight.
   const doneTurn = (turnId?: string) =>
@@ -160,12 +164,16 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
         hidden.push(it);
       }
       flush();
+      const shown = latestPerArtefact(produced);
+      const inline: Item[] = [];
+      const cards: Item[] = [];
+      for (const it of shown) (drawsInline(it, artefactById.get(it.artefactId ?? "")) ? inline : cards).push(it);
+      if (inline.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${inline[0].id}`, items: inline });
       if (answer) rows.push({ kind: "item", item: answer });
       if (answer && spawns.length > 0)
         rows.push({ kind: "jobs", id: `jobs-recap:${spawns[0].id}`, items: spawns, recap: true });
       for (const it of decided) rows.push({ kind: "item", item: it });
-      if (produced.length > 0)
-        rows.push({ kind: "artefacts", id: `artefacts:${produced[0].id}`, items: latestPerArtefact(produced) });
+      if (cards.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${cards[0].id}`, items: cards });
       i = j;
       continue;
     }

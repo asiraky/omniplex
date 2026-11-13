@@ -25,6 +25,7 @@ import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
 import { cn } from "~/lib/utils";
 import type { Delivery, HarnessMeta, Usage } from "~/protocol";
+import { useFileDrop } from "~/useFileDrop";
 import { useLatest } from "~/useLatest";
 import { useIsDesktop } from "~/useMediaQuery";
 
@@ -42,7 +43,7 @@ import { useComposerMenu } from "./composer/useComposerMenu";
 import { useComposerFit } from "./composer/useComposerFit";
 import { useComposerSend } from "./composer/useComposerSend";
 import { useDraftRef } from "./composer/useDraftRef";
-import { useFileDrop, usePasteIntake } from "./composer/useFileIntake";
+import { usePasteIntake } from "./composer/useFileIntake";
 
 /** Where the composer put its extra tools: its toolbar, or the drawer under it. */
 export type ToolPlace = "row" | "drawer";
