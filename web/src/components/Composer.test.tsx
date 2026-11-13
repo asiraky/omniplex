@@ -1266,6 +1266,30 @@ describe("sending and starting a new thread", () => {
     expect(onRunComposerAction).toHaveBeenCalledWith("compact", "", "/compact");
   });
 
+  it("stays in the thread when the draft was rewritten while the adapter command ran", async () => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    let finish!: () => void;
+    const onRunComposerAction = vi.fn(() => new Promise<void>((r) => (finish = r)));
+    const over = { ref, catalogue: catalogue(), onRunComposerAction, onSendAndNewThread };
+    const { rerender } = mount({ ...over, draft: "/compact" });
+    act(() => ref.current!.sendAndNewThread());
+    rerender({ ...over, draft: "the next thing" });
+    await act(async () => finish());
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+
+  it("stays in the thread for a client command, which sends nothing", () => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    const onRunClientAction = vi.fn();
+    const usage = { ...compact, id: "command:usage", name: "usage", insertText: "/usage", behavior: "client-action" as const, action: "usage" };
+    mount({ ref, draft: "/usage", catalogue: catalogue({ items: [usage] }), onRunClientAction, onSendAndNewThread });
+    act(() => ref.current!.sendAndNewThread());
+    expect(onRunClientAction).toHaveBeenCalledWith("usage");
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+
   it("stays in the thread when the adapter command fails", async () => {
     const ref = createRef<ComposerHandle>();
     const onSendAndNewThread = vi.fn();

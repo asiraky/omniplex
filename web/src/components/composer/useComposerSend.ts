@@ -85,15 +85,19 @@ export function useComposerSend({
     const intercepted = submittedComposerAction(t, items);
     if (intercepted?.item.behavior === "client-action") {
       changeDraft("");
+      // Nothing went to the thread: the action is this screen's, and leaving
+      // for a new thread would take away whatever it just opened.
       if (intercepted.item.action) runClientAction(intercepted.item.action);
-      then?.();
       return;
     }
     if (intercepted?.item.behavior === "adapter-action" && intercepted.item.action) {
       try {
         const submittedDraft = draftRef.current;
         await onRunComposerAction?.(intercepted.item.action, intercepted.args, t);
-        if (draftRef.current === submittedDraft) changeDraft("");
+        // Written over while it ran, the composer is someone's next message:
+        // it stays, and so do they.
+        if (draftRef.current !== submittedDraft) return;
+        changeDraft("");
         then?.();
       } catch {
         // App reports the provider error. Retain the command so it can be
