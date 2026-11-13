@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkspaceKind } from "~/components/threadDraft/shared";
-import { openThreadMessage, threadIdFromPath } from "~/lib/threadLinks";
+import { isDraftEntry, navigate } from "~/lib/history";
+import { openThreadMessage, threadIdFromPath, threadPath } from "~/lib/threadLinks";
 import type { ThreadMeta } from "~/protocol";
 import { useLatest } from "~/useLatest";
 
@@ -23,10 +24,20 @@ export interface DraftPreset {
 }
 
 /**
+ * How a pick writes the browser's history. A pick by the user pushes, so Back
+ * returns to where they were; one that only puts right what the page already
+ * shows replaces; one made by Back or Forward writes nothing, since the
+ * browser has already moved.
+ */
+export type HistoryWrite = "push" | "replace" | "none";
+
+/**
  * Which thread is attached, whether a new one is being written instead, and
- * whether the sidebar is covering them: the app's routing, such as it is.
- * Also where a reload goes back to the thread it was on, and where the app
- * lets go of a thread the list says is gone.
+ * whether the sidebar is covering them: the app's routing. The URL follows
+ * the pick, /thread/<id> for a thread and / for a draft or nothing, one
+ * history entry per place, so Back and Forward (Android's back gesture too)
+ * move between threads. Also where a reload goes back to the thread it was
+ * on, and where the app lets go of a thread the list says is gone.
  */
 export function useThreadSelection({
   wire,
@@ -89,7 +100,7 @@ export function useThreadSelection({
   }
 
   const select = useCallback(
-    (id: string) => {
+    (id: string, { history = "push" }: { history?: HistoryWrite } = {}) => {
       pendingLink.current = null;
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a pick shows its thread, which on a phone means putting the list away
       if (!isDesktop) setSidebarOpen(false);
@@ -104,6 +115,7 @@ export function useThreadSelection({
       threadStore.set(null);
       localStorage.setItem(LAST_THREAD, id);
       clientRef.current?.attach(id);
+      if (history !== "none") navigate(threadPath(id), { replace: history === "replace" });
     },
     [activeRef, clientRef, isDesktop, onLeave, threadStore],
   );
@@ -116,8 +128,10 @@ export function useThreadSelection({
   // changed with every threads broadcast would re-render the memoised sidebar
   // for each one.
   const threadsRef = useLatest(threads);
+  // The draft's history entry is /, flagged so Forward onto it opens a draft
+  // again rather than nothing.
   const startNew = useCallback(
-    (preset?: DraftPreset) => {
+    (preset?: DraftPreset, { history = "push" }: { history?: HistoryWrite } = {}) => {
       pendingLink.current = null;
       const asked = preset ?? {};
       const projectId =
@@ -132,9 +146,28 @@ export function useThreadSelection({
         clientRef.current?.detach();
       }
       if (!isDesktop) setSidebarOpen(false);
+      if (history !== "none") navigate("/", { draft: true, replace: history === "replace" });
     },
     [activeRef, clientRef, dropResume, isDesktop, threadStore, threadsRef],
   );
+
+  // Back to nothing selected: Back onto the / the app opened at. On a phone
+  // that is the sidebar, its landing screen.
+  const creatingRef = useLatest(creating);
+  const goHome = useCallback(() => {
+    pendingLink.current = null;
+    if (!activeRef.current && !creatingRef.current) return;
+    setCreating(null);
+    if (activeRef.current) {
+      activeRef.current = null;
+      setActiveId(null);
+      threadStore.set(null);
+      dropResume();
+      clientRef.current?.detach();
+      onLeave();
+    }
+    if (!isDesktop) setSidebarOpen(true);
+  }, [activeRef, clientRef, creatingRef, dropResume, isDesktop, onLeave, threadStore]);
 
   // The draft's own project pick, kept here so the Skills page reads the
   // project being drafted in and the draft comes back on it. A folder or
@@ -154,25 +187,29 @@ export function useThreadSelection({
     clientRef.current?.detach();
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     if (!isDesktop) setSidebarOpen(true);
+    // Its entry no longer names it, so Back and a reload don't go looking.
+    if (threadIdFromPath(window.location.pathname)) navigate("/", { replace: true });
   }, [clientRef, dropResume, isDesktop, threadStore]);
 
   // Restore the last thread once the list arrives. This runs once: after it,
   // "no thread selected" is a state the user chose, not one we have yet to
   // resolve, and re-opening the sidebar under them would be wrong.
+  //
+  // Whatever it settles on, the page's entry is rewritten to name it, in
+  // place: the page loaded at one URL and is showing one thing, which is one
+  // step of history, not two.
   useEffect(() => {
     if (!threadsLoaded || restoreAttempted.current) return;
     restoreAttempted.current = true;
     const link = pendingLink.current;
     pendingLink.current = null;
     if (link) {
-      // The link has done its job; a reload should not reopen it over
-      // whatever the user moves on to.
-      if (threadIdFromPath(window.location.pathname)) window.history.replaceState(null, "", "/");
       if (openable(threads, link)) {
         if (link !== activeId) {
           dropResume();
-          select(link);
+          select(link, { history: "none" });
         }
+        restoredUrl(link);
         return;
       }
       // Gone or closed: carry on as if there had been no link.
@@ -183,7 +220,11 @@ export function useThreadSelection({
       // closed from elsewhere while the page was dead) let go the same way
       // a live delete would. The seenActive effect below can't: it only acts
       // on threads it saw in a list first.
-      if (openable(threads, activeId)) return;
+      // It was hydrated at /, from a cache that does not know the URL.
+      if (openable(threads, activeId)) {
+        restoredUrl(activeId);
+        return;
+      }
       // Including the position the cache seeded: the scroll prune only drops
       // threads it saw in a list, and this one never made it into one.
       // react-doctor-disable-next-line react-doctor/no-pass-live-state-to-parent -- not live state: the scroll memory must drop a thread the list says is gone, which only this list arriving can tell
@@ -192,10 +233,15 @@ export function useThreadSelection({
       return;
     }
     const last = localStorage.getItem(LAST_THREAD);
-    if (last && openable(threads, last)) select(last);
+    if (last && openable(threads, last)) {
+      select(last, { history: "none" });
+      restoredUrl(last);
+      return;
+    }
+    restoredUrl(null);
     // Nothing to restore into, so the phone lands on the sidebar after all.
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: the phone's sidebar reopens only once the first thread list shows nothing to restore
-    else if (!isDesktop) setSidebarOpen(true);
+    if (!isDesktop) setSidebarOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadsLoaded, threads]);
 
@@ -210,7 +256,7 @@ export function useThreadSelection({
     },
     [onOpenLink, select],
   );
-  const latest = useLatest({ threads, openLink });
+  const latest = useLatest({ threads, openLink, select, startNew, goHome, onOpenLink });
   useEffect(() => {
     const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
     if (!sw) return;
@@ -226,6 +272,47 @@ export function useThreadSelection({
     sw.addEventListener("message", onMessage);
     return () => sw.removeEventListener("message", onMessage);
   }, [latest]);
+
+  // Back and Forward. The browser has already moved, so nothing here writes
+  // history except to say a thread is gone. A sheet's entry (lib/history.ts)
+  // is at the open thread's own URL, and popping it lands in the first
+  // branch: that one is the sheet's to handle, not ours.
+  useEffect(() => {
+    const onPop = () => {
+      const { pathname } = window.location;
+      const { threads, select, startNew, goHome, onOpenLink } = latest.current;
+      const id = threadIdFromPath(pathname);
+      if (id) {
+        if (id === activeRef.current && !creatingRef.current) return;
+        // Before the first list nothing is openable yet; the restore takes
+        // it, as it does the page's own URL.
+        if (!restoreAttempted.current) {
+          pendingLink.current = id;
+          return;
+        }
+        if (openable(threads, id)) {
+          // Like a tapped notification: whatever covers the thread view goes.
+          onOpenLink();
+          dropResume();
+          select(id, { history: "none" });
+          return;
+        }
+        // Deleted or closed since: nothing to go back to, so the entry stops
+        // naming it.
+        goHome();
+        navigate("/", { replace: true });
+        return;
+      }
+      if (pathname !== "/") return;
+      if (isDraftEntry()) {
+        if (!creatingRef.current) startNew(undefined, { history: "none" });
+        return;
+      }
+      goHome();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [activeRef, creatingRef, dropResume, latest]);
 
   // The list caught up with a held link. The restore effect above runs first
   // and consumes a link the first list settles, so this only sees later ones.
@@ -274,6 +361,17 @@ export function useThreadSelection({
     startNew,
     pickDraftProject,
   };
+}
+
+/**
+ * Rewrite the page's entry to name what the restore opened. Only / and a
+ * thread's path are the restore's to touch (/setup is a screen of its own),
+ * and the query and hash stay: the theme sample is the hash.
+ */
+function restoredUrl(id: string | null) {
+  const { pathname, search, hash } = window.location;
+  if (pathname !== "/" && !threadIdFromPath(pathname)) return;
+  navigate((id ? threadPath(id) : "/") + search + hash, { replace: true });
 }
 
 /** Whether the list has this thread and it can still be opened. */

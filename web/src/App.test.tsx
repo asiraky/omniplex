@@ -129,6 +129,8 @@ const thread = (id: string): ThreadMeta =>
 const sidebarShowing = () => document.querySelector("[data-slot=sheet-content]") !== null;
 
 beforeEach(() => {
+  // Picking a thread names it in the URL, and the page reads its URL at boot.
+  window.history.replaceState(null, "", "/");
   localStorage.clear();
   sessionStorage.clear();
   Element.prototype.scrollIntoView = vi.fn();
@@ -523,7 +525,7 @@ describe("opening a thread from a notification", () => {
       sw.dispatchEvent(new MessageEvent("message", { data: { type: "open-thread", threadId } }));
     });
 
-  it("opens /thread/<id> ahead of the last thread, then drops the path", async () => {
+  it("opens /thread/<id> ahead of the last thread, and stays on it", async () => {
     window.history.replaceState(null, "", "/thread/b");
     localStorage.setItem("omniplex.lastThread", "a");
     viewport("phone");
@@ -534,7 +536,7 @@ describe("opening a thread from a notification", () => {
     await act(async () => events.onThreads([thread("a"), thread("b")]));
     expect(attach).toHaveBeenCalledWith("b");
     expect(attach).not.toHaveBeenCalledWith("a");
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/thread/b");
     expect(sidebarShowing()).toBe(false);
   });
 
@@ -555,7 +557,7 @@ describe("opening a thread from a notification", () => {
     render(<App />);
     await act(async () => events.onThreads([thread("a")]));
     expect(attach).toHaveBeenCalledWith("a");
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/thread/a");
   });
 
   it("switches thread when the worker names one in an open window", async () => {
@@ -626,6 +628,29 @@ describe("opening a thread from a notification", () => {
     await act(async () => events.onThreads([thread("a"), thread("b")]));
     expect(attach).toHaveBeenCalledWith("b");
     expect(attach).not.toHaveBeenCalledWith("a");
+  });
+});
+
+describe("moving between threads", () => {
+  it("names the picked thread in the URL, and Back goes to the one before", async () => {
+    render(<App />);
+    await act(async () => {
+      events.onProjects([project]);
+      events.onHarnesses([harness]);
+      events.onThreads([thread("a"), thread("b")]);
+    });
+    fireEvent.click(screen.getByText("Thread a"));
+    fireEvent.click(screen.getByText("Thread b"));
+    expect(window.location.pathname).toBe("/thread/b");
+    attach.mockClear();
+
+    const popped = new Promise((r) => window.addEventListener("popstate", r, { once: true }));
+    await act(async () => {
+      window.history.back();
+      await popped;
+    });
+    expect(window.location.pathname).toBe("/thread/a");
+    expect(attach).toHaveBeenCalledWith("a");
   });
 });
 

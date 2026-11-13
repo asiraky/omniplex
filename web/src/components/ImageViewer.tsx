@@ -2,6 +2,8 @@ import { ExternalLinkIcon, MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
+import { useBackDismiss } from "~/lib/history";
+
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
 const control =
@@ -39,6 +41,8 @@ export function ImageViewer({
   const [bounds, setBounds] = useState({ width: 0, height: 0 });
   const scroller = useRef<HTMLDivElement>(null);
   const previous = useRef(1);
+  // Always open while mounted; on a phone, Back closes it.
+  useBackDismiss(true, onClose);
   const mountScroller = useCallback((el: HTMLDivElement | null) => {
     scroller.current = el;
     if (!el) return;

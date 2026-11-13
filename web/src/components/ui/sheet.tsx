@@ -2,10 +2,18 @@ import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
+import { useBackDismiss } from "~/lib/history"
 import { escapeUnlessComposing } from "~/lib/ime"
 import { cn } from "~/lib/utils"
 
-function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
+function Sheet({
+  backDismiss = true,
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Root> & {
+  /** On a phone, Back closes it while open. Only a controlled sheet can. */
+  backDismiss?: boolean
+}) {
+  useBackDismiss(!!props.open && backDismiss, () => props.onOpenChange?.(false))
   return <SheetPrimitive.Root data-slot="sheet" {...props} />
 }
 

@@ -12,6 +12,10 @@
 // it opened. A popstate to a shallower entry closes every sheet above it. A
 // sheet closed by its own button or Escape unwinds its entry with
 // history.go, which pops nothing else.
+//
+// history.go lands a task later. Until it does, history.state still names the
+// entry being left, and a push or replace would land beside the wrong one, so
+// both wait for it.
 
 import { useEffect } from "react";
 
@@ -31,6 +35,9 @@ const live: Layer[] = [];
 // Depths of entries whose sheets closed on their own since the last unwind.
 const closed = new Set<number>();
 let unwindQueued = false;
+// The depth an in-flight unwind is going back to, and what waits on it.
+let landing: number | null = null;
+const afterLanding: (() => void)[] = [];
 let listening = false;
 
 function stateOf(state: unknown = window.history.state): Record<string, unknown> {
@@ -40,6 +47,16 @@ function stateOf(state: unknown = window.history.state): Record<string, unknown>
 function depthOf(state: unknown = window.history.state): number {
   const d = stateOf(state)[LAYER];
   return typeof d === "number" && d > 0 ? d : 0;
+}
+
+// The current depth, counting an unwind still in flight as done.
+function currentDepth(): number {
+  return landing ?? depthOf();
+}
+
+function whenLanded(fn: () => void) {
+  if (landing === null) fn();
+  else afterLanding.push(fn);
 }
 
 /** Whether the current history entry is a new thread's draft. */
@@ -54,20 +71,22 @@ export function isDraftEntry(state: unknown = window.history.state): boolean {
  * from there skips the sheet and the abandoned draft both.
  */
 export function navigate(path: string, { draft = false, replace = false } = {}) {
-  const takeOver = depthOf() > 0 || isDraftEntry();
   // The sheets close themselves as the app moves on; their entries are taken
   // over here rather than unwound.
   live.length = 0;
   closed.clear();
-  const state = draft ? { [DRAFT]: true } : null;
-  if (replace || takeOver) window.history.replaceState(state, "", path);
-  else window.history.pushState(state, "", path);
+  whenLanded(() => {
+    const takeOver = depthOf() > 0 || isDraftEntry();
+    const state = draft ? { [DRAFT]: true } : null;
+    if (replace || takeOver) window.history.replaceState(state, "", path);
+    else window.history.pushState(state, "", path);
+  });
 }
 
 /** Put an entry under a sheet that just opened; Back calls `close`. */
 export function pushLayer(close: () => void): Layer {
   listen();
-  const depth = depthOf();
+  const depth = currentDepth();
   // A sheet that closed and opened again before its entry was unwound (React
   // StrictMode's double effect, or a quick close-and-reopen) keeps the entry
   // rather than leaving it behind as a dead step.
@@ -79,7 +98,11 @@ export function pushLayer(close: () => void): Layer {
   }
   const layer = { depth: depth + 1, close };
   live.push(layer);
-  window.history.pushState({ ...stateOf(), [LAYER]: layer.depth }, "", window.location.href);
+  whenLanded(() => {
+    // Closed again, or taken over by a navigate, while it waited.
+    if (!live.includes(layer)) return;
+    window.history.pushState({ ...stateOf(), [LAYER]: layer.depth }, "", window.location.href);
+  });
   return layer;
 }
 
@@ -96,6 +119,11 @@ export function dropLayer(layer: Layer) {
 }
 
 function unwind() {
+  // One go at a time: the next is measured from where the last one lands.
+  if (landing !== null) {
+    afterLanding.push(unwind);
+    return;
+  }
   unwindQueued = false;
   const at = depthOf();
   let to = at;
@@ -103,10 +131,24 @@ function unwind() {
   // A sheet below one still open that closed first leaves its entry where it
   // is: going back to it would close the open one.
   closed.clear();
-  if (to < at) window.history.go(to - at);
+  if (to < at) {
+    landing = to;
+    window.history.go(to - at);
+  }
 }
 
 function onPopState(e: PopStateEvent) {
+  if (landing !== null) {
+    // The unwind arriving. Every sheet above it closed already; one open
+    // since sits above it too but has no entry yet, so nothing closes here.
+    // Nor is it the user going anywhere, so the app's own listeners, which
+    // would read the URL a waiting navigate has yet to write, never see it.
+    e.stopImmediatePropagation();
+    landing = null;
+    // A queued unwind may set off another go; what is left waits for that.
+    while (landing === null && afterLanding.length) afterLanding.shift()!();
+    return;
+  }
   const depth = depthOf(e.state);
   for (let i = live.length - 1; i >= 0; i--) {
     const layer = live[i];
@@ -119,7 +161,9 @@ function onPopState(e: PopStateEvent) {
 function listen() {
   if (listening) return;
   listening = true;
-  window.addEventListener("popstate", onPopState);
+  // Capturing, so it runs before the app's listeners and can hide an unwind
+  // from them.
+  window.addEventListener("popstate", onPopState, { capture: true });
 }
 
 /**

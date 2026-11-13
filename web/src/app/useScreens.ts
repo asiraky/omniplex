@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { SettingsSection } from "~/components/SettingsScreen";
+import { useBackDismiss } from "~/lib/history";
 import type { ToolsTab } from "~/lib/toolsTab";
 
 export const SETUP_PATH = "/setup";
@@ -21,6 +22,10 @@ export function useScreens() {
   // open because these are the user's and the project's first. Open, and on
   // which tab when the caller cares; else the last one used.
   const [tools, setTools] = useState<{ tab?: ToolsTab } | null>(null);
+  // Neither is a dialog, but on a phone each covers the thread like one, so
+  // Back closes it rather than changing thread.
+  useBackDismiss(showUsage, () => setShowUsage(false));
+  useBackDismiss(!!tools, () => setTools(null));
   // The theme sample page: a static mock of the dashboard behind a palette
   // switcher, reachable at #themes so it needs no router.
   const [themePreview, setThemePreview] = useState(() => window.location.hash === "#themes");
