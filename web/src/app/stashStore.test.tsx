@@ -105,7 +105,7 @@ describe("stash store", () => {
 
 describe("stashing from the composer", () => {
   function mount() {
-    const hook = renderHook(({ threads }) => useComposerDrafts(threads, "a"), {
+    const hook = renderHook(({ threads }) => useComposerDrafts(threads), {
       initialProps: { threads: [thread("a"), thread("b")] },
     });
     return { hook, page: () => hook.result.current };
@@ -295,7 +295,7 @@ describe("stashing from the composer", () => {
       localStorage.setItem(`omniplex.stash.v1:${threadId}`, JSON.stringify([{ id: `${threadId}1`, text, attachments: [], at: 1 }]));
     stored("a", "kept");
     stored("gone", "orphan");
-    const hook = renderHook(({ threads }) => useComposerDrafts(threads, null), {
+    const hook = renderHook(({ threads }) => useComposerDrafts(threads), {
       initialProps: { threads: [] as ThreadMeta[] },
     });
     // The list has not arrived yet: nothing is known to be gone.

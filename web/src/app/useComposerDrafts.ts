@@ -45,7 +45,7 @@ export type ComposerDrafts = ReturnType<typeof useComposerDrafts>;
  * Drafts set aside to send something else first (the stash) live in a store
  * of their own for the same reason, many per thread.
  */
-export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null) {
+export function useComposerDrafts(threads: ThreadMeta[]) {
   const [restored] = useState(restoreSaved);
   const { draftStore, outbox, stashStore } = restored;
   // Images staged for the next message, per thread and for the same reason as
@@ -225,10 +225,10 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
     return outbox.subscribe(sweep);
   }, [attachments, outbox]);
 
+  // Any thread's, not only the open one's: a drop on a sidebar row stages its
+  // files on that row's thread before it opens.
   const attachFiles = useCallback(
-    (files: File[]) => {
-      const threadId = activeId;
-      if (!threadId) return;
+    (threadId: string, files: File[]) => {
       for (const file of files) {
         // Not `crypto.randomUUID`: that exists only in a secure context, and
         // the origins a phone reaches this server on are not one.
@@ -240,7 +240,7 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
         uploadInto(threadId, key, file).catch(() => {});
       }
     },
-    [activeId, uploadInto],
+    [uploadInto],
   );
 
   // Files picked for a thread that does not exist yet. Uploads belong to a

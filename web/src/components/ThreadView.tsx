@@ -23,6 +23,7 @@ import { ReadAloudContext } from "~/lib/readAloud";
 import { quoteInto, ReplyContext } from "~/lib/reply";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
+import { composerWritable } from "~/threadStatus";
 import { useLatest } from "~/useLatest";
 import type {
   HarnessMeta,
@@ -134,7 +135,7 @@ export function ThreadView({
   // A reply's "reply" quotes it into this thread's draft and takes the cursor
   // there, since what comes next is typing the answer. While the composer is
   // locked (thread closed, workspace going away or broken), replies offer nothing.
-  const writable = useThread(useThreadStore(), composerWritable);
+  const writable = useThread(useThreadStore(), writableOf);
   const { getDraft, setDraft } = store;
   const { composerRef } = recents;
   const reply = useCallback(
@@ -522,7 +523,7 @@ function ThreadComposer({
       ref={recents.composerRef}
       draft={draft}
       onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
-      disabled={!composerWritable(state)}
+      disabled={!writableOf(state)}
       disabledPlaceholder={workspace.placeholder}
       busy={state.phase === "turn"}
       steers={harnessSteers(harnesses, state.harness)}
@@ -548,7 +549,7 @@ function ThreadComposer({
       onSchedule={() => activeId && schedule.openFromComposer(activeId)}
       onCancel={commands.cancel}
       attachments={activeId ? (store.attachments[activeId] ?? []) : []}
-      onAttachFiles={store.attachFiles}
+      onAttachFiles={(files) => activeId && store.attachFiles(activeId, files)}
       onRemoveAttachment={(key) => activeId && store.removeAttachment(activeId, key)}
       onRetryAttachment={(key) => activeId && store.retryUpload(activeId, key)}
       waiting={waiting}
@@ -589,11 +590,8 @@ function ThreadComposer({
 const titleOf = (state: ThreadState | null) => state?.title;
 const NO_HISTORY: string[] = [];
 const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items, state.turns) : NO_HISTORY);
-const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) => {
-  if (!state || state.closed) return false;
-  const workspace = workspaceStatus(state.phase);
-  return !workspace.cleaning && !workspace.failed;
-};
+const writableOf = (state: Pick<ThreadState, "closed" | "phase"> | null) =>
+  !!state && !state.closed && composerWritable(state.phase);
 const harnessOf = (state: ThreadState | null) => state?.harness;
 
 // What the dock draws. Not jobs: the strip selects those itself, so a job's
