@@ -169,7 +169,8 @@ export function ThreadView({
     [threadStore, metaNow, threadsNow],
   );
   // Leaving the thread drops the question rather than asking it on return.
-  useEffect(() => setRewinding(null), [activeId]);
+  // Dropped while rendering, so the sheet never shows over another thread.
+  if (rewinding && rewinding.threadId !== activeId) setRewinding(null);
   const rewinds = harnessRewinds(harnesses, harnessId);
   const { rewind } = commands;
   const closeRewind = useCallback(() => setRewinding(null), []);
