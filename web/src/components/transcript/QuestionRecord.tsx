@@ -30,9 +30,9 @@ export function QuestionRecord({ item }: { item: Item }) {
     <>
       <MessageCircleQuestionIcon aria-hidden className="text-muted-foreground mt-0.5 size-4 shrink-0" />
       <span className="block min-w-0 flex-1 space-y-1.5">
-        {questions.length === 0 && <span className="block text-[13px] leading-snug">{item.title || "Question"}</span>}
-        {questions.map((q, i) => (
-          <span key={q.key || i} className="block space-y-0.5">
+        {questions.map((q) => (
+          // Only a bare prompt has no key, and it is then the one entry.
+          <span key={q.key} className="block space-y-0.5">
             <span className="block text-[13px] leading-snug text-pretty break-words">{q.question}</span>
             {answered && !bare && (
               <span

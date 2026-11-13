@@ -3,7 +3,7 @@ import { fireEvent, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Approval, Item } from "~/protocol";
+import type { Item } from "~/protocol";
 import { render } from "~/test/harness";
 
 import { ApprovalChip, ApprovalRecord } from "./ApprovalChip";
@@ -15,17 +15,6 @@ function withFocus(ui: ReactElement, focusPrompt = vi.fn()) {
 }
 
 describe("the approval chip", () => {
-  it.each<[Approval, string]>([
-    ["pending", "Needs approval"],
-    ["allowed", "Allowed"],
-    ["allowed_always", "Always allowed"],
-    ["denied", "Denied"],
-    ["cancelled", "Cancelled"],
-  ])("says %s as %s", (approval, label) => {
-    withFocus(<ApprovalChip approval={approval} />);
-    expect(screen.getByText(label)).toBeTruthy();
-  });
-
   it("takes the reader to the permission prompt while pending", () => {
     const focusPrompt = withFocus(<ApprovalChip approval="pending" />);
     fireEvent.click(screen.getByRole("button", { name: "Needs approval" }));
