@@ -29,6 +29,7 @@ export function ComposerHistoryMenu({
   onTake,
   onDrop,
   onRecall,
+  onPicked,
 }: {
   disabled: boolean;
   /** There is text or a ready attachment to park. */
@@ -41,9 +42,12 @@ export function ComposerHistoryMenu({
   onTake: (id: string) => void;
   onDrop: (id: string) => void;
   onRecall: (text: string) => void;
+  /** The menu has gone after a pick, so focus can go where the pick wants it. */
+  onPicked: () => void;
 }) {
-  // Whether the menu closed on a pick, which has put focus where it belongs:
-  // handing it back to the trigger would take it out of the composer again.
+  // Whether the menu closed on a pick. Focus is the pick's to place, not the
+  // trigger's, and only once the menu is gone: until then the item under the
+  // pointer can take focus back, and leaves it on the page as it unmounts.
   const picked = useRef(false);
   const pick = (run: () => void) => () => {
     picked.current = true;
@@ -69,11 +73,14 @@ export function ComposerHistoryMenu({
       <DropdownMenuContent
         side="top"
         align="start"
-        className="w-80 max-w-[calc(100vw-2rem)]"
+        // Off the screen's edges on a phone, where the menu is near its width.
+        collisionPadding={12}
+        className="w-80 max-w-[calc(100vw-1.5rem)]"
         onCloseAutoFocus={(e) => {
           if (!picked.current) return;
           picked.current = false;
           e.preventDefault();
+          onPicked();
         }}
       >
         <DropdownMenuItem disabled={!canStash} onSelect={pick(onStash)} className={ROW}>

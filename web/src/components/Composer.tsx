@@ -526,15 +526,10 @@ export function Composer({
               canStash={!!draft.trim() || hasReady}
               stashed={stash.entries}
               recent={recent}
-              onStash={() => {
-                // Focus waits in the emptied composer on desktop, for whatever
-                // was to be sent instead.
-                if (stash.save() && isDesktop) focusAt(0);
-              }}
+              onStash={() => void stash.save()}
               onTake={(id) => {
                 recall.current = null;
-                const entry = stash.take(id);
-                if (entry && isDesktop) focusAt(entry.text.length);
+                stash.take(id);
               }}
               onDrop={stash.drop}
               onRecall={(text) => {
@@ -543,6 +538,12 @@ export function Composer({
                 if (draftRef.current.trim()) stash.save();
                 recall.current = null;
                 replaceDraft(text, isDesktop);
+              }}
+              // On desktop the next keystroke belongs in the composer: what
+              // to send instead of a stashed draft, or an edit to a recalled
+              // one. A phone stays unfocused, keeping its keyboard down.
+              onPicked={() => {
+                if (isDesktop) focusAt(draftRef.current.length);
               }}
             />
           )}
