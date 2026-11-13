@@ -67,3 +67,37 @@ func TestRenameThreadBroadcastsAndRefusesBlank(t *testing.T) {
 		t.Fatal("a rename must reach the sidebar through the list broadcast")
 	}
 }
+
+// A compare thread is named by the client before it runs, and the title the
+// first prompt would give it must not replace that name.
+func TestCreateProjectTitleSurvivesTheFirstPrompt(t *testing.T) {
+	for _, tc := range []struct{ name, title, want string }{
+		{"supplied", "Fix the login · Sonnet 5", "Fix the login · Sonnet 5"},
+		{"normalised", "  Fix the\nlogin \t· Sonnet 5 ", "Fix the login · Sonnet 5"},
+		{"blank falls back to the prompt", " \n ", "fix the login page"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _ := gitRepo(t)
+			st, p := testProject(t, root)
+			fa := &fakeAdapter{}
+			mgr := newManager(st, func(string, ...any) {}, fa)
+			defer mgr.Shutdown()
+			ctx := context.Background()
+
+			a, err := mgr.CreateProject(ctx, CreateProjectOptions{ProjectID: p.ID, Workspace: "local", Title: tc.title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Dispose("test done")
+			ready(t, st, a.ID)
+
+			if _, err := a.Prompt(ctx, "fix the login page", nil); err != nil {
+				t.Fatal(err)
+			}
+			<-fa.thread().prompts
+			if got, _ := st.Thread(ctx, a.ID); got.Title != tc.want {
+				t.Fatalf("title = %q, want %q", got.Title, tc.want)
+			}
+		})
+	}
+}

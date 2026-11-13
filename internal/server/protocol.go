@@ -93,6 +93,8 @@ type serverFrame struct {
 
 // Command argument shapes.
 type createArgs struct {
+	// Title names the thread up front; empty leaves it to the first prompt.
+	Title   string `json:"title"`
 	Harness string `json:"harness"`
 	// Instance names the provider instance to run under; empty means the
 	// harness's primary account.
