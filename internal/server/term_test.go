@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,7 @@ type termReader struct {
 	conn   *websocket.Conn
 	offset int64
 	syncs  []int64
+	cwds   []string
 	out    strings.Builder
 }
 
@@ -133,10 +135,19 @@ func (tr *termReader) next(ctx context.Context) error {
 		return err
 	}
 	if typ == websocket.MessageText {
-		var f termSyncFrame
-		if json.Unmarshal(data, &f) == nil && f.Type == "sync" {
-			tr.offset = f.Offset
-			tr.syncs = append(tr.syncs, f.Offset)
+		var f struct {
+			Type   string `json:"type"`
+			Offset int64  `json:"offset"`
+			Data   string `json:"data"`
+		}
+		if json.Unmarshal(data, &f) == nil {
+			switch f.Type {
+			case "sync":
+				tr.offset = f.Offset
+				tr.syncs = append(tr.syncs, f.Offset)
+			case "cwd":
+				tr.cwds = append(tr.cwds, f.Data)
+			}
 		}
 		return nil
 	}
@@ -173,6 +184,20 @@ func (tr *termReader) input(t *testing.T, ctx context.Context, s string) {
 	if err := tr.conn.Write(ctx, websocket.MessageText, frame); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// cwd asks where the shell is and reads until the answer.
+func (tr *termReader) cwd(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	if err := tr.conn.Write(ctx, websocket.MessageText, []byte(`{"type":"cwd"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for n := len(tr.cwds); len(tr.cwds) == n; {
+		if err := tr.next(ctx); err != nil {
+			t.Fatalf("waiting for a cwd reply: %v", err)
+		}
+	}
+	return tr.cwds[len(tr.cwds)-1]
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -648,5 +673,33 @@ func TestTermUnknownThreadClosesWith4400(t *testing.T) {
 	}
 	if n := rig.count(); n != 0 {
 		t.Fatalf("%d terminals registered after a failed start", n)
+	}
+}
+
+// A path the shell prints after a cd is relative to where the shell went, so
+// the answer follows the cd rather than staying at the checkout root.
+func TestTermCwdFollowsTheShell(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("no cwd lookup on " + runtime.GOOS)
+	}
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client, "id=cwd")}
+	if err := tr.next(ctx); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(rig.session("cwd").cmd.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.cwd(t, ctx); got != root {
+		t.Fatalf("cwd at start %q, want the checkout %q", got, root)
+	}
+
+	tr.input(t, ctx, "mkdir sub && cd sub && echo in\"\"side\n")
+	tr.until(t, ctx, "inside")
+	if got, want := tr.cwd(t, ctx), filepath.Join(root, "sub"); got != want {
+		t.Fatalf("cwd after cd %q, want %q", got, want)
 	}
 }

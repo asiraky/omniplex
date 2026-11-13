@@ -36,6 +36,13 @@ export interface TermSocket {
   resize(cols: number, rows: number): void;
   /** A fresh shell under the same id, after the last one ended. */
   restart(): void;
+  /**
+   * Where the shell is now, which a cd since the start has moved: the
+   * directory a relative path it printed is relative to. null when the server
+   * cannot tell, is not reachable, or takes longer than a click should wait.
+   * Calls made while one is out share its answer.
+   */
+  cwd(): Promise<string | null>;
   /** Hang up. The server keeps the shell; nothing is reported after this. */
   dispose(): void;
 }
@@ -43,6 +50,10 @@ export interface TermSocket {
 // The server's closes that end the terminal. Any other close is a dropped
 // connection, and worth retrying.
 const CLOSE_ENDS: Record<number, TermEnd> = { 4000: "exited", 4404: "gone", 4400: "failed" };
+
+// How long a cwd question waits for the server. Past this the click has to go
+// ahead without it.
+const CWD_TIMEOUT_MS = 3000;
 
 export function openTermSocket(id: string, target: TerminalTarget, events: TermSocketEvents): TermSocket {
   let ws: WebSocket | null = null;
@@ -60,6 +71,13 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
   let retryTimer: number | null = null;
   let stableTimer: number | null = null;
   let size: { cols: number; rows: number } | null = null;
+  // The cwd question out on the wire, if any. The server answers in order on
+  // the socket it was asked on, so a drop means no answer is coming.
+  let cwdAsk: { answer: Promise<string | null>; settle: (dir: string | null) => void } | null = null;
+  // Questions asked on this socket and not yet answered. More than one means
+  // an earlier one timed out, and the next answer is that one's, not the
+  // current question's.
+  let cwdOwed = 0;
 
   const raw = (frame: Record<string, unknown>) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
@@ -82,8 +100,14 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     retryTimer = stableTimer = null;
   };
 
+  const answerCwd = (dir: string | null) => {
+    cwdAsk?.settle(dir);
+    cwdAsk = null;
+  };
+
   // Detach before closing, so a socket we hung up on ourselves reports nothing.
   const hangUp = () => {
+    answerCwd(null);
     if (!ws) return;
     ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
     ws.close();
@@ -95,6 +119,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     const sock = new WebSocket(url());
     sock.binaryType = "arraybuffer";
     ws = sock;
+    cwdOwed = 0;
 
     sock.onopen = () => {
       events.onStatus("online");
@@ -110,10 +135,16 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
         events.onData(bytes);
         return;
       }
-      let frame: { type?: string; offset?: unknown };
+      let frame: { type?: string; offset?: unknown; data?: unknown };
       try {
         frame = JSON.parse(e.data);
       } catch {
+        return;
+      }
+      if (frame.type === "cwd") {
+        if (--cwdOwed > 0) return;
+        cwdOwed = 0;
+        answerCwd(typeof frame.data === "string" && frame.data !== "" ? frame.data : null);
         return;
       }
       if (frame.type !== "sync" || typeof frame.offset !== "number") return;
@@ -129,6 +160,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
       if (stableTimer !== null) window.clearTimeout(stableTimer);
       stableTimer = null;
       ws = null;
+      answerCwd(null);
       const end = CLOSE_ENDS[e.code];
       if (end) {
         events.onEnded(end);
@@ -167,6 +199,22 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     resize(cols, rows) {
       size = { cols, rows };
       raw({ type: "resize", cols, rows });
+    },
+    cwd() {
+      if (cwdAsk) return cwdAsk.answer;
+      if (disposed || ws?.readyState !== WebSocket.OPEN) return Promise.resolve(null);
+      let settle!: (dir: string | null) => void;
+      const answer = new Promise<string | null>((resolve) => {
+        const timer = window.setTimeout(() => answerCwd(null), CWD_TIMEOUT_MS);
+        settle = (dir) => {
+          window.clearTimeout(timer);
+          resolve(dir);
+        };
+      });
+      cwdAsk = { answer, settle };
+      cwdOwed++;
+      raw({ type: "cwd" });
+      return answer;
     },
     restart() {
       if (disposed) return;

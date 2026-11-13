@@ -34,6 +34,9 @@ class FakeSocket {
   sync(offset: number) {
     this.onmessage?.({ data: JSON.stringify({ type: "sync", offset }) });
   }
+  cwd(data: string) {
+    this.onmessage?.({ data: JSON.stringify({ type: "cwd", data }) });
+  }
   bytes(text: string) {
     this.onmessage?.({ data: new TextEncoder().encode(text).buffer });
   }
@@ -316,6 +319,97 @@ describe("dispose", () => {
     term.dispose();
     vi.advanceTimersByTime(60_000);
     expect(FakeSocket.all).toHaveLength(1);
+  });
+});
+
+describe("cwd", () => {
+  const asked = (sock: FakeSocket) => sock.sent.filter((f) => f.type === "cwd").length;
+
+  it("answers with the path from the server's reply", async () => {
+    const { term } = setup();
+    latest().open();
+    latest().sync(0);
+    const answer = term.cwd();
+    expect(latest().sent).toEqual([{ type: "cwd" }]);
+    latest().cwd("/repo/web");
+    await expect(answer).resolves.toBe("/repo/web");
+  });
+
+  it("shares one question between calls made while it is out", async () => {
+    const { term } = setup();
+    latest().open();
+    const a = term.cwd();
+    const b = term.cwd();
+    expect(asked(latest())).toBe(1);
+    latest().cwd("/repo");
+    await expect(Promise.all([a, b])).resolves.toEqual(["/repo", "/repo"]);
+    // Answered: the next call asks again.
+    term.cwd();
+    expect(asked(latest())).toBe(2);
+  });
+
+  it("is null when the server cannot tell", async () => {
+    const { term } = setup();
+    latest().open();
+    const answer = term.cwd();
+    latest().cwd("");
+    await expect(answer).resolves.toBeNull();
+  });
+
+  it("is not taken for a sync", () => {
+    const { log } = setup();
+    latest().open();
+    latest().sync(0);
+    latest().bytes("abc");
+    latest().cwd("/repo");
+    expect(log.resets).toBe(0);
+    latest().close();
+    vi.advanceTimersByTime(300);
+    expect(latest().params.get("since")).toBe("3");
+  });
+
+  it("is null at once while disconnected, without asking", async () => {
+    const { term } = setup();
+    await expect(term.cwd()).resolves.toBeNull();
+    latest().open();
+    latest().close();
+    await expect(term.cwd()).resolves.toBeNull();
+    expect(FakeSocket.all.every((s) => asked(s) === 0)).toBe(true);
+  });
+
+  it("is null after 3s without a reply, and a late reply does not answer the next question", async () => {
+    const { term } = setup();
+    latest().open();
+    const slow = term.cwd();
+    vi.advanceTimersByTime(2999);
+    latest().cwd("/early");
+    await expect(slow).resolves.toBe("/early");
+
+    const lost = term.cwd();
+    vi.advanceTimersByTime(3000);
+    await expect(lost).resolves.toBeNull();
+
+    const next = term.cwd();
+    latest().cwd("/stale");
+    latest().cwd("/fresh");
+    await expect(next).resolves.toBe("/fresh");
+  });
+
+  it("is null when the socket drops before the reply", async () => {
+    const { term } = setup();
+    latest().open();
+    const answer = term.cwd();
+    latest().close();
+    await expect(answer).resolves.toBeNull();
+  });
+
+  it("is null on dispose, and after it", async () => {
+    const { term } = setup();
+    latest().open();
+    const answer = term.cwd();
+    term.dispose();
+    await expect(answer).resolves.toBeNull();
+    await expect(term.cwd()).resolves.toBeNull();
   });
 });
 
