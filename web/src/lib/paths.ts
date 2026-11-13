@@ -167,3 +167,23 @@ export function detectPath(raw: string): DetectedPath | null {
   }
   return null;
 }
+
+/**
+ * A path a shell in the checkout printed, relative to the checkout, or null
+ * when it points somewhere the server will not serve: the home directory,
+ * above the checkout, or an absolute path outside it. The checkout is `cwd`;
+ * a relative path is taken as relative to it, which is where a thread's
+ * terminal starts. The checkout itself comes back as "".
+ */
+export function pathInCheckout(path: string, cwd: string): string | null {
+  if (path.startsWith("~")) return null;
+  let rel = path;
+  if (path.startsWith("/")) {
+    const root = cwd.replace(/\/+$/, "") + "/";
+    if (!cwd || !(path + "/").startsWith(root)) return null;
+    rel = path.slice(root.length);
+  }
+  rel = rel.replace(/^(?:\.\/)+/, "").replace(/^\.$/, "");
+  if (rel === ".." || rel.startsWith("../") || rel.includes("/../")) return null;
+  return rel;
+}

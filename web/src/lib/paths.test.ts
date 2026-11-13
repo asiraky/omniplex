@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectPath } from "./paths";
+import { detectPath, pathInCheckout } from "./paths";
 
 describe("detectPath", () => {
   it("accepts slashed paths", () => {
@@ -137,5 +137,36 @@ describe("detectPath", () => {
   it("does not treat a dotted hostname segment as an extension", () => {
     expect(detectPath("github.com/asiraky/omniplex")).toBeNull();
     expect(detectPath("api.example.com/system/init")).toBeNull();
+  });
+});
+
+describe("pathInCheckout", () => {
+  const cwd = "/work/repo";
+
+  it("passes paths in the checkout, without a leading ./", () => {
+    expect(pathInCheckout("src/a.ts", cwd)).toBe("src/a.ts");
+    expect(pathInCheckout("./src/a.ts", cwd)).toBe("src/a.ts");
+    expect(pathInCheckout("/work/repo/src/a.ts", cwd)).toBe("src/a.ts");
+    expect(pathInCheckout("/work/repo/src/a.ts", "/work/repo/")).toBe("src/a.ts");
+  });
+
+  it("refuses home, parent and outside absolute paths", () => {
+    expect(pathInCheckout("~/notes.md", cwd)).toBeNull();
+    expect(pathInCheckout("../other/a.ts", cwd)).toBeNull();
+    expect(pathInCheckout("src/../../a.ts", cwd)).toBeNull();
+    expect(pathInCheckout("/etc/hosts", cwd)).toBeNull();
+    expect(pathInCheckout("/work/repo/../x/a.ts", cwd)).toBeNull();
+    // A sibling whose name starts with the checkout's is still outside it.
+    expect(pathInCheckout("/work/repo-old/a.ts", cwd)).toBeNull();
+  });
+
+  it("gives the checkout itself as the empty path", () => {
+    expect(pathInCheckout("/work/repo", cwd)).toBe("");
+    expect(pathInCheckout("/work/repo/", cwd)).toBe("");
+    expect(pathInCheckout(".", cwd)).toBe("");
+  });
+
+  it("refuses an absolute path when the checkout is not known", () => {
+    expect(pathInCheckout("/work/repo/a.ts", "")).toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import { useCallback, useMemo } from "react";
 import { NEW_THREAD } from "./app/threadKeys";
 import { ThreadStoreContext, useThread } from "./app/threadStore";
 import { useActivePR } from "./app/useActivePR";
+import { useAddToChat } from "./app/useAddToChat";
 import { useAppKeybindings } from "./app/useAppKeybindings";
 import { useComposerDrafts } from "./app/useComposerDrafts";
 import { useNewThread } from "./app/useNewThread";
@@ -125,6 +126,7 @@ export function App() {
   const showJumpHints = useModHeld(isElectronApp());
   // One composer at a time, the thread's or the draft's, behind one handle.
   const { composerRef } = recents;
+  const addToChat = useAddToChat({ activeId, store, panel, composerRef });
   const turnRunning = useThread(threadStore, isInTurn);
   const openThread = (id: string) => {
     screens.leaveAll();
@@ -434,6 +436,7 @@ export function App() {
             threadId={activeId}
             panel={panel}
             pr={pr}
+            onAddToChat={addToChat}
           />
         )}
 

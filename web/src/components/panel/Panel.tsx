@@ -84,6 +84,10 @@ export interface PanelProps {
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
   pr?: PullRequest | null;
+  /** Terminal output quoted for the composer. */
+  onAddToChat?: (quoted: string) => void;
+  /** A file path clicked in a terminal's output. */
+  onOpenPath?: (path: string, line?: number) => void;
 }
 
 function surfaceLabel(s: Surface, artefacts: Artefact[]): string {
@@ -192,6 +196,8 @@ function PanelBody({
   loadFile,
   request,
   pr,
+  onAddToChat,
+  onOpenPath,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
   // The tab model, persisted per thread so the panel reopens as it was left.
@@ -501,7 +507,12 @@ function PanelBody({
           .filter((s): s is Surface & { termId: string } => s.kind === "terminal" && !!s.termId)
           .map((s) => (
             <div key={s.id} className={cn("h-full", s.id !== panel.active && "hidden")}>
-              <TerminalSurface termId={s.termId} target={{ thread: threadId }} />
+              <TerminalSurface
+                termId={s.termId}
+                target={{ thread: threadId }}
+                onAddToChat={onAddToChat}
+                onOpenPath={onOpenPath}
+              />
             </div>
           ))}
       </div>
