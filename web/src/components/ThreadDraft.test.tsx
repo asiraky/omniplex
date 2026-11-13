@@ -2,6 +2,8 @@
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { preloadLazyLists } from "~/test/lazyLists";
+
 import { createDraftStore } from "~/app/draftStore";
 import { NEW_THREAD } from "~/app/threadKeys";
 import { render, wrap } from "~/test/harness";
@@ -78,6 +80,11 @@ beforeAll(() => {
   proto.releasePointerCapture ??= () => {};
   proto.scrollIntoView ??= () => {};
 });
+
+// The slash menu's rows and the model list arrive as their own chunks. In,
+// they render on the open itself, so an assertion that no row is offered is
+// not passing on a spinner.
+beforeAll(preloadLazyLists);
 
 describe("ThreadDraft", () => {
   it("creates the thread carrying the message", async () => {

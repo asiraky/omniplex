@@ -2,6 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { preloadLazyLists } from "~/test/lazyLists";
+
 import { ModelPicker } from "./ModelPicker";
 import type { HarnessMeta } from "~/protocol";
 
@@ -34,6 +36,10 @@ beforeAll(() => {
   Element.prototype.setPointerCapture = () => {};
   Element.prototype.releasePointerCapture = () => {};
 });
+
+// The list arrives as its own chunk; in, it renders on the open itself.
+// ModelPicker.lazy.test.tsx covers the wait.
+beforeAll(preloadLazyLists);
 
 afterEach(cleanup);
 

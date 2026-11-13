@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { preloadLazyLists } from "~/test/lazyLists";
+
 import { ComposerModelPicker } from "./ComposerModelPicker";
 import type { HarnessMeta } from "~/protocol";
 
@@ -35,6 +37,9 @@ beforeAll(() => {
   Element.prototype.setPointerCapture = () => {};
   Element.prototype.releasePointerCapture = () => {};
 });
+
+// The list arrives as its own chunk; in, it renders on the open itself.
+beforeAll(preloadLazyLists);
 
 afterEach(cleanup);
 

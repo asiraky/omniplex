@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { createRef, useRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { preloadLazyLists } from "~/test/lazyLists";
+
 import { useKeybindings } from "~/app/useKeybindings";
 import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
@@ -486,6 +488,11 @@ const compact = {
 beforeAll(() => {
   Element.prototype.scrollIntoView ??= () => {};
 });
+
+// The slash menu's rows and the model list arrive as their own chunks. In,
+// they render on the open itself, so an assertion that the menu is shut is
+// not passing on a spinner.
+beforeAll(preloadLazyLists);
 
 const catalogue = (over: Partial<ComposerCatalogue> = {}): ComposerCatalogue => ({
   items: [compact],
