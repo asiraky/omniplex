@@ -265,7 +265,13 @@ function InstanceList({
   return (
     <div className="space-y-5">
       {harnesses.map((h) => (
-        <div key={h.id} role="group" aria-label={h.name} className="space-y-2">
+        <div
+          key={h.id}
+          role="group"
+          aria-label={h.name}
+          data-setting={`harness-${h.id}`}
+          className="space-y-2"
+        >
           <div className="flex items-center gap-2">
             <HarnessBadge harness={h.id} accent={h.accent} className="size-4" />
             <SectionHeading>{h.name}</SectionHeading>
@@ -731,11 +737,21 @@ export default function ProvidersSettings({
             onAdd={(harnessId) => go({ kind: "add", harnessId })}
           />
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => go({ kind: "add", harnessId: null })}>
+            <Button
+              size="sm"
+              data-setting="add-account"
+              onClick={() => go({ kind: "add", harnessId: null })}
+            >
               <PlusIcon />
               Add account
             </Button>
-            <Button variant="outline" size="sm" disabled={checking} onClick={() => void recheck()}>
+            <Button
+              variant="outline"
+              size="sm"
+              data-setting="recheck"
+              disabled={checking}
+              onClick={() => void recheck()}
+            >
               {checking ? <Spinner aria-hidden className="size-3.5" /> : <RefreshCwIcon />}
               Check again
             </Button>

@@ -84,11 +84,14 @@ interface Listing {
 
 function HookField({
   label,
+  anchor,
   root,
   value,
   onChange,
 }: {
   label: string;
+  /** The settings search's mark for this field. */
+  anchor: string;
   root: string;
   value: string;
   onChange: (v: string) => void;
@@ -109,7 +112,7 @@ function HookField({
   };
 
   return (
-    <div className="space-y-1.5">
+    <div data-setting={anchor} className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <div className="flex gap-2">
         <Input
@@ -228,7 +231,7 @@ function FoldersSection({
   );
 
   return (
-    <div className="space-y-2">
+    <div data-setting="folders" className="space-y-2">
       <SectionHeading>Folders</SectionHeading>
       <ul className="divide-y rounded-lg border">
         {folders.map((f) => (
@@ -352,7 +355,7 @@ function DeleteProjectSection({
   };
 
   return (
-    <div className="space-y-2">
+    <div data-setting="remove" className="space-y-2">
       <SectionHeading note="cannot be undone">Remove project</SectionHeading>
       <p className="text-muted-foreground text-[11px]">
         {blocked
@@ -485,7 +488,7 @@ export function ProjectSettings({
     >
           {
             <div className="space-y-5">
-              <div className="space-y-1.5">
+              <div data-setting="name" className="space-y-1.5">
                 <Label htmlFor="project-name">Project name</Label>
                 <Input
                   id="project-name"
@@ -505,7 +508,7 @@ export function ProjectSettings({
 
               <Separator />
 
-              <div className="space-y-2">
+              <div data-setting="agent-defaults" className="space-y-2">
                 <SectionHeading>Agent defaults</SectionHeading>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Select
@@ -648,7 +651,7 @@ export function ProjectSettings({
               {hasElevenLabsKey && (
                 <>
                   <Separator />
-                  <div className="space-y-1.5">
+                  <div data-setting="voice" className="space-y-1.5">
                     <Label htmlFor="project-voice">Voice</Label>
                     <VoicePicker
                       id="project-voice"
@@ -670,7 +673,7 @@ export function ProjectSettings({
                   <SectionHeading note={gitFolders.length > 1 ? f.path : undefined}>
                     Workspace
                   </SectionHeading>
-                  <div className="space-y-1.5">
+                  <div data-setting={`base-branch-${f.id}`} className="space-y-1.5">
                     <Label htmlFor={`base-branch-${f.id}`}>Base branch</Label>
                     <Input
                       id={`base-branch-${f.id}`}
@@ -682,12 +685,14 @@ export function ProjectSettings({
                   </div>
                   <HookField
                     label="Provision"
+                    anchor={`provision-${f.id}`}
                     root={f.path}
                     value={f.provision ?? ""}
                     onChange={(v) => folder(f.id, { provision: v })}
                   />
                   <HookField
                     label="Deprovision"
+                    anchor={`deprovision-${f.id}`}
                     root={f.path}
                     value={f.deprovision ?? ""}
                     onChange={(v) => folder(f.id, { deprovision: v })}
