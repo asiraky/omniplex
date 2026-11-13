@@ -121,7 +121,9 @@ type Actor struct {
 	head int64
 	// attention caches state.Attention() for readers outside the loop — the
 	// thread list wants it without a round trip through the inbox. Written
-	// only by the actor goroutine; the projection stays the source of truth.
+	// only by the actor goroutine; the projection stays the source of truth,
+	// except that an idle thread the loop is about to start a queued prompt
+	// on reads as working (see noteAttention).
 	attention string
 	// turnFailed caches state.LastTurnFailed() the same way, so the thread
 	// list can tell a turn that failed from one that finished — both leave
@@ -1063,6 +1065,9 @@ func (a *Actor) run() {
 			// queued prompt needs to be picked up.
 			a.settleStop()
 			a.dispatchQueued(context.Background())
+			// What the loop was about to start, it now has or never will:
+			// either way the list stops hearing it is on its way.
+			a.noteAttention()
 		case <-flush:
 			a.flushDeltas()
 		}
@@ -2009,6 +2014,63 @@ func (a *Actor) dispatchQueued(ctx context.Context) {
 	}
 }
 
+// noteAttention refreshes what the thread list is told. Attention is the
+// derived whose-turn-is-it signal. Any event that moves it — turn boundaries,
+// a permission being asked or answered, activity while idle — re-notifies the
+// list. So does the latest turn failing or being superseded: a failed turn
+// moves attention exactly as a finished one does, and the list carries which
+// it was. Both move on the same TurnFinished, so one notification carries both.
+//
+// An idle thread the loop is about to start a queued prompt on is working,
+// not waiting on anyone: a fresh worktree between its workspace coming ready
+// and its first turn, which can take seconds, would otherwise read as done.
+func (a *Actor) noteAttention() {
+	att, failed := a.state.Attention(), a.state.LastTurnFailed()
+	if att == projection.AttentionNeedsPrompt && a.startsNext() {
+		att = projection.AttentionWorking
+	}
+	a.mu.Lock()
+	changed := att != a.attention || failed != a.turnFailed
+	a.attention, a.turnFailed = att, failed
+	onPhase := a.onPhase
+	a.mu.Unlock()
+	if changed && onPhase != nil {
+		onPhase()
+	}
+}
+
+// startsNext says dispatchQueued will start a prompt when the loop reaches
+// it. It asks what dispatchQueued asks, so it never claims a turn the loop
+// would not start; the loop rereads it once dispatch has run. A failed turn
+// is the exception: its failure is news even with more queued behind it.
+func (a *Actor) startsNext() bool {
+	if len(a.state.Queued) == 0 || a.turnActive != "" || a.sess == nil || a.state.Closed || a.controlPending > 0 || a.stopping != nil {
+		return false
+	}
+	if a.state.LastTurnFailed() {
+		return false
+	}
+	a.mu.Lock()
+	recovering := a.recovery != nil
+	a.mu.Unlock()
+	if recovering {
+		return false
+	}
+	if id := a.sendFirst; id != "" && a.queuedEntry(id) != nil && !a.sent[id] {
+		return true
+	}
+	for _, q := range a.state.Queued {
+		if q.Held {
+			return false
+		}
+		if a.sent[q.QueueID] || a.state.HeldByLimit(q) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // startQueued starts a queued prompt's turn, and reports whether it did.
 func (a *Actor) startQueued(ctx context.Context, q projection.QueuedPrompt) bool {
 	if _, err := a.startTurn(ctx, q.Prompt, a.resolveImages(q.Images), nil, q.QueueID); err != nil {
@@ -2414,21 +2476,7 @@ func (a *Actor) write(em proto.Emission) error {
 		a.writePhase(prevPhase)
 	}
 
-	// Attention is the derived whose-turn-is-it signal. Any event that moves
-	// it — turn boundaries, a permission being asked or answered, activity
-	// while idle — re-notifies the thread list. So does the latest turn
-	// failing or being superseded: a failed turn moves attention exactly as a
-	// finished one does, and the list carries which it was. Both move on the
-	// same TurnFinished, so one notification carries both.
-	att, failed := a.state.Attention(), a.state.LastTurnFailed()
-	a.mu.Lock()
-	changed := att != a.attention || failed != a.turnFailed
-	a.attention, a.turnFailed = att, failed
-	onPhase := a.onPhase
-	a.mu.Unlock()
-	if changed && onPhase != nil {
-		onPhase()
-	}
+	a.noteAttention()
 
 	if em.Type == proto.PromptScheduled {
 		a.mu.Lock()

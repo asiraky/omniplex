@@ -211,37 +211,6 @@ func TestLastTurnFailed(t *testing.T) {
 	}
 }
 
-// A prompt waiting to start keeps the thread working through the gap before
-// its turn: a workspace coming ready, or the turn ahead of it ending. A held
-// one does not: that queue waits on a human.
-func TestAttentionWorkingWhileAQueuedPromptWaitsToStart(t *testing.T) {
-	s := New("s1")
-	s.Apply(event(t, 1, proto.WorkspaceRequested, proto.WorkspaceRequestedPayload{ProjectID: "p"}))
-	s.Apply(event(t, 2, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "go"}))
-	s.Apply(event(t, 3, proto.WorkspaceReady, proto.WorkspaceReadyPayload{Cwd: "/w"}))
-	if got := s.Attention(); got != AttentionWorking {
-		t.Fatalf("ready with a prompt queued: attention = %q, want working", got)
-	}
-
-	s.Apply(event(t, 4, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go", QueueID: "q1"}))
-	s.Apply(event(t, 5, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn}))
-	if got := s.Attention(); got != AttentionNeedsPrompt {
-		t.Fatalf("queue drained: attention = %q, want needs_prompt", got)
-	}
-
-	s.Apply(event(t, 6, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q2", Prompt: "later", Held: true}))
-	if got := s.Attention(); got != AttentionNeedsPrompt {
-		t.Fatalf("only a held prompt queued: attention = %q, want needs_prompt", got)
-	}
-
-	s.Apply(event(t, 7, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t2", Prompt: "x"}))
-	s.Apply(event(t, 8, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q3", Prompt: "behind"}))
-	s.Apply(event(t, 9, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopError, Failure: proto.FailureLimit}))
-	if got := s.Attention(); got != AttentionNeedsPrompt {
-		t.Fatalf("queue held by a limit: attention = %q, want needs_prompt", got)
-	}
-}
-
 // The defence must not resurrect a closed thread.
 func TestStreamingDoesNotReopenClosedThread(t *testing.T) {
 	s := New("s1")

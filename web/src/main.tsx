@@ -32,9 +32,11 @@ createRoot(document.getElementById("root")!).render(
         <Suspense fallback={null}>
           {/* Top on a phone keeps toasts clear of the composer and keyboard;
               the inset keeps them out from under the status bar of a
-              home-screen install, which draws edge to edge. */}
+              home-screen install, which draws edge to edge. Sonner's own
+              gaps, 24px and 16px below 600px wide, plus the inset. */}
           <Toaster
             position="top-center"
+            offset={{ top: "calc(24px + env(safe-area-inset-top))" }}
             mobileOffset={{ top: "calc(16px + env(safe-area-inset-top))" }}
           />
         </Suspense>

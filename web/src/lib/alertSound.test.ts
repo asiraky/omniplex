@@ -117,6 +117,16 @@ describe("alert sound preference", () => {
     expect(result.current[0]).toBe(true);
     expect(alertSoundOn()).toBe(true);
   });
+
+  it("keeps this page's choice when storage reads but will not write", async () => {
+    const { alertSoundOn, useAlertSound } = await load();
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    const { result } = renderHook(() => useAlertSound());
+    act(() => result.current[1](true));
+    expect(alertSoundOn()).toBe(true);
+  });
 });
 
 describe("playAlertSound", () => {

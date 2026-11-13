@@ -93,6 +93,11 @@ type Manager struct {
 
 	mu     sync.RWMutex
 	actors map[string]*Actor
+	// exitedFailed remembers the threads whose harness exited on a failed
+	// turn, until an actor runs for them again: the list stops hearing from
+	// the actor the moment it goes, and the failure would otherwise reach the
+	// client as a turn that finished. Guarded by mu.
+	exitedFailed map[string]bool
 	// adopted holds every thread an actor has been adopted for since the
 	// server started. Only the first is rebuilt after a restart; a later one
 	// follows a harness that exited, and its queue is not held for it.
@@ -242,6 +247,7 @@ func NewManager(st *store.Store, logf func(string, ...any), ads ...adapter.Adapt
 		instances:       map[string]registered{},
 		logf:            logf,
 		actors:          map[string]*Actor{},
+		exitedFailed:    map[string]bool{},
 		probes:          map[string]probeResult{},
 		models:          map[string]modelResult{},
 		refreshing:      map[string]bool{},
@@ -1505,6 +1511,7 @@ func (m *Manager) adopt(a *Actor) {
 	a.scheduleReady = &m.scheduleReady
 	m.mu.Lock()
 	m.actors[a.ID] = a
+	delete(m.exitedFailed, a.ID)
 	m.mu.Unlock()
 	_, again := m.adopted.LoadOrStore(a.ID, true)
 	a.mu.Lock()
@@ -1552,9 +1559,13 @@ func (m *Manager) bindQuota(a *Actor) {
 
 func (m *Manager) forgetFn(id string, a *Actor) func() {
 	return func() {
+		failed := a.TurnFailed()
 		m.mu.Lock()
 		if cur, ok := m.actors[id]; ok && cur == a {
 			delete(m.actors, id)
+			if failed {
+				m.exitedFailed[id] = true
+			}
 		}
 		m.mu.Unlock()
 		m.notifyList()
@@ -1570,10 +1581,10 @@ func (m *Manager) List(ctx context.Context) ([]store.ThreadMeta, error) {
 	// projection (which knows about pending permissions and questions), and a
 	// thread with no actor answers from its phase — a dead actor cancelled
 	// its pending requests on the way down, so the phase is the whole story.
-	// TurnFailed is derived the same way but only a live actor knows it; a
-	// thread with no actor leaves it false. The client only reads it to
-	// classify a working → idle edge it saw live, and an actor is running for
-	// that edge.
+	// TurnFailed is derived the same way but only a live actor knows it. The
+	// client reads it only to classify a working → idle edge it saw live, so
+	// a thread with no actor reports it only when its harness just exited on
+	// the failure: that edge reaches the list after the actor has gone.
 	m.mu.Lock()
 	for i := range metas {
 		if a, ok := m.actors[metas[i].ID]; ok {
@@ -1581,6 +1592,7 @@ func (m *Manager) List(ctx context.Context) ([]store.ThreadMeta, error) {
 			metas[i].TurnFailed = a.TurnFailed()
 		} else {
 			metas[i].Attention = projection.AttentionForPhase(metas[i].Phase)
+			metas[i].TurnFailed = m.exitedFailed[metas[i].ID]
 		}
 	}
 	m.mu.Unlock()

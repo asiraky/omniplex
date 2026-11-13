@@ -3077,6 +3077,40 @@ func TestHarnessExitDoesNotHoldTheQueue(t *testing.T) {
 	}
 }
 
+// A harness that dies mid-turn takes its actor with it, and the list goes on
+// answering from the stored phase. The failure has to survive that: the
+// client reads this very edge to tell a failed turn from a finished one.
+func TestListKeepsTheFailureAHarnessExitedOn(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "exit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fa := &fakeAdapter{}
+	m := newManager(st, func(string, ...any) {}, fa)
+	t.Cleanup(m.Shutdown)
+	a, err := m.Create(ctx, "fake", "", t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return a.Head() >= 1 })
+	if _, err := a.Prompt(ctx, "busy", nil); err != nil {
+		t.Fatal(err)
+	}
+	nextInput(t, fa.thread())
+	fa.thread().Close()
+	waitFor(t, func() bool { _, ok := m.Peek(a.ID); return !ok })
+
+	metas, err := m.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].Attention != projection.AttentionNeedsPrompt || !metas[0].TurnFailed {
+		t.Fatalf("list after the harness died mid-turn = %+v, want needs_prompt and the turn failed", metas)
+	}
+}
+
 // TestContinueReleasesTheHolds: pressing Continue is a human starting a run,
 // so what was held for one runs after it.
 func TestContinueReleasesTheHolds(t *testing.T) {
