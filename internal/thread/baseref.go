@@ -329,7 +329,10 @@ func defaultBranch(ctx context.Context, root string) string {
 		if name := strings.TrimPrefix(short, remote+"/"); name != "" && hasLocalBranch(ctx, root, name) {
 			return name
 		}
-		if short != "" {
+		// origin/HEAD outlives the branch it names when upstream renames its
+		// default and the old ref is pruned. A ref that resolves to nothing
+		// would fail the worktree add, so it is passed over, not returned.
+		if short != "" && hasRemoteRef(ctx, root, short) {
 			return short
 		}
 	}

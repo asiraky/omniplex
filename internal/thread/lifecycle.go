@@ -551,7 +551,10 @@ func (m *Manager) createWorktreeFrom(ctx context.Context, meta store.ThreadMeta,
 	_ = a.Emit(ctx, proto.Emit(proto.WorkspaceHookStarted, proto.WorkspaceHookStartedPayload{RunID: uuid.NewString(), Hook: "provision", Command: "git worktree add " + path}))
 	args := []string{"worktree", "add", path, branch}
 	if create {
-		args = []string{"worktree", "add", path, "-b", branch, res.Ref}
+		// The base is where the branch begins, not where it pushes: a thread
+		// branch started from origin/main must not track it, or a bare push
+		// under push.default=upstream lands the thread's work on main.
+		args = []string{"worktree", "add", "--no-track", path, "-b", branch, res.Ref}
 	}
 	b, err := gitCmd(ctx, f.Path, args...).CombinedOutput()
 	if len(b) > 0 && a != nil {

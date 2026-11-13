@@ -474,11 +474,28 @@ func TestResolveBaseRefWithNoBaseUsesLocalMainWhenTheRemoteIsUnreachable(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Ref != "main" || res.FellBack {
-		t.Fatalf("resolution = %+v, want local main", res)
+	if res.Ref != "main" || res.FellBack || res.Note != "" {
+		t.Fatalf("resolution = %+v, want local main, quietly", res)
 	}
 	if took := time.Since(start); took >= baseRefreshTimeout {
 		t.Fatalf("resolving took %s, want a fast failure, not a wait on the timeout", took)
+	}
+}
+
+// Upstream renamed its default branch and the old one was pruned, but the
+// clone's origin/HEAD still names it. That dead ref must not become the base —
+// the worktree add would fail on it — so the default is found by name instead.
+func TestResolveBaseRefWithNoBaseSkipsADanglingOriginHEAD(t *testing.T) {
+	root, _, _ := gitRepo(t)
+	withOrigin(t, root, false)
+	git(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+
+	res, err := resolveBaseRef(context.Background(), root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref != "main" || res.FellBack {
+		t.Fatalf("resolution = %+v, want main, found by name", res)
 	}
 }
 
@@ -544,9 +561,6 @@ func TestManagedWorktreeWithNoBaseBranchesFromARemoteDefaultThatIsAhead(t *testi
 	remoteTip, local := defaultBehindRemote(t, root, true)
 	onAFeatureBranch(t, root)
 	st, p := testProject(t, root)
-	if p.Folders[0].BaseBranch != "" {
-		t.Fatalf("folder base branch is %q, want none", p.Folders[0].BaseBranch)
-	}
 	mgr := newManager(st, func(string, ...any) {}, &fakeAdapter{})
 	defer mgr.Shutdown()
 
@@ -562,6 +576,11 @@ func TestManagedWorktreeWithNoBaseBranchesFromARemoteDefaultThatIsAhead(t *testi
 	}
 	if got := git(t, root, "rev-parse", "refs/heads/main"); got != local {
 		t.Fatalf("local main moved: %s, want %s", got, local)
+	}
+	// Started from origin/main is not pushing to it: a bare push from the
+	// thread's branch must not be able to land on main.
+	if upstream, ok := gitCapture(context.Background(), meta.Cwd, "rev-parse", "--abbrev-ref", "HEAD@{upstream}"); ok {
+		t.Fatalf("thread branch tracks %q, want no upstream", upstream)
 	}
 	state, err := a.State(context.Background())
 	if err != nil {
