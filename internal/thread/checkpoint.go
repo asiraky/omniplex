@@ -316,8 +316,9 @@ func checkpointExists(ctx context.Context, root, ref string) bool {
 
 // restoreCheckpoint puts the checkout back the way it was when turnID
 // started: every file in that turn's base snapshot gets its content and mode
-// back, and every file the snapshot did not have is deleted. Ignored files are
-// in neither snapshot, so they are never touched. The checkout as it stood is
+// back, and every file the snapshot did not have is deleted, unless the
+// snapshot's own ignore rules cover it: ignored files were never captured, so
+// they are left alone. The checkout as it stood is
 // saved first under the turn's pre-rewind ref, which is what makes a restore
 // done by mistake recoverable with git.
 //
@@ -351,17 +352,6 @@ func restoreCheckpoint(ctx context.Context, root, threadID, turnID string) error
 		}
 	}
 
-	// Deletions first: a file that was a directory then, or a directory
-	// that was a file, has to be out of the way before the other is written.
-	for _, rel := range gone {
-		if err := removeCheckoutFile(root, rel); err != nil {
-			return err
-		}
-	}
-	if len(write) == 0 {
-		return nil
-	}
-
 	index, err := os.CreateTemp("", "omniplex-restore-index-*")
 	if err != nil {
 		return err
@@ -374,6 +364,25 @@ func restoreCheckpoint(ctx context.Context, root, threadID, turnID string) error
 	if _, err := runGitEnv(ctx, root, env, slices.Concat(scratchIndexConfig, []string{"read-tree", base})...); err != nil {
 		return err
 	}
+
+	// A file the base does not have is only the turn's if the base could
+	// have had it. One the base's ignore rules cover was left out of the
+	// snapshot, not absent from the checkout, and stays where it is.
+	if gone, err = dropIgnoredByBase(ctx, root, env, gone); err != nil {
+		return fmt.Errorf("checking which files the snapshot ignored: %w", err)
+	}
+
+	// Deletions first: a file that was a directory then, or a directory
+	// that was a file, has to be out of the way before the other is written.
+	for _, rel := range gone {
+		if err := removeCheckoutFile(root, rel); err != nil {
+			return err
+		}
+	}
+	if len(write) == 0 {
+		return nil
+	}
+
 	cmd := gitCmd(ctx, root, slices.Concat(scratchIndexConfig, []string{"checkout-index", "-f", "-z", "--stdin"})...)
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(strings.Join(write, "\x00") + "\x00")
@@ -381,6 +390,68 @@ func restoreCheckpoint(ctx context.Context, root, threadID, turnID string) error
 		return fmt.Errorf("git checkout-index: %w: %s", err, strings.TrimSpace(string(msg)))
 	}
 	return nil
+}
+
+// dropIgnoredByBase leaves out of paths every one the base snapshot's own
+// ignore rules cover. Ignore rules are files in the tree, so they can change
+// between two snapshots: a `.env` ignored when the base was taken is missing
+// from it, and once a turn stops ignoring it, it is in the later snapshot and
+// would look like a file the turn created.
+//
+// The rules are asked of the base, not of the checkout as it stands: its
+// ignore files are written into a throwaway work tree, and check-ignore runs
+// there against the repository's own git directory, so info/exclude and
+// core.excludesFile still count. env carries the scratch index already
+// holding the base.
+func dropIgnoredByBase(ctx context.Context, root string, env, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return paths, nil
+	}
+	gitDir, err := runGit(ctx, root, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return nil, err
+	}
+	rules, err := runGitEnv(ctx, root, env, "ls-files", "-z", "--", ".gitignore", "*/.gitignore")
+	if err != nil {
+		return nil, err
+	}
+	tree, err := os.MkdirTemp("", "omniplex-restore-ignores-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tree)
+	if len(rules) > 0 {
+		cmd := gitCmd(ctx, root, slices.Concat(scratchIndexConfig,
+			[]string{"checkout-index", "-f", "-z", "--stdin", "--prefix=" + tree + string(filepath.Separator)})...)
+		cmd.Env = env
+		cmd.Stdin = bytes.NewReader(rules)
+		if msg, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git checkout-index: %w: %s", err, strings.TrimSpace(string(msg)))
+		}
+	}
+
+	cmd := gitCmd(ctx, tree, "check-ignore", "--no-index", "-z", "--stdin")
+	cmd.Env = append(slices.Clone(env),
+		"GIT_DIR="+strings.TrimSpace(string(gitDir)),
+		"GIT_WORK_TREE="+tree,
+	)
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
+	out, err := cmd.Output()
+	var ee *exec.ExitError
+	switch {
+	case errors.As(err, &ee) && ee.ExitCode() == 1:
+		// Nothing is ignored.
+		return paths, nil
+	case errors.As(err, &ee):
+		return nil, fmt.Errorf("git check-ignore: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+	case err != nil:
+		return nil, err
+	}
+	ignored := make(map[string]bool)
+	for _, rel := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		ignored[rel] = true
+	}
+	return slices.DeleteFunc(paths, func(rel string) bool { return ignored[rel] }), nil
 }
 
 // removeCheckoutFile deletes one file a restore takes away, and then every
