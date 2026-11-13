@@ -761,6 +761,11 @@ export interface ThreadMeta {
     | "background"
     | "closed";
   /**
+   * The thread's latest turn ended in an error. Absent when it did not, so a
+   * `needs_prompt` thread can say whether it finished or failed.
+   */
+  turnFailed?: boolean;
+  /**
    * How far the user has read, as a head seq, synced across paired devices.
    * headSeq beyond it means something happened that nobody has looked at —
    * the sidebar's unread signal. Absent (or 0) means never viewed.

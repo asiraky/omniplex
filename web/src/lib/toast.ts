@@ -3,10 +3,12 @@ import type { toast as sonnerToast } from "sonner";
 type Toast = typeof sonnerToast;
 
 // Sonner is a toast library plus its stylesheet as a string, and nothing it
-// does is needed until something goes wrong. So it loads after first paint
-// rather than with the app: the Toaster is lazy in main.tsx, and a toast raised
-// before either has arrived waits for the module. Sonner replays the toasts it
-// already holds to a Toaster that subscribes late, so none are lost.
+// does is needed for first paint: every toast reports something that happened
+// after load, a failure or a thread in the background changing. So it loads
+// after first paint rather than with the app: the Toaster is lazy in main.tsx,
+// and a toast raised before either has arrived waits for the module. Sonner
+// replays the toasts it already holds to a Toaster that subscribes late, so
+// none are lost.
 let sonner: Promise<Toast> | undefined;
 const load = () =>
   (sonner ??= import("sonner").then(
@@ -30,4 +32,9 @@ export const toast = {
   info: later("info"),
   warning: later("warning"),
   error: later("error"),
+  /** Takes down the toast raised with this id. Before any toast has been
+      raised there is nothing to take down, so it never fetches sonner. */
+  dismiss: (id: string) => {
+    sonner?.then((t) => t.dismiss(id), () => {});
+  },
 };

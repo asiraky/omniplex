@@ -33,7 +33,7 @@ export function Message({
   // continuous output. Inactive messages render whole.
   const text = useSmoothText(item.text ?? "", streaming);
   // What the play button reads, and what a selection has to reach into to
-  // become "play selection".
+  // become "play selection" or "reply to selection".
   const speakRef = useRef<HTMLDivElement>(null);
 
   // The prompt that picks interrupted work back up was written by the server,
@@ -89,7 +89,7 @@ export function Message({
       </div>
       {/* The footer arrives with the message's end: while streaming, the time
           would claim an arrival that has not happened yet. */}
-      {!streaming && <MessageMeta item={item} speakRef={speakRef} />}
+      {!streaming && <MessageMeta item={item} speakRef={speakRef} replyable />}
     </div>
   );
 }

@@ -26,6 +26,7 @@ export function usePaletteActions({
   onSetPinned,
   onSetUnread,
   onCopyTranscript,
+  onCopyLink,
   onDelete,
   onTogglePanel,
   onOpenDiff,
@@ -48,6 +49,7 @@ export function usePaletteActions({
   onSetPinned: (threadId: string, pinned: boolean) => void;
   onSetUnread: (threadId: string, unread: boolean) => void;
   onCopyTranscript: () => void;
+  onCopyLink: (threadId: string) => void;
   onDelete: (meta: ThreadMeta) => void;
   onTogglePanel: () => void;
   onOpenDiff: () => void;
@@ -94,6 +96,12 @@ export function usePaletteActions({
       run: onCopyTranscript,
     });
     if (meta) {
+      thread({
+        id: "copy-link",
+        label: "Copy thread link",
+        keywords: ["url", "share", "clipboard"],
+        run: () => onCopyLink(meta.id),
+      });
       thread({ id: "delete", label: "Delete thread…", keywords: ["remove", "finish"], run: () => onDelete(meta) });
     }
     thread({

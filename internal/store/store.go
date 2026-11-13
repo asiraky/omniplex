@@ -123,7 +123,14 @@ type ThreadMeta struct {
 	// actor) when it serves a list. The stored row never holds it, so it can
 	// never go stale in the database.
 	Attention string `json:"attention,omitempty"`
-	ProjectID string `json:"projectId,omitempty"`
+	// TurnFailed is true when the thread's latest turn ended with stop reason
+	// error — see projection.State.LastTurnFailed. A failed turn goes idle
+	// just as a finished one does, so Attention alone cannot tell them apart.
+	// Like Attention it is not a column: the thread manager fills it from the
+	// live actor when it serves a list, and a thread with no actor leaves it
+	// false.
+	TurnFailed bool   `json:"turnFailed,omitempty"`
+	ProjectID  string `json:"projectId,omitempty"`
 	// FolderID is the project folder the thread works in. Empty in a project
 	// means the thread's scope is everything: it starts in the home folder.
 	FolderID      string `json:"folderId,omitempty"`

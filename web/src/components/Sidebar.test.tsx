@@ -79,7 +79,9 @@ function renderSidebar(over: Partial<Props> = {}) {
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
+    onCopyLink: vi.fn(),
     onReorder: vi.fn(),
+    backDismiss: false,
     ...over,
   };
   render(<WithView {...props} />);
@@ -116,7 +118,9 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     onNewProject: vi.fn(),
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
+    onCopyLink: vi.fn(),
     onReorder: vi.fn(),
+    backDismiss: false,
     ...over,
   };
   let setOpen: (open: boolean) => void = () => {};
@@ -189,6 +193,32 @@ describe("Sidebar", () => {
     // leave a 384px panel on a landscape phone — still below `md`, so still
     // inside this branch.
     expect(panel?.className).toContain("sm:max-w-none");
+  });
+
+  it("closes on Back on a phone when there is something behind it", () => {
+    viewport("phone");
+    const props = renderSidebar({ activeId: "a", backDismiss: true });
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    });
+    expect(props.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("stays open on Back on a phone when it is the landing screen", () => {
+    viewport("phone");
+    const props = renderSidebar({ activeId: null, backDismiss: false });
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    });
+    expect(props.onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("copies a thread's link from the row's context menu", async () => {
+    const props = renderSidebar();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Thread b/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Copy link" }));
+    expect(props.onCopyLink).toHaveBeenCalledWith("b");
+    expect(props.onSelect).not.toHaveBeenCalled();
   });
 
   it("renames a thread in place from the row's pencil", () => {

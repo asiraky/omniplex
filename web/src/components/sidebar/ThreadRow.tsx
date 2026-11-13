@@ -366,6 +366,7 @@ export const ThreadRow = memo(function ThreadRow({
   onSetPinned,
   onSetUnread,
   onRename,
+  onCopyLink,
   onDelete,
   jumpHint,
 }: {
@@ -387,6 +388,7 @@ export const ThreadRow = memo(function ThreadRow({
   onSetPinned: (threadId: string, pinned: boolean) => void;
   onSetUnread: (threadId: string, unread: boolean) => void;
   onRename: (threadId: string, title: string) => void;
+  onCopyLink: (threadId: string) => void;
   onDelete: (s: ThreadMeta) => void;
   /** The ⌘1–9 command that opens this row, shown while the modifier is held. */
   jumpHint?: CommandId;
@@ -552,6 +554,7 @@ export const ThreadRow = memo(function ThreadRow({
               Mark unread
             </ContextMenuItem>
           )}
+          <ContextMenuItem onSelect={() => onCopyLink(s.id)}>Copy link</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
     </div>
