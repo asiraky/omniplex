@@ -414,6 +414,9 @@ func activeContent(mediaType string) bool {
 // the frame does: once a resize of the frame moves the height by the same
 // amount, the page is following the frame rather than its content, and the
 // new height is not reported, or the two would chase each other to the cap.
+// The body's children are watched as well as the body, and children added
+// later too: in a body held at 100vh, content can come and go without the body
+// itself changing size.
 const bridgeScript = `<script>(function(){
 function mem(){var d={};return{getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d={}},key:function(i){var ks=Object.keys(d);return i<ks.length?ks[i]:null},get length(){return Object.keys(d).length}}}
 ["localStorage","sessionStorage"].forEach(function(n){try{window[n].length}catch(e){try{Object.defineProperty(window,n,{value:mem(),configurable:true})}catch(e2){}}});
@@ -424,7 +427,8 @@ function px(s,p){return parseFloat(s[p])||0}
 function measure(){var B=document.body;if(!B)return Math.ceil(D.getBoundingClientRect().height);var r=document.createRange(),s=getComputedStyle(B);r.selectNodeContents(B);return Math.ceil(r.getBoundingClientRect().bottom+scrollY+px(s,"paddingBottom")+px(s,"borderBottomWidth")+px(s,"marginBottom"))}
 function report(){var h=measure(),v=innerHeight,follows=H>=0&&v!==V&&h-H===v-V;V=v;if(h===H)return;H=h;if(!follows)send({omniplex:"size",height:h})}
 var R=new ResizeObserver(report);R.observe(D);
-function watch(){var B=document.body;if(!B)return;R.observe(B);for(var c=B.firstElementChild;c;c=c.nextElementSibling)R.observe(c)}
+var M=typeof MutationObserver==="function"&&new MutationObserver(function(){watch();report()});
+function watch(){var B=document.body;if(!B)return;R.observe(B);if(M)M.observe(B,{childList:true});for(var c=B.firstElementChild;c;c=c.nextElementSibling)R.observe(c)}
 addEventListener("DOMContentLoaded",watch);addEventListener("load",function(){watch();report()});addEventListener("resize",report)}
 function nav(){send({omniplex:"nav",url:location.pathname+location.search+location.hash,title:document.title})}
 addEventListener("load",nav);addEventListener("popstate",nav);addEventListener("hashchange",nav);

@@ -21,7 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Spinner } from "~/components/ui/spinner";
-import { bundlePath, retoken, type ExpiringUrl } from "~/lib/artefacts";
+import { bundlePath, PAGE_SANDBOX, retoken, type ExpiringUrl } from "~/lib/artefacts";
 import { cn } from "~/lib/utils";
 import { useLatest } from "~/useLatest";
 
@@ -278,9 +278,7 @@ export function MiniBrowser({
             ref={frameRef}
             src={src}
             title={title}
-            // Never allow-same-origin: with it, the page and this app would
-            // share an origin, and the agent's HTML could drive the API.
-            sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+            sandbox={PAGE_SANDBOX}
             referrerPolicy="no-referrer"
             onLoad={() => setLoading(false)}
             className={cn("block border-0 bg-white", fit.width && "shadow-md")}

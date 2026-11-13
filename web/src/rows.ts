@@ -165,8 +165,9 @@ export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts
       }
       flush();
       const shown = latestPerArtefact(produced);
-      const inline = shown.filter((it) => drawsInline(it, artefactById.get(it.artefactId ?? "")));
-      const cards = shown.filter((it) => !inline.includes(it));
+      const inline: Item[] = [];
+      const cards: Item[] = [];
+      for (const it of shown) (drawsInline(it, artefactById.get(it.artefactId ?? "")) ? inline : cards).push(it);
       if (inline.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${inline[0].id}`, items: inline });
       if (answer) rows.push({ kind: "item", item: answer });
       if (answer && spawns.length > 0)

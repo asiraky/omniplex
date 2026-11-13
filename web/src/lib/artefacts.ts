@@ -43,7 +43,6 @@ export interface Artefact {
   inline?: boolean;
 }
 
-/** How a prompt names an uploaded file. */
 /** A showing is drawn as the page itself rather than a card when it asked to
     be and the artefact's latest showing has not since turned it back into a
     card. Without the record there is nothing to point a frame at. */
@@ -51,6 +50,12 @@ export function drawsInline(it: Item, a: Artefact | undefined): boolean {
   return !!it.inline && !!a?.inline;
 }
 
+/** The sandbox every frame showing an agent's page runs in. Never
+    allow-same-origin: with it, the page and this app would share an origin,
+    and the agent's HTML could drive the API. */
+export const PAGE_SANDBOX = "allow-scripts allow-forms allow-popups allow-modals allow-downloads";
+
+/** How a prompt names an uploaded file. */
 export interface ArtefactRef {
   artefactId: string;
 }

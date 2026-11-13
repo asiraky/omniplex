@@ -5,7 +5,7 @@ import { inlineFrameHeight } from "~/components/artefacts/inlineFrame";
 import { usePreview } from "~/components/artefacts/usePreview";
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
-import type { Artefact } from "~/lib/artefacts";
+import { PAGE_SANDBOX, type Artefact } from "~/lib/artefacts";
 import { useIsDesktop } from "~/useMediaQuery";
 
 // The last height each revision of a page reported, so a frame that unmounts
@@ -207,9 +207,7 @@ function PageFrame({
         ref={frameRef}
         src={src}
         title={title}
-        // Never allow-same-origin: with it, the page and this app would share
-        // an origin, and the agent's HTML could drive the API.
-        sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+        sandbox={PAGE_SANDBOX}
         referrerPolicy="no-referrer"
         // The page never scrolls inside itself, so a drag over it scrolls the
         // transcript; what is past the cap is the full viewer's to show.
