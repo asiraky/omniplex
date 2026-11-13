@@ -87,7 +87,7 @@ export function SuggestionChip({
     <div className="mx-auto max-w-3xl px-4 pb-2 md:px-5">
       <div
         data-suggestion
-        className="bg-card/90 flex h-11 items-center rounded-full border pl-1 shadow-sm backdrop-blur md:h-9"
+        className="bg-card/90 flex h-11 items-center rounded-full pl-1 ring-1 ring-border shadow-sm backdrop-blur md:h-9"
       >
         <button
           type="button"
