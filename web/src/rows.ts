@@ -18,6 +18,7 @@
 // one-line summary. Nothing the reader is looking at is ever reclassified
 // out from under them: rows accrete and morph in place, they do not vanish.
 
+import { drawsInline, type Artefact } from "./lib/artefacts";
 import type { Item, Turn } from "./protocol";
 
 // A harness can open a message block it never fills — a thought whose text the
@@ -77,8 +78,9 @@ function spawnBatch(items: Item[], i: number): Item[] {
   return items.slice(i, j);
 }
 
-export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
+export function buildRows(items: Item[], turns: Turn[], phase: string, artefacts: readonly Artefact[] = []): Row[] {
   const turnById = new Map(turns.map((t) => [t.id, t]));
+  const artefactById = new Map(artefacts.map((a) => [a.id, a]));
   // A turn this projection has never heard of cannot be shown to be over, so
   // it is treated as still running rather than folded away mid-flight.
   const doneTurn = (turnId?: string) =>
@@ -163,8 +165,8 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
       }
       flush();
       const shown = latestPerArtefact(produced);
-      const inline = shown.filter((it) => it.inline);
-      const cards = shown.filter((it) => !it.inline);
+      const inline = shown.filter((it) => drawsInline(it, artefactById.get(it.artefactId ?? "")));
+      const cards = shown.filter((it) => !inline.includes(it));
       if (inline.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${inline[0].id}`, items: inline });
       if (answer) rows.push({ kind: "item", item: answer });
       if (answer && spawns.length > 0)

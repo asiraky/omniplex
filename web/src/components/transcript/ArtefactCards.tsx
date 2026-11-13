@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
 import { InlineArtefact } from "~/components/artefacts/InlineArtefact";
-import type { Artefact } from "~/lib/artefacts";
+import { drawsInline, type Artefact } from "~/lib/artefacts";
 import type { Item } from "~/protocol";
 
 import type { OpenArtefact } from "./Attachments";
@@ -12,13 +12,6 @@ import type { OpenArtefact } from "./Attachments";
 // A turn that shows a pile of files shows the first few: nine full-width
 // cards is a screen of scrolling on a phone before the next message.
 const ARTEFACTS_SHOWN = 3;
-
-/** Shown as the page itself rather than a card: this showing asked for it,
-    and the artefact's latest showing has not since turned it back into a
-    card. Without the record there is nothing to point a frame at. */
-function drawsInline(it: Item, a: Artefact | undefined): boolean {
-  return !!it.inline && !!a?.inline;
-}
 
 export function ArtefactCards({
   threadId,

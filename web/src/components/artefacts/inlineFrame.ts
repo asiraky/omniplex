@@ -3,13 +3,16 @@
 // height the page reports, within a floor and a cap, and anything past the cap
 // is cut off for the full viewer to show.
 
-/** The least a frame is ever given, and what it has before the page reports. */
-export const INLINE_MIN_PX = 120;
+/** The least a frame is ever given. */
+const MIN_PX = 120;
+/** What a frame has before the page reports, and keeps for a page sized to
+    its frame (a chart at 100vh), which has no height of its own to report. */
+const UNREPORTED_PX = 360;
 /** On a desktop the cap is fixed: a tall window is not a reason to give one
     reply the whole of it. */
-export const INLINE_DESKTOP_CAP_PX = 640;
+const DESKTOP_CAP_PX = 640;
 /** On a phone, the share of the screen one reply may take. */
-export const INLINE_PHONE_CAP = 0.6;
+const PHONE_CAP = 0.6;
 
 /**
  * The frame's height for the height a page reports. `cut` says the page is
@@ -19,7 +22,8 @@ export function inlineFrameHeight(
   reported: number | undefined,
   { desktop, viewportHeight }: { desktop: boolean; viewportHeight: number },
 ): { height: number; cut: boolean } {
-  const cap = Math.max(INLINE_MIN_PX, desktop ? INLINE_DESKTOP_CAP_PX : Math.round(viewportHeight * INLINE_PHONE_CAP));
-  const want = reported !== undefined && Number.isFinite(reported) ? Math.ceil(reported) : INLINE_MIN_PX;
-  return { height: Math.min(cap, Math.max(INLINE_MIN_PX, want)), cut: want > cap };
+  const cap = Math.max(MIN_PX, desktop ? DESKTOP_CAP_PX : Math.round(viewportHeight * PHONE_CAP));
+  if (reported === undefined || !Number.isFinite(reported)) return { height: Math.min(cap, UNREPORTED_PX), cut: false };
+  const want = Math.ceil(reported);
+  return { height: Math.min(cap, Math.max(MIN_PX, want)), cut: want > cap };
 }

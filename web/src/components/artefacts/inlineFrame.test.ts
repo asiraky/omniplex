@@ -6,13 +6,14 @@ const phone = { desktop: false, viewportHeight: 800 };
 const desktop = { desktop: true, viewportHeight: 1200 };
 
 describe("inlineFrameHeight", () => {
-  it("starts at the floor before the page has said how tall it is", () => {
-    expect(inlineFrameHeight(undefined, phone)).toEqual({ height: 120, cut: false });
+  it("guesses a middling height before the page has said how tall it is, within the cap", () => {
+    expect(inlineFrameHeight(undefined, phone)).toEqual({ height: 360, cut: false });
+    expect(inlineFrameHeight(Number.NaN, desktop)).toEqual({ height: 360, cut: false });
+    expect(inlineFrameHeight(undefined, { desktop: false, viewportHeight: 400 })).toEqual({ height: 240, cut: false });
   });
 
   it("never goes below the floor, and a short page is not cut", () => {
     expect(inlineFrameHeight(40, phone)).toEqual({ height: 120, cut: false });
-    expect(inlineFrameHeight(Number.NaN, desktop)).toEqual({ height: 120, cut: false });
   });
 
   it("fits a page between the floor and the cap, rounding up so nothing is clipped", () => {

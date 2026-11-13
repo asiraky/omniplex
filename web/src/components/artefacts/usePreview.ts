@@ -38,12 +38,15 @@ export function usePreview(threadId: string, artefactId: string, enabled: boolea
   }, [threadId, artefactId, key]);
 
   const current = state.key === key ? state : { key };
+  // A refresh that fails tries again: the next lands ten seconds on, even once
+  // the old token has lapsed.
+  const [failed, setFailed] = useState(0);
   useEffect(() => {
     if (!current.preview) return;
     const wait = Math.max(10_000, current.preview.expiresAt - Date.now() - REFRESH_BEFORE_MS);
-    const t = setTimeout(() => void refresh().catch(() => {}), wait);
+    const t = setTimeout(() => void refresh().catch(() => setFailed((n) => n + 1)), wait);
     return () => clearTimeout(t);
-  }, [current.preview, refresh]);
+  }, [current.preview, refresh, failed]);
 
   return { ...current, refresh, retry: () => setAttempt((n) => n + 1) };
 }

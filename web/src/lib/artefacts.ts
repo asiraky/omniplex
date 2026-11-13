@@ -10,6 +10,7 @@
  */
 
 import { postFile, type UploadOpts } from "~/lib/postFile";
+import type { Item } from "~/protocol";
 
 /**
  * A file or folder the thread has shown: a file on the server, read live.
@@ -43,6 +44,13 @@ export interface Artefact {
 }
 
 /** How a prompt names an uploaded file. */
+/** A showing is drawn as the page itself rather than a card when it asked to
+    be and the artefact's latest showing has not since turned it back into a
+    card. Without the record there is nothing to point a frame at. */
+export function drawsInline(it: Item, a: Artefact | undefined): boolean {
+  return !!it.inline && !!a?.inline;
+}
+
 export interface ArtefactRef {
   artefactId: string;
 }

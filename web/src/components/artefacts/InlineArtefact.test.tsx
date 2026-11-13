@@ -62,8 +62,18 @@ describe("an inline page in the transcript", () => {
     mount();
     await waitFor(() => expect(frame()).not.toBeNull());
     fromFrame({ omniplex: "size", height: 2000 }, window);
-    expect(frame()!.style.height).toBe("120px");
+    expect(frame()!.style.height).toBe("360px");
     expect(screen.queryByRole("button", { name: "Expand" })).toBeNull();
+  });
+
+  it("waits for a fresh token rather than loading the page on one that has lapsed", async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ url: "/p/old/chart.html", expiresAt: Date.now() - 1 }))
+      .mockResolvedValueOnce(Response.json({ url: "/p/new/chart.html", expiresAt: Date.now() + 3_600_000 }));
+    mount();
+    await waitFor(() => expect(frame()).not.toBeNull());
+    expect(frame()!.getAttribute("src")).toBe("/p/new/chart.html");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("is a card when the artefact was shown again without inline", () => {

@@ -222,8 +222,8 @@ func TestAgentShowsOnlyHTMLInlineAndOnlyUntilShownWithout(t *testing.T) {
 	if again, inline := show(chart, true); again != id || !inline {
 		t.Fatalf("shown inline again: %s inline=%v", again, inline)
 	}
-	// The record is the latest show: without inline it is a card again, and
-	// the earlier frames stay as they were drawn.
+	// The record is the latest show: without inline it is a card again. The
+	// earlier shows keep their own flag, and the record's decides how they draw.
 	if _, inline := show(chart, false); inline {
 		t.Fatal("shown again without inline is still inline")
 	}

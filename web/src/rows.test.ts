@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Item, Turn } from "./protocol";
+import { makeArtefact } from "./test/artefact";
 import { buildRows, foldLabel, formatDuration, reuseRows, rowTurnID, summarise, type Row } from "./rows";
 
 let n = 0;
@@ -469,11 +470,18 @@ describe("reuseRows", () => {
 });
 
 describe("buildRows with inline pages", () => {
+  // The artefacts' records, each as its latest showing left it.
+  const records = (inline: string[], cards: string[] = []) => [
+    ...inline.map((id) => makeArtefact({ id, inline: true })),
+    ...cards.map((id) => makeArtefact({ id })),
+  ];
+
   it("puts a finished turn's inline pages above its answer and its cards below", () => {
     const rows = buildRows(
       [prompt("chart it"), tool(), artefact("chart", 1, { inline: true }), artefact("notes", 1), tool(), msg("Here.")],
       [turn("turn1")],
       "idle",
+      records(["chart"], ["notes"]),
     );
     expect(shape(rows)).toEqual(["message:user", "fold(2)", "artefacts(chart@1)", "message:agent", "artefacts(notes@1)"]);
   });
@@ -483,8 +491,34 @@ describe("buildRows with inline pages", () => {
       [prompt("go"), artefact("a", 1, { inline: true }), artefact("a", 2), msg("Done.")],
       [turn("turn1")],
       "idle",
+      records([], ["a"]),
     );
     expect(shape(rows)).toEqual(["message:user", "message:agent", "artefacts(a@2)"]);
+  });
+
+  it("moves an earlier turn's page under its answer once a later turn shows it again as a card", () => {
+    const items = [
+      prompt("chart it"),
+      artefact("a", 1, { inline: true }),
+      msg("Here."),
+      prompt("as a card", { turnId: "turn2" }),
+      artefact("a", 2, { turnId: "turn2" }),
+      msg("Done.", { turnId: "turn2" }),
+    ];
+    const turns = [turn("turn1"), turn("turn2")];
+    expect(shape(buildRows(items.slice(0, 3), turns, "idle", records(["a"])))).toEqual([
+      "message:user",
+      "artefacts(a@1)",
+      "message:agent",
+    ]);
+    expect(shape(buildRows(items, turns, "idle", records([], ["a"])))).toEqual([
+      "message:user",
+      "message:agent",
+      "artefacts(a@1)",
+      "message:user",
+      "message:agent",
+      "artefacts(a@2)",
+    ]);
   });
 
   it("leaves a running turn's artefacts where they were shown, inline or not", () => {

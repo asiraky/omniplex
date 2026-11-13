@@ -13,6 +13,9 @@ import { useIsDesktop } from "~/useMediaQuery";
 // rather than at the floor and then jumping.
 const heights = new Map<string, number>();
 
+/** A token this close to lapsing is not worth starting a page load on. */
+const LIVE_MARGIN_MS = 30_000;
+
 /** jsdom and old browsers: with nothing to say what is near, everything is. */
 const canObserve = () => typeof IntersectionObserver !== "undefined";
 
@@ -45,7 +48,17 @@ export function InlineArtefact({
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [near, setNear] = useState(() => !canObserve());
   const [seen, setSeen] = useState(() => !canObserve());
+  // When the row last came near. A token that has lapsed by then (a phone
+  // asleep for an hour, a refresh that failed) would load the dead-link page,
+  // so the frame waits for a fresh one instead.
+  const [cameNear, setCameNear] = useState(() => Date.now());
   const preview = usePreview(threadId, a.id, seen);
+  const token = preview.preview;
+  const live = !!token && token.expiresAt > cameNear + LIVE_MARGIN_MS;
+  const { refresh } = preview;
+  useEffect(() => {
+    if (near && token && !live) void refresh().catch(() => {});
+  }, [near, token, live, refresh]);
 
   const sizeKey = `${a.id}@${a.modifiedAt}`;
   // Not reset when the page is revised: the old page's height is a better
@@ -64,7 +77,10 @@ export function InlineArtefact({
       (entries) => {
         const close = entries[entries.length - 1]!.isIntersecting;
         setNear(close);
-        if (close) setSeen(true);
+        if (close) {
+          setSeen(true);
+          setCameNear(Date.now());
+        }
       },
       // A screen either side, so the page has loaded by the time it scrolls in.
       { root: el.closest<HTMLElement>("[data-transcript-scroller]"), rootMargin: "100% 0px" },
@@ -111,12 +127,12 @@ export function InlineArtefact({
               <RotateCwIcon /> Retry
             </Button>
           </div>
-        ) : near && preview.preview ? (
+        ) : near && token && live ? (
           <PageFrame
             // A new showing reloads the page, even when the file is unchanged.
             key={`${a.modifiedAt}@${a.shownAt}`}
             frameRef={frameRef}
-            url={preview.preview.url}
+            url={token.url}
             title={a.name}
             height={height}
           />

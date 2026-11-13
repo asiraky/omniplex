@@ -216,9 +216,10 @@ type Item struct {
 	ArtefactID string `json:"artefactId,omitempty"`
 	MediaType  string `json:"mediaType,omitempty"`
 	Size       int64  `json:"size,omitempty"`
-	// Inline draws the artefact as a frame in the transcript instead of a
-	// card. It belongs to this one show: showing the page again without it
-	// adds a card and leaves this frame as it was.
+	// Inline is whether this show asked for the page to be drawn in the
+	// transcript rather than as a card. It is drawn so only while the
+	// artefact's latest show asked the same: showing the page again without
+	// it turns this frame into a card too.
 	Inline bool `json:"inline,omitempty"`
 
 	// card: what was proposed, and once answered what became of it. Status
