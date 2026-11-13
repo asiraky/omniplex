@@ -4,6 +4,7 @@
 
 import { applyEvent, applyJobRow, dropsJobRow, emptyState, prependItems, revivesUnheldJob } from "./apply";
 import { checkBuild } from "./boot";
+import type { ThreadSearchResult } from "./lib/threadFind";
 import type {
   Access,
   AuthFlowEvent,
@@ -409,9 +410,35 @@ export class Client {
    */
   loadOlder(count?: "all"): Promise<ThreadState | null> {
     if (this.olderInFlight) return count === "all" ? this.olderInFlight : Promise.resolve(null);
-    const request = this.fetchOlder(count).finally(() => (this.olderInFlight = null));
-    this.olderInFlight = request;
-    return request;
+    return this.occupyOlder(this.fetchOlder(count));
+  }
+
+  /**
+   * Page the window in down to the start of the turn holding `index`, in one
+   * request, publishing the merged state. Resolves with the state (unfetched
+   * when `index` is already loaded), or null when the page went stale or
+   * failed — the same cursor check as loadOlder.
+   */
+  async loadTo(index: number): Promise<ThreadState | null> {
+    // A scroll page landing first may already cover the index, and splicing
+    // ours in under it would break the window's contiguity: wait it out, then
+    // read the cursor afresh. Looped, as another may have claimed the slot
+    // before this resumed.
+    while (this.olderInFlight) await this.olderInFlight;
+    const s = this.state;
+    if (!s) return null;
+    const before = s.itemsBefore ?? 0;
+    if (index >= before) return s;
+    return this.occupyOlder(this.fetchPage(s, `before=${before}&from=${Math.max(0, index)}`));
+  }
+
+  /** Hold the older-page slot for `request` until it settles. */
+  private occupyOlder(request: Promise<ThreadState | null>): Promise<ThreadState | null> {
+    const held = request.finally(() => {
+      if (this.olderInFlight === held) this.olderInFlight = null;
+    });
+    this.olderInFlight = held;
+    return held;
   }
 
   /**
@@ -429,12 +456,17 @@ export class Client {
     return this.state;
   }
 
-  private async fetchOlder(count?: "all"): Promise<ThreadState | null> {
+  private fetchOlder(count?: "all"): Promise<ThreadState | null> {
     const s = this.state;
     const before = s?.itemsBefore ?? 0;
-    if (!s || before === 0) return null;
+    if (!s || before === 0) return Promise.resolve(null);
+    return this.fetchPage(s, count === "all" ? `before=${before}&count=all` : `before=${before}`);
+  }
+
+  /** Fetch an items page above `s`'s window and prepend it; see loadOlder. */
+  private async fetchPage(s: ThreadState, query: string): Promise<ThreadState | null> {
+    const before = s.itemsBefore ?? 0;
     try {
-      const query = count === "all" ? `before=${before}&count=all` : `before=${before}`;
       const response = await fetch(
         `/api/threads/${encodeURIComponent(s.threadId)}/items?${query}`,
       );
@@ -467,6 +499,23 @@ export class Client {
     }
   }
   private olderInFlight: Promise<ThreadState | null> | null = null;
+
+  /**
+   * Search the attached thread's messages and plans for `q`: the newest
+   * matches, oldest first, with the true count. Throws when no thread is
+   * attached or the server refuses (a query under SEARCH_MIN_LENGTH).
+   */
+  async search(q: string, signal: AbortSignal): Promise<ThreadSearchResult> {
+    const threadId = this.threadId;
+    if (!threadId) throw new Error("no thread attached");
+    const response = await fetch(
+      `/api/threads/${encodeURIComponent(threadId)}/search?q=${encodeURIComponent(q)}`,
+      { signal },
+    );
+    if (!response.ok) throw new Error(`search failed (${response.status})`);
+    const body = (await response.json()) as Partial<ThreadSearchResult>;
+    return { matches: body.matches ?? [], total: body.total ?? 0 };
+  }
 
   /**
    * Fetch every job the snapshot left out (`jobsBefore`) and merge them in,
