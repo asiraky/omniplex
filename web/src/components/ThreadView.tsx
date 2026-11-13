@@ -24,6 +24,7 @@ import { quoteInto, ReplyContext } from "~/lib/reply";
 import { RewindContext, rewindTarget, type RewindTarget } from "~/lib/rewind";
 import { threadTitle } from "~/lib/threadTitle";
 import { toast } from "~/lib/toast";
+import { phaseTakesMessages } from "~/threadStatus";
 import { useLatest } from "~/useLatest";
 import type {
   HarnessMeta,
@@ -608,7 +609,7 @@ function ThreadComposer({
       onSchedule={() => activeId && schedule.openFromComposer(activeId)}
       onCancel={commands.cancel}
       attachments={activeId ? (store.attachments[activeId] ?? []) : []}
-      onAttachFiles={store.attachFiles}
+      onAttachFiles={(files) => activeId && store.attachFiles(activeId, files)}
       onRemoveAttachment={(key) => activeId && store.removeAttachment(activeId, key)}
       onRetryAttachment={(key) => activeId && store.retryUpload(activeId, key)}
       waiting={waiting}
@@ -649,11 +650,8 @@ function ThreadComposer({
 const titleOf = (state: ThreadState | null) => state?.title;
 const NO_HISTORY: string[] = [];
 const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items, state.turns) : NO_HISTORY);
-const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) => {
-  if (!state || state.closed) return false;
-  const workspace = workspaceStatus(state.phase);
-  return !workspace.cleaning && !workspace.failed;
-};
+const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) =>
+  !!state && !state.closed && phaseTakesMessages(state.phase);
 const harnessOf = (state: ThreadState | null) => state?.harness;
 
 // What the dock draws. Not jobs: the strip selects those itself, so a job's

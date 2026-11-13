@@ -46,6 +46,7 @@ import { loadLastProject } from "./lib/lastProject";
 import { skillsScope } from "./lib/skills";
 import { threadUrl } from "./lib/threadLinks";
 import { cn } from "./lib/utils";
+import { useGuardFileDrops } from "./useFileDrop";
 import { useIsDesktop } from "./useMediaQuery";
 import type { ThreadState } from "./protocol";
 import { useModHeld } from "./useShortcuts";
@@ -76,7 +77,7 @@ export function App() {
   const { activeId, select } = nav;
   usePresence(clientRef, activeId, screens.covering || nav.covering);
   usePruneScrollMemory(scroll, threads);
-  const store = useComposerDrafts(threads, activeId);
+  const store = useComposerDrafts(threads);
   const schedule = useScheduleEditor(wire, store);
   const commands = useThreadCommands({ wire, activeId, store, openDiff: panel.openDiff });
   const create = useNewThread({
@@ -94,6 +95,18 @@ export function App() {
   // row menu. Kept stable for the sidebar's memo; `copy` already is.
   const { copied: linkCopied, copy: copyLink } = useCopy();
   const copyThreadLink = useCallback((id: string) => void copyLink(threadUrl(id)), [copyLink]);
+  // A drop on a sidebar row stages the files on that thread's composer and
+  // opens it, the way a tap on the row would, so its upload chips and the
+  // message to go with them are in front of the user. The thread already open
+  // only takes the files: select leaves it as it is.
+  const { attachFiles } = store;
+  const dropOnThread = useCallback(
+    (id: string, files: File[]) => {
+      attachFiles(id, files);
+      select(id);
+    },
+    [attachFiles, select],
+  );
 
   const meta = useMemo(() => threads.find((s) => s.id === activeId), [threads, activeId]);
   const harness = useThreadHarness(wire, activeId, meta);
@@ -130,6 +143,8 @@ export function App() {
   const projectView = useProjectView(projects);
   const palette = usePalette();
   usePrefetchOverlays();
+  // A file dropped where nothing takes it would otherwise replace the app.
+  useGuardFileDrops();
   const showJumpHints = useModHeld(isElectronApp());
   // One composer at a time, the thread's or the draft's, behind one handle.
   const { composerRef } = recents;
@@ -359,6 +374,7 @@ export function App() {
           onSetUnread={setThreadUnread}
           onRename={renameThread}
           onCopyLink={copyThreadLink}
+          onDropFiles={dropOnThread}
           onReorder={moveThread}
           // Only with a thread or a draft behind the drawer: otherwise it is
           // the landing screen, and Back closing it would show nothing.

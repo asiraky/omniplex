@@ -39,6 +39,15 @@ export function rowStatus(s: ThreadMeta): RowStatus {
   return "quiet";
 }
 
+/**
+ * Whether a thread in this phase takes a message, or files for one: not once
+ * it has closed, nor while its workspace is being cleaned away or has failed.
+ * A workspace still being prepared does; only the send waits for it.
+ */
+export function phaseTakesMessages(phase: string) {
+  return !["closed", "cleaning", "provision_failed", "cleanup_failed"].includes(phase);
+}
+
 /** How many of these threads would show the `new` badge. The thread on screen
     is being read, so it never counts. */
 export function newCount(threads: ThreadMeta[], activeId: string | null) {

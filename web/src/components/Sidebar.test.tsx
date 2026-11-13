@@ -80,6 +80,7 @@ function renderSidebar(over: Partial<Props> = {}) {
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
     onCopyLink: vi.fn(),
+    onDropFiles: vi.fn(),
     onReorder: vi.fn(),
     backDismiss: false,
     ...over,
@@ -119,6 +120,7 @@ function renderLive(threads: ThreadMeta[], over: Partial<Props> = {}) {
     onSetUnread: vi.fn(),
     onRename: vi.fn(),
     onCopyLink: vi.fn(),
+    onDropFiles: vi.fn(),
     onReorder: vi.fn(),
     backDismiss: false,
     ...over,
@@ -311,6 +313,76 @@ describe("Sidebar", () => {
       });
       // Already on top: nowhere to go, nothing sent.
       expect(props.onReorder).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("dropping files on a row", () => {
+    const one = new File(["a"], "one.png", { type: "image/png" });
+    const two = new File(["b"], "two.pdf", { type: "application/pdf" });
+    const files = (list: File[]) => ({
+      dataTransfer: { types: ["Files"], files: list, dropEffect: "" },
+    });
+    // The pointer is over the row's title; the events bubble to the row.
+    const over = (id: string) => screen.getByText(`Thread ${id}`);
+    const dropOn = (id: string, init: object) => {
+      fireEvent.dragEnter(over(id), init);
+      fireEvent.dragOver(over(id), init);
+      return fireEvent.drop(over(id), init);
+    };
+
+    it("hands every dropped file to the row's own thread", () => {
+      const props = renderSidebar();
+      const uncancelled = dropOn("b", files([one, two]));
+      expect(uncancelled).toBe(false);
+      expect(props.onDropFiles).toHaveBeenCalledTimes(1);
+      expect(props.onDropFiles).toHaveBeenCalledWith("b", [one, two]);
+    });
+
+    it("leaves a drag carrying no files to the browser", () => {
+      const props = renderSidebar();
+      const uncancelled = dropOn("b", { dataTransfer: { types: ["text/plain"], files: [], dropEffect: "" } });
+      expect(uncancelled).toBe(true);
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+    });
+
+    it("hands nothing on when the drop carries no files after all", () => {
+      const props = renderSidebar();
+      dropOn("b", files([]));
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+    });
+
+    // The window's guard refuses what a row does not take (useFileDrop), so
+    // a refusing row leaves the drag uncancelled for it.
+    it("refuses files on a thread whose composer would", () => {
+      const props = renderSidebar({ threads: [thread("a"), thread("b", { phase: "closed" })] });
+      expect(dropOn("b", files([one]))).toBe(true);
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+    });
+
+    it("still takes files on a thread whose workspace is being prepared", () => {
+      const props = renderSidebar({
+        threads: [thread("a"), thread("b", { phase: "provisioning" })],
+      });
+      dropOn("b", files([one]));
+      expect(props.onDropFiles).toHaveBeenCalledWith("b", [one]);
+    });
+
+    it("refuses files while the rows are being reordered", async () => {
+      const props = renderSidebar({
+        threads: [thread("a", { position: 0 }), thread("b", { position: 1 })],
+      });
+      fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
+
+      expect(dropOn("b", files([one]))).toBe(true);
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      dropOn("b", files([one]));
+      expect(props.onDropFiles).toHaveBeenCalledWith("b", [one]);
     });
   });
 

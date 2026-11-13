@@ -2,11 +2,18 @@
 import { act, cleanup, render, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { uploadStaged, type Attachment } from "~/lib/attachments";
 import type { ThreadMeta } from "~/protocol";
 
 import { LAPSED_REASON } from "./composerStorage";
 import { appendDraft, createDraftStore, useDraft, type DraftStore } from "./draftStore";
 import { useComposerDrafts } from "./useComposerDrafts";
+
+// Uploads answer when a test says so, not over the network.
+vi.mock("~/lib/attachments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/lib/attachments")>()),
+  uploadStaged: vi.fn(),
+}));
 
 afterEach(cleanup);
 beforeEach(() => localStorage.clear());
@@ -103,7 +110,7 @@ describe("appendDraft", () => {
 describe("useComposerDrafts", () => {
   it("keeps one store and one result object while only drafts change", () => {
     const threads = [thread("a")];
-    const hook = renderHook(() => useComposerDrafts(threads, "a"));
+    const hook = renderHook(() => useComposerDrafts(threads));
     const first = hook.result.current;
     act(() => first.setDraft("a", "hi"));
     hook.rerender();
@@ -112,7 +119,7 @@ describe("useComposerDrafts", () => {
   });
 
   it("drops the drafts of threads that leave the list, but not of ones not listed yet", () => {
-    const hook = renderHook(({ threads }) => useComposerDrafts(threads, "a"), {
+    const hook = renderHook(({ threads }) => useComposerDrafts(threads), {
       initialProps: { threads: [thread("a"), thread("b")] },
     });
     const { setDraft, getDraft } = hook.result.current;
@@ -149,7 +156,7 @@ describe("useComposerDrafts", () => {
     // The failed one's text came back before that page died.
     localStorage.setItem("omniplex.draft.v1:a", "first\n\ntyped after");
 
-    const page = renderHook(() => useComposerDrafts([thread("a")], "a")).result.current;
+    const page = renderHook(() => useComposerDrafts([thread("a")])).result.current;
 
     expect(page.getDraft("a")).toBe("first\n\nsecond\n\ntyped after");
     expect(page.outbox.get()).toMatchObject([
@@ -160,7 +167,7 @@ describe("useComposerDrafts", () => {
   });
 
   it("restores failed sends in the order they went, and takes back only the retried one", () => {
-    const hook = renderHook(() => useComposerDrafts([thread("a")], "a"));
+    const hook = renderHook(() => useComposerDrafts([thread("a")]));
     const file = (key: string) => ({ key, name: key, previewUrl: "", status: "ready" as const, id: key });
     const one = { commandId: "c1", threadId: "a", text: "one", attachments: [file("k1")] };
     const two = { commandId: "c2", threadId: "a", text: "two", attachments: [file("k2")] };
@@ -189,7 +196,7 @@ describe("useComposerDrafts", () => {
   it("forgets what a thread deleted while the page was away left behind", () => {
     localStorage.setItem("omniplex.draft.v1:gone", "orphan");
     localStorage.setItem("omniplex.draft.v1:new-thread", "first message");
-    const hook = renderHook(({ threads }) => useComposerDrafts(threads, null), {
+    const hook = renderHook(({ threads }) => useComposerDrafts(threads), {
       initialProps: { threads: [] as ThreadMeta[] },
     });
     // The list has not arrived yet: nothing is known to be gone.
@@ -198,5 +205,32 @@ describe("useComposerDrafts", () => {
     hook.rerender({ threads: [thread("a")] });
     expect(hook.result.current.getDraft("gone")).toBe("");
     expect(hook.result.current.getDraft("new-thread")).toBe("first message");
+  });
+
+  it("stages dropped files on the thread named, not the open one, and uploads each there", async () => {
+    const answers: ((patch: Partial<Attachment>) => void)[] = [];
+    vi.mocked(uploadStaged).mockImplementation(
+      () => new Promise((resolve) => answers.push(resolve)),
+    );
+    const hook = renderHook(() => useComposerDrafts([thread("a"), thread("b")]));
+    const one = new File(["1"], "one.txt", { type: "text/plain" });
+    const two = new File(["2"], "two.txt", { type: "text/plain" });
+
+    act(() => hook.result.current.attachFiles("b", [one, two]));
+
+    const chips = () => hook.result.current.attachments.b ?? [];
+    expect(chips().map((c) => [c.name, c.status])).toEqual([
+      ["one.txt", "uploading"],
+      ["two.txt", "uploading"],
+    ]);
+    expect(hook.result.current.attachments.a ?? []).toEqual([]);
+    expect(vi.mocked(uploadStaged).mock.calls.map(([id, file]) => [id, file])).toEqual([
+      ["b", one],
+      ["b", two],
+    ]);
+
+    await act(async () => answers[1]({ status: "ready", artefactId: "art-2" }));
+    expect(chips().map((c) => c.status)).toEqual(["uploading", "ready"]);
+    expect(chips()[1].artefactId).toBe("art-2");
   });
 });

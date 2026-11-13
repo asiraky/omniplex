@@ -24,7 +24,8 @@ import { fmtAgo } from "~/lib/format";
 import type { CommandId } from "~/lib/keybindings";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
-import { rowStatus, unread, type RowStatus } from "~/threadStatus";
+import { phaseTakesMessages, rowStatus, unread, type RowStatus } from "~/threadStatus";
+import { useFileDrop } from "~/useFileDrop";
 import { useShortcut } from "~/useShortcuts";
 import { useNow } from "~/useNow";
 
@@ -362,6 +363,7 @@ export const ThreadRow = memo(function ThreadRow({
   onRename,
   onCopyLink,
   onDelete,
+  onDropFiles,
   jumpHint,
 }: {
   s: ThreadMeta;
@@ -384,6 +386,8 @@ export const ThreadRow = memo(function ThreadRow({
   onRename: (threadId: string, title: string) => void;
   onCopyLink: (threadId: string) => void;
   onDelete: (s: ThreadMeta) => void;
+  /** Files dropped on the row, for its thread's composer. Never empty. */
+  onDropFiles: (threadId: string, files: File[]) => void;
   /** The ⌘1–9 command that opens this row, shown while the modifier is held. */
   jumpHint?: CommandId;
 }) {
@@ -399,6 +403,14 @@ export const ThreadRow = memo(function ThreadRow({
   // Only a badged row is loud. Everything else — read, idle, or busy with
   // work nobody has to watch — recedes, so the badges stand out by contrast.
   const recede = !active && badge === null;
+  // Files dragged from the OS, never a row: a reorder is pointer events, and
+  // the drop handlers answer only a drag that carries files. A thread whose
+  // composer would refuse them refuses them here too, and so does a row in
+  // reorder mode. A row on its way out takes no events at all.
+  const drop = useFileDrop(
+    (files) => onDropFiles(s.id, files),
+    !reordering && phaseTakesMessages(s.phase),
+  );
   return (
     // The row leaves from wherever it stands: it fades and slides out
     // while its own height folds shut under it, so the rows below close
@@ -446,7 +458,11 @@ export const ThreadRow = memo(function ThreadRow({
               // Already on its way out: it shows what it is doing (the busy
               // ring below) but no longer takes clicks.
               going && "pointer-events-none opacity-60",
+              // Last, so a receded row comes up to full strength under the
+              // drag the way it does under the pointer.
+              drop.dragging && "bg-primary/10 ring-primary opacity-100 ring-2 ring-inset",
             )}
+            {...drop.handlers}
           >
             {renaming ? (
               // The same box as the button below, so the row keeps its
