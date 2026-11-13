@@ -30,6 +30,7 @@ import { useIsDesktop } from "~/useMediaQuery";
 import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
+import { caretOnVisualEdge } from "./composer/caretEdge";
 import { ComposerHistoryMenu, MENU_RECENT } from "./composer/ComposerHistoryMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
 import { ComposerNotes } from "./composer/ComposerNotes";
@@ -68,9 +69,10 @@ export interface ComposerHandle {
 export interface ComposerStash {
   /** Newest first. */
   entries: readonly StashEntry[];
-  /** Parks the draft's text and ready attachments, emptying the composer.
-      False when there was nothing to park. */
-  save: () => boolean;
+  /** Parks the draft's text and ready attachments, emptying the composer;
+      with `textOnly`, the attachments stay. False when there was nothing to
+      park. */
+  save: (textOnly?: boolean) => boolean;
   /** Puts a parked draft back, parking whatever is in the composer first. */
   take: (id: string) => StashEntry | undefined;
   drop: (id: string) => void;
@@ -166,8 +168,8 @@ interface ComposerProps {
   /** The prompts sent in this thread, oldest first. ArrowUp in an empty
       composer walks back through them; the menu lists the latest. */
   history?: readonly string[];
-  /** The thread's parked drafts. Omitted along with `history`, the composer
-      has no menu for either. */
+  /** The thread's parked drafts. Without it the composer has no menu, for
+      parked drafts or for recent prompts. */
   stash?: ComposerStash;
 }
 
@@ -282,13 +284,21 @@ export function Composer({
     [onRunClientAction],
   );
 
+  // How far back ArrowUp has gone through the thread's prompts. It holds only
+  // while the composer says exactly what was recalled: edit it, and it is a
+  // draft like any other, which ArrowUp leaves alone.
+  const [recall, setRecall] = useState<HistoryPosition | null>(null);
+  // A recalled `/review` is not a command being typed: the menu would open on
+  // it and take the next arrow key, stopping the walk through history there.
+  const walking = recall !== null && recall.recalled === draft;
+
   const menu = useComposerMenu({
     draft,
     draftRef,
     changeDraft,
     catalogue,
     textareaRef,
-    disabled,
+    disabled: disabled || walking,
     sendDisabled,
     runClientAction,
     onRunComposerAction,
@@ -328,10 +338,6 @@ export function Composer({
   const { focusAt, setCursor } = menu;
   const hasPicker = harnesses.length > 0 && !disabled;
 
-  // How far back ArrowUp has gone through the thread's prompts. It holds only
-  // while the composer says exactly what was recalled: edit it, and it is a
-  // draft like any other, which ArrowUp leaves alone.
-  const recall = useRef<HistoryPosition | null>(null);
   // Replaces the whole draft. Typed in where it can be, so undo takes it back
   // out. Without focus it is written instead: focusing would raise a phone's
   // keyboard over the menu that was just tapped.
@@ -344,24 +350,24 @@ export function Composer({
     },
     [changeDraft, focusAt],
   );
-  // Only at the textarea's top or bottom line, so the arrows still move the
-  // caret through a recalled prompt of several lines.
+  // Only at the textarea's top or bottom line, wrapped lines included, so the
+  // arrows still move the caret through a recalled prompt of several lines.
   const stepRecall = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     const back = e.key === "ArrowUp";
     if (!back && e.key !== "ArrowDown") return false;
     if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey || history.length === 0) return false;
     const el = e.currentTarget;
-    const atEdge = (back ? caretOnFirstLine : caretOnLastLine)(el.value, el.selectionStart, el.selectionEnd);
-    if (!atEdge) return false;
+    const onEdgeLine = (back ? caretOnFirstLine : caretOnLastLine)(el.value, el.selectionStart, el.selectionEnd);
+    if (!onEdgeLine) return false;
     const step = stepHistory({
       direction: back ? "back" : "forward",
       entries: history,
-      position: recall.current,
+      position: recall,
       current: el.value,
     });
-    if (!step) return false;
+    if (!step || !caretOnVisualEdge(el, back ? "top" : "bottom")) return false;
     e.preventDefault();
-    recall.current = step.position;
+    setRecall(step.position);
     replaceDraft(step.text, true);
     return true;
   };
@@ -528,15 +534,18 @@ export function Composer({
               recent={recent}
               onStash={() => void stash.save()}
               onTake={(id) => {
-                recall.current = null;
+                setRecall(null);
                 stash.take(id);
               }}
               onDrop={stash.drop}
               onRecall={(text) => {
-                // Text already in the composer is parked rather than lost:
-                // a phone has no undo to get it back.
-                if (draftRef.current.trim()) stash.save();
-                recall.current = null;
+                // Words typed in the composer are parked rather than lost: a
+                // phone has no undo to get them back. A prompt already sent
+                // is still in this menu, so it is not parked again, and the
+                // attachments stay to go out with the recalled prompt.
+                const current = draftRef.current.trim();
+                if (current && !history.includes(current)) stash.save(true);
+                setRecall(null);
                 replaceDraft(text, isDesktop);
               }}
               // On desktop the next keystroke belongs in the composer: what

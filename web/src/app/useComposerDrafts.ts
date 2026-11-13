@@ -272,9 +272,11 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   // are ready. One still uploading, or failed, stays in the composer, since
   // an entry outlives the page and its upload would not.
   const composerEntry = useCallback(
-    (threadId: string): StashEntry | undefined => {
+    (threadId: string, withAttachments = true): StashEntry | undefined => {
       const text = draftStore.get(threadId);
-      const files = (attachmentsNow.current[threadId] ?? []).filter((a) => a.status === "ready");
+      const files = withAttachments
+        ? (attachmentsNow.current[threadId] ?? []).filter((a) => a.status === "ready")
+        : [];
       if (!text.trim() && files.length === 0) return undefined;
       return { id: uuid(), text, attachments: files, at: Date.now() };
     },
@@ -282,10 +284,12 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
   );
 
   // Parks the composer's draft to send something else first. Its thumbnails
-  // stay alive: they move into the entry rather than going.
+  // stay alive: they move into the entry rather than going. `textOnly` parks
+  // the words and leaves the attachments where they are, for a recalled
+  // prompt to go out with.
   const stashDraft = useCallback(
-    (threadId: string) => {
-      const entry = composerEntry(threadId);
+    (threadId: string, textOnly = false) => {
+      const entry = composerEntry(threadId, !textOnly);
       if (!entry) return false;
       const { next, evicted } = pushStash(stashStore.all(), threadId, entry);
       stashStore.update(() => next);

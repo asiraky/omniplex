@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Item } from "~/protocol";
+import type { Item, Turn } from "~/protocol";
 
 import {
   caretOnFirstLine,
@@ -28,19 +28,28 @@ describe("promptHistory", () => {
       { id: "t", kind: "tool", text: "ls" },
       user("now the tests"),
     ];
-    expect(promptHistory(items)).toEqual(["fix the build", "now the tests"]);
+    expect(promptHistory(items, [])).toEqual(["fix the build", "now the tests"]);
   });
 
   it("skips empty prompts, such as an image sent on its own", () => {
-    expect(promptHistory([user(""), user("   "), user(undefined), user("hi")])).toEqual(["hi"]);
+    expect(promptHistory([user(""), user("   "), user(undefined), user("hi")], [])).toEqual(["hi"]);
   });
 
   it("skips a subagent's messages", () => {
-    expect(promptHistory([user("mine"), user("from the Task tool", { parentId: "task1" })])).toEqual(["mine"]);
+    expect(promptHistory([user("mine"), user("from the Task tool", { parentId: "task1" })], [])).toEqual(["mine"]);
   });
 
   it("keeps a consecutive repeat once but not a repeat further back", () => {
-    expect(promptHistory([user("go"), user(" go "), user("stop"), user("go")])).toEqual(["go", "stop", "go"]);
+    expect(promptHistory([user("go"), user(" go "), user("stop"), user("go")], [])).toEqual(["go", "stop", "go"]);
+  });
+
+  it("skips the prompt the server wrote to pick up a recovered turn", () => {
+    const turns: Turn[] = [
+      { id: "t1", prompt: "build it", done: true },
+      { id: "t2", prompt: "Continue", done: true, recovery: { resumeOf: "t1", attempt: 1 } },
+    ];
+    const items = [user("build it", { turnId: "t1" }), user("Continue", { turnId: "t2" })];
+    expect(promptHistory(items, turns)).toEqual(["build it"]);
   });
 });
 

@@ -468,7 +468,7 @@ function ThreadComposer({
       activeId
         ? {
             entries: stashed,
-            save: () => stashDraft(activeId),
+            save: (textOnly?: boolean) => stashDraft(activeId, textOnly),
             take: (id: string) => unstash(activeId, id),
             drop: (id: string) => dropStash(activeId, id),
           }
@@ -529,7 +529,7 @@ function ThreadComposer({
 
 const titleOf = (state: ThreadState | null) => state?.title;
 const NO_HISTORY: string[] = [];
-const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items) : NO_HISTORY);
+const historyOf = (state: ThreadState | null) => (state ? promptHistory(state.items, state.turns) : NO_HISTORY);
 const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) => {
   if (!state || state.closed) return false;
   const workspace = workspaceStatus(state.phase);

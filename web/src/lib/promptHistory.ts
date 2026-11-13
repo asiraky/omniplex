@@ -1,16 +1,19 @@
-import type { Item } from "~/protocol";
+import type { Item, Turn } from "~/protocol";
 
 /**
  * The prompts the user sent in this thread, oldest first, for ArrowUp recall
  * and the composer's recent-prompts menu. A subagent's messages carry a
- * parentId and were never typed by the user, so they are left out. Sending the
- * same prompt twice in a row is kept once, as a shell does, so ArrowUp never
- * lands on what looks like the same entry again.
+ * parentId and were never typed by the user, so they are left out, as is the
+ * prompt the server writes to pick up a recovered turn. Sending the same prompt
+ * twice in a row is kept once, as a shell does, so ArrowUp never lands on what
+ * looks like the same entry again.
  */
-export function promptHistory(items: readonly Item[]): string[] {
+export function promptHistory(items: readonly Item[], turns: readonly Turn[]): string[] {
+  const recovered = new Set(turns.filter((turn) => turn.recovery).map((turn) => turn.id));
   const out: string[] = [];
   for (const item of items) {
     if (item.kind !== "message" || item.role !== "user" || item.parentId) continue;
+    if (item.turnId !== undefined && recovered.has(item.turnId)) continue;
     const text = item.text?.trim();
     if (!text || out[out.length - 1] === text) continue;
     out.push(text);

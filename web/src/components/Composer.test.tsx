@@ -1031,6 +1031,16 @@ describe("earlier prompts and stashed drafts", () => {
     expect(value()).toBe("one");
   });
 
+  it("keeps walking back past a recalled command instead of opening the command menu on it", () => {
+    exec.editing();
+    renderControlled("", { history: ["/older", "/newer"] });
+    up();
+    expect(value()).toBe("/newer");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    up();
+    expect(value()).toBe("/older");
+  });
+
   it("writes the recall when the browser cannot type it", () => {
     exec.absent();
     const { onDraftChange } = renderControlled("");
@@ -1087,6 +1097,15 @@ describe("earlier prompts and stashed drafts", () => {
     expect(s.take).toHaveBeenCalledWith("a");
   });
 
+  it("removes the stashed draft under the keyboard with Delete", async () => {
+    const s = stash({ entries: [{ id: "a", text: "parked one", attachments: [], at: 1 }] });
+    mount({ stash: s });
+    openMenu();
+    fireEvent.keyDown(await screen.findByRole("menuitem", { name: /parked one/ }), { key: "Delete" });
+    expect(s.drop).toHaveBeenCalledWith("a");
+    expect(s.take).not.toHaveBeenCalled();
+  });
+
   it("recalls a recent prompt from the menu, newest first, parking the draft it replaces", async () => {
     exec.editing();
     const s = stash();
@@ -1096,7 +1115,18 @@ describe("earlier prompts and stashed drafts", () => {
     expect(items.map((i) => i.textContent)).toEqual(["Stash draft", "third ask", "second ask", "first ask"]);
 
     fireEvent.click(screen.getByRole("menuitem", { name: "first ask" }));
-    expect(s.save).toHaveBeenCalled();
+    // Only the words: any attachments stay to go out with the recalled prompt.
+    expect(s.save).toHaveBeenCalledWith(true);
+    expect(onDraftChange).toHaveBeenLastCalledWith("first ask");
+  });
+
+  it("does not park a prompt already sent when another is recalled over it", async () => {
+    exec.editing();
+    const s = stash();
+    const { onDraftChange } = renderControlled("second ask", { stash: s });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "first ask" }));
+    expect(s.save).not.toHaveBeenCalled();
     expect(onDraftChange).toHaveBeenLastCalledWith("first ask");
   });
 

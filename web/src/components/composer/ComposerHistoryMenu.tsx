@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 
-/** How many sent prompts the menu offers. ArrowUp reaches the rest. */
+/** How many sent prompts the menu offers; ArrowUp walks back through all those loaded. */
 export const MENU_RECENT = 8;
 
 /**
@@ -139,10 +139,11 @@ export function ComposerHistoryMenu({
         <DropdownMenuSeparator />
         <DropdownMenuLabel className={LABEL}>Recent prompts</DropdownMenuLabel>
         {recent.length === 0 ? (
-          <p className="text-muted-foreground px-2 py-1.5 text-sm">Nothing sent in this thread yet</p>
+          <p className="text-muted-foreground px-2 py-1.5 text-sm">No recent prompts</p>
         ) : (
-          recent.map((text, i) => (
-            <DropdownMenuItem key={i} onSelect={pick(() => onRecall(text))} className={ROW}>
+          recent.map((text) => (
+            // Each prompt is listed once, so its text is its key.
+            <DropdownMenuItem key={text} onSelect={pick(() => onRecall(text))} className={ROW}>
               <Snippet text={text} />
             </DropdownMenuItem>
           ))

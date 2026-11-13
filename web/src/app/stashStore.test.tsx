@@ -135,6 +135,20 @@ describe("stashing from the composer", () => {
     expect(loadStashes().a).toMatchObject([{ text: "half a thought" }]);
   });
 
+  it("parks only the words when asked to, leaving the files for what goes out next", () => {
+    const { page } = mount();
+    act(() => {
+      page().setDraft("a", "half a thought");
+      page().setAttachments((all) => ({ ...all, a: [file("k1")] }));
+    });
+    act(() => {
+      page().stashDraft("a", true);
+    });
+    expect(page().getDraft("a")).toBe("");
+    expect(page().attachments.a).toEqual([file("k1")]);
+    expect(page().stashStore.get("a")).toMatchObject([{ text: "half a thought", attachments: [] }]);
+  });
+
   it("does nothing for a composer with only blank text and no ready file", () => {
     const { page } = mount();
     act(() => {
