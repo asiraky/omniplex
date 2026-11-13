@@ -177,6 +177,22 @@ describe("resolveCommand", () => {
     expect(late(esc, { ...ready, dialogOpen: true })).toBeNull();
   });
 
+  it("sends and starts a new thread on ⇧⌘↵ from an open thread's composer, ahead of the textarea", () => {
+    const mac = ev("Enter", "Enter", { metaKey: true, shiftKey: true });
+    const linux = ev("Enter", "Enter", { ctrlKey: true, shiftKey: true });
+    const ready = ctx({ threadOpen: true, composerFocus: true, editableFocus: true });
+    expect(early(mac, ready)).toBe("sendAndNewThread");
+    expect(early(mac, { ...ready, electronApp: true })).toBe("sendAndNewThread");
+    expect(early(linux, ready, "other")).toBe("sendAndNewThread");
+    // A new thread's draft, focus elsewhere, or the slash menu open over it.
+    expect(early(mac, { ...ready, threadOpen: false })).toBeNull();
+    expect(early(mac, { ...ready, composerFocus: false })).toBeNull();
+    expect(early(mac, { ...ready, dialogOpen: true })).toBeNull();
+    // ⇧↵ alone is still the textarea's newline, and ⌘↵ its other way to send.
+    expect(early(ev("Enter", "Enter", { shiftKey: true }), ready)).toBeNull();
+    expect(early(ev("Enter", "Enter", { metaKey: true }), ready)).toBeNull();
+  });
+
   it("asks the thread-only commands for an open thread", () => {
     const diff = ev("D", "KeyD", { metaKey: true, shiftKey: true });
     expect(early(diff, ctx({ threadOpen: true }))).toBe("openDiff");

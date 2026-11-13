@@ -63,7 +63,9 @@ export function useComposerSend({
     (!draft.trim() && sendableAttachments === 0);
 
   // `delivery` reaches only a prompt: a command runs now or not at all.
-  const send = async (delivery?: Delivery) => {
+  // `then` runs once the message has actually gone, and never for one held
+  // back: send-and-start-a-new-thread must not leave a draft behind unsent.
+  const send = async (delivery?: Delivery, then?: () => void) => {
     const t = draft.trim();
     // A message may be nothing but attachments: "what is this?" is often the
     // whole question, and the picture or the file is the rest of it.
@@ -84,6 +86,7 @@ export function useComposerSend({
     if (intercepted?.item.behavior === "client-action") {
       changeDraft("");
       if (intercepted.item.action) runClientAction(intercepted.item.action);
+      then?.();
       return;
     }
     if (intercepted?.item.behavior === "adapter-action" && intercepted.item.action) {
@@ -91,6 +94,7 @@ export function useComposerSend({
         const submittedDraft = draftRef.current;
         await onRunComposerAction?.(intercepted.item.action, intercepted.args, t);
         if (draftRef.current === submittedDraft) changeDraft("");
+        then?.();
       } catch {
         // App reports the provider error. Retain the command so it can be
         // retried or edited, without leaving a rejected promise behind.
@@ -99,6 +103,7 @@ export function useComposerSend({
     }
     onSend(t, sendPayload(attachments), delivery);
     changeDraft("");
+    then?.();
   };
 
   return { send, cannotSend, sendableAttachments, scheduleBlock, tooMuch };

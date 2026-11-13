@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { createRef, useState } from "react";
+import { createRef, useRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { useKeybindings } from "~/app/useKeybindings";
 import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
 import { Composer, type ComposerHandle, type ComposerStash } from "./Composer";
@@ -1138,5 +1139,173 @@ describe("earlier prompts and stashed drafts", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "second ask" }));
     expect(s.save).not.toHaveBeenCalled();
     expect(onDraftChange).toHaveBeenLastCalledWith("second ask");
+  });
+});
+
+describe("sending and starting a new thread", () => {
+  const sent = { imageIds: [], files: [] };
+  const hold = (el: HTMLElement) => {
+    fireEvent.pointerDown(el, { button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(el);
+    fireEvent.click(el);
+  };
+  const sendAndNewItem = () => screen.getByRole("menuitem", { name: /^Send and start a new thread/ });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens a menu on a held Send in an idle thread, and sends before starting the new one", () => {
+    vi.useFakeTimers();
+    const onSendAndNewThread = vi.fn();
+    const { onSend } = mount({ draft: "fix the flaky test", onSendAndNewThread });
+    hold(sendButton());
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(sendAndNewItem());
+    expect(onSend).toHaveBeenCalledWith("fix the flaky test", sent, undefined);
+    expect(onSendAndNewThread).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.invocationCallOrder[0]).toBeLessThan(onSendAndNewThread.mock.invocationCallOrder[0]!);
+  });
+
+  it("offers a plain send in the held menu, which stays in the thread", () => {
+    vi.useFakeTimers();
+    const onSendAndNewThread = vi.fn();
+    const { onSend } = mount({ draft: "just this", onSendAndNewThread });
+    hold(sendButton());
+    fireEvent.click(screen.getByRole("menuitem", { name: "Send" }));
+    expect(onSend).toHaveBeenCalledWith("just this", sent, undefined);
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+
+  it("keeps the steer-or-queue choice beside it mid-turn", () => {
+    vi.useFakeTimers();
+    const onSendAndNewThread = vi.fn();
+    const { onSend } = mount({ draft: "after this", busy: true, steers: true, onSendAndNewThread });
+    hold(screen.getByRole("button", { name: "Steer the running turn" }));
+    expect(screen.getByRole("menuitem", { name: /^Queue/ })).toBeTruthy();
+    fireEvent.click(sendAndNewItem());
+    expect(onSend).toHaveBeenCalledWith("after this", sent, undefined);
+    expect(onSendAndNewThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends on a held Send, with no menu, where there is no new thread to start", () => {
+    vi.useFakeTimers();
+    const { onSend } = mount({ draft: "hi" });
+    hold(sendButton());
+    expect(screen.queryByRole("menuitem")).toBeNull();
+    expect(onSend).toHaveBeenCalledWith("hi", sent, undefined);
+  });
+
+  it("does not open on a held Send with nothing to send", () => {
+    vi.useFakeTimers();
+    const onSendAndNewThread = vi.fn();
+    mount({ draft: "", onSendAndNewThread });
+    hold(sendButton());
+    expect(screen.queryByRole("menuitem")).toBeNull();
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+
+  it("closes the held menu once the message can no longer go", () => {
+    vi.useFakeTimers();
+    const onSendAndNewThread = vi.fn();
+    const { rerender } = mount({ draft: "soon", onSendAndNewThread });
+    hold(sendButton());
+    expect(sendAndNewItem()).toBeTruthy();
+    rerender({ draft: "soon", onSendAndNewThread, waiting: true });
+    expect(screen.queryByRole("menuitem")).toBeNull();
+  });
+
+  it("offers it in the send options, which it alone is enough to show", async () => {
+    const onSendAndNewThread = vi.fn();
+    const { onSend } = mount({ draft: "ship it", onSendAndNewThread });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Send and start a new thread/ }));
+    expect(onSend).toHaveBeenCalledWith("ship it", sent, undefined);
+    expect(onSendAndNewThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends through the handle the way the keyboard does", () => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    const { onSend } = mount({ ref, draft: "next task", busy: true, steers: true, onSendAndNewThread });
+    act(() => ref.current!.sendAndNewThread());
+    expect(onSend).toHaveBeenCalledWith("next task", sent, undefined);
+    expect(onSendAndNewThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing through the handle where there is no new thread to start", () => {
+    const ref = createRef<ComposerHandle>();
+    const { onSend } = mount({ ref, draft: "stay here" });
+    act(() => ref.current!.sendAndNewThread());
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an empty draft", { draft: "  " }],
+    ["the thread closed", { draft: "hi", disabled: true }],
+    ["the workspace still being prepared", { draft: "hi", sendDisabled: true }],
+    ["another message waiting on its uploads", { draft: "hi", waiting: true }],
+    ["slash text before the catalogue loads", { draft: "/compact", catalogue: catalogue({ ready: false }) }],
+  ])("stays in the thread when the message is held back: %s", (_, over) => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    const { onSend } = mount({ ref, onSendAndNewThread, ...over });
+    act(() => ref.current!.sendAndNewThread());
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+
+  it("starts the new thread once an adapter command has run", async () => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    const onRunComposerAction = vi.fn().mockResolvedValue(undefined);
+    mount({ ref, draft: "/compact", catalogue: catalogue(), onRunComposerAction, onSendAndNewThread });
+    act(() => ref.current!.sendAndNewThread());
+    await waitFor(() => expect(onSendAndNewThread).toHaveBeenCalledTimes(1));
+    expect(onRunComposerAction).toHaveBeenCalledWith("compact", "", "/compact");
+  });
+
+  it("stays in the thread when the adapter command fails", async () => {
+    const ref = createRef<ComposerHandle>();
+    const onSendAndNewThread = vi.fn();
+    const onRunComposerAction = vi.fn().mockRejectedValue(new Error("no"));
+    mount({ ref, draft: "/compact", catalogue: catalogue(), onRunComposerAction, onSendAndNewThread });
+    await act(async () => ref.current!.sendAndNewThread());
+    expect(onRunComposerAction).toHaveBeenCalled();
+    expect(onSendAndNewThread).not.toHaveBeenCalled();
+  });
+});
+
+describe("⇧⌘↵ from an open thread's composer", () => {
+  const app = { paletteOpen: false, helpOpen: false, threadOpen: true, turnRunning: false, panelOpen: false };
+
+  function Keyed(props: React.ComponentProps<typeof Composer>) {
+    const ref = useRef<ComposerHandle>(null);
+    useKeybindings({ sendAndNewThread: () => ref.current?.sendAndNewThread() }, app);
+    return <Composer ref={ref} {...props} />;
+  }
+
+  it("sends and starts a new thread, claiming the key before the textarea makes a newline of it", () => {
+    const onSend = vi.fn();
+    const onSendAndNewThread = vi.fn();
+    render(
+      <Keyed
+        draft="write the migration"
+        onDraftChange={vi.fn()}
+        disabled={false}
+        busy={false}
+        onSend={onSend}
+        onCancel={vi.fn()}
+        onSendAndNewThread={onSendAndNewThread}
+      />,
+    );
+    box().focus();
+    // jsdom reports no platform, so this is the Ctrl+Shift+↵ of Windows and Linux.
+    const went = fireEvent.keyDown(box(), { key: "Enter", code: "Enter", ctrlKey: true, shiftKey: true });
+    expect(went).toBe(false);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith("write the migration", { imageIds: [], files: [] }, undefined);
+    expect(onSendAndNewThread).toHaveBeenCalledTimes(1);
   });
 });

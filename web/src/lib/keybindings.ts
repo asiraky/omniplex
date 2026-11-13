@@ -175,6 +175,17 @@ export const COMMANDS = {
     browser: [{ key: "/" }],
     late: true,
   },
+  sendAndNewThread: {
+    label: "Send and start a new thread",
+    group: "Composer",
+    // Caught ahead of the textarea, which would otherwise take any ⇧↵ for a
+    // newline. No inDialog: with the slash menu open, Enter picks from it.
+    app: [mod("enter", { shift: true })],
+    browser: [mod("enter", { shift: true })],
+    // Only from an open thread's composer: a new thread's draft is already
+    // where this would take it.
+    guard: (ctx) => ctx.threadOpen && ctx.composerFocus,
+  },
   modelPicker: {
     label: "Model picker",
     group: "Composer",
