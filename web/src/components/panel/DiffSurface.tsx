@@ -587,9 +587,14 @@ export function DiffSurface({
   const shown = finding ? matches : listed;
 
   return (
-        // Focusable so a click on diff text puts focus in the diff, where the
+    // Focusable so a click on diff text puts focus in the diff, where the
     // diff's own find answers Ctrl/⌘+F.
-    <div ref={rootRef} data-diff-surface="" tabIndex={-1} className="flex h-full min-h-0 flex-col outline-none">
+    <div
+      ref={rootRef}
+      data-diff-surface=""
+      tabIndex={-1}
+      className="flex h-full min-h-0 flex-col outline-none"
+    >
       {/* Wraps rather than overflows: docked narrow, the options drop to a
           second line under the scope. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1.5">

@@ -23,6 +23,9 @@ type Match struct {
 // user and agent text messages, and plans (steps and explanation). Thinking,
 // tool calls, notices, artefacts and cards are never searched, nor is a child
 // item — the client never shows one as a row, so there is nothing to jump to.
+// Nor is text the client hides: a prompt's attached-files trailer, which it
+// draws as file tiles, and the prompt the server wrote to resume a recovered
+// turn, which it draws as a fixed label.
 //
 // When more than limit items match, the newest limit are returned; limit <= 0
 // returns every match. Matches come oldest first; total is the true count.
@@ -31,9 +34,15 @@ func (s *State) Search(q string, limit int) (matches []Match, total int) {
 		return []Match{}, 0
 	}
 	needle := strings.ToLower(q)
+	recovered := map[string]bool{}
+	for _, t := range s.Turns {
+		if t.Recovery != nil {
+			recovered[t.ID] = true
+		}
+	}
 	var hits []int
 	for i := range s.Items {
-		if itemMatches(&s.Items[i], needle) {
+		if itemMatches(&s.Items[i], needle, recovered) {
 			hits = append(hits, i)
 		}
 	}
@@ -49,17 +58,22 @@ func (s *State) Search(q string, limit int) (matches []Match, total int) {
 }
 
 // itemMatches reports whether it is a searchable item whose text holds
-// needle, which is already lower-cased.
-func itemMatches(it *Item, needle string) bool {
+// needle, which is already lower-cased. recovered holds the ids of turns the
+// server started itself.
+func itemMatches(it *Item, needle string, recovered map[string]bool) bool {
 	if it.ParentID != "" {
 		return false
 	}
 	switch it.Kind {
 	case ItemMessage:
-		if it.ContentKind != "text" || (it.Role != "user" && it.Role != "agent") {
+		switch {
+		case it.ContentKind != "text":
 			return false
+		case it.Role == "agent":
+			return containsFold(it.Text, needle)
+		case it.Role == "user":
+			return !recovered[it.TurnID] && containsFold(withoutAttachedFiles(it.Text), needle)
 		}
-		return containsFold(it.Text, needle)
 	case ItemPlan:
 		if containsFold(it.Explanation, needle) {
 			return true
@@ -71,6 +85,22 @@ func itemMatches(it *Item, needle string) bool {
 		}
 	}
 	return false
+}
+
+// withoutAttachedFiles cuts the attached-files trailer (server/skills.go's
+// attachedFiles) off a prompt, by the client's rule: the block closes the
+// text and its opening tag starts a line.
+func withoutAttachedFiles(text string) string {
+	const open, closing = "<attached-files>", "</attached-files>"
+	trimmed := strings.TrimRight(text, " \t\r\n")
+	if !strings.HasSuffix(trimmed, closing) {
+		return text
+	}
+	i := strings.LastIndex(trimmed, open)
+	if i == -1 || (i > 0 && trimmed[i-1] != '\n') {
+		return text
+	}
+	return trimmed[:i]
 }
 
 // containsFold reports whether s holds needle, ignoring case. needle is

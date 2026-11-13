@@ -64,10 +64,11 @@ export function ThreadFindBar({
   }, [controls.nonce]);
 
   // The painted occurrences belong to the query that found them.
-  useEffect(() => {
-    onClearRef.current();
+  const typed = (q: string) => {
+    onClear();
     setJumpFailed(false);
-  }, [f.query, onClearRef]);
+    f.setQuery(q);
+  };
   useEffect(() => () => onClearRef.current(), [onClearRef]);
 
   // `step` moves on every selection, including a re-selection of the same
@@ -115,7 +116,7 @@ export function ThreadFindBar({
         aria-label="Find in thread"
         placeholder="Find in thread"
         value={f.query}
-        onChange={(e) => f.setQuery(e.target.value)}
+        onChange={(e) => typed(e.target.value)}
         onKeyDown={onInputKeyDown}
         enterKeyHint="search"
         autoComplete="off"

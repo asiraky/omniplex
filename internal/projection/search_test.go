@@ -101,3 +101,29 @@ func TestSearchCapKeepsNewestWithTrueTotal(t *testing.T) {
 		t.Fatalf("uncapped = %v total %d", matchIDs(got), total)
 	}
 }
+
+// Text the client never draws as text is not searched: a prompt's
+// attached-files trailer (drawn as tiles) and the prompt of a turn the server
+// started to recover (drawn as a fixed label). The same tag mid-prompt is the
+// person's own words.
+func TestSearchSkipsTextTheClientHides(t *testing.T) {
+	s := New("s")
+	attached := msg("attached", "user", "text",
+		"look at this\n\n<attached-files>\n- report.pdf (application/pdf, 2 KB, artefact a1): /tmp/report.pdf\n</attached-files>\n")
+	quoted := msg("quoted", "user", "text", "what does <attached-files>report</attached-files> mean")
+	resumed := msg("resumed", "user", "text", "pick the report back up")
+	resumed.TurnID = "t2"
+	asked := msg("asked", "user", "text", "write the report")
+	asked.TurnID = "t1"
+	s.Turns = []Turn{{ID: "t1"}, {ID: "t2", Recovery: &proto.TurnRecovery{}}}
+	s.Items = []Item{attached, quoted, asked, resumed}
+
+	got, _ := s.Search("report", 0)
+	if ids := matchIDs(got); !slices.Equal(ids, []string{"quoted", "asked"}) {
+		t.Fatalf("report matched %v", ids)
+	}
+	got, _ = s.Search("look at", 0)
+	if ids := matchIDs(got); !slices.Equal(ids, []string{"attached"}) {
+		t.Fatalf("the prompt's own words matched %v", ids)
+	}
+}
