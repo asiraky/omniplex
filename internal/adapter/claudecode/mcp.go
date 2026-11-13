@@ -381,7 +381,7 @@ func (s *session) MCPStatus(ctx context.Context) ([]adapter.MCPServerStatus, err
 	var res struct {
 		Servers []adapter.MCPServerStatus `json:"servers"`
 	}
-	if err := s.conn.Call(ctx, "mcpStatus", map[string]any{}, &res); err != nil {
+	if err := s.rpc().Call(ctx, "mcpStatus", map[string]any{}, &res); err != nil {
 		return nil, err
 	}
 	return mcpStatuses(res.Servers), nil
@@ -411,7 +411,7 @@ func mcpStatuses(in []adapter.MCPServerStatus) []adapter.MCPServerStatus {
 // included, and has it reconnect. The definition crosses the bridge's stdin,
 // never a command line.
 func (s *session) ReconnectMCP(ctx context.Context, server adapter.MCPServer) error {
-	return s.conn.Call(ctx, "reconnectMcp", map[string]any{
+	return s.rpc().Call(ctx, "reconnectMcp", map[string]any{
 		"name":   server.Name,
 		"server": sdkServerConfig(server),
 	}, nil)

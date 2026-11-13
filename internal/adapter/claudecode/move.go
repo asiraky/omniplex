@@ -34,6 +34,11 @@ func (a *Adapter) MoveConversation(from, to map[string]string, cwd, id string) e
 	if src == dst {
 		return nil
 	}
+	// A rewound conversation not yet written is rebuilt from the one it was
+	// cut from, so that is what has to be under the other account.
+	if id = parseConversation(id).moveID(src, cwd); id == "" {
+		return nil
+	}
 	file, err := findConversation(src, cwd, id)
 	if err != nil || file == "" {
 		return err
