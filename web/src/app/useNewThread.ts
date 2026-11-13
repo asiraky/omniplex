@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 
 import { uuid } from "~/client";
-import type { NewThreadInput } from "~/components/ThreadDraft";
+import type { CompareRun, NewThreadInput } from "~/components/ThreadDraft";
 import { sendPayload, type Attachment } from "~/lib/attachments";
 import { toast } from "~/lib/toast";
 
@@ -112,5 +112,67 @@ export function useNewThread({
       setDraft,
       uploadInto,
     ],
+  );
+}
+
+const reason = (r: PromiseRejectedResult) =>
+  r.reason instanceof Error ? r.reason.message : String(r.reason);
+
+/**
+ * Starting one thread per model from the same prompt. Every create goes at
+ * once, so the set costs one round trip rather than one per model. The first
+ * run is the draft's own model; the first that started, in run order, opens.
+ * Files and schedules never come this way: the draft blocks them.
+ */
+export function useCompareThreads({
+  wire,
+  store,
+  select,
+}: {
+  wire: Wire;
+  store: ComposerDrafts;
+  select: (id: string) => void;
+}) {
+  const { clientRef } = wire;
+  const { setDraft } = store;
+  return useCallback(
+    async (runs: CompareRun[]) => {
+      const client = clientRef.current!;
+      const results = await Promise.allSettled(
+        runs.map((r) => client.command("create_thread", r.input)),
+      );
+      const failed = results.flatMap((r, i) =>
+        r.status === "rejected" ? [{ r, run: runs[i] }] : [],
+      );
+      const started = results.flatMap((r, i) => {
+        if (r.status !== "fulfilled") return [];
+        const { threadId, promptError } = r.value as { threadId: string; promptError?: string };
+        return [{ threadId, promptError, run: runs[i] }];
+      });
+      // None went: the draft restores its text and shows why, as for one.
+      if (!started.length) throw new Error(reason(failed[0].r));
+
+      setDraft(NEW_THREAD, "");
+      select(started[0].threadId);
+      if (started.length > 1) toast.success(`Started ${started.length} threads`);
+      if (failed.length) {
+        toast.error(`Didn't start: ${failed.map((f) => f.run.label).join(", ")}`, {
+          description: reason(failed[0].r),
+        });
+      }
+      // Those threads exist but their message did not go: it waits in each
+      // one's composer rather than being lost.
+      const unsent = started.filter((s) => s.promptError);
+      for (const s of unsent) setDraft(s.threadId, s.run.input.text);
+      if (unsent.length) {
+        toast.error(
+          started.length === 1
+            ? "The thread started, but the message did not send"
+            : `The message did not send to ${unsent.map((s) => s.run.label).join(", ")}`,
+          { description: unsent[0].promptError },
+        );
+      }
+    },
+    [clientRef, select, setDraft],
   );
 }
