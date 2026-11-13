@@ -387,7 +387,12 @@ function settleRequests(
 // (State.RewindAt). A turn that starts above the window takes the whole window
 // with it; paging older items then carries on from `at`.
 function rewind(s: ThreadState, turnId: string, at: number): ThreadState {
-  const first = s.items.findIndex((it) => it.turnId === turnId);
+  const i = s.turns.findIndex((t) => t.id === turnId);
+  const removed = new Set(i < 0 ? [turnId] : s.turns.slice(i).map((t) => t.id));
+  // The turn's own first item, else (a turn that wrote none) the first of a
+  // turn after it, as the server's cut falls.
+  let first = s.items.findIndex((it) => it.turnId === turnId);
+  if (first < 0) first = s.items.findIndex((it) => !!it.turnId && removed.has(it.turnId));
   const before = s.itemsBefore ?? 0;
   let items = s.items;
   let itemsBefore = s.itemsBefore;
@@ -397,9 +402,7 @@ function rewind(s: ThreadState, turnId: string, at: number): ThreadState {
   } else if (first >= 0) {
     items = s.items.slice(0, first);
   }
-  const i = s.turns.findIndex((t) => t.id === turnId);
   if (i < 0) return { ...s, items, itemsBefore };
-  const removed = new Set(s.turns.slice(i).map((t) => t.id));
   return {
     ...s,
     items,

@@ -1033,6 +1033,22 @@ describe("a rewind", () => {
     expect(s.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
   });
 
+  it("cuts a turn that wrote nothing at the first item of a turn after it", () => {
+    const s0 = replay(
+      turn(1, "t1"),
+      reply(2, "t1"),
+      finish(3, "t1", { rewindable: true }),
+      ev(4, "turn.started", { turnId: "t2" }),
+      finish(5, "t2", { rewindable: true }),
+      turn(6, "t3"),
+      reply(7, "t3"),
+      finish(8, "t3", { rewindable: true }),
+    );
+    const s = applyEvent(s0, ev(9, "thread.rewound", { turnId: "t2", at: 2 }));
+    expect(ids(s)).toEqual(["prompt:t1", "m-t1"]);
+    expect(s.turns.map((t) => t.id)).toEqual(["t1"]);
+  });
+
   it("clears a window that starts below the cut, and pages on from `at`", () => {
     // Only t3's items are loaded; t2 starts above the window.
     const full = threeTurns();
