@@ -36,22 +36,23 @@ func (s *State) Search(q string, limit int) (matches []Match, total int) {
 		return []Match{}, 0
 	}
 	needle := strings.ToLower(q)
-	recovered := map[string]bool{}
+	serverPrompted := map[string]bool{}
 	for _, t := range s.Turns {
 		if t.Recovery != nil {
-			recovered[t.ID] = true
+			serverPrompted[t.ID] = true
 		}
 	}
 	// The continuation armed at a usage limit is the server's prompt too; the
-	// schedule that sent it names its turn.
+	// schedule that sent it names its turn. The client's rule is recoveredTurns
+	// in web/src/components/transcript/useTranscriptModel.ts.
 	for _, p := range s.Scheduled {
 		if p.Kind == proto.ScheduleLimit && p.Status == "sent" && p.TurnID != "" {
-			recovered[p.TurnID] = true
+			serverPrompted[p.TurnID] = true
 		}
 	}
 	var hits []int
 	for i := range s.Items {
-		if itemMatches(&s.Items[i], needle, recovered) {
+		if itemMatches(&s.Items[i], needle, serverPrompted) {
 			hits = append(hits, i)
 		}
 	}
@@ -67,9 +68,9 @@ func (s *State) Search(q string, limit int) (matches []Match, total int) {
 }
 
 // itemMatches reports whether it is a searchable item whose text holds
-// needle, which is already lower-cased. recovered holds the ids of turns the
-// server started itself.
-func itemMatches(it *Item, needle string, recovered map[string]bool) bool {
+// needle, which is already lower-cased. serverPrompted holds the ids of turns
+// the server started itself.
+func itemMatches(it *Item, needle string, serverPrompted map[string]bool) bool {
 	if it.ParentID != "" {
 		return false
 	}
@@ -81,7 +82,7 @@ func itemMatches(it *Item, needle string, recovered map[string]bool) bool {
 		case it.Role == "agent":
 			return containsFold(it.Text, needle)
 		case it.Role == "user":
-			return !recovered[it.TurnID] && containsFold(withoutAttachedFiles(it.Text), needle)
+			return !serverPrompted[it.TurnID] && containsFold(withoutAttachedFiles(it.Text), needle)
 		}
 	case ItemPlan:
 		if containsFold(it.Explanation, needle) {
