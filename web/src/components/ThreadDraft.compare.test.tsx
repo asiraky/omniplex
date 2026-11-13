@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { preloadLazyLists } from "~/test/lazyLists";
 
 import { createDraftStore } from "~/app/draftStore";
 import { NEW_THREAD } from "~/app/threadKeys";
@@ -121,6 +122,7 @@ async function send() {
 
 const gitChip = () => screen.getByRole("button", { name: /^Git/ });
 
+beforeAll(preloadLazyLists);
 beforeEach(() => localStorage.clear());
 
 beforeAll(() => {
