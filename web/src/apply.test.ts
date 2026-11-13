@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyEvent, capToolText, emptyState, prependItems, TOOL_HEAD, TOOL_MAX_ENTRIES, TOOL_MAX_TEXT, TOOL_TAIL } from "./apply";
+import { ANSWER_MAX, applyEvent, capToolText, emptyState, prependItems, TOOL_HEAD, TOOL_MAX_ENTRIES, TOOL_MAX_TEXT, TOOL_TAIL } from "./apply";
 import type { Event, Item, ThreadState } from "./protocol";
 
 function ev(seq: number, type: string, payload: Record<string, unknown>, timestamp = 0): Event {
@@ -520,10 +520,9 @@ describe("cards", () => {
     ]);
   });
 
-  it("adds no item for an ordinary question", () => {
-    const s = applyEvent(emptyState("s1"), ev(1, "elicitation.requested", { requestId: "q1", prompt: "Which?", schema: {} }));
-    expect(s.pendingElicitations).toHaveLength(1);
-    expect(s.items).toHaveLength(0);
+  it("adds no question item for a card", () => {
+    const s = applyEvent(emptyState("s1"), requested(1, "r1"));
+    expect(s.items.map((it) => it.id)).toEqual(["card:r1"]);
   });
 
   it("settles the card item with the outcome and drops the pending request", () => {
@@ -681,6 +680,215 @@ describe("turn.finished settles the turn's requests", () => {
 
     expect(s.pendingPermissions.map((x) => x.requestId)).toEqual(["p-untagged"]);
     expect(s.pendingElicitations.map((x) => x.requestId)).toEqual(["q-untagged"]);
+  });
+});
+
+// These mirror the approval and question records in
+// internal/projection/state_test.go.
+describe("approval records", () => {
+  // A turn with one running tool call, c1.
+  function withCall() {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "tool_call.started", { turnId: "t1", toolCallId: "c1", kind: "execute", title: "rm", status: "pending" }));
+    return s;
+  }
+  const ask = (seq: number, over: Record<string, unknown> = {}) =>
+    ev(seq, "permission.requested", { requestId: "p1", turnId: "t1", toolCallId: "c1", title: "Run rm", ...over }, 7000);
+
+  it("marks the tool call it names pending, keeping every other item's identity", () => {
+    const before = withCall();
+    const s = applyEvent(before, ask(3));
+    expect(s.items.map((it) => it.id)).toEqual(["prompt:t1", "c1"]);
+    expect(s.items[1].approval).toBe("pending");
+    expect(s.items[0]).toBe(before.items[0]);
+    expect(before.items[1].approval).toBeUndefined();
+    expect(s.pendingPermissions.map((x) => x.requestId)).toEqual(["p1"]);
+  });
+
+  it.each([
+    ["allow_once", "allowed"],
+    ["allow_always", "allowed_always"],
+    ["reject_once", "denied"],
+    ["reject_always", "denied"],
+    ["cancelled", "cancelled"],
+  ])("records %s on the tool call as %s", (outcome, approval) => {
+    let s = applyEvent(withCall(), ask(3));
+    s = applyEvent(s, ev(4, "permission.resolved", { requestId: "p1", outcome }));
+    expect(s.items.find((it) => it.id === "c1")!.approval).toBe(approval);
+    expect(s.pendingPermissions).toEqual([]);
+  });
+
+  it.each([
+    ["no tool call id", ""],
+    ["a tool call not held", "c-missing"],
+  ])("adds a standalone item for %s, and settles it there", (_, toolCallId) => {
+    let s = applyEvent(withCall(), ask(3, { toolCallId }));
+    expect(s.items.find((it) => it.id === "c1")!.approval).toBeUndefined();
+    expect(s.items.at(-1)).toEqual({
+      id: "approval:p1",
+      kind: "approval",
+      turnId: "t1",
+      receivedAt: 7000,
+      title: "Run rm",
+      approval: "pending",
+    });
+    s = applyEvent(s, ev(4, "permission.resolved", { requestId: "p1", outcome: "allow_once" }));
+    expect(s.items.at(-1)!.approval).toBe("allowed");
+  });
+
+  it("leaves turnId off a standalone item for a request naming no turn", () => {
+    const s = applyEvent(emptyState("s1"), ask(1, { toolCallId: "", turnId: undefined }));
+    expect(s.items[0]).not.toHaveProperty("turnId");
+  });
+
+  it("never appends an item on resolve", () => {
+    const before = withCall();
+    const s = applyEvent(before, ev(3, "permission.resolved", { requestId: "p-old", outcome: "allow_once" }));
+    expect(s.items).toBe(before.items);
+
+    // Nor when the record was paged out after the request.
+    let paged = applyEvent(before, ask(3, { toolCallId: "" }));
+    paged = { ...paged, items: paged.items.filter((it) => it.id !== "approval:p1"), itemsBefore: 1 };
+    const resolved = applyEvent(paged, ev(4, "permission.resolved", { requestId: "p1", outcome: "allow_once" }));
+    expect(resolved.items.map((it) => it.id)).toEqual(["prompt:t1", "c1"]);
+  });
+
+  it("cancels a pending approval when its turn finishes, leaving a resolved one", () => {
+    let s = withCall();
+    s = applyEvent(s, ask(3));
+    s = applyEvent(s, ask(4, { requestId: "p2", toolCallId: "" }));
+    s = applyEvent(s, ask(5, { requestId: "p3", toolCallId: "" }));
+    s = applyEvent(s, ev(6, "permission.resolved", { requestId: "p3", outcome: "reject_once" }));
+    s = applyEvent(s, ev(7, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+    expect(s.items.map((it) => [it.id, it.approval])).toEqual([
+      ["prompt:t1", undefined],
+      ["c1", "cancelled"],
+      ["approval:p2", "cancelled"],
+      ["approval:p3", "denied"],
+    ]);
+    // The tool call itself is still settled as the turn's, approval and all.
+    expect(s.items[1].status).toBe("cancelled");
+  });
+});
+
+describe("question records", () => {
+  const ask = (seq: number, over: Record<string, unknown> = {}) =>
+    ev(seq, "elicitation.requested", { requestId: "q1", turnId: "t1", prompt: "Pick one", schema: {}, ...over }, 8000);
+  const answer = (seq: number, value: unknown, action = "accept") =>
+    ev(seq, "elicitation.resolved", { requestId: "q1", action, value });
+  const fields = (properties: Record<string, unknown>) => ({ schema: { type: "object", properties } });
+
+  it("adds a pending question item for a prompt with no fields", () => {
+    const s = applyEvent(emptyState("s1"), ask(1));
+    expect(s.items).toEqual([
+      { id: "question:q1", kind: "question", turnId: "t1", receivedAt: 8000, status: "pending", questions: [{ key: "", question: "Pick one" }] },
+    ]);
+    expect(s.pendingElicitations).toHaveLength(1);
+  });
+
+  it("asks each field by its title, else its description, else the prompt, else its name", () => {
+    let s = applyEvent(
+      emptyState("s1"),
+      ask(1, fields({ a: { title: "A?", description: "ignored" }, b: { description: "B?" }, c: { type: "string" } })),
+    );
+    expect(s.items[0].questions!.map((q) => [q.key, q.question])).toEqual([
+      ["a", "A?"],
+      ["b", "B?"],
+      ["c", "Pick one"],
+    ]);
+    s = applyEvent(emptyState("s1"), ask(1, { prompt: "", ...fields({ c: {} }) }));
+    expect(s.items[0].questions![0].question).toBe("c");
+  });
+
+  it("records each answer under its question, formatted", () => {
+    let s = applyEvent(emptyState("s1"), ask(1, fields({ name: {}, ok: {}, no: {}, n: {}, tags: {}, obj: {}, none: {}, empty: {} })));
+    s = applyEvent(
+      s,
+      answer(2, { name: "Ada", ok: true, no: false, n: 1.5, tags: ["x", 2, true], obj: { a: [1, 2] }, none: null, empty: "" }),
+    );
+    expect(s.items[0].status).toBe("answered");
+    expect(Object.fromEntries(s.items[0].questions!.map((q) => [q.key, q.answer]))).toEqual({
+      name: "Ada",
+      ok: "Yes",
+      no: "No",
+      n: "1.5",
+      tags: "x, 2, Yes",
+      obj: '{"a":[1,2]}',
+      none: undefined,
+      empty: undefined,
+    });
+    expect(s.items[0].questions!.find((q) => q.key === "empty")).not.toHaveProperty("answer");
+  });
+
+  it("takes a bare value as the answer to a prompt with no fields", () => {
+    const s = applyEvent(applyEvent(emptyState("s1"), ask(1)), answer(2, "left"));
+    expect(s.items[0].questions).toEqual([{ key: "", question: "Pick one", answer: "left" }]);
+  });
+
+  it(`caps an answer at ${ANSWER_MAX} code points, never splitting one`, () => {
+    const at = applyEvent(applyEvent(emptyState("s1"), ask(1)), answer(2, "a".repeat(ANSWER_MAX)));
+    expect(at.items[0].questions![0].answer).toBe("a".repeat(ANSWER_MAX));
+
+    const over = applyEvent(applyEvent(emptyState("s1"), ask(1)), answer(2, "a".repeat(ANSWER_MAX + 1)));
+    expect(over.items[0].questions![0].answer).toBe("a".repeat(ANSWER_MAX - 1) + "…");
+
+    // An astral-plane character is one code point but two UTF-16 units.
+    const emoji = applyEvent(applyEvent(emptyState("s1"), ask(1)), answer(2, "😀".repeat(ANSWER_MAX + 5)));
+    const got = emoji.items[0].questions![0].answer!;
+    expect(Array.from(got)).toHaveLength(ANSWER_MAX);
+    expect(got).toBe("😀".repeat(ANSWER_MAX - 1) + "…");
+  });
+
+  it.each([
+    ["decline", "declined"],
+    ["cancel", "cancelled"],
+  ])("records a %s as %s with no answers", (action, status) => {
+    let s = applyEvent(emptyState("s1"), ask(1, fields({ name: {} })));
+    s = applyEvent(s, answer(2, { name: "Ada" }, action));
+    expect(s.items[0].status).toBe(status);
+    expect(s.items[0].questions).toEqual([{ key: "name", question: "Pick one" }]);
+    expect(s.pendingElicitations).toEqual([]);
+  });
+
+  it("never stores any part of a secret answer", () => {
+    const secret = "hunter2-very-secret-token";
+    let s = applyEvent(
+      emptyState("s1"),
+      ask(1, fields({ user: { title: "User" }, pass: { title: "Password", format: "password" }, key: { title: "Key", writeOnly: true } })),
+    );
+    expect(s.items[0].questions!.map((q) => [q.key, !!q.secret])).toEqual([
+      ["user", false],
+      ["pass", true],
+      ["key", true],
+    ]);
+    expect(s.items[0].questions![0]).not.toHaveProperty("secret");
+    s = applyEvent(s, answer(2, { user: "ada", pass: secret, key: secret }));
+    expect(s.items[0].status).toBe("answered");
+    expect(s.items[0].questions!.map((q) => q.answer)).toEqual(["ada", undefined, undefined]);
+    const items = JSON.stringify(s.items);
+    for (const part of [secret, "hunter2", "secret-token"]) expect(items).not.toContain(part);
+  });
+
+  it("cancels a pending question when its turn finishes, leaving an answered one", () => {
+    let s = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ask(2));
+    s = applyEvent(s, ask(3, { requestId: "q2" }));
+    s = applyEvent(s, ev(4, "elicitation.resolved", { requestId: "q2", action: "accept", value: "yes" }));
+    const before = s;
+    s = applyEvent(s, ev(5, "turn.finished", { turnId: "t1", stopReason: "cancelled" }));
+    expect(s.items.map((it) => [it.id, it.status])).toEqual([
+      ["prompt:t1", undefined],
+      ["question:q1", "cancelled"],
+      ["question:q2", "answered"],
+    ]);
+    expect(s.items[0]).toBe(before.items[0]);
+    expect(s.items[2]).toBe(before.items[2]);
+  });
+
+  it("does not append a question item on resolve", () => {
+    const before = applyEvent(emptyState("s1"), ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    const s = applyEvent(before, ev(2, "elicitation.resolved", { requestId: "q-old", action: "accept", value: "x" }));
+    expect(s.items).toBe(before.items);
   });
 });
 

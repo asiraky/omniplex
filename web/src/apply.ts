@@ -3,6 +3,7 @@
 // here must reach the same state the server holds.
 
 import type {
+  Approval,
   Artefact,
   CardOutcome,
   Event,
@@ -10,6 +11,8 @@ import type {
   Item,
   Job,
   JobPayload,
+  PendingElicitation,
+  QuestionAnswer,
   ThreadState,
   ToolContent,
   TurnDiff,
@@ -368,18 +371,31 @@ function imageTitle(n: number): string {
 
 // The permissions and questions a finished turn was blocked on are dropped:
 // the harness stopped waiting once its turn was over. A request naming no turn
-// is left alone, and so are cards, which outlive the turn. Mirrors
+// is left alone, and so are cards, which outlive the turn. The record of each
+// one dropped while still pending reads cancelled. Mirrors
 // internal/projection/state.go.
 function settleRequests(
   s: ThreadState,
   turnId: string | undefined,
-): Pick<ThreadState, "pendingPermissions" | "pendingElicitations"> {
+): Pick<ThreadState, "pendingPermissions" | "pendingElicitations" | "items"> {
   const pendingPermissions = s.pendingPermissions;
   const pendingElicitations = s.pendingElicitations ?? [];
-  if (!turnId) return { pendingPermissions, pendingElicitations };
+  if (!turnId) return { pendingPermissions, pendingElicitations, items: s.items };
+  let items = s.items;
+  for (const x of pendingPermissions) {
+    if (x.turnId !== turnId) continue;
+    const i = approvalTarget(items, x.requestId, x.toolCallId);
+    if (i >= 0 && items[i].approval === "pending") items = replaceAt(items, i, { ...items[i], approval: "cancelled" });
+  }
+  for (const x of pendingElicitations) {
+    if (x.card || x.turnId !== turnId) continue;
+    const i = items.findIndex((it) => it.id === `question:${x.requestId}`);
+    if (i >= 0 && items[i].status === "pending") items = replaceAt(items, i, { ...items[i], status: "cancelled" });
+  }
   return {
     pendingPermissions: pendingPermissions.filter((x) => x.turnId !== turnId),
     pendingElicitations: pendingElicitations.filter((x) => x.card || x.turnId !== turnId),
+    items,
   };
 }
 
@@ -417,6 +433,81 @@ function rewind(s: ThreadState, turnId: string, at: number): ThreadState {
     turns: s.turns.slice(0, i),
     jobs: s.jobs.filter((j) => !j.turnId || !removed.has(j.turnId)),
   };
+}
+
+function replaceAt(items: Item[], i: number, it: Item): Item[] {
+  const next = items.slice();
+  next[i] = it;
+  return next;
+}
+
+// Where a permission request's record lives: its standalone item if this
+// window holds one, else the tool call it named. -1 when neither is held: one
+// paged out is updated on the server. Mirrors internal/projection/state.go.
+function approvalTarget(items: Item[], requestId: string, toolCallId: string | undefined): number {
+  const i = items.findIndex((it) => it.id === `approval:${requestId}`);
+  if (i >= 0 || !toolCallId) return i;
+  return items.findIndex((it) => it.id === toolCallId && it.kind === "tool");
+}
+
+function approvalOutcome(outcome: string | undefined): Approval {
+  switch (outcome) {
+    case "allow_once":
+      return "allowed";
+    case "allow_always":
+      return "allowed_always";
+    case "reject_once":
+    case "reject_always":
+      return "denied";
+    default:
+      return "cancelled";
+  }
+}
+
+// A question item asks what the schema's fields ask, in order; a schema with
+// no fields is the prompt alone. A masked field is marked so its answer is
+// never recorded. Mirrors internal/projection/state.go.
+function questionsOf(prompt: string, schema: PendingElicitation["schema"]): QuestionAnswer[] {
+  const fields = Object.entries(schema?.properties ?? {});
+  if (!fields.length) return [{ key: "", question: prompt }];
+  return fields.map(([key, f]) => ({
+    key,
+    question: f?.title || f?.description || prompt || key,
+    ...(f?.format === "password" || f?.writeOnly === true ? { secret: true } : {}),
+  }));
+}
+
+// How long a recorded answer may be, in code points. The record says what was
+// decided; the full value stays with the harness.
+export const ANSWER_MAX = 280;
+
+/** An answer as the record shows it, capped at ANSWER_MAX code points, or
+    undefined when there is nothing to show. Mirrors
+    internal/projection/state.go. */
+function formatAnswer(v: unknown): string | undefined {
+  const s = answerText(v);
+  if (!s) return undefined;
+  const cps = Array.from(s);
+  return cps.length > ANSWER_MAX ? cps.slice(0, ANSWER_MAX - 1).join("") + "…" : s;
+}
+
+function answerText(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "string") return v;
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (typeof v === "number") return String(v);
+  if (Array.isArray(v)) return v.flatMap((x) => answerText(x) ?? []).join(", ");
+  return JSON.stringify(v);
+}
+
+function answered(q: QuestionAnswer, value: unknown): QuestionAnswer {
+  // Not a character of a secret goes on the record.
+  if (q.secret) return q;
+  let v: unknown;
+  if (q.key === "") v = typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : undefined;
+  else if (value && typeof value === "object" && !Array.isArray(value)) v = (value as Record<string, unknown>)[q.key];
+  const answer = formatAnswer(v);
+  return answer === undefined ? q : { ...q, answer };
 }
 
 export function applyEvent(state: ThreadState, ev: Event): ThreadState {
@@ -593,9 +684,10 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       const open = s.turns.reduce<string>((acc, t) => (t.done ? acc : t.id), "");
       const match = open === "" || p.turnId === open;
       const live = liveJobCalls(s.jobs);
+      const settled = settleRequests(s, p.turnId);
       return {
         ...s,
-        ...settleRequests(s, p.turnId),
+        ...settled,
         phase: match ? "idle" : s.phase,
         scheduledPrompts: (s.scheduledPrompts ?? []).map(q => q.turnId === p.turnId && p.stopReason === "error" ? {...q, status: "failed", error: p.error, revision: q.revision + 1} : q),
         turns: s.turns.map((t) =>
@@ -621,13 +713,13 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         // running. Tools of other turns are left alone too. Mirrors
         // internal/projection/state.go.
         items: match
-          ? s.items.map((it) => {
+          ? settled.items.map((it) => {
               if (it.kind !== "tool" || (it.turnId !== p.turnId && it.turnId)) return it;
               if (it.parentId && live.has(it.parentId)) return it;
               if (live.has(it.id)) return "tail" in it ? dropTail(it) : it;
               return it.status === "in_progress" || it.status === "pending" ? settle(it, "cancelled") : it;
             })
-          : s.items,
+          : settled.items,
       };
     }
 
@@ -847,28 +939,52 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
     case "extension.status":
       return { ...s, extensionStatuses: applyExtensionStatus(s.extensionStatuses ?? [], p.key, p.text ?? "") };
 
-    case "permission.requested":
+    case "permission.requested": {
+      const pendingPermissions = [
+        ...s.pendingPermissions,
+        {
+          requestId: p.requestId,
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          title: p.title,
+          input: p.rawInput,
+          options: p.options ?? [],
+          ...(p.turnId ? { turnId: p.turnId } : {}),
+        },
+      ];
+      // The record goes on the tool call the request names. One this window
+      // does not hold (no id, or the call has not arrived) gets a standalone
+      // item where it was raised. Mirrors internal/projection/state.go.
+      const i = p.toolCallId ? s.items.findIndex((it) => it.id === p.toolCallId && it.kind === "tool") : -1;
+      if (i >= 0) {
+        return { ...s, pendingPermissions, items: replaceAt(s.items, i, { ...s.items[i], approval: "pending" }) };
+      }
       return {
         ...s,
-        pendingPermissions: [
-          ...s.pendingPermissions,
-          {
-            requestId: p.requestId,
-            toolCallId: p.toolCallId,
-            toolName: p.toolName,
-            title: p.title,
-            input: p.rawInput,
-            options: p.options ?? [],
-            ...(p.turnId ? { turnId: p.turnId } : {}),
-          },
-        ],
+        pendingPermissions,
+        items: upsert(s, `approval:${p.requestId}`, (it) => {
+          it.kind = "approval";
+          if (p.turnId) it.turnId = p.turnId;
+          it.receivedAt ??= ev.timestamp;
+          it.title = p.title;
+          it.approval = "pending";
+        }),
       };
+    }
 
-    case "permission.resolved":
+    case "permission.resolved": {
+      const pending = s.pendingPermissions.find((x) => x.requestId === p.requestId);
+      const pendingPermissions = s.pendingPermissions.filter((x) => x.requestId !== p.requestId);
+      // Never an append: a record paged out is updated on the server, as for
+      // elicitation.resolved below.
+      const i = approvalTarget(s.items, p.requestId, pending?.toolCallId);
+      if (i < 0) return { ...s, pendingPermissions };
       return {
         ...s,
-        pendingPermissions: s.pendingPermissions.filter((x) => x.requestId !== p.requestId),
+        pendingPermissions,
+        items: replaceAt(s.items, i, { ...s.items[i], approval: approvalOutcome(p.outcome) }),
       };
+    }
 
     case "elicitation.requested": {
       const pendingElicitations = [
@@ -881,7 +997,21 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
           ...(p.card ? { card: p.card } : {}),
         },
       ];
-      if (!p.card) return { ...s, pendingElicitations };
+      // A question is a row in the transcript too: the record of what was
+      // asked, answered from the composer. Mirrors internal/projection/state.go.
+      if (!p.card) {
+        return {
+          ...s,
+          pendingElicitations,
+          items: upsert(s, `question:${p.requestId}`, (it) => {
+            it.kind = "question";
+            if (p.turnId) it.turnId = p.turnId;
+            it.receivedAt ??= ev.timestamp;
+            it.status = "pending";
+            it.questions = questionsOf(p.prompt ?? "", p.schema ?? {});
+          }),
+        };
+      }
       // A card is also a row in the transcript, where it stays once answered
       // to say what was done. Mirrors internal/projection/state.go.
       return {
@@ -899,6 +1029,14 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
 
     case "elicitation.resolved": {
       const pendingElicitations = (s.pendingElicitations ?? []).filter((x) => x.requestId !== p.requestId);
+      const qi = s.items.findIndex((it) => it.id === `question:${p.requestId}`);
+      if (qi >= 0) {
+        // Only a question this window holds, for the reason below.
+        const q = s.items[qi];
+        const status = p.action === "accept" ? "answered" : p.action === "decline" ? "declined" : "cancelled";
+        const questions = p.action === "accept" ? q.questions?.map((x) => answered(x, p.value)) : q.questions;
+        return { ...s, pendingElicitations, items: replaceAt(s.items, qi, { ...q, status, questions }) };
+      }
       const id = `card:${p.requestId}`;
       // Only a card row this window holds: one paged out is updated on the
       // server, and an upsert here would append an orphan at the tail.
