@@ -30,7 +30,14 @@ async function openFromTerminal(cwd: string) {
   const panel = { loaded: true, openPath } as unknown as PanelControls;
   render(
     <ThreadStoreContext.Provider value={createThreadStore({ cwd } as ThreadState)}>
-      <ThreadPanel clientRef={{ current: null }} threadId="t1" panel={panel} pr={null} onAddToChat={() => {}} />
+      <ThreadPanel
+        clientRef={{ current: null }}
+        threadId="t1"
+        panel={panel}
+        pr={null}
+        onAddToChat={() => {}}
+        onAddComment={() => {}}
+      />
     </ThreadStoreContext.Provider>,
   );
   await waitFor(() => expect(panelProps.onOpenPath).toBeDefined());

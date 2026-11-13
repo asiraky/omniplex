@@ -1,6 +1,8 @@
 // Turning terminal output into something to say in a chat: a selection, or
 // the last few lines of the buffer, as a fenced block the agent reads verbatim.
 
+import { fence } from "./fence";
+
 /**
  * Terminal output as a block to put in a chat composer: CRLF→LF, trailing whitespace stripped per
  * line, leading/trailing blank lines dropped, wrapped in a Markdown code fence longer than any
@@ -16,13 +18,7 @@ export function quoteTerminalOutput(text: string): string {
   while (first < last && lines[first] === "") first++;
   while (last > first && lines[last - 1] === "") last--;
   if (first === last) return "";
-  const body = lines.slice(first, last).join("\n");
-  // A fence closes on a backtick run at least as long as itself, so it must
-  // outrun anything the output already contains.
-  let longest = 0;
-  for (const m of body.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
-  const fence = "`".repeat(Math.max(3, longest + 1));
-  return `${fence}\n${body}\n${fence}`;
+  return fence(lines.slice(first, last).join("\n"));
 }
 
 /**

@@ -23,7 +23,10 @@ import {
   useDiffSplit,
   useDiffWrap,
 } from "~/lib/diffPrefs";
+import type { DiffLine } from "~/lib/patch";
+import { reviewComment } from "~/lib/reviewComment";
 import { isTestPath } from "~/lib/testPath";
+import { toast } from "~/lib/toast";
 import { cn } from "~/lib/utils";
 import type {
   BranchCommits,
@@ -93,6 +96,7 @@ function FileRow({
   layout,
   highlight,
   onToggle,
+  onAddComment,
 }: {
   file: ChangedFile;
   rowRef?: (el: HTMLDivElement | null) => void;
@@ -104,10 +108,21 @@ function FileRow({
   layout: "unified" | "split";
   highlight?: string;
   onToggle: () => void;
+  onAddComment?: (block: string) => void;
 }) {
   const slash = file.path.lastIndexOf("/");
   const dir = slash === -1 ? "" : file.path.slice(0, slash + 1);
   const name = slash === -1 ? file.path : file.path.slice(slash + 1);
+
+  // An old-side number is a line of the file under its old name, so a renamed
+  // file's removed lines cite that name.
+  const commentLine = onAddComment
+    ? ({ line, side }: { line: DiffLine; side: "old" | "new" }, comment: string) => {
+        const path = side === "old" ? (file.oldPath ?? file.path) : file.path;
+        onAddComment(reviewComment(path, line, side, comment));
+        toast.success("Added to the composer");
+      }
+    : undefined;
 
   return (
     <div ref={rowRef} className="border-b last:border-b-0">
@@ -157,7 +172,13 @@ function FileRow({
                 </p>
               ) : (
                 <>
-                  <Diff patch={diff.patch} wrap={wrap} layout={layout} highlight={highlight} />
+                  <Diff
+                    patch={diff.patch}
+                    wrap={wrap}
+                    layout={layout}
+                    highlight={highlight}
+                    onCommentLine={commentLine}
+                  />
                   {diff.truncated && (
                     <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
                       Diff truncated — open the file in the worktree to see the rest.
@@ -204,6 +225,7 @@ export function DiffSurface({
   commits,
   onComparisonChange,
   pr,
+  onAddComment,
 }: {
   threadId: string;
   changes: ThreadChanges | null;
@@ -224,6 +246,8 @@ export function DiffSurface({
   commits?: CommitRange | null;
   onComparisonChange: (comparison: DiffComparison, commits?: CommitRange) => void;
   pr?: PullRequest | null;
+  /** A comment on a diff line, as a block for the composer. Unset, lines cannot be commented on. */
+  onAddComment?: (block: string) => void;
 }) {
   const desktop = useIsDesktop();
   const [wrap, setWrap] = useDiffWrap();
@@ -631,6 +655,7 @@ export function DiffSurface({
             layout={layout}
             highlight={finding ? q : undefined}
             onToggle={() => toggle(f.path)}
+            onAddComment={onAddComment}
           />
         ))}
         {changes?.truncated && (

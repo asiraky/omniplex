@@ -112,6 +112,8 @@ export interface PanelProps {
   pr?: PullRequest | null;
   /** Terminal output quoted for the composer. */
   onAddToChat?: (quoted: string) => void;
+  /** A comment on a diff line, as a block for the composer. */
+  onAddComment?: (block: string) => void;
   /** A file path clicked in a terminal's output. */
   onOpenPath?: (path: string, line?: number) => void;
 }
@@ -247,6 +249,7 @@ function PanelBody({
   onRequestRouted,
   pr,
   onAddToChat,
+  onAddComment,
   onOpenPath,
   inSheet,
 }: PanelProps & { inSheet?: boolean }) {
@@ -579,6 +582,7 @@ function PanelBody({
             commits={commits}
             onComparisonChange={changeComparison}
             pr={pr}
+            onAddComment={onAddComment}
           />
         )}
         {(active?.kind === "files" || active?.kind === "file") && (
