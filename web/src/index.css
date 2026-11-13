@@ -336,6 +336,33 @@
     }
   }
 
+  /* Live text: a band of full-strength colour sweeping across a muted label,
+     the sign that what it names is happening now. The text paints with its
+     own background, so the ellipsis of a truncated label sweeps with it.
+     Only the background moves: nothing is laid out again per frame. */
+  .shimmer {
+    background: linear-gradient(
+        90deg,
+        var(--muted-foreground) 35%,
+        var(--foreground) 50%,
+        var(--muted-foreground) 65%
+      )
+      0 0 / 250% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 2.2s linear infinite;
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+
   /* The permission card blocks the turn until answered, so it arrives with
      more presence than ordinary content. */
   .attention-in {
@@ -376,6 +403,13 @@
     .attention-in,
     .attention-ping {
       animation: none;
+    }
+
+    /* Held still, a shimmer is just its muted label. */
+    .shimmer {
+      animation: none;
+      background: none;
+      color: var(--muted-foreground);
     }
 
     /* The Radix primitives animate their own enter/exit through

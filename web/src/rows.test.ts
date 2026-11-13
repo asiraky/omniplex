@@ -178,7 +178,7 @@ describe("spawn batches", () => {
   });
 
   it("counts spawns in summaries", () => {
-    expect(summarise([spawn(), spawn(), tool()])).toBe("1 command · 2 agents");
+    expect(summarise([spawn(), spawn(), tool()])).toBe("Ran 1 command and started 2 agents");
   });
 });
 
@@ -194,8 +194,50 @@ describe("rowTurnID", () => {
 });
 
 describe("labels", () => {
-  it("summarises calls by kind", () => {
-    expect(summarise([tool(), tool(), tool({ toolKind: "read" })])).toBe("1 read · 2 commands");
+  it("summarises calls as a sentence, grouped by verb", () => {
+    expect(summarise([tool(), tool(), tool({ toolKind: "read" })])).toBe("Ran 2 commands and made 1 read");
+    expect(summarise([tool(), tool(), ...[1, 2, 3].map(() => tool({ toolKind: "edit" }))])).toBe(
+      "Ran 2 commands and made 3 edits",
+    );
+  });
+
+  it("names a single kind on its own", () => {
+    expect(summarise([tool({ toolKind: "read" })])).toBe("Made 1 read");
+    expect(summarise([tool({ toolKind: "search" }), tool({ toolKind: "search" })])).toBe("Ran 2 searches");
+  });
+
+  it("orders kinds within a clause regardless of call order", () => {
+    expect(summarise([tool({ toolKind: "search" }), tool(), tool()])).toBe("Ran 2 commands and 1 search");
+  });
+
+  it("joins three or more kinds with commas and a final and", () => {
+    const items = [
+      ...[1, 2, 3, 4].map(() => tool({ toolKind: "read" })),
+      ...[1, 2, 3].map(() => tool({ toolKind: "edit" })),
+      tool({ toolKind: "mystery" }),
+    ];
+    expect(summarise(items)).toBe("Made 4 reads, 3 edits and 1 other call");
+  });
+
+  it("joins three or more clauses the same way", () => {
+    const items = [tool({ toolKind: "agent" }), tool({ toolKind: "think" }), tool({ toolKind: "fetch" }), tool()];
+    expect(summarise(items)).toBe("Ran 1 command, made 1 fetch, thought once and started 1 agent");
+  });
+
+  it("counts thinking as once, twice, then n times", () => {
+    const think = (k: number) => Array.from({ length: k }, () => tool({ toolKind: "think" }));
+    expect(summarise(think(1))).toBe("Thought once");
+    expect(summarise(think(2))).toBe("Thought twice");
+    expect(summarise(think(3))).toBe("Thought 3 times");
+  });
+
+  it("counts unknown and missing kinds as other calls", () => {
+    expect(summarise([tool({ toolKind: "mystery" }), tool({ toolKind: undefined })])).toBe("Made 2 other calls");
+  });
+
+  it("is empty when there are no tool calls", () => {
+    expect(summarise([])).toBe("");
+    expect(summarise([msg("just talk")])).toBe("");
   });
 
   it("labels folds with measured durations", () => {

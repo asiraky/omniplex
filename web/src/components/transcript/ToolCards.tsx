@@ -317,10 +317,12 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
       >
         {live ? (
           <>
-            <Spinner className="text-primary size-3.5 shrink-0" />
             <ActiveIcon className="size-3.5 shrink-0" />
+            {/* The call happening now shimmers. Once it has finished and the
+                agent is thinking about what came back, it is history: the
+                working line under it says so, and the shimmer moves there. */}
             <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-              {active?.title || "working"}
+              <span className={cn(running(active) && "shimmer")}>{active?.title || "working"}</span>
             </span>
           </>
         ) : (

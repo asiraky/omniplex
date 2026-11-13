@@ -3,6 +3,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import type { Item, QueuedPrompt } from "~/protocol";
 import { buildRows, reuseRows, type Row } from "~/rows";
 
+import { liveActivity } from "./liveActivity";
 import type { Recovered } from "./Message";
 import type { TranscriptState } from "./transcriptState";
 
@@ -87,6 +88,12 @@ export function useTranscriptModel(
     return turn?.done ? undefined : newest.id;
   }, [ownItems, state.turns]);
 
+  // What the working line at the tail says, while a turn runs.
+  const activity = useMemo(
+    () => liveActivity(ownItems, state.turns, state.phase),
+    [ownItems, state.turns, state.phase],
+  );
+
   // Sending a prompt should not leave it jammed against the composer with the
   // answer arriving in the sliver below. The newest prompt is lifted to the top
   // of the view instead, so the reply streams into the open space under it and
@@ -152,6 +159,7 @@ export function useTranscriptModel(
   const { continuation, heldFor } = limitHold(state);
 
   return {
+    activity,
     continuation,
     heldFor,
     empty,

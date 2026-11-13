@@ -38,6 +38,7 @@ import { useOlderPages } from "./transcript/useOlderPages";
 import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";
 import { useTranscriptModel } from "./transcript/useTranscriptModel";
+import { WorkingLine } from "./transcript/WorkingLine";
 import { WorkspaceCard } from "./transcript/WorkspaceCard";
 
 // Only a turn that died shows it, which most loads of a thread never see, so
@@ -232,6 +233,7 @@ function TranscriptBody({
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
 
   const {
+    activity,
     empty,
     liveAgentId,
     lastPromptID,
@@ -309,6 +311,9 @@ function TranscriptBody({
             // a value that changes for every row whenever it does for one.
             // The changed-files card goes after the last row of the turn it
             // describes, the row whose successor belongs to a different turn.
+            // Reasoning still streaming in is previewed on the working line,
+            // and draws here in full once the agent moves past it.
+            if (row.kind === "item" && row.item === activity?.thought) return null;
             const turnID = rowTurnID(row);
             const nextTurnID = i + 1 < rows.length ? rowTurnID(rows[i + 1]) : undefined;
             const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
@@ -339,13 +344,7 @@ function TranscriptBody({
             );
           })}
 
-          {state.phase === "turn" &&
-            liveAgentId === undefined &&
-            !rows.some((r) => r.kind === "run" && r.live) && (
-              <div className="text-muted-foreground flex items-center gap-2 text-sm">
-                <Spinner className="text-primary size-3.5" /> thinking…
-              </div>
-            )}
+          {activity && <WorkingLine activity={activity} />}
           {/* Shown whatever else the tail is doing: a retry or a compaction is
               exactly when a live tool line or half-streamed text looks hung. */}
           <TurnStatusLine status={turnStatus} running={state.phase === "turn"} />
