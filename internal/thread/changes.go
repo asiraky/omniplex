@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/store"
@@ -47,9 +49,13 @@ type ThreadChanges struct {
 	BaseRef string `json:"baseRef,omitempty"`
 	// Base is the resolved merge base the diff is taken against; empty means
 	// the comparison is against the working tree's own HEAD.
-	Base      string        `json:"base,omitempty"`
-	Head      string        `json:"head,omitempty"`
-	TurnID    string        `json:"turnId,omitempty"`
+	Base   string `json:"base,omitempty"`
+	Head   string `json:"head,omitempty"`
+	TurnID string `json:"turnId,omitempty"`
+	// From and To are the oldest and newest commits a commit comparison
+	// covers, echoed so the client can tell which selection a list answers.
+	From      string        `json:"from,omitempty"`
+	To        string        `json:"to,omitempty"`
 	Files     []ChangedFile `json:"files"`
 	Additions int           `json:"additions"`
 	Deletions int           `json:"deletions"`
@@ -66,6 +72,9 @@ const (
 	// DiffTurn is one turn's own changes: the diff between the snapshots
 	// taken as it started and as it ended.
 	DiffTurn = "turn"
+	// DiffCommit is a run of the branch's own commits, from the parent of the
+	// oldest to the newest, as a reviewer stepping through history reads them.
+	DiffCommit = "commit"
 )
 
 // FileDiff is one file's unified diff, for the panel that opens beside the list.
@@ -78,10 +87,32 @@ type FileDiff struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+// DiffRequest names one comparison. Mode picks the kind; TurnID is the turn a
+// turn comparison covers, and From and To the oldest and newest commits a
+// commit comparison covers. Base and Head are the range the client's list
+// resolved to: reads against a list carry them so a list that has since moved
+// is refused rather than silently answered from a different range. Listing
+// ignores them.
+type DiffRequest struct {
+	Mode   string
+	TurnID string
+	From   string
+	To     string
+	Base   string
+	Head   string
+}
+
+// PatchOptions shape how one file's patch is rendered. They change what the
+// reader sees of a file, never which files are in the list.
+type PatchOptions struct {
+	IgnoreWhitespace bool
+	FullContext      bool
+}
+
 // ThreadChanges lists every file the thread's checkout differs by, measured
 // against the base branch it was cut from.
-func (m *Manager) ThreadChanges(ctx context.Context, threadID, mode, turnID string) (ThreadChanges, error) {
-	scope, err := m.diffScope(ctx, threadID, mode, turnID)
+func (m *Manager) ThreadChanges(ctx context.Context, threadID string, req DiffRequest) (ThreadChanges, error) {
+	scope, err := m.diffScope(ctx, threadID, req)
 	if err != nil {
 		return ThreadChanges{}, err
 	}
@@ -89,7 +120,7 @@ func (m *Manager) ThreadChanges(ctx context.Context, threadID, mode, turnID stri
 }
 
 func changesForScope(ctx context.Context, scope diffScope) (ThreadChanges, error) {
-	out := ThreadChanges{Root: scope.root, Branch: scope.branch, Mode: scope.mode, BaseRef: scope.baseRef, Base: scope.base, Head: scope.head, TurnID: scope.turnID, Files: []ChangedFile{}}
+	out := ThreadChanges{Root: scope.root, Branch: scope.branch, Mode: scope.mode, BaseRef: scope.baseRef, Base: scope.base, Head: scope.head, TurnID: scope.turnID, From: scope.from, To: scope.to, Files: []ChangedFile{}}
 	if scope.warning != "" {
 		out.Warning = scope.warning
 		return out, nil
@@ -124,36 +155,62 @@ func changesForScope(ctx context.Context, scope diffScope) (ThreadChanges, error
 	return out, nil
 }
 
-// ThreadFileDiff renders one file's unified diff. The path must be one the
-// change list reported: a thread's checkout is not a file server.
-func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, turnID, base, head string) (FileDiff, error) {
+// requestedChanges is the change list a read against the client's list is
+// answered from, refused if it is no longer the list the client is showing.
+// Anything that reads file content goes through here, so a path is only ever
+// read when that comparison really reports it.
+func (m *Manager) requestedChanges(ctx context.Context, threadID string, req DiffRequest) (ThreadChanges, error) {
 	var changes ThreadChanges
 	var err error
-	if mode == DiffPullRequest && base != "" && head != "" {
+	if req.Mode == DiffPullRequest && req.Base != "" && req.Head != "" {
 		// The list response already resolved the attached PR. Reuse that immutable
 		// commit range for its file reads instead of paying for another network
 		// lookup per expanded row.
-		scope, scopeErr := m.diffScope(ctx, threadID, DiffUncommitted, "")
+		scope, scopeErr := m.diffScope(ctx, threadID, DiffRequest{Mode: DiffUncommitted})
 		if scopeErr != nil {
-			return FileDiff{}, scopeErr
+			return ThreadChanges{}, scopeErr
+		}
+		if scope.warning != "" {
+			return ThreadChanges{}, errors.New(scope.warning)
 		}
 		m.diffMu.RLock()
 		resolved, ok := m.diffPR[threadID]
 		m.diffMu.RUnlock()
-		if !ok || resolved.base != base || resolved.head != head {
-			return FileDiff{}, errors.New("the pull request comparison changed; refresh the diff")
+		if !ok || resolved.base != req.Base || resolved.head != req.Head {
+			return ThreadChanges{}, errors.New("the pull request comparison changed; refresh the diff")
 		}
-		if _, verifyErr := runGit(ctx, scope.root, "rev-parse", "--verify", base+"^{commit}"); verifyErr != nil {
-			return FileDiff{}, errors.New("the pull request's base commit is not available locally")
+		if _, verifyErr := runGit(ctx, scope.root, "rev-parse", "--verify", req.Base+"^{commit}"); verifyErr != nil {
+			return ThreadChanges{}, errors.New("the pull request's base commit is not available locally")
 		}
-		if _, verifyErr := runGit(ctx, scope.root, "rev-parse", "--verify", head+"^{commit}"); verifyErr != nil {
-			return FileDiff{}, errors.New("the pull request's head commit is not available locally")
+		if _, verifyErr := runGit(ctx, scope.root, "rev-parse", "--verify", req.Head+"^{commit}"); verifyErr != nil {
+			return ThreadChanges{}, errors.New("the pull request's head commit is not available locally")
 		}
-		scope.mode, scope.base, scope.head = mode, base, head
+		scope.mode, scope.base, scope.head = req.Mode, req.Base, req.Head
 		changes, err = changesForScope(ctx, scope)
 	} else {
-		changes, err = m.ThreadChanges(ctx, threadID, mode, turnID)
+		changes, err = m.ThreadChanges(ctx, threadID, req)
 	}
+	if err != nil {
+		return ThreadChanges{}, err
+	}
+	// A turn's snapshots never move, so a read from the list its card seeded,
+	// which has no commit range yet, names the same commits the server does.
+	seededTurn := req.Mode == DiffTurn && req.Base == "" && req.Head == ""
+	if !seededTurn && (changes.Base != req.Base || changes.Head != req.Head) {
+		return ThreadChanges{}, errors.New("the comparison changed; refresh the diff")
+	}
+	return changes, nil
+}
+
+// fullContextLines is the context asked for when the whole file is wanted. Git
+// has no "all of it" spelling, so this is a count no reviewable file reaches;
+// the patch byte cap still bounds what a huge file can cost.
+const fullContextLines = 100000
+
+// ThreadFileDiff renders one file's unified diff. The path must be one the
+// change list reported: a thread's checkout is not a file server.
+func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path string, req DiffRequest, opts PatchOptions) (FileDiff, error) {
+	changes, err := m.requestedChanges(ctx, threadID, req)
 	if err != nil {
 		return FileDiff{}, err
 	}
@@ -167,23 +224,26 @@ func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, turn
 	if target == nil {
 		return FileDiff{}, fmt.Errorf("%q is not one of this thread's changed files", path)
 	}
-	// A turn's snapshots never move, so a read from the list its card seeded,
-	// which has no commit range yet, names the same commits the server does.
-	seededTurn := mode == DiffTurn && base == "" && head == ""
-	if !seededTurn && (changes.Base != base || changes.Head != head) {
-		return FileDiff{}, errors.New("the comparison changed; refresh the diff")
-	}
 
 	out := FileDiff{Path: target.Path, OldPath: target.OldPath, Status: target.Status, Binary: target.Binary}
 	if target.Binary {
 		return out, nil
 	}
 
+	var shape []string
+	if opts.IgnoreWhitespace {
+		shape = append(shape, "-w")
+	}
+	if opts.FullContext {
+		shape = append(shape, "-U"+strconv.Itoa(fullContextLines))
+	}
 	var args []string
 	if target.Untracked {
-		args = []string{"diff", "--no-index", "--no-color", "--", devNull, "./" + target.Path}
+		args = append([]string{"diff", "--no-index", "--no-color"}, shape...)
+		args = append(args, "--", devNull, "./"+target.Path)
 	} else {
-		args = []string{"diff", "-M", "--no-color", changes.Base}
+		args = append([]string{"diff", "-M", "--no-color"}, shape...)
+		args = append(args, changes.Base)
 		if changes.Head != "" {
 			args = append(args, changes.Head)
 		}
@@ -200,6 +260,90 @@ func (m *Manager) ThreadFileDiff(ctx context.Context, threadID, path, mode, turn
 	return out, nil
 }
 
+const (
+	// A search box, not a document: anything longer is a paste gone wrong.
+	maxFindQueryRunes = 200
+	// How much of an untracked file a search reads. Past this a file is a
+	// generated blob nobody is searching by hand, and reading all of it would
+	// let one file stall the request.
+	maxFindFileBytes = 1 << 20
+)
+
+// ThreadDiffFind names the files in a comparison whose added or removed lines
+// contain query, ignoring case and taking it literally. Unchanged context does
+// not count: the search is over what the comparison changed. Paths come back
+// in the list's order, and only paths the list reports.
+func (m *Manager) ThreadDiffFind(ctx context.Context, threadID, query string, req DiffRequest) ([]string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("a search needs something to search for")
+	}
+	if utf8.RuneCountInString(query) > maxFindQueryRunes {
+		return nil, fmt.Errorf("a search is at most %d characters", maxFindQueryRunes)
+	}
+	// Git matches -G line by line, so a line break could never match anything,
+	// and a NUL cannot be passed to git as an argument at all.
+	if strings.ContainsAny(query, "\n\r\x00") {
+		return nil, errors.New("a search must be a single line")
+	}
+	changes, err := m.requestedChanges(ctx, threadID, req)
+	if err != nil {
+		return nil, err
+	}
+
+	hit := map[string]bool{}
+	if changes.Base != "" {
+		// QuoteMeta's escapes are valid POSIX extended syntax, which is what
+		// -G compiles, so the query is matched literally.
+		args := []string{"diff", "-M", "--name-only", "-z", "-i", "-G", regexp.QuoteMeta(query), changes.Base}
+		if changes.Head != "" {
+			args = append(args, changes.Head)
+		}
+		raw, err := runGit(ctx, changes.Root, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range splitNUL(string(raw)) {
+			hit[path] = true
+		}
+	}
+	needle := []byte(strings.ToLower(query))
+	paths := []string{}
+	for _, f := range changes.Files {
+		if f.Untracked && !f.Binary {
+			if untrackedContains(filepath.Join(changes.Root, f.Path), needle) {
+				paths = append(paths, f.Path)
+			}
+			continue
+		}
+		if hit[f.Path] {
+			paths = append(paths, f.Path)
+		}
+	}
+	return paths, nil
+}
+
+// untrackedContains reports whether a file git has never seen holds needle,
+// which is already lower case. Every line of such a file is an added line, so
+// the whole file is in scope, up to the read cap. Only regular files are read:
+// a symlink's target is not part of the checkout's changes.
+func untrackedContains(path string, needle []byte) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(f, maxFindFileBytes))
+	if err != nil || bytes.IndexByte(body, 0) >= 0 {
+		return false
+	}
+	return bytes.Contains(bytes.ToLower(body), needle)
+}
+
 // devNull is git's own name for "the other side does not exist", and is spelled
 // this way on every platform git runs on, Windows included.
 const devNull = "/dev/null"
@@ -214,18 +358,31 @@ type diffScope struct {
 	base    string
 	head    string
 	turnID  string
+	from    string
+	to      string
 	warning string
 }
 
 // diffScope works out where to run Git and what to compare against. Failure to
 // find a base branch is not an error: comparing against HEAD still shows
 // everything uncommitted, which is most of what a live thread has.
-func (m *Manager) diffScope(ctx context.Context, threadID, mode, turnID string) (diffScope, error) {
+func (m *Manager) diffScope(ctx context.Context, threadID string, req DiffRequest) (diffScope, error) {
+	mode := req.Mode
 	// The turn id becomes part of a ref name, so it is checked before anything
 	// reaches git: a stray `..` or `:` would name some other ref, or none.
 	if mode == DiffTurn {
-		if err := validTurnID(turnID); err != nil {
+		if err := validTurnID(req.TurnID); err != nil {
 			return diffScope{}, err
+		}
+	}
+	// Commits are named by full object id and nothing else, for the same
+	// reason: a ref, a `~` or a range would let the client name commits the
+	// branch list never offered.
+	if mode == DiffCommit {
+		for _, sha := range []string{req.From, req.To} {
+			if err := validCommitSHA(sha); err != nil {
+				return diffScope{}, err
+			}
 		}
 	}
 	meta, err := m.store.Thread(ctx, threadID)
@@ -243,7 +400,7 @@ func (m *Manager) diffScope(ctx context.Context, threadID, mode, turnID string) 
 	if mode == "" {
 		mode = DiffUncommitted
 	}
-	if mode != DiffUncommitted && mode != DiffBranch && mode != DiffPullRequest && mode != DiffTurn {
+	if mode != DiffUncommitted && mode != DiffBranch && mode != DiffPullRequest && mode != DiffTurn && mode != DiffCommit {
 		return diffScope{}, fmt.Errorf("unknown diff mode %q", mode)
 	}
 	scope := diffScope{root: strings.TrimSpace(string(top)), mode: mode}
@@ -253,7 +410,10 @@ func (m *Manager) diffScope(ctx context.Context, threadID, mode, turnID string) 
 	}
 
 	if mode == DiffTurn {
-		return turnScope(ctx, scope, threadID, turnID), nil
+		return turnScope(ctx, scope, threadID, req.TurnID), nil
+	}
+	if mode == DiffCommit {
+		return commitScope(ctx, scope, req.From, req.To)
 	}
 
 	// A repository with no commits can still hold work; everything in it is
@@ -294,15 +454,24 @@ func (m *Manager) diffScope(ctx context.Context, threadID, mode, turnID string) 
 		return scope, nil
 	}
 
+	if ref, base := m.branchBase(ctx, scope.root, meta); base != "" {
+		scope.baseRef, scope.base = ref, base
+	}
+	return scope, nil
+}
+
+// branchBase is where the checkout's branch left its base branch: the merge
+// base with the first candidate that has one. Both are empty when no candidate
+// shares history with HEAD.
+func (m *Manager) branchBase(ctx context.Context, root string, meta store.ThreadMeta) (ref, base string) {
 	for _, candidate := range m.baseCandidates(ctx, meta) {
-		merged, err := runGit(ctx, scope.root, "merge-base", candidate, "HEAD")
+		merged, err := runGit(ctx, root, "merge-base", candidate, "HEAD")
 		if err != nil {
 			continue
 		}
-		scope.baseRef, scope.base = candidate, strings.TrimSpace(string(merged))
-		break
+		return candidate, strings.TrimSpace(string(merged))
 	}
-	return scope, nil
+	return "", ""
 }
 
 // turnScope compares the snapshot taken as a turn started with the one taken

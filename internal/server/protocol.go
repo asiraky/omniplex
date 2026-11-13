@@ -250,15 +250,42 @@ type threadArgs struct {
 	Comparison string `json:"comparison,omitempty"`
 	// TurnID picks the turn a "turn" comparison is taken over.
 	TurnID string `json:"turnId,omitempty"`
+	// From and To are the oldest and newest commits a "commit" comparison
+	// covers, as full object ids.
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+}
+
+func (a threadArgs) request() thread.DiffRequest {
+	return thread.DiffRequest{Mode: a.Comparison, TurnID: a.TurnID, From: a.From, To: a.To}
+}
+
+// diffReadArgs names a comparison plus the range the client's list resolved
+// it to, which every read against that list carries.
+type diffReadArgs struct {
+	ThreadID   string `json:"threadId"`
+	Comparison string `json:"comparison,omitempty"`
+	TurnID     string `json:"turnId,omitempty"`
+	From       string `json:"from,omitempty"`
+	To         string `json:"to,omitempty"`
+	Base       string `json:"base,omitempty"`
+	Head       string `json:"head,omitempty"`
+}
+
+func (a diffReadArgs) request() thread.DiffRequest {
+	return thread.DiffRequest{Mode: a.Comparison, TurnID: a.TurnID, From: a.From, To: a.To, Base: a.Base, Head: a.Head}
 }
 
 type fileDiffArgs struct {
-	ThreadID   string `json:"threadId"`
-	Path       string `json:"path"`
-	Comparison string `json:"comparison,omitempty"`
-	TurnID     string `json:"turnId,omitempty"`
-	Base       string `json:"base,omitempty"`
-	Head       string `json:"head,omitempty"`
+	diffReadArgs
+	Path             string `json:"path"`
+	IgnoreWhitespace bool   `json:"ignoreWhitespace,omitempty"`
+	FullContext      bool   `json:"fullContext,omitempty"`
+}
+
+type diffFindArgs struct {
+	diffReadArgs
+	Query string `json:"query"`
 }
 
 type fileTreeArgs struct {

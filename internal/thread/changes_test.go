@@ -2,6 +2,7 @@ package thread
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,7 +80,7 @@ func fileNamed(t *testing.T, files []ChangedFile, path string) ChangedFile {
 
 func TestThreadChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffBranch, "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffBranch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestThreadChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 
 func TestThreadChangesDefaultsToUncommittedWork(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, "", "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +146,14 @@ func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
 	base, head := strings.TrimSpace(string(baseRaw)), strings.TrimSpace(string(headRaw))
 	fakeGh(t, prJSON(`{"number":7,"state":"OPEN","baseRefName":"main","baseRefOid":"`+base+`","headRefOid":"`+head+`"}`), "", 0)
 
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffPullRequest, "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffPullRequest})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(changes.Files) != 1 || changes.Files[0].Path != "keep.txt" {
 		t.Fatalf("PR files include dirty worktree changes: %+v", changes.Files)
 	}
-	if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffPullRequest, "", base, base); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffRequest{Mode: DiffPullRequest, Base: base, Head: base}, PatchOptions{}); err == nil {
 		t.Fatal("a client-supplied range must not replace the attached PR range")
 	}
 	if diff := threadFileDiff(t, mgr, id, "keep.txt", DiffPullRequest); !strings.Contains(diff.Patch, "+four") {
@@ -162,11 +163,11 @@ func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
 
 func threadFileDiff(t *testing.T, mgr *Manager, id, path, mode string) FileDiff {
 	t.Helper()
-	changes, err := mgr.ThreadChanges(context.Background(), id, mode, "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: mode})
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff, err := mgr.ThreadFileDiff(context.Background(), id, path, mode, "", changes.Base, changes.Head)
+	diff, err := mgr.ThreadFileDiff(context.Background(), id, path, DiffRequest{Mode: mode, Base: changes.Base, Head: changes.Head}, PatchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,14 +190,14 @@ func TestThreadFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
 // be read back through the diff command.
 func TestThreadFileDiffRefusesPathsThatDidNotChange(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffUncommitted, "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffUncommitted})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.ThreadFileDiff(context.Background(), id, "../../etc/passwd", DiffUncommitted, "", changes.Base, changes.Head); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "../../etc/passwd", DiffRequest{Mode: DiffUncommitted, Base: changes.Base, Head: changes.Head}, PatchOptions{}); err == nil {
 		t.Fatal("an unrelated path must be refused")
 	}
-	if _, err := mgr.ThreadFileDiff(context.Background(), id, "README", DiffUncommitted, "", changes.Base, changes.Head); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "README", DiffRequest{Mode: DiffUncommitted, Base: changes.Base, Head: changes.Head}, PatchOptions{}); err == nil {
 		t.Fatal("an unchanged path must be refused")
 	}
 }
@@ -239,7 +240,7 @@ func TestThreadChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
 	if err := st.CreateThread(context.Background(), store.ThreadMeta{ID: "s2", Cwd: t.TempDir(), Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	changes, err := mgr.ThreadChanges(context.Background(), "s2", DiffUncommitted, "")
+	changes, err := mgr.ThreadChanges(context.Background(), "s2", DiffRequest{Mode: DiffUncommitted})
 	if err != nil {
 		t.Fatalf("a plain directory must not be an error: %v", err)
 	}
@@ -275,7 +276,7 @@ func turnFixture(t *testing.T) (*Manager, string, string) {
 
 func TestTurnChangesCoverOnlyWhatHappenedBetweenItsSnapshots(t *testing.T) {
 	mgr, id, turn := turnFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffTurn, turn)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffTurn, TurnID: turn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,18 +307,18 @@ func TestTurnChangesCoverOnlyWhatHappenedBetweenItsSnapshots(t *testing.T) {
 func TestTurnFileDiffReadsTheSnapshotRange(t *testing.T) {
 	mgr, id, turn := turnFixture(t)
 	ctx := context.Background()
-	changes, err := mgr.ThreadChanges(ctx, id, DiffTurn, turn)
+	changes, err := mgr.ThreadChanges(ctx, id, DiffRequest{Mode: DiffTurn, TurnID: turn})
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, changes.Base, changes.Head)
+	diff, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffRequest{Mode: DiffTurn, TurnID: turn, Base: changes.Base, Head: changes.Head}, PatchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(diff.Patch, "+five") || strings.Contains(diff.Patch, "+four") {
 		t.Fatalf("patch is not the turn's own edit: %q", diff.Patch)
 	}
-	added, err := mgr.ThreadFileDiff(ctx, id, "turn-new.txt", DiffTurn, turn, changes.Base, changes.Head)
+	added, err := mgr.ThreadFileDiff(ctx, id, "turn-new.txt", DiffRequest{Mode: DiffTurn, TurnID: turn, Base: changes.Base, Head: changes.Head}, PatchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,16 +327,16 @@ func TestTurnFileDiffReadsTheSnapshotRange(t *testing.T) {
 	}
 
 	for _, path := range []string{"after.txt", "new.txt", "../../etc/passwd"} {
-		if _, err := mgr.ThreadFileDiff(ctx, id, path, DiffTurn, turn, changes.Base, changes.Head); err == nil {
+		if _, err := mgr.ThreadFileDiff(ctx, id, path, DiffRequest{Mode: DiffTurn, TurnID: turn, Base: changes.Base, Head: changes.Head}, PatchOptions{}); err == nil {
 			t.Fatalf("%s is not part of the turn and must be refused", path)
 		}
 	}
-	if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, changes.Head, changes.Base); err == nil {
+	if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffRequest{Mode: DiffTurn, TurnID: turn, Base: changes.Head, Head: changes.Base}, PatchOptions{}); err == nil {
 		t.Fatal("a range that is not the turn's must be refused")
 	}
 
 	// The list a card seeds carries no range yet; the snapshots supply it.
-	seeded, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, "", "")
+	seeded, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffRequest{Mode: DiffTurn, TurnID: turn}, PatchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,14 +360,14 @@ func TestTurnChangesExplainMissingSnapshots(t *testing.T) {
 	gitRun(t, meta.Cwd, "update-ref", "-d", checkpointRef(id, turn, "end"))
 
 	for _, missing := range []string{turn, "half", "never-measured"} {
-		changes, err := mgr.ThreadChanges(ctx, id, DiffTurn, missing)
+		changes, err := mgr.ThreadChanges(ctx, id, DiffRequest{Mode: DiffTurn, TurnID: missing})
 		if err != nil {
 			t.Fatalf("%s: missing snapshots must not be an error: %v", missing, err)
 		}
 		if changes.Warning == "" || len(changes.Files) != 0 || changes.Head != "" {
 			t.Fatalf("%s: expected an explained empty list: %+v", missing, changes)
 		}
-		if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, missing, "", ""); err == nil {
+		if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffRequest{Mode: DiffTurn, TurnID: missing}, PatchOptions{}); err == nil {
 			t.Fatalf("%s: a file diff with no turn range must be refused", missing)
 		}
 	}
@@ -375,11 +376,144 @@ func TestTurnChangesExplainMissingSnapshots(t *testing.T) {
 func TestTurnChangesRefuseAnythingButATurnID(t *testing.T) {
 	mgr, id, _ := turnFixture(t)
 	for _, bad := range []string{"", "../base", "t1/base", "a:b", "HEAD~1", "a b", "x^{commit}"} {
-		if _, err := mgr.ThreadChanges(context.Background(), id, DiffTurn, bad); err == nil {
+		if _, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffTurn, TurnID: bad}); err == nil {
 			t.Fatalf("%q must be refused as a turn id", bad)
 		}
-		if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffTurn, bad, "", ""); err == nil {
+		if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffRequest{Mode: DiffTurn, TurnID: bad}, PatchOptions{}); err == nil {
 			t.Fatalf("%q must be refused as a turn id for a file diff", bad)
 		}
+	}
+}
+
+// longFileFixture adds a committed forty-line file to the changes fixture,
+// then edits its first line by whitespace alone and its thirtieth for real,
+// so the two hunks are far enough apart to be told apart.
+func longFileFixture(t *testing.T) (*Manager, string) {
+	t.Helper()
+	mgr, id := changesFixture(t)
+	meta, err := mgr.store.Thread(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]string, 40)
+	for i := range rows {
+		rows[i] = fmt.Sprintf("row %02d", i+1)
+	}
+	write(t, meta.Cwd, "long.txt", strings.Join(rows, "\n")+"\n")
+	gitRun(t, meta.Cwd, "add", "long.txt")
+	gitRun(t, meta.Cwd, "commit", "-m", "long file")
+	rows[0] = "row 01   "
+	rows[29] = "row thirty"
+	write(t, meta.Cwd, "long.txt", strings.Join(rows, "\n")+"\n")
+	return mgr, id
+}
+
+func filePatch(t *testing.T, mgr *Manager, id, path string, opts PatchOptions) string {
+	t.Helper()
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffUncommitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := mgr.ThreadFileDiff(context.Background(), id, path, DiffRequest{Mode: DiffUncommitted, Base: changes.Base, Head: changes.Head}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return diff.Patch
+}
+
+func TestFileDiffIgnoringWhitespaceDropsAWhitespaceOnlyHunk(t *testing.T) {
+	mgr, id := longFileFixture(t)
+	if plain := filePatch(t, mgr, id, "long.txt", PatchOptions{}); !strings.Contains(plain, "+row 01   ") {
+		t.Fatalf("the whitespace edit should show by default: %q", plain)
+	}
+	quiet := filePatch(t, mgr, id, "long.txt", PatchOptions{IgnoreWhitespace: true})
+	if strings.Contains(quiet, "row 01") || !strings.Contains(quiet, "+row thirty") {
+		t.Fatalf("only the real edit should remain: %q", quiet)
+	}
+	if untracked := filePatch(t, mgr, id, "untracked.txt", PatchOptions{IgnoreWhitespace: true, FullContext: true}); !strings.Contains(untracked, "+a") {
+		t.Fatalf("options must not break an untracked file's patch: %q", untracked)
+	}
+}
+
+func TestFileDiffWithFullContextShowsFarAwayLines(t *testing.T) {
+	mgr, id := longFileFixture(t)
+	const far = "\n row 15\n"
+	if plain := filePatch(t, mgr, id, "long.txt", PatchOptions{}); strings.Contains(plain, far) {
+		t.Fatalf("default context should not reach row 15: %q", plain)
+	}
+	if full := filePatch(t, mgr, id, "long.txt", PatchOptions{FullContext: true}); !strings.Contains(full, far) || !strings.Contains(full, "\n row 40\n") {
+		t.Fatalf("full context should show the whole file: %q", full)
+	}
+}
+
+// findFixture adds a staged file and an untracked one whose text has regex
+// metacharacters in it, on top of the changes fixture.
+func findFixture(t *testing.T) (*Manager, string, ThreadChanges) {
+	t.Helper()
+	mgr, id := changesFixture(t)
+	meta, err := mgr.store.Thread(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, meta.Cwd, "staged.txt", "Hello [World] 3x4 Needle\n")
+	gitRun(t, meta.Cwd, "add", "staged.txt")
+	write(t, meta.Cwd, "loose.txt", "a needle (in) a haystack\n")
+	write(t, meta.Cwd, "loose.bin", "needle\x00")
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffRequest{Mode: DiffBranch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mgr, id, changes
+}
+
+func diffFind(t *testing.T, mgr *Manager, id string, changes ThreadChanges, query string) []string {
+	t.Helper()
+	paths, err := mgr.ThreadDiffFind(context.Background(), id, query, DiffRequest{Mode: DiffBranch, Base: changes.Base, Head: changes.Head})
+	if err != nil {
+		t.Fatalf("%q: %v", query, err)
+	}
+	return paths
+}
+
+func TestDiffFindMatchesChangedLinesLiterallyAndIgnoringCase(t *testing.T) {
+	mgr, id, changes := findFixture(t)
+	cases := []struct {
+		query string
+		want  []string
+	}{
+		// Tracked and untracked hits, in the list's order, binary skipped.
+		{"NEEDLE", []string{"staged.txt", "loose.txt"}},
+		{"FOUR", []string{"keep.txt"}},
+		// "one" is in keep.txt, but only as unchanged context.
+		{"one", []string{}},
+		{"[world]", []string{"staged.txt"}},
+		{"(in)", []string{"loose.txt"}},
+		// As a pattern this would match "3x4"; as text it does not.
+		{"3.4", []string{}},
+		{"  bye  ", []string{"gone.txt"}},
+	}
+	for _, c := range cases {
+		got := diffFind(t, mgr, id, changes, c.query)
+		if strings.Join(got, ",") != strings.Join(c.want, ",") || got == nil {
+			t.Fatalf("%q: got %v, want %v", c.query, got, c.want)
+		}
+	}
+}
+
+func TestDiffFindRefusesBadQueriesAndStaleLists(t *testing.T) {
+	mgr, id, changes := findFixture(t)
+	ctx := context.Background()
+	req := DiffRequest{Mode: DiffBranch, Base: changes.Base, Head: changes.Head}
+	for _, bad := range []string{"", "   ", strings.Repeat("x", 201), "a\nb", "a\x00b"} {
+		if _, err := mgr.ThreadDiffFind(ctx, id, bad, req); err == nil {
+			t.Fatalf("%q must be refused", bad)
+		}
+	}
+	if _, err := mgr.ThreadDiffFind(ctx, id, strings.Repeat("é", 200), req); err != nil {
+		t.Fatalf("the limit is in characters, not bytes: %v", err)
+	}
+	stale := DiffRequest{Mode: DiffBranch, Base: changes.Head, Head: changes.Head}
+	if _, err := mgr.ThreadDiffFind(ctx, id, "needle", stale); err == nil {
+		t.Fatal("a search against a list that has moved must be refused")
 	}
 }
