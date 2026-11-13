@@ -21,12 +21,14 @@ import { Markdown } from "~/components/Markdown";
 import { Spinner } from "~/components/ui/spinner";
 import { toolImages } from "~/lib/toolImages";
 import { cn } from "~/lib/utils";
-import type { Item, ToolContent, ToolStatus, Turn } from "~/protocol";
+import type { Approval, Item, ToolContent, ToolStatus, Turn } from "~/protocol";
 import { foldLabel, summarise } from "~/rows";
 
+import { ApprovalChip, ApprovalRecord } from "./ApprovalChip";
 import { useRevealOpen } from "./findReveal";
 import { LiveTail } from "./LiveTail";
 import type { FullToolBody } from "./LoadFullOutput";
+import { QuestionRecord } from "./QuestionRecord";
 import { ToolImages } from "./ToolImages";
 
 // Few cards are truncated, so the loader arrives on first open. On a dropped
@@ -198,36 +200,40 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
 
   return (
     <div className="fade-in bg-card/60 rounded-lg border">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="hover:bg-accent/40 focus-visible:ring-ring flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
-      >
-        <Icon className="text-muted-foreground size-3.5 shrink-0" />
-        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">
-          {item.title || "tool"}
-        </span>
-        {/* A shield alone reads as nothing much; the word says it never ran. */}
-        {item.status === "declined" && (
-          <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
-        )}
-        <StatusMark status={item.status as ToolStatus | undefined} />
-        {/* A cut input alone still has a body worth opening for. A preview's
-            counts are the preview's, not the output's, so it says neither. */}
-        {(body.length > 0 || truncated) && (
-          <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
-            {open ? (
-              "hide"
-            ) : truncated ? (
-              "truncated"
-            ) : (
-              lines > 0 && `${lines} ${lines === 1 ? "line" : "lines"}`
-            )}
-            <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="hover:bg-accent/40 focus-visible:ring-ring flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
+        >
+          <Icon className="text-muted-foreground size-3.5 shrink-0" />
+          <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">
+            {item.title || "tool"}
           </span>
-        )}
-      </button>
+          {/* A shield alone reads as nothing much; the word says it never ran. */}
+          {item.status === "declined" && !item.approval && (
+            <span className="text-muted-foreground shrink-0 font-mono text-[10px]">declined</span>
+          )}
+          {item.approval && item.approval !== "pending" && <ApprovalChip approval={item.approval} />}
+          <StatusMark status={item.status as ToolStatus | undefined} />
+          {/* A cut input alone still has a body worth opening for. A preview's
+              counts are the preview's, not the output's, so it says neither. */}
+          {(body.length > 0 || truncated) && (
+            <span className="text-muted-foreground flex shrink-0 items-center gap-1 font-mono text-[10px]">
+              {open ? (
+                "hide"
+              ) : truncated ? (
+                "truncated"
+              ) : (
+                lines > 0 && `${lines} ${lines === 1 ? "line" : "lines"}`
+              )}
+              <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
+            </span>
+          )}
+        </button>
+        <PendingChip approval={item.approval} className="mr-3" />
+      </div>
 
       {/* Outside the expander: the point of a tail is that it shows without
           a tap. It only exists while the call runs, so a finished card is
@@ -266,6 +272,18 @@ export function ToolCard({ threadId, item }: { threadId: string; item: Item }) {
   );
 }
 
+// A pending chip is a button of its own, so it sits beside a row's toggle
+// rather than inside it: a button cannot hold another. Settled, it is a label
+// and sits inside, by the status it qualifies.
+function PendingChip({ approval, className }: { approval?: Approval; className?: string }) {
+  if (approval !== "pending") return null;
+  return (
+    <span className={cn("flex shrink-0 items-center", className)}>
+      <ApprovalChip approval="pending" />
+    </span>
+  );
+}
+
 // The expanded body of a run or a fold: the cards and text a summary row
 // stands in for. Everything renders the way it would in the open — the same
 // content shown two different ways in one transcript is a seam the reader has
@@ -276,6 +294,10 @@ function ExpandedItems({ threadId, items }: { threadId: string; items: Item[] })
       {items.map((item) =>
         item.kind === "tool" ? (
           <ToolCard key={item.id} threadId={threadId} item={item} />
+        ) : item.kind === "approval" ? (
+          <ApprovalRecord key={item.id} item={item} />
+        ) : item.kind === "question" ? (
+          <QuestionRecord key={item.id} item={item} />
         ) : (
           // Wrapped only to carry the id find in thread jumps to.
           <div key={item.id} data-item-id={item.id}>
@@ -307,51 +329,63 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
   const kinds = Array.from(new Set(items.map((i) => i.toolKind ?? "other")));
   const ActiveIcon = TOOL_ICON[active?.toolKind ?? "other"] ?? CircleIcon;
   const images = useMemo(() => toolImages(items), [items]);
+  // A call waiting on a permission says so on the line, wherever it is in the
+  // run: the line names one call, and the wait holds the whole turn. Live, a
+  // settled one shows for the call the line names.
+  const approval: Approval | undefined = items.some((i) => i.approval === "pending")
+    ? "pending"
+    : live
+      ? active?.approval
+      : undefined;
 
   return (
     <div className="fade-in">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        // 44px tall on a phone, its content's height from md up; a touch
-        // screen that wide still gets the 44px, as hit area.
-        className="hover:bg-accent/40 focus-visible:ring-ring text-muted-foreground hit-44 relative flex min-h-11 w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
-      >
-        {live ? (
-          <>
-            <ActiveIcon className="size-3.5 shrink-0" />
-            {/* The call happening now shimmers. One waiting on a permission
-                is not happening yet, and one that has finished is history:
-                the working line under it says which, and shimmers if it is
-                thinking. */}
-            <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-              <span className={cn(active?.status === "in_progress" && "shimmer")}>{active?.title || "working"}</span>
-            </span>
-          </>
-        ) : (
-          <>
-            <span className="flex shrink-0 items-center gap-1">
-              {failed && <XIcon aria-label="A call failed" className="text-destructive size-3.5" />}
-              {declined && <ShieldXIcon aria-label="A call was declined" className="size-3.5" />}
-              {kinds.slice(0, 4).map((k) => {
-                const Icon = TOOL_ICON[k] ?? CircleIcon;
-                return <Icon key={k} className="size-3.5" />;
-              })}
-            </span>
-            {/* A sentence runs longer than the dotted counts did: two lines on a
-                phone rather than losing its last clause. */}
-            <span className="line-clamp-2 min-w-0 flex-1 text-[12px] md:line-clamp-1">{summarise(items)}</span>
-          </>
-        )}
-        {/* `leading-none`, or this span is 12px tall (just the chevron) while the
-            label is empty and 15px once "2 calls" arrives with the run's second
-            call — and the row centres, so the chevron twitches up 1.5px. */}
-        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none">
-          {open ? "hide" : items.length === 1 ? "" : `${items.length} calls`}
-          <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
-        </span>
-      </button>
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          // 44px tall on a phone, its content's height from md up; a touch
+          // screen that wide still gets the 44px, as hit area.
+          className="hover:bg-accent/40 focus-visible:ring-ring text-muted-foreground hit-44 relative flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
+        >
+          {live ? (
+            <>
+              <ActiveIcon className="size-3.5 shrink-0" />
+              {/* The call happening now shimmers. One waiting on a permission
+                  is not happening yet, and one that has finished is history:
+                  the working line under it says which, and shimmers if it is
+                  thinking. */}
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+                <span className={cn(active?.status === "in_progress" && "shimmer")}>{active?.title || "working"}</span>
+              </span>
+              {approval && approval !== "pending" && <ApprovalChip approval={approval} />}
+            </>
+          ) : (
+            <>
+              <span className="flex shrink-0 items-center gap-1">
+                {failed && <XIcon aria-label="A call failed" className="text-destructive size-3.5" />}
+                {declined && <ShieldXIcon aria-label="A call was declined" className="size-3.5" />}
+                {kinds.slice(0, 4).map((k) => {
+                  const Icon = TOOL_ICON[k] ?? CircleIcon;
+                  return <Icon key={k} className="size-3.5" />;
+                })}
+              </span>
+              {/* A sentence runs longer than the dotted counts did: two lines on a
+                  phone rather than losing its last clause. */}
+              <span className="line-clamp-2 min-w-0 flex-1 text-[12px] md:line-clamp-1">{summarise(items)}</span>
+            </>
+          )}
+          {/* `leading-none`, or this span is 12px tall (just the chevron) while the
+              label is empty and 15px once "2 calls" arrives with the run's second
+              call — and the row centres, so the chevron twitches up 1.5px. */}
+          <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none">
+            {open ? "hide" : items.length === 1 ? "" : `${items.length} calls`}
+            <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
+          </span>
+        </button>
+        <PendingChip approval={approval} className="ml-1" />
+      </div>
 
       {/* The tail of the call the row names, under it. Opened, the run's own
           card for that call shows the same tail, so this one steps aside

@@ -1,4 +1,7 @@
+import { useImperativeHandle, useRef, type Ref } from "react";
+
 import { AttentionLabel } from "~/components/AttentionLabel";
+import { focusPromptCard, type PromptHandle } from "~/components/transcript/promptFocus";
 import { Button } from "~/components/ui/button";
 import type { PendingPermission } from "~/protocol";
 
@@ -7,10 +10,21 @@ import type { PendingPermission } from "~/protocol";
 export function PermissionPrompt({
   request,
   onResolve,
+  ref,
 }: {
   request: PendingPermission;
   onResolve: (outcome: string, optionId: string) => void;
+  /** Brings the card into view and focuses its first option, for the
+      transcript's record of the request. */
+  ref?: Ref<PromptHandle>;
 }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
+  useImperativeHandle(
+    ref,
+    () => ({ focus: () => focusPromptCard(cardRef.current, optionsRef.current?.querySelector("button")) }),
+    [],
+  );
   const detail =
     request.input && typeof request.input === "object"
       ? JSON.stringify(request.input, null, 2)
@@ -23,6 +37,7 @@ export function PermissionPrompt({
     // deliberate in both themes rather than glowing in one of them.
     <div className="mx-auto max-w-3xl px-4 pb-2.5 md:px-5">
       <div
+        ref={cardRef}
         role="group"
         aria-label="Permission request"
         className="attention-in bg-card ring-attention/25 rounded-2xl border p-4 shadow-lg ring-1"
@@ -39,7 +54,7 @@ export function PermissionPrompt({
           </pre>
         )}
 
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div ref={optionsRef} className="mt-3 flex flex-wrap gap-2">
           {request.options.map((o) => (
             <Button
               key={o.optionId}

@@ -1,8 +1,18 @@
 import { CheckIcon, ExternalLinkIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { isEditable, keyboardLayerOpen } from "~/app/useKeybindings";
 import { AttentionLabel } from "~/components/AttentionLabel";
+import { focusPromptCard, type PromptHandle } from "~/components/transcript/promptFocus";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
@@ -29,7 +39,15 @@ interface Props {
   threadId: string;
   request: PendingElicitation;
   onResolve(action: "accept" | "decline" | "cancel", value?: unknown): void;
+  /** Brings the card into view and focuses the question on screen, for the
+      transcript's record of it. */
+  ref?: Ref<PromptHandle>;
 }
+
+// The question on screen's own control: its text box (or the "Other" one)
+// first, else its first choice or switch. Not a switch's hidden form input.
+const TEXT_CONTROL = 'input:not([type="hidden"]):not([aria-hidden="true"]), textarea';
+const CHOICE_CONTROL = '[role="radio"], [role="checkbox"], [role="switch"]';
 
 // Long enough to see the row light up under a thumb before the next question
 // replaces it; short enough not to feel like waiting.
@@ -42,7 +60,7 @@ const ADVANCE_MS = 180;
  * answers so far live outside the component, so switching threads and back
  * finds them where they were left.
  */
-export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
+export function ElicitationPrompt({ threadId, request, onResolve, ref }: Props) {
   const properties = request.schema?.properties ?? {};
   const keys = Object.keys(properties);
   const q = useQuestions(threadId, request.requestId, properties);
@@ -61,6 +79,20 @@ export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
     return true;
   });
 
+  const formRef = useRef<HTMLFormElement>(null);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus() {
+        const form = formRef.current;
+        const control =
+          form?.querySelector<HTMLElement>(TEXT_CONTROL) ?? form?.querySelector<HTMLElement>(CHOICE_CONTROL);
+        focusPromptCard(form, control);
+      },
+    }),
+    [],
+  );
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (last) onResolve("accept", q.answers());
@@ -73,9 +105,12 @@ export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
     // full-bleed coloured tray, so it reads as part of the transcript's tail.
     <div className="mx-auto max-w-3xl px-4 pb-2.5 md:px-5">
       <form
+        ref={formRef}
+        // Focusable from script alone, for a question with no control.
+        tabIndex={-1}
         onSubmit={submit}
         aria-label="Input requested"
-        className="attention-in bg-card ring-attention/25 flex max-h-[60dvh] flex-col rounded-2xl border shadow-lg ring-1"
+        className="attention-in bg-card ring-attention/25 flex max-h-[60dvh] flex-col rounded-2xl border shadow-lg ring-1 outline-none"
       >
         {/* Only the question scrolls. The header keeps "2 of 3" in sight and
             the actions keep Next and Continue in reach, however long the

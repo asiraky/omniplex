@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import { appendDraft, useDraft } from "~/app/draftStore";
 import { useStash } from "~/app/stashStore";
@@ -14,6 +14,7 @@ import type { ThreadCommands } from "~/app/useThreadCommands";
 import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { DraftPreset } from "~/app/useThreadSelection";
 import type { ConnectionStatus } from "~/client";
+import { PromptFocusContext, type PromptHandle, type PromptKind } from "~/components/transcript/promptFocus";
 import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { CardSignIn } from "~/lib/cards";
 import { elicitationDrafts } from "~/lib/elicitationDraft";
@@ -244,6 +245,15 @@ export function ThreadView({
     () => (activeId ? positionOf(activeId) : undefined),
     [activeId, positionOf],
   );
+  // A pending record in the transcript (a tool call's "Needs approval", a
+  // question waiting) takes the reader to the prompt above the composer,
+  // which is where it is answered.
+  const permissionRef = useRef<PromptHandle>(null);
+  const questionRef = useRef<PromptHandle>(null);
+  const focusPrompt = useCallback(
+    (kind: PromptKind) => (kind === "permission" ? permissionRef : questionRef).current?.focus(),
+    [],
+  );
 
   return (
     <div ref={layoutRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -256,41 +266,43 @@ export function ThreadView({
         <ReadAloudContext.Provider value={speech}>
           <ReplyContext.Provider value={writable ? reply : null}>
             <RewindContext.Provider value={writable && rewinds ? openRewind : null}>
-              <Transcript
-                key={activeId}
-                onLoadOlder={commands.loadOlderItems}
-                initialScroll={initialScroll}
-                onScrollChange={scroll.record}
-                onContinue={onContinue}
-                onLogin={onProviderLogin}
-                providerName={provider?.displayName}
-                providerReady={provider?.availability.state === "ready"}
-                onRetryTurn={harness.retryTurn}
-                switchTargets={harness.switchTargets}
-                onSwitchAccount={onSwitchAccount}
-                onCancelContinuation={onCancelContinuation}
-                onRetryProvision={onRetryProvision}
-                onCleanup={onCleanup}
-                onForceDelete={onForceDeleteThread}
-                onOpenDiff={panel.openDiff}
-                onOpenJobs={panel.openJobs}
-                onOpenArtefact={panel.openArtefact}
-                pr={pr}
-                onFinish={onFinishThread}
-                recents={recents.items}
-                recentsSeeded={recents.seeded}
-                onPickRecent={recents.pick}
-                onDequeue={commands.dequeue}
-                onEditQueued={commands.editQueued}
-                onSendQueued={commands.sendQueued}
-                onResumeQueue={commands.resumeQueue}
-                onQueuedEditLost={commands.keepLostEdit}
-                steers={steers}
-                onCardSignIn={setSignIn}
-                describeSettings={describe}
-                turnStatus={turnStatus}
-                find={findControls}
-              />
+              <PromptFocusContext.Provider value={focusPrompt}>
+                <Transcript
+                  key={activeId}
+                  onLoadOlder={commands.loadOlderItems}
+                  initialScroll={initialScroll}
+                  onScrollChange={scroll.record}
+                  onContinue={onContinue}
+                  onLogin={onProviderLogin}
+                  providerName={provider?.displayName}
+                  providerReady={provider?.availability.state === "ready"}
+                  onRetryTurn={harness.retryTurn}
+                  switchTargets={harness.switchTargets}
+                  onSwitchAccount={onSwitchAccount}
+                  onCancelContinuation={onCancelContinuation}
+                  onRetryProvision={onRetryProvision}
+                  onCleanup={onCleanup}
+                  onForceDelete={onForceDeleteThread}
+                  onOpenDiff={panel.openDiff}
+                  onOpenJobs={panel.openJobs}
+                  onOpenArtefact={panel.openArtefact}
+                  pr={pr}
+                  onFinish={onFinishThread}
+                  recents={recents.items}
+                  recentsSeeded={recents.seeded}
+                  onPickRecent={recents.pick}
+                  onDequeue={commands.dequeue}
+                  onEditQueued={commands.editQueued}
+                  onSendQueued={commands.sendQueued}
+                  onResumeQueue={commands.resumeQueue}
+                  onQueuedEditLost={commands.keepLostEdit}
+                  steers={steers}
+                  onCardSignIn={setSignIn}
+                  describeSettings={describe}
+                  turnStatus={turnStatus}
+                  find={findControls}
+                />
+              </PromptFocusContext.Provider>
             </RewindContext.Provider>
           </ReplyContext.Provider>
         </ReadAloudContext.Provider>
@@ -355,6 +367,8 @@ export function ThreadView({
           store={store}
           dictate={readAloud}
           onSendAndNewThread={onSendAndNewThread}
+          permissionRef={permissionRef}
+          questionRef={questionRef}
         />
       </div>
     </div>
@@ -407,6 +421,8 @@ function ComposerDock({
   store,
   dictate,
   onSendAndNewThread,
+  permissionRef,
+  questionRef,
 }: {
   activeId: string | null;
   meta: ThreadMeta | undefined;
@@ -419,6 +435,9 @@ function ComposerDock({
   store: ComposerDrafts;
   dictate: boolean;
   onSendAndNewThread?: (preset: DraftPreset) => void;
+  /** The permission and question prompts' focus handles, for the transcript. */
+  permissionRef: RefObject<PromptHandle | null>;
+  questionRef: RefObject<PromptHandle | null>;
 }) {
   const state = useThread(useThreadStore(), dockFields, shallow);
   // Paired with the state's own thread id, not activeId: for a render after a
@@ -459,6 +478,7 @@ function ComposerDock({
 
       {pending && (
         <PermissionPrompt
+          ref={permissionRef}
           request={pending}
           onResolve={(outcome, optionId) =>
             commands.resolvePermission(pending.requestId, outcome, optionId)
@@ -472,6 +492,7 @@ function ComposerDock({
             // A fresh prompt per question, so one queued behind another does
             // not open on the first one's answers.
             key={elicitation.requestId}
+            ref={questionRef}
             threadId={state.threadId}
             request={elicitation}
             onResolve={(action, value) =>
