@@ -36,14 +36,7 @@ import { useLatest } from "~/useLatest";
 
 import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
-import {
-  clearHighlight,
-  findItem,
-  FindRevealProvider,
-  flash,
-  highlightIn,
-  type Reveal,
-} from "./transcript/findReveal";
+import { FindRevealProvider, type Reveal } from "./transcript/findReveal";
 import { MergedCard } from "./transcript/MergedCard";
 import { QueuedPrompts } from "./transcript/QueuedPrompts";
 import type { ScrollPosition } from "./transcript/scrollAnchor";
@@ -78,9 +71,11 @@ const InterruptedCard = lazy(() =>
 // It is fetched once the page settles, so opening it mounts the field at once
 // (the phone keyboard only comes up for a field focused straight away).
 const findBar = chunk(() => import("./transcript/FindBar").then((m) => m.ThreadFindBar));
+// What paints a jump's match; every jump waits for it, as it does a page.
+const findPaint = chunk(() => import("./transcript/findPaint"));
 
 function FindBarSlot(props: ComponentProps<typeof import("./transcript/FindBar").ThreadFindBar>) {
-  useIdlePrefetch(findBar);
+  useIdlePrefetch(findBar, findPaint);
   const { loaded: Bar, failed } = useChunk(findBar, props.controls.open);
   if (!props.controls.open) return null;
   if (Bar) return <Bar {...props} />;
@@ -239,16 +234,18 @@ function useFindJump(
   const loadTo = useLatest(find?.loadTo);
 
   // Resolves false when the match's page could not be loaded (a failed fetch,
-  // or a page dropped as stale after a resync), so the bar can say so. A jump
-  // superseded by a newer one or a clear is not a failure.
+  // or a page dropped as stale after a resync), or the painter's code could
+  // not, so the bar can say so. A jump superseded by a newer one or a clear is
+  // not a failure.
   const onJump = useCallback(
     async (match: ThreadMatch, q: string): Promise<boolean> => {
       const mine = ++seq.current;
-      if (match.index < itemsBefore.current) {
-        const loaded = await loadTo.current?.(match.index);
-        if (mine !== seq.current) return true;
-        if (!loaded) return false;
-      }
+      const [loaded, paint] = await Promise.all([
+        match.index < itemsBefore.current ? loadTo.current?.(match.index) : true,
+        findPaint.load(),
+      ]);
+      if (mine !== seq.current) return true;
+      if (!loaded || !paint) return false;
       query.current = q;
       setReveal({ id: match.id });
       return true;
@@ -259,28 +256,31 @@ function useFindJump(
   const onClear = useCallback(() => {
     seq.current++;
     jumped.current = null;
-    clearHighlight();
+    findPaint.get()?.clearHighlight();
     setReveal(null);
   }, []);
 
-  useEffect(() => clearHighlight, []);
+  // Nothing was painted if the painter never loaded.
+  useEffect(() => () => findPaint.get()?.clearHighlight(), []);
 
   // On the state as well as the reveal: a paged-in match may not have drawn
   // yet when the jump is asked for, and a redraw kills the painted ranges.
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
-    if (!reveal || !scroller) return;
-    const el = findItem(scroller, reveal.id);
+    // A reveal is only set once the painter has loaded.
+    const paint = findPaint.get();
+    if (!reveal || !scroller || !paint) return;
+    const el = paint.findItem(scroller, reveal.id);
     if (!el) return;
-    const { ranges, painted } = highlightIn(el, query.current);
+    const { ranges, painted } = paint.highlightIn(el, query.current);
     if (jumped.current === reveal) return;
     jumped.current = reveal;
     // The pin would snap the view back to the tail on the next redraw.
     release();
     el.scrollIntoView({ block: "center" });
     // An item taller than the view can be centred with its match off screen.
-    if (ranges[0]) centreIfHidden(scroller, ranges[0]);
-    if (!painted) flash(el);
+    if (ranges[0]) paint.centreIfHidden(scroller, ranges[0]);
+    if (!painted) paint.flash(el);
   }, [reveal, state, scrollerRef, release]);
 
   return { reveal, onJump, onClear };
@@ -299,18 +299,6 @@ function useTimelineCuts(turns: readonly { id: string }[]): number {
     if (seen !== undefined && !turns.some((t) => t.id === seen)) setCuts((c) => c + 1);
   }
   return cuts;
-}
-
-// Brings `range` to the middle of the scroller's view when it is outside it,
-// allowing for the room the composer covers at the bottom.
-function centreIfHidden(scroller: HTMLElement, range: Range) {
-  const rect = range.getBoundingClientRect?.();
-  if (!rect || (rect.width === 0 && rect.height === 0)) return;
-  const box = scroller.getBoundingClientRect();
-  const cover = parseFloat(getComputedStyle(scroller).scrollPaddingBottom) || 0;
-  const bottom = box.bottom - cover;
-  if (rect.top >= box.top && rect.bottom <= bottom) return;
-  scroller.scrollTop += rect.top - box.top - (bottom - box.top - rect.height) / 2;
 }
 
 /**

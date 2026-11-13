@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { Markdown } from "~/components/Markdown";
 
-import { findRanges } from "./findReveal";
+import { findRanges } from "./findPaint";
 
 function root(html: string) {
   const el = document.createElement("div");
