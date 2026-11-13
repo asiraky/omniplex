@@ -6,8 +6,10 @@ import type { Client } from "~/client";
 import type { OpenPath } from "~/lib/openPath";
 import { pathInCheckout } from "~/lib/paths";
 import { toast } from "~/lib/toast";
+import type { DiffOptions } from "./panel/DiffSurface";
 import type {
-  DiffComparison,
+  BranchCommits,
+  DiffScope,
   FileContent,
   FileDiff,
   FileTree,
@@ -46,24 +48,39 @@ export function ThreadPanel({
   // Git is the source of truth for what a thread changed: it catches the
   // formatter and the codemod as well as the edits we parsed out of tool calls.
   const loadChanges = useCallback(
-    async (comparison: DiffComparison, turnId?: string) => {
-      const res = await clientRef.current!.command("thread_changes", { threadId, comparison, turnId });
+    async (scope: DiffScope) => {
+      const res = await clientRef.current!.command("thread_changes", { threadId, ...scope });
       return res.changes as ThreadChanges;
     },
     [clientRef, threadId],
   );
 
+  // A file's diff, and find, are read against the list on screen: the same
+  // comparison, turn, commits and endpoints it was measured between.
   const loadDiff = useCallback(
-    async (path: string, changes: ThreadChanges) => {
+    async (path: string, changes: ThreadChanges, options: DiffOptions) => {
       const res = await clientRef.current!.command("thread_file_diff", {
         threadId,
         path,
-        comparison: changes.mode,
-        turnId: changes.turnId,
-        base: changes.base,
-        head: changes.head,
+        ...listScope(changes),
+        // Off is the default; leaving it out keeps the request small.
+        ignoreWhitespace: options.ignoreWhitespace || undefined,
+        fullContext: options.fullContext || undefined,
       });
       return res.diff as FileDiff;
+    },
+    [clientRef, threadId],
+  );
+
+  const loadCommits = useCallback(async () => {
+    const res = await clientRef.current!.command("thread_commits", { threadId });
+    return res.commits as BranchCommits;
+  }, [clientRef, threadId]);
+
+  const findInDiff = useCallback(
+    async (query: string, changes: ThreadChanges) => {
+      const res = await clientRef.current!.command("thread_diff_find", { threadId, ...listScope(changes), query });
+      return (res.paths ?? []) as string[];
     },
     [clientRef, threadId],
   );
@@ -136,6 +153,8 @@ export function ThreadPanel({
         revision={`${threadId}:${inTurn ? "turn" : "settled"}`}
         loadChanges={loadChanges}
         loadDiff={loadDiff}
+        loadCommits={loadCommits}
+        findInDiff={findInDiff}
         loadTree={loadTree}
         loadFile={loadFile}
         request={panel.request}
@@ -146,6 +165,18 @@ export function ThreadPanel({
       />
     </Suspense>
   );
+}
+
+/** What a list was measured between, for the reads made against it. */
+function listScope(changes: ThreadChanges) {
+  return {
+    comparison: changes.mode,
+    turnId: changes.turnId,
+    from: changes.from,
+    to: changes.to,
+    base: changes.base,
+    head: changes.head,
+  };
 }
 
 const isInTurn = (state: ThreadState | null) => state?.phase === "turn";

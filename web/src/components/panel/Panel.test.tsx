@@ -9,7 +9,7 @@ import { emptyState } from "~/apply";
 import { createThreadStore, ThreadStoreContext } from "~/app/threadStore";
 import { usePanel, type PanelControls } from "~/app/usePanel";
 import { savePanel } from "~/lib/panel";
-import type { Job, ThreadChanges } from "~/protocol";
+import type { DiffScope, Job, ThreadChanges } from "~/protocol";
 import { render, viewport, wrap } from "~/test/harness";
 
 function renderPanel(onClose: () => void) {
@@ -24,6 +24,8 @@ function renderPanel(onClose: () => void) {
         revision="r"
         loadChanges={never}
         loadDiff={never}
+        loadCommits={never}
+        findInDiff={never}
         loadTree={never}
         loadFile={never}
         onRequestRouted={() => {}}
@@ -83,6 +85,8 @@ function props(overrides: Partial<PanelProps> = {}): PanelProps {
     revision: "r",
     loadChanges: never,
     loadDiff: never,
+    loadCommits: never,
+    findInDiff: never,
     loadTree: never,
     loadFile: never,
     onRequestRouted: () => {},
@@ -111,7 +115,7 @@ describe("Panel requests", () => {
     await act(async () => changes.resolve(changesWith("src/a.ts")));
 
     expect(selectedTab()?.textContent).toBe("Diff");
-    await waitFor(() => expect(loadDiff).toHaveBeenCalledWith("src/a.ts", expect.anything()));
+    await waitFor(() => expect(loadDiff).toHaveBeenCalledWith("src/a.ts", expect.anything(), expect.anything()));
   });
 
   it("opens a path outside the change list as the file, and routes each nonce once", async () => {
@@ -275,25 +279,25 @@ describe("Panel turn diff", () => {
   const trigger = () => screen.getByRole("combobox", { name: "Diff comparison" });
 
   it("shows a card's turn, and switching away neither forgets it nor stores it", async () => {
-    const loadChanges = vi.fn((_c: string, _t?: string) => Promise.resolve(changesWith("src/a.ts")));
+    const loadChanges = vi.fn((_scope: DiffScope) => Promise.resolve(changesWith("src/a.ts")));
     const loadDiff = vi.fn(() => new Promise<never>(() => {}));
     const request: PanelRequest = { kind: "diff", path: "src/a.ts", turn: { id: "t2", number: 2 }, nonce: 1 };
     render(<Panel {...props({ loadChanges, loadDiff, request })} />);
 
-    await waitFor(() => expect(loadDiff).toHaveBeenCalledWith("src/a.ts", expect.anything()));
-    expect(loadChanges.mock.calls).toEqual([["turn", "t2"]]);
+    await waitFor(() => expect(loadDiff).toHaveBeenCalledWith("src/a.ts", expect.anything(), expect.anything()));
+    expect(loadChanges.mock.calls).toEqual([[{ comparison: "turn", turnId: "t2" }]]);
     expect(trigger().textContent).toBe("Turn 2");
     expect(localStorage.getItem(KEY)).toBeNull();
 
     fireEvent.click(trigger());
     fireEvent.click(await screen.findByRole("option", { name: "Uncommitted changes" }));
-    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith("uncommitted", undefined));
+    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith({ comparison: "uncommitted" }));
     expect(localStorage.getItem(KEY)).toBe("uncommitted");
 
     // The way back is still on offer, and takes the same turn.
     fireEvent.click(trigger());
     fireEvent.click(await screen.findByRole("option", { name: "Turn 2" }));
-    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith("turn", "t2"));
+    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith({ comparison: "turn", turnId: "t2" }));
     expect(localStorage.getItem(KEY)).toBe("uncommitted");
   });
 
@@ -306,7 +310,7 @@ describe("Panel turn diff", () => {
 
   it("lists the card's files before the server answers, then takes the server's list", async () => {
     const changes = deferred<ThreadChanges>();
-    const loadChanges = vi.fn((_c: string, _t?: string) => changes.promise);
+    const loadChanges = vi.fn((_scope: DiffScope) => changes.promise);
     const request: PanelRequest = { kind: "diff", turn: { id: "t2", number: 2, diff: cardDiff }, nonce: 1 };
     render(<Panel {...props({ loadChanges, request })} />);
 
@@ -320,7 +324,7 @@ describe("Panel turn diff", () => {
 
   it("retries a failed turn read when the same card asks again", async () => {
     const loadChanges = vi
-      .fn((_c: string, _t?: string) => Promise.resolve(changesWith("src/a.ts")))
+      .fn((_scope: DiffScope) => Promise.resolve(changesWith("src/a.ts")))
       .mockRejectedValueOnce(new Error("socket closed"));
     const turn = { id: "t2", number: 2, diff: cardDiff };
     const { rerender } = render(<Panel {...props({ loadChanges })} request={{ kind: "diff", turn, nonce: 1 }} />);
@@ -328,11 +332,11 @@ describe("Panel turn diff", () => {
 
     rerender(wrap(<Panel {...props({ loadChanges })} request={{ kind: "diff", turn, nonce: 2 }} />));
     await waitFor(() => expect(screen.queryByText("socket closed")).toBeNull());
-    expect(loadChanges.mock.calls).toEqual([["turn", "t2"], ["turn", "t2"]]);
+    expect(loadChanges.mock.calls).toEqual([[{ comparison: "turn", turnId: "t2" }], [{ comparison: "turn", turnId: "t2" }]]);
   });
 
   it("does not re-read a turn when a later turn ends", async () => {
-    const loadChanges = vi.fn((_c: string, _t?: string) => Promise.resolve(changesWith("src/a.ts")));
+    const loadChanges = vi.fn((_scope: DiffScope) => Promise.resolve(changesWith("src/a.ts")));
     const request: PanelRequest = { kind: "diff", turn: { id: "t2", number: 2 }, nonce: 1 };
     const { rerender } = render(<Panel {...props({ loadChanges, request })} />);
     await waitFor(() => expect(loadChanges).toHaveBeenCalledOnce());
@@ -340,18 +344,67 @@ describe("Panel turn diff", () => {
     rerender(wrap(<Panel {...props({ loadChanges, request, revision: "r2" })} />));
     fireEvent.click(trigger());
     fireEvent.click(await screen.findByRole("option", { name: "Uncommitted changes" }));
-    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith("uncommitted", undefined));
+    await waitFor(() => expect(loadChanges).toHaveBeenLastCalledWith({ comparison: "uncommitted" }));
     expect(loadChanges).toHaveBeenCalledTimes(2);
   });
 
   it("leaves the comparison alone for a diff request that names no turn", async () => {
     localStorage.setItem(KEY, "branch");
-    const loadChanges = vi.fn((_c: string, _t?: string) => Promise.resolve(changesWith()));
+    const loadChanges = vi.fn((_scope: DiffScope) => Promise.resolve(changesWith()));
     render(<Panel {...props({ loadChanges, request: { kind: "diff", nonce: 1 } })} />);
 
     await waitFor(() => expect(loadChanges).toHaveBeenCalled());
-    expect(loadChanges.mock.calls).toEqual([["branch", undefined]]);
+    expect(loadChanges.mock.calls).toEqual([[{ comparison: "branch" }]]);
     expect(trigger().textContent).toBe("Branch changes");
+  });
+});
+
+describe("Panel commit scope", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  const trigger = () => screen.getByRole("combobox", { name: "Diff comparison" });
+  const COMMITS = {
+    commits: [
+      { sha: "bbb2222000000", subject: "Second", author: "a", time: 2 },
+      { sha: "aaa1111000000", subject: "First", author: "a", time: 1 },
+    ],
+  };
+
+  it("reads a picked commit, and opens on it again next mount", async () => {
+    const loadChanges = vi.fn((_scope: DiffScope) => Promise.resolve(changesWith()));
+    const base = props({ loadChanges, loadCommits: () => Promise.resolve(COMMITS) });
+    const first = render(<Panel {...base} request={{ kind: "diff", nonce: 1 }} />);
+    await waitFor(() => expect(loadChanges).toHaveBeenCalled());
+
+    fireEvent.click(trigger());
+    fireEvent.click(await screen.findByRole("option", { name: /aaa1111\s*First/ }));
+    await waitFor(() =>
+      expect(loadChanges).toHaveBeenLastCalledWith({ comparison: "commit", from: "aaa1111000000", to: "aaa1111000000" }),
+    );
+    fireEvent.click(screen.getByRole("combobox", { name: "Extend to a range of commits" }));
+    fireEvent.click(await screen.findByRole("option", { name: /through\s*bbb2222/ }));
+    await waitFor(() =>
+      expect(loadChanges).toHaveBeenLastCalledWith({ comparison: "commit", from: "aaa1111000000", to: "bbb2222000000" }),
+    );
+    first.unmount();
+
+    loadChanges.mockClear();
+    render(<Panel {...base} />);
+    await waitFor(() => expect(loadChanges).toHaveBeenCalled());
+    expect(loadChanges.mock.calls).toEqual([[{ comparison: "commit", from: "aaa1111000000", to: "bbb2222000000" }]]);
+    expect(trigger().textContent).toBe("aaa1111…bbb2222");
+  });
+
+  it("opens on uncommitted changes when the stored commits are unreadable", async () => {
+    localStorage.setItem("omniplex.diffComparison:s1", "commit");
+    localStorage.setItem("omniplex.diffCommits:s1", "{not json");
+    const loadChanges = vi.fn((_scope: DiffScope) => Promise.resolve(changesWith()));
+    render(<Panel {...props({ loadChanges, request: { kind: "diff", nonce: 1 } })} />);
+    await waitFor(() => expect(loadChanges).toHaveBeenCalled());
+    expect(loadChanges.mock.calls).toEqual([[{ comparison: "uncommitted" }]]);
   });
 });
 

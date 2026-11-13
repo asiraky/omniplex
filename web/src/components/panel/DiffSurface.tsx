@@ -1,19 +1,51 @@
 import { ChevronRightIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Diff } from "~/components/Diff";
 import { IconButton } from "~/components/IconButton";
-import { Checkbox } from "~/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
+import { DiffScopeSelect, type CommitRange } from "~/components/panel/DiffScopeSelect";
+import { DiffFindBar, DiffToolbar, TOGGLE_ICONS, type DiffToggle } from "~/components/panel/DiffToolbar";
+import { diffPlace, diffPlaceKey, rememberDiffPlace } from "~/components/panel/diffScroll";
 import { Spinner } from "~/components/ui/spinner";
-import { useDiffWrap } from "~/lib/diffWrap";
+import {
+  useDiffFullContext,
+  useDiffHideTests,
+  useDiffIgnoreWhitespace,
+  useDiffSplit,
+  useDiffWrap,
+} from "~/lib/diffPrefs";
+import { isTestPath } from "~/lib/testPath";
 import { cn } from "~/lib/utils";
-import type { ChangedFile, DiffComparison, DiffTurn, FileDiff, PullRequest, ThreadChanges } from "~/protocol";
+import type {
+  BranchCommits,
+  ChangedFile,
+  DiffComparison,
+  DiffTurn,
+  FileDiff,
+  PullRequest,
+  ThreadChanges,
+} from "~/protocol";
+import { useIsDesktop } from "~/useMediaQuery";
 import { useLatest } from "~/useLatest";
 
+export type { CommitRange };
+
+/** How a file's diff is asked for. Each changes what the server sends back. */
+export interface DiffOptions {
+  ignoreWhitespace: boolean;
+  fullContext: boolean;
+}
+
 type DiffEntry = { diff?: FileDiff; loading: boolean; error?: string };
-type DiffsRead = { changes: ThreadChanges | null; diffs: Record<string, DiffEntry> };
+/** Diffs, with the list and the options they were read under. */
+type DiffsRead = { changes: ThreadChanges | null; options: string; diffs: Record<string, DiffEntry> };
 const NO_DIFFS: Record<string, DiffEntry> = {};
+
+// Long enough to mean something; a single letter matches every file.
+const MIN_QUERY = 2;
+// Typing a word costs one search, not one per key, on a connection where
+// each is a second's round trip.
+const FIND_DELAY = 300;
 
 const STATUS_LABEL: Record<string, string> = {
   added: "A",
@@ -49,6 +81,8 @@ function FileRow({
   loading,
   error,
   wrap,
+  layout,
+  highlight,
   onToggle,
 }: {
   file: ChangedFile;
@@ -58,6 +92,8 @@ function FileRow({
   loading: boolean;
   error?: string;
   wrap: boolean;
+  layout: "unified" | "split";
+  highlight?: string;
   onToggle: () => void;
 }) {
   const slash = file.path.lastIndexOf("/");
@@ -112,7 +148,7 @@ function FileRow({
                 </p>
               ) : (
                 <>
-                  <Diff patch={diff.patch} wrap={wrap} />
+                  <Diff patch={diff.patch} wrap={wrap} layout={layout} highlight={highlight} />
                   {diff.truncated && (
                     <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
                       Diff truncated — open the file in the worktree to see the rest.
@@ -128,125 +164,373 @@ function FileRow({
   );
 }
 
+/** Which list a remembered place belongs to. */
+function scopeKey(comparison: DiffComparison, turn?: DiffTurn | null, commits?: CommitRange | null): string {
+  if (comparison === "turn") return `turn:${turn?.id ?? ""}`;
+  if (comparison === "commit") return `commit:${commits?.from ?? ""}..${commits?.to ?? ""}`;
+  return comparison;
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
 /**
- * The changed-file list with inline unified diffs — what the whole panel used
- * to be, now one surface among several. The change list itself is owned by the
- * panel (other surfaces route on it); the per-file diffs are read here,
- * lazily, and dropped whenever the list is re-read.
+ * The changed-file list with inline diffs — what the whole panel used to be,
+ * now one surface among several. The change list itself is owned by the panel
+ * (other surfaces route on it); the per-file diffs are read here, lazily, and
+ * dropped whenever the list is re-read or the way they are read changes.
  */
 export function DiffSurface({
+  threadId,
   changes,
   loading,
   error,
   onRefresh,
   loadDiff,
+  loadCommits,
+  findInDiff,
   reveal,
+  onRevealHandled,
   comparison,
   turn,
+  commits,
   onComparisonChange,
   pr,
 }: {
+  threadId: string;
   changes: ThreadChanges | null;
   loading: boolean;
   error: string;
   onRefresh: () => void;
-  loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
+  loadDiff: (path: string, changes: ThreadChanges, options: DiffOptions) => Promise<FileDiff>;
+  loadCommits: () => Promise<BranchCommits>;
+  /** The paths in a list whose changed lines contain a query. Path names are matched here. */
+  findInDiff: (query: string, changes: ThreadChanges) => Promise<string[]>;
+  /** A file to put on screen. Unhandled until `onRevealHandled` hears its nonce. */
   reveal?: { path: string; nonce: number } | null;
+  onRevealHandled?: (nonce: number) => void;
   comparison: DiffComparison;
   /** The turn a card last opened, offered in the select so it can be gone back to. */
   turn?: DiffTurn | null;
-  onComparisonChange: (comparison: DiffComparison) => void;
+  /** The commits a `commit` comparison covers. */
+  commits?: CommitRange | null;
+  onComparisonChange: (comparison: DiffComparison, commits?: CommitRange) => void;
   pr?: PullRequest | null;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const desktop = useIsDesktop();
   const [wrap, setWrap] = useDiffWrap();
-  // A new change list describes a worktree that has moved on; every diff read
-  // against the old one is stale. So the diffs are held with the list they
-  // were read against, and a list that is no longer the current one reads as
-  // no diffs at all. An in-flight read from before a refresh lands on the old
-  // list and is never seen.
-  const [read, setRead] = useState<DiffsRead>({ changes, diffs: {} });
-  const diffs = read.changes === changes ? read.diffs : NO_DIFFS;
+  const [split, setSplit] = useDiffSplit();
+  const [ignoreWhitespace, setIgnoreWhitespace] = useDiffIgnoreWhitespace();
+  const [hideTests, setHideTests] = useDiffHideTests();
+  const [fullContext, setFullContext] = useDiffFullContext();
+  // A phone has no room for two columns of code, whatever was ticked on a desktop.
+  const layout = desktop && split ? "split" : "unified";
 
-  // Row elements, so a revealed file can be scrolled to.
-  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  // ---- where this list was left ----
+  // Remembered per thread and scope, so coming back (a tab switch, a closed
+  // panel, another thread and back) opens the same file at the same scroll.
+  // A reveal still waiting to be shown is where the user is going instead.
+  const placeKey = diffPlaceKey(threadId, scopeKey(comparison, turn, commits));
+  const [shownKey, setShownKey] = useState(placeKey);
+  const [expanded, setExpanded] = useState<string | null>(() => (reveal ? null : diffPlace(placeKey).expanded));
+  // A test file a reveal asked for stays listed while tests are hidden.
+  const [revealed, setRevealed] = useState<string | null>(() => diffPlace(placeKey).revealed);
+  // The scrollTop still to be put back, once there is enough list to hold it.
+  const [restore, setRestore] = useState<number | null>(() => (reveal ? null : diffPlace(placeKey).scrollTop || null));
+  if (shownKey !== placeKey) {
+    // Switching scope in place is coming back to that scope too.
+    const place = diffPlace(placeKey);
+    setShownKey(placeKey);
+    setExpanded(reveal ? null : place.expanded);
+    setRevealed(place.revealed);
+    setRestore(reveal ? null : place.scrollTop || null);
+  }
+  useEffect(() => rememberDiffPlace(placeKey, { expanded, revealed }), [placeKey, expanded, revealed]);
+
+  // ---- the diffs ----
+  // A new change list describes a worktree that has moved on, and new options
+  // ask for different text; every diff read under the old ones is stale. So
+  // the diffs are held with the list and options they were read under, and
+  // anything else reads as no diffs at all. An in-flight read from before
+  // lands on the old key and is never seen.
+  const options = `${ignoreWhitespace ? "w" : ""}${fullContext ? "c" : ""}`;
+  const [read, setRead] = useState<DiffsRead>({ changes, options, diffs: {} });
+  const diffs = read.changes === changes && read.options === options ? read.diffs : NO_DIFFS;
   const diffRef = useLatest(loadDiff);
+  // What has been asked for under the current key, so a replayed effect
+  // (StrictMode) does not ask twice.
+  const asked = useRef<{ changes: ThreadChanges; options: string; paths: Set<string> } | null>(null);
 
-  const toggle = useCallback((path: string, forceOpen = false) => {
-    setExpanded((current) => (current === path && !forceOpen ? null : path));
-    // Expanding a row twice does not re-read it; a failed read may be retried.
-    const known = diffs[path];
-    if (known && !known.error) return;
-    // The first entry for a new list starts it afresh.
-    setRead((r) => ({
-      changes,
-      diffs: { ...(r.changes === changes ? r.diffs : NO_DIFFS), [path]: { loading: true } },
-    }));
-    if (!changes) return;
-    // An answer for a list that has since been replaced is dropped.
-    const land = (entry: DiffEntry) =>
-      setRead((r) => (r.changes === changes ? { changes, diffs: { ...r.diffs, [path]: entry } } : r));
-    void diffRef.current(path, changes)
-      .then((diff) => land({ diff, loading: false }))
-      .catch((e) => land({ loading: false, error: e instanceof Error ? e.message : String(e) }));
-  }, [changes, diffs, diffRef]);
+  const readDiff = useCallback(
+    (path: string) => {
+      if (!changes) return;
+      const a = asked.current;
+      if (a && a.changes === changes && a.options === options) {
+        if (a.paths.has(path)) return;
+        a.paths.add(path);
+      } else {
+        asked.current = { changes, options, paths: new Set([path]) };
+      }
+      const same = (r: DiffsRead) => r.changes === changes && r.options === options;
+      // The first entry for a new key starts it afresh.
+      setRead((r) => ({ changes, options, diffs: { ...(same(r) ? r.diffs : NO_DIFFS), [path]: { loading: true } } }));
+      const land = (entry: DiffEntry) => setRead((r) => (same(r) ? { ...r, diffs: { ...r.diffs, [path]: entry } } : r));
+      void diffRef.current(path, changes, { ignoreWhitespace, fullContext })
+        .then((diff) => land({ diff, loading: false }))
+        .catch((e) => land({ loading: false, error: e instanceof Error ? e.message : String(e) }));
+    },
+    [changes, options, ignoreWhitespace, fullContext, diffRef],
+  );
 
-  const toggleRef = useLatest(toggle);
+  const files = useMemo(() => changes?.files ?? [], [changes]);
 
-  const files = changes?.files ?? [];
+  // The open file always has its diff: read on expanding, and read again
+  // against a new list or new options without being closed and reopened.
+  useEffect(() => {
+    if (!expanded || diffs[expanded] || !files.some((f) => f.path === expanded)) return;
+    readDiff(expanded);
+  }, [expanded, diffs, files, readDiff]);
+
+  // ---- hide tests ----
+  const testCount = useMemo(() => files.filter((f) => isTestPath(f.path)).length, [files]);
+  const listed = useMemo(
+    () => (hideTests && testCount > 0 ? files.filter((f) => !isTestPath(f.path) || f.path === revealed) : files),
+    [files, hideTests, testCount, revealed],
+  );
+  const hiddenCount = files.length - listed.length;
+
+  // ---- find in diff ----
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [current, setCurrent] = useState<string | null>(null);
+  const findInput = useRef<HTMLInputElement>(null);
+  const q = findOpen ? query.trim() : "";
+  const finding = q.length >= MIN_QUERY;
+  // The server's answer, kept with the list and query it is for: an answer to
+  // anything else is stale and reads as none.
+  const [found, setFound] = useState<{ changes: ThreadChanges; query: string; paths: Set<string> } | null>(null);
+  const serverPaths = found && found.changes === changes && found.query === q ? found.paths : null;
+  const searching = finding && !serverPaths;
+  const findRef = useLatest(findInDiff);
+
+  useEffect(() => {
+    if (!finding || !changes) return;
+    const list = changes;
+    let live = true;
+    const timer = setTimeout(() => {
+      const land = (paths: string[]) => live && setFound({ changes: list, query: q, paths: new Set(paths) });
+      // A failed search still settles: the path-name matches stand alone.
+      findRef.current(q, list).then(land, () => land([]));
+    }, FIND_DELAY);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [finding, q, changes, findRef]);
+
+  const matches = useMemo(() => {
+    if (!finding) return listed;
+    const needle = q.toLowerCase();
+    return listed.filter((f) => f.path.toLowerCase().includes(needle) || serverPaths?.has(f.path));
+  }, [finding, q, listed, serverPaths]);
+  const at = current === null ? -1 : matches.findIndex((f) => f.path === current);
+
+  // ---- scrolling to what was asked for, once it is on screen ----
+  const listRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const scrollRow = useRef<{ path: string; smooth: boolean } | null>(null);
+  const scrollMatch = useRef<string | null>(null);
+
+  useEffect(() => {
+    const row = scrollRow.current;
+    const el = row && rowRefs.current.get(row.path);
+    if (row && el) {
+      el.scrollIntoView({ block: "start", behavior: row.smooth ? "smooth" : "auto" });
+      scrollRow.current = null;
+    }
+    const path = scrollMatch.current;
+    if (!path) return;
+    if (expanded !== path) {
+      scrollMatch.current = null;
+      return;
+    }
+    const entry = diffs[path];
+    if (!entry || entry.loading) return;
+    rowRefs.current.get(path)?.querySelector("[data-diff-match]")?.scrollIntoView({ block: "center" });
+    scrollMatch.current = null;
+  });
+
+  const step = (by: 1 | -1) => {
+    if (!matches.length) return;
+    const next = at === -1 ? (by === 1 ? 0 : matches.length - 1) : (at + by + matches.length) % matches.length;
+    const path = matches[next].path;
+    setCurrent(path);
+    setExpanded(path);
+    setRestore(null);
+    scrollRow.current = { path, smooth: false };
+    scrollMatch.current = path;
+  };
+
+  const openFind = (open: boolean) => {
+    setFindOpen(open);
+    if (!open) {
+      setQuery("");
+      setCurrent(null);
+    }
+  };
+  useEffect(() => {
+    if (findOpen) findInput.current?.focus();
+  }, [findOpen]);
+
+  // ---- rows ----
+  const toggle = (path: string) => {
+    setExpanded((cur) => (cur === path ? null : path));
+    setRestore(null);
+    if (finding) setCurrent(path);
+    // Expanding a row twice does not re-read it; a failed read is retried.
+    if (diffs[path]?.error) {
+      asked.current?.paths.delete(path);
+      setRead((r) => {
+        const rest = { ...r.diffs };
+        delete rest[path];
+        return { ...r, diffs: rest };
+      });
+    }
+  };
 
   // Reveal whatever the transcript asked for, once the list it belongs to has
   // arrived. A path the list does not carry is not an error: the file may have
   // been changed by an earlier turn and put back since.
+  const revealHandledRef = useLatest(onRevealHandled);
   useEffect(() => {
     if (!reveal) return;
     if (!files.some((f) => f.path === reveal.path)) return;
-    toggleRef.current(reveal.path, true);
-    const row = rowRefs.current.get(reveal.path);
-    row?.scrollIntoView({ block: "start", behavior: "smooth" });
+    setExpanded(reveal.path);
+    setRevealed(reveal.path);
+    setRestore(null);
+    scrollRow.current = { path: reveal.path, smooth: true };
+    revealHandledRef.current?.(reveal.nonce);
     // The nonce is what makes a repeat click count as a new request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.path, reveal?.nonce, files]);
 
+  // Put the remembered scroll back once the list can hold it, or once nothing
+  // more is coming that would make it taller.
+  const openEntry = expanded ? diffs[expanded] : undefined;
+  const settled =
+    !!error ||
+    (!!changes &&
+      !loading &&
+      (!expanded || !files.some((f) => f.path === expanded) || (!!openEntry && !openEntry.loading)));
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (restore === null || !el) return;
+    if (el.scrollHeight - el.clientHeight < restore && !settled) return;
+    el.scrollTop = restore;
+    setRestore(null);
+  });
+
+  const onScroll = () => {
+    // A list still filling in scrolls on its own; that is not where it was left.
+    if (restore !== null || !listRef.current) return;
+    rememberDiffPlace(placeKey, { scrollTop: listRef.current.scrollTop });
+  };
+
+  // ---- the toolbar ----
+  const toggles: DiffToggle[] = [
+    ...(desktop ? [{ label: "Split view", Icon: TOGGLE_ICONS.split, on: split, set: setSplit }] : []),
+    { label: "Wrap text", Icon: TOGGLE_ICONS.wrap, on: wrap, set: setWrap },
+    { label: "Ignore whitespace", Icon: TOGGLE_ICONS.whitespace, on: ignoreWhitespace, set: setIgnoreWhitespace },
+    { label: "Show full files", Icon: TOGGLE_ICONS.context, on: fullContext, set: setFullContext },
+    ...(testCount > 0
+      ? [
+          {
+            label: "Hide test files",
+            Icon: TOGGLE_ICONS.tests,
+            on: hideTests,
+            set: (hide: boolean) => {
+              // Asking to hide tests hides them all, the revealed one included.
+              if (hide) setRevealed(null);
+              setHideTests(hide);
+            },
+          },
+        ]
+      : []),
+  ];
+
+  const noun =
+    comparison === "turn"
+      ? "turn"
+      : comparison === "commit"
+        ? commits && commits.from !== commits.to
+          ? "range of commits"
+          : "commit"
+        : "thread";
+  const nothing =
+    comparison === "turn"
+      ? "This turn changed nothing."
+      : comparison === "commit"
+        ? commits && commits.from !== commits.to
+          ? "These commits changed nothing."
+          : "This commit changed nothing."
+        : "Nothing changed yet.";
+
+  const shown = finding ? matches : listed;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5">
-        <Select value={comparison} onValueChange={(value) => onComparisonChange(value as DiffComparison)}>
-          <SelectTrigger aria-label="Diff comparison" className="h-8 min-w-0 max-w-52 text-[12px]">
-            <SelectValue>
-              {comparison === "uncommitted" && (
-                <>
-                  <span className="sm:hidden">Uncommitted</span>
-                  <span className="hidden sm:inline">Uncommitted changes</span>
-                </>
-              )}
-              {comparison === "branch" && "Branch changes"}
-              {comparison === "pull_request" && (pr ? `PR #${pr.number}` : "Attached PR")}
-              {comparison === "turn" && (turn ? `Turn ${turn.number}` : "Turn")}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="uncommitted">Uncommitted changes</SelectItem>
-            <SelectItem value="branch">Branch changes</SelectItem>
-            {(pr || comparison === "pull_request") && <SelectItem value="pull_request">{pr ? `PR #${pr.number} vs ${pr.baseRefName || "base"}` : "Attached PR"}</SelectItem>}
-            {turn && <SelectItem value="turn">Turn {turn.number}</SelectItem>}
-          </SelectContent>
-        </Select>
-        <span className="text-muted-foreground shrink-0 text-[11px] whitespace-nowrap">
-          {files.length} file{files.length === 1 ? "" : "s"}
-        </span>
-        <span className="flex-1" />
-        {changes && <Counts additions={changes.additions} deletions={changes.deletions} />}
-        <label className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 text-[11px] select-none md:min-h-0">
-          <Checkbox checked={wrap} onCheckedChange={(v) => setWrap(v === true)} className="size-3.5" />
-          Wrap text
-        </label>
-        <IconButton label="Re-read the worktree" onClick={onRefresh}>
-          <RefreshCwIcon className={cn(loading && "spin-icon")} />
-        </IconButton>
+      {/* Wraps rather than overflows: docked narrow, the options drop to a
+          second line under the scope. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <DiffScopeSelect
+            comparison={comparison}
+            turn={turn}
+            pr={pr}
+            commits={commits}
+            onComparisonChange={onComparisonChange}
+            loadCommits={loadCommits}
+          />
+          <span className="text-muted-foreground shrink-0 text-[11px] whitespace-nowrap">
+            {finding ? `${matches.length} of ${plural(listed.length, "file")}` : plural(listed.length, "file")}
+            {hiddenCount > 0 && (
+              <span title={`${plural(hiddenCount, "test file")} hidden`}>
+                {" · "}
+                <span className="sm:hidden">{hiddenCount} hidden</span>
+                <span className="hidden sm:inline">{plural(hiddenCount, "test file")} hidden</span>
+              </span>
+            )}
+          </span>
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {changes && <Counts additions={changes.additions} deletions={changes.deletions} />}
+          <DiffToolbar desktop={desktop} toggles={toggles} findOpen={findOpen} onFind={openFind} menuFocus={findInput} />
+          <IconButton label="Re-read the worktree" onClick={onRefresh}>
+            <RefreshCwIcon className={cn(loading && "spin-icon")} />
+          </IconButton>
+        </div>
       </div>
 
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      {findOpen && (
+        <DiffFindBar
+          inputRef={findInput}
+          query={query}
+          onQuery={(next) => {
+            setQuery(next);
+            setCurrent(null);
+          }}
+          current={at}
+          total={finding ? matches.length : null}
+          searching={searching}
+          onStep={step}
+          onClose={() => openFind(false)}
+        />
+      )}
+
+      <div
+        ref={listRef}
+        onScroll={onScroll}
+        className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
+      >
         {error && (
           <div className="text-destructive flex items-start gap-2 px-3 py-3 text-[12px]">
             <TriangleAlertIcon className="size-4 shrink-0" />
@@ -258,14 +542,20 @@ export function DiffSurface({
         )}
         {!error && !changes?.warning && files.length === 0 && (
           <p className="text-muted-foreground px-3 py-10 text-center text-[12px]">
-            {loading && !changes
-              ? "Reading the worktree…"
-              : comparison === "turn"
-                ? "This turn changed nothing."
-                : "Nothing changed yet."}
+            {loading && !changes ? "Reading the worktree…" : nothing}
           </p>
         )}
-        {files.map((f) => (
+        {!error && files.length > 0 && listed.length === 0 && (
+          <p className="text-muted-foreground px-3 py-10 text-center text-[12px]">
+            Only test files changed, and they are hidden.
+          </p>
+        )}
+        {!error && finding && listed.length > 0 && matches.length === 0 && (
+          <p className="text-muted-foreground px-3 py-10 text-center text-[12px]">
+            {searching ? "Searching…" : `No file matches “${q}”.`}
+          </p>
+        )}
+        {shown.map((f) => (
           <FileRow
             key={f.path}
             file={f}
@@ -278,13 +568,14 @@ export function DiffSurface({
             loading={!!diffs[f.path]?.loading}
             error={diffs[f.path]?.error}
             wrap={wrap}
+            layout={layout}
+            highlight={finding ? q : undefined}
             onToggle={() => toggle(f.path)}
           />
         ))}
         {changes?.truncated && (
           <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
-            Only the first files are listed; this {comparison === "turn" ? "turn" : "thread"} changed more than the
-            panel will show.
+            Only the first files are listed; this {noun} changed more than the panel will show.
           </p>
         )}
       </div>
