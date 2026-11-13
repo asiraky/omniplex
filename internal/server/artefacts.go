@@ -404,13 +404,15 @@ func activeContent(mediaType string) bool {
 // sandbox boundary: the page reports where it is and what it logged, and takes
 // back and forward from the parent, and reports its height whenever that
 // changes, so a page drawn inline in the conversation can be sized to fit
-// instead of scrolling inside its frame.
+// instead of scrolling inside its frame. The body's scroll height counts too:
+// a page styled html, body { height: 100% } is exactly as tall as its frame
+// whatever it holds, and only the body's overflow says how much more there is.
 const bridgeScript = `<script>(function(){
 function mem(){var d={};return{getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d={}},key:function(i){var ks=Object.keys(d);return i<ks.length?ks[i]:null},get length(){return Object.keys(d).length}}}
 ["localStorage","sessionStorage"].forEach(function(n){try{window[n].length}catch(e){try{Object.defineProperty(window,n,{value:mem(),configurable:true})}catch(e2){}}});
 var P=window.parent;if(P===window)return;
 function send(m){try{P.postMessage(m,"*")}catch(e){}}
-if(typeof ResizeObserver==="function"){var H=-1,D=document.documentElement;new ResizeObserver(function(){var h=Math.ceil(D.getBoundingClientRect().height);if(h!==H){H=h;send({omniplex:"size",height:h})}}).observe(D)}
+if(typeof ResizeObserver==="function"){var H=-1,D=document.documentElement;var R=new ResizeObserver(function(){var B=document.body,h=Math.ceil(Math.max(D.getBoundingClientRect().height,B?B.scrollHeight:0));if(h!==H){H=h;send({omniplex:"size",height:h})}});R.observe(D);addEventListener("DOMContentLoaded",function(){if(document.body)R.observe(document.body)})}
 function nav(){send({omniplex:"nav",url:location.pathname+location.search+location.hash,title:document.title})}
 addEventListener("load",nav);addEventListener("popstate",nav);addEventListener("hashchange",nav);
 function fmt(a){if(typeof a==="string")return a;try{return JSON.stringify(a)}catch(e){return String(a)}}

@@ -467,3 +467,32 @@ describe("reuseRows", () => {
     expect(after[2]).toBe(before[2]);
   });
 });
+
+describe("buildRows with inline pages", () => {
+  it("puts a finished turn's inline pages above its answer and its cards below", () => {
+    const rows = buildRows(
+      [prompt("chart it"), tool(), artefact("chart", 1, { inline: true }), artefact("notes", 1), tool(), msg("Here.")],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "fold(2)", "artefacts(chart@1)", "message:agent", "artefacts(notes@1)"]);
+  });
+
+  it("goes by the last showing in the turn: a page shown again as a card moves under the answer", () => {
+    const rows = buildRows(
+      [prompt("go"), artefact("a", 1, { inline: true }), artefact("a", 2), msg("Done.")],
+      [turn("turn1")],
+      "idle",
+    );
+    expect(shape(rows)).toEqual(["message:user", "message:agent", "artefacts(a@2)"]);
+  });
+
+  it("leaves a running turn's artefacts where they were shown, inline or not", () => {
+    const rows = buildRows(
+      [prompt("go"), artefact("a", 1, { inline: true }), artefact("b", 1), msg("Look.")],
+      [turn("turn1", { done: false })],
+      "turn",
+    );
+    expect(shape(rows)).toEqual(["message:user", "artefacts(a@1,b@1)", "message:agent"]);
+  });
+});

@@ -37,6 +37,9 @@ export interface Artefact {
   note?: string;
   turnId?: string;
   shownAt: number;
+  /** The last showing asked for the page in the transcript. A later showing
+      without it turns the artefact back into a card. */
+  inline?: boolean;
 }
 
 /** How a prompt names an uploaded file. */

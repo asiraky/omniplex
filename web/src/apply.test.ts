@@ -1081,3 +1081,40 @@ describe("a rewind", () => {
     expect(s.queuedPrompts.map((q) => q.queueId)).toEqual(["q1"]);
   });
 });
+
+describe("applyEvent artefact.shown", () => {
+  const shown = (seq: number, over: Record<string, unknown> = {}) =>
+    ev(
+      seq,
+      "artefact.shown",
+      {
+        artefactId: "a1",
+        name: "chart.html",
+        path: "/p/chart.html",
+        mediaType: "text/html",
+        size: 10,
+        entry: "chart.html",
+        files: 1,
+        modifiedAt: 1,
+        source: "agent",
+        turnId: "t1",
+        ...over,
+      },
+      seq * 1000,
+    );
+
+  it("marks the showing and the artefact inline, and a showing without it turns both back into a card", () => {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "chart" }));
+    s = applyEvent(s, shown(2, { inline: true }));
+    expect(s.items.at(-1)!.inline).toBe(true);
+    expect(s.artefacts![0].inline).toBe(true);
+
+    s = applyEvent(s, shown(3));
+    expect(s.items.at(-1)!.inline).toBeUndefined();
+    expect(s.artefacts![0].inline).toBeUndefined();
+    // The earlier showing is history and keeps what it asked for.
+    expect(s.items.find((it) => it.id === "artefact:a1@2")!.inline).toBe(true);
+    expect(s.artefacts).toHaveLength(1);
+  });
+});

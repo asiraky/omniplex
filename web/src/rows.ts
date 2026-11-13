@@ -51,8 +51,10 @@ export type Row =
   // in view without scrolling back up to where they were started.
   | { kind: "jobs"; id: string; items: Item[]; recap?: true }
   // Artefacts the agent showed. Never folded: they are what the turn was
-  // for. A finished turn shows them under its answer, one card per artefact
-  // however many times it was shown.
+  // for. A finished turn shows one per artefact however many times it was
+  // shown: pages shown inline sit above its answer, as the visual reply the
+  // answer goes with, and the cards sit under it. A running turn shows them
+  // where they were shown, which is before the text that follows.
   | { kind: "artefacts"; id: string; items: Item[] };
 
 /** A row's identity: its React key, and the id the scroll memory finds it by. */
@@ -160,12 +162,15 @@ export function buildRows(items: Item[], turns: Turn[], phase: string): Row[] {
         hidden.push(it);
       }
       flush();
+      const shown = latestPerArtefact(produced);
+      const inline = shown.filter((it) => it.inline);
+      const cards = shown.filter((it) => !it.inline);
+      if (inline.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${inline[0].id}`, items: inline });
       if (answer) rows.push({ kind: "item", item: answer });
       if (answer && spawns.length > 0)
         rows.push({ kind: "jobs", id: `jobs-recap:${spawns[0].id}`, items: spawns, recap: true });
       for (const it of decided) rows.push({ kind: "item", item: it });
-      if (produced.length > 0)
-        rows.push({ kind: "artefacts", id: `artefacts:${produced[0].id}`, items: latestPerArtefact(produced) });
+      if (cards.length > 0) rows.push({ kind: "artefacts", id: `artefacts:${cards[0].id}`, items: cards });
       i = j;
       continue;
     }

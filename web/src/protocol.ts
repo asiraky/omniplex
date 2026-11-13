@@ -110,6 +110,9 @@ export interface Item {
   artefactId?: string;
   mediaType?: string;
   size?: number;
+  /** This showing asked for the page to be drawn in the transcript rather
+      than as a card. Only ever set on HTML; the server drops it otherwise. */
+  inline?: boolean;
   // card: what the agent proposed, and once answered, what happened
   card?: Card;
   outcome?: CardOutcome;
