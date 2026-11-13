@@ -5,9 +5,10 @@
 //
 // It seeds a temporary store, serves it with the real handler, and reads what
 // a phone reads: the welcome frame (the sidebar), a thread's snapshot, and the
-// page of older items above it. No harness adapters are installed, so the
-// welcome frame's harness list is empty: that part depends on the machine. Each is measured decoded, which is what the
+// page of older items above it. Each is measured decoded, which is what the
 // phone parses and keeps, and compressed, which is what crosses the network.
+// No harness adapters are installed, so the welcome frame's harness list is
+// empty: what it holds depends on the machine.
 package main
 
 import (
@@ -30,6 +31,7 @@ import (
 
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/project"
+	"github.com/asiraky/omniplex/internal/projection"
 	"github.com/asiraky/omniplex/internal/proto"
 	"github.com/asiraky/omniplex/internal/server"
 	"github.com/asiraky/omniplex/internal/store"
@@ -46,22 +48,22 @@ const (
 	fixtureThread   = "fixture-thread"
 )
 
-// budget is the ceiling on one payload, in bytes. Decoded is the JSON as
-// parsed; wire is what gzip (HTTP) or permessage-deflate (WebSocket) sends.
-type budget struct{ decoded, wire int }
+// sizes is one payload in bytes: decoded is the JSON as parsed, wire is what
+// gzip (HTTP) or permessage-deflate (WebSocket) sends.
+type sizes struct{ decoded, wire int }
 
-// The ceilings sit about 15% over what the fixture measured when they were set,
-// noted beside each. Raising one
-// is a decision: say in the PR why the payload has to be bigger.
-var budgets = map[string]budget{
-	"welcome":  {decoded: 53_000, wire: 7_000},   // 46.2 KB, 6.0 KB
-	"snapshot": {decoded: 200_000, wire: 48_000}, // 173.1 KB, 41.6 KB
-	"page":     {decoded: 168_000, wire: 42_000}, // 146.1 KB, 36.1 KB
-}
+// The ceilings sit about 15% over what the fixture measured when they were
+// set, noted beside each. Raising one is a decision: say in the PR why the
+// payload has to be bigger.
+var (
+	welcomeBudget  = sizes{decoded: 53_000, wire: 8_000}   // 46.2 KB, 6.9 KB
+	snapshotBudget = sizes{decoded: 211_000, wire: 52_000} // 183.6 KB, 45.2 KB
+	pageBudget     = sizes{decoded: 189_000, wire: 49_000} // 164.0 KB, 42.6 KB
+)
 
-type measure struct {
-	name          string
-	decoded, wire int
+type payload struct {
+	name        string
+	got, budget sizes
 }
 
 func main() {
@@ -102,9 +104,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
-	var state struct {
-		ItemsBefore int `json:"itemsBefore"`
-	}
+	var state projection.State
 	if err := json.Unmarshal(body, &state); err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
@@ -116,50 +116,49 @@ func run() error {
 		return fmt.Errorf("page: %w", err)
 	}
 
-	welcome.name, snap.name, page.name = "welcome", "snapshot", "page"
-	return check([]measure{welcome, snap, page})
+	return check([]payload{
+		{"welcome", welcome, welcomeBudget},
+		{"snapshot", snap, snapshotBudget},
+		{"page", page, pageBudget},
+	})
 }
 
-func check(ms []measure) error {
+func check(ps []payload) error {
 	var over []string
-	for _, m := range ms {
-		b := budgets[m.name]
-		fmt.Printf("%-9s decoded %7d B (budget %7d)   wire %6d B (budget %6d)\n", m.name, m.decoded, b.decoded, m.wire, b.wire)
-		if m.decoded > b.decoded {
-			over = append(over, fmt.Sprintf("%s decoded %d B > %d B", m.name, m.decoded, b.decoded))
-		}
-		if m.wire > b.wire {
-			over = append(over, fmt.Sprintf("%s wire %d B > %d B", m.name, m.wire, b.wire))
+	for _, p := range ps {
+		fmt.Printf("%-9s decoded %7d B (budget %7d)   wire %6d B (budget %6d)\n", p.name, p.got.decoded, p.budget.decoded, p.got.wire, p.budget.wire)
+		if p.got.decoded > p.budget.decoded || p.got.wire > p.budget.wire {
+			over = append(over, p.name)
 		}
 	}
 	if len(over) > 0 {
-		return fmt.Errorf("over budget: %s", strings.Join(over, "; "))
+		return fmt.Errorf("over budget: %s", strings.Join(over, ", "))
 	}
 	return nil
 }
 
 // measureWelcome reads the frame a client gets for its hello. The socket is
 // opened uncompressed so the frame arrives as sent; its wire size is the frame
-// deflated on its own, which is what permessage-deflate sends for the first
-// message on a socket.
-func measureWelcome(ctx context.Context, base string) (measure, error) {
+// deflated on its own at BestSpeed, which is what coder/websocket's
+// permessage-deflate sends for the first message on a socket.
+func measureWelcome(ctx context.Context, base string) (sizes, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/ws",
 		&websocket.DialOptions{CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
-		return measure{}, err
+		return sizes{}, err
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(64 << 20)
-	hello, _ := json.Marshal(map[string]any{"type": "hello", "protocolVersion": 1, "clientId": "wirebudget"})
+	hello, _ := json.Marshal(map[string]any{"type": "hello", "protocolVersion": server.ProtocolVersion, "clientId": "wirebudget"})
 	if err := conn.Write(ctx, websocket.MessageText, hello); err != nil {
-		return measure{}, err
+		return sizes{}, err
 	}
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			return measure{}, err
+			return sizes{}, err
 		}
 		var f struct {
 			Type string `json:"type"`
@@ -168,47 +167,47 @@ func measureWelcome(ctx context.Context, base string) (measure, error) {
 			continue
 		}
 		var buf bytes.Buffer
-		w, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+		w, _ := flate.NewWriter(&buf, flate.BestSpeed)
 		w.Write(data)
 		w.Close()
-		return measure{decoded: len(data), wire: buf.Len()}, nil
+		return sizes{decoded: len(data), wire: buf.Len()}, nil
 	}
 }
 
 // measureHTTP fetches url as the browser does, gzip accepted, and returns the
 // sizes and the decoded body.
-func measureHTTP(url string) (measure, []byte, error) {
+func measureHTTP(url string) (sizes, []byte, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return measure{}, nil, err
+		return sizes{}, nil, err
 	}
 	req.Header.Set("Accept-Encoding", "gzip")
 	// DisableCompression keeps the transport from unzipping it behind our back.
 	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
 	res, err := client.Do(req)
 	if err != nil {
-		return measure{}, nil, err
+		return sizes{}, nil, err
 	}
 	defer res.Body.Close()
 	raw, err := io.ReadAll(res.Body)
 	if err != nil {
-		return measure{}, nil, err
+		return sizes{}, nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return measure{}, nil, fmt.Errorf("status %d: %s", res.StatusCode, raw)
+		return sizes{}, nil, fmt.Errorf("status %d: %s", res.StatusCode, raw)
 	}
 	if res.Header.Get("Content-Encoding") != "gzip" {
-		return measure{}, nil, fmt.Errorf("response was not gzipped")
+		return sizes{}, nil, fmt.Errorf("response was not gzipped")
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		return measure{}, nil, err
+		return sizes{}, nil, err
 	}
 	body, err := io.ReadAll(zr)
 	if err != nil {
-		return measure{}, nil, err
+		return sizes{}, nil, err
 	}
-	return measure{decoded: len(body), wire: len(raw)}, body, nil
+	return sizes{decoded: len(body), wire: len(raw)}, body, nil
 }
 
 // seed writes the fixture: projects with folders, a sidebar of threads across
@@ -217,8 +216,9 @@ func measureHTTP(url string) (measure, []byte, error) {
 // them from disk.
 func seed(ctx context.Context, st *store.Store) error {
 	const home = "/home/dev/code"
-	// Fixed timestamps for the rows we write; the store stamps events itself,
-	// but every stamp is the same width, so sizes do not move between runs.
+	// Fixed timestamps for the rows we write. The store stamps events with the
+	// clock, at a fixed width: decoded sizes never move between runs, and the
+	// compressed ones move by a few bytes.
 	const epoch = int64(1_760_000_000_000)
 	for p := range fixtureProjects {
 		id := fmt.Sprintf("project-%d", p)
@@ -270,6 +270,9 @@ func seed(ctx context.Context, st *store.Store) error {
 
 // turnEvents is one ordinary coding turn: a prompt, some thinking, a read, a
 // search, an edit and a command, then the answer and what the turn changed.
+// Every fifth turn reads a file far past the projection's caps on tool text,
+// and every fourth spawns a subagent that makes calls of its own, so a cap
+// loosened or a trim dropped shows up in the sizes.
 func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 	tid := fmt.Sprintf("turn-%03d", turn)
 	call := func(n int) string { return fmt.Sprintf("toolu_%03d_%d_%s", turn, n, word(r)) }
@@ -286,8 +289,12 @@ func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 	add(proto.MessageChunk, proto.MessageChunkPayload{TurnID: tid, Role: "agent", Kind: "thought", BlockID: tid + "-think", Delta: paragraph(r, 4)})
 
 	read := call(1)
+	readLines := 80
+	if turn%5 == 0 {
+		readLines = 2000
+	}
 	tool(read, proto.KindRead, "Read "+path, map[string]any{"file_path": path},
-		[]proto.ToolContent{{Type: "text", Text: code(r, 80)}})
+		[]proto.ToolContent{{Type: "text", Text: code(r, readLines)}})
 	search := call(2)
 	tool(search, proto.KindSearch, "Grep "+word(r), map[string]any{"pattern": word(r), "path": "internal"},
 		[]proto.ToolContent{{Type: "text", Text: lines(r, 15, func() string {
@@ -302,6 +309,23 @@ func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 		[]proto.ToolContent{{Type: "text", Text: lines(r, 40, func() string {
 			return fmt.Sprintf("ok  \tgithub.com/asiraky/omniplex/internal/%s\t%d.%03ds", word(r), r.IntN(9), r.IntN(1000))
 		})}})
+
+	if turn%4 == 0 {
+		task, job := call(5), fmt.Sprintf("job-%03d", turn)
+		add(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: tid, ToolCallID: task, Kind: proto.KindAgent, Title: "Agent: " + sentence(r, 4), Status: proto.StatusInProgress,
+			RawInput: input(map[string]any{"description": sentence(r, 4), "prompt": paragraph(r, 6), "subagent_type": "Explore"})})
+		add(proto.JobStarted, proto.JobPayload{JobID: job, ToolCallID: task, Kind: proto.JobAgent, TaskType: "local_agent", Name: sentence(r, 4), Role: "Explore", Status: proto.JobRunning})
+		for n := range 6 {
+			child := fmt.Sprintf("%s_child_%d", task, n)
+			add(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: tid, ToolCallID: child, Kind: proto.KindRead, Title: "Read " + path, Status: proto.StatusInProgress,
+				RawInput: input(map[string]any{"file_path": path}), ParentToolCallID: task})
+			add(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: child, Status: proto.StatusCompleted, ParentToolCallID: task,
+				Content: []proto.ToolContent{{Type: "text", Text: code(r, 60)}}})
+		}
+		add(proto.JobFinished, proto.JobPayload{JobID: job, ToolCallID: task, Status: proto.JobCompleted})
+		add(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: task, Status: proto.StatusCompleted,
+			Content: []proto.ToolContent{{Type: "text", Text: paragraph(r, 10)}}})
+	}
 
 	for _, chunk := range strings.SplitAfter(paragraph(r, 8), ". ") {
 		add(proto.MessageChunk, proto.MessageChunkPayload{TurnID: tid, Role: "agent", Kind: "text", BlockID: tid + "-answer", Delta: chunk})
