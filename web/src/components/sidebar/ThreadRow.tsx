@@ -28,6 +28,7 @@ import { useShortcut } from "~/useShortcuts";
 import { useNow } from "~/useNow";
 
 import type { RowDrag } from "./SortableRows";
+import { ThreadHoverCard } from "./ThreadHoverCard";
 
 function ago(ms: number, now: number) {
   const s = Math.max(0, Math.floor((now - ms) / 1000));
@@ -483,36 +484,45 @@ export const ThreadRow = memo(function ThreadRow({
               </div>
             ) : (
               <>
-                <button
-                  type="button"
-                  onClick={reordering ? undefined : () => onSelect(s.id)}
-                  // A mouse or pen drags the row itself; a finger only ever
-                  // drags by the handle, so a scroll is never a drag.
-                  onPointerDown={drag && ((e) => drag.onRowPointerDown(e, s.id))}
-                  aria-current={active ? "true" : undefined}
-                  className={cn(
-                    "focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2",
-                    // The grip's column, in reorder mode only.
-                    reordering && "cursor-default pl-11",
-                  )}
+                {/* A mouse resting on the row previews the thread; in reorder
+                    mode the row is something to move, so it previews nothing. */}
+                <ThreadHoverCard
+                  s={s}
+                  projectName={projectName}
+                  accentOf={accentOf}
+                  disabled={reordering}
                 >
-                  {/* Two matched lines: text on the left, a small mark on the
-                      right — timestamp above, provider logo below. */}
-                  <TitleLine
-                    s={s}
-                    isNew={badge === "new"}
-                    reordering={reordering}
-                    jumpHint={jumpHint}
-                  />
-                  <DetailLine
-                    s={s}
-                    status={status}
-                    badge={badge}
-                    showProject={showProject}
-                    projectName={projectName}
-                    accentOf={accentOf}
-                  />
-                </button>
+                  <button
+                    type="button"
+                    onClick={reordering ? undefined : () => onSelect(s.id)}
+                    // A mouse or pen drags the row itself; a finger only ever
+                    // drags by the handle, so a scroll is never a drag.
+                    onPointerDown={drag && ((e) => drag.onRowPointerDown(e, s.id))}
+                    aria-current={active ? "true" : undefined}
+                    className={cn(
+                      "focus-visible:ring-ring block w-full min-w-0 cursor-pointer rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2",
+                      // The grip's column, in reorder mode only.
+                      reordering && "cursor-default pl-11",
+                    )}
+                  >
+                    {/* Two matched lines: text on the left, a small mark on the
+                        right — timestamp above, provider logo below. */}
+                    <TitleLine
+                      s={s}
+                      isNew={badge === "new"}
+                      reordering={reordering}
+                      jumpHint={jumpHint}
+                    />
+                    <DetailLine
+                      s={s}
+                      status={status}
+                      badge={badge}
+                      showProject={showProject}
+                      projectName={projectName}
+                      accentOf={accentOf}
+                    />
+                  </button>
+                </ThreadHoverCard>
 
                 {reordering ? (
                   <DragHandle s={s} drag={drag} />

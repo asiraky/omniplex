@@ -314,6 +314,91 @@ describe("Sidebar", () => {
     });
   });
 
+  describe("hover card", () => {
+    const card = () => document.querySelector("[data-slot=thread-hover-card]");
+    const row = (id: string) => screen.getByRole("button", { name: new RegExp(`^Thread ${id}`) });
+    const rest = (el: Element) => fireEvent.pointerMove(el, { pointerType: "mouse" });
+    const long = thread("a", {
+      attention: "needs_permission",
+      branch: "issue/369-thread-hover-card-in-the-sidebar-with-a-long-name",
+      model: "claude-opus-5-5",
+    });
+
+    it("opens on a resting mouse with what the row has no room for", () => {
+      vi.useFakeTimers();
+      try {
+        pointerDesktop();
+        renderSidebar({ threads: [long] });
+        rest(row("a"));
+        // A pointer passing over the list opens nothing.
+        expect(card()).toBeNull();
+        act(() => vi.advanceTimersByTime(600));
+
+        const c = card()!;
+        expect(c).not.toBeNull();
+        expect(c.textContent).toContain("Waiting for permission");
+        expect(c.textContent).toContain(long.branch);
+        expect(c.textContent).toContain("claude-opus-5-5");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("closes when the row is pressed, and the row still opens", () => {
+      pointerDesktop();
+      const props = renderSidebar({ threads: [long] });
+      fireEvent.focus(row("a"));
+      expect(card()).not.toBeNull();
+
+      fireEvent.pointerDown(row("a"), { button: 0, pointerType: "mouse" });
+      fireEvent.click(row("a"));
+      expect(card()).toBeNull();
+      expect(props.onSelect).toHaveBeenCalledWith("a");
+    });
+
+    it("says whether a stopped thread's last turn failed", () => {
+      pointerDesktop();
+      renderSidebar({
+        threads: [
+          thread("a", { attention: "needs_prompt", turnFailed: true }),
+          thread("b", { attention: "needs_prompt" }),
+        ],
+      });
+      fireEvent.focus(row("a"));
+      expect(card()!.textContent).toContain("Last turn failed");
+      fireEvent.blur(row("a"));
+      fireEvent.focus(row("b"));
+      expect(card()!.textContent).toContain("Finished");
+      expect(card()!.textContent).not.toContain("failed");
+    });
+
+    it("shows no status when the server sends no attention signal", () => {
+      pointerDesktop();
+      renderSidebar({ threads: [thread("a", { phase: "running" })] });
+      fireEvent.focus(row("a"));
+      expect(card()!.textContent).not.toMatch(/Working|Finished|Waiting/);
+    });
+
+    it("never renders on a screen without hover", () => {
+      viewport("phone");
+      renderSidebar({ threads: [long] });
+      fireEvent.focus(row("a"));
+      expect(card()).toBeNull();
+    });
+
+    it("previews nothing in reorder mode", async () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long] });
+      fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
+      fireEvent.focus(row("a"));
+      expect(card()).toBeNull();
+    });
+  });
+
   it("starts a project from the header", () => {
     const props = renderSidebar({ activeId: null });
     fireEvent.click(screen.getByRole("button", { name: "New project" }));
