@@ -30,6 +30,7 @@
     "start": "./omniplex",
     "test": "npm run test:go && npm run test:web && npm run test:desktop && npm run test:site",
     "test:go": "go test -race ./...",
+    "check:wire": "go run ./scripts/wirebudget",
     "test:web": "./scripts/web tsc && ./scripts/web vitest run",
     "test:site": "node --test site/src/lib/download.test.js",
     "clean": "rm -f omniplex omni && rm -rf cmd/omniplex/webdist && mkdir -p cmd/omniplex/webdist && touch cmd/omniplex/webdist/.gitkeep",
