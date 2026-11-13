@@ -444,6 +444,9 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
       return {
         ...marked,
         phase: "turn",
+        // A suggestion answers the turn before this one. Mirrors
+        // internal/projection/state.go.
+        suggestion: undefined,
         // A recovery prompt is the server talking to itself, so it never
         // names the thread.
         title: marked.title || (p.recovery ? "" : prompt.slice(0, 60) || imageTitle(images?.length ?? 0)),
@@ -590,6 +593,14 @@ export function applyEvent(state: ThreadState, ev: Event): ThreadState {
         ...s,
         turns: s.turns.map((t) => (t.id === p.turnId ? { ...t, diff: p as TurnDiff } : t)),
       };
+
+    case "turn.suggested":
+      // Only a suggestion for the latest turn is offered: one for an earlier
+      // turn arrived after the human had already moved on. Mirrors
+      // internal/projection/state.go.
+      return s.turns.at(-1)?.id === p.turnId
+        ? { ...s, suggestion: { turnId: p.turnId, text: p.text } }
+        : s;
 
     case "message.chunk":
       return {

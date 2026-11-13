@@ -525,6 +525,17 @@ export interface ThreadState {
       in the order the keys first appeared. Absent on states cached by an
       older page. */
   extensionStatuses?: ExtensionStatus[];
+  /** The harness's guess at the human's next prompt, for the latest turn
+      only. Cleared when the next turn starts. */
+  suggestion?: TurnSuggested;
+}
+
+/** Wire payload of turn.suggested: the harness's guess at the next prompt
+    after a turn ended. The text is trimmed, non-empty and at most 200
+    characters. */
+export interface TurnSuggested {
+  turnId: string;
+  text: string;
 }
 
 /** One extension status line, under the extension's own key. */
@@ -722,6 +733,8 @@ export interface UserConfig {
   voice?: string;
   /** Whether the new-thread composer starts with its pin on. Absent means on. */
   pinNewThreads?: boolean;
+  /** Whether the harness offers a suggested next prompt after a turn. Absent means on. */
+  suggestPrompts?: boolean;
   /** Whether the server keeps harness CLIs up to date in the background. Absent means on. */
   autoUpdateHarnesses?: boolean;
   /** Whether the server tidies a dictated transcript (punctuation, filler

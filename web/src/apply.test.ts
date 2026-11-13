@@ -112,6 +112,38 @@ describe("applyEvent turn lifecycle", () => {
   });
 });
 
+// Mirrors internal/projection/state_test.go.
+describe("turn suggestions", () => {
+  function finished(): ThreadState {
+    let s = emptyState("s1");
+    s = applyEvent(s, ev(1, "turn.started", { turnId: "t1", prompt: "go" }));
+    s = applyEvent(s, ev(2, "turn.finished", { turnId: "t1", stopReason: "end_turn" }));
+    return s;
+  }
+
+  it("keeps a suggestion for the latest turn", () => {
+    const s = applyEvent(finished(), ev(3, "turn.suggested", { turnId: "t1", text: "run the tests" }));
+    expect(s.suggestion).toEqual({ turnId: "t1", text: "run the tests" });
+  });
+
+  it("ignores a suggestion for a turn that is no longer the latest", () => {
+    let s = applyEvent(finished(), ev(3, "turn.started", { turnId: "t2", prompt: "next" }));
+    s = applyEvent(s, ev(4, "turn.suggested", { turnId: "t1", text: "stale" }));
+    expect(s.suggestion).toBeUndefined();
+  });
+
+  it("ignores a suggestion for a turn it has never seen", () => {
+    const s = applyEvent(finished(), ev(3, "turn.suggested", { turnId: "t9", text: "who?" }));
+    expect(s.suggestion).toBeUndefined();
+  });
+
+  it("clears the suggestion when the next turn starts", () => {
+    let s = applyEvent(finished(), ev(3, "turn.suggested", { turnId: "t1", text: "run the tests" }));
+    s = applyEvent(s, ev(4, "turn.started", { turnId: "t2", prompt: "run the tests" }));
+    expect(s.suggestion).toBeUndefined();
+  });
+});
+
 // Mirrors internal/projection/state_test.go: "" is a level the user can
 // choose — the harness's own default — so an event carrying it must win.
 describe("applyEvent config changes", () => {
