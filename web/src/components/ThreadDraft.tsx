@@ -61,6 +61,14 @@ export interface NewThreadInput {
   text: string;
   /** Starts the thread in the sidebar's Pinned section. */
   pinned: boolean;
+  /** Named up front, so the title the first prompt would give is not used. */
+  title?: string;
+}
+
+/** One thread of a compare send, and the model's name for saying it did not start. */
+export interface CompareRun {
+  input: NewThreadInput;
+  label: string;
 }
 
 /** Why sending is not possible yet, or "" when it is. */
