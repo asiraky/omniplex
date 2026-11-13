@@ -386,6 +386,22 @@ describe("Sidebar", () => {
       expect(card()).toBeNull();
     });
 
+    it("never renders in a window too narrow to dock the sidebar, mouse or not", () => {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: /hover: hover/.test(query),
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }));
+      renderSidebar({ threads: [long] });
+      fireEvent.focus(row("a"));
+      expect(card()).toBeNull();
+    });
+
     it("previews nothing in reorder mode", async () => {
       pointerDesktop();
       renderSidebar({ threads: [long] });

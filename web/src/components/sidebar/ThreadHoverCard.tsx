@@ -6,7 +6,7 @@ import { HarnessBadge } from "~/components/HarnessBadge";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
 import { unread } from "~/threadStatus";
-import { useCanHover } from "~/useMediaQuery";
+import { useCanHover, useIsDesktop } from "~/useMediaQuery";
 import { useNow } from "~/useNow";
 
 /** Long enough that sweeping the pointer down the list opens nothing. */
@@ -129,8 +129,8 @@ function Card({
 /**
  * The preview a sidebar row opens when a mouse rests on it: the whole title,
  * what the thread is doing, and where it works. Desktop only — a touch screen
- * has no hover, so on one the card never renders, and a tap still just opens
- * the thread.
+ * has no hover, and below md the sidebar fills the screen, so on either the
+ * card never renders and a tap still just opens the thread.
  *
  * Built on the tooltip primitive rather than a hover card: a tooltip closes the
  * moment the row is pressed and does not reopen from the focus that press
@@ -187,11 +187,15 @@ function CardContent(props: {
 }
 
 /**
- * Nothing without a pointer that hovers. Not rendering the card on touch,
- * rather than hiding it, matters for the reason the shared tooltip gives: an
- * invisible card is still a layer, and it would swallow the Escape meant for
- * the sheet under it.
+ * Nothing without a pointer that hovers, and nothing below md. Not rendering
+ * the card on touch, rather than hiding it, matters for the reason the shared
+ * tooltip gives: an invisible card is still a layer, and it would swallow the
+ * Escape meant for the sheet under it. Below md the sidebar is a sheet that
+ * fills the screen, so a card beside it would open off the edge; the row there
+ * is wide enough to say most of what the card would.
  */
 function HoverOnly({ children }: { children: ReactNode }) {
-  return useCanHover() ? children : null;
+  const canHover = useCanHover();
+  const docked = useIsDesktop();
+  return canHover && docked ? children : null;
 }
