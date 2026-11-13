@@ -281,12 +281,13 @@ export function ThreadDraft({
   // message starting with a slash has to wait to find out.
   const catalogue = useMemo(() => ({ ...listed, ready: true }), [listed]);
 
+  const filesWithCompare = compare.comparing && !!attachments?.some((a) => a.status !== "error");
   const blocker = blockerFor({
     status,
     project,
     ready: agent.instance?.availability?.state === "ready",
     missingWorktree: git.kind === "attach" && !git.choice.attachPath,
-    filesWithCompare: compare.comparing && !!attachments?.some((a) => a.status !== "error"),
+    filesWithCompare,
     loadingSpaces: git.loadingSpaces,
     starting,
   });
@@ -369,8 +370,8 @@ export function ThreadDraft({
 
         {/* The placeholder that says why send is held is hidden under the
             message already typed, and this one is easy to walk into. */}
-        {blocker === FILES_WITH_COMPARE && (
-          <p className="text-muted-foreground text-[12px]">{blocker}</p>
+        {filesWithCompare && (
+          <p className="text-muted-foreground text-[12px]">{FILES_WITH_COMPARE}</p>
         )}
 
         {error && (
@@ -448,8 +449,9 @@ export function ThreadDraft({
           disabledPlaceholder={blocker}
           busy={false}
           onSend={(text) => void start(text)}
+          onSchedule={() => void start(draft, true)}
           // A schedule fires one prompt into one thread.
-          onSchedule={compare.comparing ? undefined : () => void start(draft, true)}
+          scheduleBlocked={compare.comparing ? "Not while comparing models" : undefined}
           attachments={attachments}
           onAttachFiles={onAttachFiles}
           onRemoveAttachment={onRemoveAttachment}

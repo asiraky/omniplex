@@ -203,13 +203,33 @@ describe("comparing models from the draft", () => {
     expect(props.onCompare).not.toHaveBeenCalled();
   });
 
-  it("holds send while files are attached, and says why", async () => {
+  it("holds send while files are attached", async () => {
     const file = { key: "a", kind: "file", status: "ready", name: "notes.txt" } as unknown as Attachment;
     open({ attachments: [file] });
     await waitFor(() => compareChip());
     add("Sonnet 5");
-    expect(screen.getByText(/Files go to one thread/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("will not schedule while comparing, and will once the models are removed", async () => {
+    open();
+    await waitFor(() => compareChip());
+    add("Sonnet 5");
+    const openOptions = () =>
+      fireEvent.pointerDown(screen.getByRole("button", { name: "More send options" }), {
+        button: 0,
+        ctrlKey: false,
+      });
+    openOptions();
+    const item = await screen.findByRole("menuitem", { name: /Schedule send/ });
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.keyDown(item, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop comparing with Sonnet 5" }));
+    openOptions();
+    const again = await screen.findByRole("menuitem", { name: /Schedule send/ });
+    expect(again.getAttribute("aria-disabled")).toBeNull();
   });
 
   it("puts the message back when no thread started", async () => {

@@ -187,6 +187,8 @@ export interface CompareAgent {
   serviceTier: string;
   /** The model's name in the catalogue, for titles and toasts. */
   label: string;
+  /** The account's name, to tell the same model on two accounts apart. */
+  account: string;
 }
 
 /**
@@ -211,6 +213,7 @@ export function compareAgent(sources: AgentSources, pick: ModelSelection): Compa
     effort: models.effort,
     serviceTier: models.serviceTier,
     label: instance?.models.find((m) => m.id === models.model)?.label || pick.model,
+    account: instance?.name ?? "",
   };
 }
 

@@ -101,6 +101,7 @@ describe("compareAgent", () => {
       effort: "high",
       serviceTier: "",
       label: "Opus 5",
+      account: "Claude",
     });
   });
 

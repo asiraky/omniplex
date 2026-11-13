@@ -2,7 +2,8 @@ import { useState } from "react";
 
 import type { ModelSelection } from "~/components/ModelPicker";
 import type { CompareRun, NewThreadInput } from "~/components/ThreadDraft";
-import { addCompare, compareBranches, compareTitle, sameModel } from "./compare";
+import { pickerInstances } from "~/lib/models";
+import { addCompare, compareBranches, compareLabels, compareTitle, sameModel } from "./compare";
 import { compareAgent, type AgentSources } from "./useAgentChoice";
 
 const NONE: ModelSelection[] = [];
@@ -37,25 +38,29 @@ export function useCompare(sources: AgentSources, primary: ModelSelection, enabl
      * off the same base, a branch of its own, and a title naming its model.
      */
     runs: (own: NewThreadInput, ownLabel: string): CompareRun[] => {
+      const ownAccount =
+        pickerInstances(sources.harnesses).find((i) => i.id === own.instance)?.name ?? "";
       const all = [
-        { input: own, label: ownLabel },
-        ...extras.map(({ agent: { label, ...agent } }) => ({
+        { input: own, label: ownLabel, account: ownAccount },
+        ...extras.map(({ agent: { label, account, ...agent } }) => ({
           input: { ...own, ...agent, agentSettingsExplicit: true },
           label,
+          account,
         })),
       ];
       const branches = compareBranches(
         own.branch,
         all.map((r) => r.input.model),
       );
-      return all.map(({ input, label }, i) => ({
-        label,
+      const labels = compareLabels(all);
+      return all.map(({ input }, i) => ({
+        label: labels[i],
         input: {
           ...input,
           workspace: "managed",
           workspacePath: "",
           branch: branches[i],
-          title: compareTitle(input.text, label),
+          title: compareTitle(input.text, labels[i]),
         },
       }));
     },

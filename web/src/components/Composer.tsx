@@ -113,6 +113,8 @@ interface ComposerProps {
       a send that was held back. */
   onSendAndNewThread?: () => void;
   onSchedule?: () => void;
+  /** Why the caller can't schedule right now, ahead of the composer's own reasons. */
+  scheduleBlocked?: string;
   onCancel: () => void;
   /** Images and files staged for the next message. Owned by the parent for
       the same reason the draft is: a thread switch unmounts this component. */
@@ -229,6 +231,7 @@ export function Composer({
   onSend,
   onSendAndNewThread,
   onSchedule,
+  scheduleBlocked,
   onCancel,
   attachments = NO_ATTACHMENTS,
   onAttachFiles,
@@ -599,7 +602,7 @@ export function Composer({
             steers={steers}
             hasContent={!!draft.trim() || sendableAttachments > 0}
             cannotSend={cannotSend}
-            scheduleBlock={scheduleBlock}
+            scheduleBlock={scheduleBlocked || scheduleBlock}
             onSend={(delivery) => void send(delivery)}
             onSendAndNew={sendAndNew}
             onSchedule={onSchedule}
@@ -614,7 +617,12 @@ export function Composer({
           <div
             role="group"
             aria-label="Thread options"
-            className="flex flex-wrap gap-0.5 py-0.5"
+            // A draft's chips wrap, so none hides off the edge of a phone; a
+            // thread's tools are one short row and scroll.
+            className={cn(
+              "flex gap-0.5 py-0.5",
+              footer ? "flex-wrap" : "scroll-thin overflow-x-auto",
+            )}
           >
             {drawerTools}
             {footer}

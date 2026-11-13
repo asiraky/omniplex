@@ -53,6 +53,17 @@ export function compareBranches(branch: string, models: string[]): string[] {
 }
 
 /**
+ * Each model's name for its title and toasts, with the account after it when
+ * another model in the set has the same name: the same model on two accounts
+ * would otherwise read as one.
+ */
+export function compareLabels(models: { label: string; account: string }[]): string[] {
+  return models.map(({ label, account }) =>
+    account && models.filter((m) => m.label === label).length > 1 ? `${label} (${account})` : label,
+  );
+}
+
+/**
  * A compare thread's title: the start of the prompt and the model, so rows
  * that would otherwise read the same tell one model from another.
  */

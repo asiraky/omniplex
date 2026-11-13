@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ModelSelection } from "~/components/ModelPicker";
 
-import { MAX_COMPARE, addCompare, compareBranches, compareTitle } from "./compare";
+import { MAX_COMPARE, addCompare, compareBranches, compareLabels, compareTitle } from "./compare";
 
 const pick = (model: string, instance = "claude"): ModelSelection => ({
   harness: "claude",
@@ -92,6 +92,36 @@ describe("compareBranches", () => {
       "b-sonnet-3",
       "b-opus",
     ]);
+  });
+});
+
+describe("compareLabels", () => {
+  it("leaves names that differ alone", () => {
+    expect(
+      compareLabels([
+        { label: "Opus 5", account: "Claude" },
+        { label: "Sonnet 5", account: "Claude" },
+      ]),
+    ).toEqual(["Opus 5", "Sonnet 5"]);
+  });
+
+  it("names the account for the same model on two accounts", () => {
+    expect(
+      compareLabels([
+        { label: "Sonnet 5", account: "Claude" },
+        { label: "Opus 5", account: "Claude" },
+        { label: "Sonnet 5", account: "Work" },
+      ]),
+    ).toEqual(["Sonnet 5 (Claude)", "Opus 5", "Sonnet 5 (Work)"]);
+  });
+
+  it("keeps the bare name when there is no account to tell them apart by", () => {
+    expect(
+      compareLabels([
+        { label: "Sonnet 5", account: "" },
+        { label: "Sonnet 5", account: "Work" },
+      ]),
+    ).toEqual(["Sonnet 5", "Sonnet 5 (Work)"]);
   });
 });
 
