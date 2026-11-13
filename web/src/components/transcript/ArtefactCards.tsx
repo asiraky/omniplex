@@ -1,11 +1,16 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import { ArtefactTile } from "~/components/artefacts/ArtefactTile";
-import { InlineArtefact } from "~/components/artefacts/InlineArtefact";
 import { drawsInline, type Artefact } from "~/lib/artefacts";
 import type { Item } from "~/protocol";
 
 import type { OpenArtefact } from "./Attachments";
+
+// A page drawn inline loads its own code: most threads never show one, and
+// those that do are waiting on the page itself anyway.
+const InlineArtefact = lazy(() =>
+  import("~/components/artefacts/InlineArtefact").then((m) => ({ default: m.InlineArtefact })),
+);
 
 // What the agent showed in a turn, one card per artefact. The card opens the
 // file as it is now, since there is only ever the one.
@@ -40,7 +45,13 @@ export function ArtefactCards({
     <div className="fade-in flex flex-col gap-2">
       {shown.map(({ it, a, inline }) => {
         const open = onOpen && it.artefactId ? () => onOpen(it.artefactId!) : undefined;
-        if (inline && a) return <InlineArtefact key={it.id} threadId={threadId} artefact={a} onOpen={open} />;
+        if (inline && a)
+          return (
+            // Held at about the size the frame first takes, header included.
+            <Suspense key={it.id} fallback={<div className="bg-card h-[404px] w-full rounded-xl border" />}>
+              <InlineArtefact threadId={threadId} artefact={a} onOpen={open} />
+            </Suspense>
+          );
         return (
           <ArtefactTile
             key={it.id}

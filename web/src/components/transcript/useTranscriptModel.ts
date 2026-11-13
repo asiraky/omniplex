@@ -64,6 +64,7 @@ export function useTranscriptModel(
     | "items"
     | "itemsBefore"
     | "turns"
+    | "artefacts"
     | "scheduledPrompts"
     | "pendingPermissions"
     | "pendingElicitations"
