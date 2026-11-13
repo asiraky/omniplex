@@ -979,6 +979,7 @@ describe("Sidebar", () => {
         paletteOpen: false,
         helpOpen: false,
         threadOpen: true,
+        transcriptShown: true,
         turnRunning: false,
         panelOpen: false,
       });
