@@ -95,6 +95,7 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 		Accent:  "oklch(0.72 0.13 48)",
 		DocsURL: docsURL,
 		Steers:  true,
+		Rewinds: true,
 	}
 }
 
@@ -261,10 +262,13 @@ type sidecarConfig struct {
 	// setPermissionMode. It permits the mode; it does not enable it.
 	AllowDangerouslySkipPermissions bool   `json:"allowDangerouslySkipPermissions,omitempty"`
 	Effort                          string `json:"effort,omitempty"`
-	// SessionID and Resume are mutually exclusive, as the SDK requires: one
-	// names a new conversation, the other continues an existing one.
+	// SessionID names a new conversation and Resume continues an existing
+	// one. The SDK takes both only for a fork: Resume is the conversation
+	// copied, ResumeAt the last entry of it kept, and SessionID the copy.
 	SessionID  string `json:"sessionId,omitempty"`
 	Resume     string `json:"resume,omitempty"`
+	ResumeAt   string `json:"resumeSessionAt,omitempty"`
+	Fork       bool   `json:"forkSession,omitempty"`
 	ClaudePath string `json:"claudePath,omitempty"`
 	// EnvKeys names every variable the host set on the bridge. The bridge
 	// passes exactly those on to Claude Code; resolved.command fills it.
@@ -321,7 +325,17 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		return nil, fmt.Errorf("claude is unavailable: %s", avail.Reason)
 	}
 
-	sessionID := conversationID(o)
+	conv := conversation{id: conversationID(o)}
+	if o.Resume {
+		conv = parseConversation(conversationID(o))
+		// A rewind's conversation is only written once it carries a turn.
+		// Until then it is started from what it was cut from; after, it is
+		// an ordinary conversation, whatever the id still says.
+		if conv.pending() && conversationOnDisk(claudeConfigDir(o.Cwd, o.Env), o.Cwd, conv.id) {
+			conv = conversation{id: conv.id}
+		}
+		conv.resume = !conv.pending()
+	}
 
 	cfg := sidecarConfig{
 		Cwd:            o.Cwd,
@@ -348,12 +362,6 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	for _, p := range o.Plugins {
 		cfg.Plugins = append(cfg.Plugins, sdkPlugin{Type: "local", Path: p})
 	}
-	// One field or the other, never both — the SDK rejects the pair.
-	if o.Resume {
-		cfg.Resume = sessionID
-	} else {
-		cfg.SessionID = sessionID
-	}
 	// The 1M context window is a process-start choice, not a runtime one: the
 	// CLI decides it from CLAUDE_CODE_DISABLE_1M_CONTEXT when it boots, and no
 	// control call changes it after. It is 1M by default on accounts that have
@@ -370,15 +378,81 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	if kv := mcpToolTimeout(o.MCPServers, o.Env); kv != "" {
 		extra = append(extra, kv)
 	}
+
+	s := &session{
+		host:             host,
+		launch:           launch{r: r, cfg: cfg, env: o.Env, extra: extra},
+		cwd:              o.Cwd,
+		configDir:        claudeConfigDir(o.Cwd, o.Env),
+		accountFile:      claudeJSON(o.Env),
+		taskRoot:         claudeTaskRoot(o.Cwd, o.Env),
+		commands:         &a.commands,
+		harnessSessionID: conv.String(),
+		model:            o.Model,
+		// The window was fixed above, from this id, when the process booted.
+		// Remembering the answer is what lets the fallback meter stay right
+		// after init overwrites the model with the bare id the harness reports
+		// — and after a mid-session model switch, which cannot move it.
+		oneM:    strings.Contains(o.Model, "[1m]"),
+		effort:  o.Effort,
+		events:  make(chan proto.Emission, 256),
+		streams: map[string]*stream{},
+		steers:  map[string]bool{},
+		done:    make(chan struct{}),
+		lastGen: 1,
+	}
+	conv.apply(&cfg)
+	if _, err := s.startBridge(cfg, conv.id, 1, true); err != nil {
+		return nil, err
+	}
+
+	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
+		HarnessSessionID: s.harnessSessionID,
+	}))
+
+	return s, nil
+}
+
+// launch is what starting the bridge again needs: the resolved runtime and
+// the session's settings as they were at start. A rewind starts a second
+// bridge from it, with the conversation fields and the live settings filled
+// in.
+type launch struct {
+	r     resolved
+	cfg   sidecarConfig
+	env   map[string]string
+	extra []string
+}
+
+// bridge is one running sidecar process. A session has one at a time; a rewind
+// starts another and swaps it in. gen is which one it is: anything the
+// process says once it has been replaced is ignored.
+type bridge struct {
+	gen   uint64
+	cmd   *exec.Cmd
+	proc  *adapter.Process
+	tree  procgroup.Group
+	conn  *jsonrpc.Conn
+	stdin io.WriteCloser
+
+	mu    sync.Mutex
+	fatal string // the last fatal it sent while it was not the session's
+}
+
+// startBridge spawns a sidecar with cfg. With adopt it is the session's from
+// its first byte. Otherwise it waits to be swapped in (Rewind): until then its
+// notifications are dropped but for a fatal, which it keeps, it is asked
+// nothing, and nothing watches for it exiting.
+func (s *session) startBridge(cfg sidecarConfig, name string, gen uint64, adopt bool) (*bridge, error) {
 	// The instance's overlay over the ambient environment is the entire
 	// credential mechanism: CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, or
 	// ANTHROPIC_API_KEY select the account per process. The session outlives
-	// this call, so the command is not bound to ctx.
-	cmd, err := r.command(context.Background(), cfg, o.Env, extra...)
+	// this call, so the command is not bound to a ctx.
+	cmd, err := s.launch.r.command(context.Background(), cfg, s.launch.env, s.launch.extra...)
 	if err != nil {
 		return nil, err
 	}
-	cmd.Dir = o.Cwd
+	cmd.Dir = cfg.Cwd
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -394,45 +468,84 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	}
 	// The whole tree, not just the bridge: shells, dev servers and browsers
 	// the agent starts must end with the session.
-	tree := procgroup.Attach(cmd, "claude-"+sessionID)
+	tree := procgroup.Attach(cmd, "claude-"+name)
 	if err := cmd.Start(); err != nil {
 		tree.Kill()
 		return nil, fmt.Errorf("start claude bridge: %w", err)
 	}
-
-	s := &session{
-		host:             host,
-		cmd:              cmd,
-		proc:             adapter.WatchProcess(cmd, stderr, host.Logf, "claude bridge"),
-		tree:             tree,
-		stdin:            stdin,
-		cwd:              o.Cwd,
-		configDir:        claudeConfigDir(o.Cwd, o.Env),
-		accountFile:      claudeJSON(o.Env),
-		taskRoot:         claudeTaskRoot(o.Cwd, o.Env),
-		commands:         &a.commands,
-		harnessSessionID: sessionID,
-		model:            o.Model,
-		// The window was fixed above, from this id, when the process booted.
-		// Remembering the answer is what lets the fallback meter stay right
-		// after init overwrites the model with the bare id the harness reports
-		// — and after a mid-session model switch, which cannot move it.
-		oneM:    strings.Contains(o.Model, "[1m]"),
-		effort:  o.Effort,
-		events:  make(chan proto.Emission, 256),
-		streams: map[string]*stream{},
-		steers:  map[string]bool{},
-		done:    make(chan struct{}),
+	b := &bridge{gen: gen, cmd: cmd, tree: tree, stdin: stdin}
+	b.proc = adapter.WatchProcess(cmd, stderr, s.host.Logf, "claude bridge")
+	// The read loop starts inside NewConn, and its handlers ask whether this
+	// is the session's bridge; holding procMu until it is makes them wait.
+	if adopt {
+		s.procMu.Lock()
 	}
-	s.conn = jsonrpc.NewConn(stdout, stdin, s.handleRequest, s.handleNotification, host.Logf)
+	b.conn = jsonrpc.NewConn(stdout, stdin,
+		func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+			if !s.isCurrent(gen) {
+				return nil, errors.New("this claude bridge has been replaced")
+			}
+			return s.handleRequest(ctx, method, params)
+		},
+		func(method string, params json.RawMessage) {
+			if s.isCurrent(gen) {
+				s.handleNotification(method, params)
+				return
+			}
+			if method == "fatal" {
+				var p struct {
+					Message string `json:"message"`
+				}
+				_ = json.Unmarshal(params, &p)
+				if p.Message != "session ended" {
+					b.mu.Lock()
+					b.fatal = p.Message
+					b.mu.Unlock()
+				}
+			}
+		},
+		s.host.Logf)
+	if adopt {
+		s.install(b)
+		s.procMu.Unlock()
+		go s.watchExit(b.conn, gen)
+	}
+	return b, nil
+}
 
-	go s.watchExit()
+// install makes b the session's bridge. procMu must be held.
+func (s *session) install(b *bridge) {
+	s.cmd, s.proc, s.tree, s.conn, s.stdin, s.gen = b.cmd, b.proc, b.tree, b.conn, b.stdin, b.gen
+}
 
-	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
-		HarnessSessionID: sessionID,
-	}))
+func (s *session) isCurrent(gen uint64) bool {
+	s.procMu.Lock()
+	defer s.procMu.Unlock()
+	return s.gen == gen
+}
 
-	return s, nil
+// rpc is the current bridge's connection.
+func (s *session) rpc() *jsonrpc.Conn {
+	s.procMu.Lock()
+	defer s.procMu.Unlock()
+	return s.conn
+}
+
+// stop ends a bridge: stdin EOF is the sidecar's signal to exit, taking Claude
+// Code with it; the kills are a backstop for a wedged process.
+func (b *bridge) stop() {
+	if b.stdin != nil {
+		_ = b.stdin.Close()
+	}
+	if b.cmd != nil && b.cmd.Process != nil {
+		_ = b.cmd.Process.Kill()
+	}
+	if b.tree != nil {
+		b.tree.Kill()
+	}
+	if b.proc != nil {
+		_ = b.proc.Wait()
+	}
 }
 
 // block tracks one streaming content block of the current assistant message.
@@ -453,13 +566,26 @@ type stream struct {
 }
 
 type session struct {
-	host  adapter.HostServices
-	cmd   *exec.Cmd
-	proc  *adapter.Process
-	tree  procgroup.Group
-	conn  *jsonrpc.Conn
-	stdin io.WriteCloser
-	cwd   string
+	host adapter.HostServices
+	// launch is how the bridge was started, kept current with the mode, model
+	// and effort the session has moved to since, for a rewind to start the
+	// next one from. Guarded by mu.
+	launch launch
+	// The running bridge, guarded by procMu: a rewind replaces it. gen is
+	// its generation; lastGen the newest handed out, so a bridge that never
+	// made it in cannot be mistaken for the one that did.
+	procMu  sync.Mutex
+	cmd     *exec.Cmd
+	proc    *adapter.Process
+	tree    procgroup.Group
+	conn    *jsonrpc.Conn
+	stdin   io.WriteCloser
+	gen     uint64
+	lastGen uint64
+	closing bool
+	// rewindMu keeps rewinds one at a time.
+	rewindMu sync.Mutex
+	cwd      string
 	// configDir is resolved from the same per-instance environment the child
 	// received, so origin enrichment cannot accidentally inspect another
 	// Claude account's skills.
@@ -501,6 +627,13 @@ type session struct {
 	// clears it, so a late one is dropped rather than put on the wrong turn.
 	suggestFor string
 
+	// ref is the open turn's HarnessRef: the uuid of the first entry it put
+	// in Claude's transcript, which is what a rewind cuts before. A prompted
+	// turn's is its prompt, echoed under the uuid the sidecar stamped on it;
+	// refAny is set for a turn the harness opened by itself, whose first
+	// top-level message is its first entry.
+	ref    string
+	refAny bool
 	// steers are prompts handed to the harness mid-turn that it has not read
 	// yet, keyed by the uuid stamped on them; the value is whether Cancel
 	// has since discarded them. The harness echoes the uuid back when it
@@ -587,7 +720,7 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	// session down), and every screen downstream fell back to describing a
 	// server restart. Refuse with the reason the bridge actually gave.
 	select {
-	case <-s.conn.Done():
+	case <-s.rpc().Done():
 		reason, kind := s.exitReason()
 		return &adapter.FailureError{Kind: kind, Err: errors.New(reason)}
 	default:
@@ -604,12 +737,15 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 		s.mu.Unlock()
 		return errors.New("the harness resumed work on its own; wait for it to finish")
 	}
+	if s.turnID == "" {
+		s.ref, s.refAny = "", false
+	}
 	s.turnID = in.TurnID
 	s.sawResult = false
 	s.suggestFor = ""
 	s.mu.Unlock()
 
-	return s.conn.Notify("prompt", promptParams(in.Text, in.Images, in.TurnID))
+	return s.rpc().Notify("prompt", promptParams(in.Text, in.Images, in.TurnID))
 }
 
 // promptParams is the sidecar's prompt frame. Paths, not bytes: the sidecar
@@ -634,7 +770,7 @@ func promptParams(text string, images []proto.PromptImage, uuid string) map[stri
 // echo carrying the queue id is how handleUser learns it was read.
 func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 	select {
-	case <-s.conn.Done():
+	case <-s.rpc().Done():
 		reason, kind := s.exitReason()
 		return &adapter.FailureError{Kind: kind, Err: errors.New(reason)}
 	default:
@@ -645,7 +781,7 @@ func (s *session) Steer(ctx context.Context, in adapter.PromptInput) error {
 	s.mu.Lock()
 	s.steers[in.QueueID] = false
 	s.mu.Unlock()
-	if err := s.conn.Notify("prompt", promptParams(in.Text, in.Images, in.QueueID)); err != nil {
+	if err := s.rpc().Notify("prompt", promptParams(in.Text, in.Images, in.QueueID)); err != nil {
 		s.mu.Lock()
 		delete(s.steers, in.QueueID)
 		s.mu.Unlock()
@@ -672,7 +808,7 @@ func (s *session) Cancel(ctx context.Context) error {
 	// the bridge to confirm the SDK accepted the interrupt, then close the
 	// canonical turn ourselves. If a result won the race it already cleared the
 	// same id and emitted the finish, so the identity guard prevents a duplicate.
-	if err := s.conn.Call(ctx, "interrupt", map[string]any{}, nil); err != nil {
+	if err := s.rpc().Call(ctx, "interrupt", map[string]any{}, nil); err != nil {
 		return err
 	}
 	s.stopTails()
@@ -684,9 +820,12 @@ func (s *session) Cancel(ctx context.Context) error {
 	s.turnID = ""
 	s.sawResult = true
 	s.suggestFor = ""
+	// What the interrupted turn still writes after this (the tool result it
+	// was waiting on, the interruption notice) is not the next turn's start.
+	ref := s.takeRef()
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-		TurnID: turn, StopReason: proto.StopCancelled,
+		TurnID: turn, StopReason: proto.StopCancelled, HarnessRef: ref,
 	}))
 	return nil
 }
@@ -696,7 +835,13 @@ func (s *session) Cancel(ctx context.Context) error {
 // request, not a notification, so a mode the harness refuses (managed settings
 // can disable bypass and auto) comes back as a legible error.
 func (s *session) SetMode(ctx context.Context, mode string) error {
-	return s.conn.Call(ctx, "setPermissionMode", map[string]any{"mode": mode}, nil)
+	if err := s.rpc().Call(ctx, "setPermissionMode", map[string]any{"mode": mode}, nil); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.launch.cfg.PermissionMode = mode
+	s.mu.Unlock()
+	return nil
 }
 
 // SetModel switches the model mid-session via the SDK's setModel. It is a
@@ -706,11 +851,12 @@ func (s *session) SetMode(ctx context.Context, mode string) error {
 // while the session keeps using the old one. Local state is updated only once
 // the harness has acknowledged the switch.
 func (s *session) SetModel(ctx context.Context, model string) error {
-	if err := s.conn.Call(ctx, "setModel", map[string]any{"model": model}, nil); err != nil {
+	if err := s.rpc().Call(ctx, "setModel", map[string]any{"model": model}, nil); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.model = s.tagged(model)
+	s.launch.cfg.Model = model
 	// The cached window was the old model's, as the harness reported it.
 	// Clearing it stops a stale value persisting across the switch: the next
 	// result falls back to the window this process was started with, and the
@@ -727,11 +873,12 @@ func (s *session) SetModel(ctx context.Context, model string) error {
 // with no restart. Like SetModel it is a request: an effort the harness
 // refuses must surface as an error rather than be recorded as applied.
 func (s *session) SetEffort(ctx context.Context, effort string) error {
-	if err := s.conn.Call(ctx, "setEffort", map[string]any{"effort": effort}, nil); err != nil {
+	if err := s.rpc().Call(ctx, "setEffort", map[string]any{"effort": effort}, nil); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.effort = effort
+	s.launch.cfg.Effort = effort
 	s.mu.Unlock()
 	return nil
 }
@@ -742,7 +889,7 @@ func (s *session) SetEffort(ctx context.Context, effort string) error {
 // come back as an error. The harness reports the outcome itself as a
 // task_notification, which is what finishes the job.
 func (s *session) StopJob(ctx context.Context, jobID string) error {
-	return s.conn.Call(ctx, "stopTask", map[string]any{"taskId": jobID}, nil)
+	return s.rpc().Call(ctx, "stopTask", map[string]any{"taskId": jobID}, nil)
 }
 
 // Close tears down the bridge. Closing stdin is the primary signal: the
@@ -754,32 +901,50 @@ func (s *session) Close() error {
 		// it the tailers queued behind that emit, before Close waits on them.
 		close(s.done)
 		s.stopTails()
-		_ = s.stdin.Close()
-		if s.cmd.Process != nil {
-			_ = s.cmd.Process.Kill()
-		}
-		s.tree.Kill()
-		_ = s.proc.Wait()
+		s.procMu.Lock()
+		s.closing = true
+		b := s.current()
+		s.procMu.Unlock()
+		b.stop()
 	})
 	return nil
 }
 
-func (s *session) watchExit() {
-	<-s.conn.Done()
+// current is the running bridge. procMu must be held.
+func (s *session) current() *bridge {
+	return &bridge{gen: s.gen, cmd: s.cmd, proc: s.proc, tree: s.tree, conn: s.conn, stdin: s.stdin}
+}
+
+// watchExit ends the session when its bridge does. A bridge a rewind has
+// replaced ends without a word: the session carries on with the next one.
+func (s *session) watchExit(conn *jsonrpc.Conn, gen uint64) {
+	<-conn.Done()
+	if !s.isCurrent(gen) {
+		return
+	}
 	s.stopTails()
 
 	s.mu.Lock()
 	turn, saw := s.turnID, s.sawResult
 	s.turnID = ""
+	ref := s.takeRef()
 	s.mu.Unlock()
 
 	if turn != "" && !saw {
 		reason, kind := s.exitReason()
 		s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-			TurnID: turn, StopReason: proto.StopError, Error: reason, Failure: kind,
+			TurnID: turn, StopReason: proto.StopError, Error: reason, Failure: kind, HarnessRef: ref,
 		}))
 	}
 	s.closeEvents()
+}
+
+// takeRef returns the open turn's HarnessRef and clears it for the next
+// turn. mu must be held.
+func (s *session) takeRef() string {
+	ref := s.ref
+	s.ref, s.refAny = "", false
+	return ref
 }
 
 // exitReason explains a bridge that is no longer there, in the terms the
@@ -790,18 +955,21 @@ func (s *session) exitReason() (message, failure string) {
 	s.mu.Lock()
 	fatal := s.fatal
 	s.mu.Unlock()
+	s.procMu.Lock()
+	proc, conn := s.proc, s.conn
+	s.procMu.Unlock()
 
 	if msg, ok := loginRequired(fatal); ok {
 		return msg, proto.FailureAuth
 	}
 	if fatal != "" {
 		msg := "claude exited: " + briefly(fatal)
-		if tail := s.proc.Tail(); tail != "" {
+		if tail := proc.Tail(); tail != "" {
 			msg += "\n" + tail
 		}
 		return msg, ""
 	}
-	return s.proc.ExitReason(s.conn.Err()), ""
+	return proc.ExitReason(conn.Err()), ""
 }
 
 // authNeedles are what an unauthenticated Claude Code says on its way out. The
@@ -881,6 +1049,7 @@ func (s *session) ensureTurn() string {
 	s.turnID = id
 	s.sawResult = false
 	s.suggestFor = ""
+	s.ref, s.refAny = "", true
 	s.mu.Unlock()
 
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
@@ -1100,7 +1269,7 @@ func (s *session) handleNotification(method string, params json.RawMessage) {
 		if err := json.Unmarshal(params, &p); err != nil || len(p.ID) == 0 {
 			return
 		}
-		s.conn.CancelInbound(p.ID)
+		s.rpc().CancelInbound(p.ID)
 
 	case "fatal":
 		var p struct {
@@ -1139,6 +1308,7 @@ func (s *session) handleSDKMessage(msg map[string]json.RawMessage) {
 			}
 		}
 	}
+	defer s.noteEntry(msg)
 	switch str(msg["type"]) {
 	case "system":
 		s.handleSystem(msg)
@@ -1209,6 +1379,12 @@ func (s *session) trackSessionID(msg map[string]json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
+	// A rewound conversation reports its own id before it is written; it
+	// keeps the id that says how to rebuild it until settleRewind.
+	if conv := parseConversation(s.harnessSessionID); conv.pending() && conv.id == id {
+		s.mu.Unlock()
+		return
+	}
 	changed := id != s.harnessSessionID
 	if changed {
 		s.harnessSessionID = id
@@ -1263,6 +1439,9 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		remarshal(msg, &init)
 		s.mu.Lock()
 		s.model = s.tagged(init.Model)
+		if init.PermissionMode != "" {
+			s.launch.cfg.PermissionMode = init.PermissionMode
+		}
 		model := s.model
 		harnessID := s.harnessSessionID
 		s.mu.Unlock()
@@ -1276,10 +1455,16 @@ func (s *session) handleSystem(msg map[string]json.RawMessage) {
 		s.handleAPIRetry(msg)
 	case "status":
 		var st struct {
-			Status *string `json:"status"`
+			Status         *string `json:"status"`
+			PermissionMode string  `json:"permissionMode"`
 		}
 		remarshal(msg, &st)
 		s.mu.Lock()
+		// The harness moves its own mode too (leaving plan mode); a rewind
+		// restarts in the one it is in.
+		if st.PermissionMode != "" {
+			s.launch.cfg.PermissionMode = st.PermissionMode
+		}
 		wasCompacting := s.compacting
 		s.compacting = st.Status != nil && *st.Status == "compacting"
 		s.mu.Unlock()
@@ -1718,6 +1903,10 @@ func (s *session) handleReplay(id, text string) {
 	s.mu.Lock()
 	cancelled, ok := s.steers[id]
 	if !ok {
+		// The turn's own prompt, entering the transcript under its id.
+		if id != "" && id == s.turnID && s.ref == "" {
+			s.ref, s.refAny = id, false
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -1733,7 +1922,7 @@ func (s *session) handleReplay(id, text string) {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				_ = s.conn.Call(ctx, "interrupt", map[string]any{}, nil)
+				_ = s.rpc().Call(ctx, "interrupt", map[string]any{}, nil)
 			}()
 		}
 		return
@@ -1747,6 +1936,7 @@ func (s *session) handleReplay(id, text string) {
 	s.turnID = turn
 	s.sawResult = false
 	s.suggestFor = ""
+	s.ref, s.refAny = id, false
 	s.mu.Unlock()
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: turn, Prompt: text, QueueID: id}))
 }
@@ -1858,6 +2048,10 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 	s.turnID = ""
 	// The turn the CLI ran from a discarded steer has ended with this.
 	s.suppress = false
+	ref := ""
+	if turn != "" {
+		ref = s.takeRef()
+	}
 	// Only a normal end is offered a next prompt. A result with no turn (a
 	// suppressed one) clears it too: its suggestion is not the last turn's.
 	s.suggestFor = ""
@@ -1865,6 +2059,10 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 		s.suggestFor = turn
 	}
 	s.mu.Unlock()
+
+	// A rewound conversation exists once a turn has gone into it; from here
+	// it resumes by its own id.
+	s.settleRewind()
 
 	// A result for a turn that was never started — no prompt, and no output
 	// that would have opened one — has nothing to finish. Emitting it anyway
@@ -1875,6 +2073,7 @@ func (s *session) handleResult(msg map[string]json.RawMessage) {
 
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: turn, StopReason: stop, Error: failure, Failure: failureKind, ResetAt: resetAt,
+		HarnessRef: ref,
 	}))
 }
 

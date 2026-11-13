@@ -2,6 +2,7 @@ package thread
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -38,17 +39,20 @@ type checkpointer struct {
 
 // checkpointJob is one unit of work for the snapshot goroutine.
 type checkpointJob struct {
-	// kind is baseline or turn.
+	// kind is baseline, turn or restore.
 	kind   string
 	turnID string
 	// ack is closed once the job has been handled, so a caller can wait for the
 	// baseline to exist before letting the harness touch the checkout.
 	ack chan struct{}
+	// done hears how a restore went. Only a restore has one.
+	done chan error
 }
 
 const (
 	jobBaseline = "baseline"
 	jobTurn     = "turn"
+	jobRestore  = "restore"
 )
 
 // A snapshot of a large checkout is slow, but it is not unbounded.
@@ -145,6 +149,47 @@ func (c *checkpointer) submit(job checkpointJob) bool {
 	}
 }
 
+// restore puts the checkout back to turnID's starting snapshot (see
+// restoreCheckpoint), and waits for it. It runs on the snapshot goroutine, in
+// line with the rest: the closing snapshot of the turn that just ended may
+// still be waiting there, and taken after the restore it would measure the
+// restore as that turn's work. Unlike a snapshot it is never dropped for a
+// full queue, since someone asked for it and is waiting on the answer; nor
+// does the caller give up on it once it is queued, since a restore cut off
+// halfway would leave the checkout matching neither picture. Only stop, or
+// the snapshot timeout, ends one early.
+func (c *checkpointer) restore(ctx context.Context, turnID string) error {
+	if c == nil {
+		return errNoCheckpoints
+	}
+	done := make(chan error, 1)
+	select {
+	case c.jobs <- checkpointJob{kind: jobRestore, turnID: turnID, done: done}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.ctx.Done():
+		return errCheckpointsStopped
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-c.finished:
+		// Stopped with the job still queued, or killed mid-restore.
+		select {
+		case err := <-done:
+			return err
+		default:
+			return errCheckpointsStopped
+		}
+	}
+}
+
+// errNoCheckpoints is a restore on a thread with no checkout to snapshot.
+var errNoCheckpoints = errors.New("this thread's folder is not a Git checkout, so there are no snapshots to restore")
+
+// errCheckpointsStopped is a restore cut short by the thread closing.
+var errCheckpointsStopped = errors.New("the thread closed before its files were restored")
+
 // stop ends the snapshot goroutine and waits for it, killing any Git process it
 // has running. Waiting is what makes drop safe: a capture still in flight would
 // otherwise write back a ref that drop has already deleted.
@@ -188,6 +233,12 @@ func (c *checkpointer) run() {
 		case <-c.ctx.Done():
 			return
 		case job := <-c.jobs:
+			if job.kind == jobRestore {
+				// A restore is not a snapshot of a turn, so the
+				// standing baseline passes over it untouched.
+				job.done <- c.restoreNow(job.turnID)
+				continue
+			}
 			base = c.handle(job, base)
 			if job.ack != nil {
 				close(job.ack)
@@ -236,6 +287,13 @@ func (c *checkpointer) handle(job checkpointJob, base string) string {
 		// on every turn that was only a question.
 	}
 	return ""
+}
+
+// restoreNow is a restore job, bounded like a snapshot and killed only by stop.
+func (c *checkpointer) restoreNow(turnID string) error {
+	ctx, cancel := context.WithTimeout(c.ctx, checkpointTimeout)
+	defer cancel()
+	return restoreCheckpoint(ctx, c.root, c.threadID, turnID)
 }
 
 // edgeFor names which end of a turn a snapshot is.

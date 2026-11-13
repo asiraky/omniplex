@@ -56,6 +56,7 @@ func (a *Adapter) Meta() adapter.HarnessMeta {
 		Name:    "Pi",
 		Accent:  "oklch(0.72 0.15 55)",
 		DocsURL: "https://github.com/earendil-works/pi",
+		Rewinds: true,
 	}
 }
 
@@ -248,6 +249,8 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 		pending:   map[string]chan rpcResponse{},
 		dialogs:   map[string]dialog{},
 		editPaths: map[string]string{},
+
+		refTimeout: refLookupTimeout,
 	}
 
 	go s.readLoop(stdout)
@@ -257,28 +260,35 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 	// mode (a bad flag dies before answering), and it reports the session id
 	// pi settled on plus the running model's context window for the usage
 	// meter.
-	var state struct {
-		SessionID string `json:"sessionId"`
-		Model     *struct {
-			Provider      string `json:"provider"`
-			ID            string `json:"id"`
-			ContextWindow int64  `json:"contextWindow"`
-		} `json:"model"`
-	}
+	var state piState
 	if err := s.call(ctx, map[string]any{"type": "get_state"}, &state); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("pi get_state: %w", s.classify(err))
 	}
+	s.mu.Lock()
 	if state.Model != nil {
-		s.mu.Lock()
 		s.contextWindow = state.Model.ContextWindow
-		s.mu.Unlock()
+		s.model = state.Model.Provider + "/" + state.Model.ID
 	}
+	s.effort = state.ThinkingLevel
+	s.mu.Unlock()
 	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 		HarnessSessionID: state.SessionID,
 	}))
 
 	return s, nil
+}
+
+// piState is the part of get_state's answer this package reads.
+type piState struct {
+	SessionID     string `json:"sessionId"`
+	SessionFile   string `json:"sessionFile"`
+	ThinkingLevel string `json:"thinkingLevel"`
+	Model         *struct {
+		Provider      string `json:"provider"`
+		ID            string `json:"id"`
+		ContextWindow int64  `json:"contextWindow"`
+	} `json:"model"`
 }
 
 // rpcResponse is the id-correlated half of pi's stdout stream.
@@ -347,7 +357,40 @@ type session struct {
 	totIn, totOut, totCacheR, totCacheW int64
 	totCost                             float64
 	contextWindow                       int64
+	// model ("provider/id") and effort are what pi runs with, as it reported
+	// at the handshake and as SetModel/SetEffort changed them since. A fork
+	// starts a fresh runtime from the CLI flags and the kept history, which
+	// can be a different model; Rewind puts these back.
+	model, effort string
+	// prompt is the open turn's prompt, kept until the turn ends so its
+	// entry in pi's history can be found then (see refFor).
+	prompt *turnPrompt
+
+	// finMu orders a turn.finished held back for its HarnessRef lookup
+	// (pendingFin) against the next turn's turn.started: whichever comes
+	// first emits it, so the actor never sees a turn start before the last
+	// one finished. finishing counts the lookups; watchExit waits for them
+	// before it closes events. refTimeout bounds each lookup.
+	finMu      sync.Mutex
+	pendingFin *proto.TurnFinishedPayload
+	finishing  sync.WaitGroup
+	refTimeout time.Duration
 }
+
+// turnPrompt is what was sent to pi for a turn: the message text pi received
+// and the get_fork_messages answer pipelined just ahead of it, the user
+// entries that existed before this prompt added its own.
+type turnPrompt struct {
+	turn    string
+	text    string
+	before  <-chan rpcResponse
+	release func()
+}
+
+// refLookupTimeout bounds the get_fork_messages read a turn.finished waits on.
+// Pi answers it from memory at once; one that does not answer this quickly
+// is wedged, and the turn finishes without an anchor rather than hang.
+const refLookupTimeout = 3 * time.Second
 
 func (s *session) Events() <-chan proto.Emission { return s.events }
 
@@ -496,10 +539,27 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 			"mimeType": img.MediaType,
 		})
 	}
-	cmd := map[string]any{"type": "prompt", "message": adapter.WithDocumentPaths(in.Text, documents)}
+	text := adapter.WithDocumentPaths(in.Text, documents)
+	cmd := map[string]any{"type": "prompt", "message": text}
 	if len(images) > 0 {
 		cmd["images"] = images
 	}
+	// The user entries pi holds before this prompt, so the one it adds can be
+	// told apart when the turn ends (see refFor). Pi handles stdin lines in
+	// order and computes get_fork_messages synchronously, before it reads the
+	// prompt line, so this listing cannot include the prompt's own message.
+	// Nothing waits for the answer here.
+	before, releaseBefore, err := s.request(map[string]any{"type": "get_fork_messages"})
+	if err != nil {
+		s.clearTurn(in.TurnID)
+		return s.classify(err)
+	}
+	s.mu.Lock()
+	if s.prompt != nil {
+		s.prompt.release()
+	}
+	s.prompt = &turnPrompt{turn: in.TurnID, text: text, before: before, release: releaseBefore}
+	s.mu.Unlock()
 	// Pi acks a prompt only after its preflight: extension commands and input
 	// handlers, the auth check, and possibly a full context compaction. That
 	// can take minutes, and an extension that opens a dialog during preflight
@@ -509,10 +569,25 @@ func (s *session) Prompt(ctx context.Context, in adapter.PromptInput) error {
 	ack, release, err := s.request(cmd)
 	if err != nil {
 		s.clearTurn(in.TurnID)
+		s.dropPrompt(in.TurnID)
 		return s.classify(err)
 	}
 	go s.awaitPromptAck(in.TurnID, ack, release)
 	return nil
+}
+
+// dropPrompt forgets turnID's prompt, for a turn that ends without a run and
+// so without an entry in pi's history.
+func (s *session) dropPrompt(turnID string) {
+	s.mu.Lock()
+	p := s.prompt
+	if p != nil && p.turn == turnID {
+		s.prompt = nil
+	}
+	s.mu.Unlock()
+	if p != nil && p.turn == turnID {
+		p.release()
+	}
 }
 
 // awaitPromptAck waits out pi's prompt preflight and, if pi refuses the prompt,
@@ -548,6 +623,7 @@ func (s *session) awaitPromptAck(turnID string, ack <-chan rpcResponse, release 
 	if !ours {
 		return
 	}
+	s.dropPrompt(turnID)
 	refusal = s.classify(refusal)
 	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
 		TurnID: turnID, StopReason: proto.StopError, Error: refusal.Error(),
@@ -621,6 +697,7 @@ func (s *session) SetModel(ctx context.Context, model string) error {
 	// so it must follow the switch.
 	s.mu.Lock()
 	s.contextWindow = res.ContextWindow
+	s.model = model
 	s.mu.Unlock()
 	return nil
 }
@@ -628,7 +705,139 @@ func (s *session) SetModel(ctx context.Context, model string) error {
 // SetEffort maps omniplex's effort onto pi's thinking level; the ids are pi's
 // own ("off" … "max"), straight from the model catalogue.
 func (s *session) SetEffort(ctx context.Context, effort string) error {
-	return s.call(ctx, map[string]any{"type": "set_thinking_level", "level": effort}, nil)
+	if err := s.call(ctx, map[string]any{"type": "set_thinking_level", "level": effort}, nil); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.effort = effort
+	s.mu.Unlock()
+	return nil
+}
+
+var _ adapter.Rewinder = (*session)(nil)
+
+// Rewind forks pi's session just before the user message that opened
+// target.Turn. Pi writes the kept history to a new session file under a new
+// id and switches this process over to it, so the id goes out as the thread's
+// harness session id, which is what a later resume opens. Forking at the first
+// user message leaves an empty session that pi only writes once it has an
+// assistant reply; resuming its id before then starts afresh under it, which
+// is the same empty conversation.
+func (s *session) Rewind(ctx context.Context, target adapter.RewindTarget) error {
+	if target.Turn == "" {
+		return errors.New("this turn has no pi history entry to rewind to")
+	}
+	if s.currentTurn() != "" {
+		return errors.New("pi is running a turn; rewind once it finishes")
+	}
+	// The file pi is on now is the way back if the fork's id cannot be read.
+	var before piState
+	if err := s.call(ctx, map[string]any{"type": "get_state"}, &before); err != nil {
+		return fmt.Errorf("pi get_state: %w", s.classify(err))
+	}
+	var forked struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err := s.call(ctx, map[string]any{"type": "fork", "entryId": target.Turn}, &forked); err != nil {
+		return fmt.Errorf("pi fork: %w", s.classify(err))
+	}
+	if forked.Cancelled {
+		return errors.New("a pi extension cancelled the fork")
+	}
+	// Pi is on the fork from here, and its answer does not carry the new id.
+	state, err := s.forkedState(ctx)
+	if err != nil {
+		return s.unfork(ctx, before.SessionFile, err)
+	}
+	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
+		HarnessSessionID: state.SessionID,
+	}))
+	s.restoreSettings(ctx, state)
+	return nil
+}
+
+// forkStateAttempts and forkStateTimeout bound forkedState's reads.
+const (
+	forkStateAttempts = 3
+	forkStateTimeout  = 5 * time.Second
+)
+
+// forkedState reads the session pi moved to on a fork, retrying a read that
+// fails or comes back without an id, since the rewind has already happened.
+func (s *session) forkedState(ctx context.Context) (piState, error) {
+	var err error
+	for i := 0; i < forkStateAttempts; i++ {
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(i) * 200 * time.Millisecond):
+			case <-ctx.Done():
+				return piState{}, ctx.Err()
+			case <-s.rpcDone:
+				return piState{}, s.died(err)
+			}
+		}
+		actx, cancel := context.WithTimeout(ctx, forkStateTimeout)
+		var state piState
+		err = s.call(actx, map[string]any{"type": "get_state"}, &state)
+		cancel()
+		if err == nil && state.SessionID != "" {
+			return state, nil
+		}
+		if err == nil {
+			err = errors.New("pi reported no session id")
+		}
+	}
+	return piState{}, err
+}
+
+// unfork puts pi back on the session it forked from when the fork's id could
+// not be read, so the stored id, the transcript and pi agree again. Failing
+// that, pi is killed: a restart resumes the stored id, the un-rewound file,
+// which is still what the transcript shows.
+func (s *session) unfork(ctx context.Context, file string, cause error) error {
+	cause = fmt.Errorf("pi forked but did not report the new session: %w", s.classify(cause))
+	if file != "" {
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), forkStateTimeout)
+		var res struct {
+			Cancelled bool `json:"cancelled"`
+		}
+		err := s.call(bctx, map[string]any{"type": "switch_session", "sessionPath": file}, &res)
+		cancel()
+		if err == nil && !res.Cancelled {
+			return fmt.Errorf("%w; switched back to the session before the rewind", cause)
+		}
+		s.host.Logf("pi: switch back to %s after a fork: %v (cancelled %v)", file, err, res.Cancelled)
+	}
+	_ = s.Close()
+	return fmt.Errorf("%w; pi was stopped so a restart resumes the session before the rewind", cause)
+}
+
+// restoreSettings puts back the model and thinking level the session ran with
+// before a fork, where the forked runtime came up with different ones. The
+// rewind itself has happened by now, so a failure here is logged, not
+// returned: the thread's settings still say what was chosen, and the next
+// switch applies it.
+func (s *session) restoreSettings(ctx context.Context, state piState) {
+	s.mu.Lock()
+	model, effort := s.model, s.effort
+	s.mu.Unlock()
+	running := ""
+	if state.Model != nil {
+		running = state.Model.Provider + "/" + state.Model.ID
+		s.mu.Lock()
+		s.contextWindow = state.Model.ContextWindow
+		s.mu.Unlock()
+	}
+	if model != "" && model != running {
+		if err := s.SetModel(ctx, model); err != nil {
+			s.host.Logf("pi: restore model %s after a fork: %v", model, err)
+		}
+	}
+	if effort != "" && effort != state.ThinkingLevel {
+		if err := s.SetEffort(ctx, effort); err != nil {
+			s.host.Logf("pi: restore thinking level %s after a fork: %v", effort, err)
+		}
+	}
 }
 
 func (s *session) Close() error {
@@ -646,6 +855,9 @@ func (s *session) Close() error {
 
 func (s *session) watchExit() {
 	<-s.rpcDone
+	// A turn.finished waiting on its anchor goes out before the stream
+	// closes. The lookup fails with the read loop, so this does not hang.
+	s.finishing.Wait()
 	// Nobody is left to read a dialog's answer, and the read loop has
 	// registered its last one, so this catches them all.
 	s.cancelDialogs()
@@ -697,6 +909,9 @@ func (s *session) ensureTurn() string {
 	id := uuid.NewString()
 	s.turnID = id
 	s.mu.Unlock()
+	// The last turn's finish may still be waiting on its anchor; it goes out
+	// first, without one, rather than after this turn has started.
+	s.flushFinish()
 	s.emit(proto.Emit(proto.TurnStarted, proto.TurnStartedPayload{TurnID: id}))
 	return id
 }
@@ -1062,6 +1277,15 @@ func (s *session) endTurnAndUnlock() {
 	turn := s.turnID
 	stop, errMsg := s.lastStop, s.lastErr
 	aborted := turn != "" && s.aborted == turn
+	// Only a turn pi ran an agent for has its prompt in pi's history.
+	ran := turn != "" && s.ranTurn == turn
+	prompt := s.prompt
+	if prompt != nil && prompt.turn == turn {
+		s.prompt = nil
+	} else {
+		prompt = nil
+	}
+	refTimeout := s.refTimeout
 	s.turnID, s.ranTurn = "", ""
 	s.lastStop, s.lastErr, s.aborted = "", "", ""
 	// An edit that never ended (pi died mid-call) has nothing left to claim
@@ -1095,9 +1319,124 @@ func (s *session) endTurnAndUnlock() {
 		// its own accord.
 		errMsg = ""
 	}
-	s.emit(proto.Emit(proto.TurnFinished, proto.TurnFinishedPayload{
-		TurnID: turn, StopReason: reason, Error: errMsg, Failure: failure,
-	}))
+	fin := proto.TurnFinishedPayload{TurnID: turn, StopReason: reason, Error: errMsg, Failure: failure}
+	if prompt == nil || !ran {
+		if prompt != nil {
+			prompt.release()
+		}
+		s.emit(proto.Emit(proto.TurnFinished, fin))
+		return
+	}
+	// The anchor is read from pi, and this runs on the read loop, which is
+	// what delivers the answer: the read and the turn.finished behind it go
+	// to a goroutine. The turn is already cleared, so the session reads as
+	// idle to everything but the actor, which waits for the turn.finished —
+	// at most refTimeout — before it sends the next prompt.
+	s.finMu.Lock()
+	s.pendingFin = &fin
+	s.finMu.Unlock()
+	s.finishing.Add(1)
+	go s.finishWithRef(fin.TurnID, prompt, refTimeout)
+}
+
+// finishWithRef looks up the turn's anchor and emits its held-back
+// turn.finished with it, unless the next turn's start already sent it.
+func (s *session) finishWithRef(turnID string, p *turnPrompt, timeout time.Duration) {
+	defer s.finishing.Done()
+	ref, err := s.refFor(p, timeout)
+	if err != nil {
+		s.host.Logf("pi: no rewind anchor for turn %s: %v", turnID, err)
+	}
+	s.finMu.Lock()
+	defer s.finMu.Unlock()
+	if s.pendingFin == nil || s.pendingFin.TurnID != turnID {
+		return
+	}
+	fin := *s.pendingFin
+	s.pendingFin = nil
+	fin.HarnessRef = ref
+	s.emit(proto.Emit(proto.TurnFinished, fin))
+}
+
+// flushFinish emits a held-back turn.finished now, without its anchor.
+func (s *session) flushFinish() {
+	s.finMu.Lock()
+	defer s.finMu.Unlock()
+	if s.pendingFin == nil {
+		return
+	}
+	fin := *s.pendingFin
+	s.pendingFin = nil
+	s.emit(proto.Emit(proto.TurnFinished, fin))
+}
+
+// forkMessage is one entry of get_fork_messages: a user message in pi's
+// session, by entry id, with its text as pi stored it.
+type forkMessage struct {
+	EntryID string `json:"entryId"`
+	Text    string `json:"text"`
+}
+
+// refFor finds the pi entry id of the user message p sent: the turn's
+// HarnessRef, and the entry Rewind forks before. The spec's rule is the last
+// user entry whose text equals the prompt. Pi does not always store the text
+// it was sent, though: it expands /skill:name and prompt templates, and an
+// input handler may rewrite it. So the entries the prompt added are told
+// apart from the ones listed just before it was sent, and with no exact
+// match among them the first is the prompt's (steers and follow-ups come
+// after it). With no listing from before, only an exact match is trusted.
+func (s *session) refFor(p *turnPrompt, timeout time.Duration) (string, error) {
+	defer p.release()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var before map[string]bool
+	select {
+	case res := <-p.before:
+		var listed struct {
+			Messages []forkMessage `json:"messages"`
+		}
+		if res.err() == nil && json.Unmarshal(res.Data, &listed) == nil {
+			before = make(map[string]bool, len(listed.Messages))
+			for _, m := range listed.Messages {
+				before[m.EntryID] = true
+			}
+		}
+	case <-ctx.Done():
+		return "", fmt.Errorf("get_fork_messages before the prompt: %w", ctx.Err())
+	case <-s.rpcDone:
+		return "", errors.New("pi exited")
+	}
+
+	var after struct {
+		Messages []forkMessage `json:"messages"`
+	}
+	if err := s.call(ctx, map[string]any{"type": "get_fork_messages"}, &after); err != nil {
+		return "", err
+	}
+	return matchPrompt(after.Messages, before, p.text), nil
+}
+
+// matchPrompt is refFor's rule over the listings; before is nil when the
+// listing from before the prompt is missing.
+func matchPrompt(after []forkMessage, before map[string]bool, text string) string {
+	first := ""
+	match := ""
+	for _, m := range after {
+		if before != nil && before[m.EntryID] {
+			continue
+		}
+		if first == "" {
+			first = m.EntryID
+		}
+		if m.Text == text {
+			match = m.EntryID
+		}
+	}
+	if match != "" || before == nil {
+		return match
+	}
+	return first
 }
 
 // handleUIRequest answers a pi extension's UI call. Dialog methods block the

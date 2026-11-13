@@ -331,12 +331,19 @@ const fetchCommandTimeout = 250 * time.Second
 // a server and connect it to a live session in one go.
 const cardCommandTimeout = 2 * time.Minute
 
+// rewindCommandTimeout is for a rewind, which can restart the harness to fork
+// its conversation (up to two minutes) and then wait behind the last turn's
+// snapshot to put the files back (up to two more).
+const rewindCommandTimeout = 5 * time.Minute
+
 func timeoutFor(command string) time.Duration {
 	switch command {
 	case "stage_skills", "stage_update":
 		return fetchCommandTimeout
 	case "resolve_card":
 		return cardCommandTimeout
+	case "rewind_thread":
+		return rewindCommandTimeout
 	}
 	return commandTimeout
 }
@@ -712,6 +719,20 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"mode": a.Mode}, nil
+
+	case "rewind_thread":
+		var a rewindArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		actor, err := c.srv.mgr.Get(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if err := actor.Rewind(ctx, a.TurnID, a.RestoreFiles); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 
 	case "set_model":
 		var a setModelArgs

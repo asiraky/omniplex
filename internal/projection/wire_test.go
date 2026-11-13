@@ -395,3 +395,54 @@ func TestWireEventPassesThroughWhatFits(t *testing.T) {
 		}
 	}
 }
+
+// A wire copy says whether each turn has an anchor and never carries the
+// anchor itself; the live state keeps it and gains no flag.
+func TestWireCopySwapsHarnessRefForRewindable(t *testing.T) {
+	s := New("s")
+	s.Turns = []Turn{{ID: "t1", HarnessRef: "secret-1"}, {ID: "t2"}}
+	s.reindex()
+
+	w := s.WireCopy(0)
+	if !w.Turns[0].Rewindable || w.Turns[1].Rewindable {
+		t.Fatalf("rewindable = %v/%v, want true/false", w.Turns[0].Rewindable, w.Turns[1].Rewindable)
+	}
+	blob, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(blob, []byte("secret-1")) {
+		t.Fatalf("wire copy carries the anchor: %s", blob)
+	}
+	if s.Turns[0].HarnessRef != "secret-1" || s.Turns[0].Rewindable {
+		t.Fatalf("source turn = %+v, want its ref and no flag", s.Turns[0])
+	}
+}
+
+// A turn.finished goes out with its anchor swapped for the flag and the rest
+// as it was; the event it came from is untouched. One with no anchor goes out
+// as the very bytes it came in with.
+func TestWireEventSwapsHarnessRefForRewindable(t *testing.T) {
+	ev := event(t, 1, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopEndTurn, HarnessRef: "secret-1"})
+	orig := append([]byte(nil), ev.Payload...)
+
+	out := WireEvent(ev)
+	var p proto.TurnFinishedPayload
+	if err := json.Unmarshal(out.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.HarnessRef != "" || !p.Rewindable || p.TurnID != "t1" || p.StopReason != proto.StopEndTurn {
+		t.Fatalf("wire payload = %+v", p)
+	}
+	if out.Seq != 1 || out.Type != proto.TurnFinished {
+		t.Fatalf("envelope = %d/%s", out.Seq, out.Type)
+	}
+	if !bytes.Equal(ev.Payload, orig) {
+		t.Fatalf("source payload changed: %s", ev.Payload)
+	}
+
+	bare := event(t, 2, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t2", StopReason: proto.StopEndTurn})
+	if got := WireEvent(bare); &got.Payload[0] != &bare.Payload[0] {
+		t.Fatal("a finish with no anchor was re-encoded")
+	}
+}

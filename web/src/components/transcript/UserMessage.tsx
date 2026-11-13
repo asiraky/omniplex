@@ -121,7 +121,7 @@ export function UserMessage({
         </button>
       )}
       {/* Read-aloud reads the bubble; an attachment-only message has none. */}
-      <MessageMeta item={item} speakRef={text ? bodyRef : undefined} rawMarkdown />
+      <MessageMeta item={item} speakRef={text ? bodyRef : undefined} rawMarkdown editable />
     </div>
   );
 }

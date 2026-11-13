@@ -297,6 +297,12 @@ export interface Turn {
   // "Worked for 34s" from these.
   startedAt?: number;
   finishedAt?: number;
+  /**
+   * The turn carries the harness's own anchor for it, so the thread can be cut
+   * back to before it. Absent on turns from before anchors existed and on
+   * turns the server closed itself.
+   */
+  rewindable?: boolean;
 }
 
 export interface PermissionOption {
@@ -1212,6 +1218,9 @@ export interface HarnessMeta {
   configFields?: ProviderConfigField[];
   /** The harness can take a message into a running turn. */
   steers?: boolean;
+  /** The harness can forget the end of its conversation, so a thread on it
+      can be rewound to before an earlier prompt. */
+  rewinds?: boolean;
   /**
    * A per-model setting the harness itself reads, offered beside the account
    * so it does not have to be hand-edited into a config file. Absent means the

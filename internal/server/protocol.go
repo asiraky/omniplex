@@ -319,6 +319,14 @@ type setModeArgs struct {
 	Mode     string `json:"mode"`
 }
 
+// rewindArgs cuts a thread back to just before TurnID ("Edit from here"),
+// putting the checkout back to that turn's start too when RestoreFiles.
+type rewindArgs struct {
+	ThreadID     string `json:"threadId"`
+	TurnID       string `json:"turnId"`
+	RestoreFiles bool   `json:"restoreFiles"`
+}
+
 type switchAccountArgs struct {
 	ThreadID string `json:"threadId"`
 	Instance string `json:"instance"`

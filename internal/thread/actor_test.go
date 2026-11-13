@@ -27,12 +27,19 @@ type fakeAdapter struct {
 	steer       bool
 	steerRefuse error
 	// tier makes every thread a ServiceTierSwitcher.
-	tier      bool
-	mu        sync.Mutex
-	last      *fakeThread
-	live      []adapter.ModelMeta
-	liveErr   error
-	listCalls int
+	tier bool
+	// rewind makes every thread a Rewinder. rewindErr is what Rewind
+	// returns, rewindGate holds it until closed, and onRewind runs inside
+	// it once the gate opens, for a harness doing something as it rewinds.
+	rewind     bool
+	rewindErr  error
+	rewindGate <-chan struct{}
+	onRewind   func()
+	mu         sync.Mutex
+	last       *fakeThread
+	live       []adapter.ModelMeta
+	liveErr    error
+	listCalls  int
 	// listGate, when set, holds the listing open so a test can prove the
 	// caller did not wait for it.
 	listGate      chan struct{}
@@ -289,7 +296,7 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 		host: host, events: make(chan proto.Emission, 4096),
 		prompts: make(chan adapter.PromptInput, 16), actions: make(chan adapter.ComposerActionInput, 16),
 		steerRefuse: f.steerRefuse, cancelGate: f.cancelGate, modeGate: f.modeGate, modeAsked: f.modeAsked, steerGate: f.steerGate,
-		modeHeld: f.modeHeld,
+		modeHeld: f.modeHeld, rewindErr: f.rewindErr, rewindGate: f.rewindGate, onRewind: f.onRewind,
 	}
 	for _, em := range f.startup {
 		s.events <- em
@@ -304,7 +311,33 @@ func (f *fakeAdapter) CreateSession(ctx context.Context, host adapter.HostServic
 	if f.tier {
 		return tierThread{s}, nil
 	}
+	if f.rewind {
+		return rewindThread{s}, nil
+	}
 	return s, nil
+}
+
+// rewindThread is a fakeThread whose harness can forget the end of its
+// conversation. It records every target it is asked for, gate or no gate.
+type rewindThread struct{ *fakeThread }
+
+func (s rewindThread) Rewind(ctx context.Context, target adapter.RewindTarget) error {
+	s.mu.Lock()
+	s.rewinds = append(s.rewinds, target)
+	s.mu.Unlock()
+	if err := gated(ctx, s.rewindGate); err != nil {
+		return err
+	}
+	if s.onRewind != nil {
+		s.onRewind()
+	}
+	return s.rewindErr
+}
+
+func (s *fakeThread) rewindTargets() []adapter.RewindTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]adapter.RewindTarget(nil), s.rewinds...)
 }
 
 // tierThread is a fakeThread whose harness can change service tier; "rejected"
@@ -357,6 +390,9 @@ type fakeThread struct {
 	steerGate    <-chan struct{}
 	modeAsked    chan<- string
 	modeHeld     map[string]<-chan struct{}
+	rewindErr    error
+	rewindGate   <-chan struct{}
+	onRewind     func()
 
 	mu   sync.Mutex
 	mode string
@@ -367,6 +403,7 @@ type fakeThread struct {
 	refuse      error
 	steerRefuse error
 	closed      bool
+	rewinds     []adapter.RewindTarget
 }
 
 // gated holds a fake's call until gate is closed, or fails it at the call's
