@@ -260,12 +260,12 @@ function PanelBody({
   // Every switch starts the list afresh, and reads it even when the
   // comparison is the one already showing: that is how a failed read is
   // retried by asking for the same turn again.
-  const [reads, setReads] = useState(0);
+  const [readNonce, setReadNonce] = useState(0);
   const showComparison = useCallback((next: DiffComparison, nextTurn: DiffTurn | null) => {
     setChanges(next === "turn" && nextTurn ? turnSeed(nextTurn) : null);
     setChangesError("");
     setComparison(next);
-    setReads((n) => n + 1);
+    setReadNonce((n) => n + 1);
   }, []);
 
   const changeComparison = useCallback((next: DiffComparison) => {
@@ -282,7 +282,7 @@ function PanelBody({
   const listRevision = comparison === "turn" ? "" : revision;
   useEffect(() => {
     if (open) void refreshChanges();
-  }, [open, listRevision, reads, refreshChanges]);
+  }, [open, listRevision, readNonce, refreshChanges]);
 
   // ---- the worktree tree, shared by the files and file surfaces ----
   const [tree, setTree] = useState<FileTree | null>(null);
