@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { TerminalLink } from "~/lib/terminalLinks";
 
-import { bufferRows, cellAtPoint, linksAtRow, rangeContains, type LinkBufferLine } from "./xtermLinks";
+import { cellAtPoint, linksAtRow, rangeContains, type LinkBufferLine } from "./xtermLinks";
 
 // A row of cells as xterm lays them out: a wide character takes its cell and
 // leaves an empty, zero-width spacer after it. Cells past the text are blank.
@@ -22,15 +22,11 @@ function row(text: string, cols: number, wrapped = false): LinkBufferLine {
       const c = cells[x];
       return c && { getChars: () => c.chars, getWidth: () => c.width };
     },
-    translateToString: (trimRight) => {
-      const s = cells.map((c) => (c.width === 0 ? "" : c.chars || " ")).join("");
-      return trimRight ? s.replace(/\s+$/, "") : s;
-    },
   };
 }
 
 function buffer(...lines: LinkBufferLine[]) {
-  return { getLine: (y: number) => lines[y], baseY: 0, cursorY: lines.length - 1 };
+  return { getLine: (y: number) => lines[y] };
 }
 
 // Every run of "http…" up to a space, so the tests exercise the mapping and not
@@ -99,20 +95,6 @@ describe("linksAtRow", () => {
   it("ignores a range the finder reports past the line", () => {
     const bogus = (): TerminalLink[] => [{ kind: "url", start: 0, end: 999, url: "x" }];
     expect(linksAtRow(buffer(row("abc", 5)), 1, bogus)).toEqual([]);
-  });
-});
-
-describe("bufferRows", () => {
-  it("stops at the cursor's row and keeps the spaces a wrapped row continues", () => {
-    const buf = {
-      ...buffer(row("ab  ", 4), row("cd", 4, true), row("$ ", 4), row("", 4)),
-      cursorY: 2,
-    };
-    expect(bufferRows(buf)).toEqual([
-      { text: "ab  ", wrapped: false },
-      { text: "cd", wrapped: true },
-      { text: "$", wrapped: false },
-    ]);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { lastTerminalLines, quoteTerminalOutput, type TerminalRow } from "./terminalQuote";
+import { bufferRows, lastTerminalLines, quoteTerminalOutput, type QuoteBufferLine, type TerminalRow } from "./terminalQuote";
 
 describe("quoteTerminalOutput", () => {
   it("fences the output, tidying line ends and blank edges but not indentation", () => {
@@ -48,5 +48,29 @@ describe("lastTerminalLines", () => {
     expect(lastTerminalLines(rows, 0)).toBe("");
     expect(lastTerminalLines([], 3)).toBe("");
     expect(lastTerminalLines([row(""), row(" ")], 3)).toBe("");
+  });
+});
+
+describe("bufferRows", () => {
+  // A row as xterm pads it: the text, then spaces to the width of the terminal.
+  const line = (text: string, wrapped = false): QuoteBufferLine => ({
+    isWrapped: wrapped,
+    translateToString: (trim) => (trim ? text.trimEnd() : text.padEnd(6)),
+  });
+  const buffer = (...lines: QuoteBufferLine[]) => ({ length: lines.length, getLine: (y: number) => lines[y] });
+
+  it("trims each row but keeps the spaces a wrapped row continues", () => {
+    expect(bufferRows(buffer(line("ab  "), line("cd", true), line("$ ")))).toEqual([
+      { text: "ab    ", wrapped: false },
+      { text: "cd", wrapped: true },
+      { text: "$", wrapped: false },
+    ]);
+  });
+
+  it("reads below the cursor, where a full-screen program draws too", () => {
+    // vim with the cursor on its first line: the rest of the file and the
+    // status line sit under it.
+    const vim = { ...buffer(line("fn main() {"), line("}"), line("~"), line('"main.rs" 2L')), cursorY: 0 };
+    expect(lastTerminalLines(bufferRows(vim), 10)).toBe('fn main() {\n}\n~\n"main.rs" 2L');
   });
 });

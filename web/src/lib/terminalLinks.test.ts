@@ -77,6 +77,25 @@ describe("findTerminalLinks", () => {
     expect(findTerminalLinks("/a/(b)")).toEqual([pathAt("/a/(b)", "/a/(b)", "/a/(b)")]);
   });
 
+  it("drops the punctuation that ends a sentence after a bare path", () => {
+    for (const [line, text] of [
+      ["Edited src/foo.ts.", "src/foo.ts"],
+      ["see web/src/App.tsx.", "web/src/App.tsx"],
+      ["(in web/src/App.tsx), then", "web/src/App.tsx"],
+      ["Created web/; done", "web/"],
+    ] as const) {
+      expect(findTerminalLinks(line)).toEqual([pathAt(line, text, text)]);
+    }
+    const line = "Updated README.md:3.";
+    expect(findTerminalLinks(line)).toEqual([pathAt(line, "README.md:3", "README.md", 3)]);
+  });
+
+  it("judges a bare filename the same with a full stop after it as without", () => {
+    // A slashless name needs a line to be a link, full stop or not.
+    expect(findTerminalLinks("Updated README.md.")).toEqual([]);
+    expect(findTerminalLinks("Updated README.md")).toEqual([]);
+  });
+
   it("keeps a question mark inside a filesystem path", () => {
     expect(findTerminalLinks("wrote /tmp/report?draft")).toEqual([
       pathAt("wrote /tmp/report?draft", "/tmp/report?draft", "/tmp/report?draft"),

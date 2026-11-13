@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { quoteTerminalOutput } from "~/lib/terminalQuote";
@@ -7,7 +7,7 @@ import { render } from "~/test/harness";
 
 import { TerminalSurface } from "./TerminalSurface";
 
-const { FakeTerminal, toast } = vi.hoisted(() => {
+const { FakeTerminal, socket, toast } = vi.hoisted(() => {
   // ASCII rows, one character a cell, as much of xterm's buffer as the
   // surface reads.
   const line = (text: string, wrapped = false) => ({
@@ -31,10 +31,7 @@ const { FakeTerminal, toast } = vi.hoisted(() => {
     buffer = {
       active: {
         getLine: (y: number) => this.lines[y],
-        get baseY() {
-          return 0;
-        },
-        cursorY: 0,
+        length: 1,
         viewportY: 0,
       },
     };
@@ -51,7 +48,7 @@ const { FakeTerminal, toast } = vi.hoisted(() => {
 
     show(...rows: string[]) {
       this.lines = rows.map((r) => line(r));
-      this.buffer.active.cursorY = rows.length - 1;
+      this.buffer.active.length = rows.length;
     }
     select(text: string) {
       this.selection = text;
@@ -90,19 +87,18 @@ const { FakeTerminal, toast } = vi.hoisted(() => {
     reset() {}
     dispose() {}
   }
-  return { FakeTerminal, toast: { info: vi.fn() } };
+  const socket = { resize() {}, send() {}, dispose() {}, restart() {}, cwd: vi.fn() };
+  return { FakeTerminal, socket, toast: { info: vi.fn() } };
 });
 
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
-vi.mock("~/lib/termSocket", () => ({
-  openTermSocket: () => ({ resize() {}, send() {}, dispose() {}, restart() {} }),
-}));
+vi.mock("~/lib/termSocket", () => ({ openTermSocket: () => socket }));
 vi.mock("~/lib/toast", () => ({ toast }));
 
 function mount(props: Partial<Parameters<typeof TerminalSurface>[0]> = {}) {
-  render(<TerminalSurface termId="t1" target={{ thread: "s1" }} {...props} />);
-  return FakeTerminal.last;
+  const { unmount } = render(<TerminalSurface termId="t1" target={{ thread: "s1" }} {...props} />);
+  return Object.assign(FakeTerminal.last, { unmount });
 }
 
 function linksOn(term: InstanceType<typeof FakeTerminal>, y: number) {
@@ -121,6 +117,7 @@ function tap(x: number, y: number) {
 let open: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   toast.info.mockClear();
+  socket.cwd.mockReset().mockResolvedValue(null);
   open = vi.fn();
   vi.stubGlobal("open", open);
 });
@@ -154,7 +151,7 @@ describe("TerminalSurface: add to chat", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: label }));
   }
 
-  it("sends the last lines up to the cursor", async () => {
+  it("sends the last lines of the buffer", async () => {
     const onAddToChat = vi.fn();
     const term = mount({ onAddToChat });
     term.show(...Array.from({ length: 25 }, (_, i) => `line ${i}`));
@@ -184,7 +181,7 @@ describe("TerminalSurface: links", () => {
     expect(linksOn(term, 1)?.map((l) => l.text)).toEqual(["https://a.io"]);
   });
 
-  it("opens a URL in a new tab and a path through the caller", () => {
+  it("opens a URL in a new tab and a path through the caller", async () => {
     const onOpenPath = vi.fn();
     const term = mount({ onOpenPath });
     term.show("see https://a.io and src/app.ts:12");
@@ -195,22 +192,63 @@ describe("TerminalSurface: links", () => {
 
     const path = links.find((l) => l.text.startsWith("src/"));
     path.activate(new MouseEvent("mouseup"), path.text);
-    expect(onOpenPath).toHaveBeenCalledWith("src/app.ts", 12);
+    // The shell's directory is not known, so the path goes as printed.
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("src/app.ts", 12));
+  });
+
+  it("makes a relative path absolute against the shell's directory", async () => {
+    socket.cwd.mockResolvedValue("/r/web");
+    const onOpenPath = vi.fn();
+    const term = mount({ onOpenPath });
+    term.show("../go.mod:3 and src/app.ts");
+
+    for (const link of linksOn(term, 1)!) link.activate(new MouseEvent("mouseup"), link.text);
+
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledTimes(2));
+    expect(onOpenPath).toHaveBeenCalledWith("/r/go.mod", 3);
+    expect(onOpenPath).toHaveBeenCalledWith("/r/web/src/app.ts", undefined);
+  });
+
+  it("asks the shell nothing for an absolute or home path", async () => {
+    const onOpenPath = vi.fn();
+    const term = mount({ onOpenPath });
+    term.show("/etc/hosts ~/notes.md");
+
+    for (const link of linksOn(term, 1)!) link.activate(new MouseEvent("mouseup"), link.text);
+
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledTimes(2));
+    expect(onOpenPath).toHaveBeenCalledWith("/etc/hosts", undefined);
+    expect(onOpenPath).toHaveBeenCalledWith("~/notes.md", undefined);
+    expect(socket.cwd).not.toHaveBeenCalled();
+  });
+
+  it("opens nothing when the terminal is gone by the time the shell answers", async () => {
+    let answer!: (dir: string) => void;
+    socket.cwd.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const onOpenPath = vi.fn();
+    const term = mount({ onOpenPath });
+    term.show("src/app.ts:12");
+
+    linksOn(term, 1)![0].activate(new MouseEvent("mouseup"), "src/app.ts:12");
+    term.unmount();
+    await act(async () => answer("/r/web"));
+
+    expect(onOpenPath).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a link when the click made a selection", () => {
+    const term = mount();
+    term.show("go https://a.io now");
+    // A double-click that selected the URL ends in a mouseup over it.
+    act(() => term.select("https://a.io"));
+    linksOn(term, 1)![0].activate(new MouseEvent("mouseup"), "https://a.io");
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("answers undefined for a row with no links", () => {
     const term = mount();
     term.show("nothing here");
     expect(linksOn(term, 1)).toBeUndefined();
-  });
-
-  it("opens OSC 8 hyperlinks only when they are http(s)", () => {
-    const term = mount();
-    const { activate } = term.options.linkHandler;
-    activate(new MouseEvent("mouseup"), "file:///etc/passwd");
-    expect(open).not.toHaveBeenCalled();
-    activate(new MouseEvent("mouseup"), "https://a.io/x");
-    expect(open).toHaveBeenCalledWith("https://a.io/x", "_blank", "noopener,noreferrer");
   });
 
   it("opens a tapped link once, though xterm's own activation follows the tap", () => {
@@ -222,6 +260,15 @@ describe("TerminalSurface: links", () => {
 
     linksOn(term, 1)![0].activate(new MouseEvent("mouseup"), "https://a.io");
     expect(open).toHaveBeenCalledOnce();
+  });
+
+  it("resolves a tapped path against the shell's directory too", async () => {
+    socket.cwd.mockResolvedValue("/r/web");
+    const onOpenPath = vi.fn();
+    const term = mount({ onOpenPath });
+    term.show("at src/app.ts:12");
+    tap(55, 10);
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("/r/web/src/app.ts", 12));
   });
 
   it("ignores a tap beside a link, a drag, and a tap while an app reads the mouse", () => {

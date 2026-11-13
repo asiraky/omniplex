@@ -52,7 +52,10 @@ const SCP_REMOTE_PATTERN = /(?<![\w.@-])[\w.-]+@[\w.-]+:[^\s"'`<>]+/gu;
 // `api.example.com:443` is a host and port, not a file and line.
 const DOMAIN_ENDINGS = new Set(["com", "org", "net"]);
 
-/** Links in one logical terminal line (soft-wrapped rows already joined). start/end are string indices into `line`, end exclusive, sorted by start, non-overlapping. */
+/**
+ * Links in one logical terminal line (soft-wrapped rows already joined). start/end are string
+ * indices into `line`, end exclusive, sorted by start, non-overlapping.
+ */
 export function findTerminalLinks(line: string): TerminalLink[] {
   const urls: TerminalLink[] = [];
   for (const m of line.matchAll(URL_PATTERN)) {
@@ -71,8 +74,9 @@ export function findTerminalLinks(line: string): TerminalLink[] {
   const paths: TerminalLink[] = [];
   for (const m of line.matchAll(PATH_PATTERN)) {
     const prefixed = PREFIXED.test(m[0]);
-    // Only the free-running prefixed shape can swallow trailing prose.
-    const text = prefixed ? trimEnd(m[0], PATH_TRAILING_PUNCTUATION) : m[0];
+    // The prefixed shape runs on into prose, and the bare one takes in the full
+    // stop of `Edited src/foo.ts.`, since a dot is part of a segment.
+    const text = trimEnd(m[0], PATH_TRAILING_PUNCTUATION);
     const link = admit(text, prefixed);
     if (!link) continue;
     const range = { start: m.index, end: m.index + text.length };

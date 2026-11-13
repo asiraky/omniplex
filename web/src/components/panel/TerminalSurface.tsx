@@ -1,24 +1,16 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { MessageSquarePlusIcon, TextQuoteIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "~/components/ui/dropdown-menu";
-import { findTerminalLinks, type TerminalLink } from "~/lib/terminalLinks";
-import { lastTerminalLines, quoteTerminalOutput } from "~/lib/terminalQuote";
+import { bufferRows, lastTerminalLines, quoteTerminalOutput } from "~/lib/terminalQuote";
 import { openTermSocket, type TermEnd, type TermSocket, type TermStatus, type TerminalTarget } from "~/lib/termSocket";
 import { toast } from "~/lib/toast";
 import { cn } from "~/lib/utils";
-import { bufferRows, cellAtPoint, linksAtRow, rangeContains, type BufferLink } from "~/lib/xtermLinks";
 import { useLatest } from "~/useLatest";
-import { useCanHover } from "~/useMediaQuery";
+
+import { attachTerminalLinks } from "./attachTerminalLinks";
+import { TerminalActions } from "./TerminalActions";
 
 const SHELL_ENDED: Record<TermEnd, string> = {
   exited: "The shell exited.",
@@ -31,21 +23,6 @@ const LOGIN_ENDED: Record<TermEnd, string> = {
   gone: "The sign-in is no longer running.",
   failed: "The sign-in could not start.",
 };
-
-/** The choices of "send the last N lines": a command's tail, a screenful, a long log. */
-const LAST_LINES = [20, 50, 200];
-
-// A touch that stays this close and lifts this soon is a tap, not a scroll
-// or a long press.
-const TAP_SLOP_PX = 10;
-const TAP_MS = 500;
-// How long after a tap opened a link xterm's own activation of it is ignored,
-// should the browser deliver the tap's mouse events anyway.
-const TAP_GRACE_MS = 800;
-
-function openUrl(url: string) {
-  window.open(url, "_blank", "noopener,noreferrer");
-}
 
 /**
  * One terminal tab: an xterm bound to a pty the server spawned in the
@@ -82,14 +59,11 @@ export function TerminalSurface({
   const hostRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<TermSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
-  // Whether the last-lines menu closed on a send, for where focus goes next.
-  const sentRef = useRef(false);
   const [status, setStatus] = useState<TermStatus>("connecting");
   const [ended, setEnded] = useState<TermEnd | null>(null);
   const [selected, setSelected] = useState(false);
   const onEndedRef = useLatest(onEnded);
   const onOpenPathRef = useLatest(onOpenPath);
-  const canHover = useCanHover();
   const targetKey = "thread" in target ? `thread:${target.thread}` : `login:${target.login}`;
   const login = "login" in target;
 
@@ -97,10 +71,6 @@ export function TerminalSurface({
     const host = hostRef.current;
     if (!host) return;
     setEnded(null);
-
-    // When a tap last opened a link itself (see the pointer handlers below).
-    let tappedAt = -Infinity;
-    const tappedRecently = () => performance.now() - tappedAt < TAP_GRACE_MS;
 
     const term = new Terminal({
       fontSize: 12,
@@ -114,100 +84,15 @@ export function TerminalSurface({
       theme: { background: "#00000000" },
       allowTransparency: true,
       // OSC 8 hyperlinks, the ones a program marks up itself (gh, cargo,
-      // compilers). xterm's default asks confirm() first; a link in our own
-      // shell's output is no more dangerous than one we found by pattern.
-      // Only http(s) reach here: xterm drops other schemes unless told not to.
-      linkHandler: {
-        activate: (_event, uri) => {
-          if (!tappedRecently() && /^https?:\/\//i.test(uri)) openUrl(uri);
-        },
-      },
+      // compilers), keep xterm's default handler, which shows the real target
+      // in a confirm() before opening it: the text printed for one need not be
+      // where it goes.
     });
     termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
-
-    // URLs and paths found in the text. Paths are links only when there is
-    // somewhere to open them, read at the hover so the callback can change.
-    const linksAt = (y: number): BufferLink[] => {
-      const links = linksAtRow(term.buffer.active, y, findTerminalLinks);
-      return onOpenPathRef.current ? links : links.filter((l) => l.link.kind === "url");
-    };
-    const follow = (link: TerminalLink) => {
-      if (link.kind === "url") openUrl(link.url);
-      else onOpenPathRef.current?.(link.path, link.line);
-    };
-    const provider = term.registerLinkProvider({
-      provideLinks: (y, callback) => {
-        const links = linksAt(y);
-        // Undefined, not empty, for none: xterm reads an empty answer from a
-        // provider as "has links" and lets it shadow the ones after it.
-        callback(
-          links.length
-            ? links.map(({ link, range, text }) => ({
-                range,
-                text,
-                activate: () => {
-                  if (!tappedRecently()) follow(link);
-                },
-              }))
-            : undefined,
-        );
-      },
-    });
-
-    // A tap opens a link without help from xterm's linkifier. That one works
-    // off hover, and a tap's hover is only the mousemove the browser makes up
-    // just before its mousedown; WebKit is documented to drop the rest of a
-    // tap's mouse events when that mousemove changes the page, which the
-    // hover underline does. So a touch is matched against the links here, on
-    // the pointerup (a user gesture on a phone, so the new tab is allowed),
-    // and its touchend is cancelled so no mouse events follow: no second open
-    // through xterm, and no focus on xterm's input, which would raise the
-    // keyboard over whatever the link just opened. An app that reads the
-    // mouse (vim, htop) gets the tap instead, as it would a click.
-    let touch: { id: number; x: number; y: number; t: number } | null = null;
-    let swallowTouchEnd = false;
-    const onPointerDown = (e: PointerEvent) => {
-      touch =
-        e.pointerType === "touch" && e.isPrimary
-          ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp }
-          : null;
-    };
-    const onPointerCancel = () => {
-      touch = null;
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      const start = touch;
-      touch = null;
-      if (!start || e.pointerId !== start.id) return;
-      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > TAP_SLOP_PX) return;
-      if (e.timeStamp - start.t > TAP_MS || term.modes.mouseTrackingMode !== "none") return;
-      const screen = term.element?.querySelector(".xterm-screen");
-      if (!screen) return;
-      const cell = cellAtPoint(
-        screen.getBoundingClientRect(),
-        { cols: term.cols, rows: term.rows, viewportY: term.buffer.active.viewportY },
-        e.clientX,
-        e.clientY,
-      );
-      const hit = cell && linksAt(cell.y).find((l) => rangeContains(l.range, cell));
-      if (!hit) return;
-      tappedAt = performance.now();
-      swallowTouchEnd = true;
-      follow(hit.link);
-    };
-    // A contact's pointerup comes before its touchend.
-    const onTouchEnd = (e: TouchEvent) => {
-      if (swallowTouchEnd && e.cancelable) e.preventDefault();
-      swallowTouchEnd = false;
-    };
-    host.addEventListener("pointerdown", onPointerDown, true);
-    host.addEventListener("pointerup", onPointerUp, true);
-    host.addEventListener("pointercancel", onPointerCancel, true);
-    host.addEventListener("touchend", onTouchEnd, { capture: true, passive: false });
 
     const selection = term.onSelectionChange(() => setSelected(term.hasSelection()));
 
@@ -223,6 +108,11 @@ export function TerminalSurface({
     socketRef.current = socket;
     socket.resize(term.cols, term.rows);
 
+    const links = attachTerminalLinks(term, host, {
+      openPath: () => onOpenPathRef.current,
+      cwd: () => socket.cwd(),
+    });
+
     const data = term.onData((d) => socket.send(d));
     const resize = term.onResize(({ cols, rows }) => socket.resize(cols, rows));
 
@@ -233,11 +123,7 @@ export function TerminalSurface({
 
     return () => {
       ro.disconnect();
-      host.removeEventListener("pointerdown", onPointerDown, true);
-      host.removeEventListener("pointerup", onPointerUp, true);
-      host.removeEventListener("pointercancel", onPointerCancel, true);
-      host.removeEventListener("touchend", onTouchEnd, true);
-      provider.dispose();
+      links.dispose();
       selection.dispose();
       data.dispose();
       resize.dispose();
@@ -265,92 +151,25 @@ export function TerminalSurface({
 
   const sendLast = (n: number) => {
     const term = termRef.current;
-    if (!term) return;
+    if (!term) return false;
     const quoted = quoteTerminalOutput(lastTerminalLines(bufferRows(term.buffer.active), n));
     if (!quoted) {
       toast.info("Nothing in the terminal to send");
-      return;
+      return false;
     }
-    sentRef.current = true;
     onAddToChat?.(quoted);
+    return true;
   };
-
-  const pill =
-    "flex items-center gap-1.5 rounded-full bg-black/75 px-2 py-0.5 text-[11px] text-white/80 ring-1 ring-white/15";
-  const pillButton = cn(
-    pill,
-    "pointer-events-auto h-6 transition-colors outline-none hover:bg-black/90 hover:text-white focus-visible:ring-white/60 pointer-coarse:h-9 pointer-coarse:px-3 pointer-coarse:text-[12px]",
-  );
 
   return (
     <div className="group/terminal relative h-full min-h-0 bg-black/90 p-1.5">
       <div ref={hostRef} className="h-full min-h-0 [&_.xterm]:h-full" />
-      {/* One row in the top corner, so the pills sit side by side rather
-          than on top of each other. Only the buttons take pointer events; the
-          rest lets clicks and drags through to the terminal. */}
-      <div className="pointer-events-none absolute top-2 right-2 flex items-center gap-1.5">
-        {/* The output stays up while the socket is away: the shell is still
-            running, and what it printed meanwhile replays on reconnect. */}
-        {status === "reconnecting" && !ended && (
-          <div role="status" className={cn(pill, "h-6 pointer-coarse:h-9")}>
-            <span className="size-1.5 animate-pulse rounded-full bg-amber-400" />
-            Reconnecting…
-          </div>
-        )}
-        {onAddToChat && selected && !ended && (
-          <button
-            type="button"
-            // The terminal keeps its selection and its focus through the click.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={addSelection}
-            className={pillButton}
-          >
-            <MessageSquarePlusIcon className="size-3.5" />
-            Add to chat
-          </button>
-        )}
-        {/* Selecting on a touch screen is hard going in xterm, so this is the
-            phone's way to quote output; with a mouse it waits for the pointer
-            to come over the terminal rather than sit on top of the output. */}
-        {onAddToChat && !ended && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Send recent output to chat"
-                onMouseDown={(e) => e.preventDefault()}
-                className={cn(
-                  pillButton,
-                  canHover &&
-                    "opacity-0 group-hover/terminal:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100",
-                )}
-              >
-                <TextQuoteIcon className="size-3.5" />
-                <span className="hidden pointer-coarse:inline">Send output</span>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              // Not back to the trigger: after a send the caller puts focus
-              // where the quote went, and dismissed with a mouse it goes back
-              // to the shell. A touch screen gets neither, since focusing the
-              // terminal raises the keyboard.
-              onCloseAutoFocus={(e) => {
-                e.preventDefault();
-                if (canHover && !sentRef.current) termRef.current?.focus();
-                sentRef.current = false;
-              }}
-            >
-              <DropdownMenuLabel>Send to chat</DropdownMenuLabel>
-              {LAST_LINES.map((n) => (
-                <DropdownMenuItem key={n} onSelect={() => sendLast(n)}>
-                  Last {n} lines
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
+      <TerminalActions
+        reconnecting={status === "reconnecting" && !ended}
+        selected={selected}
+        quote={onAddToChat && !ended ? { addSelection, sendLast } : undefined}
+        onRefocus={() => termRef.current?.focus()}
+      />
       {/* A finished sign-in leaves its last words on screen — "logged in as…",
           or the error — so the notice sits below rather than over them. */}
       {ended && (

@@ -169,11 +169,30 @@ export function detectPath(raw: string): DetectedPath | null {
 }
 
 /**
- * A path a shell in the checkout printed, relative to the checkout, or null
- * when it points somewhere the server will not serve: the home directory,
- * above the checkout, or an absolute path outside it. The checkout is `cwd`;
- * a relative path is taken as relative to it, which is where a thread's
- * terminal starts. The checkout itself comes back as "".
+ * `path` as a shell sitting in directory `dir` means it: absolute, with `.` and
+ * `..` worked out, and `..` at the root staying there as it does in a shell. An
+ * absolute `path` ignores `dir`. A trailing slash, which marks a directory, is
+ * kept. `dir` must be absolute; a `:line` anchor is the caller's to split off.
+ */
+export function resolvePath(path: string, dir: string): string {
+  const parts: string[] = [];
+  for (const segment of (path.startsWith("/") ? path : `${dir}/${path}`).split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") parts.pop();
+    else parts.push(segment);
+  }
+  const out = "/" + parts.join("/");
+  return parts.length > 0 && path.endsWith("/") ? out + "/" : out;
+}
+
+/**
+ * A path a terminal printed, relative to the checkout, or null when it points
+ * somewhere the server will not serve: the home directory, above the checkout,
+ * or an absolute path outside it. The checkout is `cwd`. The terminal makes a
+ * relative path absolute against the shell's working directory before it gets
+ * here, so a relative one is the fallback for when that is unknown, and is
+ * taken against the checkout, where a thread's terminal starts. The checkout
+ * itself comes back as "".
  */
 export function pathInCheckout(path: string, cwd: string): string | null {
   if (path.startsWith("~")) return null;

@@ -1,12 +1,12 @@
 // The glue between what a terminal buffer holds (cells in rows, some rows the
 // soft-wrapped continuation of the one above) and the plain strings the link
-// finder and the quoting work on. Typed against the slice of xterm's IBuffer it
-// reads, so the tests can hand it a fake one.
+// finder works on, and between a point on the screen and the cell under it.
+// Typed against the slice of xterm's IBuffer it reads, so the tests can hand it
+// a fake one.
 
 import type { IBufferRange } from "@xterm/xterm";
 
 import type { TerminalLink } from "~/lib/terminalLinks";
-import type { TerminalRow } from "~/lib/terminalQuote";
 
 export interface LinkBufferCell {
   getChars(): string;
@@ -17,7 +17,6 @@ export interface LinkBufferLine {
   readonly isWrapped: boolean;
   readonly length: number;
   getCell(x: number): LinkBufferCell | undefined;
-  translateToString(trimRight?: boolean): string;
 }
 
 export interface LinkBuffer {
@@ -95,26 +94,6 @@ export function linksAtRow(
     });
   }
   return links;
-}
-
-/**
- * The buffer as rows for quoting, from the top of the scrollback to the
- * cursor's row: below the cursor is only the blank rest of the screen. A row
- * keeps its trailing spaces when the next row continues it, since they are
- * part of the line it wraps, not padding.
- */
-export function bufferRows(
-  buffer: LinkBuffer & { readonly baseY: number; readonly cursorY: number },
-): TerminalRow[] {
-  const end = buffer.baseY + buffer.cursorY;
-  const rows: TerminalRow[] = [];
-  for (let y = 0; y <= end; y++) {
-    const line = buffer.getLine(y);
-    if (!line) break;
-    const continued = !!buffer.getLine(y + 1)?.isWrapped && y < end;
-    rows.push({ text: line.translateToString(!continued), wrapped: line.isWrapped });
-  }
-  return rows;
 }
 
 export interface Cell {
