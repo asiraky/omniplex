@@ -285,17 +285,33 @@ func confirmBridge(ctx context.Context, b *bridge) error {
 	return err
 }
 
+// Why entryParent will not give a fork point. The CLI resumes a compacted
+// conversation from its last compact boundary on, so it cannot cut it any
+// earlier; and after /clear the session is on a new conversation that never
+// had the turns before it.
+var (
+	errRewindCompacted = errors.New("claude: the conversation was compacted after this message, so it can't be rewound to it")
+	errRewindCleared   = errors.New("claude: this message is no longer in the current conversation (it was cleared), so it can't be rewound to it")
+)
+
+// compactBoundary marks a line that may be a compact boundary, a system
+// entry with subtype "compact_boundary"; the CLI resumes from the last one.
+var compactBoundary = []byte(`"compact_boundary"`)
+
 // entryParent finds entry in the transcript of conversation id and returns
-// its parent's uuid, "" when it is the first. An entry it cannot find is an
-// error: resuming at a uuid the CLI does not know leaves a session that fails
-// every turn.
+// its parent's uuid, "" when it is the first. An entry it cannot find, or
+// one before the conversation's last compact boundary, is an error: resuming
+// at a uuid the CLI does not know leaves a session that fails at boot or on
+// every turn. An entry after the last boundary has its parent there too (the
+// boundary itself, or an entry after it, attachments included), so where the
+// entry is settles where its parent is.
 func entryParent(configDir, cwd, id, entry string) (string, error) {
 	file, err := findConversation(configDir, cwd, id)
 	if err != nil {
 		return "", err
 	}
 	if file == "" {
-		return "", fmt.Errorf("claude: no transcript for conversation %s", id)
+		return "", errRewindCleared
 	}
 	f, err := os.Open(file)
 	if err != nil {
@@ -303,19 +319,32 @@ func entryParent(configDir, cwd, id, entry string) (string, error) {
 	}
 	defer f.Close()
 	needle := []byte(`"` + entry + `"`)
+	var (
+		found     bool
+		parent    string
+		compacted bool // a boundary came after the entry
+	)
 	r := bufio.NewReader(f)
 	for {
 		line, err := r.ReadBytes('\n')
-		if bytes.Contains(line, needle) {
+		entryLine, boundaryLine := bytes.Contains(line, needle), bytes.Contains(line, compactBoundary)
+		if entryLine || boundaryLine {
 			var e struct {
-				UUID   string  `json:"uuid"`
-				Parent *string `json:"parentUuid"`
+				Type    string  `json:"type"`
+				Subtype string  `json:"subtype"`
+				UUID    string  `json:"uuid"`
+				Parent  *string `json:"parentUuid"`
 			}
-			if json.Unmarshal(line, &e) == nil && e.UUID == entry {
-				if e.Parent == nil {
-					return "", nil
+			if json.Unmarshal(line, &e) == nil {
+				switch {
+				case e.UUID == entry:
+					found, compacted, parent = true, false, ""
+					if e.Parent != nil {
+						parent = *e.Parent
+					}
+				case e.Type == "system" && e.Subtype == "compact_boundary" && found:
+					compacted = true
 				}
-				return *e.Parent, nil
 			}
 		}
 		if err == io.EOF {
@@ -325,5 +354,11 @@ func entryParent(configDir, cwd, id, entry string) (string, error) {
 			return "", err
 		}
 	}
-	return "", fmt.Errorf("claude: turn %s is not in conversation %s", entry, id)
+	switch {
+	case !found:
+		return "", errRewindCleared
+	case compacted:
+		return "", errRewindCompacted
+	}
+	return parent, nil
 }

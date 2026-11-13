@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -183,6 +184,18 @@ func (f *fakeBridge) transcript(t *testing.T, id string, entries ...string) {
 	writeFile(t, filepath.Join(f.configDir, "projects", nonAlphanumeric.ReplaceAllString(filepath.Clean(f.cwd), "-"), id+".jsonl"), b.String())
 }
 
+// entries writes conversation id's transcript, one line per entry as given.
+func (f *fakeBridge) entries(t *testing.T, id string, entries ...map[string]any) {
+	t.Helper()
+	var b strings.Builder
+	for _, e := range entries {
+		e["sessionId"] = id
+		line, _ := json.Marshal(e)
+		b.Write(append(line, '\n'))
+	}
+	writeFile(t, filepath.Join(f.configDir, "projects", nonAlphanumeric.ReplaceAllString(filepath.Clean(f.cwd), "-"), id+".jsonl"), b.String())
+}
+
 // configs is every config a bridge of this session was started with, in
 // order.
 func (f *fakeBridge) configs(t *testing.T) []sidecarConfig {
@@ -342,8 +355,8 @@ func TestRewindToAnUnknownTurnChangesNothing(t *testing.T) {
 	f := startFakeBridge(t, adapter.CreateOptions{}, nil)
 	orig := f.harnessID(t)
 	f.turn(t, "turn-1")
-	if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "elsewhere"}); err == nil {
-		t.Fatal("rewound to a turn the conversation does not have")
+	if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "elsewhere"}); !errors.Is(err, errRewindCleared) {
+		t.Fatalf("rewind error = %v, want %v", err, errRewindCleared)
 	}
 	if n := len(f.configs(t)); n != 1 {
 		t.Fatalf("%d bridges started, want the one", n)
@@ -352,6 +365,85 @@ func TestRewindToAnUnknownTurnChangesNothing(t *testing.T) {
 		t.Fatalf("harness id = %q, want %q", got, orig)
 	}
 	f.turn(t, "turn-2")
+}
+
+// compactedConversation is a conversation compacted twice, the way the CLI
+// writes it: each boundary starts a new chain, and what follows the last one
+// is all a resume can see.
+func compactedConversation() []map[string]any {
+	entry := func(typ, id string, parent any) map[string]any {
+		return map[string]any{"type": typ, "uuid": id, "parentUuid": parent}
+	}
+	boundary := func(id, logical string) map[string]any {
+		return map[string]any{
+			"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted",
+			"uuid": id, "parentUuid": nil, "logicalParentUuid": logical,
+			"compactMetadata": map[string]any{"trigger": "auto"},
+		}
+	}
+	return []map[string]any{
+		entry("user", "old-1", nil),
+		entry("assistant", "old-1-answer", "old-1"),
+		boundary("boundary-1", "old-1-answer"),
+		entry("user", "mid-1", "boundary-1"),
+		entry("assistant", "mid-1-answer", "mid-1"),
+		boundary("boundary-2", "mid-1-answer"),
+		entry("user", "summary", "boundary-2"),
+		entry("attachment", "attached", "summary"),
+		entry("user", "new-1", "attached"),
+		entry("assistant", "new-1-answer", "new-1"),
+		entry("user", "new-2", "new-1-answer"),
+	}
+}
+
+// The CLI resumes a compacted conversation from its last boundary on, so a
+// turn before it is refused before anything starts, and the session carries
+// on as it was.
+func TestRewindBeforeACompactionChangesNothing(t *testing.T) {
+	for _, turn := range []string{"old-1", "mid-1"} {
+		t.Run(turn, func(t *testing.T) {
+			f := startFakeBridge(t, adapter.CreateOptions{Resume: true, HarnessSessionID: "O"}, func(f *fakeBridge) {
+				f.entries(t, "O", compactedConversation()...)
+			})
+			waitFor(t, func() bool { return len(f.configs(t)) == 1 })
+			if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: turn}); !errors.Is(err, errRewindCompacted) {
+				t.Fatalf("rewind error = %v, want %v", err, errRewindCompacted)
+			}
+			if n := len(f.configs(t)); n != 1 {
+				t.Fatalf("%d bridges started, want the one", n)
+			}
+			if got := f.id(); got != "O" {
+				t.Fatalf("harness id = %q, want O", got)
+			}
+		})
+	}
+}
+
+// A turn after the last boundary forks at its parent, whether that is the
+// boundary, an attachment, or an ordinary entry.
+func TestRewindAfterACompactionForksAtTheParent(t *testing.T) {
+	for _, tc := range []struct{ turn, at string }{
+		{"summary", "boundary-2"},
+		{"new-1", "attached"},
+		{"new-2", "new-1-answer"},
+	} {
+		t.Run(tc.turn, func(t *testing.T) {
+			f := startFakeBridge(t, adapter.CreateOptions{Resume: true, HarnessSessionID: "O"}, func(f *fakeBridge) {
+				f.entries(t, "O", compactedConversation()...)
+			})
+			waitFor(t, func() bool { return len(f.configs(t)) == 1 })
+			if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: tc.turn}); err != nil {
+				t.Fatal(err)
+			}
+			cfgs := f.configs(t)
+			if len(cfgs) != 2 {
+				t.Fatalf("%d bridges started, want 2", len(cfgs))
+			}
+			if fork := cfgs[1]; fork.Resume != "O" || fork.ResumeAt != tc.at || !fork.Fork {
+				t.Fatalf("fork config = resume %q at %q fork %v, want O at %s, forked", fork.Resume, fork.ResumeAt, fork.Fork, tc.at)
+			}
+		})
+	}
 }
 
 // A fork the CLI will not boot fails the rewind and leaves the session on
