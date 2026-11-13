@@ -572,7 +572,7 @@ type TurnFinishedPayload struct {
 	HarnessRef string `json:"harnessRef,omitempty"`
 	// Rewindable is set on wire copies only, in place of HarnessRef: the turn
 	// carries an anchor. Whether it can actually be rewound to also depends
-	// on the turn before it having one (see projection.Rewindable).
+	// on the turn before it having one (see projection.State.CanRewindTo).
 	Rewindable bool `json:"rewindable,omitempty"`
 }
 

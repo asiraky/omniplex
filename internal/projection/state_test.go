@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strconv"
@@ -1280,5 +1281,170 @@ func TestSuggestionWithNoTurnIsIgnored(t *testing.T) {
 	s.Apply(event(t, 1, proto.TurnSuggested, proto.TurnSuggestedPayload{TurnID: "t1", Text: "go"}))
 	if s.Suggestion != nil {
 		t.Fatalf("suggestion = %+v, want none", s.Suggestion)
+	}
+}
+
+func finishTurn(t *testing.T, seq int64, id, ref string) proto.Event {
+	return event(t, seq, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: id, StopReason: proto.StopEndTurn, HarnessRef: ref})
+}
+
+func turnIDs(turns []Turn) []string {
+	out := []string{}
+	for _, t := range turns {
+		out = append(out, t.ID)
+	}
+	return out
+}
+
+// A turn's harness anchor lands on the turn, survives a stored snapshot, and
+// a later finish that carries none does not take it away.
+func TestTurnFinishedKeepsItsHarnessRef(t *testing.T) {
+	s := New("s1")
+	s.Apply(startTurn(t, 1, "t1"))
+	s.Apply(finishTurn(t, 2, "t1", "ref-1"))
+	s.Apply(finishTurn(t, 3, "t1", ""))
+	s.Apply(startTurn(t, 4, "t2"))
+	s.Apply(finishTurn(t, 5, "t2", ""))
+
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range []*State{s, back, s.Clone()} {
+		if st.Turns[0].HarnessRef != "ref-1" || st.Turns[1].HarnessRef != "" {
+			t.Fatalf("refs = %q/%q, want ref-1/empty", st.Turns[0].HarnessRef, st.Turns[1].HarnessRef)
+		}
+	}
+}
+
+// rewoundThread is three finished turns: t1 with a reply, a model switch
+// marked above t2's prompt, t2 with a tool call and a job, then t3. A prompt
+// is queued at the end.
+func rewoundThread(t *testing.T) *State {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ThreadCreated, proto.ThreadCreatedPayload{Model: "opus"}))
+	s.Apply(startTurn(t, 2, "t1"))
+	s.Apply(event(t, 3, proto.MessageChunk, proto.MessageChunkPayload{TurnID: "t1", BlockID: "m1", Role: "assistant", Kind: "text", Delta: "hi"}))
+	s.Apply(event(t, 4, proto.JobStarted, proto.JobPayload{JobID: "j1", TaskType: "local_agent"}))
+	s.Apply(event(t, 5, proto.JobFinished, proto.JobPayload{JobID: "j1"}))
+	s.Apply(finishTurn(t, 6, "t1", "ref-1"))
+	s.Apply(pickModel(t, 7, "sonnet"))
+	s.Apply(startTurn(t, 8, "t2"))
+	s.Apply(event(t, 9, proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: "t2", ToolCallID: "c2", Status: proto.StatusInProgress}))
+	s.Apply(event(t, 10, proto.JobStarted, proto.JobPayload{JobID: "j2", ToolCallID: "c2", TaskType: "local_agent"}))
+	s.Apply(event(t, 11, proto.JobFinished, proto.JobPayload{JobID: "j2"}))
+	s.Apply(finishTurn(t, 12, "t2", "ref-2"))
+	s.Apply(startTurn(t, 13, "t3"))
+	s.Apply(finishTurn(t, 14, "t3", "ref-3"))
+	s.Apply(event(t, 15, proto.PromptQueued, proto.PromptQueuedPayload{QueueID: "q1", Prompt: "later"}))
+	return s
+}
+
+// Rewinding to t2 cuts from its prompt on, keeps the switch notice above it
+// (the switch still happened), drops t2 and t3 and the job t2 spawned, and
+// leaves the queue alone. The thread carries on from there: a new turn's
+// items are found by id where they land.
+func TestRewindCutsTheThreadBackToBeforeATurn(t *testing.T) {
+	s := rewoundThread(t)
+	at := s.RewindAt("t2")
+	if at < 0 || s.Items[at].ID != "prompt:t2" {
+		t.Fatalf("RewindAt(t2) = %d, want the index of prompt:t2 in %v", at, ids(s.Items))
+	}
+	s.Apply(event(t, 16, proto.ThreadRewound, proto.ThreadRewoundPayload{TurnID: "t2", At: at}))
+
+	if got, want := ids(s.Items), []string{"prompt:t1", "m1", "model:8"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("items = %v, want %v", got, want)
+	}
+	if got := turnIDs(s.Turns); !reflect.DeepEqual(got, []string{"t1"}) {
+		t.Fatalf("turns = %v, want [t1]", got)
+	}
+	if got := jobIDs(s.Jobs); !reflect.DeepEqual(got, []string{"j1"}) {
+		t.Fatalf("jobs = %v, want [j1]", got)
+	}
+	if _, ok := s.ItemByID("prompt:t2"); ok || s.job("j2") != nil {
+		t.Fatal("the indexes still find what the rewind removed")
+	}
+	if len(s.Queued) != 1 || s.Queued[0].QueueID != "q1" {
+		t.Fatalf("queued = %+v, want q1 left alone", s.Queued)
+	}
+	if s.Phase != "idle" {
+		t.Fatalf("phase = %q, want idle", s.Phase)
+	}
+
+	s.Apply(startTurn(t, 17, "t4"))
+	s.Apply(event(t, 18, proto.MessageChunk, proto.MessageChunkPayload{TurnID: "t4", BlockID: "m4", Role: "assistant", Kind: "text", Delta: "again"}))
+	if got, want := ids(s.Items), []string{"prompt:t1", "m1", "model:8", "prompt:t4", "m4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("items after the next turn = %v, want %v", got, want)
+	}
+	if it, ok := s.ItemByID("m4"); !ok || it.Text != "again" {
+		t.Fatalf("m4 = %+v, %v", it, ok)
+	}
+}
+
+// Rewinding to the first turn leaves an empty conversation.
+func TestRewindToTheFirstTurnEmptiesTheThread(t *testing.T) {
+	s := rewoundThread(t)
+	s.Apply(event(t, 16, proto.ThreadRewound, proto.ThreadRewoundPayload{TurnID: "t1", At: s.RewindAt("t1")}))
+	if len(s.Items) != 0 || len(s.Turns) != 0 || len(s.Jobs) != 0 {
+		t.Fatalf("items=%v turns=%v jobs=%v, want all empty", ids(s.Items), turnIDs(s.Turns), jobIDs(s.Jobs))
+	}
+	if s.LastTurnFailed() || s.QueueHeld() {
+		t.Fatal("an empty thread reports a failed or held last turn")
+	}
+}
+
+// A rewind naming a turn the projection does not have keeps its turns, and
+// an index outside the items keeps the items: nothing is cut on a guess.
+func TestRewindOutOfRangeCutsNothing(t *testing.T) {
+	s := rewoundThread(t)
+	items, turns := ids(s.Items), turnIDs(s.Turns)
+	s.Apply(event(t, 16, proto.ThreadRewound, proto.ThreadRewoundPayload{TurnID: "nope", At: len(s.Items) + 1}))
+	s.Apply(event(t, 17, proto.ThreadRewound, proto.ThreadRewoundPayload{TurnID: "nope", At: -1}))
+	if !reflect.DeepEqual(ids(s.Items), items) || !reflect.DeepEqual(turnIDs(s.Turns), turns) {
+		t.Fatalf("items=%v turns=%v, want %v and %v", ids(s.Items), turnIDs(s.Turns), items, turns)
+	}
+}
+
+// A rewind replays to the same state from a snapshot taken before it as from
+// the start of the log.
+func TestRewindReplaysFromASnapshot(t *testing.T) {
+	s := rewoundThread(t)
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := event(t, 16, proto.ThreadRewound, proto.ThreadRewoundPayload{TurnID: "t3", At: s.RewindAt("t3")})
+	s.Apply(ev)
+	back.Apply(ev)
+	a, _ := json.Marshal(s)
+	b, _ := json.Marshal(back)
+	if !bytes.Equal(a, b) {
+		t.Fatalf("snapshot replay differs:\n%s\n%s", a, b)
+	}
+	if got := turnIDs(s.Turns); !reflect.DeepEqual(got, []string{"t1", "t2"}) {
+		t.Fatalf("turns = %v, want [t1 t2]", got)
+	}
+}
+
+// A turn can be rewound to when it has an anchor and so does the turn before
+// it, which a forking harness resumes from.
+func TestCanRewindTo(t *testing.T) {
+	s := New("s1")
+	s.Turns = []Turn{{ID: "a", HarnessRef: "ra"}, {ID: "b"}, {ID: "c", HarnessRef: "rc"}, {ID: "d", HarnessRef: "rd"}}
+	for i, want := range map[int]bool{-1: false, 0: true, 1: false, 2: false, 3: true, 4: false} {
+		if got := s.CanRewindTo(i); got != want {
+			t.Errorf("CanRewindTo(%d) = %v, want %v", i, got, want)
+		}
+	}
+	if New("s").CanRewindTo(0) {
+		t.Error("CanRewindTo(0) on no turns = true")
 	}
 }

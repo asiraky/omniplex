@@ -20,14 +20,21 @@ const (
 
 // WireCopy returns a copy of s for a client: Items windowed to maxTop
 // top-level items (see windowStart), child items trimmed (see WireChildTail),
-// Jobs windowed, and tool Input capped. Only what is kept is copied. maxTop
-// <= 0 keeps every top-level item; the other trims still apply.
+// Jobs windowed, tool Input capped, and each turn's HarnessRef swapped for
+// Rewindable. Only what is kept is copied. maxTop <= 0 keeps every top-level
+// item; the other trims still apply.
 //
 // The jobs kept are the live ones, the last WireFinishedJobs finished, those
 // a kept item spawned — a spawn card in the transcript finds its job by tool
 // call id — and every ancestor of a kept job, so the roster can nest it.
 func (s *State) WireCopy(maxTop int) *State {
 	out := s.cloneRest()
+	// cloneRest copied Turns, so this touches only the copy. A client never
+	// needs the anchor itself, only whether there is one.
+	for i := range out.Turns {
+		out.Turns[i].Rewindable = out.Turns[i].HarnessRef != ""
+		out.Turns[i].HarnessRef = ""
+	}
 	start := 0
 	if maxTop > 0 {
 		start = windowStart(s.Items, len(s.Items), maxTop)
@@ -86,8 +93,9 @@ func (s *State) WireJobs() []Job {
 
 // WireEvent returns ev as a client should see it: a tool_call.started or
 // tool_call.updated has its Content and RawInput capped the way the
-// projection caps them, with Truncated set when anything was cut. Every other
-// event, and a tool event with nothing to cut, comes back unchanged.
+// projection caps them, with Truncated set when anything was cut; a
+// turn.finished carrying a HarnessRef has it swapped for Rewindable. Every
+// other event, and one of those with nothing to change, comes back unchanged.
 func WireEvent(ev proto.Event) proto.Event {
 	var payload any
 	switch ev.Type {
@@ -118,6 +126,13 @@ func WireEvent(ev proto.Event) proto.Event {
 		}
 		p.Content = it.Content
 		p.Truncated = true
+		payload = p
+	case proto.TurnFinished:
+		var p proto.TurnFinishedPayload
+		if json.Unmarshal(ev.Payload, &p) != nil || p.HarnessRef == "" {
+			return ev
+		}
+		p.HarnessRef, p.Rewindable = "", true
 		payload = p
 	default:
 		return ev

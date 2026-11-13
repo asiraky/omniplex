@@ -1073,6 +1073,11 @@ func (s *State) Apply(ev proto.Event) {
 				s.Turns[i].Failure = p.Failure
 				s.Turns[i].Done = true
 				s.Turns[i].FinishedAt = ev.Timestamp
+				// A finish with no anchor (a duplicate, or the server
+				// closing the turn itself) does not take one away.
+				if p.HarnessRef != "" {
+					s.Turns[i].HarnessRef = p.HarnessRef
+				}
 			}
 		}
 		if match {
@@ -1102,6 +1107,11 @@ func (s *State) Apply(ev proto.Event) {
 				}
 			}
 		}
+
+	case proto.ThreadRewound:
+		var p proto.ThreadRewoundPayload
+		decode(ev.Payload, &p)
+		s.rewind(p)
 
 	case proto.MessageChunk:
 		var p proto.MessageChunkPayload
@@ -1399,6 +1409,37 @@ func (s *State) settleRequests(turnID string) {
 		}
 	}
 	s.Elicitations = elicits
+}
+
+// rewind cuts the thread back to before turn p.TurnID: items from p.At on,
+// that turn and every turn after it, and the jobs those turns spawned. The
+// actor writes one only while nothing is running, so there is no open turn or
+// live job to settle. Queued and held prompts, artefacts, the settings
+// baseline and the harness session are the thread's, not the removed turns',
+// and stay. Mirrored in web/src/apply.ts.
+func (s *State) rewind(p proto.ThreadRewoundPayload) {
+	if p.At >= 0 && p.At <= len(s.Items) {
+		// Cleared so the cut tail's content is not held by the array.
+		clear(s.Items[p.At:])
+		s.Items = s.Items[:p.At]
+	}
+	if i := s.TurnIndex(p.TurnID); i >= 0 {
+		removed := make(map[string]bool, len(s.Turns)-i)
+		for _, t := range s.Turns[i:] {
+			removed[t.ID] = true
+		}
+		clear(s.Turns[i:])
+		s.Turns = s.Turns[:i]
+		jobs := s.Jobs[:0]
+		for _, j := range s.Jobs {
+			if j.TurnID == "" || !removed[j.TurnID] {
+				jobs = append(jobs, j)
+			}
+		}
+		clear(s.Jobs[len(jobs):])
+		s.Jobs = jobs
+	}
+	s.reindex()
 }
 
 // Card statuses: pending until answered, then the outcome's result.
