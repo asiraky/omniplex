@@ -44,3 +44,34 @@ export function rowStatus(s: ThreadMeta): RowStatus {
 export function newCount(threads: ThreadMeta[], activeId: string | null) {
   return threads.filter((s) => s.id !== activeId && rowStatus(s) === "new").length;
 }
+
+/** How loud a thread's status is: the colour of its dot on the hover card. */
+export type AttentionTone = "busy" | "waiting" | "failed" | "quiet";
+
+/**
+ * What the thread is doing, in words. The row says it with a ring or a badge;
+ * the hover card has room to say which kind of waiting it is. Null when the
+ * server sends no attention signal, rather than guessing from the phase.
+ */
+export function attentionLabel(s: ThreadMeta): { label: string; tone: AttentionTone } | null {
+  switch (s.attention) {
+    case "working":
+      return { label: "Working", tone: "busy" };
+    case "background":
+      return { label: "Background task running", tone: "busy" };
+    case "needs_permission":
+      return { label: "Waiting for permission", tone: "waiting" };
+    case "needs_answer":
+      return { label: "Waiting for your answer", tone: "waiting" };
+    case "needs_prompt":
+      return s.turnFailed
+        ? { label: "Last turn failed", tone: "failed" }
+        : { label: "Finished", tone: "quiet" };
+    case "failed":
+      return { label: "Workspace failed", tone: "failed" };
+    case "closed":
+      return { label: "Closed", tone: "quiet" };
+    default:
+      return null;
+  }
+}

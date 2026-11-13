@@ -317,37 +317,56 @@ describe("Sidebar", () => {
   describe("hover card", () => {
     const card = () => document.querySelector("[data-slot=thread-hover-card]");
     const row = (id: string) => screen.getByRole("button", { name: new RegExp(`^Thread ${id}`) });
-    const rest = (el: Element) => fireEvent.pointerMove(el, { pointerType: "mouse" });
     const long = thread("a", {
       attention: "needs_permission",
       branch: "issue/369-thread-hover-card-in-the-sidebar-with-a-long-name",
+      cwd: "/home/me/code/repo/.worktrees/issue-369",
       model: "claude-opus-5-5",
     });
 
-    it("opens on a resting mouse with what the row has no room for", () => {
-      vi.useFakeTimers();
-      try {
-        pointerDesktop();
-        renderSidebar({ threads: [long] });
-        rest(row("a"));
-        // A pointer passing over the list opens nothing.
-        expect(card()).toBeNull();
-        act(() => vi.advanceTimersByTime(600));
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
 
-        const c = card()!;
-        expect(c).not.toBeNull();
-        expect(c.textContent).toContain("Waiting for permission");
-        expect(c.textContent).toContain(long.branch);
-        expect(c.textContent).toContain("claude-opus-5-5");
-      } finally {
-        vi.useRealTimers();
-      }
+    /** A mouse comes to rest on the row and stays past the delay. */
+    const rest = (el: Element) => {
+      fireEvent.pointerMove(el, { pointerType: "mouse" });
+      act(() => vi.advanceTimersByTime(600));
+    };
+
+    it("opens on a resting mouse with what the row has no room for", () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long] });
+      fireEvent.pointerMove(row("a"), { pointerType: "mouse" });
+      // A pointer passing over the list opens nothing.
+      act(() => vi.advanceTimersByTime(300));
+      expect(card()).toBeNull();
+      act(() => vi.advanceTimersByTime(300));
+
+      const c = card()!;
+      expect(c.textContent).toContain("Waiting for permission");
+      expect(c.textContent).toContain(long.branch);
+      // The project names the group; the path tells its worktrees apart.
+      expect(c.textContent).toContain("repo");
+      expect(c.textContent).toContain(long.cwd);
+    });
+
+    it("waits out the delay on every row, even straight after another's tooltip", () => {
+      pointerDesktop();
+      renderSidebar({ threads: [long, thread("b")] });
+      rest(row("a"));
+      expect(card()).not.toBeNull();
+      fireEvent.pointerLeave(row("a"), { pointerType: "mouse" });
+      act(() => vi.advanceTimersByTime(50));
+
+      fireEvent.pointerMove(row("b"), { pointerType: "mouse" });
+      act(() => vi.advanceTimersByTime(100));
+      expect(card()?.textContent ?? "").not.toContain("Thread b");
     });
 
     it("closes when the row is pressed, and the row still opens", () => {
       pointerDesktop();
       const props = renderSidebar({ threads: [long] });
-      fireEvent.focus(row("a"));
+      rest(row("a"));
       expect(card()).not.toBeNull();
 
       fireEvent.pointerDown(row("a"), { button: 0, pointerType: "mouse" });
@@ -356,33 +375,31 @@ describe("Sidebar", () => {
       expect(props.onSelect).toHaveBeenCalledWith("a");
     });
 
-    it("says whether a stopped thread's last turn failed", () => {
+    it("opens for nothing but a pointer on the row: focus alone does not", () => {
       pointerDesktop();
-      renderSidebar({
-        threads: [
-          thread("a", { attention: "needs_prompt", turnFailed: true }),
-          thread("b", { attention: "needs_prompt" }),
-        ],
-      });
+      renderSidebar({ threads: [long] });
+      // The window regaining focus, or a menu handing it back, with the
+      // pointer somewhere else.
       fireEvent.focus(row("a"));
-      expect(card()!.textContent).toContain("Last turn failed");
-      fireEvent.blur(row("a"));
-      fireEvent.focus(row("b"));
-      expect(card()!.textContent).toContain("Finished");
-      expect(card()!.textContent).not.toContain("failed");
+      act(() => vi.advanceTimersByTime(600));
+      expect(card()).toBeNull();
     });
 
-    it("shows no status when the server sends no attention signal", () => {
+    it("says new only for a thread that is not the one on screen", () => {
       pointerDesktop();
-      renderSidebar({ threads: [thread("a", { phase: "running" })] });
-      fireEvent.focus(row("a"));
-      expect(card()!.textContent).not.toMatch(/Working|Finished|Waiting/);
+      const unreadStop = { attention: "needs_prompt" as const, headSeq: 9, lastViewedSeq: 4 };
+      renderSidebar({ threads: [thread("a", unreadStop), thread("b", unreadStop)], activeId: "a" });
+      rest(row("a"));
+      expect(card()!.textContent).not.toContain("new since");
+      fireEvent.pointerLeave(row("a"), { pointerType: "mouse" });
+      rest(row("b"));
+      expect(card()!.textContent).toContain("new since");
     });
 
     it("never renders on a screen without hover", () => {
       viewport("phone");
       renderSidebar({ threads: [long] });
-      fireEvent.focus(row("a"));
+      rest(row("a"));
       expect(card()).toBeNull();
     });
 
@@ -398,7 +415,7 @@ describe("Sidebar", () => {
         dispatchEvent: () => false,
       }));
       renderSidebar({ threads: [long] });
-      fireEvent.focus(row("a"));
+      rest(row("a"));
       expect(card()).toBeNull();
     });
 
@@ -409,8 +426,9 @@ describe("Sidebar", () => {
         button: 0,
         ctrlKey: false,
       });
-      fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
-      fireEvent.focus(row("a"));
+      act(() => vi.advanceTimersByTime(50));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Reorder threads" }));
+      rest(row("a"));
       expect(card()).toBeNull();
     });
   });

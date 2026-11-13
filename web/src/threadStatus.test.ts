@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { newCount, rowStatus } from "./threadStatus";
+import { attentionLabel, newCount, rowStatus } from "./threadStatus";
 import type { ThreadMeta } from "~/protocol";
 
 const thread = (over: Partial<ThreadMeta>): ThreadMeta =>
@@ -35,7 +35,6 @@ describe("rowStatus", () => {
       "quiet",
     );
   });
-
 });
 
 describe("newCount", () => {
@@ -48,5 +47,18 @@ describe("newCount", () => {
     ];
     expect(newCount(threads, "b")).toBe(1);
     expect(newCount(threads, null)).toBe(2);
+  });
+});
+
+describe("attentionLabel", () => {
+  it("tells a stopped thread whose last turn failed from one that finished", () => {
+    expect(attentionLabel(thread({ attention: "needs_prompt", turnFailed: true }))?.tone).toBe(
+      "failed",
+    );
+    expect(attentionLabel(thread({ attention: "needs_prompt" }))?.tone).toBe("quiet");
+  });
+
+  it("says nothing rather than guess when the server sends no attention", () => {
+    expect(attentionLabel(thread({ phase: "turn" }))).toBeNull();
   });
 });

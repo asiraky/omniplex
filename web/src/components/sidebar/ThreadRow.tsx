@@ -20,6 +20,7 @@ import {
 } from "~/components/ui/context-menu";
 import { KbdChord } from "~/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
+import { fmtAgo } from "~/lib/format";
 import type { CommandId } from "~/lib/keybindings";
 import { cn } from "~/lib/utils";
 import type { ThreadMeta } from "~/protocol";
@@ -29,14 +30,6 @@ import { useNow } from "~/useNow";
 
 import type { RowDrag } from "./SortableRows";
 import { ThreadHoverCard } from "./ThreadHoverCard";
-
-function ago(ms: number, now: number) {
-  const s = Math.max(0, Math.floor((now - ms) / 1000));
-  if (s < 60) return "now";
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
-}
 
 /** The title line: the title, whatever the thread is doing, and when. */
 function TitleLine({
@@ -108,7 +101,7 @@ function TitleLine({
             className="[&_kbd]:h-4 [&_kbd]:min-w-4 [&_kbd]:text-[10px]"
           />
         ) : (
-          ago(s.updatedAt, now)
+          fmtAgo(s.updatedAt, now)
         )}
       </span>
     </span>
@@ -488,6 +481,7 @@ export const ThreadRow = memo(function ThreadRow({
                     mode the row is something to move, so it previews nothing. */}
                 <ThreadHoverCard
                   s={s}
+                  active={active}
                   projectName={projectName}
                   accentOf={accentOf}
                   disabled={reordering}
