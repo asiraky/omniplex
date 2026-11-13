@@ -276,7 +276,7 @@ func TestRewindForksBeforeTheTurn(t *testing.T) {
 		t.Fatalf("turn 2 ref = %q, want its prompt's uuid", got)
 	}
 
-	if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "turn-2", Previous: "turn-1"}); err != nil {
+	if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "turn-2"}); err != nil {
 		t.Fatal(err)
 	}
 	cfgs := f.configs(t)
@@ -342,7 +342,7 @@ func TestRewindToAnUnknownTurnChangesNothing(t *testing.T) {
 	f := startFakeBridge(t, adapter.CreateOptions{}, nil)
 	orig := f.harnessID(t)
 	f.turn(t, "turn-1")
-	if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "elsewhere", Previous: "turn-1"}); err == nil {
+	if err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "elsewhere"}); err == nil {
 		t.Fatal("rewound to a turn the conversation does not have")
 	}
 	if n := len(f.configs(t)); n != 1 {
@@ -362,7 +362,7 @@ func TestRewindThatCannotBootKeepsTheSession(t *testing.T) {
 	f.turn(t, "turn-1")
 	f.turn(t, "turn-2")
 	t.Setenv(failForkEnv, "1")
-	err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "turn-2", Previous: "turn-1"})
+	err := f.s.Rewind(context.Background(), adapter.RewindTarget{Turn: "turn-2"})
 	if err == nil || !strings.Contains(err.Error(), "No message found") {
 		t.Fatalf("rewind error = %v, want the bridge's own reason", err)
 	}

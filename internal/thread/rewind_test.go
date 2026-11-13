@@ -89,8 +89,8 @@ func TestRewindCutsTheHarnessThenTheTranscript(t *testing.T) {
 	if err := actor.Rewind(ctx, t2, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := fa.thread().rewindTargets(); len(got) != 1 || got[0] != (adapter.RewindTarget{Turn: "r2", Previous: "r1"}) {
-		t.Fatalf("harness asked for %+v, want r2 after r1", got)
+	if got := fa.thread().rewindTargets(); len(got) != 1 || got[0] != (adapter.RewindTarget{Turn: "r2"}) {
+		t.Fatalf("harness asked for %+v, want r2", got)
 	}
 	after, err := actor.State(ctx)
 	if err != nil {
@@ -110,10 +110,25 @@ func TestRewindCutsTheHarnessThenTheTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := fa.thread().rewindTargets(); len(got) != 2 || got[1] != (adapter.RewindTarget{Turn: "r1"}) {
-		t.Fatalf("harness asked for %+v, want r1 with nothing before it", got)
+		t.Fatalf("harness asked for %+v, want r1", got)
 	}
 	if s, _ := actor.State(ctx); len(s.Turns) != 0 || len(s.Items) != 0 {
 		t.Fatalf("after rewinding to the first turn: %d turns, %d items", len(s.Turns), len(s.Items))
+	}
+}
+
+// The harness cuts at the target turn's own anchor, so a turn with none before
+// it (one the server closed itself) does not stand in the way.
+func TestRewindPastATurnWithNoAnchor(t *testing.T) {
+	actor, fa, _ := newTestActorWith(t, &fakeAdapter{rewind: true})
+	ctx := context.Background()
+	runTurn(t, actor, fa, "one", "")
+	t2 := runTurn(t, actor, fa, "two", "r2")
+	if err := actor.Rewind(ctx, t2, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := fa.thread().rewindTargets(); len(got) != 1 || got[0] != (adapter.RewindTarget{Turn: "r2"}) {
+		t.Fatalf("harness asked for %+v, want r2", got)
 	}
 }
 
@@ -162,15 +177,7 @@ func TestRewindRefusals(t *testing.T) {
 		setup: func(t *testing.T, a *Actor, fa *fakeAdapter) string {
 			return runTurn(t, a, fa, "one", "")
 		},
-		want: "predates rewind support",
-	}, {
-		name: "a turn after one with no anchor",
-		fa:   &fakeAdapter{rewind: true},
-		setup: func(t *testing.T, a *Actor, fa *fakeAdapter) string {
-			runTurn(t, a, fa, "one", "")
-			return runTurn(t, a, fa, "two", "r2")
-		},
-		want: "the turn before this one",
+		want: "no anchor",
 	}, {
 		name: "a turn the thread does not have",
 		fa:   &fakeAdapter{rewind: true},

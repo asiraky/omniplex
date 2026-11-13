@@ -299,9 +299,8 @@ export interface Turn {
   finishedAt?: number;
   /**
    * The turn carries the harness's own anchor for it, so the thread can be cut
-   * back to before it — if the turn before it has one too (see
-   * lib/rewind.ts canRewindTo). Absent on turns from before anchors existed
-   * and on turns the server closed itself.
+   * back to before it. Absent on turns from before anchors existed and on
+   * turns the server closed itself.
    */
   rewindable?: boolean;
 }

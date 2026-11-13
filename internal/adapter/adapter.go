@@ -450,12 +450,10 @@ type ServiceTierSwitcher interface {
 }
 
 // RewindTarget names where a rewind cuts the conversation: Turn is the
-// HarnessRef of the first turn to forget, Previous the HarnessRef of the turn
-// just before it ("" when Turn is the thread's first turn). Both are the
-// adapter's own values from TurnFinishedPayload.HarnessRef.
+// HarnessRef of the first turn to forget, the adapter's own value from
+// TurnFinishedPayload.HarnessRef.
 type RewindTarget struct {
-	Turn     string
-	Previous string
+	Turn string
 }
 
 // Rewinder is a Session whose harness can forget the end of its conversation:

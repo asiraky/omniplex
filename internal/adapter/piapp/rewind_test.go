@@ -169,7 +169,7 @@ func TestRewindForksAndReportsNewSession(t *testing.T) {
 	s := startSession(t, dir, adapter.CreateOptions{ThreadID: "sess-1"})
 	drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })
 
-	if err := s.(adapter.Rewinder).Rewind(context.Background(), adapter.RewindTarget{Turn: "e2", Previous: "e1"}); err != nil {
+	if err := s.(adapter.Rewinder).Rewind(context.Background(), adapter.RewindTarget{Turn: "e2"}); err != nil {
 		t.Fatalf("Rewind: %v", err)
 	}
 	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })

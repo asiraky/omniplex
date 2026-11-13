@@ -44,12 +44,12 @@ describe("edit from here is offered", () => {
     expect(canEditFrom(s, prompt("t2", "prompt:q1"))).toBe(false);
   });
 
-  it("not on a turn without an anchor, nor on the one after it", () => {
+  it("not on a turn without an anchor, but on the one after it", () => {
     const s = thread([turn("t1"), turn("t2", false), turn("t3"), turn("t4")]);
     expect(["t1", "t2", "t3", "t4"].map((id) => canEditFrom(s, prompt(id)))).toEqual([
       true,
       false,
-      false,
+      true,
       true,
     ]);
   });

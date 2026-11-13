@@ -16,14 +16,12 @@ export function useRewind() {
 }
 
 /**
- * Whether the thread can be cut back to before turns[i]. The turn needs its
- * own anchor, and so does the one before it: a harness that forks rather than
- * truncates resumes from the kept turn's last entry. Mirrors
- * projection.State.CanRewindTo, which the server enforces.
+ * Whether the thread can be cut back to before turns[i]: the turn needs the
+ * harness's anchor. Mirrors projection.State.CanRewindTo, which the server
+ * enforces.
  */
 export function canRewindTo(turns: Turn[], i: number): boolean {
-  if (i < 0 || i >= turns.length || !turns[i].rewindable) return false;
-  return i === 0 || !!turns[i - 1].rewindable;
+  return i >= 0 && i < turns.length && !!turns[i].rewindable;
 }
 
 /** The prompt that opened its turn. A prompt steered or injected into a

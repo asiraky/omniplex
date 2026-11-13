@@ -1434,12 +1434,12 @@ func TestRewindReplaysFromASnapshot(t *testing.T) {
 	}
 }
 
-// A turn can be rewound to when it has an anchor and so does the turn before
-// it, which a forking harness resumes from.
+// A turn can be rewound to when it has an anchor, whatever the turn before it
+// has.
 func TestCanRewindTo(t *testing.T) {
 	s := New("s1")
 	s.Turns = []Turn{{ID: "a", HarnessRef: "ra"}, {ID: "b"}, {ID: "c", HarnessRef: "rc"}, {ID: "d", HarnessRef: "rd"}}
-	for i, want := range map[int]bool{-1: false, 0: true, 1: false, 2: false, 3: true, 4: false} {
+	for i, want := range map[int]bool{-1: false, 0: true, 1: false, 2: true, 3: true, 4: false} {
 		if got := s.CanRewindTo(i); got != want {
 			t.Errorf("CanRewindTo(%d) = %v, want %v", i, got, want)
 		}

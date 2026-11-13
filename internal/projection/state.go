@@ -1659,16 +1659,11 @@ func (s *State) TurnIndex(id string) int {
 	return -1
 }
 
-// CanRewindTo reports whether the thread can be cut back to before Turns[i].
-// The turn needs its own anchor, and so does the one before it: a harness that
-// forks rather than truncates resumes from the kept turn's last entry, and a
-// turn with no anchor (one from before anchors existed, or one the server
-// closed itself after a crash) leaves nothing to resume from.
+// CanRewindTo reports whether the thread can be cut back to before Turns[i]:
+// the turn needs the harness's anchor. One with none (from before anchors
+// existed, or one the server closed itself after a crash) cannot be.
 func (s *State) CanRewindTo(i int) bool {
-	if i < 0 || i >= len(s.Turns) || s.Turns[i].HarnessRef == "" {
-		return false
-	}
-	return i == 0 || s.Turns[i-1].HarnessRef != ""
+	return i >= 0 && i < len(s.Turns) && s.Turns[i].HarnessRef != ""
 }
 
 // RewindAt is the index in Items of the first item turn id owns — its opening

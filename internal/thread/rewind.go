@@ -51,9 +51,6 @@ func (a *Actor) rewind(ctx context.Context, turnID string, restoreFiles bool, re
 	}
 	idx := a.state.TurnIndex(turnID)
 	target := adapter.RewindTarget{Turn: a.state.Turns[idx].HarnessRef}
-	if idx > 0 {
-		target.Previous = a.state.Turns[idx-1].HarnessRef
-	}
 	cp, sess, threadID := a.checkpoints, a.sess, a.ID
 	// Held until the result is back on the loop. inOrder's pending count
 	// already keeps prompts and the queue waiting; this stops what starts a
@@ -173,12 +170,10 @@ func (a *Actor) rewindRefusal(turnID string) (adapter.Rewinder, error) {
 	switch {
 	case idx < 0:
 		return nil, fmt.Errorf("there is no turn %q in this thread", turnID)
-	case a.state.CanRewindTo(idx):
-		return rewinder, nil
-	case a.state.Turns[idx].HarnessRef == "":
-		return nil, errors.New("this turn predates rewind support, so the harness has nothing to rewind it to")
+	case !a.state.CanRewindTo(idx):
+		return nil, errors.New("the harness has no anchor for this turn, so it cannot rewind to it")
 	}
-	return nil, errors.New("the turn before this one predates rewind support, so the harness has nothing to resume from")
+	return rewinder, nil
 }
 
 // rewindBlocks says a command must not run while a rewind is in flight: it

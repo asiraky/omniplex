@@ -72,7 +72,7 @@ func TestLimitFinishCarriesCodexTurnID(t *testing.T) {
 
 func TestRewindRevertsBeforeTheTurn(t *testing.T) {
 	s, rec := stopSession(t, nil)
-	if err := s.Rewind(context.Background(), adapter.RewindTarget{Turn: "codex-turn-2", Previous: "codex-turn-1"}); err != nil {
+	if err := s.Rewind(context.Background(), adapter.RewindTarget{Turn: "codex-turn-2"}); err != nil {
 		t.Fatalf("Rewind: %v", err)
 	}
 	raw := rec.sent("thread/revert")
