@@ -7,7 +7,7 @@ import {
 } from "~/components/ui/command";
 import type { ComposerItem } from "~/protocol";
 
-export interface MenuListProps {
+export interface CommandMenuListProps {
   matches: ComposerItem[];
   activeIndex: number;
   loading: boolean;
@@ -16,7 +16,13 @@ export interface MenuListProps {
 }
 
 /** The slash menu's rows. The textarea owns the keys; this only shows them. */
-export function MenuList({ matches, activeIndex, loading, onHover, onChoose }: MenuListProps) {
+export function CommandMenuList({
+  matches,
+  activeIndex,
+  loading,
+  onHover,
+  onChoose,
+}: CommandMenuListProps) {
   return (
     <Command shouldFilter={false} className="bg-transparent">
       {/* The 2px is the popover's border, so the list never overflows the space above. */}

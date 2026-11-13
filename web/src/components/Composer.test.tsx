@@ -3,12 +3,12 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { createRef, useRef, useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { preloadLazyLists } from "~/test/lazyLists";
+
 import { useKeybindings } from "~/app/useKeybindings";
 import { stubExecCommand } from "~/test/execCommand";
 import { render, wrap } from "~/test/harness";
-import { modelList } from "./ModelPicker";
 import { Composer, type ComposerHandle, type ComposerStash } from "./Composer";
-import { menuList } from "./composer/CommandMenu";
 import type { Attachment } from "~/lib/attachments";
 import type { HarnessMeta } from "~/protocol";
 import type { ComposerCatalogue } from "./composer/useComposerItems";
@@ -492,9 +492,7 @@ beforeAll(() => {
 // The slash menu's rows and the model list arrive as their own chunks. In,
 // they render on the open itself, so an assertion that the menu is shut is
 // not passing on a spinner.
-beforeAll(async () => {
-  await Promise.all([menuList.load(), modelList.load()]);
-});
+beforeAll(preloadLazyLists);
 
 const catalogue = (over: Partial<ComposerCatalogue> = {}): ComposerCatalogue => ({
   items: [compact],

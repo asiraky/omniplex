@@ -1,17 +1,11 @@
 import type { ReactElement, RefObject } from "react";
 
 import { ChunkFallback } from "~/components/ChunkFallback";
+import { commandMenuList } from "~/components/lazyLists";
 import { Popover, PopoverAnchor, PopoverContent } from "~/components/ui/popover";
-import { chunk } from "~/lib/chunk";
 import { useChunk, useIdlePrefetch } from "~/useChunk";
 
-import type { MenuListProps } from "./CommandMenuList";
-
-// The list is built on cmdk, which stays out of the first load. The composer
-// fetches it once the page is idle, so the first slash rarely waits; when it
-// does, a spinner holds the menu's place. The keys never needed it: arrows,
-// Enter and Escape are the textarea's, so nothing typed is lost meanwhile.
-export const menuList = chunk(() => import("./CommandMenuList").then((m) => m.MenuList));
+import type { CommandMenuListProps } from "./CommandMenuList";
 
 /** The completion menu, in a popover above the textarea. On a phone it must
     not cover the textarea: the composer sits at the bottom of the screen, so
@@ -22,7 +16,7 @@ export function CommandMenu({
   anchorRef,
   onDismiss,
   ...list
-}: MenuListProps & {
+}: CommandMenuListProps & {
   open: boolean;
   /** The textarea the menu completes into. */
   anchor: ReactElement;
@@ -30,8 +24,11 @@ export function CommandMenu({
   /** Keeps the menu shut for the current token. */
   onDismiss: () => void;
 }) {
-  useIdlePrefetch(menuList);
-  const { loaded: MenuList, failed } = useChunk(menuList, open);
+  // The rows are cmdk, fetched once the page is idle; when the first slash
+  // beats them, a spinner holds the menu's place. The keys never needed them:
+  // arrows, Enter and Escape are the textarea's, so nothing typed is lost.
+  useIdlePrefetch(commandMenuList);
+  const { loaded: List, failed } = useChunk(commandMenuList, open);
   return (
     <Popover open={open}>
       <PopoverAnchor asChild>{anchor}</PopoverAnchor>
@@ -50,8 +47,8 @@ export function CommandMenu({
         // shift a wider menu back on screen.
         className="w-[min(40rem,var(--radix-popover-trigger-width))] p-0"
       >
-        {MenuList ? (
-          <MenuList {...list} />
+        {List ? (
+          <List {...list} />
         ) : (
           <ChunkFallback failed={failed} className="p-3 text-[12px]" />
         )}

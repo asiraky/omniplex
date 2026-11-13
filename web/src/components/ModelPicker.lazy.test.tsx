@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ModelPicker } from "./ModelPicker";
 import type { HarnessMeta } from "~/protocol";
 
 /**
@@ -85,6 +84,14 @@ const claude: HarnessMeta = {
   ],
 } as HarnessMeta;
 
+// Each test starts from a fresh module registry, so the chunk inside starts
+// empty: what one test let in does not carry into the next.
+let ModelPicker: typeof import("./ModelPicker").ModelPicker;
+beforeEach(async () => {
+  vi.resetModules();
+  ({ ModelPicker } = await import("./ModelPicker"));
+});
+
 function open() {
   render(
     <ModelPicker
@@ -99,8 +106,6 @@ function open() {
 const search = () => screen.getByPlaceholderText("Search models…") as HTMLInputElement;
 const rows = () => document.querySelectorAll("[data-slot='command-item']");
 
-// The chunk is module-level and keeps what arrives, so these run in order: a
-// failure first, then the hold that finally lets the list in.
 describe("ModelPicker before its list has arrived", () => {
   it("offers a reload when the list could not be fetched", async () => {
     gate.hold();
@@ -117,8 +122,9 @@ describe("ModelPicker before its list has arrived", () => {
     expect(document.querySelector("[cmdk-input]")).toBeNull();
     expect(rows()).toHaveLength(0);
 
+    // Opening puts focus in the stand-in, as it would the real search.
     const standIn = search();
-    standIn.focus();
+    expect(document.activeElement).toBe(standIn);
     fireEvent.change(standIn, { target: { value: "son" } });
 
     await act(async () => gate.resolve());

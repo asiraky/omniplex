@@ -12,12 +12,12 @@ import {
 
 import { ChunkFallback } from "~/components/ChunkFallback";
 import type { ModelListProps } from "~/components/ModelList";
+import { modelList } from "~/components/lazyLists";
 import { ProviderLogo } from "~/components/ProviderLogo";
 import { Button } from "~/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "~/components/ui/sheet";
 import { Switch } from "~/components/ui/switch";
-import { chunk } from "~/lib/chunk";
 import { pickerInstances, resolveInstance, resolveModel, type PickerInstance } from "~/lib/models";
 import { formatEffort } from "~/lib/efforts";
 import { cn } from "~/lib/utils";
@@ -38,11 +38,6 @@ export interface ModelSelection {
 export type PickerFocus = "model" | "effort";
 
 const NO_EFFORTS: string[] = [];
-
-// The search and the model list are built on cmdk, which stays out of the
-// first load. The picker fetches them once the page is idle, so opening it
-// rarely waits; when it does, a stand-in search takes the typing.
-export const modelList = chunk(() => import("./ModelList").then((m) => m.ModelList));
 
 interface ModelPickerProps {
   harnesses: HarnessMeta[];
@@ -172,7 +167,7 @@ export function ModelPicker({
   const [browsing, setBrowsing] = useState(selectedId);
   const [search, setSearch] = useState("");
   // Whether the stand-in's search has focus, so the real one can take it over.
-  const [searchHeld, setSearchHeld] = useState(false);
+  const [standInFocused, setStandInFocused] = useState(false);
   // Opening the picker, or the selection moving while it is open, starts it
   // over at the selection with no query. Adjusted during render so the menu
   // never paints a stale pane first.
@@ -182,9 +177,11 @@ export function ModelPicker({
     if (open) {
       setBrowsing(selectedId);
       setSearch("");
-      setSearchHeld(false);
+      setStandInFocused(false);
     }
   }
+  // The list is cmdk, fetched once the page is idle; until it is in, a
+  // stand-in search takes the typing.
   useIdlePrefetch(modelList);
   const { loaded: LoadedList, failed } = useChunk(modelList, open);
 
@@ -245,7 +242,7 @@ export function ModelPicker({
     placeholder: instances.length > 1 ? "Search models and accounts…" : "Search models…",
     onSearchChange: setSearch,
     searchRef,
-    takeFocus: searchHeld,
+    takeFocus: standInFocused,
     onBrowse: (id) => {
       setBrowsing(id);
       const target = instances.find((i) => i.id === id);
@@ -256,7 +253,7 @@ export function ModelPicker({
   const body = LoadedList ? (
     <LoadedList {...listProps} />
   ) : (
-    <ListStandIn {...listProps} failed={failed} onHeldChange={setSearchHeld} />
+    <ListStandIn {...listProps} failed={failed} onFocusedChange={setStandInFocused} />
   );
 
   const footer = (showEffort || showFast || contextLabel) && (
@@ -568,10 +565,14 @@ function ListStandIn({
   onSearchChange,
   searchRef,
   failed,
-  onHeldChange,
-}: ModelListProps & { failed: boolean; onHeldChange: (held: boolean) => void }) {
+  onFocusedChange,
+}: Pick<ModelListProps, "search" | "placeholder" | "onSearchChange" | "searchRef"> & {
+  failed: boolean;
+  onFocusedChange: (focused: boolean) => void;
+}) {
   return (
-    // Fills the sheet as the real list does, so the footer does not jump.
+    // Fills the sheet as the real list does, so the footer does not jump. The
+    // field copies CommandInput's look (ui/command.tsx) without its cmdk.
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3">
         <SearchIcon className="size-4 shrink-0 opacity-50" />
@@ -579,8 +580,8 @@ function ListStandIn({
           ref={searchRef}
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
-          onFocus={() => onHeldChange(true)}
-          onBlur={() => onHeldChange(false)}
+          onFocus={() => onFocusedChange(true)}
+          onBlur={() => onFocusedChange(false)}
           // Nothing to pick yet; the real list takes Enter, so this one must
           // not submit a form it sits in.
           onKeyDown={(e) => {

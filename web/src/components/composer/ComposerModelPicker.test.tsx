@@ -3,7 +3,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { modelList } from "~/components/ModelPicker";
+import { preloadLazyLists } from "~/test/lazyLists";
+
 import { ComposerModelPicker } from "./ComposerModelPicker";
 import type { HarnessMeta } from "~/protocol";
 
@@ -38,9 +39,7 @@ beforeAll(() => {
 });
 
 // The list arrives as its own chunk; in, it renders on the open itself.
-beforeAll(async () => {
-  await modelList.load();
-});
+beforeAll(preloadLazyLists);
 
 afterEach(cleanup);
 
