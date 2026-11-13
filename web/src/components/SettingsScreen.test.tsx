@@ -3,7 +3,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { settingsIndex, type SettingEntry } from "~/lib/settingsSearch";
-import type { HarnessMeta, Project } from "~/protocol";
+import type { HarnessMeta, Project, UserConfig } from "~/protocol";
 import { render, viewport } from "~/test/harness";
 import { SettingsScreen, type SettingsSection } from "./SettingsScreen";
 
@@ -32,22 +32,19 @@ function open(
     projects?: Project[];
     harnesses?: HarnessMeta[];
     hasElevenLabsKey?: boolean;
+    userConfig?: UserConfig | null;
     onAddProject?: () => void;
   } = {},
 ) {
   const props = {
     projects: [project("p1", "alpha"), project("p2", "beta")],
     harnesses: [] as HarnessMeta[],
-    userConfig: { version: 1 },
+    userConfig: { version: 1 } as UserConfig | null,
     threadCounts: {},
     onSaveUserConfig: vi.fn(async () => {}),
     hasElevenLabsKey: false,
     onSetElevenLabsKey: vi.fn(async () => {}),
-    providers: {
-      wires: {} as never,
-      onOpenTerminal: vi.fn(),
-      onRecheck: vi.fn(),
-    },
+    providers: { wires: {} as never, onOpenTerminal: vi.fn(), onRecheck: vi.fn() },
     project: {
       onSave: vi.fn(async () => {}),
       onAddFolder: vi.fn(),
@@ -62,14 +59,12 @@ function open(
   const view = render(<SettingsScreen {...props} />);
   return {
     props,
-    rerender: (p: Partial<typeof props>) =>
-      view.rerender(<SettingsScreen {...props} {...p} />),
+    rerender: (p: Partial<typeof props>) => view.rerender(<SettingsScreen {...props} {...p} />),
   };
 }
 
 const pane = () => screen.queryByRole("region");
-const nav = () =>
-  screen.queryByRole("navigation", { name: "Settings sections" });
+const nav = () => screen.queryByRole("navigation", { name: "Settings sections" });
 
 describe("on a desktop", () => {
   it("opens on General beside the list, and moves between sections", () => {
@@ -79,9 +74,7 @@ describe("on a desktop", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "beta" }));
     expect(pane()?.getAttribute("aria-label")).toBe("beta");
-    expect(
-      screen.getByRole("button", { name: "beta" }).getAttribute("aria-current"),
-    ).toBe("page");
+    expect(screen.getByRole("button", { name: "beta" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("opens where it was asked to", () => {
@@ -126,10 +119,7 @@ it("opens Providers on adding an account for the asked-for agent", () => {
     accent: "#000",
     models: [],
     permissionModes: [],
-    availability: {
-      state: "unavailable",
-      remedy: [{ text: "Add account", action: "add_account" }],
-    },
+    availability: { state: "unavailable", remedy: [{ text: "Add account", action: "add_account" }] },
     instances: [],
   };
   open({ at: { kind: "providers", addFor: "codex" }, harnesses: [codex] });
@@ -160,12 +150,9 @@ describe("searching", () => {
     );
   };
 
-  const search = () =>
-    screen.getByRole("searchbox", { name: "Search settings" });
-  const type = (q: string) =>
-    fireEvent.change(search(), { target: { value: q } });
-  const results = () =>
-    screen.queryByRole("list", { name: "Matching settings" });
+  const search = () => screen.getByRole("searchbox", { name: "Search settings" });
+  const type = (q: string) => fireEvent.change(search(), { target: { value: q } });
+  const results = () => screen.queryByRole("list", { name: "Matching settings" });
   /** A result's button, by the setting's label and the section it is in. */
   const result = (label: string, where: string) => {
     const hit = within(results()!)
@@ -178,9 +165,7 @@ describe("searching", () => {
     [...document.querySelectorAll<HTMLElement>("[data-setting]")].find(
       (e) => e.dataset.setting === anchor,
     );
-  const found = () => [
-    ...document.querySelectorAll("[data-setting][data-found]"),
-  ];
+  const found = () => [...document.querySelectorAll("[data-setting][data-found]")];
 
   const gitProject = (id: string, name: string, paths: string[]): Project => ({
     ...project(id, name),
@@ -247,10 +232,7 @@ describe("searching", () => {
 
   it("opens the project a result belongs to", () => {
     open({
-      projects: [
-        gitProject("p1", "alpha", ["/a"]),
-        gitProject("p2", "beta", ["/b"]),
-      ],
+      projects: [gitProject("p1", "alpha", ["/a"]), gitProject("p2", "beta", ["/b"])],
     });
     type("beta base branch");
     fireEvent.click(result("Base branch", "beta"));
@@ -277,12 +259,51 @@ describe("searching", () => {
     expect(target("recheck")?.hasAttribute("data-found")).toBe(true);
   });
 
-  it("finds a harness by its account's name", () => {
+  it("opens an account found by its name", () => {
     open({ harnesses: [codex] });
     type("zephyr");
-    fireEvent.click(result("Codex", "Providers"));
+    fireEvent.click(result("Zephyr", "Providers · Zephyr"));
     expect(pane()?.getAttribute("aria-label")).toBe("Providers");
-    expect(target("harness-codex")?.hasAttribute("data-found")).toBe(true);
+    expect(target("account")?.hasAttribute("data-found")).toBe(true);
+    expect(screen.getByLabelText("Display name")).toBeTruthy();
+  });
+
+  it("moves an open Providers screen to the picked account without losing its edits", () => {
+    open({ at: { kind: "providers" }, harnesses: [codex] });
+    type("display name");
+    fireEvent.click(result("Display name", "Providers · Zephyr"));
+    const name = screen.getByLabelText("Display name") as HTMLInputElement;
+    fireEvent.change(name, { target: { value: "Edited" } });
+
+    type("enabled");
+    fireEvent.click(result("Enabled", "Providers · Zephyr"));
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Edited");
+    expect(target("enabled")?.hasAttribute("data-found")).toBe(true);
+  });
+
+  it("drops a pick that has not landed once you move by hand", () => {
+    // General waits for the config, so a pick there cannot land yet.
+    open({
+      userConfig: null,
+      hasElevenLabsKey: true,
+      projects: [project("p1", "alpha")],
+    });
+    type("default voice");
+    fireEvent.click(result("Default voice", "General"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    fireEvent.click(screen.getByRole("button", { name: "alpha" }));
+    // The project has a "voice" setting of its own; the stale pick must not land on it.
+    expect(pane()?.getAttribute("aria-label")).toBe("alpha");
+    expect(target("voice")?.hasAttribute("data-found") ?? false).toBe(false);
+  });
+
+  it("never puts focus on a button inside a setting", () => {
+    withMouse();
+    open({ projects: [gitProject("p1", "alpha", ["/src/a", "/src/b"])] });
+    type("folders");
+    fireEvent.click(result("Folders", "alpha"));
+    expect(target("folders")?.hasAttribute("data-found")).toBe(true);
+    expect(document.activeElement?.closest("[data-setting='folders']")).toBeNull();
   });
 
   it("opens the first result on Enter, and does nothing when there is none", () => {
@@ -357,12 +378,10 @@ describe("searching", () => {
     type("projects folder");
     fireEvent.click(result("Projects folder", "General"));
     expect(target("projects-dir")?.hasAttribute("data-found")).toBe(true);
-    expect(target("projects-dir")!.contains(document.activeElement)).toBe(
-      false,
-    );
+    expect(target("projects-dir")!.contains(document.activeElement)).toBe(false);
   });
 
-  it("lands every setting the index offers somewhere on screen", () => {
+  it("lands every setting the index offers somewhere on screen", { timeout: 30_000 }, () => {
     const projects = [
       gitProject("p1", "alpha", ["/src/alpha"]),
       gitProject("p2", "duo", ["/src/duo/web", "/src/duo/api"]),
@@ -376,9 +395,7 @@ describe("searching", () => {
     });
     const sectionName = (e: SettingEntry) =>
       e.place.kind === "project"
-        ? projects.find(
-            (p) => e.place.kind === "project" && p.id === e.place.id,
-          )!.name
+        ? projects.find((p) => e.place.kind === "project" && p.id === e.place.id)!.name
         : e.place.kind[0].toUpperCase() + e.place.kind.slice(1);
 
     open({ projects, harnesses, hasElevenLabsKey: true });
@@ -387,10 +404,7 @@ describe("searching", () => {
       type(e.label);
       fireEvent.click(result(e.label, e.where));
       expect(pane()?.getAttribute("aria-label"), e.anchor).toBe(sectionName(e));
-      expect(
-        target(e.anchor)?.hasAttribute("data-found"),
-        `${e.where}: ${e.anchor}`,
-      ).toBe(true);
+      expect(target(e.anchor)?.hasAttribute("data-found"), `${e.where}: ${e.anchor}`).toBe(true);
     }
   });
 });

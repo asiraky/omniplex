@@ -508,14 +508,18 @@ export function ProjectSettings({
 
               <Separator />
 
-              <div data-setting="agent-defaults" className="space-y-2">
+              <div className="space-y-2">
                 <SectionHeading>Agent defaults</SectionHeading>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Select
                     value={defs.harness ?? ""}
                     onValueChange={(v) => defaults({ harness: v })}
                   >
-                    <SelectTrigger aria-label="Default harness" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default harness"
+                      data-setting="default-harness"
+                      className="w-full"
+                    >
                       <SelectValue placeholder="Harness" />
                     </SelectTrigger>
                     <SelectContent>
@@ -528,7 +532,11 @@ export function ProjectSettings({
                   </Select>
 
                   <Select value={settingsHarness} onValueChange={setSettingsHarness}>
-                    <SelectTrigger aria-label="Harness settings" className="w-full">
+                    <SelectTrigger
+                      aria-label="Harness settings"
+                      data-setting="harness-settings"
+                      className="w-full"
+                    >
                       <SelectValue placeholder="Settings for harness" />
                     </SelectTrigger>
                     <SelectContent>
@@ -544,7 +552,11 @@ export function ProjectSettings({
                     value={defs.harnesses?.[settingsHarness]?.model || UNSET}
                     onValueChange={(v) => agentDefaults({ model: v === UNSET ? "" : v })}
                   >
-                    <SelectTrigger aria-label="Default model" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default model"
+                      data-setting="default-model"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -580,7 +592,11 @@ export function ProjectSettings({
                     value={defs.harnesses?.[settingsHarness]?.effort || UNSET}
                     onValueChange={(v) => agentDefaults({ effort: v === UNSET ? "" : v })}
                   >
-                    <SelectTrigger aria-label="Default effort" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default effort"
+                      data-setting="default-effort"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -600,7 +616,11 @@ export function ProjectSettings({
                     value={defs.harnesses?.[settingsHarness]?.mode || UNSET}
                     onValueChange={(v) => agentDefaults({ mode: v === UNSET ? "" : v })}
                   >
-                    <SelectTrigger aria-label="Default permission mode" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default permission mode"
+                      data-setting="default-mode"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -633,7 +653,11 @@ export function ProjectSettings({
                     value={defs.workspace ?? "local"}
                     onValueChange={(v) => defaults({ workspace: v })}
                   >
-                    <SelectTrigger aria-label="Default workspace" className="w-full">
+                    <SelectTrigger
+                      aria-label="Default workspace"
+                      data-setting="default-workspace"
+                      className="w-full"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

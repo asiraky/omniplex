@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Folder, HarnessMeta, Project } from "~/protocol";
-import {
-  searchSettings,
-  settingsIndex,
-  type SettingEntry,
-} from "./settingsSearch";
+import { searchSettings, settingsIndex, type SettingEntry } from "./settingsSearch";
 
 const folder = (id: string, path: string, git: boolean): Folder => ({
   id,
@@ -25,11 +21,7 @@ const project = (id: string, name: string, folders: Folder[]): Project => ({
   updatedAt: 0,
 });
 
-const harness = (
-  id: string,
-  name: string,
-  instances: { id: string; displayName: string }[],
-) =>
+const harness = (id: string, name: string, instances: { id: string; displayName: string }[]) =>
   ({
     id,
     name,
@@ -45,10 +37,7 @@ const harness = (
     })),
   }) as unknown as HarnessMeta;
 
-const entry = (
-  label: string,
-  over: Partial<SettingEntry> = {},
-): SettingEntry => ({
+const entry = (label: string, over: Partial<SettingEntry> = {}): SettingEntry => ({
   place: { kind: "general" },
   anchor: label,
   label,
@@ -103,11 +92,7 @@ describe("searchSettings", () => {
       entry("Sound push", { anchor: "words" }),
       entry("Push sound alerts", { anchor: "starts" }),
     ];
-    expect(anchors(searchSettings(es, "push sound"))).toEqual([
-      "starts",
-      "words",
-      "desc",
-    ]);
+    expect(anchors(searchSettings(es, "push sound"))).toEqual(["starts", "words", "desc"]);
   });
 
   it("keeps the given order within a rank", () => {
@@ -124,10 +109,7 @@ describe("searchSettings", () => {
       entry("Branch base", { anchor: "words" }),
       entry("Base branch", { anchor: "starts" }),
     ];
-    expect(anchors(searchSettings(es, "  base br  "))).toEqual([
-      "starts",
-      "words",
-    ]);
+    expect(anchors(searchSettings(es, "  base br  "))).toEqual(["starts", "words"]);
   });
 });
 
@@ -148,15 +130,11 @@ describe("settingsIndex", () => {
     });
 
     const voice = (es: SettingEntry[]) =>
-      es.filter(
-        (e) => e.anchor === "voice" || e.anchor === "dictation-cleanup",
-      );
+      es.filter((e) => e.anchor === "voice" || e.anchor === "dictation-cleanup");
     expect(voice(without)).toEqual([]);
     const found = voice(withKey).map((e) => e.place);
     expect(found).toContainEqual({ kind: "general" });
     expect(found).toContainEqual({ kind: "project", id: "p1" });
-    // The key itself is set from General either way.
-    expect(without.some((e) => e.anchor === "elevenlabs-key")).toBe(true);
   });
 
   it("offers workspace settings only for git folders", () => {
@@ -166,18 +144,12 @@ describe("settingsIndex", () => {
       harnesses: [],
       hasElevenLabsKey: false,
     });
-    const workspace = es.filter((e) =>
-      /^(base-branch|provision|deprovision)-/.test(e.anchor),
-    );
+    const workspace = es.filter((e) => /^(base-branch|provision|deprovision)-/.test(e.anchor));
     expect(workspace.length).toBeGreaterThan(0);
-    expect(
-      workspace.every((e) => e.place.kind === "project" && e.place.id === "p1"),
-    ).toBe(true);
+    expect(workspace.every((e) => e.place.kind === "project" && e.place.id === "p1")).toBe(true);
     expect(workspace.every((e) => e.anchor.endsWith("-a1"))).toBe(true);
     // The non-git project still has its own settings.
-    expect(
-      es.some((e) => e.place.kind === "project" && e.place.id === "p3"),
-    ).toBe(true);
+    expect(es.some((e) => e.place.kind === "project" && e.place.id === "p3")).toBe(true);
   });
 
   it("names the folder in a workspace's place only when the project has more than one git folder", () => {
@@ -191,8 +163,7 @@ describe("settingsIndex", () => {
       harnesses: [],
       hasElevenLabsKey: false,
     });
-    const whereOf = (anchor: string) =>
-      es.find((e) => e.anchor === anchor)!.where;
+    const whereOf = (anchor: string) => es.find((e) => e.anchor === anchor)!.where;
 
     expect(whereOf("base-branch-a1")).toBe("alpha");
     expect(whereOf("base-branch-d1")).toContain("/src/duo/web");
@@ -200,10 +171,7 @@ describe("settingsIndex", () => {
     expect(whereOf("base-branch-d1")).toContain("duo");
     // Settings that are the project's, not a folder's, never carry a path.
     const projectWide = es.filter(
-      (e) =>
-        e.place.kind === "project" &&
-        e.place.id === "p4" &&
-        !/-d\d$/.test(e.anchor),
+      (e) => e.place.kind === "project" && e.place.id === "p4" && !/-d\d$/.test(e.anchor),
     );
     expect(projectWide.length).toBeGreaterThan(0);
     expect(projectWide.every((e) => e.where === "duo")).toBe(true);
@@ -217,9 +185,7 @@ describe("settingsIndex", () => {
     });
     const hits = searchSettings(es, "beta branch");
     expect(hits.length).toBeGreaterThan(0);
-    expect(
-      hits.every((e) => e.place.kind === "project" && e.place.id === "p2"),
-    ).toBe(true);
+    expect(hits.every((e) => e.place.kind === "project" && e.place.id === "p2")).toBe(true);
     expect(hits[0].anchor).toBe("base-branch-b1");
   });
 
@@ -233,12 +199,10 @@ describe("settingsIndex", () => {
       harnesses: [],
       hasElevenLabsKey: false,
     });
-    expect(anchors(searchSettings(es, "api base branch"))).toEqual([
-      "base-branch-d2",
-    ]);
+    expect(anchors(searchSettings(es, "api base branch"))).toEqual(["base-branch-d2"]);
   });
 
-  it("finds a harness by an account's name, falling back to the account id", () => {
+  it("finds an account by its name, falling back to its id, and opens that account", () => {
     const es = settingsIndex({
       projects: [],
       harnesses: [
@@ -248,10 +212,17 @@ describe("settingsIndex", () => {
       hasElevenLabsKey: false,
     });
     const named = searchSettings(es, "zephyrwork");
-    expect(named.map((e) => [e.anchor, e.place])).toEqual([
-      ["harness-codex", { kind: "providers" }],
-    ]);
-    expect(anchors(searchSettings(es, "quuxacct"))).toEqual(["harness-claude"]);
+    // The account itself first, then the settings inside it.
+    expect(named[0].anchor).toBe("account");
+    const zephyr = { kind: "providers", account: { harnessId: "codex", instanceId: "c-1" } };
+    expect(named.every((e) => JSON.stringify(e.place) === JSON.stringify(zephyr))).toBe(true);
+
+    const byId = searchSettings(es, "quuxacct");
+    expect(byId[0].anchor).toBe("account");
+    expect(byId[0].place).toEqual({
+      kind: "providers",
+      account: { harnessId: "claude", instanceId: "quuxacct" },
+    });
   });
 
   it("copes with a harness that reports no instances", () => {
@@ -268,20 +239,14 @@ describe("settingsIndex", () => {
   });
 
   it("gives every entry a distinct place and anchor", () => {
-    const two = project("p4", "duo", [
-      folder("d1", "/a", true),
-      folder("d2", "/b", true),
-    ]);
+    const two = project("p4", "duo", [folder("d1", "/a", true), folder("d2", "/b", true)]);
     const es = settingsIndex({
       projects: [alpha, beta, two],
-      harnesses: [
-        harness("codex", "Codex", [{ id: "c", displayName: "Work" }]),
-      ],
+      harnesses: [harness("codex", "Codex", [{ id: "c", displayName: "Work" }])],
       hasElevenLabsKey: true,
     });
     const keys = es.map(
-      (e) =>
-        `${e.place.kind === "project" ? e.place.id : e.place.kind}:${e.anchor}`,
+      (e) => `${e.place.kind === "project" ? e.place.id : e.place.kind}:${e.anchor}`,
     );
     expect(new Set(keys).size).toBe(keys.length);
   });

@@ -1,9 +1,13 @@
 import type { HarnessMeta, Project } from "~/protocol";
 
-/** Where a setting lives: one of the fixed sections, or a project. */
+/** One account on the Providers screen. */
+export type AccountRef = { harnessId: string; instanceId: string };
+
+/** Where a setting lives: one of the fixed sections, an account, or a project. */
 export type SettingsPlace =
   | { kind: "general" }
-  | { kind: "providers" }
+  /** With an account, that account's own view; without, the list of them. */
+  | { kind: "providers"; account?: AccountRef }
   | { kind: "notifications" }
   | { kind: "project"; id: string };
 
@@ -24,6 +28,14 @@ export interface SettingEntry {
 
 type Fixed = Omit<SettingEntry, "place" | "where">;
 
+/** One result's identity, unique across the whole index. */
+export function entryKey(e: SettingEntry): string {
+  const p = e.place;
+  const at =
+    p.kind === "project" ? p.id : p.kind === "providers" && p.account ? p.account.instanceId : "";
+  return `${p.kind}:${at}:${e.anchor}`;
+}
+
 const GENERAL: Fixed[] = [
   {
     anchor: "projects-dir",
@@ -33,19 +45,21 @@ const GENERAL: Fixed[] = [
   {
     anchor: "default-model",
     label: "Default model",
-    description: "What a project's first thread starts on.",
-    keywords: ["harness", "account"],
+    description:
+      "What a project's first thread starts on. Not set, it starts on the first account that is signed in.",
+    keywords: ["harness"],
   },
   {
     anchor: "default-level",
     label: "Default permissions",
-    description: "The permission level a new thread starts at.",
+    description: "The permissions a new thread starts on, or the harness's own default.",
     keywords: ["approval", "sandbox"],
   },
   {
     anchor: "pin-new-threads",
     label: "Pin new threads",
-    description: "Whether the pin beside a new thread's composer starts on.",
+    description:
+      "Whether the pin beside a new thread's composer starts on. You can still flip it before sending.",
   },
   {
     anchor: "auto-update-harnesses",
@@ -56,7 +70,8 @@ const GENERAL: Fixed[] = [
   {
     anchor: "branch-format",
     label: "Branch names from issues",
-    description: "Names the copies started from your open GitHub issues.",
+    description:
+      "Names the copies started from your open GitHub issues. {number} is the issue number and {title} its title.",
     keywords: ["template", "worktree"],
   },
   {
@@ -72,7 +87,7 @@ const GENERAL_VOICE: Fixed[] = [
   {
     anchor: "voice",
     label: "Default voice",
-    description: "What messages are read aloud in, unless a project picks its own.",
+    description: "What messages are read in, unless a project picks its own.",
     keywords: ["speech", "tts"],
   },
   {
@@ -128,11 +143,40 @@ const PROJECT: Fixed[] = [
     keywords: ["repo", "repository", "github"],
   },
   {
-    anchor: "agent-defaults",
-    label: "Agent defaults",
-    description:
-      "The harness, model, effort, permissions and workspace this project's new threads start on.",
-    keywords: ["worktree", "main checkout"],
+    anchor: "default-harness",
+    label: "Default harness",
+    description: "The harness this project's new threads open on.",
+    keywords: ["agent defaults"],
+  },
+  {
+    anchor: "harness-settings",
+    label: "Harness settings",
+    description: "Which harness the model, effort and permissions below are for.",
+    keywords: ["agent defaults"],
+  },
+  {
+    anchor: "default-model",
+    label: "Default model",
+    description: "The model this project's new threads start on, for that harness.",
+    keywords: ["agent defaults"],
+  },
+  {
+    anchor: "default-effort",
+    label: "Default effort",
+    description: "How hard this project's new threads think, for that harness.",
+    keywords: ["agent defaults", "reasoning", "thinking"],
+  },
+  {
+    anchor: "default-mode",
+    label: "Default permissions",
+    description: "The permission mode this project's new threads start on, for that harness.",
+    keywords: ["agent defaults", "approval", "sandbox"],
+  },
+  {
+    anchor: "default-workspace",
+    label: "Default workspace",
+    description: "Whether new threads run in the main checkout or a worktree of their own.",
+    keywords: ["agent defaults", "main checkout", "worktree", "copy"],
   },
 ];
 
@@ -146,7 +190,7 @@ const PROJECT_VOICE: Fixed = {
 const PROJECT_REMOVE: Fixed = {
   anchor: "remove",
   label: "Remove project",
-  description: "Takes the project out of Omniplex. Nothing on disk is touched.",
+  description: "Takes it out of Omniplex only. Nothing on disk is touched. Its threads go first.",
   keywords: ["delete"],
 };
 
@@ -160,17 +204,72 @@ const workspace = (folderId: string): Fixed[] => [
   },
   {
     anchor: `provision-${folderId}`,
-    label: "Provision hook",
+    label: "Provision",
     description: "A script run in each new copy of this folder before its thread starts.",
     keywords: ["worktree", "setup", "script"],
   },
   {
     anchor: `deprovision-${folderId}`,
-    label: "Deprovision hook",
+    label: "Deprovision",
     description: "A script run in a copy of this folder before it is removed.",
     keywords: ["worktree", "teardown", "cleanup", "script"],
   },
 ];
+
+/** One account's own settings: its view on the Providers screen. */
+function accountEntries(h: HarnessMeta): SettingEntry[] {
+  return (h.instances ?? []).flatMap((i) => {
+    const name = i.displayName || i.id;
+    const place: SettingsPlace = {
+      kind: "providers",
+      account: { harnessId: h.id, instanceId: i.id },
+    };
+    const where = `Providers · ${name}`;
+    const list: Fixed[] = [
+      {
+        anchor: "account",
+        label: name,
+        description: `${h.name} account.`,
+        keywords: [i.id, i.account ?? ""],
+      },
+      {
+        anchor: "enabled",
+        label: "Enabled",
+        description: "A disabled account keeps its settings but offers no models.",
+      },
+      { anchor: "display-name", label: "Display name", description: "What the account is called." },
+      ...(h.configFields ?? []).map((f) => ({
+        anchor: `field-${f.env}`,
+        label: f.label,
+        description: f.description ?? "",
+        keywords: [f.env],
+      })),
+      ...(h.modelSettings
+        ? [
+            {
+              anchor: "model-settings",
+              label: h.modelSettings.label,
+              description: h.modelSettings.description ?? "",
+            },
+          ]
+        : []),
+      {
+        anchor: "sign-in",
+        label: "Sign-in",
+        description: "How the account signs in.",
+        keywords: ["login", "log in", "auth"],
+      },
+      {
+        anchor: "remove-account",
+        label: "Remove account",
+        description:
+          "Takes the account out of the config. Threads that used it keep their transcripts.",
+        keywords: ["delete"],
+      },
+    ];
+    return list.map((e) => ({ ...e, place, where }));
+  });
+}
 
 /**
  * Every setting the screen can show right now. Settings that are not on screen
@@ -200,10 +299,9 @@ export function settingsIndex({
       anchor: `harness-${h.id}`,
       label: h.name,
       description: "The accounts this agent signs in with.",
-      // An account is found by its own name too.
-      keywords: (h.instances ?? []).map((i) => i.displayName || i.id),
     })),
     ...at(providers, "Providers", PROVIDERS),
+    ...harnesses.flatMap(accountEntries),
     ...at({ kind: "notifications" }, "Notifications", NOTIFICATIONS),
   ];
 

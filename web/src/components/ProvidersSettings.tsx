@@ -17,6 +17,7 @@ import { Switch } from "~/components/ui/switch";
 import { describeHarnessUpdate } from "~/lib/harnessUpdate";
 import { buildInstanceSpec, deriveInstanceId, hasStoredSecret, initialFieldValues } from "~/lib/providerSpec";
 import { joinAnd, sameLoginNames } from "~/lib/sameLogin";
+import type { AccountRef } from "~/lib/settingsSearch";
 import type {
   HarnessMeta,
   ProviderConfigField,
@@ -39,6 +40,9 @@ type View =
   | { kind: "list" }
   | { kind: "add"; harnessId: string | null }
   | { kind: "instance"; harnessId: string; instanceId: string };
+
+const viewOf = (account?: AccountRef): View =>
+  account ? { kind: "instance", ...account } : { kind: "list" };
 
 /** Every instance id in play, for slug collision checks. */
 function takenIds(harnesses: HarnessMeta[]): string[] {
@@ -229,7 +233,7 @@ function ConfigFields({
   return (
     <>
       {fields.map((f) => (
-        <div key={f.env} className="space-y-1.5">
+        <div key={f.env} data-setting={`field-${f.env}`} className="space-y-1.5">
           <Label htmlFor={`${idBase}-${f.env}`}>{f.label}</Label>
           <Input
             id={`${idBase}-${f.env}`}
@@ -526,7 +530,7 @@ function InstanceView({
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-setting="account" className="flex flex-wrap items-center gap-2">
         <HarnessBadge harness={instance.driver} accent={harness.accent} className="size-4" />
         <SectionHeading>{instance.displayName || instance.id}</SectionHeading>
         <ReadyBadge instance={instance} />
@@ -562,7 +566,7 @@ function InstanceView({
         <p className="text-attention-foreground text-[12px]">{instance.availability.reason}</p>
       )}
 
-      <div className="flex items-center justify-between gap-2">
+      <div data-setting="enabled" className="flex items-center justify-between gap-2">
         <div>
           <SectionHeading>Enabled</SectionHeading>
           <p className="text-muted-foreground text-[11px]">
@@ -581,7 +585,7 @@ function InstanceView({
 
       <div className="space-y-3">
         <SectionHeading>Settings</SectionHeading>
-        <div className="space-y-1.5">
+        <div data-setting="display-name" className="space-y-1.5">
           <Label htmlFor="instance-name">Display name</Label>
           <Input id="instance-name" value={name} onChange={(e) => setName(e.target.value)} />
         </div>
@@ -606,17 +610,19 @@ function InstanceView({
       {harness.modelSettings && (
         <>
           <Separator />
-          <ModelSettingsSection
-            wires={wires}
-            instance={instance}
-            schema={harness.modelSettings}
-          />
+          <div data-setting="model-settings">
+            <ModelSettingsSection
+              wires={wires}
+              instance={instance}
+              schema={harness.modelSettings}
+            />
+          </div>
         </>
       )}
 
       <Separator />
 
-      <div className="space-y-2">
+      <div data-setting="sign-in" className="space-y-2">
         <SectionHeading>Sign-in</SectionHeading>
         {instance.auth ? (
           <AuthMethods
@@ -633,7 +639,7 @@ function InstanceView({
 
       <Separator />
 
-      <div className="space-y-2">
+      <div data-setting="remove-account" className="space-y-2">
         <SectionHeading note="cannot be undone">Remove account</SectionHeading>
         <p className="text-muted-foreground text-[11px]">
           Takes the account out of the config. Threads that used it keep their transcripts.
@@ -686,6 +692,7 @@ export default function ProvidersSettings({
   onRecheck,
   onBack,
   addFor,
+  show,
 }: {
   harnesses: HarnessMeta[];
   wires: AuthWires;
@@ -699,11 +706,28 @@ export default function ProvidersSettings({
    * agent, null asks which. Read once, on mount.
    */
   addFor?: string | null;
+  /**
+   * A settings search pick: an account's view, or the list. `n` changes on
+   * every pick, so a second pick of the same place still moves there.
+   */
+  show?: { account?: AccountRef; n: number };
 }) {
   const [view, setView] = useState<View>(() =>
-    addFor === undefined ? { kind: "list" } : { kind: "add", harnessId: addFor },
+    show
+      ? viewOf(show.account)
+      : addFor === undefined
+        ? { kind: "list" }
+        : { kind: "add", harnessId: addFor },
   );
   const [error, setError] = useState<string | null>(null);
+  // A pick while this is already open moves the view without a remount, so
+  // an account that is already showing keeps the edits made in it.
+  const [shown, setShown] = useState(show?.n);
+  if (show && show.n !== shown) {
+    setShown(show.n);
+    setError(null);
+    setView(viewOf(show.account));
+  }
   const [checking, setChecking] = useState(false);
 
   const go = (v: View) => {
