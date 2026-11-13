@@ -282,6 +282,7 @@ func (a *Adapter) CreateSession(ctx context.Context, host adapter.HostServices, 
 // piState is the part of get_state's answer this package reads.
 type piState struct {
 	SessionID     string `json:"sessionId"`
+	SessionFile   string `json:"sessionFile"`
 	ThinkingLevel string `json:"thinkingLevel"`
 	Model         *struct {
 		Provider      string `json:"provider"`
@@ -729,6 +730,11 @@ func (s *session) Rewind(ctx context.Context, target adapter.RewindTarget) error
 	if s.currentTurn() != "" {
 		return errors.New("pi is running a turn; rewind once it finishes")
 	}
+	// The file pi is on now is the way back if the fork's id cannot be read.
+	var before piState
+	if err := s.call(ctx, map[string]any{"type": "get_state"}, &before); err != nil {
+		return fmt.Errorf("pi get_state: %w", s.classify(err))
+	}
 	var forked struct {
 		Cancelled bool `json:"cancelled"`
 	}
@@ -738,18 +744,72 @@ func (s *session) Rewind(ctx context.Context, target adapter.RewindTarget) error
 	if forked.Cancelled {
 		return errors.New("a pi extension cancelled the fork")
 	}
-	var state piState
-	if err := s.call(ctx, map[string]any{"type": "get_state"}, &state); err != nil {
-		return fmt.Errorf("pi forked but did not report the new session: %w", s.classify(err))
-	}
-	if state.SessionID == "" {
-		return errors.New("pi forked but reported no session id")
+	// Pi is on the fork from here, and its answer does not carry the new id.
+	state, err := s.forkedState(ctx)
+	if err != nil {
+		return s.unfork(ctx, before.SessionFile, err)
 	}
 	s.emit(proto.Emit(proto.ThreadConfigChanged, proto.ThreadConfigChangedPayload{
 		HarnessSessionID: state.SessionID,
 	}))
 	s.restoreSettings(ctx, state)
 	return nil
+}
+
+// forkStateAttempts and forkStateTimeout bound forkedState's reads.
+const (
+	forkStateAttempts = 3
+	forkStateTimeout  = 5 * time.Second
+)
+
+// forkedState reads the session pi moved to on a fork, retrying a read that
+// fails or comes back without an id, since the rewind has already happened.
+func (s *session) forkedState(ctx context.Context) (piState, error) {
+	var err error
+	for i := 0; i < forkStateAttempts; i++ {
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(i) * 200 * time.Millisecond):
+			case <-ctx.Done():
+				return piState{}, ctx.Err()
+			case <-s.rpcDone:
+				return piState{}, s.died(err)
+			}
+		}
+		actx, cancel := context.WithTimeout(ctx, forkStateTimeout)
+		var state piState
+		err = s.call(actx, map[string]any{"type": "get_state"}, &state)
+		cancel()
+		if err == nil && state.SessionID != "" {
+			return state, nil
+		}
+		if err == nil {
+			err = errors.New("pi reported no session id")
+		}
+	}
+	return piState{}, err
+}
+
+// unfork puts pi back on the session it forked from when the fork's id could
+// not be read, so the stored id, the transcript and pi agree again. Failing
+// that, pi is killed: a restart resumes the stored id, the un-rewound file,
+// which is still what the transcript shows.
+func (s *session) unfork(ctx context.Context, file string, cause error) error {
+	cause = fmt.Errorf("pi forked but did not report the new session: %w", s.classify(cause))
+	if file != "" {
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), forkStateTimeout)
+		var res struct {
+			Cancelled bool `json:"cancelled"`
+		}
+		err := s.call(bctx, map[string]any{"type": "switch_session", "sessionPath": file}, &res)
+		cancel()
+		if err == nil && !res.Cancelled {
+			return fmt.Errorf("%w; switched back to the session before the rewind", cause)
+		}
+		s.host.Logf("pi: switch back to %s after a fork: %v (cancelled %v)", file, err, res.Cancelled)
+	}
+	_ = s.Close()
+	return fmt.Errorf("%w; pi was stopped so a restart resumes the session before the rewind", cause)
 }
 
 // restoreSettings puts back the model and thinking level the session ran with

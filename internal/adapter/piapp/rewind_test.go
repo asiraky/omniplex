@@ -3,6 +3,7 @@ package piapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,5 +243,130 @@ func TestRewindRestoresModelAndEffort(t *testing.T) {
 	}
 	if len(afterFork) != 2 || afterFork[0] != "model:openai/gpt-x" || afterFork[1] != "effort:high" {
 		t.Fatalf("after the fork pi was sent %v, want the model then the effort put back", afterFork)
+	}
+}
+
+// forkingPi is a pi that tracks which session file it is on, so a test can
+// see where a failed rewind left it. sid holds the current id; fork moves it
+// to harness-forked and switch_session to the file it is given. After a fork
+// get_state refuses while state_fails counts down above zero; switch_refuse
+// makes switch_session refuse.
+func forkingPi(t *testing.T, dir string) adapter.Session {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+DIR=%q
+printf 'harness-old' > "$DIR/sid"
+while IFS= read -r line; do
+  printf '%%s\n' "$line" >> "$DIR/lines"
+  id=$(printf '%%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  sid=$(cat "$DIR/sid")
+  case "$line" in
+    *'"type":"get_state"'*)
+      n=0; [ -f "$DIR/state_fails" ] && n=$(cat "$DIR/state_fails")
+      if [ "$sid" = harness-forked ] && [ "$n" -gt 0 ]; then
+        echo $((n - 1)) > "$DIR/state_fails"
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":false,\"error\":\"busy\"}"
+      else
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"get_state\",\"success\":true,\"data\":{\"sessionId\":\"$sid\",\"sessionFile\":\"/s/$sid.jsonl\",\"thinkingLevel\":\"medium\",\"model\":{\"provider\":\"anthropic\",\"id\":\"claude-x\",\"contextWindow\":200000}}}"
+      fi
+      ;;
+    *'"type":"fork"'*)
+      printf 'harness-forked' > "$DIR/sid"
+      printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"fork\",\"success\":true,\"data\":{\"text\":\"hi\",\"cancelled\":false}}"
+      ;;
+    *'"type":"switch_session"'*)
+      if [ -f "$DIR/switch_refuse" ]; then
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"switch_session\",\"success\":false,\"error\":\"boom\"}"
+      else
+        printf '%%s' "$line" | sed -n 's/.*"sessionPath":"\/s\/\([^"]*\)\.jsonl".*/\1/p' > "$DIR/sid"
+        printf '%%s\n' "{\"type\":\"response\",\"id\":\"$id\",\"command\":\"switch_session\",\"success\":true,\"data\":{\"cancelled\":false}}"
+      fi
+      ;;
+  esac
+done
+`, dir)
+	bin := filepath.Join(dir, "pi")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(bin).CreateSession(context.Background(), fakeHost{}, adapter.CreateOptions{ThreadID: "sess-1"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })
+	return s
+}
+
+// piSession is the session forkingPi is on now.
+func piSession(t *testing.T, dir string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "sid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// configIDs is every harness session id reported in got.
+func configIDs(got []proto.Emission) []string {
+	var ids []string
+	for _, e := range got {
+		if p, ok := e.Payload.(proto.ThreadConfigChangedPayload); ok {
+			ids = append(ids, p.HarnessSessionID)
+		}
+	}
+	return ids
+}
+
+// A get_state that fails once after the fork is retried: the rewind stands
+// and the fork's id is reported.
+func TestRewindRetriesStateAfterFork(t *testing.T) {
+	dir := t.TempDir()
+	s := forkingPi(t, dir)
+	stage(t, dir, map[string]string{"state_fails": "1"})
+	if err := s.(adapter.Rewinder).Rewind(context.Background(), adapter.RewindTarget{Turn: "e2"}); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	got := drain(t, s, func(g []proto.Emission) bool { return hasType(g, proto.ThreadConfigChanged) })
+	if ids := configIDs(got); len(ids) != 1 || ids[0] != "harness-forked" {
+		t.Fatalf("reported ids = %v, want harness-forked", ids)
+	}
+}
+
+// When the fork's id never comes, pi goes back to the session it forked from,
+// which is still the stored id, and the rewind fails with nothing reported.
+func TestRewindSwitchesBackWhenForkIDUnknown(t *testing.T) {
+	dir := t.TempDir()
+	s := forkingPi(t, dir)
+	stage(t, dir, map[string]string{"state_fails": "99"})
+	if err := s.(adapter.Rewinder).Rewind(context.Background(), adapter.RewindTarget{Turn: "e2"}); err == nil {
+		t.Fatal("Rewind succeeded without learning the fork's id")
+	}
+	if got := piSession(t, dir); got != "harness-old" {
+		t.Fatalf("pi is on %q after the failed rewind, want harness-old", got)
+	}
+	select {
+	case e, ok := <-s.Events():
+		if !ok {
+			t.Fatal("pi was stopped although switching back worked")
+		}
+		t.Fatalf("unexpected %s after a failed rewind", e.Type)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// When pi cannot be switched back either, it is stopped, so a restart
+// resumes the stored id rather than run on with the fork.
+func TestRewindStopsPiWhenSwitchBackFails(t *testing.T) {
+	dir := t.TempDir()
+	s := forkingPi(t, dir)
+	stage(t, dir, map[string]string{"state_fails": "99", "switch_refuse": ""})
+	if err := s.(adapter.Rewinder).Rewind(context.Background(), adapter.RewindTarget{Turn: "e2"}); err == nil {
+		t.Fatal("Rewind succeeded without learning the fork's id")
+	}
+	got := drain(t, s, func([]proto.Emission) bool { return false })
+	if ids := configIDs(got); len(ids) != 0 {
+		t.Fatalf("reported ids = %v after a failed rewind, want none", ids)
 	}
 }
