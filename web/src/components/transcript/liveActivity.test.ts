@@ -5,7 +5,7 @@ import type { Item, Turn } from "~/protocol";
 import { liveActivity, thoughtPreview } from "./liveActivity";
 
 const prompt = (turnId = "t2"): Item => ({ id: "u", kind: "message", role: "user", text: "go", turnId });
-const tool = (status: string, turnId = "t2"): Item => ({ id: "x", kind: "tool", toolKind: "execute", status, turnId });
+const tool = (status: Item["status"], turnId = "t2"): Item => ({ id: "x", kind: "tool", toolKind: "execute", status, turnId });
 const said = (text: string, contentKind: "text" | "thought" = "text", turnId = "t2"): Item => ({
   id: `m:${text}`,
   kind: "message",

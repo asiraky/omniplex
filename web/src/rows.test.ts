@@ -210,11 +210,14 @@ describe("labels", () => {
     expect(summarise([tool({ toolKind: "search" }), tool(), tool()])).toBe("Ran 2 commands and 1 search");
   });
 
+  // A kind a newer harness sends that this client has no name for.
+  const UNKNOWN = "mystery" as Item["toolKind"];
+
   it("joins three or more kinds with commas and a final and", () => {
     const items = [
       ...[1, 2, 3, 4].map(() => tool({ toolKind: "read" })),
       ...[1, 2, 3].map(() => tool({ toolKind: "edit" })),
-      tool({ toolKind: "mystery" }),
+      tool({ toolKind: UNKNOWN }),
     ];
     expect(summarise(items)).toBe("Made 4 reads, 3 edits and 1 other call");
   });
@@ -232,7 +235,7 @@ describe("labels", () => {
   });
 
   it("counts unknown and missing kinds as other calls", () => {
-    expect(summarise([tool({ toolKind: "mystery" }), tool({ toolKind: undefined })])).toBe("Made 2 other calls");
+    expect(summarise([tool({ toolKind: UNKNOWN }), tool({ toolKind: undefined })])).toBe("Made 2 other calls");
   });
 
   it("is empty when there are no tool calls", () => {
