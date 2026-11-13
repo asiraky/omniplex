@@ -14,7 +14,7 @@ function setup({ expanded = false } = {}) {
   const drafts = createDraftStore({ s1: "why does this fail?" });
   const store = { setDrafts: drafts.update, getDraft: drafts.get } as unknown as ComposerDrafts;
   const panel = { close: vi.fn(), expanded, toggleExpanded: vi.fn() } as unknown as PanelControls;
-  const composer: ComposerHandle = { focusEnd: vi.fn(), openModelPicker: vi.fn() };
+  const composer: ComposerHandle = { focusEnd: vi.fn(), openModelPicker: vi.fn(), typeAtEnd: vi.fn() };
   const { result } = renderHook(() =>
     useAddToChat({ activeId: "s1", store, panel, composerRef: { current: composer } }),
   );
