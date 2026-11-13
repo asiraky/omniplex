@@ -8,12 +8,15 @@ import {
   loadAttachments,
   loadDrafts,
   loadOutbox,
+  loadStashes,
   persistDrafts,
   persistOutbox,
+  persistStashes,
   saveAttachments,
 } from "./composerStorage";
 import { createDraftStore, PARAGRAPH, type Drafts } from "./draftStore";
 import { createOutbox, type Outbox, type OutboxSend } from "./outbox";
+import { createStashStore, pushStash, takeStash, type StashEntry, type Stashes } from "./stashStore";
 import { NEW_THREAD } from "./threadKeys";
 
 export type ComposerDrafts = ReturnType<typeof useComposerDrafts>;
@@ -38,10 +41,13 @@ export type ComposerDrafts = ReturnType<typeof useComposerDrafts>;
  * composers subscribe to themselves (`useDraft`), and the callbacks that need
  * it read it when they run (`getDraft`) rather than closing over a render's
  * copy. Attachments change rarely, so they stay ordinary state.
+ *
+ * Drafts set aside to send something else first (the stash) live in a store
+ * of their own for the same reason, many per thread.
  */
 export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null) {
   const [restored] = useState(restoreSaved);
-  const { draftStore, outbox } = restored;
+  const { draftStore, outbox, stashStore } = restored;
   // Images staged for the next message, per thread and for the same reason as
   // the drafts: switching away and back must not lose what you attached. The
   // upload starts as soon as a picture is picked, so by send time this is a
@@ -50,6 +56,7 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
 
   useEffect(() => persistDrafts(draftStore), [draftStore]);
   useEffect(() => persistOutbox(outbox), [outbox]);
+  useEffect(() => persistStashes(stashStore), [stashStore]);
   // From the last write: saving compares each thread's list by reference and
   // writes only the ones that moved.
   const savedAttachments = useRef(restored.attachments);
@@ -57,6 +64,20 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
     saveAttachments(savedAttachments.current, attachments);
     savedAttachments.current = attachments;
   }, [attachments]);
+  // The lists as last rendered, for a stash to read which files it takes. A
+  // stash moves files ahead of the render too, so a second one straight after
+  // cannot take them twice.
+  const attachmentsNow = useRef(restored.attachments);
+  useEffect(() => {
+    attachmentsNow.current = attachments;
+  }, [attachments]);
+  const moveAttachments = useCallback(
+    (fn: (all: Record<string, Attachment[]>) => Record<string, Attachment[]>) => {
+      attachmentsNow.current = fn(attachmentsNow.current);
+      setAttachments(fn);
+    },
+    [],
+  );
 
   // A prompt that did not go, back in its thread's composer: in front of
   // whatever has been typed since, with the files it carried, and behind any
@@ -247,6 +268,68 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
     });
   }, []);
 
+  // What the composer holds as a stash entry: its text and the files that
+  // are ready. One still uploading, or failed, stays in the composer, since
+  // an entry outlives the page and its upload would not.
+  const composerEntry = useCallback(
+    (threadId: string, textOnly = false): StashEntry | undefined => {
+      const text = draftStore.get(threadId);
+      const files = textOnly ? [] : (attachmentsNow.current[threadId] ?? []).filter((a) => a.status === "ready");
+      if (!text.trim() && files.length === 0) return undefined;
+      return { id: uuid(), text, attachments: files, at: Date.now() };
+    },
+    [draftStore],
+  );
+
+  // Parks the composer's draft to send something else first. Its thumbnails
+  // stay alive: they move into the entry rather than going. `textOnly` parks
+  // the words and leaves the attachments where they are, for a recalled
+  // prompt to go out with.
+  const stashDraft = useCallback(
+    (threadId: string, textOnly = false) => {
+      const entry = composerEntry(threadId, textOnly);
+      if (!entry) return false;
+      const { next, evicted } = pushStash(stashStore.all(), threadId, entry);
+      stashStore.update(() => next);
+      revokeEntries(evicted);
+      draftStore.set(threadId, "");
+      moveAttachments((all) => withoutKeys(all, threadId, entry.attachments));
+      return true;
+    },
+    [composerEntry, draftStore, moveAttachments, stashStore],
+  );
+
+  // A stashed draft back in the composer. Whatever is there now is stashed
+  // in its place first, so bringing one back never costs what was typed.
+  const unstash = useCallback(
+    (threadId: string, entryId: string) => {
+      const { next, taken } = takeStash(stashStore.all(), threadId, entryId);
+      if (!taken) return undefined;
+      const swap = composerEntry(threadId);
+      const pushed = swap ? pushStash(next, threadId, swap) : { next, evicted: [] };
+      stashStore.update(() => pushed.next);
+      revokeEntries(pushed.evicted);
+      draftStore.set(threadId, taken.text);
+      moveAttachments((all) => {
+        const list = withoutKeys(all, threadId, swap?.attachments ?? [])[threadId] ?? [];
+        const back = taken.attachments.filter((a) => !list.some((b) => b.key === a.key));
+        return { ...all, [threadId]: [...list, ...back] };
+      });
+      return taken;
+    },
+    [composerEntry, draftStore, moveAttachments, stashStore],
+  );
+
+  const dropStash = useCallback(
+    (threadId: string, entryId: string) => {
+      const { next, taken } = takeStash(stashStore.all(), threadId, entryId);
+      if (!taken) return;
+      stashStore.update(() => next);
+      revokeEntries([taken]);
+    },
+    [stashStore],
+  );
+
   // Drop drafts for threads that have left the list, so a deleted thread does
   // not leave its text behind for the life of the tab. "Absent from the list"
   // only means gone if the thread was ever *in* the list: a freshly created
@@ -289,7 +372,19 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       return changed ? next : all;
     });
     outbox.prune((id) => live.has(id) || !seenThreads.current.has(id));
-  }, [draftStore, outbox, restored, threads]);
+    // And the stashes, thumbnails and all.
+    const stashes = stashStore.all();
+    const keptStashes: Record<string, readonly StashEntry[]> = {};
+    const prunedStashes: StashEntry[] = [];
+    for (const [id, list] of Object.entries(stashes)) {
+      if (live.has(id) || !seenThreads.current.has(id)) keptStashes[id] = list;
+      else prunedStashes.push(...list);
+    }
+    if (prunedStashes.length) {
+      stashStore.update(() => keptStashes);
+      revokeEntries(prunedStashes);
+    }
+  }, [draftStore, outbox, restored, stashStore, threads]);
 
   // One object while nothing in it changes, so typing (which changes nothing
   // here) hands every consumer the same store it had.
@@ -297,6 +392,7 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
     () => ({
       draftStore,
       outbox,
+      stashStore,
       restoreFailedSend,
       withdrawFailedSend,
       getDraft,
@@ -311,10 +407,14 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       attachFiles,
       attachToDraft,
       removeAttachment,
+      stashDraft,
+      unstash,
+      dropStash,
     }),
     [
       draftStore,
       outbox,
+      stashStore,
       restoreFailedSend,
       withdrawFailedSend,
       getDraft,
@@ -327,13 +427,16 @@ export function useComposerDrafts(threads: ThreadMeta[], activeId: string | null
       attachFiles,
       attachToDraft,
       removeAttachment,
+      stashDraft,
+      unstash,
+      dropStash,
     ],
   );
 }
 
 /**
- * What the last page of this browser left: drafts, staged files and the
- * outbox. A send that lapsed while the page was gone goes back into its
+ * What the last page of this browser left: drafts, staged files, stashes and
+ * the outbox. A send that lapsed while the page was gone goes back into its
  * composer, as a failed one does.
  */
 function restoreSaved() {
@@ -346,14 +449,43 @@ function restoreSaved() {
     drafts = restoreDraft(drafts, entry, before);
     attachments = restoreAttachments(attachments, entry, before);
   }
+  const stashes: Stashes = loadStashes();
   const threadIds = new Set([
     ...Object.keys(drafts),
     ...Object.keys(attachments),
+    ...Object.keys(stashes),
     ...entries.map((e) => e.threadId),
   ]);
   // The new-thread composer is not a thread, and is never in the list.
   threadIds.delete(NEW_THREAD);
-  return { draftStore: createDraftStore(drafts), outbox, attachments, threadIds };
+  return {
+    draftStore: createDraftStore(drafts),
+    outbox,
+    attachments,
+    stashStore: createStashStore(stashes),
+    threadIds,
+  };
+}
+
+/** The thread's list without the given files, the same object when none of
+    them is in it. */
+function withoutKeys(
+  all: Record<string, Attachment[]>,
+  threadId: string,
+  files: readonly Attachment[],
+): Record<string, Attachment[]> {
+  const list = all[threadId];
+  if (!list || files.length === 0) return all;
+  const out = new Set(files.map((a) => a.key));
+  const kept = list.filter((a) => !out.has(a.key));
+  return kept.length === list.length ? all : { ...all, [threadId]: kept };
+}
+
+/** Stash entries gone for good: their thumbnails go with them. */
+function revokeEntries(entries: readonly StashEntry[]) {
+  for (const e of entries) {
+    for (const a of e.attachments) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  }
 }
 
 /** The thread's failed sends from before this one, oldest first: what a

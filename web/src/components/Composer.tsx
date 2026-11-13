@@ -5,17 +5,21 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
   type ReactNode,
   type Ref,
 } from "react";
 
+import type { StashEntry } from "~/app/stashStore";
 import { ContextMeter } from "~/components/ContextMeter";
 import type { Attachment } from "~/lib/attachments";
 import type { ArtefactRef } from "~/lib/artefacts";
 import type { PickerFocus } from "~/components/ModelPicker";
 import { isComposing } from "~/lib/ime";
+import { recentPrompts, stepHistory, type HistoryPosition } from "~/lib/promptHistory";
 import { typeInto } from "~/lib/typeInto";
 import { currentPlatform, formatShortcut } from "~/lib/keybindings";
 import type { PickerInstance } from "~/lib/models";
@@ -26,6 +30,8 @@ import { useIsDesktop } from "~/useMediaQuery";
 import { AttachButton } from "./composer/AttachButton";
 import { AttachmentStrip } from "./composer/AttachmentStrip";
 import { CommandMenu } from "./composer/CommandMenu";
+import { caretOnEdge } from "./composer/caretEdge";
+import { ComposerHistoryMenu, MENU_RECENT } from "./composer/ComposerHistoryMenu";
 import { ComposerModelPicker } from "./composer/ComposerModelPicker";
 import { ComposerNotes } from "./composer/ComposerNotes";
 import { DELIVERY_LABEL, deliveryFor, offersChoice } from "./composer/delivery";
@@ -58,6 +64,21 @@ export interface ComposerHandle {
   /** Opens the model picker; "effort" puts focus on the effort control. Already open: moves focus there. */
   openModelPicker: (focus?: PickerFocus) => void;
 }
+
+/** A thread's parked drafts, and what the composer's menu can do with them. */
+export interface ComposerStash {
+  /** Newest first. */
+  entries: readonly StashEntry[];
+  /** Parks the draft's text and ready attachments, emptying the composer;
+      with `textOnly`, the attachments stay. False when there was nothing to
+      park. */
+  save: (textOnly?: boolean) => boolean;
+  /** Puts a parked draft back, parking whatever is in the composer first. */
+  take: (id: string) => StashEntry | undefined;
+  drop: (id: string) => void;
+}
+
+const NO_PROMPTS: readonly string[] = [];
 
 interface ComposerProps {
   ref?: Ref<ComposerHandle>;
@@ -144,6 +165,12 @@ interface ComposerProps {
       names the thread a transcript is for. The new-thread screen has no thread
       yet, so it passes an empty object. */
   dictation?: { thread?: string };
+  /** The prompts sent in this thread, oldest first. ArrowUp in an empty
+      composer walks back through them; the menu lists the latest. */
+  history?: readonly string[];
+  /** The thread's parked drafts. Without it the composer has no menu, for
+      parked drafts or for recent prompts. */
+  stash?: ComposerStash;
 }
 
 const NO_HARNESSES: HarnessMeta[] = [];
@@ -217,6 +244,8 @@ export function Composer({
   tools,
   footer,
   dictation,
+  history = NO_PROMPTS,
+  stash,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -255,13 +284,21 @@ export function Composer({
     [onRunClientAction],
   );
 
+  // How far back ArrowUp has gone through the thread's prompts. It holds only
+  // while the composer says exactly what was recalled: edit it, and it is a
+  // draft like any other, which ArrowUp leaves alone.
+  const [recall, setRecall] = useState<HistoryPosition | null>(null);
+  // A recalled `/review` is not a command being typed: the menu would open on
+  // it and take the next arrow key, stopping the walk through history there.
+  const walking = recall !== null && recall.recalled === draft;
+
   const menu = useComposerMenu({
     draft,
     draftRef,
     changeDraft,
     catalogue,
     textareaRef,
-    disabled,
+    disabled: disabled || walking,
     sendDisabled,
     runClientAction,
     onRunComposerAction,
@@ -300,6 +337,40 @@ export function Composer({
 
   const { focusAt, setCursor } = menu;
   const hasPicker = harnesses.length > 0 && !disabled;
+
+  // Replaces the whole draft. Typed in where it can be, so undo takes it back
+  // out. Without focus it is written instead: focusing would raise a phone's
+  // keyboard over the menu that was just tapped.
+  const replaceDraft = useCallback(
+    (text: string, focus: boolean) => {
+      const el = textareaRef.current;
+      if (focus && el && typeInto(el, 0, el.value.length, text)) return;
+      changeDraft(text);
+      if (focus) focusAt(text.length);
+    },
+    [changeDraft, focusAt],
+  );
+  // Only at the textarea's top or bottom line, wrapped lines included, so the
+  // arrows still move the caret through a recalled prompt of several lines.
+  const stepRecall = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const back = e.key === "ArrowUp";
+    if (!back && e.key !== "ArrowDown") return false;
+    if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey || history.length === 0) return false;
+    const el = e.currentTarget;
+    const step = stepHistory({
+      direction: back ? "back" : "forward",
+      entries: history,
+      position: recall,
+      current: el.value,
+    });
+    if (!step || !caretOnEdge(el, back ? "top" : "bottom")) return false;
+    e.preventDefault();
+    setRecall(step.position);
+    replaceDraft(step.text, true);
+    return true;
+  };
+  const recent = useMemo(() => recentPrompts(history, MENU_RECENT), [history]);
+  const hasReady = attachments.some((a) => a.status === "ready");
   const placeCaret = useCallback(
     (cursor: number, focus: boolean) => {
       // Without focus the caret is left to the browser: placing it would pull
@@ -401,6 +472,7 @@ export function Composer({
         paste.noteKey(e);
         if (isComposing(e)) return;
         if (menu.onKey(e)) return;
+        if (stepRecall(e)) return;
         if (e.key !== "Enter") return;
         // Shift+Enter is the newline; let the textarea handle it.
         if (e.shiftKey) return;
@@ -452,6 +524,36 @@ export function Composer({
           )}
         >
           <AttachButton show={!!onAttachFiles} disabled={disabled} onFiles={attach} />
+          {stash && (
+            <ComposerHistoryMenu
+              disabled={disabled}
+              canStash={!!draft.trim() || hasReady}
+              stashed={stash.entries}
+              recent={recent}
+              onStash={() => void stash.save()}
+              onTake={(id) => {
+                setRecall(null);
+                stash.take(id);
+              }}
+              onDrop={stash.drop}
+              onRecall={(text) => {
+                // Words typed in the composer are parked rather than lost: a
+                // phone has no undo to get them back. A prompt still listed
+                // in this menu is not parked again, and the attachments stay
+                // to go out with the recalled prompt.
+                const current = draftRef.current.trim();
+                if (current && !recent.includes(current)) stash.save(true);
+                setRecall(null);
+                replaceDraft(text, isDesktop);
+              }}
+              // On desktop the next keystroke belongs in the composer: what
+              // to send instead of a stashed draft, or an edit to a recalled
+              // one. A phone stays unfocused, keeping its keyboard down.
+              onPicked={() => {
+                if (isDesktop) focusAt(draftRef.current.length);
+              }}
+            />
+          )}
 
           {showMic ? (
             // Until the recorder's code arrives the row is laid out as if
