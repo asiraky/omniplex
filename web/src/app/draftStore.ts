@@ -12,6 +12,11 @@ export function prependDraft(drafts: Drafts, threadId: string, text: string): Dr
   return { ...drafts, [threadId]: [text, drafts[threadId] ?? ""].filter(Boolean).join(PARAGRAPH) };
 }
 
+/** Words added to a thread's composer after anything already typed. */
+export function appendDraft(drafts: Drafts, threadId: string, text: string): Drafts {
+  return { ...drafts, [threadId]: [drafts[threadId] ?? "", text].filter(Boolean).join(PARAGRAPH) };
+}
+
 /**
  * The composers' half-typed text, per thread, held outside React state.
  *

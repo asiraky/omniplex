@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ThreadMeta } from "~/protocol";
 
 import { LAPSED_REASON } from "./composerStorage";
-import { createDraftStore, useDraft, type DraftStore } from "./draftStore";
+import { appendDraft, createDraftStore, useDraft, type DraftStore } from "./draftStore";
 import { useComposerDrafts } from "./useComposerDrafts";
 
 afterEach(cleanup);
@@ -80,6 +80,23 @@ describe("draft store", () => {
     unsubscribe();
     store.set("a", "hi");
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("appendDraft", () => {
+  it("adds after what is typed, a paragraph apart, touching no other thread", () => {
+    const drafts = { a: "look at this", b: "other" };
+    expect(appendDraft(drafts, "a", "```\nerror\n```")).toEqual({
+      a: "look at this\n\n```\nerror\n```",
+      b: "other",
+    });
+    expect(drafts.a).toBe("look at this");
+  });
+
+  it("adds no separator to an empty composer, nor for nothing added", () => {
+    expect(appendDraft({}, "a", "quoted")).toEqual({ a: "quoted" });
+    expect(appendDraft({ a: "" }, "a", "quoted")).toEqual({ a: "quoted" });
+    expect(appendDraft({ a: "typed" }, "a", "")).toEqual({ a: "typed" });
   });
 });
 
