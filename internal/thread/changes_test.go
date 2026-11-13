@@ -79,7 +79,7 @@ func fileNamed(t *testing.T, files []ChangedFile, path string) ChangedFile {
 
 func TestThreadChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffBranch)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffBranch, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestThreadChangesAggregatesTheWholeWorktreeAgainstItsBase(t *testing.T) {
 
 func TestThreadChangesDefaultsToUncommittedWork(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, "")
+	changes, err := mgr.ThreadChanges(context.Background(), id, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +145,14 @@ func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
 	base, head := strings.TrimSpace(string(baseRaw)), strings.TrimSpace(string(headRaw))
 	fakeGh(t, prJSON(`{"number":7,"state":"OPEN","baseRefName":"main","baseRefOid":"`+base+`","headRefOid":"`+head+`"}`), "", 0)
 
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffPullRequest)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffPullRequest, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(changes.Files) != 1 || changes.Files[0].Path != "keep.txt" {
 		t.Fatalf("PR files include dirty worktree changes: %+v", changes.Files)
 	}
-	if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffPullRequest, base, base); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffPullRequest, "", base, base); err == nil {
 		t.Fatal("a client-supplied range must not replace the attached PR range")
 	}
 	if diff := threadFileDiff(t, mgr, id, "keep.txt", DiffPullRequest); !strings.Contains(diff.Patch, "+four") {
@@ -162,11 +162,11 @@ func TestPullRequestChangesExcludeDirtyWorktree(t *testing.T) {
 
 func threadFileDiff(t *testing.T, mgr *Manager, id, path, mode string) FileDiff {
 	t.Helper()
-	changes, err := mgr.ThreadChanges(context.Background(), id, mode)
+	changes, err := mgr.ThreadChanges(context.Background(), id, mode, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff, err := mgr.ThreadFileDiff(context.Background(), id, path, mode, changes.Base, changes.Head)
+	diff, err := mgr.ThreadFileDiff(context.Background(), id, path, mode, "", changes.Base, changes.Head)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,14 +189,14 @@ func TestThreadFileDiffRendersAPatchForTrackedAndUntrackedFiles(t *testing.T) {
 // be read back through the diff command.
 func TestThreadFileDiffRefusesPathsThatDidNotChange(t *testing.T) {
 	mgr, id := changesFixture(t)
-	changes, err := mgr.ThreadChanges(context.Background(), id, DiffUncommitted)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffUncommitted, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.ThreadFileDiff(context.Background(), id, "../../etc/passwd", DiffUncommitted, changes.Base, changes.Head); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "../../etc/passwd", DiffUncommitted, "", changes.Base, changes.Head); err == nil {
 		t.Fatal("an unrelated path must be refused")
 	}
-	if _, err := mgr.ThreadFileDiff(context.Background(), id, "README", DiffUncommitted, changes.Base, changes.Head); err == nil {
+	if _, err := mgr.ThreadFileDiff(context.Background(), id, "README", DiffUncommitted, "", changes.Base, changes.Head); err == nil {
 		t.Fatal("an unchanged path must be refused")
 	}
 }
@@ -239,11 +239,147 @@ func TestThreadChangesExplainsACheckoutThatIsNotARepository(t *testing.T) {
 	if err := st.CreateThread(context.Background(), store.ThreadMeta{ID: "s2", Cwd: t.TempDir(), Harness: "fake", CreatedAt: now, UpdatedAt: now, Phase: "idle"}); err != nil {
 		t.Fatal(err)
 	}
-	changes, err := mgr.ThreadChanges(context.Background(), "s2", DiffUncommitted)
+	changes, err := mgr.ThreadChanges(context.Background(), "s2", DiffUncommitted, "")
 	if err != nil {
 		t.Fatalf("a plain directory must not be an error: %v", err)
 	}
 	if changes.Warning == "" || len(changes.Files) != 0 {
 		t.Fatalf("expected an explained empty list: %+v", changes)
+	}
+}
+
+// turnFixture brackets one turn with real checkpoints on top of the changes
+// fixture's dirty worktree, then keeps working after the turn ended, so the
+// turn's range has something on either side of it to leave out.
+func turnFixture(t *testing.T) (*Manager, string, string) {
+	t.Helper()
+	mgr, id := changesFixture(t)
+	ctx := context.Background()
+	meta, err := mgr.store.Thread(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const turn = "0b6c1f9e-3d2a-4c55-9a8e-7f00c0ffee01"
+	if _, err := captureCheckpoint(ctx, meta.Cwd, checkpointRef(id, turn, "base")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, meta.Cwd, "keep.txt", "one\ntwo\nthree\nfour\nfive\n")
+	write(t, meta.Cwd, "turn-new.txt", "made\nduring\n")
+	if _, err := captureCheckpoint(ctx, meta.Cwd, checkpointRef(id, turn, "end")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, meta.Cwd, "new.txt", "fresh\nlater\n")
+	write(t, meta.Cwd, "after.txt", "left behind\n")
+	return mgr, id, turn
+}
+
+func TestTurnChangesCoverOnlyWhatHappenedBetweenItsSnapshots(t *testing.T) {
+	mgr, id, turn := turnFixture(t)
+	changes, err := mgr.ThreadChanges(context.Background(), id, DiffTurn, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.Warning != "" {
+		t.Fatalf("unexpected warning: %s", changes.Warning)
+	}
+	if changes.TurnID != turn || changes.Mode != DiffTurn || changes.Base == "" || changes.Head == "" || changes.BaseRef != "" {
+		t.Fatalf("turn range not recorded: %+v", changes)
+	}
+	// Work from before the turn, edits after it, and files left untracked
+	// after it all belong to some other range.
+	if len(changes.Files) != 2 {
+		t.Fatalf("want exactly the turn's two files, got %+v", changes.Files)
+	}
+	if got := fileNamed(t, changes.Files, "keep.txt"); got.Status != "modified" || got.Additions != 1 {
+		t.Fatalf("turn edit mis-measured: %+v", got)
+	}
+	// A file that was untracked when the turn ended is in the end snapshot, so
+	// it is an ordinary addition there, not an untracked worktree file.
+	if got := fileNamed(t, changes.Files, "turn-new.txt"); got.Status != "added" || got.Untracked || got.Additions != 2 {
+		t.Fatalf("turn's new file mis-measured: %+v", got)
+	}
+	if changes.Additions != 3 || changes.Deletions != 0 {
+		t.Fatalf("totals do not add up: %+v", changes)
+	}
+}
+
+func TestTurnFileDiffReadsTheSnapshotRange(t *testing.T) {
+	mgr, id, turn := turnFixture(t)
+	ctx := context.Background()
+	changes, err := mgr.ThreadChanges(ctx, id, DiffTurn, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, changes.Base, changes.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff.Patch, "+five") || strings.Contains(diff.Patch, "+four") {
+		t.Fatalf("patch is not the turn's own edit: %q", diff.Patch)
+	}
+	added, err := mgr.ThreadFileDiff(ctx, id, "turn-new.txt", DiffTurn, turn, changes.Base, changes.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(added.Patch, "+during") {
+		t.Fatalf("new file patch missing its content: %q", added.Patch)
+	}
+
+	for _, path := range []string{"after.txt", "new.txt", "../../etc/passwd"} {
+		if _, err := mgr.ThreadFileDiff(ctx, id, path, DiffTurn, turn, changes.Base, changes.Head); err == nil {
+			t.Fatalf("%s is not part of the turn and must be refused", path)
+		}
+	}
+	if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, changes.Head, changes.Base); err == nil {
+		t.Fatal("a range that is not the turn's must be refused")
+	}
+
+	// The list a card seeds carries no range yet; the snapshots supply it.
+	seeded, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, turn, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded.Patch != diff.Patch {
+		t.Fatalf("a seeded read must name the same range: %q", seeded.Patch)
+	}
+}
+
+func TestTurnChangesExplainMissingSnapshots(t *testing.T) {
+	mgr, id, turn := turnFixture(t)
+	ctx := context.Background()
+	meta, err := mgr.store.Thread(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A turn that was cut short has a start but no end.
+	if _, err := captureCheckpoint(ctx, meta.Cwd, checkpointRef(id, "half", "base")); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, meta.Cwd, "update-ref", "-d", checkpointRef(id, turn, "base"))
+	gitRun(t, meta.Cwd, "update-ref", "-d", checkpointRef(id, turn, "end"))
+
+	for _, missing := range []string{turn, "half", "never-measured"} {
+		changes, err := mgr.ThreadChanges(ctx, id, DiffTurn, missing)
+		if err != nil {
+			t.Fatalf("%s: missing snapshots must not be an error: %v", missing, err)
+		}
+		if changes.Warning == "" || len(changes.Files) != 0 || changes.Head != "" {
+			t.Fatalf("%s: expected an explained empty list: %+v", missing, changes)
+		}
+		if _, err := mgr.ThreadFileDiff(ctx, id, "keep.txt", DiffTurn, missing, "", ""); err == nil {
+			t.Fatalf("%s: a file diff with no turn range must be refused", missing)
+		}
+	}
+}
+
+func TestTurnChangesRefuseAnythingButATurnID(t *testing.T) {
+	mgr, id, _ := turnFixture(t)
+	for _, bad := range []string{"", "../base", "t1/base", "a:b", "HEAD~1", "a b", "x^{commit}"} {
+		if _, err := mgr.ThreadChanges(context.Background(), id, DiffTurn, bad); err == nil {
+			t.Fatalf("%q must be refused as a turn id", bad)
+		}
+		if _, err := mgr.ThreadFileDiff(context.Background(), id, "keep.txt", DiffTurn, bad, "", ""); err == nil {
+			t.Fatalf("%q must be refused as a turn id for a file diff", bad)
+		}
 	}
 }

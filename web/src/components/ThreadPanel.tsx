@@ -46,8 +46,8 @@ export function ThreadPanel({
   // Git is the source of truth for what a thread changed: it catches the
   // formatter and the codemod as well as the edits we parsed out of tool calls.
   const loadChanges = useCallback(
-    async (comparison: DiffComparison) => {
-      const res = await clientRef.current!.command("thread_changes", { threadId, comparison });
+    async (comparison: DiffComparison, turnId?: string) => {
+      const res = await clientRef.current!.command("thread_changes", { threadId, comparison, turnId });
       return res.changes as ThreadChanges;
     },
     [clientRef, threadId],
@@ -59,6 +59,7 @@ export function ThreadPanel({
         threadId,
         path,
         comparison: changes.mode,
+        turnId: changes.turnId,
         base: changes.base,
         head: changes.head,
       });
