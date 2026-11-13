@@ -2,11 +2,18 @@
 import { act, cleanup, render, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { uploadStaged, type Attachment } from "~/lib/attachments";
 import type { ThreadMeta } from "~/protocol";
 
 import { LAPSED_REASON } from "./composerStorage";
 import { appendDraft, createDraftStore, useDraft, type DraftStore } from "./draftStore";
 import { useComposerDrafts } from "./useComposerDrafts";
+
+// Uploads answer when a test says so, not over the network.
+vi.mock("~/lib/attachments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/lib/attachments")>()),
+  uploadStaged: vi.fn(),
+}));
 
 afterEach(cleanup);
 beforeEach(() => localStorage.clear());
@@ -198,5 +205,32 @@ describe("useComposerDrafts", () => {
     hook.rerender({ threads: [thread("a")] });
     expect(hook.result.current.getDraft("gone")).toBe("");
     expect(hook.result.current.getDraft("new-thread")).toBe("first message");
+  });
+
+  it("stages dropped files on the thread named, not the open one, and uploads each there", async () => {
+    const answers: ((patch: Partial<Attachment>) => void)[] = [];
+    vi.mocked(uploadStaged).mockImplementation(
+      () => new Promise((resolve) => answers.push(resolve)),
+    );
+    const hook = renderHook(() => useComposerDrafts([thread("a"), thread("b")]));
+    const one = new File(["1"], "one.txt", { type: "text/plain" });
+    const two = new File(["2"], "two.txt", { type: "text/plain" });
+
+    act(() => hook.result.current.attachFiles("b", [one, two]));
+
+    const chips = () => hook.result.current.attachments.b ?? [];
+    expect(chips().map((c) => [c.name, c.status])).toEqual([
+      ["one.txt", "uploading"],
+      ["two.txt", "uploading"],
+    ]);
+    expect(hook.result.current.attachments.a ?? []).toEqual([]);
+    expect(vi.mocked(uploadStaged).mock.calls.map(([id, file]) => [id, file])).toEqual([
+      ["b", one],
+      ["b", two],
+    ]);
+
+    await act(async () => answers[1]({ status: "ready", artefactId: "art-2" }));
+    expect(chips().map((c) => c.status)).toEqual(["uploading", "ready"]);
+    expect(chips()[1].artefactId).toBe("art-2");
   });
 });

@@ -316,6 +316,82 @@ describe("Sidebar", () => {
     });
   });
 
+  describe("dropping files on a row", () => {
+    const one = new File(["a"], "one.png", { type: "image/png" });
+    const two = new File(["b"], "two.pdf", { type: "application/pdf" });
+    const files = (list: File[]) => ({
+      dataTransfer: { types: ["Files"], files: list, dropEffect: "" },
+    });
+    // The pointer is over the row's title; the events bubble to the row.
+    const over = (id: string) => screen.getByText(`Thread ${id}`);
+    const dropOn = (id: string, init: object) => {
+      fireEvent.dragEnter(over(id), init);
+      fireEvent.dragOver(over(id), init);
+      return fireEvent.drop(over(id), init);
+    };
+
+    it("hands every dropped file to the row's own thread", () => {
+      const props = renderSidebar();
+      const kept = dropOn("b", files([one, two]));
+      expect(kept).toBe(false);
+      expect(props.onDropFiles).toHaveBeenCalledTimes(1);
+      expect(props.onDropFiles).toHaveBeenCalledWith("b", [one, two]);
+    });
+
+    it("leaves a drag carrying no files to the browser", () => {
+      const props = renderSidebar();
+      const kept = dropOn("b", { dataTransfer: { types: ["text/plain"], files: [], dropEffect: "" } });
+      expect(kept).toBe(true);
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+    });
+
+    it("hands nothing on when the drop carries no files after all", () => {
+      const props = renderSidebar();
+      dropOn("b", files([]));
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+    });
+
+    it.each(["closed", "cleaning", "provision_failed", "cleanup_failed"])(
+      "refuses files on a %s thread, but keeps the browser from opening them",
+      (phase) => {
+        const props = renderSidebar({
+          threads: [thread("a"), thread("b", { phase: phase as ThreadMeta["phase"] })],
+        });
+        const init = files([one]);
+        expect(fireEvent.dragOver(over("b"), init)).toBe(false);
+        expect(init.dataTransfer.dropEffect).toBe("none");
+        expect(fireEvent.drop(over("b"), init)).toBe(false);
+        expect(props.onDropFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it("still takes files on a thread whose workspace is being prepared", () => {
+      const props = renderSidebar({
+        threads: [thread("a"), thread("b", { phase: "provisioning" })],
+      });
+      dropOn("b", files([one]));
+      expect(props.onDropFiles).toHaveBeenCalledWith("b", [one]);
+    });
+
+    it("refuses files while the rows are being reordered", async () => {
+      const props = renderSidebar({
+        threads: [thread("a", { position: 0 }), thread("b", { position: 1 })],
+      });
+      fireEvent.pointerDown(screen.getByRole("button", { name: /^Filter threads/ }), {
+        button: 0,
+        ctrlKey: false,
+      });
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Reorder threads" }));
+
+      expect(dropOn("b", files([one]))).toBe(false);
+      expect(props.onDropFiles).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      dropOn("b", files([one]));
+      expect(props.onDropFiles).toHaveBeenCalledWith("b", [one]);
+    });
+  });
+
   describe("hover card", () => {
     const card = () => document.querySelector("[data-slot=thread-hover-card]");
     const row = (id: string) => screen.getByRole("button", { name: new RegExp(`^Thread ${id}`) });
