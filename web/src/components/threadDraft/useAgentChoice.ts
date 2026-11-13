@@ -15,7 +15,7 @@ import type { RememberedChoices } from "./useRememberedChoices";
 /** A project's starting choices for one harness, from its settings. */
 type Seed = NonNullable<ProjectDefaults["harnesses"]>[string];
 
-interface Sources {
+export interface AgentSources {
   project: Project | undefined;
   remembered: ProjectPrefs | undefined;
   harnesses: HarnessMeta[];
@@ -23,7 +23,7 @@ interface Sources {
 }
 
 /** The harness and account the thread runs under. */
-function resolveHarness({ project, remembered, harnesses, userConfig }: Sources) {
+function resolveHarness({ project, remembered, harnesses, userConfig }: AgentSources) {
   const instances = pickerInstances(harnesses);
   const fallbackHarness =
     (harnesses.some((h) => h.id === remembered?.harness) ? remembered?.harness : "") ||
@@ -44,7 +44,7 @@ function resolveHarness({ project, remembered, harnesses, userConfig }: Sources)
 /** The model, its context window, its effort and whether it runs Fast. */
 function resolveModel(
   instance: PickerInstance | undefined,
-  chosen: HarnessPrefs | undefined,
+  chosen: Partial<HarnessPrefs> | undefined,
   harnessDefaults: Seed | undefined,
   userConfig: UserConfig | null,
 ) {
@@ -117,7 +117,7 @@ function resolveMode(
  * on what this project last used, then the project's seed, then the defaults
  * from settings, and every pick is remembered for the project at once.
  */
-export function useAgentChoice(sources: Sources, { patch }: Pick<RememberedChoices, "patch">) {
+export function useAgentChoice(sources: AgentSources, { patch }: Pick<RememberedChoices, "patch">) {
   const { project, remembered, harnesses, userConfig } = sources;
   const { instances, instance, harnessId } = resolveHarness(sources);
   const selected = harnesses.find((h) => h.id === harnessId);
@@ -173,6 +173,47 @@ export function useAgentChoice(sources: Sources, { patch }: Pick<RememberedChoic
       const target = instances.find((i) => i.id === id);
       if (target) selectModel({ harness: target.driver, instance: id, model });
     },
+  };
+}
+
+/** What a thread is created with to run one model, and what to call it. */
+export interface CompareAgent {
+  harness: string;
+  instance: string;
+  /** As sent: with the "[1m]" window tag when the 1M window is on. */
+  model: string;
+  mode: string;
+  effort: string;
+  serviceTier: string;
+  /** The model's name in the catalogue, for titles and toasts. */
+  label: string;
+  /** The account's name, to tell the same model on two accounts apart. */
+  account: string;
+}
+
+/**
+ * The agent for a model added to compare: the model picked, and the rest the
+ * way the draft would resolve it on switching to that model's harness — the
+ * effort, mode, 1M window and Fast this project last used there.
+ */
+export function compareAgent(sources: AgentSources, pick: ModelSelection): CompareAgent {
+  const { project, remembered, harnesses, userConfig } = sources;
+  const instance = pickerInstances(harnesses).find((i) => i.id === pick.instance);
+  const harnessId = instance?.driver ?? pick.harness;
+  const chosen = remembered?.byHarness[harnessId];
+  const harnessDefaults = project?.defaults.harnesses?.[harnessId];
+  const models = resolveModel(instance, { ...chosen, model: pick.model }, harnessDefaults, userConfig);
+  const selected = harnesses.find((h) => h.id === harnessId);
+  const { mode } = resolveMode(selected, chosen, harnessDefaults, userConfig);
+  return {
+    harness: harnessId,
+    instance: instance?.id ?? pick.instance,
+    model: models.effectiveModel,
+    mode,
+    effort: models.effort,
+    serviceTier: models.serviceTier,
+    label: instance?.models.find((m) => m.id === models.model)?.label || pick.model,
+    account: instance?.name ?? "",
   };
 }
 

@@ -7,7 +7,7 @@ import { useAddToChat, useAppendToChat } from "./app/useAddToChat";
 import { useAppKeybindings } from "./app/useAppKeybindings";
 import { useBackgroundAlerts } from "./app/useBackgroundAlerts";
 import { useComposerDrafts } from "./app/useComposerDrafts";
-import { useNewThread } from "./app/useNewThread";
+import { useCompareThreads, useNewThread } from "./app/useNewThread";
 import { usePalette } from "./app/usePalette";
 import { usePaletteActions } from "./app/usePaletteActions";
 import { usePanel } from "./app/usePanel";
@@ -87,6 +87,7 @@ export function App() {
     openSchedule: schedule.openNew,
     sendWhenUploaded: commands.sendWhenUploaded,
   });
+  const compare = useCompareThreads({ wire, store, select });
   const setThreadUnread = useReadState(wire, activeId);
   const projectActions = useProjectActions(wire);
   const auth = useProviderAuth(wire);
@@ -445,6 +446,7 @@ export function App() {
               status={wire.status}
               drafts={store.draftStore}
               onStart={create}
+              onCompare={compare}
               attachments={store.attachments[NEW_THREAD] ?? []}
               onAttachFiles={store.attachToDraft}
               onRemoveAttachment={(key) => store.removeAttachment(NEW_THREAD, key)}

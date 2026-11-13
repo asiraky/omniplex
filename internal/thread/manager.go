@@ -1021,7 +1021,10 @@ func (m *Manager) Create(ctx context.Context, harness, instance, cwd, model, mod
 
 type CreateProjectOptions struct {
 	ProjectID string
-	Harness   string
+	// Title is the name the client chose up front; empty leaves it to the
+	// first prompt.
+	Title   string
+	Harness string
 	// Instance names the provider instance; empty means the harness's default.
 	Instance string
 	Model    string
@@ -1216,7 +1219,7 @@ func (m *Manager) CreateProject(ctx context.Context, o CreateProjectOptions) (*A
 		}
 	}
 
-	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned}
+	meta := store.ThreadMeta{ID: uuid.NewString(), Cwd: cwd, Harness: reg.inst.Driver, ProviderInstance: reg.inst.ID, CreatedAt: proto.NowMillis(), UpdatedAt: proto.NowMillis(), Title: normaliseTitle(o.Title), Phase: "creating", ProjectID: p.ID, FolderID: f.ID, Branch: o.Branch, Model: o.Model, Mode: o.Mode, Effort: o.Effort, ServiceTier: o.ServiceTier, WorkspaceMode: o.Workspace, BaseRef: o.BaseRef, ProvisionScript: relHook(f.Path, provision), DeprovisionScript: relHook(f.Path, deprovision), Pinned: o.Pinned}
 	if err := m.store.CreateThread(ctx, meta); err != nil {
 		return nil, err
 	}
