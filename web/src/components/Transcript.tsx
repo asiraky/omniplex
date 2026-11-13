@@ -287,14 +287,16 @@ function useFindJump(
 }
 
 // Counts the times the timeline lost turns: a rewind cutting it back. Live
-// events and older pages only ever add turns, and the list is the whole
-// thread's, not the window's.
-function useTimelineCuts(turnCount: number): number {
-  const [seen, setSeen] = useState(turnCount);
+// events and older pages only ever append turns, and the list is the whole
+// thread's, not the window's, so the cut shows as the newest turn seen being
+// gone — whatever arrived since, as after a reconnect's catch-up.
+function useTimelineCuts(turns: readonly { id: string }[]): number {
+  const last = turns[turns.length - 1]?.id;
+  const [seen, setSeen] = useState(last);
   const [cuts, setCuts] = useState(0);
-  if (turnCount !== seen) {
-    setSeen(turnCount);
-    if (turnCount < seen) setCuts((c) => c + 1);
+  if (last !== seen) {
+    setSeen(last);
+    if (seen !== undefined && !turns.some((t) => t.id === seen)) setCuts((c) => c + 1);
   }
   return cuts;
 }
@@ -371,7 +373,7 @@ function TranscriptBody({
   const hasOlder = (state.itemsBefore ?? 0) > 0;
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
   const { reveal, onJump, onClear } = useFindJump(scrollerRef, state, find, release);
-  const cuts = useTimelineCuts(state.turns.length);
+  const cuts = useTimelineCuts(state.turns);
 
   const {
     activity,

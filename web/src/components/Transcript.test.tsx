@@ -1281,6 +1281,10 @@ describe("find in thread", () => {
     frame({ ...later, turns: [...later.turns, { id: "t3", prompt: "more", done: true, stopReason: "end_turn" }] });
     frame(finished());
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+    // Cut back and built on again while away: as many turns, but not the same.
+    frame({ ...later, turns: [...finished().turns, { id: "t9", prompt: "redo", done: true, stopReason: "end_turn" }] });
+    frame({ ...later, turns: [...finished().turns, { id: "t10", prompt: "redo", done: true, stopReason: "end_turn" }] });
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(3));
   });
 
   it("closes on Escape from the step buttons too", async () => {

@@ -47,7 +47,10 @@ export function ThreadFindBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const onJumpRef = useLatest(onJump);
   const onClearRef = useLatest(onClear);
-  const [jumpFailed, setJumpFailed] = useState(false);
+  // The selection whose jump failed, by `step`: any later selection, a new
+  // query or a re-run that finds nothing is no longer that failure.
+  const [failedStep, setFailedStep] = useState(-1);
+  const jumpFailed = f.current !== null && failedStep === f.step;
 
   // Focus goes back where it was when the bar closes, not to the page body.
   useEffect(() => {
@@ -70,7 +73,6 @@ export function ThreadFindBar({
   // The painted occurrences belong to the query that found them.
   const typed = (q: string) => {
     onClear();
-    setJumpFailed(false);
     f.setQuery(q);
   };
   useEffect(() => () => onClearRef.current(), [onClearRef]);
@@ -83,7 +85,6 @@ export function ThreadFindBar({
     if (cuts === openedAt.current) return;
     openedAt.current = cuts;
     onClearRef.current();
-    setJumpFailed(false);
     rerun.current();
   }, [cuts, rerun, onClearRef]);
 
@@ -93,9 +94,9 @@ export function ThreadFindBar({
   const query = f.query;
   useEffect(() => {
     if (!current) return;
-    setJumpFailed(false);
+    const step = f.step;
     let live = true;
-    void onJumpRef.current(current, query).then((ok) => live && !ok && setJumpFailed(true));
+    void onJumpRef.current(current, query).then((ok) => live && !ok && setFailedStep(step));
     return () => {
       live = false;
     };
