@@ -5,7 +5,8 @@ import type { ThreadState } from "~/protocol";
  * plan or the pending prompts: those tick far more often than the
  * conversation does, and the parts that show them select them on their own.
  * The schedules are in, for the continuation a usage limit arms and the turns
- * it sent. Not seq either, which every frame bumps.
+ * it sent. The questions waiting on the user are in, for the working line to
+ * say so. Not seq either, which every frame bumps.
  */
 export type TranscriptState = Pick<
   ThreadState,
@@ -19,6 +20,8 @@ export type TranscriptState = Pick<
   | "queuedPrompts"
   | "artefacts"
   | "scheduledPrompts"
+  | "pendingPermissions"
+  | "pendingElicitations"
 >;
 
 /**
@@ -40,6 +43,8 @@ export function transcriptState(s: ThreadState | null): TranscriptState | null {
       queuedPrompts: s.queuedPrompts,
       artefacts: s.artefacts,
       scheduledPrompts: s.scheduledPrompts,
+      pendingPermissions: s.pendingPermissions,
+      pendingElicitations: s.pendingElicitations,
     }
   );
 }

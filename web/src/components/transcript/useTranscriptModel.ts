@@ -3,6 +3,7 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import type { Item, QueuedPrompt } from "~/protocol";
 import { buildRows, reuseRows, type Row } from "~/rows";
 
+import { liveActivity } from "./liveActivity";
 import type { Recovered } from "./Message";
 import type { TranscriptState } from "./transcriptState";
 
@@ -56,7 +57,10 @@ function newestBesidesNotify(items: Item[]): Item | undefined {
 
 /** What the transcript derives from the thread's state before it draws a row. */
 export function useTranscriptModel(
-  state: Pick<TranscriptState, "phase" | "closed" | "items" | "turns" | "scheduledPrompts">,
+  state: Pick<
+    TranscriptState,
+    "phase" | "closed" | "items" | "turns" | "scheduledPrompts" | "pendingPermissions" | "pendingElicitations"
+  >,
 ) {
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
@@ -86,6 +90,13 @@ export function useTranscriptModel(
     const turn = turnId ? state.turns.find((t) => t.id === turnId) : undefined;
     return turn?.done ? undefined : newest.id;
   }, [ownItems, state.turns]);
+
+  // What the working line at the tail says, while a turn runs.
+  const asking = (state.pendingPermissions?.length ?? 0) + (state.pendingElicitations?.length ?? 0) > 0;
+  const activity = useMemo(
+    () => liveActivity(ownItems, state.turns, state.phase, asking),
+    [ownItems, state.turns, state.phase, asking],
+  );
 
   // Sending a prompt should not leave it jammed against the composer with the
   // answer arriving in the sliver below. The newest prompt is lifted to the top
@@ -152,6 +163,7 @@ export function useTranscriptModel(
   const { continuation, heldFor } = limitHold(state);
 
   return {
+    activity,
     continuation,
     heldFor,
     empty,

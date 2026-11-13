@@ -23,7 +23,7 @@ import type { Item, Turn } from "./protocol";
 // A harness can open a message block it never fills — a thought whose text the
 // model kept to itself. There is nothing to render and nothing to hide, so it
 // is dropped rather than left to print a blank line.
-function isEmptyMessage(item: Item) {
+export function isEmptyMessage(item: Item) {
   // A prompt that is nothing but pictures has no text and is not empty: the
   // images are the message.
   return item.kind === "message" && (item.text ?? "").trim() === "" && !item.images?.length;
@@ -64,7 +64,7 @@ function latestPerArtefact(items: Item[]): Item[] {
   return [...last.values()];
 }
 
-function isSpawn(item: Item) {
+export function isSpawn(item: Item) {
   return item.kind === "tool" && item.toolKind === "agent";
 }
 
@@ -266,36 +266,57 @@ export function rowTurnID(row: Row): string | undefined {
   return row.items[row.items.length - 1]?.turnId;
 }
 
-// One phrase per tool kind, in the order they read best in a summary. These
-// count calls, not files: one call can touch several paths and five calls can
-// touch one, so "Edited 3 files" would be a claim this cannot make. The Changes
-// panel is where the honest per-file count lives.
-const SUMMARY: { kind: string; one: string; many: (n: number) => string }[] = [
-  { kind: "read", one: "1 read", many: (n) => `${n} reads` },
-  { kind: "edit", one: "1 edit", many: (n) => `${n} edits` },
-  { kind: "delete", one: "1 delete", many: (n) => `${n} deletes` },
-  { kind: "move", one: "1 move", many: (n) => `${n} moves` },
-  { kind: "search", one: "1 search", many: (n) => `${n} searches` },
-  { kind: "execute", one: "1 command", many: (n) => `${n} commands` },
-  { kind: "fetch", one: "1 fetch", many: (n) => `${n} fetches` },
-  { kind: "think", one: "1 thought", many: (n) => `${n} thoughts` },
-  { kind: "agent", one: "1 agent", many: (n) => `${n} agents` },
-  { kind: "other", one: "1 other call", many: (n) => `${n} other calls` },
+// A settled run reads as a sentence: "Ran 2 commands and made 3 edits". Kinds
+// group under the verb that fits them, clauses and kinds in the order below.
+// These count calls, not files: one call can touch several paths and five calls
+// can touch one, so "Edited 3 files" would be a claim this cannot make — hence
+// "made 3 edits". The Changes panel is where the honest per-file count lives.
+const count = (one: string, many: string) => (n: number) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);
+
+const SUMMARY: { verb: string; kinds: { kind: string; phrase: (n: number) => string }[] }[] = [
+  {
+    verb: "ran",
+    kinds: [
+      { kind: "execute", phrase: count("command", "commands") },
+      { kind: "search", phrase: count("search", "searches") },
+    ],
+  },
+  {
+    verb: "made",
+    kinds: [
+      { kind: "read", phrase: count("read", "reads") },
+      { kind: "edit", phrase: count("edit", "edits") },
+      { kind: "delete", phrase: count("delete", "deletes") },
+      { kind: "move", phrase: count("move", "moves") },
+      { kind: "fetch", phrase: count("fetch", "fetches") },
+      { kind: "other", phrase: count("other call", "other calls") },
+    ],
+  },
+  { verb: "thought", kinds: [{ kind: "think", phrase: times }] },
+  { verb: "started", kinds: [{ kind: "agent", phrase: count("agent", "agents") }] },
 ];
+const KNOWN = new Set(SUMMARY.flatMap((c) => c.kinds.map((k) => k.kind)));
+
+// "a", "a and b", "a, b and c".
+function list(parts: string[]): string {
+  return parts.length < 2 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
 
 export function summarise(items: Item[]): string {
   const counts = new Map<string, number>();
   for (const it of items) {
     if (it.kind !== "tool") continue;
-    const kind = it.toolKind && SUMMARY.some((s) => s.kind === it.toolKind) ? it.toolKind : "other";
+    const kind = it.toolKind && KNOWN.has(it.toolKind) ? it.toolKind : "other";
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
-  return SUMMARY.filter((s) => counts.has(s.kind))
-    .map((s) => {
-      const n = counts.get(s.kind)!;
-      return n === 1 ? s.one : s.many(n);
-    })
-    .join(" · ");
+  const clauses = SUMMARY.flatMap(({ verb, kinds }) => {
+    const parts = kinds.filter((k) => counts.has(k.kind)).map((k) => k.phrase(counts.get(k.kind)!));
+    if (parts.length === 0) return [];
+    return [`${verb} ${list(parts)}`];
+  });
+  const sentence = list(clauses);
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
 
 // "Worked for 34s", measured by the event log's own clock. A turn without

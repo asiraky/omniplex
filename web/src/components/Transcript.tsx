@@ -38,6 +38,7 @@ import { useOlderPages } from "./transcript/useOlderPages";
 import { usePromptAnchor } from "./transcript/usePromptAnchor";
 import { useScrollMemory } from "./transcript/useScrollMemory";
 import { useTranscriptModel } from "./transcript/useTranscriptModel";
+import { WorkingLine } from "./transcript/WorkingLine";
 import { WorkspaceCard } from "./transcript/WorkspaceCard";
 
 // Only a turn that died shows it, which most loads of a thread never see, so
@@ -232,6 +233,7 @@ function TranscriptBody({
   const sentinelRef = useOlderPages(scrollerRef, contentRef, state, hasOlder, onLoadOlder);
 
   const {
+    activity,
     empty,
     liveAgentId,
     lastPromptID,
@@ -335,17 +337,12 @@ function TranscriptBody({
                 recovered={item?.turnId ? recoveredTurns.get(item.turnId) : undefined}
                 onCardSignIn={onCardSignIn}
                 describeSettings={describeSettings}
+                previewed={item !== undefined && item === activity?.thought}
               />
             );
           })}
 
-          {state.phase === "turn" &&
-            liveAgentId === undefined &&
-            !rows.some((r) => r.kind === "run" && r.live) && (
-              <div className="text-muted-foreground flex items-center gap-2 text-sm">
-                <Spinner className="text-primary size-3.5" /> thinking…
-              </div>
-            )}
+          {activity && <WorkingLine activity={activity} />}
           {/* Shown whatever else the tail is doing: a retry or a compaction is
               exactly when a live tool line or half-streamed text looks hung. */}
           <TurnStatusLine status={turnStatus} running={state.phase === "turn"} />

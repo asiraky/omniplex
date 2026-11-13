@@ -957,8 +957,8 @@ describe("a held queue", () => {
 });
 
 describe("a turn gone quiet", () => {
-  // A turn whose tail is a tool call still running: the case where the
-  // thinking line stands aside, and a retry would otherwise look hung.
+  // A turn whose tail is a tool call still running: the case where a retry
+  // would otherwise look hung.
   const running = (phase: "turn" | "idle"): any => ({
     ...state("working"),
     phase,
@@ -984,13 +984,90 @@ describe("a turn gone quiet", () => {
 
   it("says why while a tool run is live", () => {
     view("turn");
-    expect(screen.queryByText("thinking…")).toBeNull();
     expect(screen.getByText("Compacting context…").closest("[role=status]")).not.toBeNull();
   });
 
   it("says nothing once the thread is idle", () => {
     view("idle");
     expect(screen.queryByText("Compacting context…")).toBeNull();
+  });
+});
+
+describe("the working line", () => {
+  const prompt = { id: "u1", kind: "message", role: "user", contentKind: "text", text: "go", turnId: "t1", receivedAt: 1 };
+  const thought = (text: string) => ({ id: "th1", kind: "message", role: "agent", contentKind: "thought", text, turnId: "t1" });
+  const running = (items: any[], phase = "turn"): any => ({
+    ...state("unused"),
+    phase,
+    items,
+    turns: [{ id: "t1", done: phase !== "turn", startedAt: 100_000, finishedAt: phase === "turn" ? undefined : 160_000 }],
+  });
+  const view = (s: any) =>
+    attach(
+      s,
+      <Transcript
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={() => {}}
+        onFinish={() => {}}
+      />,
+    );
+  const line = () => document.querySelector("[data-working-line]") as HTMLElement | null;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("times the running turn, and keeps ticking", () => {
+    vi.useFakeTimers({ now: 112_400 });
+    view(running([prompt]));
+    expect(line()?.textContent).toBe("Thinking·12s");
+    act(() => vi.advanceTimersByTime(50_000));
+    expect(line()?.textContent).toBe("Thinking·1m 2s");
+  });
+
+  it("says working while a call runs", () => {
+    view(running([prompt, { id: "x1", kind: "tool", toolKind: "execute", status: "in_progress", title: "npm test", turnId: "t1" }]));
+    expect(line()?.textContent).toMatch(/^Working·/);
+  });
+
+  it("previews reasoning at the tail, and keeps it off a phone", () => {
+    view(running([prompt, thought("First.\n\n**Reading the router**\n\nIt routes by path.")]));
+    expect(line()?.textContent).toContain("Reading the router");
+    expect(screen.getByText("It routes by path.").closest("[data-previewed]")).toBeTruthy();
+  });
+
+  it("says it is waiting while a permission is up", () => {
+    const call = { id: "x1", kind: "tool", toolKind: "execute", status: "pending", title: "rm -rf build", turnId: "t1" };
+    view({ ...running([prompt, call]), pendingPermissions: [{ requestId: "r1", toolCallId: "x1", toolName: "Bash", title: "rm", options: [] }] });
+    expect(line()?.textContent).toMatch(/^Waiting for you·/);
+  });
+
+  it("names a call still running once the agent writes past it", () => {
+    const call = { id: "x1", kind: "tool", toolKind: "execute", status: "in_progress", title: "npm run build", turnId: "t1" };
+    const text = { id: "m1", kind: "message", role: "agent", contentKind: "text", text: "While that builds", turnId: "t1" };
+    view(running([prompt, call, text]));
+    expect(line()?.textContent).toMatch(/^Working·.+·npm run build$/);
+  });
+
+  it("draws the reasoning in full once the agent moves past it", () => {
+    const { frame } = view(running([prompt, thought("It routes by path.")]));
+    frame(
+      running([
+        prompt,
+        thought("It routes by path."),
+        { id: "m1", kind: "message", role: "agent", contentKind: "text", text: "Fixed.", turnId: "t1" },
+      ]),
+    );
+    expect(screen.getByText("It routes by path.").closest("[data-previewed]")).toBeNull();
+    expect(line()?.textContent).toMatch(/^Working·/);
+  });
+
+  it("is gone once the turn ends", () => {
+    view(running([prompt, thought("It routes by path.")], "idle"));
+    expect(line()).toBeNull();
   });
 });
 
