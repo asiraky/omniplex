@@ -61,7 +61,7 @@ type sizes struct{ decoded, wire int }
 // set, noted beside each. Raising one is a decision: say in the PR why the
 // payload has to be bigger.
 var (
-	welcomeBudget  = sizes{decoded: 59_000, wire: 10_000}  // 51.2 KB, 8.7 KB
+	welcomeBudget  = sizes{decoded: 78_000, wire: 11_000}  // 67.9 KB, 9.6 KB
 	snapshotBudget = sizes{decoded: 211_000, wire: 52_000} // 183.6 KB, 45.2 KB
 	pageBudget     = sizes{decoded: 189_000, wire: 49_000} // 164.0 KB, 42.6 KB
 )
@@ -240,26 +240,33 @@ func seed(ctx context.Context, st *store.Store) error {
 	}
 
 	r := rand.New(rand.NewPCG(379, 379))
+	harnesses := []string{"claude", "codex", "pi"}
 	for i := range sidebarThreads {
-		p := i % fixtureProjects
+		p, h := i%fixtureProjects, harnesses[i%len(harnesses)]
+		branch := fmt.Sprintf("issue/%d-%s", 100+i, strings.ReplaceAll(sentence(r, 3), " ", "-"))
 		if err := st.CreateThread(ctx, store.ThreadMeta{
-			ID:        fmt.Sprintf("thread-%03d", i),
-			Cwd:       filepath.Join(home, fmt.Sprintf("project-%d", p)),
-			Harness:   []string{"claudecode", "codex", "pi"}[i%3],
-			Title:     sentence(r, 4+r.IntN(6)),
-			ProjectID: fmt.Sprintf("project-%d", p),
-			FolderID:  fmt.Sprintf("project-%d-main", p),
-			Branch:    fmt.Sprintf("issue/%d-%s", 100+i, strings.ReplaceAll(sentence(r, 3), " ", "-")),
-			Model:     "claude-opus-5-5",
-			Phase:     "idle",
-			CreatedAt: epoch + int64(i)*60_000, UpdatedAt: epoch + int64(i)*60_000,
+			ID:               fmt.Sprintf("thread-%03d", i),
+			Cwd:              filepath.Join(home, fmt.Sprintf("project-%d", p), ".worktrees", strings.ReplaceAll(branch, "/", "-")),
+			Harness:          h,
+			ProviderInstance: h,
+			Title:            sentence(r, 4+r.IntN(6)),
+			ProjectID:        fmt.Sprintf("project-%d", p),
+			FolderID:         fmt.Sprintf("project-%d-main", p),
+			Branch:           branch,
+			BaseRef:          "main",
+			WorkspaceMode:    "managed",
+			Model:            "claude-opus-5-5",
+			Mode:             "default",
+			Effort:           "high",
+			Phase:            "idle",
+			CreatedAt:        epoch + int64(i)*60_000, UpdatedAt: epoch + int64(i)*60_000,
 		}); err != nil {
 			return err
 		}
 	}
 
 	if err := st.CreateThread(ctx, store.ThreadMeta{
-		ID: fixtureThread, Cwd: filepath.Join(home, "project-0"), Harness: "claudecode",
+		ID: fixtureThread, Cwd: filepath.Join(home, "project-0"), Harness: "claude", ProviderInstance: "claude",
 		Title: "The fixture thread", ProjectID: "project-0", FolderID: "project-0-main",
 		Model: "claude-opus-5-5", Phase: "idle", CreatedAt: epoch, UpdatedAt: epoch,
 	}); err != nil {
@@ -287,9 +294,10 @@ func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 	input := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 	var ems []proto.Emission
 	add := func(typ string, p any) { ems = append(ems, proto.Emit(typ, p)) }
-	tool := func(id, kind, title string, in any, out []proto.ToolContent) {
-		add(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: tid, ToolCallID: id, Kind: kind, Title: title, Status: proto.StatusInProgress, RawInput: input(in)})
-		add(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: id, Status: proto.StatusCompleted, Content: out})
+	// tool is one finished call; parent names the subagent call that made it.
+	tool := func(id, parent, kind, title string, in any, out []proto.ToolContent) {
+		add(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: tid, ToolCallID: id, ParentToolCallID: parent, Kind: kind, Title: title, Status: proto.StatusInProgress, RawInput: input(in)})
+		add(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: id, ParentToolCallID: parent, Status: proto.StatusCompleted, Content: out})
 	}
 
 	add(proto.TurnStarted, proto.TurnStartedPayload{TurnID: tid, Prompt: paragraph(r, 2)})
@@ -300,19 +308,19 @@ func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 	if turn%5 == 0 {
 		readLines = 2000
 	}
-	tool(read, proto.KindRead, "Read "+path, map[string]any{"file_path": path},
+	tool(read, "", proto.KindRead, "Read "+path, map[string]any{"file_path": path},
 		[]proto.ToolContent{{Type: "text", Text: code(r, readLines)}})
 	search := call(2)
-	tool(search, proto.KindSearch, "Grep "+word(r), map[string]any{"pattern": word(r), "path": "internal"},
+	tool(search, "", proto.KindSearch, "Grep "+word(r), map[string]any{"pattern": word(r), "path": "internal"},
 		[]proto.ToolContent{{Type: "text", Text: lines(r, 15, func() string {
 			return fmt.Sprintf("internal/%s/%s.go:%d: %s", word(r), word(r), r.IntN(900), sentence(r, 8))
 		})}})
 	edit := call(3)
 	before, after := code(r, 6), code(r, 9)
-	tool(edit, proto.KindEdit, "Edit "+path, map[string]any{"file_path": path, "old_string": before, "new_string": after},
+	tool(edit, "", proto.KindEdit, "Edit "+path, map[string]any{"file_path": path, "old_string": before, "new_string": after},
 		[]proto.ToolContent{{Type: "diff", Path: path, Old: before, New: after}})
-	run := call(4)
-	tool(run, proto.KindExecute, "go test ./internal/...", map[string]any{"command": "go test ./internal/...", "description": sentence(r, 6)},
+	test := call(4)
+	tool(test, "", proto.KindExecute, "go test ./internal/...", map[string]any{"command": "go test ./internal/...", "description": sentence(r, 6)},
 		[]proto.ToolContent{{Type: "text", Text: lines(r, 40, func() string {
 			return fmt.Sprintf("ok  \tgithub.com/asiraky/omniplex/internal/%s\t%d.%03ds", word(r), r.IntN(9), r.IntN(1000))
 		})}})
@@ -323,11 +331,8 @@ func turnEvents(r *rand.Rand, turn int) []proto.Emission {
 			RawInput: input(map[string]any{"description": sentence(r, 4), "prompt": paragraph(r, 6), "subagent_type": "Explore"})})
 		add(proto.JobStarted, proto.JobPayload{JobID: job, ToolCallID: task, Kind: proto.JobAgent, TaskType: "local_agent", Name: sentence(r, 4), Role: "Explore", Status: proto.JobRunning})
 		for n := range 6 {
-			child := fmt.Sprintf("%s_child_%d", task, n)
-			add(proto.ToolCallStarted, proto.ToolCallStartedPayload{TurnID: tid, ToolCallID: child, Kind: proto.KindRead, Title: "Read " + path, Status: proto.StatusInProgress,
-				RawInput: input(map[string]any{"file_path": path}), ParentToolCallID: task})
-			add(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: child, Status: proto.StatusCompleted, ParentToolCallID: task,
-				Content: []proto.ToolContent{{Type: "text", Text: code(r, 60)}}})
+			tool(fmt.Sprintf("%s_child_%d", task, n), task, proto.KindRead, "Read "+path, map[string]any{"file_path": path},
+				[]proto.ToolContent{{Type: "text", Text: code(r, 60)}})
 		}
 		add(proto.JobFinished, proto.JobPayload{JobID: job, ToolCallID: task, Status: proto.JobCompleted})
 		add(proto.ToolCallUpdated, proto.ToolCallUpdatedPayload{ToolCallID: task, Status: proto.StatusCompleted,
