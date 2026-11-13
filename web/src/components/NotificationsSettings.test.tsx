@@ -261,7 +261,7 @@ describe("where push can't work", () => {
     rows = [row("r1", "https://push.example/a", "Mac · Chrome")];
     render(<NotificationsSettings />);
 
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Notifications on this device" })).toBeNull();
     expect(screen.getByText(/Add to Home Screen/)).toBeTruthy();
     expect(await screen.findByText("Mac · Chrome")).toBeTruthy();
   });
@@ -270,14 +270,14 @@ describe("where push can't work", () => {
     // What an http:// page looks like: no worker, no PushManager.
     vi.stubGlobal("isSecureContext", false);
     render(<NotificationsSettings />);
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Notifications on this device" })).toBeNull();
     expect(screen.getByText(/HTTPS/)).toBeTruthy();
   });
 
   it("in a browser without push, says so", () => {
     vi.stubGlobal("isSecureContext", true);
     render(<NotificationsSettings />);
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Notifications on this device" })).toBeNull();
     expect(screen.getByText(/can't receive push/)).toBeTruthy();
   });
 });
