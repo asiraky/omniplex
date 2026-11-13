@@ -216,8 +216,8 @@ const screenshot: ToolContent = { type: "image", url: SRC, mediaType: "image/png
 // The text a rendered diff row shows: gutter numbers, the +/- mark, the line.
 // The renderer loads in its own chunk, so wait for its first row.
 async function diffRows(container: HTMLElement) {
-  await waitFor(() => expect(container.querySelector(".font-mono > div")).not.toBeNull(), { timeout: 5000 });
-  return Array.from(container.querySelectorAll(".font-mono > div")).map((r) => r.textContent ?? "");
+  await waitFor(() => expect(container.querySelector("[data-diff-row]")).not.toBeNull(), { timeout: 5000 });
+  return Array.from(container.querySelectorAll("[data-diff-row]")).map((r) => r.textContent ?? "");
 }
 
 /** The viewer loads in its own chunk, which a cold, busy test run can take
