@@ -1216,7 +1216,7 @@ describe("find in thread", () => {
     // Folded: the turn's middle is not drawn.
     expect(screen.queryByText("Looking for the needle")).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Find in thread"), { target: { value: "needle" } });
+    fireEvent.change(await screen.findByLabelText("Find in thread"), { target: { value: "needle" } });
 
     await waitFor(() => expect(screen.getByText("Looking for the needle")).toBeTruthy());
     expect(screen.getByRole("button", { expanded: true })).toBeTruthy();
@@ -1244,7 +1244,7 @@ describe("find in thread", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("Find in thread"), { target: { value: "needle" } });
+    fireEvent.change(await screen.findByLabelText("Find in thread"), { target: { value: "needle" } });
     await waitFor(() => expect(loadTo).toHaveBeenCalledWith(0));
     expect(scrolledTo()).not.toContain("old");
 
@@ -1262,22 +1262,22 @@ describe("find in thread", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("Find in thread"), { target: { value: "needle" } });
+    fireEvent.change(await screen.findByLabelText("Find in thread"), { target: { value: "needle" } });
     await waitFor(() => expect(screen.getByText("Couldn't load match")).toBeTruthy());
     expect(scrolledTo()).not.toContain("old");
   });
 
-  it("closes on Escape from the step buttons too", () => {
+  it("closes on Escape from the step buttons too", async () => {
     const close = vi.fn();
     attach(finished(), <Transcript {...view().props} find={controls({ close })} />);
-    fireEvent.keyDown(screen.getByRole("button", { name: "Close find" }), { key: "Escape" });
+    fireEvent.keyDown(await screen.findByRole("button", { name: "Close find" }), { key: "Escape" });
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("closes on Escape", () => {
+  it("closes on Escape", async () => {
     const close = vi.fn();
     attach(finished(), <Transcript {...view().props} find={controls({ close })} />);
-    fireEvent.keyDown(screen.getByLabelText("Find in thread"), { key: "Escape" });
+    fireEvent.keyDown(await screen.findByLabelText("Find in thread"), { key: "Escape" });
     expect(close).toHaveBeenCalled();
   });
 

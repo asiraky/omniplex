@@ -1,4 +1,4 @@
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, XIcon } from "lucide-react";
 import {
   lazy,
   memo,
@@ -17,6 +17,7 @@ import { IconButton } from "~/components/IconButton";
 import { Spinner } from "~/components/ui/spinner";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
+import { chunk } from "~/lib/chunk";
 import type { ThreadFindControls, ThreadMatch } from "~/lib/threadFind";
 import { cn } from "~/lib/utils";
 import type {
@@ -30,11 +31,11 @@ import type {
 } from "~/protocol";
 import { rowKey, rowTurnID } from "~/rows";
 import { useAutoScroll } from "~/useAutoScroll";
+import { useChunk, useIdlePrefetch } from "~/useChunk";
 import { useLatest } from "~/useLatest";
 
 import type { OpenArtefact } from "./transcript/Attachments";
 import { EmptyTranscript } from "./transcript/EmptyTranscript";
-import { ThreadFindBar } from "./transcript/FindBar";
 import {
   clearHighlight,
   findItem,
@@ -72,6 +73,27 @@ const InterruptedCard = lazy(() =>
     () => ({ default: CardUnavailable }),
   ),
 );
+
+// The find bar opens on demand, so its code stays out of the initial bundle.
+// It is fetched once the page settles, so opening it mounts the field at once
+// (the phone keyboard only comes up for a field focused straight away).
+const findBar = chunk(() => import("./transcript/FindBar").then((m) => m.ThreadFindBar));
+
+function FindBarSlot(props: ComponentProps<typeof import("./transcript/FindBar").ThreadFindBar>) {
+  useIdlePrefetch(findBar);
+  const { loaded: Bar, failed } = useChunk(findBar, props.controls.open);
+  if (!props.controls.open) return null;
+  if (Bar) return <Bar {...props} />;
+  if (!failed) return null;
+  return (
+    <div className="bg-background flex shrink-0 items-center gap-1 border-b px-2 py-1 md:px-3">
+      <p className="text-destructive flex-1 text-[13px]">Find didn't load. Reload to try again.</p>
+      <IconButton label="Close find" onClick={props.controls.close}>
+        <XIcon />
+      </IconButton>
+    </div>
+  );
+}
 
 // Room reserved beneath the transcript's tail: the overlay's measured height
 // (`--composer-h`, published by App from a ResizeObserver) plus a headroom band
@@ -359,7 +381,7 @@ function TranscriptBody({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {find?.open && <ThreadFindBar controls={find} onJump={onJump} onClear={onClear} />}
+      {find && <FindBarSlot controls={find} onJump={onJump} onClear={onClear} />}
       <FindRevealProvider value={reveal}>
         <div
           ref={scrollerRef}
