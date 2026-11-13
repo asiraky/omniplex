@@ -7,8 +7,10 @@
 // a phone reads: the welcome frame (the sidebar), a thread's snapshot, and the
 // page of older items above it. Each is measured decoded, which is what the
 // phone parses and keeps, and compressed, which is what crosses the network.
-// No harness adapters are installed, so the welcome frame's harness list is
-// empty: what it holds depends on the machine.
+// The real drivers are registered with no binaries and no accounts, so the
+// welcome frame carries what every install sends about its harnesses (their
+// metadata, fallback models, permission modes and settings schemas) and none
+// of what a live harness reports, which depends on the machine.
 package main
 
 import (
@@ -29,6 +31,9 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/asiraky/omniplex/internal/adapter/claudecode"
+	"github.com/asiraky/omniplex/internal/adapter/codexapp"
+	"github.com/asiraky/omniplex/internal/adapter/piapp"
 	"github.com/asiraky/omniplex/internal/auth"
 	"github.com/asiraky/omniplex/internal/project"
 	"github.com/asiraky/omniplex/internal/projection"
@@ -56,7 +61,7 @@ type sizes struct{ decoded, wire int }
 // set, noted beside each. Raising one is a decision: say in the PR why the
 // payload has to be bigger.
 var (
-	welcomeBudget  = sizes{decoded: 53_000, wire: 8_000}   // 46.2 KB, 6.9 KB
+	welcomeBudget  = sizes{decoded: 59_000, wire: 10_000}  // 51.2 KB, 8.7 KB
 	snapshotBudget = sizes{decoded: 211_000, wire: 52_000} // 183.6 KB, 45.2 KB
 	pageBudget     = sizes{decoded: 189_000, wire: 49_000} // 164.0 KB, 42.6 KB
 )
@@ -90,7 +95,9 @@ func run() error {
 		return fmt.Errorf("seed: %w", err)
 	}
 
-	mgr := thread.NewManager(st, func(string, ...any) {})
+	const nowhere = "/nonexistent/wirebudget"
+	mgr := thread.NewManager(st, func(string, ...any) {},
+		claudecode.New(nowhere), codexapp.New(nowhere), piapp.New(nowhere))
 	defer mgr.Shutdown()
 	srv := server.New(server.Options{Manager: mgr, Store: st, Guard: auth.New(st, true, auth.DefaultPort)})
 	ts := httptest.NewServer(srv.Handler()) // loopback is trusted: no pairing
