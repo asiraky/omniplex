@@ -111,6 +111,14 @@ interface SidebarProps {
   onSetUnread: (threadId: string, unread: boolean) => void;
   /** Gives a thread the title the user typed. */
   onRename: (threadId: string, title: string) => void;
+  /** Copies the thread's /thread/<id> link. */
+  onCopyLink: (threadId: string) => void;
+  /**
+   * Whether Back on a phone closes the drawer. With nothing selected the
+   * drawer is the landing screen and there is nothing behind it, so Back has
+   * to leave it alone and do whatever Back did before.
+   */
+  backDismiss: boolean;
   /**
    * Moves a thread to a new place in the user's order. `threads` must already
    * be in that order, and must show the move at once: the row the user just
@@ -208,6 +216,7 @@ function ThreadList({
   onSetPinned,
   onSetUnread,
   onRename,
+  onCopyLink,
   onReorder,
   reordering,
   showJumpHints,
@@ -222,6 +231,7 @@ function ThreadList({
   | "onSetPinned"
   | "onSetUnread"
   | "onRename"
+  | "onCopyLink"
   | "onReorder"
 > & {
   flow: DeleteFlow;
@@ -297,6 +307,7 @@ function ThreadList({
       onSetPinned={onSetPinned}
       onSetUnread={onSetUnread}
       onRename={onRename}
+      onCopyLink={onCopyLink}
       onDelete={ask}
       jumpHint={jumps.get(s.id)}
     />
@@ -474,6 +485,7 @@ function SidebarPanel({
           onSetPinned={props.onSetPinned}
           onSetUnread={props.onSetUnread}
           onRename={props.onRename}
+          onCopyLink={props.onCopyLink}
           onReorder={props.onReorder}
           reordering={reordering}
           showJumpHints={props.showJumpHints}
@@ -563,7 +575,7 @@ export const Sidebar = memo(function Sidebar(props: SidebarProps) {
   if (!isDesktop) {
     return (
       <>
-        <Sheet open={props.open} onOpenChange={props.onOpenChange}>
+        <Sheet open={props.open} onOpenChange={props.onOpenChange} backDismiss={props.backDismiss}>
           <SheetContent
             // A dialog to Radix, but the app's own chrome to the user: the
             // shortcuts keep working while it is open.

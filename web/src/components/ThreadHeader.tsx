@@ -2,6 +2,7 @@ import {
   CheckIcon,
   CopyIcon,
   EllipsisIcon,
+  LinkIcon,
   PanelLeftIcon,
   PanelRightIcon,
   PencilIcon,
@@ -47,10 +48,14 @@ type Actions = {
   meta: ThreadMeta | undefined;
   onSetPinned: (threadId: string, pinned: boolean) => void;
   copy: TranscriptCopy;
+  link: ThreadLinkCopy;
   panel: PanelControls;
   /** The Skills page on its MCP tab, which asks this thread's session. */
   onShowMcp: () => void;
 };
+
+/** Copying a thread's /thread/<id> link, and whether one was just copied. */
+export type ThreadLinkCopy = { copied: boolean; copy: (threadId: string) => void };
 
 /** The bar above the content column: the thread's title and its actions. */
 export function ThreadHeader({
@@ -64,6 +69,7 @@ export function ThreadHeader({
   onSetPinned,
   harness,
   copy,
+  link,
   panel,
   onShowMcp,
 }: {
@@ -77,6 +83,7 @@ export function ThreadHeader({
   onSetPinned: (threadId: string, pinned: boolean) => void;
   harness: ThreadHarness;
   copy: TranscriptCopy;
+  link: ThreadLinkCopy;
   panel: PanelControls;
   onShowMcp: () => void;
 }) {
@@ -86,7 +93,7 @@ export function ThreadHeader({
   // The attached thread, as far as the bar shows it: a frame that changes
   // neither field leaves the header alone.
   const thread = useThread(useThreadStore(), headerFields, shallow);
-  const actions = thread && { activeId, meta, onSetPinned, copy, panel, onShowMcp };
+  const actions = thread && { activeId, meta, onSetPinned, copy, link, panel, onShowMcp };
   return (
     <header className="px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2 md:px-3">
       <div className="flex items-center gap-2">
@@ -220,7 +227,7 @@ function threadPin({ activeId, meta, onSetPinned }: Actions) {
 }
 
 function DesktopActions({ actions }: { actions: Actions }) {
-  const { copy, panel } = actions;
+  const { activeId, copy, link, panel } = actions;
   const pin = threadPin(actions);
   return (
     <>
@@ -242,6 +249,15 @@ function DesktopActions({ actions }: { actions: Actions }) {
         {copy.copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
       </IconButton>
 
+      {activeId && (
+        <IconButton
+          label={link.copied ? "Thread link copied" : "Copy thread link"}
+          onClick={() => link.copy(activeId)}
+        >
+          {link.copied ? <CheckIcon className="text-success" /> : <LinkIcon />}
+        </IconButton>
+      )}
+
       <IconButton
         label={panel.open ? "Hide the panel" : "Show the panel"}
         shortcut="togglePanel"
@@ -259,7 +275,7 @@ function DesktopActions({ actions }: { actions: Actions }) {
 // A phone has no room for a row of buttons, so the same actions sit in one
 // overflow menu.
 function PhoneActions({ actions }: { actions: Actions }) {
-  const { copy, panel, onShowMcp } = actions;
+  const { activeId, copy, link, panel, onShowMcp } = actions;
   const pin = threadPin(actions);
   return (
     <DropdownMenu>
@@ -288,6 +304,12 @@ function PhoneActions({ actions }: { actions: Actions }) {
           {copy.copied ? "Transcript copied" : "Copy transcript"}
           <ItemShortcut command="copyTranscript" />
         </DropdownMenuItem>
+        {activeId && (
+          <DropdownMenuItem onSelect={() => link.copy(activeId)}>
+            {link.copied ? <CheckIcon className="text-success" /> : <LinkIcon />}
+            {link.copied ? "Thread link copied" : "Copy thread link"}
+          </DropdownMenuItem>
+        )}
         {pin.toggle && (
           <>
             <DropdownMenuSeparator />

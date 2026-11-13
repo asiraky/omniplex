@@ -39,9 +39,11 @@ import { ThreadDraft } from "./components/ThreadDraft";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { ThreadPanel } from "./components/ThreadPanel";
 import { ThreadView } from "./components/ThreadView";
+import { useCopy } from "./lib/clipboard";
 import { isElectronApp } from "./lib/keybindings";
 import { loadLastProject } from "./lib/lastProject";
 import { skillsScope } from "./lib/skills";
+import { threadUrl } from "./lib/threadLinks";
 import { cn } from "./lib/utils";
 import { useIsDesktop } from "./useMediaQuery";
 import type { ThreadState } from "./protocol";
@@ -87,6 +89,10 @@ export function App() {
   const projectActions = useProjectActions(wire);
   const auth = useProviderAuth(wire);
   const copy = useTranscriptCopy(wire);
+  // One copier for every "Copy thread link": the header, the palette and the
+  // row menu. Kept stable for the sidebar's memo; `copy` already is.
+  const { copied: linkCopied, copy: copyLink } = useCopy();
+  const copyThreadLink = useCallback((id: string) => void copyLink(threadUrl(id)), [copyLink]);
 
   const meta = useMemo(() => threads.find((s) => s.id === activeId), [threads, activeId]);
   const harness = useThreadHarness(wire, activeId, meta);
@@ -204,6 +210,7 @@ export function App() {
     onSetPinned: setPinned,
     onSetUnread: setThreadUnread,
     onCopyTranscript: copyTranscript,
+    onCopyLink: copyThreadLink,
     onDelete: deletion.deleteFlow.ask,
     onTogglePanel: panel.toggle,
     onOpenDiff: () => panel.openDiff(),
@@ -348,7 +355,11 @@ export function App() {
           onNewProject={screens.openNewProject}
           onSetUnread={setThreadUnread}
           onRename={renameThread}
+          onCopyLink={copyThreadLink}
           onReorder={moveThread}
+          // Only with a thread or a draft behind the drawer: otherwise it is
+          // the landing screen, and Back closing it would show nothing.
+          backDismiss={!!activeId || !!nav.creating}
         />
 
         <DeleteThreadDialog flow={deletion.deleteFlow} />
@@ -372,6 +383,7 @@ export function App() {
             onSetPinned={setPinned}
             harness={harness}
             copy={copy}
+            link={{ copied: linkCopied, copy: copyThreadLink }}
             panel={panel}
             onShowMcp={() => screens.setTools({ tab: "mcp" })}
           />
