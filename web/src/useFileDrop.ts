@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 
 import { dragHasFiles, filesFrom } from "~/lib/attachments";
 
@@ -71,4 +71,9 @@ export function guardFileDrops(target: Window) {
     target.removeEventListener("dragover", refuseOver);
     target.removeEventListener("drop", refuseDrop);
   };
+}
+
+/** `guardFileDrops` on the window for as long as the app is up. */
+export function useGuardFileDrops() {
+  useEffect(() => guardFileDrops(window), []);
 }

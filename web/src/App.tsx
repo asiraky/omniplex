@@ -46,6 +46,7 @@ import { loadLastProject } from "./lib/lastProject";
 import { skillsScope } from "./lib/skills";
 import { threadUrl } from "./lib/threadLinks";
 import { cn } from "./lib/utils";
+import { useGuardFileDrops } from "./useFileDrop";
 import { useIsDesktop } from "./useMediaQuery";
 import type { ThreadState } from "./protocol";
 import { useModHeld } from "./useShortcuts";
@@ -142,6 +143,8 @@ export function App() {
   const projectView = useProjectView(projects);
   const palette = usePalette();
   usePrefetchOverlays();
+  // A file dropped where nothing takes it would otherwise replace the app.
+  useGuardFileDrops();
   const showJumpHints = useModHeld(isElectronApp());
   // One composer at a time, the thread's or the draft's, behind one handle.
   const { composerRef } = recents;
