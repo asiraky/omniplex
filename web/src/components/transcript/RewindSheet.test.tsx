@@ -51,14 +51,13 @@ describe("the edit-from-here button", () => {
   });
 
   it("is only on turn openers the thread can be cut back to", () => {
-    // t2 has no anchor, so neither it nor t3 (whose kept turn would be t2)
-    // can be rewound to; q1 was steered into t3.
+    // t2 has no anchor, so it cannot be rewound to; q1 was steered into t3.
     const store = createThreadStore(thread([turn("t1"), turn("t2", false), turn("t3"), turn("t4")]));
     prompts(store, [prompt("t1"), prompt("t2"), prompt("t3"), prompt("t3", "prompt:q1"), prompt("t4")], vi.fn());
     const offered = screen
       .getAllByRole("button", { name: "Edit from here" })
       .map((b) => b.closest("[data-msg-id]")?.getAttribute("data-msg-id"));
-    expect(offered).toEqual(["prompt:t1", "prompt:t4"]);
+    expect(offered).toEqual(["prompt:t1", "prompt:t3", "prompt:t4"]);
   });
 
   it("goes while a turn runs and comes back when it is over", () => {
