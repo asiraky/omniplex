@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
@@ -96,26 +96,30 @@ function Sign({ kind }: { kind: DiffLine["kind"] }) {
  * `highlight` marks every case-insensitive occurrence of a literal string,
  * for find-in-diff.
  *
- * With `onCommentLine`, a click or tap on a code line selects it and opens a
+ * With `comments`, a click or tap on a code line selects it and opens a
  * comment box under it; "Add to chat" hands the line, its side and the text
  * up. The whole row is the target, so a phone needs no horizontal precision,
  * and a mis-tap is fixed by tapping the right line: the box moves and keeps
  * what was typed. A click that ends a text selection is left alone, so code
- * can still be selected and copied. Without the prop the diff is read-only.
+ * can still be selected and copied. Without `comments` the diff is read-only.
+ *
+ * The comment being written is the owner's state, not the diff's: the owner
+ * unmounts the diff while it re-reads it, which happens whenever the agent
+ * finishes a turn, and the half-typed comment has to outlive that.
  */
 export function Diff({
   patch,
   wrap = false,
   layout = "unified",
   highlight,
-  onCommentLine,
+  comments,
   className,
 }: {
   patch: string;
   wrap?: boolean;
   layout?: "unified" | "split";
   highlight?: string;
-  onCommentLine?: (target: CommentTarget, comment: string) => void;
+  comments?: LineComments;
   className?: string;
 }) {
   const lines = useMemo(() => parsePatch(patch), [patch]);
@@ -125,16 +129,37 @@ export function Diff({
       wrap={wrap}
       layout={layout}
       highlight={highlight}
-      onCommentLine={onCommentLine}
+      comments={comments}
       className={className}
     />
   );
 }
 
+/** Which version's numbering a commented line is cited in. */
+export type DiffSide = "old" | "new";
+
 /** A commented line, and which version's numbering it belongs to. */
 export interface CommentTarget {
   line: DiffLine;
-  side: "old" | "new";
+  side: DiffSide;
+}
+
+/**
+ * The comment being written: the row it sits under (a key the diff gives its
+ * rows, so a re-read that drops the row stops showing the box), the side the
+ * line is cited from, and the text so far.
+ */
+export interface CommentDraft {
+  row: string;
+  side: DiffSide;
+  text: string;
+}
+
+/** Commenting on lines: the draft, held by the owner, and what to do with a finished comment. */
+export interface LineComments {
+  draft: CommentDraft | null;
+  onDraft: (draft: CommentDraft | null) => void;
+  onAdd: (target: CommentTarget, comment: string) => void;
 }
 
 /** The same view for lines that never were a patch: two versions compared in the browser. */
@@ -143,51 +168,47 @@ export function DiffLines({
   wrap = false,
   layout = "unified",
   highlight,
-  onCommentLine,
+  comments: owner,
   className,
 }: {
   lines: DiffLine[];
   wrap?: boolean;
   layout?: "unified" | "split";
   highlight?: string;
-  onCommentLine?: (target: CommentTarget, comment: string) => void;
+  comments?: LineComments;
   className?: string;
 }) {
   const re = useMemo(() => matcher(highlight), [highlight]);
-  // The selection is held by row key, not by line, so a re-read that drops
-  // the row simply stops rendering the box.
-  const [picked, setPicked] = useState<Picked | null>(null);
-  const [draft, setDraft] = useState("");
 
   if (lines.length === 0) {
     return <p className="text-muted-foreground px-3 py-2 text-[12px]">No textual changes.</p>;
   }
 
-  const close = () => {
-    setPicked(null);
-    setDraft("");
-  };
-  const comments: Comments | undefined = onCommentLine && {
-    picked,
+  const comments: Comments | undefined = owner && {
+    picked: owner.draft,
     pick: (next) => {
       // The click that finishes a drag-select is not a tap on the line.
       if (window.getSelection()?.toString()) return;
-      setPicked(next);
+      owner.onDraft({ ...next, text: owner.draft?.text ?? "" });
     },
-    box: (target, className) => (
-      <CommentBox
-        draft={draft}
-        onDraft={setDraft}
-        onAdd={() => {
-          const comment = draft.trim();
-          if (!comment) return;
-          onCommentLine(target, comment);
-          close();
-        }}
-        onCancel={close}
-        className={className}
-      />
-    ),
+    box: (target, className) => {
+      const draft = owner.draft;
+      if (!draft) return null;
+      return (
+        <CommentBox
+          draft={draft.text}
+          onDraft={(text) => owner.onDraft({ ...draft, text })}
+          onAdd={() => {
+            const comment = draft.text.trim();
+            if (!comment) return;
+            owner.onAdd(target, comment);
+            owner.onDraft(null);
+          }}
+          onCancel={() => owner.onDraft(null)}
+          className={className}
+        />
+      );
+    },
   };
 
   return layout === "split" ? (
@@ -198,11 +219,9 @@ export function DiffLines({
 }
 
 /** Which row is selected for a comment; in split view, which cell of it. */
-interface Picked {
-  key: string;
-  side: "old" | "new";
-}
+type Picked = Omit<CommentDraft, "text">;
 
+/** Line selection and the box, as the two layouts use them. */
 interface Comments {
   picked: Picked | null;
   pick: (picked: Picked) => void;
@@ -244,13 +263,13 @@ function Unified({ lines, wrap, re, comments, className }: BodyProps) {
         {rows.map(({ key, item: line }) => {
           const side = line.kind === "del" ? "old" : "new";
           const target = comments && isCode(line);
-          const selected = target && comments?.picked?.key === key;
+          const selected = target && comments?.picked?.row === key;
           return (
             <Fragment key={key}>
               <div
                 data-diff-row
                 data-selected={selected || undefined}
-                onClick={target ? () => comments?.pick({ key, side }) : undefined}
+                onClick={target ? () => comments?.pick({ row: key, side }) : undefined}
                 className={cn(
                   "flex",
                   wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre",
@@ -305,7 +324,7 @@ function Split({ lines, re, comments, className }: Omit<BodyProps, "wrap">) {
     >
       {rows.map(({ key, item: row }) => {
         if (row.kind === "pair") {
-          const picked = comments?.picked?.key === key ? comments.picked : null;
+          const picked = comments?.picked?.row === key ? comments.picked : null;
           const line = picked?.side === "old" ? row.left : picked?.side === "new" ? row.right : undefined;
           const cell = (side: "left" | "right", l?: DiffLine) => {
             const which = side === "left" ? "old" : "new";
@@ -315,7 +334,7 @@ function Split({ lines, re, comments, className }: Omit<BodyProps, "wrap">) {
                 side={side}
                 re={re}
                 selected={picked?.side === which}
-                onPick={comments && l ? () => comments.pick({ key, side: which }) : undefined}
+                onPick={comments && l ? () => comments.pick({ row: key, side: which }) : undefined}
               />
             );
           };
@@ -384,8 +403,9 @@ function Cell({
 }
 
 /**
- * The box under a selected line. It sets its own type: the diff around it is
- * 11px monospace, and a textarea under 16px makes iOS zoom the page on focus.
+ * The box under a selected line, in the UI's own type rather than the diff's
+ * 11px monospace. The Textarea is 16px on a phone, where anything smaller
+ * makes iOS zoom the page on focus.
  */
 function CommentBox({
   draft,

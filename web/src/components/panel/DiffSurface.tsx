@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { Diff } from "~/components/Diff";
+import { type CommentDraft, Diff, type LineComments } from "~/components/Diff";
 import { IconButton } from "~/components/IconButton";
 import { DiffScopeSelect, type CommitRange } from "~/components/panel/DiffScopeSelect";
 import { DiffFindBar, DiffToolbar, type DiffToggle } from "~/components/panel/DiffToolbar";
@@ -23,7 +23,6 @@ import {
   useDiffSplit,
   useDiffWrap,
 } from "~/lib/diffPrefs";
-import type { DiffLine } from "~/lib/patch";
 import { reviewComment } from "~/lib/reviewComment";
 import { isTestPath } from "~/lib/testPath";
 import { toast } from "~/lib/toast";
@@ -96,6 +95,8 @@ function FileRow({
   layout,
   highlight,
   onToggle,
+  comment,
+  onComment,
   onAddComment,
 }: {
   file: ChangedFile;
@@ -108,21 +109,26 @@ function FileRow({
   layout: "unified" | "split";
   highlight?: string;
   onToggle: () => void;
+  /** This file's comment in progress. */
+  comment: CommentDraft | null;
+  onComment: (draft: CommentDraft | null) => void;
   onAddComment?: (block: string) => void;
 }) {
   const slash = file.path.lastIndexOf("/");
   const dir = slash === -1 ? "" : file.path.slice(0, slash + 1);
   const name = slash === -1 ? file.path : file.path.slice(slash + 1);
 
-  // An old-side number is a line of the file under its old name, so a renamed
-  // file's removed lines cite that name.
-  const commentLine = onAddComment
-    ? ({ line, side }: { line: DiffLine; side: "old" | "new" }, comment: string) => {
-        const path = side === "old" ? (file.oldPath ?? file.path) : file.path;
-        onAddComment(reviewComment(path, line, side, comment));
-        toast.success("Added to the composer");
-      }
-    : undefined;
+  const comments: LineComments | undefined = onAddComment && {
+    draft: comment,
+    onDraft: onComment,
+    onAdd: ({ line, side }, text) => {
+      // An old-side number is a line of the file under its old name, so a
+      // renamed file's removed lines cite that name.
+      const path = side === "old" ? (file.oldPath ?? file.path) : file.path;
+      onAddComment(reviewComment(path, line, side, text));
+      toast.success("Added to the composer");
+    },
+  };
 
   return (
     <div ref={rowRef} className="border-b last:border-b-0">
@@ -177,7 +183,7 @@ function FileRow({
                     wrap={wrap}
                     layout={layout}
                     highlight={highlight}
-                    onCommentLine={commentLine}
+                    comments={comments}
                   />
                   {diff.truncated && (
                     <p className="text-muted-foreground px-3 py-2 text-[11px] italic">
@@ -345,6 +351,12 @@ export function DiffSurface({
     if (!expanded || diffs[expanded] || !listed.some((f) => f.path === expanded)) return;
     readDiff(expanded);
   }, [expanded, diffs, listed, readDiff]);
+
+  // ---- the comment being written ----
+  // Held here rather than in the diff, which unmounts while it is re-read: at
+  // the end of every turn, or when an option changes. One at a time, with the
+  // file it is on, so it is back under its line when that file is reopened.
+  const [comment, setComment] = useState<{ path: string; draft: CommentDraft } | null>(null);
 
   // ---- find in diff ----
   const [findOpen, setFindOpen] = useState(false);
@@ -655,6 +667,8 @@ export function DiffSurface({
             layout={layout}
             highlight={finding ? q : undefined}
             onToggle={() => toggle(f.path)}
+            comment={comment?.path === f.path ? comment.draft : null}
+            onComment={(draft) => setComment(draft && { path: f.path, draft })}
             onAddComment={onAddComment}
           />
         ))}

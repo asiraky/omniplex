@@ -693,6 +693,12 @@ export function Panel(props: PanelProps) {
           // The panel header carries its own close button, aligned with the
           // rest of the row.
           showCloseButton={false}
+          // Escape in a diff line's comment box cancels the comment. Radix
+          // hears it first, and closing the sheet as well would unmount the
+          // diff the comment was for.
+          onEscapeKeyDown={(e) => {
+            if (e.target instanceof Element && e.target.closest("[data-diff-comment]")) e.preventDefault();
+          }}
           // Radix otherwise focuses the first control inside, which pops its
           // tooltip open on a touch screen and leaves it there. Focus still
           // has to enter the panel, so it lands on the panel itself.

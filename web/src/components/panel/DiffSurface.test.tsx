@@ -44,6 +44,9 @@ function diffOf(path: string, text = `line in ${path}`): FileDiff {
 
 const never = () => new Promise<never>(() => {});
 
+const { toast } = vi.hoisted(() => ({ toast: { success: vi.fn() } }));
+vi.mock("~/lib/toast", () => ({ toast }));
+
 type Props = ComponentProps<typeof DiffSurface>;
 
 function surface(overrides: Partial<Props> = {}) {
@@ -78,6 +81,7 @@ async function openDiffRow(): Promise<HTMLElement> {
 }
 
 beforeEach(() => {
+  toast.success.mockClear();
   localStorage.clear();
   forgetDiffPlaces();
   Element.prototype.scrollIntoView = vi.fn();
@@ -93,7 +97,8 @@ describe("DiffSurface wrap toggle", () => {
     expect(line.className).toContain("whitespace-pre");
     expect(line.className).not.toContain("whitespace-pre-wrap");
     // Without this the line spills out of a container-width box and cannot be scrolled to.
-    expect(line.className).toContain("w-max");
+    // The rows share one block that wide, so every row's tint reaches the far edge.
+    expect(line.parentElement?.className).toContain("w-max");
     expect(toggle().getAttribute("aria-pressed")).toBe("false");
   });
 
@@ -491,5 +496,64 @@ describe("DiffSurface place memory", () => {
     renderSurface({ changes: LIST, reveal: { path: "src/a.ts", nonce: 1 } });
     expect(row(/a\.ts/).getAttribute("aria-expanded")).toBe("true");
     expect(row(/b\.ts/).getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
+describe("DiffSurface line comments", () => {
+  const RENAMED: ThreadChanges = {
+    root: "/wt",
+    mode: "branch",
+    additions: 1,
+    deletions: 1,
+    files: [{ path: "web/src/new.ts", oldPath: "web/src/old.ts", status: "renamed", additions: 1, deletions: 1 }],
+  };
+  const RENAMED_DIFF: FileDiff = {
+    path: "web/src/new.ts",
+    status: "renamed",
+    patch: "@@ -3 +3 @@\n-was here\n+is here\n",
+  };
+  const comment = (text: string) => {
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment on this line" }), { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  };
+
+  it("cites a renamed file's removed line under its old name and its added line under its new one", async () => {
+    const onAddComment = vi.fn();
+    renderSurface({ changes: RENAMED, loadDiff: () => Promise.resolve(RENAMED_DIFF), onAddComment });
+    fireEvent.click(row(/new\.ts/));
+
+    fireEvent.click(await screen.findByText("was here"));
+    comment("why?");
+    fireEvent.click(screen.getByText("is here"));
+    comment("ok");
+
+    expect(onAddComment.mock.calls.map(([block]) => (block as string).split("\n")[0])).toEqual([
+      "`web/src/old.ts:3` (removed line)",
+      "`web/src/new.ts:3`",
+    ]);
+    expect(toast.success).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a half-written comment through a re-read of the list", async () => {
+    let resolve: (d: FileDiff) => void = () => {};
+    const loadDiff = vi.fn(() => new Promise<FileDiff>((r) => (resolve = r)));
+    const props = { loadDiff, onAddComment: vi.fn() };
+    const { rerender } = renderSurface(props);
+    fireEvent.click(row(/long\.ts/));
+    await act(async () => resolve(DIFF));
+
+    fireEvent.click(screen.getByText(TEXT));
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment on this line" }), {
+      target: { value: "half a thought" },
+    });
+
+    // The turn ends and the list is read again: the diff unmounts until its new read lands.
+    rerender(wrap(surface({ ...props, changes: { ...CHANGES } })));
+    expect(screen.queryByText(TEXT)).toBeNull();
+    await act(async () => resolve(DIFF));
+
+    const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment on this line" });
+    expect(box.value).toBe("half a thought");
+    expect(props.onAddComment).not.toHaveBeenCalled();
   });
 });

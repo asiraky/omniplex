@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { fireEvent, screen } from "@testing-library/react";
+import { type ComponentProps, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { Diff } from "./Diff";
+import { type CommentDraft, Diff, type LineComments } from "./Diff";
 import { render, wrap } from "~/test/harness";
 
 const PATCH = [
@@ -91,6 +92,15 @@ describe("Diff highlight", () => {
   });
 });
 
+/** A diff whose owner holds the comment draft, as the panel does. */
+function Commentable({
+  onAdd,
+  ...props
+}: Omit<ComponentProps<typeof Diff>, "comments"> & { onAdd: LineComments["onAdd"] }) {
+  const [draft, setDraft] = useState<CommentDraft | null>(null);
+  return <Diff {...props} comments={{ draft, onDraft: setDraft, onAdd }} />;
+}
+
 function box(): HTMLElement | null {
   return document.querySelector<HTMLElement>("[data-diff-comment]");
 }
@@ -112,8 +122,8 @@ describe("Diff line comments", () => {
   });
 
   it("opens a box under an added line and hands up the trimmed comment", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} onAdd={onAdd} />);
     const row = rowOf("after change");
     fireEvent.click(row);
     expect(row.hasAttribute("data-selected")).toBe(true);
@@ -122,8 +132,8 @@ describe("Diff line comments", () => {
 
     type("  rename this  ");
     fireEvent.click(addButton());
-    expect(onCommentLine).toHaveBeenCalledTimes(1);
-    expect(onCommentLine).toHaveBeenCalledWith(
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledWith(
       { line: expect.objectContaining({ kind: "add", text: "after change", newNo: 2 }), side: "new" },
       "rename this",
     );
@@ -132,29 +142,29 @@ describe("Diff line comments", () => {
   });
 
   it("cites the old side for a removed line and the new side for context", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} onAdd={onAdd} />);
     fireEvent.click(rowOf("before change"));
     type("gone");
     fireEvent.click(addButton());
     fireEvent.click(rowOf("keep"));
     type("kept");
     fireEvent.click(addButton());
-    expect(onCommentLine.mock.calls).toEqual([
+    expect(onAdd.mock.calls).toEqual([
       [{ line: expect.objectContaining({ kind: "del", oldNo: 2 }), side: "old" }, "gone"],
       [{ line: expect.objectContaining({ kind: "context", oldNo: 1, newNo: 1 }), side: "new" }, "kept"],
     ]);
   });
 
   it("ignores hunk headers", () => {
-    render(<Diff patch={PATCH} onCommentLine={vi.fn()} />);
+    render(<Commentable patch={PATCH} onAdd={vi.fn()} />);
     fireEvent.click(rowOf("@@ -1,3 +1,4 @@"));
     expect(box()).toBeNull();
   });
 
   it("cites the side of the cell tapped in a split diff", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} layout="split" onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} layout="split" onAdd={onAdd} />);
     const row = rowOf("before change");
     fireEvent.click(side(row, "left"));
     type("left");
@@ -162,47 +172,47 @@ describe("Diff line comments", () => {
     fireEvent.click(side(rowOf("after change"), "right"));
     type("right");
     fireEvent.click(addButton());
-    expect(onCommentLine.mock.calls).toEqual([
+    expect(onAdd.mock.calls).toEqual([
       [{ line: expect.objectContaining({ kind: "del", text: "before change" }), side: "old" }, "left"],
       [{ line: expect.objectContaining({ kind: "add", text: "after change" }), side: "new" }, "right"],
     ]);
   });
 
   it("does not open on an empty split cell or a hunk row", () => {
-    render(<Diff patch={PATCH} layout="split" onCommentLine={vi.fn()} />);
+    render(<Commentable patch={PATCH} layout="split" onAdd={vi.fn()} />);
     fireEvent.click(side(rowOf("brand new"), "left"));
     fireEvent.click(rowOf("@@ -1,3 +1,4 @@"));
     expect(box()).toBeNull();
   });
 
   it("keeps Add to chat disabled until there is something to send", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} onAdd={onAdd} />);
     fireEvent.click(rowOf("after change"));
     expect(addButton().disabled).toBe(true);
     type("   ");
     expect(addButton().disabled).toBe(true);
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", ctrlKey: true });
-    expect(onCommentLine).not.toHaveBeenCalled();
+    expect(onAdd).not.toHaveBeenCalled();
     type("x");
     expect(addButton().disabled).toBe(false);
   });
 
   it("closes on Cancel without sending, and the next box starts empty", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} onAdd={onAdd} />);
     fireEvent.click(rowOf("after change"));
     type("never mind");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(box()).toBeNull();
-    expect(onCommentLine).not.toHaveBeenCalled();
+    expect(onAdd).not.toHaveBeenCalled();
     fireEvent.click(rowOf("after change"));
     expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("");
   });
 
   it("moves the box to another line and keeps what was typed", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} onAdd={onAdd} />);
     fireEvent.click(rowOf("after change"));
     type("meant the next one");
     fireEvent.click(rowOf("brand new"));
@@ -210,14 +220,14 @@ describe("Diff line comments", () => {
     expect(rowOf("brand new").nextElementSibling).toBe(box());
     expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("meant the next one");
     fireEvent.click(addButton());
-    expect(onCommentLine).toHaveBeenCalledWith(
+    expect(onAdd).toHaveBeenCalledWith(
       { line: expect.objectContaining({ text: "brand new" }), side: "new" },
       "meant the next one",
     );
   });
 
   it("does not count clicks inside the box as a tap on a line", () => {
-    render(<Diff patch={PATCH} onCommentLine={vi.fn()} />);
+    render(<Commentable patch={PATCH} onAdd={vi.fn()} />);
     fireEvent.click(rowOf("after change"));
     type("draft");
     fireEvent.click(screen.getByRole("textbox"));
@@ -228,7 +238,7 @@ describe("Diff line comments", () => {
   it("leaves a click that ends a text selection alone", () => {
     const spy = vi.spyOn(window, "getSelection").mockReturnValue({ toString: () => "after" } as Selection);
     try {
-      render(<Diff patch={PATCH} onCommentLine={vi.fn()} />);
+      render(<Commentable patch={PATCH} onAdd={vi.fn()} />);
       fireEvent.click(rowOf("after change"));
       expect(box()).toBeNull();
     } finally {
@@ -237,26 +247,26 @@ describe("Diff line comments", () => {
   });
 
   it("sends on Ctrl+Enter and cancels on Escape", () => {
-    const onCommentLine = vi.fn();
-    render(<Diff patch={PATCH} onCommentLine={onCommentLine} />);
+    const onAdd = vi.fn();
+    render(<Commentable patch={PATCH} onAdd={onAdd} />);
     fireEvent.click(rowOf("after change"));
     type("ship it");
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", ctrlKey: true });
-    expect(onCommentLine).toHaveBeenCalledWith(expect.objectContaining({ side: "new" }), "ship it");
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ side: "new" }), "ship it");
     expect(box()).toBeNull();
 
     fireEvent.click(rowOf("brand new"));
     type("drop it");
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
     expect(box()).toBeNull();
-    expect(onCommentLine).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
   it("drops the box when a re-read loses the selected line", () => {
-    const { rerender } = render(<Diff patch={PATCH} onCommentLine={vi.fn()} />);
+    const { rerender } = render(<Commentable patch={PATCH} onAdd={vi.fn()} />);
     fireEvent.click(rowOf("brand new"));
     expect(box()).not.toBeNull();
-    rerender(wrap(<Diff patch={PATCH.replace("+brand new", "+brand newer")} onCommentLine={vi.fn()} />));
+    rerender(wrap(<Commentable patch={PATCH.replace("+brand new", "+brand newer")} onAdd={vi.fn()} />));
     expect(box()).toBeNull();
   });
 });
