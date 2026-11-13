@@ -184,7 +184,9 @@ async function* prompts() {
 const pending = new Map();
 let requestSeq = 0;
 
-const canUseTool = (toolName, input, { signal, suggestions }) =>
+// toolUseId is the gated tool_use block's id, the same id the host gave the
+// tool call when its content block streamed, so the approval lands on that call.
+const canUseTool = (toolName, input, { signal, suggestions, toolUseID }) =>
   new Promise((resolve) => {
     // Already aborted: nobody is waiting on the answer, so don't ask.
     if (signal?.aborted) {
@@ -215,7 +217,7 @@ const canUseTool = (toolName, input, { signal, suggestions }) =>
       jsonrpc: "2.0",
       id,
       method: "permission",
-      params: { toolName, input, suggestions: suggestions ?? [] },
+      params: { toolName, toolUseId: toolUseID, input, suggestions: suggestions ?? [] },
     });
   });
 

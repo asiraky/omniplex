@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/asiraky/omniplex/internal/adapter"
+	"github.com/asiraky/omniplex/internal/proto"
 )
 
 // fakeHost stands in for the session's host services. RequestPermission fails
@@ -234,5 +235,34 @@ func TestAskUserQuestionDeclineResolvesWithoutAnswers(t *testing.T) {
 	}
 	if len(answers) != 0 {
 		t.Errorf("answers = %v, want empty", answers)
+	}
+}
+
+// A permission prompt names the tool call it gates, so the host can record the
+// approval on that call's card rather than as a row of its own.
+func TestPermissionCarriesToolCallID(t *testing.T) {
+	var got adapter.PermissionRequest
+	host := &fakeHost{
+		permission: func(req adapter.PermissionRequest) (adapter.PermissionOutcome, error) {
+			got = req
+			return adapter.PermissionOutcome{Outcome: proto.OutcomeAllowOnce}, nil
+		},
+	}
+	s := &session{host: host}
+
+	params, _ := json.Marshal(map[string]any{
+		"toolName":  "Bash",
+		"toolUseId": "toolu_01ABC",
+		"input":     map[string]any{"command": "ls"},
+	})
+	res, err := s.handleRequest(context.Background(), "permission", params)
+	if err != nil {
+		t.Fatalf("handleRequest: %v", err)
+	}
+	if behavior, _ := decodePermissionResult(t, res); behavior != "allow" {
+		t.Fatalf("behavior = %q, want allow", behavior)
+	}
+	if got.ToolCallID != "toolu_01ABC" {
+		t.Errorf("ToolCallID = %q, want toolu_01ABC", got.ToolCallID)
 	}
 }

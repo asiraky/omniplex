@@ -1064,8 +1064,9 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 	}
 
 	var p struct {
-		ToolName string          `json:"toolName"`
-		Input    json.RawMessage `json:"input"`
+		ToolName  string          `json:"toolName"`
+		ToolUseID string          `json:"toolUseId"`
+		Input     json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
@@ -1085,11 +1086,12 @@ func (s *session) handleRequest(ctx context.Context, method string, params json.
 	}
 
 	outcome, err := s.host.RequestPermission(ctx, adapter.PermissionRequest{
-		TurnID:   s.currentTurn(),
-		ToolName: p.ToolName,
-		Title:    toolTitle(p.ToolName, p.Input),
-		RawInput: p.Input,
-		Options:  proto.DefaultPermissionOptions(),
+		TurnID:     s.currentTurn(),
+		ToolCallID: p.ToolUseID,
+		ToolName:   p.ToolName,
+		Title:      toolTitle(p.ToolName, p.Input),
+		RawInput:   p.Input,
+		Options:    proto.DefaultPermissionOptions(),
 	})
 	if ctx.Err() != nil {
 		// Withdrawn by the bridge (permissionCancelled) or the stream ended:
