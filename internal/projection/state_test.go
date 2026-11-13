@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/asiraky/omniplex/internal/proto"
 )
@@ -1446,5 +1448,352 @@ func TestCanRewindTo(t *testing.T) {
 	}
 	if New("s").CanRewindTo(0) {
 		t.Error("CanRewindTo(0) on no turns = true")
+	}
+}
+
+// toolTurn opens turn t1 with tool call c1 running in it.
+func toolTurn(t *testing.T) *State {
+	t.Helper()
+	s := New("s1")
+	s.Apply(event(t, 1, proto.TurnStarted, proto.TurnStartedPayload{TurnID: "t1", Prompt: "go"}))
+	s.Apply(event(t, 2, proto.ToolCallStarted, proto.ToolCallStartedPayload{
+		TurnID: "t1", ToolCallID: "c1", Kind: "execute", Title: "rm -rf build", Status: proto.StatusInProgress,
+	}))
+	return s
+}
+
+func itemOf(t *testing.T, s *State, id string) Item {
+	t.Helper()
+	it, ok := s.ItemByID(id)
+	if !ok {
+		t.Fatalf("no item %q in %+v", id, s.Items)
+	}
+	return it
+}
+
+// A permission naming a tool call marks that call, pending until it
+// resolves, then with what the outcome means. No standalone item is made.
+// Mirrored by web/src/apply.test.ts.
+func TestApprovalMarksTheToolCall(t *testing.T) {
+	for _, tc := range []struct{ outcome, want string }{
+		{proto.OutcomeAllowOnce, ApprovalAllowed},
+		{proto.OutcomeAllowAlways, ApprovalAllowedAlways},
+		{proto.OutcomeRejectOnce, ApprovalDenied},
+		{proto.OutcomeRejectAlways, ApprovalDenied},
+		{proto.OutcomeCancelled, ApprovalCancelled},
+		{"something-new", ApprovalCancelled},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			s := toolTurn(t)
+			s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{
+				RequestID: "r1", TurnID: "t1", ToolCallID: "c1", Title: "Run rm",
+			}))
+			if got := itemOf(t, s, "c1").Approval; got != ApprovalPending {
+				t.Fatalf("approval while asked = %q, want pending", got)
+			}
+			if _, ok := s.ItemByID(ApprovalID("r1")); ok {
+				t.Fatal("a request naming a held tool call got a standalone item")
+			}
+			s.Apply(event(t, 4, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r1", Outcome: tc.outcome}))
+			if got := itemOf(t, s, "c1").Approval; got != tc.want {
+				t.Fatalf("approval after %s = %q, want %q", tc.outcome, got, tc.want)
+			}
+		})
+	}
+}
+
+// A request this projection holds no tool call for gets a standalone item,
+// titled with the request, where it was raised; it resolves like a call does.
+// Mirrored by web/src/apply.test.ts.
+func TestApprovalWithoutAToolCallStandsAlone(t *testing.T) {
+	for name, callID := range map[string]string{"no call id": "", "unknown call": "c-missing"} {
+		t.Run(name, func(t *testing.T) {
+			s := toolTurn(t)
+			s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{
+				RequestID: "r1", TurnID: "t1", ToolCallID: callID, Title: "Grant network",
+			}))
+			got := itemOf(t, s, ApprovalID("r1"))
+			want := Item{ID: ApprovalID("r1"), Kind: ItemApproval, TurnID: "t1", ReceivedAt: 3000, Title: "Grant network", Approval: ApprovalPending}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("standalone item = %+v, want %+v", got, want)
+			}
+			if s.Items[len(s.Items)-1].ID != ApprovalID("r1") {
+				t.Fatal("standalone item is not where the request was raised")
+			}
+			if a := itemOf(t, s, "c1").Approval; a != "" {
+				t.Fatalf("unrelated tool call marked %q", a)
+			}
+			s.Apply(event(t, 4, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r1", Outcome: proto.OutcomeRejectAlways}))
+			if a := itemOf(t, s, ApprovalID("r1")).Approval; a != ApprovalDenied {
+				t.Fatalf("standalone approval after reject = %q, want denied", a)
+			}
+		})
+	}
+}
+
+// A turn's finish withdraws what it was blocked on, and the records say so;
+// a request already answered keeps its answer. Mirrored by
+// web/src/apply.test.ts.
+func TestTurnFinishedCancelsPendingRecords(t *testing.T) {
+	s := toolTurn(t)
+	s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r1", TurnID: "t1", ToolCallID: "c1"}))
+	s.Apply(event(t, 4, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r2", TurnID: "t1"}))
+	s.Apply(event(t, 5, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", TurnID: "t1", Prompt: "which?"}))
+	s.Apply(event(t, 6, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q2", TurnID: "t1", Prompt: "and?"}))
+	s.Apply(event(t, 7, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q2", Action: "decline"}))
+
+	s.Apply(event(t, 8, proto.TurnFinished, proto.TurnFinishedPayload{TurnID: "t1", StopReason: proto.StopCancelled}))
+
+	if a := itemOf(t, s, "c1").Approval; a != ApprovalCancelled {
+		t.Fatalf("tool call approval after finish = %q, want cancelled", a)
+	}
+	if a := itemOf(t, s, ApprovalID("r2")).Approval; a != ApprovalCancelled {
+		t.Fatalf("standalone approval after finish = %q, want cancelled", a)
+	}
+	if st := itemOf(t, s, QuestionID("q1")).Status; st != QuestionCancelled {
+		t.Fatalf("pending question after finish = %q, want cancelled", st)
+	}
+	if st := itemOf(t, s, QuestionID("q2")).Status; st != QuestionDeclined {
+		t.Fatalf("declined question after finish = %q, want declined kept", st)
+	}
+}
+
+// Each schema field is a question, in the schema's order, labelled by its
+// title, else its description, else the prompt, else its name. A schema with
+// no fields is the prompt alone. Mirrored by web/src/apply.test.ts.
+func TestQuestionLabels(t *testing.T) {
+	for _, tc := range []struct {
+		name, prompt, schema string
+		want                 []QuestionAnswer
+	}{
+		{
+			name:   "fields in document order",
+			prompt: "Set up",
+			schema: `{"type":"object","properties":{"zeta":{"title":"Zeta?"},"alpha":{"description":"Alpha, described"},"mid":{"type":"string"},"pw":{"title":"Token","format":"password"},"wo":{"writeOnly":true}}}`,
+			want: []QuestionAnswer{
+				{Key: "zeta", Question: "Zeta?"},
+				{Key: "alpha", Question: "Alpha, described"},
+				{Key: "mid", Question: "Set up"},
+				{Key: "pw", Question: "Token", Secret: true},
+				{Key: "wo", Question: "Set up", Secret: true},
+			},
+		},
+		{
+			name:   "no prompt falls back to the key",
+			schema: `{"properties":{"name":{}}}`,
+			want:   []QuestionAnswer{{Key: "name", Question: "name"}},
+		},
+		{
+			name:   "no properties",
+			prompt: "Continue?",
+			schema: `{"type":"boolean"}`,
+			want:   []QuestionAnswer{{Key: "", Question: "Continue?"}},
+		},
+		{
+			name:   "no schema",
+			prompt: "Continue?",
+			want:   []QuestionAnswer{{Key: "", Question: "Continue?"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var schema json.RawMessage
+			if tc.schema != "" {
+				schema = json.RawMessage(tc.schema)
+			}
+			s := New("s1")
+			s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+				RequestID: "q1", TurnID: "t1", Prompt: tc.prompt, Schema: schema,
+			}))
+			it := itemOf(t, s, QuestionID("q1"))
+			if it.Kind != ItemQuestion || it.Status != QuestionPending || it.TurnID != "t1" || it.ReceivedAt != 1000 {
+				t.Fatalf("question item = %+v", it)
+			}
+			if !reflect.DeepEqual(it.Questions, tc.want) {
+				t.Fatalf("questions = %+v, want %+v", it.Questions, tc.want)
+			}
+		})
+	}
+}
+
+// An accepted answer is kept as text a person reads, each capped at
+// AnswerCap code points. Mirrored by web/src/apply.test.ts.
+func TestQuestionAnswers(t *testing.T) {
+	long := strings.Repeat("a", 300)
+	runes := strings.Repeat("é", 279) + "日本"
+	exact := strings.Repeat("日", AnswerCap)
+	schema := `{"properties":{"s":{},"long":{},"runes":{},"exact":{},"yes":{},"no":{},"n":{},"list":{},"obj":{},"null":{},"missing":{},"nulls":{},"empty":{},"allnull":{}}}`
+	value, _ := json.Marshal(map[string]any{
+		"s": "plain", "long": long, "runes": runes, "exact": exact, "yes": true, "no": false,
+		"n": json.Number("4.50"), "list": []any{"a", true, 3}, "obj": map[string]any{"k": []int{1}}, "null": nil,
+		"nulls": []any{"a", nil, "b"}, "empty": []any{}, "allnull": []any{nil, nil},
+	})
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", Schema: json.RawMessage(schema)}))
+	s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: value}))
+
+	it := itemOf(t, s, QuestionID("q1"))
+	if it.Status != QuestionAnswered {
+		t.Fatalf("status = %q, want answered", it.Status)
+	}
+	got := map[string]string{}
+	for _, q := range it.Questions {
+		got[q.Key] = q.Answer
+	}
+	want := map[string]string{
+		"s":       "plain",
+		"long":    strings.Repeat("a", AnswerCap-1) + "…",
+		"runes":   strings.Repeat("é", 279) + "…",
+		"exact":   exact,
+		"yes":     "Yes",
+		"no":      "No",
+		"n":       "4.5",
+		"list":    "a, Yes, 3",
+		"nulls":   "a, b",
+		"empty":   "",
+		"allnull": "",
+		"obj":     `{"k":[1]}`,
+		"null":    "",
+		"missing": "",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("answers = %v\nwant %v", got, want)
+	}
+	if n := utf8.RuneCountInString(got["runes"]); n != AnswerCap {
+		t.Fatalf("capped multi-byte answer is %d runes, want %d", n, AnswerCap)
+	}
+}
+
+// A prompt with no fields takes a scalar answer whole; anything else is no
+// answer for it. Mirrored by web/src/apply.test.ts.
+func TestQuestionAnswerWithoutFields(t *testing.T) {
+	for _, tc := range []struct{ value, want string }{
+		{`"go ahead"`, "go ahead"},
+		{`true`, "Yes"},
+		{`7`, "7"},
+		{`{"a":1}`, ""},
+		{`["a"]`, ""},
+	} {
+		s := New("s1")
+		s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", Prompt: "Proceed?"}))
+		s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: json.RawMessage(tc.value)}))
+		if got := itemOf(t, s, QuestionID("q1")).Questions[0].Answer; got != tc.want {
+			t.Errorf("answer for %s = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+// Named fields read their answers off an object; any other value answers
+// none of them. Mirrored by web/src/apply.test.ts.
+func TestQuestionAnswerNotAnObject(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", Schema: json.RawMessage(`{"properties":{"a":{}}}`)}))
+	s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: json.RawMessage(`["a"]`)}))
+	it := itemOf(t, s, QuestionID("q1"))
+	if it.Status != QuestionAnswered || it.Questions[0].Answer != "" {
+		t.Fatalf("question = %+v, want answered with no answer", it)
+	}
+}
+
+// Declining or cancelling ends the question with no answers recorded.
+func TestQuestionDeclinedOrCancelled(t *testing.T) {
+	for action, want := range map[string]string{"decline": QuestionDeclined, "cancel": QuestionCancelled, "": QuestionCancelled} {
+		s := New("s1")
+		s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", Schema: json.RawMessage(`{"properties":{"a":{}}}`)}))
+		s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: action, Value: json.RawMessage(`{"a":"x"}`)}))
+		it := itemOf(t, s, QuestionID("q1"))
+		if it.Status != want || it.Questions[0].Answer != "" {
+			t.Errorf("after %q: status %q, answer %q; want %q and no answer", action, it.Status, it.Questions[0].Answer, want)
+		}
+	}
+}
+
+// A masked field's value goes nowhere: not on the item, not in its JSON, not
+// in the state a snapshot is written from.
+func TestSecretAnswerIsNeverStored(t *testing.T) {
+	const secret = "hunter2-sk-live-XYZ"
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+		RequestID: "q1", Schema: json.RawMessage(`{"properties":{"user":{"title":"User"},"pw":{"title":"Password","format":"password"},"key":{"writeOnly":true}}}`),
+	}))
+	value, _ := json.Marshal(map[string]string{"user": "aaron", "pw": secret, "key": secret})
+	s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: value}))
+
+	it := itemOf(t, s, QuestionID("q1"))
+	want := []QuestionAnswer{
+		{Key: "user", Question: "User", Answer: "aaron"},
+		{Key: "pw", Question: "Password", Secret: true},
+		{Key: "key", Question: "key", Secret: true},
+	}
+	if !reflect.DeepEqual(it.Questions, want) {
+		t.Fatalf("questions = %+v, want %+v", it.Questions, want)
+	}
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{secret, "hunter2", "XYZ"} {
+		if strings.Contains(string(blob), part) {
+			t.Fatalf("state JSON holds %q of the secret: %s", part, blob)
+		}
+	}
+}
+
+// A reconnect gets the records from the snapshot like any other item.
+func TestApprovalAndQuestionSurviveSnapshot(t *testing.T) {
+	s := toolTurn(t)
+	s.Apply(event(t, 3, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r1", TurnID: "t1", ToolCallID: "c1"}))
+	s.Apply(event(t, 4, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r1", Outcome: proto.OutcomeAllowAlways}))
+	s.Apply(event(t, 5, proto.PermissionRequested, proto.PermissionRequestedPayload{RequestID: "r2", TurnID: "t1", Title: "Network"}))
+	s.Apply(event(t, 6, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", TurnID: "t1", Schema: json.RawMessage(`{"properties":{"b":{"title":"B"},"a":{"title":"A"}}}`)}))
+	s.Apply(event(t, 7, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: json.RawMessage(`{"a":"one","b":["x","y"]}`)}))
+
+	blob, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FromSnapshot(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Items, s.Items) {
+		t.Fatalf("items after round trip = %+v\nwant %+v", back.Items, s.Items)
+	}
+	if a := itemOf(t, back, "c1").Approval; a != ApprovalAllowedAlways {
+		t.Fatalf("restored tool approval = %q", a)
+	}
+	// The restored state still folds onto the records it restored.
+	back.Apply(event(t, 8, proto.PermissionResolved, proto.PermissionResolvedPayload{RequestID: "r2", Outcome: proto.OutcomeAllowOnce}))
+	if a := itemOf(t, back, ApprovalID("r2")).Approval; a != ApprovalAllowed {
+		t.Fatalf("restored standalone approval after resolve = %q, want allowed", a)
+	}
+	want := []QuestionAnswer{{Key: "b", Question: "B", Answer: "x, y"}, {Key: "a", Question: "A", Answer: "one"}}
+	if got := itemOf(t, back, QuestionID("q1")).Questions; !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored questions = %+v, want %+v", got, want)
+	}
+}
+
+// A card is its own record: it gets no question item.
+func TestCardElicitationGetsNoQuestionItem(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{
+		RequestID: "card1", Prompt: "Add server?", Card: json.RawMessage(`{"kind":"mcp"}`),
+	}))
+	s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "card1", Action: "accept"}))
+	if _, ok := s.ItemByID(QuestionID("card1")); ok {
+		t.Fatal("a card elicitation got a question item")
+	}
+	if len(s.Items) != 1 || s.Items[0].Kind != ItemCard {
+		t.Fatalf("items = %+v, want the card alone", s.Items)
+	}
+}
+
+// Clone shares no question entries with the live state.
+func TestCloneCopiesQuestions(t *testing.T) {
+	s := New("s1")
+	s.Apply(event(t, 1, proto.ElicitationRequested, proto.ElicitationRequestedPayload{RequestID: "q1", Prompt: "which?"}))
+	c := s.Clone()
+	s.Apply(event(t, 2, proto.ElicitationResolved, proto.ElicitationResolvedPayload{RequestID: "q1", Action: "accept", Value: json.RawMessage(`"this one"`)}))
+	if got := c.Items[0].Questions[0].Answer; got != "" {
+		t.Fatalf("clone saw the live answer %q", got)
 	}
 }
