@@ -1,102 +1,213 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { render } from "~/test/harness";
 import { ElicitationPrompt } from "./ElicitationPrompt";
 import type { PendingElicitation } from "~/protocol";
 
-// The shape the Claude AskUserQuestion bridge produces: an enum field carrying
-// the x- hints for multi-select, a free-text escape, and per-option rationale.
-function multiSelectRequest(): PendingElicitation {
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// Drafts are module-level and keyed by request, so every test gets its own id.
+let seq = 0;
+function request(properties: Record<string, unknown>): PendingElicitation {
   return {
-    requestId: "r-auq",
+    requestId: `r-${++seq}`,
     prompt: "The assistant needs your input to continue.",
-    schema: {
-      type: "object",
-      properties: {
-        q0: {
-          type: "string",
-          title: "Which features?",
-          enum: ["Caching", "Metrics", "Tracing"],
-          "x-multiSelect": true,
-          "x-allowOther": true,
-          "x-optionDescriptions": { Caching: "faster reads" },
-        },
-      },
-    },
-  };
+    schema: { type: "object", properties },
+  } as PendingElicitation;
 }
 
-describe("AskUserQuestion elicitations", () => {
-  it("collects several checkbox answers as an array", () => {
-    const onResolve = vi.fn();
-    render(<ElicitationPrompt request={multiSelectRequest()} onResolve={onResolve} />);
+// The shape the Claude AskUserQuestion bridge produces: an enum field carrying
+// the x- hints for multi-select, a free-text escape, and per-option rationale.
+const features = {
+  type: "string",
+  title: "Which features?",
+  enum: ["Caching", "Metrics", "Tracing"],
+  "x-multiSelect": true,
+  "x-allowOther": true,
+  "x-optionDescriptions": { Caching: "faster reads" },
+};
+const color = { type: "string", title: "Which colour?", enum: ["Red", "Green"], "x-allowOther": true };
+const name = { type: "string", title: "Your name?" };
 
-    // Caching, Metrics, Tracing, then Other.
-    const boxes = screen.getAllByRole("checkbox");
-    fireEvent.click(boxes[0]); // Caching
-    fireEvent.click(boxes[2]); // Tracing
-    fireEvent.click(screen.getByText("Continue"));
+function mount(req: PendingElicitation, onResolve = vi.fn()) {
+  const view = render(<ElicitationPrompt request={req} onResolve={onResolve} />);
+  return { ...view, onResolve };
+}
 
-    expect(onResolve).toHaveBeenCalledWith("accept", { q0: ["Caching", "Tracing"] });
+const click = (text: string) => fireEvent.click(screen.getByText(text));
+const press = (key: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(window, { key, ...init });
+const title = () => screen.getByText(/\?$/).textContent;
+
+describe("stepping through questions", () => {
+  it("shows one question at a time, Back keeps answers, Continue sends them all", () => {
+    const { onResolve } = mount(request({ name, color }));
+    expect(title()).toBe("Your name?");
+    expect(screen.getByText("1 of 2")).toBeTruthy();
+    expect(screen.queryByText("Back")).toBeNull();
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ada" } });
+    click("Next");
+    expect(title()).toBe("Which colour?");
+    expect(screen.getByText("2 of 2")).toBeTruthy();
+
+    click("Back");
+    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("Ada");
+    click("Next");
+    click("Green");
+    expect(onResolve).not.toHaveBeenCalled();
+    click("Continue");
+
+    expect(onResolve).toHaveBeenCalledWith("accept", { name: "Ada", color: "Green" });
+  });
+
+  it("advances on Enter in a non-last step rather than submitting", () => {
+    const { onResolve, container } = mount(request({ name, color }));
+    fireEvent.submit(container.querySelector("form")!);
+    expect(title()).toBe("Which colour?");
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+
+  it("declines from any step without answers", () => {
+    const { onResolve } = mount(request({ name, color }));
+    click("Next");
+    click("Decline");
+    expect(onResolve).toHaveBeenCalledWith("decline", undefined);
+  });
+});
+
+describe("single-select", () => {
+  it("renders radio rows and auto-advances after a pick", () => {
+    vi.useFakeTimers();
+    mount(request({ color, name }));
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+
+    click("Red");
+    expect(screen.getByRole("radio", { name: /Red/ }).getAttribute("aria-checked")).toBe("true");
+    act(() => void vi.advanceTimersByTime(179));
+    expect(title()).toBe("Which colour?");
+    act(() => void vi.advanceTimersByTime(1));
+    expect(title()).toBe("Your name?");
+  });
+
+  it("does not advance when the human moves first", () => {
+    vi.useFakeTimers();
+    mount(request({ color, name, other: { ...name, title: "Third?" } }));
+    click("Red");
+    click("Next");
+    act(() => void vi.advanceTimersByTime(500));
+    expect(title()).toBe("Your name?");
+  });
+
+  it("sends trimmed Other text, and choosing Other does not advance", () => {
+    vi.useFakeTimers();
+    const { onResolve } = mount(request({ color, name }));
+    click("Red");
+    click("Other");
+    act(() => void vi.advanceTimersByTime(500));
+    expect(title()).toBe("Which colour?");
+    expect(screen.getByRole("radio", { name: /Red/ }).getAttribute("aria-checked")).toBe("false");
+
+    fireEvent.change(screen.getByLabelText("Other answer"), { target: { value: "  Teal " } });
+    click("Next");
+    click("Continue");
+    expect(onResolve).toHaveBeenCalledWith("accept", { color: "Teal", name: "" });
+  });
+});
+
+describe("multi-select", () => {
+  it("collects several checkbox answers as an array, toggling off", () => {
+    const { onResolve } = mount(request({ features }));
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    click("Caching");
+    click("Tracing");
+    click("Metrics");
+    click("Metrics");
+    click("Continue");
+    expect(onResolve).toHaveBeenCalledWith("accept", { features: ["Caching", "Tracing"] });
+  });
+
+  it("appends a trimmed free-text Other answer last", () => {
+    const { onResolve } = mount(request({ features }));
+    click("Other");
+    click("Caching");
+    fireEvent.change(screen.getByLabelText("Other answer"), { target: { value: " Batching " } });
+    click("Continue");
+    expect(onResolve).toHaveBeenCalledWith("accept", { features: ["Caching", "Batching"] });
   });
 
   it("shows each option's description", () => {
-    render(<ElicitationPrompt request={multiSelectRequest()} onResolve={vi.fn()} />);
-    expect(screen.getByText("faster reads")).toBeTruthy();
+    mount(request({ features }));
+    expect(screen.getByRole("checkbox", { name: /Caching/ }).textContent).toContain("faster reads");
+  });
+});
+
+describe("digit keys", () => {
+  it("pick option N, and the one after the last picks Other", () => {
+    const { onResolve } = mount(request({ features }));
+    press("3");
+    press("4");
+    expect(screen.getByLabelText("Other answer")).toBeTruthy();
+    press("9"); // no such row
+    click("Continue");
+    expect(onResolve).toHaveBeenCalledWith("accept", { features: ["Tracing"] });
   });
 
-  it("appends a free-text Other answer", () => {
-    const onResolve = vi.fn();
-    render(<ElicitationPrompt request={multiSelectRequest()} onResolve={onResolve} />);
+  it.each([
+    ["a modifier is held", () => press("1", { ctrlKey: true })],
+    ["focus is in a text box", () => {
+      const input = document.createElement("input");
+      document.body.append(input);
+      input.focus();
+      press("1");
+      input.remove();
+    }],
+    ["a dialog is open", () => {
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      document.body.append(dialog);
+      press("1");
+      dialog.remove();
+    }],
+  ])("are ignored when %s", (_, setup) => {
+    mount(request({ features }));
+    setup();
+    expect(screen.getByRole("checkbox", { name: /Caching/ }).getAttribute("aria-checked")).toBe("false");
+  });
+});
 
-    const boxes = screen.getAllByRole("checkbox");
-    fireEvent.click(boxes[0]); // Caching
-    fireEvent.click(boxes[3]); // Other
-    fireEvent.change(screen.getByLabelText("Other answer"), { target: { value: "Batching" } });
-    fireEvent.click(screen.getByText("Continue"));
+describe("drafts", () => {
+  it("survive a remount of the same request, and resolving clears them", () => {
+    const req = request({ name, color });
+    const first = mount(req);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ada" } });
+    click("Next");
+    click("Green");
+    first.unmount();
 
-    expect(onResolve).toHaveBeenCalledWith("accept", { q0: ["Caching", "Batching"] });
+    const second = mount(req);
+    expect(title()).toBe("Which colour?");
+    expect(screen.getByRole("radio", { name: /Green/ }).getAttribute("aria-checked")).toBe("true");
+    click("Continue");
+    expect(second.onResolve).toHaveBeenCalledWith("accept", { name: "Ada", color: "Green" });
+    second.unmount();
+
+    mount(req);
+    expect(title()).toBe("Your name?");
+    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("");
   });
 
-  // The trigger is a one-line box; a rationale dragged into it by Radix's value
-  // echo used to spill out of the border. It belongs under the control.
-  it("keeps a chosen option's description out of the select trigger", () => {
-    const request: PendingElicitation = {
-      requestId: "r-single",
-      prompt: "Pick one",
-      schema: {
-        type: "object",
-        properties: {
-          q0: {
-            type: "string",
-            title: "Which cache?",
-            enum: ["Caching", "Metrics"],
-            default: "Caching",
-            "x-optionDescriptions": { Caching: "faster reads" },
-          },
-        },
-      },
-    };
-    render(<ElicitationPrompt request={request} onResolve={vi.fn()} />);
-
-    const description = screen.getByText("faster reads");
-    const trigger = screen.getByRole("combobox");
-    expect(trigger.contains(description)).toBe(false);
-    expect(trigger.textContent).not.toContain("faster reads");
-  });
-
-  it("leaves a plain enum elicitation as a single-select with no checkboxes", () => {
-    const request: PendingElicitation = {
-      requestId: "r-plain",
-      prompt: "Pick one",
-      schema: {
-        type: "object",
-        properties: { choice: { type: "string", enum: ["a", "b"] } },
-      },
-    };
-    render(<ElicitationPrompt request={request} onResolve={vi.fn()} />);
-    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  it("are cleared by declining", () => {
+    const req = request({ name, color });
+    const first = mount(req);
+    click("Next");
+    click("Decline");
+    first.unmount();
+    mount(req);
+    expect(title()).toBe("Your name?");
   });
 });
