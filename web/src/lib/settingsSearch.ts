@@ -228,9 +228,10 @@ export function settingsIndex({
  * name holding every word, then the rest. Within each, the screen's own order.
  */
 export function searchSettings(entries: SettingEntry[], query: string): SettingEntry[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  const words = q.split(/\s+/);
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  // One space between words, however many were typed, for the starts-with test.
+  const q = words.join(" ");
 
   const rank = (e: SettingEntry): number | null => {
     const label = e.label.toLowerCase();
