@@ -37,11 +37,18 @@ export function liveActivity(items: Item[], turns: Turn[], phase: string): LiveA
   const newest = last(items, (it) => !blank(it));
   // Anything from a finished turn is history: the running turn has not said
   // anything yet.
-  const current = newest && !turns.some((t) => t.done && t.id === newest.turnId) ? newest : undefined;
-  if (current?.kind === "tool" && running(current)) return { state: "working", startedAt };
+  const done = new Set(turns.filter((t) => t.done).map((t) => t.id));
+  const settled = (it: Item) => it.turnId !== undefined && done.has(it.turnId);
+  const current = newest && !settled(newest) ? newest : undefined;
   if (current?.kind === "message" && current.role === "agent") {
     if (current.contentKind === "thought") return { state: "thinking", thought: current, startedAt };
     return { state: "working", startedAt };
+  }
+  // Not only the newest call: calls run side by side, and the one started
+  // last is often a quick read that finishes while a build started before it
+  // is still going.
+  for (let i = items.length - 1; i >= 0 && !settled(items[i]); i--) {
+    if (items[i].kind === "tool" && running(items[i])) return { state: "working", startedAt };
   }
   return { state: "thinking", startedAt };
 }

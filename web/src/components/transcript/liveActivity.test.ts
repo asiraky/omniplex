@@ -43,6 +43,15 @@ describe("liveActivity", () => {
     expect(liveActivity([prompt(), tool("pending")], turns, "turn")?.state).toBe("working");
   });
 
+  it("is working while an earlier call runs beside a finished one", () => {
+    const quick: Item = { ...tool("completed"), id: "y" };
+    expect(liveActivity([prompt(), tool("in_progress"), quick], turns, "turn")?.state).toBe("working");
+  });
+
+  it("ignores a call a finished turn left running", () => {
+    expect(liveActivity([tool("in_progress", "t1"), prompt()], turns, "turn")?.state).toBe("thinking");
+  });
+
   it("is thinking once the newest call has finished", () => {
     expect(liveActivity([prompt(), tool("completed")], turns, "turn")?.state).toBe("thinking");
   });
