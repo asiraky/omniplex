@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, modelList } from "./ModelPicker";
 import type { HarnessMeta } from "~/protocol";
 
 // jsdom has none of the layout plumbing Radix and cmdk expect. These are the
@@ -33,6 +33,12 @@ beforeAll(() => {
   Element.prototype.hasPointerCapture = () => false;
   Element.prototype.setPointerCapture = () => {};
   Element.prototype.releasePointerCapture = () => {};
+});
+
+// The list arrives as its own chunk; in, it renders on the open itself.
+// ModelPicker.lazy.test.tsx covers the wait.
+beforeAll(async () => {
+  await modelList.load();
 });
 
 afterEach(cleanup);

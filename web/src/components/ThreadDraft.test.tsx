@@ -5,6 +5,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createDraftStore } from "~/app/draftStore";
 import { NEW_THREAD } from "~/app/threadKeys";
 import { render, wrap } from "~/test/harness";
+import { menuList } from "./composer/CommandMenu";
+import { modelList } from "./ModelPicker";
 import { ThreadDraft, type NewThreadInput } from "./ThreadDraft";
 import type { ComposerItem, HarnessMeta, Project, Workspace } from "~/protocol";
 
@@ -77,6 +79,13 @@ beforeAll(() => {
   proto.setPointerCapture ??= () => {};
   proto.releasePointerCapture ??= () => {};
   proto.scrollIntoView ??= () => {};
+});
+
+// The slash menu's rows and the model list arrive as their own chunks. In,
+// they render on the open itself, so an assertion that no row is offered is
+// not passing on a spinner.
+beforeAll(async () => {
+  await Promise.all([menuList.load(), modelList.load()]);
 });
 
 describe("ThreadDraft", () => {
