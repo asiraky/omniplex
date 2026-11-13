@@ -26,6 +26,16 @@ export function isMultiSelect(field: ElicitationField): boolean {
   return Boolean(field["x-multiSelect"]);
 }
 
+/** A choice field's options, in order; none for any other field. */
+export function optionsOf(field: ElicitationField): string[] {
+  return Array.isArray(field.enum) ? (field.enum as string[]) : [];
+}
+
+/** A choice field offers a free-text "Other" after its options. */
+export function allowsOther(field: ElicitationField): boolean {
+  return Boolean(field.enum) && Boolean(field["x-allowOther"]);
+}
+
 export function initialDraft(properties: Record<string, ElicitationField>): ElicitationDraft {
   const fields: Record<string, FieldDraft> = {};
   for (const [key, field] of Object.entries(properties)) {
@@ -86,11 +96,22 @@ export function answersOf(
  * Half-typed answers, by request, in memory only. Switching to another thread
  * unmounts the prompt; coming back finds the answers where they were left. A
  * reload starts over, which is all this is meant to cover.
+ *
+ * A draft outlives the click that answers it: the answer can fail to send on
+ * a bad connection, and the question stays. It goes when the thread stops
+ * listing the request as pending, however that happened: answered here or on
+ * another device, cancelled, or dropped with its turn.
  */
-const drafts = new Map<string, ElicitationDraft>();
+const drafts = new Map<string, { threadId: string; draft: ElicitationDraft }>();
 
 export const elicitationDrafts = {
-  get: (requestId: string) => drafts.get(requestId),
-  set: (requestId: string, draft: ElicitationDraft) => void drafts.set(requestId, draft),
-  delete: (requestId: string) => void drafts.delete(requestId),
+  get: (requestId: string) => drafts.get(requestId)?.draft,
+  set: (threadId: string, requestId: string, draft: ElicitationDraft) =>
+    void drafts.set(requestId, { threadId, draft }),
+  /** Drops the thread's drafts for requests it no longer has pending. */
+  keepOnly(threadId: string, pending: readonly string[]) {
+    for (const [requestId, entry] of drafts) {
+      if (entry.threadId === threadId && !pending.includes(requestId)) drafts.delete(requestId);
+    }
+  },
 };

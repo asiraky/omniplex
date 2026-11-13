@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { answerOf, initialDraft, pickOption, pickOther, type FieldDraft } from "./elicitationDraft";
+import {
+  answerOf,
+  elicitationDrafts,
+  initialDraft,
+  pickOption,
+  pickOther,
+  type FieldDraft,
+} from "./elicitationDraft";
 
 const single = { type: "string", enum: ["a", "b", "c"], "x-allowOther": true };
 const multi = { ...single, "x-multiSelect": true };
@@ -66,5 +73,20 @@ describe("answerOf", () => {
     ["plain field", { type: "number" }, draft({ value: 4 }), 4],
   ])("%s", (_, field, d, expected) => {
     expect(answerOf(field, d)).toEqual(expected);
+  });
+});
+
+describe("elicitationDrafts.keepOnly", () => {
+  it("drops only that thread's drafts for requests no longer pending", () => {
+    const saved = initialDraft({});
+    elicitationDrafts.set("t-a", "keep-a", saved);
+    elicitationDrafts.set("t-a", "gone-a", saved);
+    elicitationDrafts.set("t-b", "other-b", saved);
+
+    elicitationDrafts.keepOnly("t-a", ["keep-a"]);
+
+    expect(elicitationDrafts.get("keep-a")).toBe(saved);
+    expect(elicitationDrafts.get("gone-a")).toBeUndefined();
+    expect(elicitationDrafts.get("other-b")).toBe(saved);
   });
 });

@@ -8,10 +8,12 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Switch } from "~/components/ui/switch";
 import {
+  allowsOther,
   answersOf,
   elicitationDrafts,
   initialDraft,
   isMultiSelect,
+  optionsOf,
   pickOption,
   pickOther,
   type ElicitationDraft,
@@ -24,6 +26,7 @@ import { useLatest } from "~/useLatest";
 import type { PendingElicitation } from "~/protocol";
 
 interface Props {
+  threadId: string;
   request: PendingElicitation;
   onResolve(action: "accept" | "decline" | "cancel", value?: unknown): void;
 }
@@ -39,107 +42,30 @@ const ADVANCE_MS = 180;
  * answers so far live outside the component, so switching threads and back
  * finds them where they were left.
  */
-export function ElicitationPrompt({ request, onResolve }: Props) {
+export function ElicitationPrompt({ threadId, request, onResolve }: Props) {
   const properties = request.schema?.properties ?? {};
   const keys = Object.keys(properties);
-  const requiredKeys = new Set(request.schema?.required);
-  const fieldId = useId();
-
-  const [draft, setDraftState] = useState<ElicitationDraft>(
-    () => elicitationDrafts.get(request.requestId) ?? initialDraft(properties),
-  );
-  // The newest draft, for the auto-advance timer and the digit keys, which
-  // outlive the render that saw it.
-  const latest = useRef(draft);
-  const setDraft = (next: ElicitationDraft) => {
-    latest.current = next;
-    elicitationDrafts.set(request.requestId, next);
-    setDraftState(next);
-  };
-
-  // Set once the human moves between questions, so the next question's text
-  // box takes focus. Not on first show: that would steal focus from the
-  // composer and, on a phone, throw up the keyboard over the thread.
-  const [moved, setMoved] = useState(false);
-  const timer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-
-  const step = Math.min(draft.step, Math.max(keys.length - 1, 0));
-  const last = step >= keys.length - 1;
-  const key = keys[step];
+  const q = useQuestions(threadId, request.requestId, properties);
+  const key = keys[q.step];
   const field = key ? properties[key] : undefined;
-  const fieldDraft = key ? draft.fields[key] : undefined;
+  const last = q.step >= keys.length - 1;
 
-  const goTo = (next: number) => {
-    window.clearTimeout(timer.current);
-    setMoved(true);
-    setDraft({ ...latest.current, step: next });
-  };
-
-  const resolve = (action: "accept" | "decline") => {
-    window.clearTimeout(timer.current);
-    elicitationDrafts.delete(request.requestId);
-    onResolve(action, action === "accept" ? answersOf(properties, latest.current) : undefined);
-  };
-
-  const setField = (update: (d: FieldDraft) => FieldDraft) => {
-    const d = latest.current;
-    if (!key || !d.fields[key]) return;
-    setDraft({ ...d, fields: { ...d.fields, [key]: update(d.fields[key]) } });
-  };
-
-  // A single-select answered by an option is done; anything else (several
-  // picks, an "Other" still to type) waits for Next.
-  const pick = (option: string) => {
-    if (!field) return;
-    setField((d) => pickOption(field, d, option));
-    window.clearTimeout(timer.current);
-    if (!isMultiSelect(field) && !last) {
-      const from = step;
-      timer.current = window.setTimeout(() => {
-        if (latest.current.step === from) goTo(from + 1);
-      }, ADVANCE_MS);
-    }
-  };
-  const other = () => {
-    if (!field) return;
-    window.clearTimeout(timer.current);
-    setMoved(true);
-    setField((d) => pickOther(field, d));
-  };
-
-  const options = field?.enum ? (field.enum as string[]) : [];
-  const allowOther = Boolean(field?.["x-allowOther"]);
-
-  // Digits pick the question's options on a keyboard: 1 is the first row,
-  // and "Other", when there is one, is the row after the last option. Not
-  // while typing, nor under a dialog or menu that owns the keyboard.
-  const digits = useLatest({ options, allowOther, pick, other });
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.repeat || isComposing(e)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (!/^[1-9]$/.test(e.key)) return;
-      if (isEditable(document.activeElement) || keyboardLayerOpen()) return;
-      const { options, allowOther, pick, other } = digits.current;
-      const index = Number(e.key) - 1;
-      if (index < options.length) pick(options[index]);
-      else if (allowOther && index === options.length) other();
-      else return;
-      e.preventDefault();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [digits]);
+  useDigitKeys((n) => {
+    const step = q.settle();
+    const field = properties[keys[step]];
+    if (!field) return false;
+    const options = optionsOf(field);
+    if (n <= options.length) q.pick(step, options[n - 1]);
+    else if (allowsOther(field) && n === options.length + 1) q.other(step);
+    else return false;
+    return true;
+  });
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (last) resolve("accept");
-    else goTo(step + 1);
+    if (last) onResolve("accept", q.answers());
+    else q.goTo(q.step + 1);
   };
-
-  const id = `${fieldId}-${key}`;
-  const labelId = `${id}-label`;
 
   return (
     // Like the permission card, this blocks the turn. It floats in the band
@@ -157,7 +83,7 @@ export function ElicitationPrompt({ request, onResolve }: Props) {
           <AttentionLabel label="input needed">
             {keys.length > 1 && (
               <span className="text-muted-foreground ml-auto font-mono text-[10px] tabular-nums">
-                {step + 1} of {keys.length}
+                {q.step + 1} of {keys.length}
               </span>
             )}
           </AttentionLabel>
@@ -175,81 +101,220 @@ export function ElicitationPrompt({ request, onResolve }: Props) {
             </a>
           )}
 
-          {key && field && fieldDraft && (
+          {key && field && q.draft.fields[key] && (
             // Keyed by the question so a text box's focus and a row's hover
             // do not carry over to the next one.
-            <div key={key} className="space-y-2.5">
-              {/* The Claude bridge sends the question as the title and its
-                  short header as the description. */}
-              <div className="space-y-1">
-                <Label id={labelId} htmlFor={id} className="block text-[13px] leading-snug">
-                  {field.title || key}
-                </Label>
-                {field.description && (
-                  <p className="text-muted-foreground text-[11px] leading-snug">
-                    {field.description}
-                  </p>
-                )}
-              </div>
-
-              {field.enum ? (
-                <Choices
-                  id={id}
-                  labelId={labelId}
-                  field={field}
-                  draft={fieldDraft}
-                  focusOther={moved}
-                  onPick={pick}
-                  onOther={other}
-                  onOtherText={(otherText) => setField((d) => ({ ...d, otherText }))}
-                />
-              ) : field.type === "boolean" ? (
-                <div className="flex h-9 items-center">
-                  <Switch
-                    id={id}
-                    checked={Boolean(fieldDraft.value)}
-                    onCheckedChange={(value) => setField((d) => ({ ...d, value }))}
-                  />
-                </div>
-              ) : (
-                <Input
-                  id={id}
-                  autoFocus={moved}
-                  type={
-                    field.format === "password"
-                      ? "password"
-                      : field.type === "number" || field.type === "integer"
-                        ? "number"
-                        : "text"
-                  }
-                  required={requiredKeys.has(key)}
-                  value={String(fieldDraft.value ?? "")}
-                  onChange={(event) => {
-                    const value =
-                      field.type === "number" || field.type === "integer"
-                        ? Number(event.target.value)
-                        : event.target.value;
-                    setField((d) => ({ ...d, value }));
-                  }}
-                />
-              )}
-            </div>
+            <Question
+              key={key}
+              name={key}
+              field={field}
+              required={Boolean(request.schema?.required?.includes(key))}
+              draft={q.draft.fields[key]}
+              focus={q.moved}
+              onPick={(option) => q.pick(q.step, option)}
+              onOther={() => q.other(q.step)}
+              onChange={(update) => q.update(q.step, update)}
+            />
           )}
         </div>
 
         <div className="flex items-center gap-2 border-t px-4 py-3">
-          <Button type="button" variant="ghost" onClick={() => resolve("decline")}>
+          <Button type="button" variant="ghost" onClick={() => onResolve("decline")}>
             Decline
           </Button>
           <div className="flex-1" />
-          {step > 0 && (
-            <Button type="button" variant="outline" onClick={() => goTo(step - 1)}>
+          {q.step > 0 && (
+            <Button type="button" variant="outline" onClick={() => q.goTo(q.step - 1)}>
               Back
             </Button>
           )}
           <Button type="submit">{last ? "Continue" : "Next"}</Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/**
+ * The answers and the question on screen, saved as they change so a remount
+ * picks them up. Every write goes through `latest` synchronously as well, so a
+ * key pressed or a timer fired before the rerender sees it.
+ */
+function useQuestions(
+  threadId: string,
+  requestId: string,
+  properties: Record<string, ElicitationField>,
+) {
+  const keys = Object.keys(properties);
+  const lastStep = Math.max(keys.length - 1, 0);
+  const [draft, setDraftState] = useState<ElicitationDraft>(
+    () => elicitationDrafts.get(requestId) ?? initialDraft(properties),
+  );
+  const latest = useRef(draft);
+  const save = (next: ElicitationDraft) => {
+    latest.current = next;
+    elicitationDrafts.set(threadId, requestId, next);
+    setDraftState(next);
+  };
+
+  // Set once the human moves between questions, so the next question's text
+  // box takes focus. Not on first show: that would steal focus from the
+  // composer and, on a phone, throw up the keyboard over the thread.
+  const [moved, setMoved] = useState(false);
+
+  // The step a single-select pick is about to move on to, while it waits.
+  const advancing = useRef<{ to: number; timer: number } | null>(null);
+  const cancelAdvance = () => {
+    if (advancing.current) window.clearTimeout(advancing.current.timer);
+    advancing.current = null;
+  };
+  useEffect(() => cancelAdvance, []);
+
+  const goTo = (step: number) => {
+    cancelAdvance();
+    setMoved(true);
+    save({ ...latest.current, step: Math.min(Math.max(step, 0), lastStep) });
+  };
+
+  const update = (step: number, fn: (d: FieldDraft) => FieldDraft) => {
+    const key = keys[step];
+    const d = latest.current;
+    if (!key || !d.fields[key]) return;
+    save({ ...d, fields: { ...d.fields, [key]: fn(d.fields[key]) } });
+  };
+
+  return {
+    draft,
+    step: Math.min(draft.step, lastStep),
+    moved,
+    goTo,
+    update,
+    answers: () => answersOf(properties, latest.current),
+    /**
+     * The question a key press is for. In the moment between a pick and the
+     * move it makes, that is the next question already: two digits typed
+     * fast answer two questions, not the first one twice.
+     */
+    settle() {
+      if (advancing.current) goTo(advancing.current.to);
+      return Math.min(latest.current.step, lastStep);
+    },
+    // A single-select answered by an option is done; anything else (several
+    // picks, an "Other" still to type) waits for Next.
+    pick(step: number, option: string) {
+      const field = properties[keys[step]];
+      if (!field) return;
+      cancelAdvance();
+      update(step, (d) => pickOption(field, d, option));
+      if (!isMultiSelect(field) && step < lastStep) {
+        const to = step + 1;
+        advancing.current = { to, timer: window.setTimeout(() => goTo(to), ADVANCE_MS) };
+      }
+    },
+    other(step: number) {
+      const field = properties[keys[step]];
+      if (!field) return;
+      cancelAdvance();
+      setMoved(true);
+      update(step, (d) => pickOther(field, d));
+    },
+  };
+}
+
+/**
+ * Bare digits 1–9 for the question's rows, on a keyboard. Not while typing,
+ * nor under a dialog or menu that owns the keyboard. The composer is the one
+ * text box let through, while it is empty: it keeps focus after a send, which
+ * is just when a question arrives, and with nothing in it a lone digit can
+ * only be an answer. `onDigit` says whether the digit was used.
+ */
+function useDigitKeys(onDigit: (n: number) => boolean) {
+  const latest = useLatest(onDigit);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || isComposing(e)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!/^[1-9]$/.test(e.key)) return;
+      const el = document.activeElement;
+      const emptyComposer =
+        el instanceof HTMLTextAreaElement && el.matches("[data-composer-input]") && el.value === "";
+      if ((!emptyComposer && isEditable(el)) || keyboardLayerOpen()) return;
+      if (latest.current(Number(e.key))) e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [latest]);
+}
+
+function Question({
+  name,
+  field,
+  required,
+  draft,
+  focus,
+  onPick,
+  onOther,
+  onChange,
+}: {
+  name: string;
+  field: ElicitationField;
+  required: boolean;
+  draft: FieldDraft;
+  /** Take focus on show: the human moved here, rather than it appearing. */
+  focus: boolean;
+  onPick(option: string): void;
+  onOther(): void;
+  onChange(update: (d: FieldDraft) => FieldDraft): void;
+}) {
+  const id = `${useId()}-${name}`;
+  const labelId = `${id}-label`;
+  const numeric = field.type === "number" || field.type === "integer";
+
+  return (
+    <div className="space-y-2.5">
+      {/* The Claude bridge sends the question as the title and its short
+          header as the description. */}
+      <div className="space-y-1">
+        <Label id={labelId} htmlFor={id} className="block text-[13px] leading-snug">
+          {field.title || name}
+        </Label>
+        {field.description && (
+          <p className="text-muted-foreground text-[11px] leading-snug">{field.description}</p>
+        )}
+      </div>
+
+      {field.enum ? (
+        <Choices
+          id={id}
+          labelId={labelId}
+          field={field}
+          draft={draft}
+          focusOther={focus}
+          onPick={onPick}
+          onOther={onOther}
+          onOtherText={(otherText) => onChange((d) => ({ ...d, otherText }))}
+        />
+      ) : field.type === "boolean" ? (
+        <div className="flex h-9 items-center">
+          <Switch
+            id={id}
+            checked={Boolean(draft.value)}
+            onCheckedChange={(value) => onChange((d) => ({ ...d, value }))}
+          />
+        </div>
+      ) : (
+        <Input
+          id={id}
+          autoFocus={focus}
+          type={field.format === "password" ? "password" : numeric ? "number" : "text"}
+          required={required}
+          value={String(draft.value ?? "")}
+          onChange={(event) => {
+            const value = numeric ? Number(event.target.value) : event.target.value;
+            onChange((d) => ({ ...d, value }));
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -280,10 +345,10 @@ function Choices({
   onOther(): void;
   onOtherText(text: string): void;
 }) {
-  const options = (Array.isArray(field.enum) ? field.enum : []) as string[];
+  const options = optionsOf(field);
   const descriptions = (field["x-optionDescriptions"] ?? {}) as Record<string, string>;
   const multi = isMultiSelect(field);
-  const allowOther = Boolean(field["x-allowOther"]);
+  const other = allowsOther(field);
   const role = multi ? "checkbox" : "radio";
 
   return (
@@ -311,13 +376,13 @@ function Choices({
             )}
           </ChoiceRow>
         ))}
-        {allowOther && (
+        {other && (
           <ChoiceRow role={role} n={options.length + 1} checked={draft.otherOn} onClick={onOther}>
             Other
           </ChoiceRow>
         )}
       </div>
-      {allowOther && draft.otherOn && (
+      {other && draft.otherOn && (
         <Input
           aria-label="Other answer"
           placeholder="Your answer"

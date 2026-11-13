@@ -3,6 +3,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { render } from "~/test/harness";
+import { elicitationDrafts } from "~/lib/elicitationDraft";
 import { ElicitationPrompt } from "./ElicitationPrompt";
 import type { PendingElicitation } from "~/protocol";
 
@@ -34,7 +35,7 @@ const color = { type: "string", title: "Which colour?", enum: ["Red", "Green"], 
 const name = { type: "string", title: "Your name?" };
 
 function mount(req: PendingElicitation, onResolve = vi.fn()) {
-  const view = render(<ElicitationPrompt request={req} onResolve={onResolve} />);
+  const view = render(<ElicitationPrompt threadId="t-1" request={req} onResolve={onResolve} />);
   return { ...view, onResolve };
 }
 
@@ -75,7 +76,7 @@ describe("stepping through questions", () => {
     const { onResolve } = mount(request({ name, color }));
     click("Next");
     click("Decline");
-    expect(onResolve).toHaveBeenCalledWith("decline", undefined);
+    expect(onResolve).toHaveBeenCalledWith("decline");
   });
 });
 
@@ -157,6 +158,32 @@ describe("digit keys", () => {
     expect(onResolve).toHaveBeenCalledWith("accept", { features: ["Tracing"] });
   });
 
+  it("answer two questions when typed faster than the auto-advance", () => {
+    vi.useFakeTimers();
+    const { onResolve } = mount(request({ color, shape: { ...color, title: "Which shape?", enum: ["Round", "Square"] } }));
+    press("1");
+    press("2");
+    act(() => void vi.runAllTimers());
+    click("Continue");
+    expect(onResolve).toHaveBeenCalledWith("accept", { color: "Red", shape: "Square" });
+  });
+
+  it("reach the rows from an empty composer, and type into one with text in it", () => {
+    mount(request({ features }));
+    const composer = document.createElement("textarea");
+    composer.setAttribute("data-composer-input", "");
+    document.body.append(composer);
+    composer.focus();
+
+    press("1");
+    composer.value = "hello";
+    press("2");
+    composer.remove();
+
+    expect(screen.getByRole("checkbox", { name: /Caching/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("checkbox", { name: /Metrics/ }).getAttribute("aria-checked")).toBe("false");
+  });
+
   it.each([
     ["a modifier is held", () => press("1", { ctrlKey: true })],
     ["focus is in a text box", () => {
@@ -181,12 +208,13 @@ describe("digit keys", () => {
 });
 
 describe("drafts", () => {
-  it("survive a remount of the same request, and resolving clears them", () => {
+  it("survive a remount, including after an answer that has not landed", () => {
     const req = request({ name, color });
     const first = mount(req);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ada" } });
     click("Next");
     click("Green");
+    click("Continue"); // the request is still pending: it may not have landed
     first.unmount();
 
     const second = mount(req);
@@ -194,19 +222,15 @@ describe("drafts", () => {
     expect(screen.getByRole("radio", { name: /Green/ }).getAttribute("aria-checked")).toBe("true");
     click("Continue");
     expect(second.onResolve).toHaveBeenCalledWith("accept", { name: "Ada", color: "Green" });
-    second.unmount();
-
-    mount(req);
-    expect(title()).toBe("Your name?");
-    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("");
   });
 
-  it("are cleared by declining", () => {
+  it("start over once the thread stops listing the request", () => {
     const req = request({ name, color });
     const first = mount(req);
     click("Next");
-    click("Decline");
     first.unmount();
+
+    elicitationDrafts.keepOnly("t-1", []);
     mount(req);
     expect(title()).toBe("Your name?");
   });

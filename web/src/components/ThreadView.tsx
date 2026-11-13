@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { useDraft } from "~/app/draftStore";
 import { useFailedSend, useWaitingSend } from "~/app/outbox";
@@ -13,6 +13,7 @@ import type { ThreadHarness } from "~/app/useThreadHarness";
 import type { ConnectionStatus } from "~/client";
 import type { ScrollPosition } from "~/components/transcript/scrollAnchor";
 import type { CardSignIn } from "~/lib/cards";
+import { elicitationDrafts } from "~/lib/elicitationDraft";
 import { describeSettings, pickerInstances, resolveInstance } from "~/lib/models";
 import { OpenPathContext } from "~/lib/openPath";
 import { ReadAloudContext } from "~/lib/readAloud";
@@ -337,6 +338,16 @@ function ComposerDock({
   dictate: boolean;
 }) {
   const state = useThread(useThreadStore(), dockFields, shallow);
+  // Paired with the state's own thread id, not activeId: for a render after a
+  // switch the two can disagree, and the wrong pairing would drop the drafts
+  // of the thread being opened.
+  const threadId = state?.threadId;
+  const pendingElicitations = state?.pendingElicitations;
+  useEffect(() => {
+    if (threadId) {
+      elicitationDrafts.keepOnly(threadId, (pendingElicitations ?? []).map((e) => e.requestId));
+    }
+  }, [threadId, pendingElicitations]);
   if (!state) return null;
   const pending = state.pendingPermissions?.[0];
   const elicitations = state.pendingElicitations ?? [];
@@ -378,6 +389,7 @@ function ComposerDock({
             // A fresh prompt per question, so one queued behind another does
             // not open on the first one's answers.
             key={elicitation.requestId}
+            threadId={state.threadId}
             request={elicitation}
             onResolve={(action, value) =>
               commands.resolveElicitation(elicitation.requestId, action, value)
@@ -524,6 +536,7 @@ const harnessOf = (state: ThreadState | null) => state?.harness;
 function dockFields(s: ThreadState | null) {
   return (
     s && {
+      threadId: s.threadId,
       pendingPermissions: s.pendingPermissions,
       pendingElicitations: s.pendingElicitations,
       scheduledPrompts: s.scheduledPrompts,
