@@ -110,7 +110,7 @@ function add(label: string) {
 function browse(account: string) {
   fireEvent.click(compareChip()!);
   const picker = within(document.querySelector("[cmdk-root]") as HTMLElement);
-  fireEvent.click(picker.getByRole("button", { name: new RegExp(`^${account}`) }));
+  fireEvent.click(picker.getByRole("button", { name: new RegExp(`${account}$`) }));
 }
 
 async function send() {
@@ -171,6 +171,25 @@ describe("comparing models from the draft", () => {
     await waitFor(() => expect(props.onCompare).toHaveBeenCalled());
     const runs = vi.mocked(props.onCompare!).mock.calls[0][0] as CompareRun[];
     expect(runs[1].input).toMatchObject({ harness: "codex", instance: "codex", model: "gpt-5.6" });
+  });
+
+  it("names the account on chips and titles when the same model runs on two", async () => {
+    const work = { ...claude.instances![0], id: "claude-work", displayName: "Work" };
+    const twoAccounts = { ...claude, instances: [...claude.instances!, work] } as HarnessMeta;
+    const props = open({ harnesses: [twoAccounts, codex] });
+    await waitFor(() => compareChip());
+    browse("Work");
+    add("Opus 5");
+    expect(screen.getByRole("button", { name: "Stop comparing with Opus 5 (Work)" }).textContent).toContain(
+      "Opus 5 (Work)",
+    );
+    await send();
+    await waitFor(() => expect(props.onCompare).toHaveBeenCalled());
+    const runs = vi.mocked(props.onCompare!).mock.calls[0][0] as CompareRun[];
+    expect(runs.map((r) => r.input.title)).toEqual([
+      "fix the login · Opus 5 (Claude Code)",
+      "fix the login · Opus 5 (Work)",
+    ]);
   });
 
   it("adds a model once, never the draft's own, and stops offering more at three", async () => {

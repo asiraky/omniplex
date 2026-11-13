@@ -223,7 +223,9 @@ export function ThreadDraft({
     instance: agent.instance?.id ?? "",
     model: agent.model,
   };
-  const compare = useCompare(sources, primary, !!gitScope && !!onCompare);
+  const modelLabel =
+    agent.instance?.models.find((m) => m.id === agent.model)?.label ?? "";
+  const compare = useCompare(sources, primary, modelLabel || agent.model, !!gitScope && !!onCompare);
   const git = useWorkspaceChoice({
     project,
     gitScope,
@@ -233,8 +235,6 @@ export function ThreadDraft({
     preset: preset && { ...preset, projectId: presetProject },
     forceWorktree: compare.comparing,
   });
-  const modelLabel =
-    agent.instance?.models.find((m) => m.id === agent.model)?.label ?? "";
   const ownComposer = useRef<ComposerHandle | null>(null);
   const composer = composerRef ?? ownComposer;
   // Asked for from the keyboard or the palette, the cursor goes straight into
@@ -313,7 +313,7 @@ export function ThreadDraft({
     const comparing = compare.comparing;
     try {
       if (comparing && onCompare) {
-        await onCompare(compare.runs(input, modelLabel || agent.model));
+        await onCompare(compare.runs(input));
         compare.clear();
       } else {
         await onStart(input, schedule);

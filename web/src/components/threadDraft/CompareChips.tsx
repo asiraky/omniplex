@@ -27,18 +27,18 @@ export function CompareChips({
 }) {
   return (
     <>
-      {compare.extras.map(({ pick, agent }) => (
+      {compare.extras.map(({ pick, agent, label }) => (
         <Button
           key={`${pick.instance}:${pick.model}`}
           type="button"
           variant="ghost"
           size="sm"
-          aria-label={`Stop comparing with ${agent.label}`}
+          aria-label={`Stop comparing with ${label}`}
           onClick={() => compare.remove(pick)}
           className={cn(chipClass, "text-foreground")}
         >
           <ProviderLogo provider={agent.harness} />
-          <span className="truncate">{agent.label}</span>
+          <span className="truncate">{label}</span>
           <XIcon className="text-muted-foreground" />
         </Button>
       ))}
