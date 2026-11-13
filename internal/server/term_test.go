@@ -124,7 +124,7 @@ type termReader struct {
 	conn   *websocket.Conn
 	offset int64
 	syncs  []int64
-	cwds   []string
+	cwds   []termCwdFrame
 	out    strings.Builder
 }
 
@@ -139,6 +139,7 @@ func (tr *termReader) next(ctx context.Context) error {
 			Type   string `json:"type"`
 			Offset int64  `json:"offset"`
 			Data   string `json:"data"`
+			Root   string `json:"root"`
 		}
 		if json.Unmarshal(data, &f) == nil {
 			switch f.Type {
@@ -146,7 +147,7 @@ func (tr *termReader) next(ctx context.Context) error {
 				tr.offset = f.Offset
 				tr.syncs = append(tr.syncs, f.Offset)
 			case "cwd":
-				tr.cwds = append(tr.cwds, f.Data)
+				tr.cwds = append(tr.cwds, termCwdFrame{Type: f.Type, Data: f.Data, Root: f.Root})
 			}
 		}
 		return nil
@@ -187,7 +188,7 @@ func (tr *termReader) input(t *testing.T, ctx context.Context, s string) {
 }
 
 // cwd asks where the shell is and reads until the answer.
-func (tr *termReader) cwd(t *testing.T, ctx context.Context) string {
+func (tr *termReader) cwd(t *testing.T, ctx context.Context) termCwdFrame {
 	t.Helper()
 	if err := tr.conn.Write(ctx, websocket.MessageText, []byte(`{"type":"cwd"}`)); err != nil {
 		t.Fatal(err)
@@ -689,17 +690,21 @@ func TestTermCwdFollowsTheShell(t *testing.T) {
 	if err := tr.next(ctx); err != nil {
 		t.Fatal(err)
 	}
-	root, err := filepath.EvalSymlinks(rig.session("cwd").cmd.Dir)
+	start := rig.session("cwd").cmd.Dir
+	// The kernel reports where the shell is with symlinks resolved, and
+	// macOS's temp dir sits behind one.
+	real, err := filepath.EvalSymlinks(start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := tr.cwd(t, ctx); got != root {
-		t.Fatalf("cwd at start %q, want the checkout %q", got, root)
+	if got := tr.cwd(t, ctx); got.Data != real || got.Root != start {
+		t.Fatalf("at start got %+v, want cwd %q and root %q", got, real, start)
 	}
 
 	tr.input(t, ctx, "mkdir sub && cd sub && echo in\"\"side\n")
 	tr.until(t, ctx, "inside")
-	if got, want := tr.cwd(t, ctx), filepath.Join(root, "sub"); got != want {
-		t.Fatalf("cwd after cd %q, want %q", got, want)
+	// The root stays where the shell started.
+	if got, want := tr.cwd(t, ctx), filepath.Join(real, "sub"); got.Data != want || got.Root != start {
+		t.Fatalf("after cd got %+v, want cwd %q and root %q", got, want, start)
 	}
 }

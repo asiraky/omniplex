@@ -83,6 +83,12 @@ export interface PanelProps {
   loadTree: (includeIgnored: boolean) => Promise<FileTree>;
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
+  /**
+   * The request with this nonce is on screen. The owner drops it, so the next
+   * mount of the panel (a phone's sheet reopening, a crossed breakpoint) does
+   * not route it again.
+   */
+  onRequestRouted: (nonce: number) => void;
   pr?: PullRequest | null;
   /** Terminal output quoted for the composer. */
   onAddToChat?: (quoted: string) => void;
@@ -195,6 +201,7 @@ function PanelBody({
   loadTree,
   loadFile,
   request,
+  onRequestRouted,
   pr,
   onAddToChat,
   onOpenPath,
@@ -299,8 +306,14 @@ function PanelBody({
   const [reveal, setReveal] = useState<{ path: string; nonce: number } | null>(null);
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
   // Each nonce is routed exactly once, during render, so the tab it opens is
-  // in the same paint as the request rather than one frame behind it.
+  // in the same paint as the request rather than one frame behind it. The
+  // owner hears about it after the commit (telling it during render would set
+  // its state mid-render) and drops the request, so a remount of this body
+  // does not replay it.
   const [routedNonce, setRoutedNonce] = useState(0);
+  useEffect(() => {
+    if (routedNonce) onRequestRouted(routedNonce);
+  }, [routedNonce, onRequestRouted]);
   if (request && request.nonce !== routedNonce) {
     const route = routeRequest(request, changes !== null || !!changesError, changedPaths, tree);
     // Null is "not settled yet": the nonce stays unrouted and the render the

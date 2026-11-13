@@ -186,20 +186,18 @@ export function resolvePath(path: string, dir: string): string {
 }
 
 /**
- * A path a terminal printed, relative to the checkout, or null when it points
- * somewhere the server will not serve: the home directory, above the checkout,
- * or an absolute path outside it. The checkout is `cwd`. The terminal makes a
- * relative path absolute against the shell's working directory before it gets
- * here, so a relative one is the fallback for when that is unknown, and is
- * taken against the checkout, where a thread's terminal starts. The checkout
- * itself comes back as "".
+ * `path` relative to the checkout, or null when it points somewhere the server
+ * will not serve: the home directory, above the checkout, or an absolute path
+ * outside it. `checkout` is the checkout's absolute path. A relative `path` is
+ * taken to be relative to the checkout already. The checkout itself comes
+ * back as "".
  */
-export function pathInCheckout(path: string, cwd: string): string | null {
+export function pathInCheckout(path: string, checkout: string): string | null {
   if (path.startsWith("~")) return null;
   let rel = path;
   if (path.startsWith("/")) {
-    const root = cwd.replace(/\/+$/, "") + "/";
-    if (!cwd || !(path + "/").startsWith(root)) return null;
+    const root = checkout.replace(/\/+$/, "") + "/";
+    if (!checkout || !(path + "/").startsWith(root)) return null;
     rel = path.slice(root.length);
   }
   // A trailing slash is how `git status` marks a directory; the panel's

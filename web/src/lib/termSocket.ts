@@ -29,6 +29,14 @@ export interface TermSocketEvents {
   onEnded(reason: TermEnd): void;
 }
 
+/** Where a shell is, as its server saw it. Both absolute. */
+export interface ShellLocation {
+  /** Where the shell is now, which a cd since the start has moved. */
+  cwd: string;
+  /** Where it started: for a thread's shell, the checkout root. */
+  root: string;
+}
+
 export interface TermSocket {
   /** Keystrokes. Dropped while disconnected. */
   send(data: string): void;
@@ -37,12 +45,12 @@ export interface TermSocket {
   /** A fresh shell under the same id, after the last one ended. */
   restart(): void;
   /**
-   * Where the shell is now, which a cd since the start has moved: the
-   * directory a relative path it printed is relative to. null when the server
-   * cannot tell, is not reachable, or takes longer than a click should wait.
-   * Calls made while one is out share its answer.
+   * Where the shell is now, the directory a relative path it printed is
+   * relative to, and where it started. null when the server cannot tell, is
+   * not reachable, or takes longer than a click should wait. Calls made while
+   * one is out share its answer.
    */
-  cwd(): Promise<string | null>;
+  where(): Promise<ShellLocation | null>;
   /** Hang up. The server keeps the shell; nothing is reported after this. */
   dispose(): void;
 }
@@ -51,9 +59,9 @@ export interface TermSocket {
 // connection, and worth retrying.
 const CLOSE_ENDS: Record<number, TermEnd> = { 4000: "exited", 4404: "gone", 4400: "failed" };
 
-// How long a cwd question waits for the server. Past this the click has to go
-// ahead without it.
-const CWD_TIMEOUT_MS = 3000;
+// How long a where question waits for the server. Past this the click has to
+// go ahead without it.
+const WHERE_TIMEOUT_MS = 3000;
 
 export function openTermSocket(id: string, target: TerminalTarget, events: TermSocketEvents): TermSocket {
   let ws: WebSocket | null = null;
@@ -71,13 +79,16 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
   let retryTimer: number | null = null;
   let stableTimer: number | null = null;
   let size: { cols: number; rows: number } | null = null;
-  // The cwd question out on the wire, if any. The server answers in order on
-  // the socket it was asked on, so a drop means no answer is coming.
-  let cwdAsk: { answer: Promise<string | null>; settle: (dir: string | null) => void } | null = null;
+  // The where question out on the wire, if any. The server answers in order
+  // on the socket it was asked on, so a drop means no answer is coming.
+  let whereAsk: {
+    answer: Promise<ShellLocation | null>;
+    settle: (at: ShellLocation | null) => void;
+  } | null = null;
   // Questions asked on this socket and not yet answered. More than one means
   // an earlier one timed out, and the next answer is that one's, not the
   // current question's.
-  let cwdOwed = 0;
+  let whereOwed = 0;
 
   const raw = (frame: Record<string, unknown>) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
@@ -100,14 +111,14 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     retryTimer = stableTimer = null;
   };
 
-  const answerCwd = (dir: string | null) => {
-    cwdAsk?.settle(dir);
-    cwdAsk = null;
+  const answerWhere = (at: ShellLocation | null) => {
+    whereAsk?.settle(at);
+    whereAsk = null;
   };
 
   // Detach before closing, so a socket we hung up on ourselves reports nothing.
   const hangUp = () => {
-    answerCwd(null);
+    answerWhere(null);
     if (!ws) return;
     ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
     ws.close();
@@ -119,7 +130,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
     const sock = new WebSocket(url());
     sock.binaryType = "arraybuffer";
     ws = sock;
-    cwdOwed = 0;
+    whereOwed = 0;
 
     sock.onopen = () => {
       events.onStatus("online");
@@ -135,16 +146,19 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
         events.onData(bytes);
         return;
       }
-      let frame: { type?: string; offset?: unknown; data?: unknown };
+      let frame: { type?: string; offset?: unknown; data?: unknown; root?: unknown };
       try {
         frame = JSON.parse(e.data);
       } catch {
         return;
       }
       if (frame.type === "cwd") {
-        if (--cwdOwed > 0) return;
-        cwdOwed = 0;
-        answerCwd(typeof frame.data === "string" && frame.data !== "" ? frame.data : null);
+        if (--whereOwed > 0) return;
+        whereOwed = 0;
+        const { data: cwd, root } = frame;
+        // "" is the server not knowing. A shell with no start directory (a
+        // sign-in) has nothing for a path to be under either.
+        answerWhere(typeof cwd === "string" && cwd && typeof root === "string" && root ? { cwd, root } : null);
         return;
       }
       if (frame.type !== "sync" || typeof frame.offset !== "number") return;
@@ -160,7 +174,7 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
       if (stableTimer !== null) window.clearTimeout(stableTimer);
       stableTimer = null;
       ws = null;
-      answerCwd(null);
+      answerWhere(null);
       const end = CLOSE_ENDS[e.code];
       if (end) {
         events.onEnded(end);
@@ -200,19 +214,19 @@ export function openTermSocket(id: string, target: TerminalTarget, events: TermS
       size = { cols, rows };
       raw({ type: "resize", cols, rows });
     },
-    cwd() {
-      if (cwdAsk) return cwdAsk.answer;
+    where() {
+      if (whereAsk) return whereAsk.answer;
       if (disposed || ws?.readyState !== WebSocket.OPEN) return Promise.resolve(null);
-      let settle!: (dir: string | null) => void;
-      const answer = new Promise<string | null>((resolve) => {
-        const timer = window.setTimeout(() => answerCwd(null), CWD_TIMEOUT_MS);
-        settle = (dir) => {
+      let settle!: (at: ShellLocation | null) => void;
+      const answer = new Promise<ShellLocation | null>((resolve) => {
+        const timer = window.setTimeout(() => answerWhere(null), WHERE_TIMEOUT_MS);
+        settle = (at) => {
           window.clearTimeout(timer);
-          resolve(dir);
+          resolve(at);
         };
       });
-      cwdAsk = { answer, settle };
-      cwdOwed++;
+      whereAsk = { answer, settle };
+      whereOwed++;
       raw({ type: "cwd" });
       return answer;
     },

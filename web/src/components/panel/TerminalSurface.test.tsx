@@ -87,7 +87,7 @@ const { FakeTerminal, socket, toast } = vi.hoisted(() => {
     reset() {}
     dispose() {}
   }
-  const socket = { resize() {}, send() {}, dispose() {}, restart() {}, cwd: vi.fn() };
+  const socket = { resize() {}, send() {}, dispose() {}, restart() {}, where: vi.fn() };
   return { FakeTerminal, socket, toast: { info: vi.fn() } };
 });
 
@@ -117,7 +117,7 @@ function tap(x: number, y: number) {
 let open: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   toast.info.mockClear();
-  socket.cwd.mockReset().mockResolvedValue(null);
+  socket.where.mockReset().mockResolvedValue(null);
   open = vi.fn();
   vi.stubGlobal("open", open);
 });
@@ -134,6 +134,18 @@ describe("TerminalSurface: add to chat", () => {
     expect(onAddToChat).toHaveBeenCalledWith(quoteTerminalOutput("$ make\nok\n"));
     expect(term.selection).toBe("");
     expect(screen.queryByRole("button", { name: "Add to chat" })).toBeNull();
+  });
+
+  it("says so for a blank selection, and keeps it", () => {
+    const onAddToChat = vi.fn();
+    const term = mount({ onAddToChat });
+
+    act(() => term.select("  \n \n"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+    expect(onAddToChat).not.toHaveBeenCalled();
+    expect(toast.info).toHaveBeenCalledOnce();
+    expect(term.selection).toBe("  \n \n");
   });
 
   it("offers nothing to a caller with no chat to add to", () => {
@@ -196,42 +208,64 @@ describe("TerminalSurface: links", () => {
     await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("src/app.ts", 12));
   });
 
-  it("makes a relative path absolute against the shell's directory", async () => {
-    socket.cwd.mockResolvedValue("/r/web");
+  // The thread sits in /r/web of a repo at /r: the shell starts at /r, and
+  // the panel's paths are relative to /r.
+  const inWeb = { cwd: "/r/web", root: "/r" };
+  async function click(text: string, at: typeof inWeb | null) {
+    socket.where.mockResolvedValue(at);
     const onOpenPath = vi.fn();
     const term = mount({ onOpenPath });
-    term.show("../go.mod:3 and src/app.ts");
-
+    term.show(text);
     for (const link of linksOn(term, 1)!) link.activate(new MouseEvent("mouseup"), link.text);
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalled());
+    term.unmount();
+    return onOpenPath;
+  }
 
-    await waitFor(() => expect(onOpenPath).toHaveBeenCalledTimes(2));
-    expect(onOpenPath).toHaveBeenCalledWith("/r/go.mod", 3);
-    expect(onOpenPath).toHaveBeenCalledWith("/r/web/src/app.ts", undefined);
+  it("opens a relative path where the shell is, as a path under its start directory", async () => {
+    const onOpenPath = await click("../go.mod:3 and src/app.ts and dist/", inWeb);
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledTimes(3));
+    expect(onOpenPath).toHaveBeenCalledWith("go.mod", 3);
+    expect(onOpenPath).toHaveBeenCalledWith("web/src/app.ts", undefined);
+    // git status's directory: the panel matches it without the slash.
+    expect(onOpenPath).toHaveBeenCalledWith("web/dist", undefined);
   });
 
-  it("asks the shell nothing for an absolute or home path", async () => {
-    const onOpenPath = vi.fn();
-    const term = mount({ onOpenPath });
-    term.show("/etc/hosts ~/notes.md");
+  it("opens an absolute path under the start directory relative to it", async () => {
+    expect(await click("/r/go.mod:3", inWeb)).toHaveBeenCalledWith("go.mod", 3);
+  });
 
-    for (const link of linksOn(term, 1)!) link.activate(new MouseEvent("mouseup"), link.text);
+  it("hands on a path outside the start directory absolute", async () => {
+    expect(await click("/etc/hosts", inWeb)).toHaveBeenCalledWith("/etc/hosts", undefined);
+    // A sibling whose name starts with the root's is still outside it.
+    expect(await click("/r-old/a.ts", inWeb)).toHaveBeenCalledWith("/r-old/a.ts", undefined);
+    // Printed after a cd out of the checkout.
+    expect(await click("logs/out.txt", { cwd: "/tmp", root: "/r" })).toHaveBeenCalledWith(
+      "/tmp/logs/out.txt",
+      undefined,
+    );
+  });
 
-    await waitFor(() => expect(onOpenPath).toHaveBeenCalledTimes(2));
-    expect(onOpenPath).toHaveBeenCalledWith("/etc/hosts", undefined);
-    expect(onOpenPath).toHaveBeenCalledWith("~/notes.md", undefined);
-    expect(socket.cwd).not.toHaveBeenCalled();
+  it("hands on a path as printed when the shell cannot say where it is", async () => {
+    expect(await click("src/app.ts:12", null)).toHaveBeenCalledWith("src/app.ts", 12);
+    expect(await click("/r/go.mod", null)).toHaveBeenCalledWith("/r/go.mod", undefined);
+  });
+
+  it("asks the shell nothing for a home path", async () => {
+    expect(await click("~/notes.md", inWeb)).toHaveBeenCalledWith("~/notes.md", undefined);
+    expect(socket.where).not.toHaveBeenCalled();
   });
 
   it("opens nothing when the terminal is gone by the time the shell answers", async () => {
-    let answer!: (dir: string) => void;
-    socket.cwd.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    let answer!: (at: { cwd: string; root: string }) => void;
+    socket.where.mockReturnValue(new Promise((resolve) => (answer = resolve)));
     const onOpenPath = vi.fn();
     const term = mount({ onOpenPath });
     term.show("src/app.ts:12");
 
     linksOn(term, 1)![0].activate(new MouseEvent("mouseup"), "src/app.ts:12");
     term.unmount();
-    await act(async () => answer("/r/web"));
+    await act(async () => answer({ cwd: "/r/web", root: "/r" }));
 
     expect(onOpenPath).not.toHaveBeenCalled();
   });
@@ -263,12 +297,12 @@ describe("TerminalSurface: links", () => {
   });
 
   it("resolves a tapped path against the shell's directory too", async () => {
-    socket.cwd.mockResolvedValue("/r/web");
+    socket.where.mockResolvedValue({ cwd: "/r/web", root: "/r" });
     const onOpenPath = vi.fn();
     const term = mount({ onOpenPath });
     term.show("at src/app.ts:12");
     tap(55, 10);
-    await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("/r/web/src/app.ts", 12));
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledWith("web/src/app.ts", 12));
   });
 
   it("ignores a tap beside a link, a drag, and a tap while an app reads the mouse", () => {

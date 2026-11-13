@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 
+import type { OpenPath } from "~/lib/openPath";
 import { bufferRows, lastTerminalLines, quoteTerminalOutput } from "~/lib/terminalQuote";
 import { openTermSocket, type TermEnd, type TermSocket, type TermStatus, type TerminalTarget } from "~/lib/termSocket";
 import { toast } from "~/lib/toast";
@@ -53,8 +54,12 @@ export function TerminalSurface({
    * "Add to chat" on a selection and "send the last lines".
    */
   onAddToChat?: (quoted: string) => void;
-  /** A file path clicked in the output. Without it only URLs are links. */
-  onOpenPath?: (path: string, line?: number) => void;
+  /**
+   * A file path clicked in the output: relative to the shell's start
+   * directory when under it, else absolute, or as printed when the shell
+   * cannot say where it is. Without it only URLs are links.
+   */
+  onOpenPath?: OpenPath;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<TermSocket | null>(null);
@@ -110,7 +115,7 @@ export function TerminalSurface({
 
     const links = attachTerminalLinks(term, host, {
       openPath: () => onOpenPathRef.current,
-      cwd: () => socket.cwd(),
+      where: () => socket.where(),
     });
 
     const data = term.onData((d) => socket.send(d));
@@ -145,8 +150,12 @@ export function TerminalSurface({
     const term = termRef.current;
     if (!term) return;
     const quoted = quoteTerminalOutput(term.getSelection());
+    if (!quoted) {
+      toast.info("Nothing in the selection to add");
+      return;
+    }
     term.clearSelection();
-    if (quoted) onAddToChat?.(quoted);
+    onAddToChat?.(quoted);
   };
 
   const sendLast = (n: number) => {

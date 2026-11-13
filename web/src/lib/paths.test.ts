@@ -141,34 +141,34 @@ describe("detectPath", () => {
 });
 
 describe("pathInCheckout", () => {
-  const cwd = "/work/repo";
+  const checkout = "/work/repo";
 
   it("passes paths in the checkout, without a leading ./", () => {
-    expect(pathInCheckout("src/a.ts", cwd)).toBe("src/a.ts");
-    expect(pathInCheckout("./src/a.ts", cwd)).toBe("src/a.ts");
-    expect(pathInCheckout("/work/repo/src/a.ts", cwd)).toBe("src/a.ts");
+    expect(pathInCheckout("src/a.ts", checkout)).toBe("src/a.ts");
+    expect(pathInCheckout("./src/a.ts", checkout)).toBe("src/a.ts");
+    expect(pathInCheckout("/work/repo/src/a.ts", checkout)).toBe("src/a.ts");
     expect(pathInCheckout("/work/repo/src/a.ts", "/work/repo/")).toBe("src/a.ts");
   });
 
   it("refuses home, parent and outside absolute paths", () => {
-    expect(pathInCheckout("~/notes.md", cwd)).toBeNull();
-    expect(pathInCheckout("../other/a.ts", cwd)).toBeNull();
-    expect(pathInCheckout("src/../../a.ts", cwd)).toBeNull();
-    expect(pathInCheckout("/etc/hosts", cwd)).toBeNull();
-    expect(pathInCheckout("/work/repo/../x/a.ts", cwd)).toBeNull();
+    expect(pathInCheckout("~/notes.md", checkout)).toBeNull();
+    expect(pathInCheckout("../other/a.ts", checkout)).toBeNull();
+    expect(pathInCheckout("src/../../a.ts", checkout)).toBeNull();
+    expect(pathInCheckout("/etc/hosts", checkout)).toBeNull();
+    expect(pathInCheckout("/work/repo/../x/a.ts", checkout)).toBeNull();
     // A sibling whose name starts with the checkout's is still outside it.
-    expect(pathInCheckout("/work/repo-old/a.ts", cwd)).toBeNull();
+    expect(pathInCheckout("/work/repo-old/a.ts", checkout)).toBeNull();
   });
 
   it("drops a directory's trailing slash, as git status prints it", () => {
-    expect(pathInCheckout("web/", cwd)).toBe("web");
-    expect(pathInCheckout("/work/repo/web/src/", cwd)).toBe("web/src");
+    expect(pathInCheckout("web/", checkout)).toBe("web");
+    expect(pathInCheckout("/work/repo/web/src/", checkout)).toBe("web/src");
   });
 
   it("gives the checkout itself as the empty path", () => {
-    expect(pathInCheckout("/work/repo", cwd)).toBe("");
-    expect(pathInCheckout("/work/repo/", cwd)).toBe("");
-    expect(pathInCheckout(".", cwd)).toBe("");
+    expect(pathInCheckout("/work/repo", checkout)).toBe("");
+    expect(pathInCheckout("/work/repo/", checkout)).toBe("");
+    expect(pathInCheckout(".", checkout)).toBe("");
   });
 
   it("refuses an absolute path when the checkout is not known", () => {

@@ -44,8 +44,10 @@ import (
 // as binary frames. It sends another sync when the client has fallen so far
 // behind that output was overwritten, which is the client's cue that the
 // screen has a gap. It answers a cwd with {"type":"cwd","data":"<absolute
-// path>"}, "" when it cannot tell: a path the shell printed after a cd
-// resolves against where the shell is, not the checkout root. Close 4000
+// path>","root":"<absolute path>"}: data is where the shell is now, "" when it
+// cannot tell, and root is where it started, which for a thread is the
+// checkout root the panel's paths are relative to. A path the shell printed
+// after a cd resolves against data, and opens as a path under root. Close 4000
 // "exited" means the process ended and its output was fully sent; 4404 "no
 // such terminal" answers an attach=1 for an id the server no longer has, and
 // ends a socket whose terminal was closed or revoked; 4400 "could not start"
@@ -76,6 +78,7 @@ type termSyncFrame struct {
 type termCwdFrame struct {
 	Type string `json:"type"`
 	Data string `json:"data"`
+	Root string `json:"root"`
 }
 
 // validTermID keeps the id something that is safe to log and key on.
@@ -243,7 +246,7 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		case "cwd":
 			// Written from here while termStream writes too; the library
 			// serialises whole messages, so a reply cannot split a frame.
-			frame, _ := json.Marshal(termCwdFrame{Type: "cwd", Data: sess.cwd(ctx)})
+			frame, _ := json.Marshal(termCwdFrame{Type: "cwd", Data: sess.cwd(ctx), Root: sess.cmd.Dir})
 			wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
 			err := ws.Write(wctx, websocket.MessageText, frame)
 			wcancel()

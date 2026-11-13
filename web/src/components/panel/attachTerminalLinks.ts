@@ -1,6 +1,8 @@
 import type { IDisposable, Terminal } from "@xterm/xterm";
 
-import { resolvePath } from "~/lib/paths";
+import type { OpenPath } from "~/lib/openPath";
+import { pathInCheckout, resolvePath } from "~/lib/paths";
+import type { ShellLocation } from "~/lib/termSocket";
 import { findTerminalLinks, type TerminalLink } from "~/lib/terminalLinks";
 import { cellAtPoint, linksAtRow, rangeContains, type BufferLink } from "~/lib/xtermLinks";
 
@@ -15,11 +17,12 @@ const TAP_GRACE_MS = 800;
 export interface TerminalLinkOptions {
   /**
    * Where a clicked path goes, read at each use so the caller's callback can
-   * change. Without one only URLs are links.
+   * change. Without one only URLs are links. See attachTerminalLinks for what
+   * it is given.
    */
-  openPath: () => ((path: string, line?: number) => void) | undefined;
-  /** The shell's working directory, absolute, or null when it is not known. */
-  cwd: () => Promise<string | null>;
+  openPath: () => OpenPath | undefined;
+  /** Where the shell is and where it started, or null when that is not known. */
+  where: () => Promise<ShellLocation | null>;
 }
 
 function openUrl(url: string) {
@@ -28,9 +31,14 @@ function openUrl(url: string) {
 
 /**
  * Makes the URLs and file paths in a terminal's output clickable, and
- * tappable. `host` is the element the terminal was opened in. A relative path
- * is made absolute against the shell's working directory before it is handed
- * on, since the shell may have moved since the terminal started.
+ * tappable. `host` is the element the terminal was opened in.
+ *
+ * A clicked path goes to `openPath` relative to the shell's start directory,
+ * for a thread's shell its checkout root, when it is under it. A relative
+ * path is taken against where the shell is now, since a cd may have moved it.
+ * A path outside the start directory goes absolute, for the caller to place
+ * or refuse. When the shell cannot say where it is, and for a `~` path, which
+ * it cannot expand, the path goes as printed.
  */
 export function attachTerminalLinks(term: Terminal, host: HTMLElement, opts: TerminalLinkOptions): IDisposable {
   let disposed = false;
@@ -45,13 +53,16 @@ export function attachTerminalLinks(term: Terminal, host: HTMLElement, opts: Ter
     return opts.openPath() ? links : links.filter((l) => l.link.kind === "url");
   };
   const openPath = async (path: string, line?: number) => {
-    let resolved = path;
-    if (!path.startsWith("/") && !path.startsWith("~")) {
-      const dir = await opts.cwd();
+    let placed = path;
+    if (!path.startsWith("~")) {
+      const at = await opts.where();
       if (disposed) return;
-      if (dir) resolved = resolvePath(path, dir);
+      if (at) {
+        const absolute = resolvePath(path, at.cwd);
+        placed = pathInCheckout(absolute, at.root) ?? absolute;
+      }
     }
-    opts.openPath()?.(resolved, line);
+    opts.openPath()?.(placed, line);
   };
   const follow = (link: TerminalLink) => {
     if (link.kind === "url") openUrl(link.url);

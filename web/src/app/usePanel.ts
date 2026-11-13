@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { PanelRequest } from "~/components/panel/Panel";
 
@@ -22,29 +22,34 @@ export function usePanel(threadStore: ThreadStore) {
   // One click takes the diff panel to the full content width; another brings
   // it back. There is no in-between state on purpose.
   const [expanded, setExpanded] = useState(false);
-  // What the panel should put on screen, and a counter that changes on every
-  // request. Without the counter, asking for the same file twice would look
-  // identical to the panel and it would not bring it back into view.
+  // What the panel should put on screen, held until the panel has routed it.
+  // The panel's body remounts (a phone's sheet closing, the 1024px breakpoint,
+  // a reconnect) and this outlives it, so a request it kept after routing would
+  // be replayed by every mount, reopening a tab the user had since closed. One
+  // made while the body is unmounted waits here for the mount that routes it.
+  // The nonce changes on every request, so asking for the same file twice
+  // still brings it back into view; it never repeats, so a body that routed
+  // nonce 3 cannot mistake a later request for one it has already seen.
   const [request, setRequest] = useState<PanelRequest | null>(null);
+  const nonces = useRef(0);
+  const ask = useCallback((next: Omit<PanelRequest, "nonce">) => {
+    setOpen(true);
+    setRequest({ ...next, nonce: ++nonces.current });
+  }, []);
+  // The panel has put this nonce on screen. A newer request is left alone.
+  const requestRouted = useCallback((nonce: number) => {
+    setRequest((current) => (current?.nonce === nonce ? null : current));
+  }, []);
 
   // Opening the diff from a turn's card: show the panel, and put it on the file
   // that was clicked.
-  const openDiff = useCallback((path?: string) => {
-    setOpen(true);
-    setRequest((current) => ({ kind: "diff", path, nonce: (current?.nonce ?? 0) + 1 }));
-  }, []);
+  const openDiff = useCallback((path?: string) => ask({ kind: "diff", path }), [ask]);
 
   // Opening the jobs surface from the strip or a spawn card in the transcript.
-  const openJobs = useCallback(() => {
-    setOpen(true);
-    setRequest((current) => ({ kind: "jobs", nonce: (current?.nonce ?? 0) + 1 }));
-  }, []);
+  const openJobs = useCallback(() => ask({ kind: "jobs" }), [ask]);
 
   // Opening an artefact from its card in the transcript.
-  const openArtefact = useCallback((artefactId: string) => {
-    setOpen(true);
-    setRequest((current) => ({ kind: "artefact", artefactId, nonce: (current?.nonce ?? 0) + 1 }));
-  }, []);
+  const openArtefact = useCallback((artefactId: string) => ask({ kind: "artefact", artefactId }), [ask]);
 
   // Opening a path clicked in prose. The panel routes it: the diff surface
   // when the thread changed it, the file surface otherwise. An absolute path
@@ -58,15 +63,9 @@ export function usePanel(threadStore: ThreadStore) {
       if (cwd && (rel === cwd || rel.startsWith(cwd + "/")))
         rel = rel.slice(cwd.length).replace(/^\//, "");
       if (rel === "") return;
-      setOpen(true);
-      setRequest((current) => ({
-        kind: "path",
-        path: rel,
-        line,
-        nonce: (current?.nonce ?? 0) + 1,
-      }));
+      ask({ kind: "path", path: rel, line });
     },
-    [threadStore],
+    [threadStore, ask],
   );
 
   // The panel belongs to a checkout, so it must not survive a move to a
@@ -91,6 +90,7 @@ export function usePanel(threadStore: ThreadStore) {
     loaded,
     expanded,
     request,
+    requestRouted,
     show,
     toggle,
     close,
