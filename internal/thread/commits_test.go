@@ -133,11 +133,56 @@ func TestThreadCommitsListsTheBranchsOwnNewestFirst(t *testing.T) {
 		t.Fatalf("unexpected list: %+v", got)
 	}
 	for i, c := range got.Commits {
-		if c.SHA != own[2-i] || c.Subject != "step "+string(rune('3'-i)) || c.Author != "t" || c.Time == 0 {
+		if c.SHA != own[2-i] || c.Subject != "step "+string(rune('3'-i)) {
 			t.Fatalf("commit %d wrong: %+v", i, c)
 		}
 		if c.SHA == rootSHA {
 			t.Fatal("the base branch's commits are not the branch's own")
+		}
+	}
+}
+
+// A side branch merged into the thread's branch is part of the merge, not a
+// run of commits of its own: listing its commits would offer ranges that are
+// not one line of history, and git would refuse them.
+func TestThreadCommitsFollowTheBranchsOwnLine(t *testing.T) {
+	mgr, id, _, own := commitsFixture(t)
+	ctx := context.Background()
+	meta, err := mgr.store.Thread(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, meta.Cwd, "checkout", "-q", "-b", "side", own[0])
+	write(t, meta.Cwd, "side.txt", "side\n")
+	gitRun(t, meta.Cwd, "add", ".")
+	gitRun(t, meta.Cwd, "commit", "-m", "side work")
+	gitRun(t, meta.Cwd, "checkout", "-q", "-")
+	gitRun(t, meta.Cwd, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+
+	got, err := mgr.ThreadCommits(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subjects []string
+	for _, c := range got.Commits {
+		subjects = append(subjects, c.Subject)
+	}
+	if strings.Join(subjects, ",") != "merge side,step 3,step 2,step 1" {
+		t.Fatalf("listed %v", subjects)
+	}
+	// Every pair the list offers, older first, is a range git accepts; the
+	// side branch's file arrives with the merge.
+	list := got.Commits
+	for i := range list {
+		for j := 0; j <= i; j++ {
+			changes, err := mgr.ThreadChanges(ctx, id, DiffRequest{Mode: DiffCommit, From: list[i].SHA, To: list[j].SHA})
+			if err != nil {
+				t.Fatalf("%s..%s refused: %v", list[i].Subject, list[j].Subject, err)
+			}
+			hasSide := strings.Contains(summary(changes.Files), "side.txt")
+			if hasSide != (j == 0) {
+				t.Fatalf("%s..%s: side.txt shown=%v: %s", list[i].Subject, list[j].Subject, hasSide, summary(changes.Files))
+			}
 		}
 	}
 }

@@ -368,8 +368,8 @@ describe("Panel commit scope", () => {
   const trigger = () => screen.getByRole("combobox", { name: "Diff comparison" });
   const COMMITS = {
     commits: [
-      { sha: "bbb2222000000", subject: "Second", author: "a", time: 2 },
-      { sha: "aaa1111000000", subject: "First", author: "a", time: 1 },
+      { sha: "bbb2222000000", subject: "Second" },
+      { sha: "aaa1111000000", subject: "First" },
     ],
   };
 

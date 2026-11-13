@@ -376,8 +376,9 @@ func (m *Manager) diffScope(ctx context.Context, threadID string, req DiffReques
 		}
 	}
 	// Commits are named by full object id and nothing else, for the same
-	// reason: a ref, a `~` or a range would let the client name commits the
-	// branch list never offered.
+	// reason: a ref, a `~` or a range would be read by git as something other
+	// than one commit. Any commit in the repository is accepted, not only the
+	// ones the branch list offered; it is the thread's own checkout.
 	if mode == DiffCommit {
 		for _, sha := range []string{req.From, req.To} {
 			if err := validCommitSHA(sha); err != nil {

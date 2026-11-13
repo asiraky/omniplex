@@ -1,10 +1,19 @@
-import { ChevronRightIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  Columns2Icon,
+  FlaskConicalOffIcon,
+  PilcrowIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
+  UnfoldVerticalIcon,
+  WrapTextIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Diff } from "~/components/Diff";
 import { IconButton } from "~/components/IconButton";
 import { DiffScopeSelect, type CommitRange } from "~/components/panel/DiffScopeSelect";
-import { DiffFindBar, DiffToolbar, TOGGLE_ICONS, type DiffToggle } from "~/components/panel/DiffToolbar";
+import { DiffFindBar, DiffToolbar, type DiffToggle } from "~/components/panel/DiffToolbar";
 import { diffPlace, diffPlaceKey, rememberDiffPlace } from "~/components/panel/diffScroll";
 import { Spinner } from "~/components/ui/spinner";
 import {
@@ -228,21 +237,21 @@ export function DiffSurface({
   // ---- where this list was left ----
   // Remembered per thread and scope, so coming back (a tab switch, a closed
   // panel, another thread and back) opens the same file at the same scroll.
-  // A reveal still waiting to be shown is where the user is going instead.
+  // A reveal, once its file is listed, takes over from both.
   const placeKey = diffPlaceKey(threadId, scopeKey(comparison, turn, commits));
   const [shownKey, setShownKey] = useState(placeKey);
-  const [expanded, setExpanded] = useState<string | null>(() => (reveal ? null : diffPlace(placeKey).expanded));
+  const [expanded, setExpanded] = useState<string | null>(() => diffPlace(placeKey).expanded);
   // A test file a reveal asked for stays listed while tests are hidden.
   const [revealed, setRevealed] = useState<string | null>(() => diffPlace(placeKey).revealed);
   // The scrollTop still to be put back, once there is enough list to hold it.
-  const [restore, setRestore] = useState<number | null>(() => (reveal ? null : diffPlace(placeKey).scrollTop || null));
+  const [restore, setRestore] = useState<number | null>(() => diffPlace(placeKey).scrollTop || null);
   if (shownKey !== placeKey) {
     // Switching scope in place is coming back to that scope too.
     const place = diffPlace(placeKey);
     setShownKey(placeKey);
-    setExpanded(reveal ? null : place.expanded);
+    setExpanded(place.expanded);
     setRevealed(place.revealed);
-    setRestore(reveal ? null : place.scrollTop || null);
+    setRestore(place.scrollTop || null);
   }
   useEffect(() => rememberDiffPlace(placeKey, { expanded, revealed }), [placeKey, expanded, revealed]);
 
@@ -283,13 +292,6 @@ export function DiffSurface({
 
   const files = useMemo(() => changes?.files ?? [], [changes]);
 
-  // The open file always has its diff: read on expanding, and read again
-  // against a new list or new options without being closed and reopened.
-  useEffect(() => {
-    if (!expanded || diffs[expanded] || !files.some((f) => f.path === expanded)) return;
-    readDiff(expanded);
-  }, [expanded, diffs, files, readDiff]);
-
   // ---- hide tests ----
   const testCount = useMemo(() => files.filter((f) => isTestPath(f.path)).length, [files]);
   const listed = useMemo(
@@ -297,6 +299,28 @@ export function DiffSurface({
     [files, hideTests, testCount, revealed],
   );
   const hiddenCount = files.length - listed.length;
+  // The header's totals are for what is listed, so hidden files come off them.
+  const totals = useMemo(() => {
+    if (!changes) return null;
+    let { additions, deletions } = changes;
+    if (listed.length < files.length) {
+      const shown = new Set(listed);
+      for (const f of files) {
+        if (shown.has(f)) continue;
+        additions -= f.additions;
+        deletions -= f.deletions;
+      }
+    }
+    return { additions, deletions };
+  }, [changes, files, listed]);
+
+  // The open file always has its diff: read on expanding, and read again
+  // against a new list or new options without being closed and reopened. A
+  // file hidden from the list is not read, open or not.
+  useEffect(() => {
+    if (!expanded || diffs[expanded] || !listed.some((f) => f.path === expanded)) return;
+    readDiff(expanded);
+  }, [expanded, diffs, listed, readDiff]);
 
   // ---- find in diff ----
   const [findOpen, setFindOpen] = useState(false);
@@ -307,8 +331,14 @@ export function DiffSurface({
   const finding = q.length >= MIN_QUERY;
   // The server's answer, kept with the list and query it is for: an answer to
   // anything else is stale and reads as none.
-  const [found, setFound] = useState<{ changes: ThreadChanges; query: string; paths: Set<string> } | null>(null);
-  const serverPaths = found && found.changes === changes && found.query === q ? found.paths : null;
+  const [found, setFound] = useState<{
+    changes: ThreadChanges;
+    query: string;
+    paths: Set<string>;
+    failed: boolean;
+  } | null>(null);
+  const answer = found && found.changes === changes && found.query === q ? found : null;
+  const serverPaths = answer?.paths ?? null;
   const searching = finding && !serverPaths;
   const findRef = useLatest(findInDiff);
 
@@ -317,9 +347,14 @@ export function DiffSurface({
     const list = changes;
     let live = true;
     const timer = setTimeout(() => {
-      const land = (paths: string[]) => live && setFound({ changes: list, query: q, paths: new Set(paths) });
-      // A failed search still settles: the path-name matches stand alone.
-      findRef.current(q, list).then(land, () => land([]));
+      const land = (paths: string[], failed: boolean) =>
+        live && setFound({ changes: list, query: q, paths: new Set(paths), failed });
+      // A failed search still settles, the path-name matches standing alone,
+      // but says so: it is not the same answer as "nothing in the diff".
+      findRef.current(q, list).then(
+        (paths) => land(paths, false),
+        () => land([], true),
+      );
     }, FIND_DELAY);
     return () => {
       live = false;
@@ -399,19 +434,42 @@ export function DiffSurface({
 
   // Reveal whatever the transcript asked for, once the list it belongs to has
   // arrived. A path the list does not carry is not an error: the file may have
-  // been changed by an earlier turn and put back since.
+  // been written since the list was read, so the list is read once more, or
+  // changed by an earlier turn and put back since, so a list read after the
+  // request that still lacks it drops the request. Left waiting, it would
+  // keep a remount from restoring its place and fire on some later list.
   const revealHandledRef = useLatest(onRevealHandled);
+  const refreshRef = useLatest(onRefresh);
+  // The nonce whose list is being re-read, and whether that read has started.
+  const revealRead = useRef<{ nonce: number; started: boolean } | null>(null);
   useEffect(() => {
     if (!reveal) return;
-    if (!files.some((f) => f.path === reveal.path)) return;
-    setExpanded(reveal.path);
-    setRevealed(reveal.path);
-    setRestore(null);
-    scrollRow.current = { path: reveal.path, smooth: true };
-    revealHandledRef.current?.(reveal.nonce);
+    if (files.some((f) => f.path === reveal.path)) {
+      revealRead.current = null;
+      setExpanded(reveal.path);
+      setRevealed(reveal.path);
+      setRestore(null);
+      scrollRow.current = { path: reveal.path, smooth: true };
+      revealHandledRef.current?.(reveal.nonce);
+      return;
+    }
+    const read = revealRead.current?.nonce === reveal.nonce ? revealRead.current : null;
+    if (loading) {
+      if (read) read.started = true;
+      else revealRead.current = { nonce: reveal.nonce, started: true };
+      return;
+    }
+    if (!changes && !error) return;
+    if (read?.started) {
+      revealRead.current = null;
+      revealHandledRef.current?.(reveal.nonce);
+    } else if (!read) {
+      revealRead.current = { nonce: reveal.nonce, started: false };
+      refreshRef.current();
+    }
     // The nonce is what makes a repeat click count as a new request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reveal?.path, reveal?.nonce, files]);
+  }, [reveal?.path, reveal?.nonce, files, loading, changes, error]);
 
   // Put the remembered scroll back once the list can hold it, or once nothing
   // more is coming that would make it taller.
@@ -420,7 +478,7 @@ export function DiffSurface({
     !!error ||
     (!!changes &&
       !loading &&
-      (!expanded || !files.some((f) => f.path === expanded) || (!!openEntry && !openEntry.loading)));
+      (!expanded || !listed.some((f) => f.path === expanded) || (!!openEntry && !openEntry.loading)));
   useLayoutEffect(() => {
     const el = listRef.current;
     if (restore === null || !el) return;
@@ -437,16 +495,16 @@ export function DiffSurface({
 
   // ---- the toolbar ----
   const toggles: DiffToggle[] = [
-    ...(desktop ? [{ label: "Split view", Icon: TOGGLE_ICONS.split, on: split, set: setSplit }] : []),
+    ...(desktop ? [{ label: "Split view", Icon: Columns2Icon, on: split, set: setSplit }] : []),
     // Split view always wraps (see Diff), so the toggle would do nothing there.
-    ...(desktop && split ? [] : [{ label: "Wrap text", Icon: TOGGLE_ICONS.wrap, on: wrap, set: setWrap }]),
-    { label: "Ignore whitespace", Icon: TOGGLE_ICONS.whitespace, on: ignoreWhitespace, set: setIgnoreWhitespace },
-    { label: "Show full files", Icon: TOGGLE_ICONS.context, on: fullContext, set: setFullContext },
+    ...(desktop && split ? [] : [{ label: "Wrap text", Icon: WrapTextIcon, on: wrap, set: setWrap }]),
+    { label: "Ignore whitespace", Icon: PilcrowIcon, on: ignoreWhitespace, set: setIgnoreWhitespace },
+    { label: "Show full files", Icon: UnfoldVerticalIcon, on: fullContext, set: setFullContext },
     ...(testCount > 0
       ? [
           {
             label: "Hide test files",
-            Icon: TOGGLE_ICONS.tests,
+            Icon: FlaskConicalOffIcon,
             on: hideTests,
             set: (hide: boolean) => {
               // Asking to hide tests hides them all, the revealed one included.
@@ -503,7 +561,7 @@ export function DiffSurface({
           </span>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {changes && <Counts additions={changes.additions} deletions={changes.deletions} />}
+          {totals && <Counts additions={totals.additions} deletions={totals.deletions} />}
           <DiffToolbar desktop={desktop} toggles={toggles} findOpen={findOpen} onFind={openFind} menuFocus={findInput} />
           <IconButton label="Re-read the worktree" onClick={onRefresh}>
             <RefreshCwIcon className={cn(loading && "spin-icon")} />
@@ -522,6 +580,7 @@ export function DiffSurface({
           current={at}
           total={finding ? matches.length : null}
           searching={searching}
+          failed={!!answer?.failed}
           onStep={step}
           onClose={() => openFind(false)}
         />

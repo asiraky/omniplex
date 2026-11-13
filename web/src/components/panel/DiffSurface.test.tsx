@@ -140,9 +140,9 @@ describe("DiffSurface comparison", () => {
 const COMMITS: BranchCommits = {
   baseRef: "main",
   commits: [
-    { sha: "ccc3333000000", subject: "Third", author: "a", time: 3 },
-    { sha: "bbb2222000000", subject: "Second", author: "a", time: 2 },
-    { sha: "aaa1111000000", subject: "First", author: "a", time: 1 },
+    { sha: "ccc3333000000", subject: "Third" },
+    { sha: "bbb2222000000", subject: "Second" },
+    { sha: "aaa1111000000", subject: "First" },
   ],
 };
 
@@ -275,6 +275,24 @@ describe("DiffSurface hide tests", () => {
     expect(screen.queryByRole("button", { name: /a\.test\.ts/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /helper\.ts/ })).toBeNull();
     expect(screen.getByText(/^1 file/).textContent).toBe("1 file · 2 hidden2 test files hidden");
+    // The totals beside it are for what is listed.
+    const header = screen.getByRole("button", { name: "Re-read the worktree" }).parentElement;
+    expect(header?.textContent).toMatch(/^\+1 −0/);
+    fireEvent.click(hide());
+    expect(header?.textContent).toMatch(/^\+3 −0/);
+  });
+
+  it("does not read the open file once it is hidden", async () => {
+    const loadDiff = vi.fn((path: string) => Promise.resolve(diffOf(path)));
+    const view = renderSurface({ changes: MIXED, loadDiff });
+    fireEvent.click(row(/a\.test\.ts/));
+    await screen.findByText("line in src/a.test.ts");
+    fireEvent.click(hide());
+
+    // A re-read list would read the open file again, were it listed.
+    view.rerender(wrap(surface({ changes: { ...MIXED }, loadDiff })));
+    await act(async () => {});
+    expect(loadDiff).toHaveBeenCalledTimes(1);
   });
 
   it("still shows a hidden test file the transcript asks for, until tests are hidden again", async () => {
@@ -361,6 +379,14 @@ describe("DiffSurface find", () => {
     await act(async () => answers[1]([]));
     expect(listed()).toEqual(["src/gamma.ts"]);
   });
+
+  it("says a failed search failed, rather than that nothing matched", async () => {
+    const findInDiff = vi.fn(() => Promise.reject(new Error("offline")));
+    openFind({ findInDiff });
+    fireEvent.change(input(), { target: { value: "delta" } });
+    expect(await screen.findByText("failed")).toBeTruthy();
+    expect(screen.queryByText("0/0")).toBeNull();
+  });
 });
 
 describe("DiffSurface on a phone", () => {
@@ -430,6 +456,31 @@ describe("DiffSurface place memory", () => {
 
     renderSurface({ comparison: "uncommitted", changes: LIST });
     expect(row(/b\.ts/).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("re-reads the list once for a reveal it lacks, then drops the reveal and restores its place", async () => {
+    const loadDiff = vi.fn((path: string) => Promise.resolve(diffOf(path)));
+    const first = renderSurface({ changes: LIST, loadDiff });
+    fireEvent.click(row(/b\.ts/));
+    first.unmount();
+
+    const onRefresh = vi.fn();
+    const onRevealHandled = vi.fn();
+    const reveal = { path: "src/gone.ts", nonce: 7 };
+    const props = { changes: LIST, loadDiff, reveal, onRefresh, onRevealHandled };
+    const view = renderSurface(props);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(onRevealHandled).not.toHaveBeenCalled();
+
+    view.rerender(wrap(surface({ ...props, loading: true })));
+    view.rerender(wrap(surface({ ...props, changes: { ...LIST } })));
+    expect(onRevealHandled).toHaveBeenCalledWith(7);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    view.unmount();
+
+    // Spent, the panel stops passing it, and coming back is coming back.
+    renderSurface({ changes: LIST, loadDiff });
+    expect(row(/b\.ts/).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("gives way to a reveal", async () => {

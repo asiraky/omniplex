@@ -1,13 +1,8 @@
 import {
   ChevronDownIcon,
   ChevronUpIcon,
-  Columns2Icon,
-  FlaskConicalOffIcon,
-  PilcrowIcon,
   SearchIcon,
   SlidersHorizontalIcon,
-  UnfoldVerticalIcon,
-  WrapTextIcon,
   XIcon,
 } from "lucide-react";
 import { useRef, type ComponentType, type KeyboardEvent, type RefObject } from "react";
@@ -31,14 +26,6 @@ export interface DiffToggle {
   on: boolean;
   set: (on: boolean) => void;
 }
-
-export const TOGGLE_ICONS = {
-  split: Columns2Icon,
-  wrap: WrapTextIcon,
-  whitespace: PilcrowIcon,
-  context: UnfoldVerticalIcon,
-  tests: FlaskConicalOffIcon,
-};
 
 const PRESSED = "aria-pressed:bg-accent aria-pressed:text-foreground text-muted-foreground";
 
@@ -136,6 +123,7 @@ export function DiffFindBar({
   current,
   total,
   searching,
+  failed,
   onStep,
   onClose,
 }: {
@@ -147,6 +135,8 @@ export function DiffFindBar({
   /** Null until the query is long enough to look for. */
   total: number | null;
   searching: boolean;
+  /** The search of the diff's lines failed; only file names were matched. */
+  failed: boolean;
   onStep: (by: 1 | -1) => void;
   onClose: () => void;
 }) {
@@ -176,9 +166,22 @@ export function DiffFindBar({
       />
       <span
         aria-live="polite"
-        className={cn("text-muted-foreground w-12 shrink-0 text-center text-[11px] tabular-nums", searching && "opacity-60")}
+        title={failed ? "Couldn't search the diff; only file names matched" : undefined}
+        className={cn(
+          "w-12 shrink-0 text-center text-[11px] tabular-nums",
+          failed ? "text-destructive" : "text-muted-foreground",
+          searching && "opacity-60",
+        )}
       >
-        {total === null ? "" : total === 0 ? (searching ? "…" : "0/0") : `${current < 0 ? 0 : current + 1}/${total}`}
+        {total === null
+          ? ""
+          : failed && total === 0
+            ? "failed"
+            : total === 0
+              ? searching
+                ? "…"
+                : "0/0"
+              : `${current < 0 ? 0 : current + 1}/${total}`}
       </span>
       <IconButton label="Previous match" disabled={!total} onClick={() => onStep(-1)}>
         <ChevronUpIcon />

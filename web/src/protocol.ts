@@ -177,9 +177,6 @@ export interface DiffScope {
 export interface BranchCommit {
   sha: string;
   subject: string;
-  author: string;
-  /** Unix seconds. */
-  time: number;
 }
 
 /** The branch's own commits since its base, newest first, capped. */

@@ -20,10 +20,6 @@ const maxBranchCommits = 50
 type BranchCommit struct {
 	SHA     string `json:"sha"`
 	Subject string `json:"subject"`
-	Author  string `json:"author"`
-	// Time is the committer's time in unix seconds: when the commit took its
-	// place on the branch, which is the order the list is in.
-	Time int64 `json:"time"`
 }
 
 // BranchCommits is the branch's own commits, newest first.
@@ -64,10 +60,15 @@ func (m *Manager) ThreadCommits(ctx context.Context, threadID string) (BranchCom
 	if ref, base := m.branchBase(ctx, root, meta); base != "" {
 		out.BaseRef, span = ref, base+"..HEAD"
 	}
-	// Fields and commits are both NUL-separated, so a subject or a name can
-	// hold anything a commit message can and still parse. One past the cap is
-	// asked for so a cut list knows it was cut.
-	raw, err := runGit(ctx, root, "log", "-z", "--format=%H%x00%s%x00%an%x00%ct", "--max-count="+strconv.Itoa(maxBranchCommits+1), span, "--")
+	// First parents only: the branch's own line of history, one commit after
+	// another. A merged-in side branch would otherwise put commits in the list
+	// that no run of the branch's commits starts or ends at, and a range picked
+	// across them would be refused. Its changes still show, in the merge.
+	//
+	// Fields and commits are both NUL-separated, so a subject can hold anything
+	// a commit message can and still parse. One past the cap is asked for so a
+	// cut list knows it was cut.
+	raw, err := runGit(ctx, root, "log", "-z", "--first-parent", "--format=%H%x00%s", "--max-count="+strconv.Itoa(maxBranchCommits+1), span, "--")
 	if err != nil {
 		return BranchCommits{}, err
 	}
@@ -78,15 +79,14 @@ func (m *Manager) ThreadCommits(ctx context.Context, threadID string) (BranchCom
 	return out, nil
 }
 
-// parseBranchLog reads the log format above: four fields per commit. Fields
+// parseBranchLog reads the log format above: two fields per commit. Fields
 // are split positionally rather than by dropping empties, since a commit made
 // with an empty message has an empty subject.
 func parseBranchLog(raw string) []BranchCommit {
 	fields := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
 	out := []BranchCommit{}
-	for i := 0; i+3 < len(fields); i += 4 {
-		when, _ := strconv.ParseInt(fields[i+3], 10, 64)
-		out = append(out, BranchCommit{SHA: fields[i], Subject: fields[i+1], Author: fields[i+2], Time: when})
+	for i := 0; i+1 < len(fields); i += 2 {
+		out = append(out, BranchCommit{SHA: fields[i], Subject: fields[i+1]})
 	}
 	return out
 }
