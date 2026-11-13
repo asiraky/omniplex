@@ -31,11 +31,14 @@ import (
 // leaves the id in place until a socket has drained its last output (or the
 // TTL passes), so an exit while detached is replayed rather than lost.
 //
-// GET /api/term?id=<id>&thread=<id>|login=<instance>[&since=<n>][&attach=1|&fresh=1]
+// GET /api/term?id=<id>&thread=<id>|login=<instance>[&since=<n>][&tail=<n>][&attach=1|&fresh=1]
 // upgrades to a WebSocket. attach=1 only ever reattaches; without it a missing
 // terminal is spawned. fresh=1 is the user asking for a new shell after the
 // last one ended: an ended terminal under the id is replaced, not replayed.
-// since is the stream offset the client already holds.
+// since is the stream offset the client already holds. tail is how many lines
+// of scrollback the client keeps: a socket with no since is sent only the last
+// tail lines the ring holds, not the whole ring. It is ignored when since is
+// given, since a reconnect needs exactly the gap.
 //
 // Wire format: the client sends text frames of JSON — {"type":"input","data"}
 // to type, {"type":"resize","cols","rows"} on layout change, {"type":"cwd"} to
@@ -129,12 +132,18 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
+	// Unparsable or not positive is the same as absent: the whole ring.
+	tail, _ := strconv.Atoi(q.Get("tail"))
 	attachOnly := q.Get("attach") == "1"
 	fresh := q.Get("fresh") == "1"
 
 	// Upgraded before anything is spawned, so a failed upgrade cannot leave a
 	// shell behind with nobody to detach it.
-	opts := &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled}
+	// No context takeover: a long-lived, mostly idle socket does not hold a
+	// flate writer of its own, and frames under the library's 512-byte
+	// threshold (keystroke echo) go out uncompressed, so typing adds no
+	// latency while a catch-up replay still compresses.
+	opts := &websocket.AcceptOptions{CompressionMode: websocket.CompressionNoContextTakeover}
 	if s.allowAny {
 		opts.InsecureSkipVerify = true
 	}
@@ -176,6 +185,11 @@ func (s *Server) serveTerm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer s.termDetach(sess)
+	if since == 0 && tail > 0 {
+		sess.mu.Lock()
+		since = sess.ring.TailStart(tail)
+		sess.mu.Unlock()
+	}
 	// A paste into a shell is bounded by the same cap as a prompt; without it
 	// the library's 32 KiB default drops the terminal mid-paste.
 	ws.SetReadLimit(maxWSMessageBytes)

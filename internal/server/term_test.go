@@ -708,3 +708,70 @@ func TestTermCwdFollowsTheShell(t *testing.T) {
 		t.Fatalf("after cd got %+v, want cwd %q and root %q", got, want, start)
 	}
 }
+
+// seqLines is what `seq from to` prints through a pty, which turns each \n
+// into \r\n.
+func seqLines(from, to int) string {
+	var b strings.Builder
+	for i := from; i <= to; i++ {
+		b.WriteString(strconv.Itoa(i) + "\r\n")
+	}
+	return b.String()
+}
+
+// hundredLines fills a terminal's ring with exactly 1-100 as its last output:
+// the shell is replaced by a sleep, so no prompt follows them.
+func hundredLines(t *testing.T, ctx context.Context, rig *termRig, id string) *termSession {
+	t.Helper()
+	first := &termReader{conn: rig.dial(t, ctx, rig.client, "id="+id)}
+	first.input(t, ctx, "seq 1 100; exec sleep 600\n")
+	first.until(t, ctx, "\r\n99\r\n100\r\n")
+	sess := rig.session(id)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	data, _ := sess.ring.Since(sess.ring.Start(), termRingBytes)
+	if !strings.HasSuffix(string(data), seqLines(1, 100)) {
+		t.Fatalf("the ring does not end with 1-100: %q", data)
+	}
+	return sess
+}
+
+// A fresh mount keeps only so much scrollback, so it is sent only that much.
+func TestTermAttachWithTailSendsOnlyTheLastLines(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+	sess := hundredLines(t, ctx, rig, "tail")
+	sess.mu.Lock()
+	total := sess.ring.Total()
+	sess.mu.Unlock()
+
+	want := seqLines(91, 100)
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client, "id=tail&attach=1&tail=10")}
+	tr.until(t, ctx, "100\r\n")
+	if got := tr.out.String(); got != want {
+		t.Fatalf("tail=10 streamed %q, want %q", got, want)
+	}
+	if at := total - int64(len(want)); len(tr.syncs) != 1 || tr.syncs[0] != at {
+		t.Fatalf("syncs %v, want one at line 91's offset %d", tr.syncs, at)
+	}
+}
+
+// A reconnect needs exactly the gap, so a since wins over a tail.
+func TestTermAttachWithSinceIgnoresTail(t *testing.T) {
+	rig := newTermRig(t, time.Minute)
+	ctx := testCtx(t)
+	sess := hundredLines(t, ctx, rig, "since")
+	sess.mu.Lock()
+	since := sess.ring.Total() - int64(len(seqLines(51, 100)))
+	sess.mu.Unlock()
+
+	tr := &termReader{conn: rig.dial(t, ctx, rig.client,
+		"id=since&attach=1&tail=10&since="+strconv.FormatInt(since, 10))}
+	tr.until(t, ctx, "\r\n100\r\n")
+	if got, want := tr.out.String(), seqLines(51, 100); got != want {
+		t.Fatalf("since=%d streamed %q, want %q", since, got, want)
+	}
+	if len(tr.syncs) != 1 || tr.syncs[0] != since {
+		t.Fatalf("syncs %v, want one at %d", tr.syncs, since)
+	}
+}

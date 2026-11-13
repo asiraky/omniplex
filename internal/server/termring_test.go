@@ -111,3 +111,73 @@ func TestRingMatchesTheStreamTailAcrossManyWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestRingTailStartFindsWhereTheLastLinesBegin(t *testing.T) {
+	r := newTermRing(64)
+	r.Write([]byte("a\nb\nc\n"))
+
+	// The final newline ends "c", it does not start an empty fourth line.
+	for lines, want := range map[int]int64{1: 4, 2: 2, 3: 0} {
+		if got := r.TailStart(lines); got != want {
+			t.Errorf("TailStart(%d) = %d, want %d", lines, got, want)
+		}
+	}
+}
+
+func TestRingTailStartWithFewerLinesThanAskedIsStart(t *testing.T) {
+	r := newTermRing(8)
+	r.Write([]byte("xxxxa\nb\nc\n")) // held: "xxa\nb\nc\n" from 2
+
+	if got := r.TailStart(9); got != r.Start() || got != 2 {
+		t.Fatalf("TailStart(9) = %d, want Start %d", got, r.Start())
+	}
+	// The oldest line held is cut short, but it still counts as one.
+	if got := r.TailStart(3); got != 2 {
+		t.Fatalf("TailStart(3) = %d, want 2", got)
+	}
+}
+
+// A progress bar redrawing with \r, or a TUI, never ends a line: the whole
+// ring goes, as it would without a tail.
+func TestRingTailStartWithNoNewlineIsStart(t *testing.T) {
+	r := newTermRing(8)
+	r.Write([]byte("10%\r50%\r100%"))
+
+	if got := r.TailStart(1); got != r.Start() {
+		t.Fatalf("TailStart(1) = %d, want Start %d", got, r.Start())
+	}
+}
+
+func TestRingTailStartCountsATrailingPartialLine(t *testing.T) {
+	r := newTermRing(64)
+	r.Write([]byte("a\nb\nc"))
+
+	if got := r.TailStart(1); got != 4 {
+		t.Fatalf("TailStart(1) = %d, want 4 (\"c\")", got)
+	}
+	if got := r.TailStart(2); got != 2 {
+		t.Fatalf("TailStart(2) = %d, want 2 (\"b\\nc\")", got)
+	}
+}
+
+func TestRingTailStartAcrossTheWrap(t *testing.T) {
+	r := newTermRing(8)
+	r.Write([]byte("012345"))
+	// Total 13, held 5-12: "5\nab\ncd\n". The newline after "ab" sits at
+	// offset 9, index 1, past the physical end of the buffer.
+	r.Write([]byte("\nab\ncd\n"))
+
+	for lines, want := range map[int]int64{1: 10, 2: 7, 3: 5, 4: 5} {
+		if got := r.TailStart(lines); got != want {
+			t.Errorf("TailStart(%d) = %d, want %d", lines, got, want)
+		}
+	}
+}
+
+func TestRingTailStartOfNoLinesIsTotal(t *testing.T) {
+	r := newTermRing(8)
+	r.Write([]byte("a\nb\n"))
+	if got := r.TailStart(0); got != r.Total() {
+		t.Fatalf("TailStart(0) = %d, want Total %d", got, r.Total())
+	}
+}
