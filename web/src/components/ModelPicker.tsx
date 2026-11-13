@@ -53,50 +53,7 @@ export type PickerFocus = "model" | "effort";
 
 const NO_EFFORTS: string[] = [];
 
-/**
- * The one control for choosing a harness account and a model.
- *
- * They were two controls, and choosing a model already implies its harness, so
- * they are one: a rail of provider instances beside that instance's models.
- * Every row says what the model is and what it is for, because the old
- * single-line list could not distinguish two Opuses — or say what "Default"
- * resolved to.
- *
- * Reasoning effort joins it on the same terms. It is a second axis, not a
- * second control: passing the effort props adds a row of levels at the foot of
- * this menu, and the trigger then names the model and the level together. A
- * composer that had two dropdowns elbowing the send button has one.
- *
- * Picking a model leaves the menu open when there is an effort still to
- * choose, so changing both is one visit; picking the effort, the last choice,
- * closes it.
- *
- * Fast is the third axis, and the smallest: an on/off switch beside effort for
- * a model whose harness can run it on a faster service tier. The trigger
- * carries a bolt while it is on, since it costs more of the plan per turn.
- */
-export function ModelPicker({
-  harnesses,
-  value,
-  onChange,
-  onInstanceChange,
-  lockDriver = false,
-  disabled = false,
-  efforts = NO_EFFORTS,
-  effort = "",
-  contextLabel = "",
-  onEffortChange,
-  fastTier = "",
-  serviceTier = "",
-  onServiceTierChange,
-  id,
-  className,
-  compact = false,
-  open: controlledOpen,
-  onOpenChange,
-  focusRequest = null,
-  trigger: customTrigger,
-}: {
+interface ModelPickerProps {
   harnesses: HarnessMeta[];
   value: ModelSelection;
   onChange: (next: ModelSelection) => void;
@@ -153,7 +110,52 @@ export function ModelPicker({
    * props, since the popover or sheet hangs its trigger wiring on it.
    */
   trigger?: ReactNode;
-}) {
+}
+
+/**
+ * The one control for choosing a harness account and a model.
+ *
+ * They were two controls, and choosing a model already implies its harness, so
+ * they are one: a rail of provider instances beside that instance's models.
+ * Every row says what the model is and what it is for, because the old
+ * single-line list could not distinguish two Opuses — or say what "Default"
+ * resolved to.
+ *
+ * Reasoning effort joins it on the same terms. It is a second axis, not a
+ * second control: passing the effort props adds a row of levels at the foot of
+ * this menu, and the trigger then names the model and the level together. A
+ * composer that had two dropdowns elbowing the send button has one.
+ *
+ * Picking a model leaves the menu open when there is an effort still to
+ * choose, so changing both is one visit; picking the effort, the last choice,
+ * closes it.
+ *
+ * Fast is the third axis, and the smallest: an on/off switch beside effort for
+ * a model whose harness can run it on a faster service tier. The trigger
+ * carries a bolt while it is on, since it costs more of the plan per turn.
+ */
+export function ModelPicker({
+  harnesses,
+  value,
+  onChange,
+  onInstanceChange,
+  lockDriver = false,
+  disabled = false,
+  efforts = NO_EFFORTS,
+  effort = "",
+  contextLabel = "",
+  onEffortChange,
+  fastTier = "",
+  serviceTier = "",
+  onServiceTierChange,
+  id,
+  className,
+  compact = false,
+  open: controlledOpen,
+  onOpenChange,
+  focusRequest = null,
+  trigger: customTrigger,
+}: ModelPickerProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = (next: boolean) => {
