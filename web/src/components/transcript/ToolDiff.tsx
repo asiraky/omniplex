@@ -1,5 +1,5 @@
 import { Diff } from "~/components/Diff";
-import { useDiffWrap } from "~/lib/diffWrap";
+import { useDiffWrap } from "~/lib/diffPrefs";
 
 /**
  * A tool call's patch, wrapped or not by the reader's diff preference. Holding

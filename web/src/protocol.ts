@@ -152,11 +152,41 @@ export interface ThreadChanges {
   truncated?: boolean;
   /** The turn a `turn` comparison measured, between its two snapshots. */
   turnId?: string;
+  /** A `commit` comparison's oldest and newest included commits, echoed back. */
+  from?: string;
+  to?: string;
   /** Why the list is empty, when the reason is not "nothing changed". */
   warning?: string;
 }
 
-export type DiffComparison = "uncommitted" | "branch" | "pull_request" | "turn";
+export type DiffComparison = "uncommitted" | "branch" | "pull_request" | "turn" | "commit";
+
+/**
+ * What a change list measures: `thread_changes`' arguments, less the thread.
+ * `turnId` is set only for a `turn`; `from` and `to` only for a `commit`, as
+ * the oldest and newest commit included (the same sha for one commit).
+ */
+export interface DiffScope {
+  comparison: DiffComparison;
+  turnId?: string;
+  from?: string;
+  to?: string;
+}
+
+/** One commit on a thread's branch, for the diff panel's commit scope. */
+export interface BranchCommit {
+  sha: string;
+  subject: string;
+}
+
+/** The branch's own commits since its base, newest first, capped. */
+export interface BranchCommits {
+  commits: BranchCommit[];
+  baseRef?: string;
+  truncated?: boolean;
+  /** Why the list is empty, when the reason is not "no commits yet". */
+  warning?: string;
+}
 
 /** The turn a `turn` comparison is of: its id, and its 1-based place in the thread. */
 export interface DiffTurn {

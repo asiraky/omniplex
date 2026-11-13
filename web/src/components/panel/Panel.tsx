@@ -17,7 +17,7 @@ import { ArtefactSurface } from "~/components/artefacts/ArtefactSurface";
 import { shallow, useThread, useThreadStore } from "~/app/threadStore";
 import { IconButton } from "~/components/IconButton";
 
-import { DiffSurface } from "~/components/panel/DiffSurface";
+import { DiffSurface, type CommitRange, type DiffOptions } from "~/components/panel/DiffSurface";
 import { FileBrowser } from "~/components/panel/FileBrowser";
 import { JobsSurface, type JobFocus } from "~/components/panel/JobsSurface";
 import { TerminalSurface } from "~/components/panel/TerminalSurface";
@@ -47,7 +47,9 @@ import { endTerminal } from "~/lib/termSocket";
 import { fileName } from "~/lib/tree";
 import { cn } from "~/lib/utils";
 import type {
+  BranchCommits,
   DiffComparison,
+  DiffScope,
   DiffTurn,
   FileContent,
   FileDiff,
@@ -91,9 +93,13 @@ export interface PanelProps {
   onToggleExpanded?: () => void;
   /** Data is re-read when this changes — when a turn ends, in practice. */
   revision: string;
-  /** The turn id is set only for a `turn` comparison. */
-  loadChanges: (comparison: DiffComparison, turnId?: string) => Promise<ThreadChanges>;
-  loadDiff: (path: string, changes: ThreadChanges) => Promise<FileDiff>;
+  loadChanges: (scope: DiffScope) => Promise<ThreadChanges>;
+  /** One file's diff, read against the list it is in. */
+  loadDiff: (path: string, changes: ThreadChanges, options: DiffOptions) => Promise<FileDiff>;
+  /** The branch's own commits, for the diff surface's commit scope. */
+  loadCommits: () => Promise<BranchCommits>;
+  /** The files in a list whose changed lines contain a query. */
+  findInDiff: (query: string, changes: ThreadChanges) => Promise<string[]>;
   loadTree: (includeIgnored: boolean) => Promise<FileTree>;
   loadFile: (path: string) => Promise<FileContent>;
   request?: PanelRequest | null;
@@ -233,6 +239,8 @@ function PanelBody({
   revision,
   loadChanges,
   loadDiff,
+  loadCommits,
+  findInDiff,
   loadTree,
   loadFile,
   request,
@@ -248,14 +256,20 @@ function PanelBody({
 
   // ---- the change list, owned here because routing needs it too ----
   const [changes, setChanges] = useState<ThreadChanges | null>(null);
+  // A commit scope is stored with the commits it covers; without them it is
+  // not a scope at all, and the panel opens on uncommitted changes.
+  const [commits, setCommits] = useState<CommitRange | null>(() => readCommits(threadId));
   const [comparison, setComparison] = useState<DiffComparison>(() => {
-    const stored = localStorage.getItem(`omniplex.diffComparison:${threadId}`);
+    const stored = readStored(`omniplex.diffComparison:${threadId}`);
+    if (stored === "commit") return commits ? "commit" : "uncommitted";
     return stored === "branch" || stored === "pull_request" ? stored : "uncommitted";
   });
   // The turn a card last asked for. It outlives a switch to another comparison,
   // so the select can still offer the way back to it.
   const [turn, setTurn] = useState<DiffTurn | null>(null);
   const turnId = comparison === "turn" ? turn?.id : undefined;
+  const from = comparison === "commit" ? commits?.from : undefined;
+  const to = comparison === "commit" ? commits?.to : undefined;
   const [changesLoading, setChangesLoading] = useState(false);
   const [changesError, setChangesError] = useState("");
   // A refresh that started earlier must not overwrite a later one's answer.
@@ -269,7 +283,10 @@ function PanelBody({
     setChangesLoading(true);
     setChangesError("");
     try {
-      const next = await loadChangesRef.current(comparison, turnId);
+      const scope: DiffScope = { comparison };
+      if (turnId) scope.turnId = turnId;
+      if (from && to) Object.assign(scope, { from, to });
+      const next = await loadChangesRef.current(scope);
       if (generation !== changesGeneration.current) return;
       setChanges(next);
     } catch (e) {
@@ -278,7 +295,7 @@ function PanelBody({
     } finally {
       if (generation === changesGeneration.current) setChangesLoading(false);
     }
-  }, [comparison, turnId, loadChangesRef]);
+  }, [comparison, turnId, from, to, loadChangesRef]);
 
   // Every switch starts the list afresh, and reads it even when the
   // comparison is the one already showing: that is how a failed read is
@@ -291,18 +308,24 @@ function PanelBody({
     setReadNonce((n) => n + 1);
   }, []);
 
-  const changeComparison = useCallback((next: DiffComparison) => {
+  const changeComparison = useCallback((next: DiffComparison, range?: CommitRange) => {
+    if (next === "commit") {
+      if (!range) return;
+      setCommits(range);
+      store(`omniplex.diffCommits:${threadId}`, JSON.stringify(range));
+    }
     // A turn is a look back at one moment, not a way of working: the next
     // mount opens on the last comparison the user chose for themselves.
-    if (next !== "turn") localStorage.setItem(`omniplex.diffComparison:${threadId}`, next);
+    if (next !== "turn") store(`omniplex.diffComparison:${threadId}`, next);
     showComparison(next, turn);
   }, [threadId, turn, showComparison]);
 
   // Opening reads the worktree, and so does the end of a turn: the agent has
   // just stopped writing, which is exactly when the data is worth re-reading.
   // A turn's snapshots never move, so the end of a later one changes nothing
-  // in it. A hidden panel (kept mounted so its terminals survive) reads nothing.
-  const listRevision = comparison === "turn" ? "" : revision;
+  // in it, and nor does it in a commit. A hidden panel (kept mounted so its
+  // terminals survive) reads nothing.
+  const listRevision = comparison === "turn" || comparison === "commit" ? "" : revision;
   useEffect(() => {
     if (open) void refreshChanges();
   }, [open, listRevision, readNonce, refreshChanges]);
@@ -362,6 +385,12 @@ function PanelBody({
   // the reader may since have backed out of. Checked before routing: a
   // request routed below sees this render's tab, not the one it is opening.
   if (jobFocus && active?.kind !== "jobs") setJobFocus(undefined);
+  // Once on screen a reveal is spent: the diff surface remounting (a tab
+  // switch) restores where it was left rather than jumping back to it.
+  const revealHandled = useCallback(
+    (nonce: number) => setReveal((r) => (r?.nonce === nonce ? null : r)),
+    [],
+  );
   const [fileLine, setFileLine] = useState<number | undefined>(undefined);
   // Each nonce is routed exactly once, during render, so the tab it opens is
   // in the same paint as the request rather than one frame behind it. The
@@ -535,14 +564,19 @@ function PanelBody({
         )}
         {active?.kind === "diff" && (
           <DiffSurface
+            threadId={threadId}
             changes={changes}
             loading={changesLoading}
             error={changesError}
             onRefresh={() => void refreshChanges()}
             loadDiff={loadDiff}
+            loadCommits={loadCommits}
+            findInDiff={findInDiff}
             reveal={reveal}
+            onRevealHandled={revealHandled}
             comparison={comparison}
             turn={turn}
+            commits={commits}
             onComparisonChange={changeComparison}
             pr={pr}
           />
@@ -699,6 +733,36 @@ export function Panel(props: PanelProps) {
       <PanelBody {...props} />
     </aside>
   );
+}
+
+function readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function store(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* Not persisted; the choice still holds for this mount. */
+  }
+}
+
+/** The stored commit scope, or null for anything that is not one. */
+function readCommits(threadId: string): CommitRange | null {
+  const raw = readStored(`omniplex.diffCommits:${threadId}`);
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!v || typeof v !== "object") return null;
+    const { from, to } = v as Record<string, unknown>;
+    return typeof from === "string" && from && typeof to === "string" && to ? { from, to } : null;
+  } catch {
+    return null;
+  }
 }
 
 function panelFields(state: ThreadState | null) {

@@ -952,22 +952,45 @@ func (c *conn) execute(ctx context.Context, f clientFrame) (any, error) {
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		changes, err := c.srv.mgr.ThreadChanges(ctx, a.ThreadID, a.Comparison, a.TurnID)
+		changes, err := c.srv.mgr.ThreadChanges(ctx, a.ThreadID, a.request())
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"changes": changes}, nil
+
+	case "thread_commits":
+		var a threadArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		commits, err := c.srv.mgr.ThreadCommits(ctx, a.ThreadID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"commits": commits}, nil
 
 	case "thread_file_diff":
 		var a fileDiffArgs
 		if err := json.Unmarshal(f.Args, &a); err != nil {
 			return nil, err
 		}
-		diff, err := c.srv.mgr.ThreadFileDiff(ctx, a.ThreadID, a.Path, a.Comparison, a.TurnID, a.Base, a.Head)
+		opts := thread.PatchOptions{IgnoreWhitespace: a.IgnoreWhitespace, FullContext: a.FullContext}
+		diff, err := c.srv.mgr.ThreadFileDiff(ctx, a.ThreadID, a.Path, a.request(), opts)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"diff": diff}, nil
+
+	case "thread_diff_find":
+		var a diffFindArgs
+		if err := json.Unmarshal(f.Args, &a); err != nil {
+			return nil, err
+		}
+		paths, err := c.srv.mgr.ThreadDiffFind(ctx, a.ThreadID, a.Query, a.request())
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"paths": paths}, nil
 
 	case "thread_file_tree":
 		var a fileTreeArgs
