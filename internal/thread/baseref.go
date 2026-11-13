@@ -326,15 +326,18 @@ func defaultBranch(ctx context.Context, root string) string {
 			continue
 		}
 		short := strings.TrimPrefix(head, "refs/remotes/")
+		// origin/HEAD outlives the branch it names when upstream renames its
+		// default and the old ref is pruned. Such a HEAD names neither a ref
+		// the worktree add could use nor a local branch worth trusting — the
+		// leftover local copy of a renamed default is exactly the stale base
+		// this exists to avoid — so it is passed over entirely.
+		if short == "" || !hasRemoteRef(ctx, root, short) {
+			continue
+		}
 		if name := strings.TrimPrefix(short, remote+"/"); name != "" && hasLocalBranch(ctx, root, name) {
 			return name
 		}
-		// origin/HEAD outlives the branch it names when upstream renames its
-		// default and the old ref is pruned. A ref that resolves to nothing
-		// would fail the worktree add, so it is passed over, not returned.
-		if short != "" && hasRemoteRef(ctx, root, short) {
-			return short
-		}
+		return short
 	}
 	for _, name := range []string{"main", "master"} {
 		if hasLocalBranch(ctx, root, name) {

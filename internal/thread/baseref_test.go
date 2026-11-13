@@ -483,19 +483,33 @@ func TestResolveBaseRefWithNoBaseUsesLocalMainWhenTheRemoteIsUnreachable(t *test
 }
 
 // Upstream renamed its default branch and the old one was pruned, but the
-// clone's origin/HEAD still names it. That dead ref must not become the base —
-// the worktree add would fail on it — so the default is found by name instead.
+// clone's origin/HEAD still names it. Neither the dead ref — the worktree add
+// would fail on it — nor the leftover local copy of the old default may become
+// the base, so the default is found by name instead.
 func TestResolveBaseRefWithNoBaseSkipsADanglingOriginHEAD(t *testing.T) {
-	root, _, _ := gitRepo(t)
-	withOrigin(t, root, false)
-	git(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+	for _, tc := range []struct {
+		name          string
+		leftoverLocal bool
+	}{
+		{"no local copy of the old default", false},
+		{"a leftover local copy of the old default", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _ := gitRepo(t)
+			withOrigin(t, root, false)
+			git(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+			if tc.leftoverLocal {
+				git(t, root, "branch", "master", "main")
+			}
 
-	res, err := resolveBaseRef(context.Background(), root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Ref != "main" || res.FellBack {
-		t.Fatalf("resolution = %+v, want main, found by name", res)
+			res, err := resolveBaseRef(context.Background(), root, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Ref != "main" || res.FellBack {
+				t.Fatalf("resolution = %+v, want main, found by name", res)
+			}
+		})
 	}
 }
 
