@@ -1033,10 +1033,23 @@ describe("the working line", () => {
     expect(line()?.textContent).toMatch(/^Working·/);
   });
 
-  it("previews reasoning at the tail instead of drawing it", () => {
+  it("previews reasoning at the tail, and keeps it off a phone", () => {
     view(running([prompt, thought("First.\n\n**Reading the router**\n\nIt routes by path.")]));
     expect(line()?.textContent).toContain("Reading the router");
-    expect(screen.queryByText("It routes by path.")).toBeNull();
+    expect(screen.getByText("It routes by path.").closest("[data-previewed]")).toBeTruthy();
+  });
+
+  it("says it is waiting while a permission is up", () => {
+    const call = { id: "x1", kind: "tool", toolKind: "execute", status: "pending", title: "rm -rf build", turnId: "t1" };
+    view({ ...running([prompt, call]), pendingPermissions: [{ requestId: "r1", toolCallId: "x1", toolName: "Bash", title: "rm", options: [] }] });
+    expect(line()?.textContent).toMatch(/^Waiting for you·/);
+  });
+
+  it("names a call still running once the agent writes past it", () => {
+    const call = { id: "x1", kind: "tool", toolKind: "execute", status: "in_progress", title: "npm run build", turnId: "t1" };
+    const text = { id: "m1", kind: "message", role: "agent", contentKind: "text", text: "While that builds", turnId: "t1" };
+    view(running([prompt, call, text]));
+    expect(line()?.textContent).toMatch(/^Working·.+·npm run build$/);
   });
 
   it("draws the reasoning in full once the agent moves past it", () => {
@@ -1048,7 +1061,7 @@ describe("the working line", () => {
         { id: "m1", kind: "message", role: "agent", contentKind: "text", text: "Fixed.", turnId: "t1" },
       ]),
     );
-    expect(screen.getByText("It routes by path.")).toBeTruthy();
+    expect(screen.getByText("It routes by path.").closest("[data-previewed]")).toBeNull();
     expect(line()?.textContent).toMatch(/^Working·/);
   });
 

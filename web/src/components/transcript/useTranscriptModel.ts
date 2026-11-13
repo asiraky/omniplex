@@ -57,7 +57,10 @@ function newestBesidesNotify(items: Item[]): Item | undefined {
 
 /** What the transcript derives from the thread's state before it draws a row. */
 export function useTranscriptModel(
-  state: Pick<TranscriptState, "phase" | "closed" | "items" | "turns" | "scheduledPrompts">,
+  state: Pick<
+    TranscriptState,
+    "phase" | "closed" | "items" | "turns" | "scheduledPrompts" | "pendingPermissions" | "pendingElicitations"
+  >,
 ) {
   // The provisioner is holding the transcript while it works, or while it
   // waits for an answer about a failure. Anything else — ready, released, or
@@ -89,9 +92,10 @@ export function useTranscriptModel(
   }, [ownItems, state.turns]);
 
   // What the working line at the tail says, while a turn runs.
+  const waiting = (state.pendingPermissions?.length ?? 0) + (state.pendingElicitations?.length ?? 0) > 0;
   const activity = useMemo(
-    () => liveActivity(ownItems, state.turns, state.phase),
-    [ownItems, state.turns, state.phase],
+    () => liveActivity(ownItems, state.turns, state.phase, waiting),
+    [ownItems, state.turns, state.phase, waiting],
   );
 
   // Sending a prompt should not leave it jammed against the composer with the

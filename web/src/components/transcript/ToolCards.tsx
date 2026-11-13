@@ -318,11 +318,12 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
         {live ? (
           <>
             <ActiveIcon className="size-3.5 shrink-0" />
-            {/* The call happening now shimmers. Once it has finished and the
-                agent is thinking about what came back, it is history: the
-                working line under it says so, and the shimmer moves there. */}
+            {/* The call happening now shimmers. One waiting on a permission
+                is not happening yet, and one that has finished is history:
+                the working line under it says which, and shimmers if it is
+                thinking. */}
             <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-              <span className={cn(running(active) && "shimmer")}>{active?.title || "working"}</span>
+              <span className={cn(active?.status === "in_progress" && "shimmer")}>{active?.title || "working"}</span>
             </span>
           </>
         ) : (
@@ -335,7 +336,9 @@ export function ToolRun({ threadId, items, live }: { threadId: string; items: It
                 return <Icon key={k} className="size-3.5" />;
               })}
             </span>
-            <span className="min-w-0 flex-1 truncate text-[12px]">{summarise(items)}</span>
+            {/* A sentence runs longer than the dotted counts did: two lines on a
+                phone rather than losing its last clause. */}
+            <span className="line-clamp-2 min-w-0 flex-1 text-[12px] md:line-clamp-1">{summarise(items)}</span>
           </>
         )}
         {/* `leading-none`, or this span is 12px tall (just the chevron) while the

@@ -21,58 +21,80 @@ const turns: Turn[] = [
 
 describe("liveActivity", () => {
   it("is nothing unless a turn is running", () => {
-    expect(liveActivity([prompt()], turns, "idle")).toBeUndefined();
+    expect(liveActivity([prompt()], turns, "idle", false)).toBeUndefined();
   });
 
   it("times the running turn, not the one before it", () => {
-    expect(liveActivity([prompt()], turns, "turn")?.startedAt).toBe(5_000);
+    expect(liveActivity([prompt()], turns, "turn", false)?.startedAt).toBe(5_000);
   });
 
   it("is thinking before the turn has said anything", () => {
-    const a = liveActivity([prompt()], turns, "turn");
+    const a = liveActivity([prompt()], turns, "turn", false);
     expect(a?.state).toBe("thinking");
     expect(a?.thought).toBeUndefined();
   });
 
   it("is thinking when the newest item is the previous turn's answer", () => {
-    expect(liveActivity([said("done", "text", "t1")], turns, "turn")?.state).toBe("thinking");
+    expect(liveActivity([said("done", "text", "t1")], turns, "turn", false)?.state).toBe("thinking");
   });
 
   it("is working while a call runs or is waiting to", () => {
-    expect(liveActivity([prompt(), tool("in_progress")], turns, "turn")?.state).toBe("working");
-    expect(liveActivity([prompt(), tool("pending")], turns, "turn")?.state).toBe("working");
+    expect(liveActivity([prompt(), tool("in_progress")], turns, "turn", false)?.state).toBe("working");
+    expect(liveActivity([prompt(), tool("pending")], turns, "turn", false)?.state).toBe("working");
   });
 
   it("is working while an earlier call runs beside a finished one", () => {
     const quick: Item = { ...tool("completed"), id: "y" };
-    expect(liveActivity([prompt(), tool("in_progress"), quick], turns, "turn")?.state).toBe("working");
+    expect(liveActivity([prompt(), tool("in_progress"), quick], turns, "turn", false)?.state).toBe("working");
   });
 
   it("ignores a call a finished turn left running", () => {
-    expect(liveActivity([tool("in_progress", "t1"), prompt()], turns, "turn")?.state).toBe("thinking");
+    expect(liveActivity([tool("in_progress", "t1"), prompt()], turns, "turn", false)?.state).toBe("thinking");
+  });
+
+  it("is waiting while the user has something to answer", () => {
+    expect(liveActivity([prompt(), tool("pending")], turns, "turn", true)).toEqual({ state: "waiting", startedAt: 5_000 });
+  });
+
+  it("leaves a call to its own row while that row is the newest thing", () => {
+    const quick: Item = { ...tool("completed"), id: "y" };
+    expect(liveActivity([prompt(), tool("in_progress"), quick], turns, "turn", false)?.call).toBeUndefined();
+  });
+
+  it("names a running call the agent has written past", () => {
+    const build = tool("in_progress");
+    const a = liveActivity([prompt(), build, said("While that builds")], turns, "turn", false);
+    expect(a).toMatchObject({ state: "working", call: build });
+  });
+
+  it("names a running call the agent is thinking past", () => {
+    const build = tool("in_progress");
+    const thought = said("The build is slow", "thought");
+    const a = liveActivity([prompt(), build, { ...tool("completed"), id: "y" }, thought], turns, "turn", false);
+    expect(a).toMatchObject({ state: "thinking", thought, call: build });
   });
 
   it("is thinking once the newest call has finished", () => {
-    expect(liveActivity([prompt(), tool("completed")], turns, "turn")?.state).toBe("thinking");
+    expect(liveActivity([prompt(), tool("completed")], turns, "turn", false)?.state).toBe("thinking");
   });
 
   it("is working while text streams", () => {
-    expect(liveActivity([prompt(), said("Here is")], turns, "turn")?.state).toBe("working");
+    expect(liveActivity([prompt(), said("Here is")], turns, "turn", false)?.state).toBe("working");
   });
 
   it("carries the reasoning streaming at the tail", () => {
     const thought = said("Looking at the router", "thought");
-    expect(liveActivity([prompt(), thought], turns, "turn")).toMatchObject({ state: "thinking", thought });
+    expect(liveActivity([prompt(), thought], turns, "turn", false)).toMatchObject({ state: "thinking", thought });
   });
 
   it("drops reasoning the agent has moved past", () => {
-    const a = liveActivity([prompt(), said("Hmm", "thought"), tool("in_progress")], turns, "turn");
+    const a = liveActivity([prompt(), said("Hmm", "thought"), tool("in_progress")], turns, "turn", false);
     expect(a?.thought).toBeUndefined();
   });
 
   it("looks past a block the harness opened and never filled", () => {
     const thought = said("Reading the tests", "thought");
-    const a = liveActivity([prompt(), thought, said("  ", "thought")], turns, "turn");
+    const a = liveActivity([prompt(), thought, said("  ", "thought")], turns, "turn", false);
     expect(a?.thought).toBe(thought);
   });
 });
@@ -81,6 +103,19 @@ describe("thoughtPreview", () => {
   it("is the newest bold heading when the reasoning has them", () => {
     const md = "**Reading the router**\n\nIt routes by path.\n\n**Checking the tests**\n\nThere are three.";
     expect(thoughtPreview(md)).toBe("Checking the tests");
+  });
+
+  it("is the paragraph streaming now, past a bold line far back up the prose", () => {
+    const md = "**Plan**\n\nRead the router.\n\nThen the tests, which are slow.";
+    expect(thoughtPreview(md)).toBe("Then the tests, which are slow.");
+  });
+
+  it("is the heading while its section has just started", () => {
+    expect(thoughtPreview("Earlier.\n\n**Checking the tests**")).toBe("Checking the tests");
+  });
+
+  it("keeps arithmetic asterisks", () => {
+    expect(thoughtPreview("So 2 * 3 * 4 is 24.")).toBe("So 2 * 3 * 4 is 24.");
   });
 
   it("is the newest paragraph of plain prose", () => {

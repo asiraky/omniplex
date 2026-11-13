@@ -311,9 +311,6 @@ function TranscriptBody({
             // a value that changes for every row whenever it does for one.
             // The changed-files card goes after the last row of the turn it
             // describes, the row whose successor belongs to a different turn.
-            // Reasoning still streaming in is previewed on the working line,
-            // and draws here in full once the agent moves past it.
-            if (row.kind === "item" && row.item === activity?.thought) return null;
             const turnID = rowTurnID(row);
             const nextTurnID = i + 1 < rows.length ? rowTurnID(rows[i + 1]) : undefined;
             const diff = turnID && turnID !== nextTurnID ? turnDiffs.get(turnID) : undefined;
@@ -340,6 +337,7 @@ function TranscriptBody({
                 recovered={item?.turnId ? recoveredTurns.get(item.turnId) : undefined}
                 onCardSignIn={onCardSignIn}
                 describeSettings={describeSettings}
+                previewed={item !== undefined && item === activity?.thought}
               />
             );
           })}

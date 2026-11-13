@@ -3,6 +3,7 @@ import { memo } from "react";
 import { ChangedFiles } from "~/components/ChangedFiles";
 import type { Artefact } from "~/lib/artefacts";
 import type { CardSignIn } from "~/lib/cards";
+import { cn } from "~/lib/utils";
 import type { DiffTurn, TurnDiff } from "~/protocol";
 import { rowKey, type Row } from "~/rows";
 
@@ -74,6 +75,7 @@ export const TranscriptRow = memo(function TranscriptRow({
   turnNumber,
   latest,
   onOpenDiff,
+  previewed,
   ...context
 }: RowContext & {
   row: Row;
@@ -84,6 +86,10 @@ export const TranscriptRow = memo(function TranscriptRow({
   /** The diff is the newest turn's. */
   latest: boolean;
   onOpenDiff: (path?: string, turn?: DiffTurn) => void;
+  /** Reasoning still streaming, which a phone shows only as the working
+      line's preview. Hidden there rather than left out, so it stays mounted
+      and draws without a flash once the agent moves past it. */
+  previewed?: boolean;
 }) {
   return (
     // A `display: contents` box, not a `content-visibility: auto` one.
@@ -100,7 +106,7 @@ export const TranscriptRow = memo(function TranscriptRow({
     // memory finds the row the reader was on (scrollAnchor.ts). `contents`
     // keeps it out of layout, so the transcript's gap still falls between
     // the row and its changed-files card as if they were loose children.
-    <div data-row-id={rowKey(row)} className="contents">
+    <div data-row-id={rowKey(row)} data-previewed={previewed || undefined} className={cn("contents", previewed && "max-md:hidden")}>
       <RowBody row={row} {...context} />
       {diff && <ChangedFiles diff={diff} turnNumber={turnNumber} latest={latest} onOpenDiff={onOpenDiff} />}
     </div>

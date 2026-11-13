@@ -23,7 +23,7 @@ import type { Item, Turn } from "./protocol";
 // A harness can open a message block it never fills — a thought whose text the
 // model kept to itself. There is nothing to render and nothing to hide, so it
 // is dropped rather than left to print a blank line.
-function isEmptyMessage(item: Item) {
+export function isEmptyMessage(item: Item) {
   // A prompt that is nothing but pictures has no text and is not empty: the
   // images are the message.
   return item.kind === "message" && (item.text ?? "").trim() === "" && !item.images?.length;
