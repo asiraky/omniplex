@@ -51,7 +51,7 @@ describe("blocking prompts are opaque", () => {
   });
 
   it("paints the elicitation band the same way", () => {
-    render(<ElicitationPrompt request={elicitation} onResolve={vi.fn()} />);
+    render(<ElicitationPrompt threadId="t-1" request={elicitation} onResolve={vi.fn()} />);
 
     const band = screen.getByRole("form", { name: "Input requested" });
     expect(surface(band)).toContain("bg-card");
