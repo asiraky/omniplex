@@ -1058,3 +1058,51 @@ describe("redrawing on a new frame", () => {
     expect(messageRenders.size).toBe(0);
   });
 });
+
+// The diff panel names a turn by its place in the thread, so a card has to
+// hand over the number of the turn it sits under, not its row's or its own.
+describe("a turn's changed-files card", () => {
+  it("opens the diff on the turn it sits under, numbered by its place in the thread", () => {
+    const onOpenDiff = vi.fn();
+    const changed = (turnId: string, path: string) => ({
+      turnId,
+      files: [{ path, status: "modified", additions: 1, deletions: 0 }],
+      additions: 1,
+      deletions: 0,
+    });
+    const s = {
+      ...state(""),
+      items: [
+        { id: "u1", kind: "message", role: "user", text: "first", turnId: "t1", receivedAt: 1 },
+        { id: "a1", kind: "message", role: "agent", contentKind: "text", text: "One.", turnId: "t1", receivedAt: 2 },
+        { id: "u2", kind: "message", role: "user", text: "second", turnId: "t2", receivedAt: 3 },
+        { id: "a2", kind: "message", role: "agent", contentKind: "text", text: "Two.", turnId: "t2", receivedAt: 4 },
+        { id: "u3", kind: "message", role: "user", text: "third", turnId: "t3", receivedAt: 5 },
+        { id: "a3", kind: "message", role: "agent", contentKind: "text", text: "Three.", turnId: "t3", receivedAt: 6 },
+      ],
+      // The middle turn changed nothing: it has no card, but still counts.
+      turns: [
+        { id: "t1", done: true, stopReason: "end_turn", diff: changed("t1", "a.ts") },
+        { id: "t2", done: true, stopReason: "end_turn" },
+        { id: "t3", done: true, stopReason: "end_turn", diff: changed("t3", "c.ts") },
+      ],
+    };
+    attach(
+      s,
+      <Transcript
+        onRetryProvision={() => {}}
+        onCleanup={() => {}}
+        onForceDelete={() => {}}
+        onContinue={() => {}}
+        onOpenDiff={onOpenDiff}
+        onFinish={() => {}}
+      />,
+    );
+
+    const [first, last] = screen.getAllByRole("button", { name: "Open diff" });
+    fireEvent.click(first);
+    expect(onOpenDiff).toHaveBeenLastCalledWith("a.ts", { id: "t1", number: 1 });
+    fireEvent.click(last);
+    expect(onOpenDiff).toHaveBeenLastCalledWith("c.ts", { id: "t3", number: 3 });
+  });
+});

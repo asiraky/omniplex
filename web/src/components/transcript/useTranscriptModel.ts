@@ -129,6 +129,10 @@ export function useTranscriptModel(
     () => new Map(state.turns.filter((t) => t.diff).map((t) => [t.id, t.diff!])),
     [state.turns],
   );
+  // Each turn's 1-based place in the thread, which is what the diff panel
+  // calls it. The thread state holds every turn, not a page of them, so the
+  // count is the real one.
+  const turnNumbers = useMemo(() => new Map(state.turns.map((t, i) => [t.id, i + 1])), [state.turns]);
   const lastTurnID = state.turns[state.turns.length - 1]?.id;
 
   // Keyed by cause, not merely by "this was recovered": the note the reader
@@ -157,6 +161,7 @@ export function useTranscriptModel(
     interrupted,
     switchedTo,
     turnDiffs,
+    turnNumbers,
     lastTurnID,
     recoveredTurns,
   };

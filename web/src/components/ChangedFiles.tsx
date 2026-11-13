@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { buildTree, collectDirs, fileName, type TreeNode } from "~/lib/tree";
-import type { ChangedFile, TurnDiff } from "~/protocol";
+import type { ChangedFile, DiffTurn, TurnDiff } from "~/protocol";
 
 // A preview stands in for a list too long to show: one file per area of the
 // tree, so the three shown say as much as three can about where the work went.
@@ -250,19 +250,29 @@ function Row({
  * The event log cannot answer this: a formatter or a codemod changes files
  * without going through a tool call anyone parses. So the server snapshots the
  * checkout on either side of the turn and asks Git, and this renders the
- * answer — as a file tree that opens the diff panel on the file you click.
+ * answer — as a file tree that opens the diff panel on this turn's changes, at
+ * the file you click.
  */
 export function ChangedFiles({
   diff,
+  turnNumber,
   latest,
   onOpenDiff,
 }: {
   diff: TurnDiff;
-  /** Only the newest turn's collapsed card shows the preview chips. */
+  /** The turn's 1-based place in the thread, which the panel names it by. */
+  turnNumber: number;
+  /**
+   * The diff is the newest turn's. Its card opens on the tree, and shows the
+   * preview chips in its place when collapsed.
+   */
   latest: boolean;
-  onOpenDiff: (path?: string) => void;
+  onOpenDiff: (path?: string, turn?: DiffTurn) => void;
 }) {
   const files = diff.files;
+  // The panel opens on what this turn changed, not on the checkout as it
+  // stands: a file the next turn touched again would otherwise show both.
+  const open = (path?: string) => onOpenDiff(path, { id: diff.turnId, number: turnNumber });
   const tree = useMemo(
     () => buildTree(files.map((f) => ({ path: f.path, file: f, additions: f.additions, deletions: f.deletions }))),
     [files],
@@ -270,8 +280,12 @@ export function ChangedFiles({
   const scopes = useMemo(() => summariseScopes(files), [files]);
   const preview = useMemo(() => previewFiles(files), [files]);
 
-  // Collapsed until asked: the card is a summary line first, a tree second.
-  const [expanded, setExpanded] = useState(false);
+  // The newest turn's card is open on its tree, since what just changed is
+  // what the reader wants to look at; every older card is a summary line. The
+  // reader's own toggle wins over that, and until they touch it the card
+  // follows `latest`, so the card a new turn pushes down closes by itself.
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  const expanded = toggled ?? latest;
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
 
   const dirPaths = useMemo(() => collectDirs(tree), [tree]);
@@ -296,7 +310,7 @@ export function ChangedFiles({
       <div className={cn("flex items-center gap-1", expanded && "mb-1")}>
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => setToggled(!expanded)}
           aria-expanded={expanded}
           className="hover:bg-accent/40 focus-visible:ring-ring flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 md:min-h-0"
         >
@@ -322,7 +336,7 @@ export function ChangedFiles({
             {allOpen ? <ChevronsDownUpIcon /> : <ChevronsUpDownIcon />}
           </Button>
         )}
-        <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" onClick={() => onOpenDiff(files[0]?.path)}>
+        <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" onClick={() => open(files[0]?.path)}>
           <FileDiffIcon className="size-3.5" />
           <span className="hidden text-[12px] sm:inline">Open diff</span>
         </Button>
@@ -344,7 +358,7 @@ export function ChangedFiles({
                   return next;
                 })
               }
-              onOpen={onOpenDiff}
+              onOpen={open}
             />
           ))}
           {diff.truncated && (
@@ -366,7 +380,7 @@ export function ChangedFiles({
                 key={file.path}
                 type="button"
                 title={file.path}
-                onClick={() => onOpenDiff(file.path)}
+                onClick={() => open(file.path)}
                 className="hover:bg-accent/60 focus-visible:ring-ring hit-44 relative flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors outline-none focus-visible:ring-2"
               >
                 <span className={cn(STATUS_TONE[file.status])}>{STATUS_LABEL[file.status] ?? "M"}</span>
@@ -377,7 +391,7 @@ export function ChangedFiles({
             {files.length > preview.length && (
               <button
                 type="button"
-                onClick={() => setExpanded(true)}
+                onClick={() => setToggled(true)}
                 className="text-muted-foreground hover:text-foreground hit-44 relative rounded-md px-2 py-1 text-[11px] transition-colors"
               >
                 Show all {files.length} files
