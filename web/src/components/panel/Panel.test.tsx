@@ -215,7 +215,9 @@ describe("Panel jobs request", () => {
     Element.prototype.scrollIntoView = vi.fn();
   });
 
-  it("opens the jobs tab on the job a request names", () => {
+  // A panel on the Diff tab, driven through usePanel, for a thread with one
+  // running agent.
+  function mountJobsPanel() {
     const agent: Job = { id: "j1", toolCallId: "task", depth: 0, kind: "agent", name: "Explore", status: "running", usage: {} };
     const threadStore = createThreadStore({
       ...emptyState("s1"),
@@ -236,8 +238,12 @@ describe("Panel jobs request", () => {
         <Host />
       </ThreadStoreContext.Provider>,
     );
+    return () => controls;
+  }
 
-    act(() => controls.openJobs("j1"));
+  it("opens the jobs tab on the job a request names", () => {
+    const controls = mountJobsPanel();
+    act(() => controls().openJobs("j1"));
     expect(selectedTab()?.textContent).toMatch(/^Jobs/);
     expect(screen.getByText("exploring")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Back to jobs" })).toBeTruthy();
@@ -250,46 +256,10 @@ describe("Panel jobs request", () => {
   });
 
   it("goes back to the roster when the strip asks after a row opened an agent", () => {
-    const agent: Job = {
-      id: "j1",
-      toolCallId: "task",
-      depth: 0,
-      kind: "agent",
-      name: "Explore",
-      status: "running",
-      usage: {},
-    };
-    const threadStore = createThreadStore({
-      ...emptyState("s1"),
-      jobs: [agent],
-      items: [{ id: "task", kind: "tool" }],
-    });
-    savePanel("s1", {
-      surfaces: [{ id: "diff", kind: "diff" }],
-      active: "diff",
-    });
-    let controls!: PanelControls;
-    function Host() {
-      const panel = usePanel(threadStore);
-      controls = panel;
-      return (
-        <Panel
-          {...props()}
-          open={panel.open}
-          request={panel.request}
-          onRequestRouted={panel.requestRouted}
-        />
-      );
-    }
-    render(
-      <ThreadStoreContext.Provider value={threadStore}>
-        <Host />
-      </ThreadStoreContext.Provider>,
-    );
-
-    act(() => controls.openJobs("j1"));
+    const controls = mountJobsPanel();
+    act(() => controls().openJobs("j1"));
     expect(screen.getByRole("button", { name: "Back to jobs" })).toBeTruthy();
-    act(() => controls.openJobs());
+    act(() => controls().openJobs());
     expect(screen.queryByRole("button", { name: "Back to jobs" })).toBeNull();
     expect(screen.getByRole("button", { name: "Stop Explore" })).toBeTruthy();
   });

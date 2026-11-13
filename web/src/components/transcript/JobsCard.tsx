@@ -80,33 +80,33 @@ const harnessOf = (s: ThreadState | null) => s?.harness ?? "";
 // How each status reads: its word, the dot on the avatar, and the word's colour.
 const STATUS: Record<
   AgentStatus,
-  { label: string; dot: string; word: string }
+  { label: string; dot: string; tone: string }
 > = {
   queued: {
     label: "queued",
     dot: "bg-muted-foreground/60",
-    word: "text-muted-foreground",
+    tone: "text-muted-foreground",
   },
   running: {
     label: "running",
     dot: "bg-primary animate-pulse",
-    word: "text-primary",
+    tone: "text-primary",
   },
   waiting: {
     label: "waiting",
     dot: "bg-amber-400",
-    word: "text-amber-500 dark:text-amber-400",
+    tone: "text-amber-500 dark:text-amber-400",
   },
   completed: {
     label: "done",
     dot: "bg-success",
-    word: "text-muted-foreground",
+    tone: "text-muted-foreground",
   },
-  failed: { label: "failed", dot: "bg-destructive", word: "text-destructive" },
+  failed: { label: "failed", dot: "bg-destructive", tone: "text-destructive" },
   stopped: {
     label: "stopped",
     dot: "bg-muted-foreground",
-    word: "text-muted-foreground",
+    tone: "text-muted-foreground",
   },
 };
 
@@ -186,7 +186,7 @@ const AgentRow = memo(function AgentRow({
   onOpen?: (jobId?: string) => void;
 }) {
   const label = job ? jobLabel(job) : item.title || "agent";
-  const { label: word, word: tone } = STATUS[status];
+  const { label: word, tone } = STATUS[status];
   // A settled job the server never stamped would otherwise tick on forever.
   const since =
     job && (!jobDone(job.status) || job.finishedAt) ? job.startedAt : undefined;
