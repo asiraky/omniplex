@@ -75,19 +75,9 @@ export function useThreadSelection({
   const [creating, setCreating] = useState<(DraftPreset & { nonce: number }) | null>(null);
   const nonce = useRef(0);
 
-  // Whether the last-thread key was set at boot. Read once, before anything
-  // can write it, because it decides what the very first frame shows. Storage
-  // can be denied outright (Safari with cookies blocked), and a throw here
-  // would take the whole mount with it.
-  // A /thread/<id> link counts the same: it is about to open a thread.
-  const [hadLastThread] = useState(() => {
-    if (wire.link) return true;
-    try {
-      return localStorage.getItem(LAST_THREAD) !== null;
-    } catch {
-      return false;
-    }
-  });
+  // Whether the page booted into a thread (a link or the last thread), which
+  // decides what the very first frame shows.
+  const hadLastThread = wire.bootThread !== null;
   const restoreAttempted = useRef(false);
   // A thread a link asked for that the list does not have yet. Before the
   // first list: the page's /thread/<id> URL or an early "open-thread" message
@@ -199,7 +189,7 @@ export function useThreadSelection({
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: letting go detaches the socket, and only the thread list arriving can say the thread is gone
     if (!isDesktop) setSidebarOpen(true);
     // Its entry no longer names it, so Back and a reload don't go looking.
-    if (threadIdFromPath(window.location.pathname)) navigate("/", { replace: true });
+    if (threadIdFromPath(window.location.pathname)) writeRestoredUrl(null);
   }, [activeRef, clientRef, dropResume, isDesktop, threadStore]);
 
   // Restore the last thread once the list arrives. This runs once: after it,

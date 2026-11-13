@@ -605,14 +605,14 @@ describe("opening a thread from a notification", () => {
   });
 
   it("falls back to the last thread when the linked one is gone", async () => {
-    window.history.replaceState(null, "", "/thread/gone");
+    window.history.replaceState(null, "", "/thread/gone#themes");
     localStorage.setItem("omniplex.lastThread", "a");
     render(<App />);
     expect(attach).toHaveBeenCalledWith("gone");
     await act(async () => events.onThreads([thread("a")]));
     expect(detach).toHaveBeenCalled();
     expect(attach).toHaveBeenLastCalledWith("a");
-    expect(window.location.pathname).toBe("/thread/a");
+    expect(window.location.pathname + window.location.hash).toBe("/thread/a#themes");
     expect(localStorage.getItem("omniplex.lastThread")).toBe("a");
   });
 
