@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -105,7 +107,28 @@ func (sess *termSession) cwd(ctx context.Context) string {
 	if ended {
 		return ""
 	}
-	return processCwd(ctx, sess.cmd.Process.Pid)
+	return asStartedIn(processCwd(ctx, sess.cmd.Process.Pid), sess.cmd.Dir)
+}
+
+// asStartedIn spells dir the way the shell's start directory is spelled. The
+// kernel reports a cwd with its symlinks resolved, while the client compares
+// it against the checkout path as the thread recorded it; through a symlinked
+// checkout every path would otherwise look like it was outside it.
+func asStartedIn(dir, start string) string {
+	if dir == "" || start == "" {
+		return dir
+	}
+	real, err := filepath.EvalSymlinks(start)
+	if err != nil || real == start {
+		return dir
+	}
+	if dir == real {
+		return start
+	}
+	if rest, ok := strings.CutPrefix(dir, real+string(filepath.Separator)); ok {
+		return filepath.Join(start, rest)
+	}
+	return dir
 }
 
 // termAttach finds the device's terminal by id and counts a new attachment on
