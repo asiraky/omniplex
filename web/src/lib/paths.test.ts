@@ -160,6 +160,11 @@ describe("pathInCheckout", () => {
     expect(pathInCheckout("/work/repo-old/a.ts", cwd)).toBeNull();
   });
 
+  it("drops a directory's trailing slash, as git status prints it", () => {
+    expect(pathInCheckout("web/", cwd)).toBe("web");
+    expect(pathInCheckout("/work/repo/web/src/", cwd)).toBe("web/src");
+  });
+
   it("gives the checkout itself as the empty path", () => {
     expect(pathInCheckout("/work/repo", cwd)).toBe("");
     expect(pathInCheckout("/work/repo/", cwd)).toBe("");

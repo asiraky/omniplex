@@ -113,8 +113,8 @@ export function TerminalSurface({
       convertEol: false,
       theme: { background: "#00000000" },
       allowTransparency: true,
-      // OSC 8 hyperlinks, the ones a program marks up itself (ls --hyperlink,
-      // gh, cargo). xterm's default asks confirm() first; a link in our own
+      // OSC 8 hyperlinks, the ones a program marks up itself (gh, cargo,
+      // compilers). xterm's default asks confirm() first; a link in our own
       // shell's output is no more dangerous than one we found by pattern.
       // Only http(s) reach here: xterm drops other schemes unless told not to.
       linkHandler: {

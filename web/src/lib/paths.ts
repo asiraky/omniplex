@@ -183,7 +183,9 @@ export function pathInCheckout(path: string, cwd: string): string | null {
     if (!cwd || !(path + "/").startsWith(root)) return null;
     rel = path.slice(root.length);
   }
-  rel = rel.replace(/^(?:\.\/)+/, "").replace(/^\.$/, "");
+  // A trailing slash is how `git status` marks a directory; the panel's
+  // routing matches directories by bare path, so it goes.
+  rel = rel.replace(/^(?:\.\/)+/, "").replace(/^\.$/, "").replace(/\/+$/, "");
   if (rel === ".." || rel.startsWith("../") || rel.includes("/../")) return null;
   return rel;
 }

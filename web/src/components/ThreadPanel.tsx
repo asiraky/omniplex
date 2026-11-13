@@ -33,7 +33,7 @@ export function ThreadPanel({
   panel: PanelControls;
   pr: PullRequest | null;
   /** Terminal output quoted for the composer. */
-  onAddToChat?: (quoted: string) => void;
+  onAddToChat: (quoted: string) => void;
 }) {
   const threadStore = useThreadStore();
 
