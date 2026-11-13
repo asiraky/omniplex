@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 
 import { listNumber } from "~/lib/listNumber";
+import { SPEAK_AS_ATTR } from "~/lib/speechAttrs";
 
 /**
  * How an agent's reply is quoted into the attached thread's composer. Provided
@@ -35,9 +36,9 @@ export function quoteInto(draft: string, text: string): string {
 // line break; text is otherwise run together, as the reader sees it.
 const BLOCKS = "p, li, pre, h1, h2, h3, h4, h5, h6, td, th";
 // Chrome, not content: a code block's header (its language and copy button).
-const SKIP = '[data-speak-as="code-block"] > :not(pre)';
+const SKIP = `[${SPEAK_AS_ATTR}="code-block"] > :not(pre)`;
 // A diagram quotes as its source; its header, status line and drawing are chrome.
-const DIAGRAM = '[data-speak-as="diagram"]';
+const DIAGRAM = `[${SPEAK_AS_ATTR}="diagram"]`;
 const FENCE = "```";
 
 /** What goes between the text of two blocks. */
@@ -80,7 +81,7 @@ export function quotableSelection(range: Range): string {
   const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT);
   let out = "";
   let block: Element | null = null;
-  const leave = () => {
+  const closeFence = () => {
     if (block?.tagName === "PRE") out = `${out.trimEnd()}\n${FENCE}`;
   };
   let node = top.nodeType === Node.TEXT_NODE ? top : walker.nextNode();
@@ -95,7 +96,7 @@ export function quotableSelection(range: Range): string {
     if (here !== block) {
       // The newlines markdown leaves between blocks are layout, not text.
       if (!text.trim()) continue;
-      leave();
+      closeFence();
       if (block && out) out += between(block, here);
       else if (out) out += "\n\n";
       if (here?.tagName === "PRE") {
@@ -106,6 +107,6 @@ export function quotableSelection(range: Range): string {
     }
     out += text;
   }
-  leave();
+  closeFence();
   return out.trim();
 }

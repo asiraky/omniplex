@@ -126,7 +126,7 @@ export function ThreadView({
   // A reply's "reply" quotes it into this thread's draft and takes the cursor
   // there, since what comes next is typing the answer. While the composer is
   // locked (thread closed, workspace going away or broken), replies offer nothing.
-  const open = useThread(useThreadStore(), composerWritable);
+  const writable = useThread(useThreadStore(), composerWritable);
   const { getDraft, setDraft } = store;
   const { composerRef } = recents;
   const reply = useCallback(
@@ -194,7 +194,7 @@ export function ThreadView({
 
       <OpenPathContext.Provider value={panel.openPath}>
         <ReadAloudContext.Provider value={speech}>
-          <ReplyContext.Provider value={open ? reply : null}>
+          <ReplyContext.Provider value={writable ? reply : null}>
             <Transcript
               key={activeId}
               onLoadOlder={commands.loadOlderItems}
