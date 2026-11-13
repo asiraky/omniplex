@@ -24,14 +24,6 @@ export interface DraftPreset {
 }
 
 /**
- * How a pick writes the browser's history. A pick by the user pushes, so Back
- * returns to where they were; one that only puts right what the page already
- * shows replaces; one made by Back or Forward writes nothing, since the
- * browser has already moved.
- */
-export type HistoryWrite = "push" | "replace" | "none";
-
-/**
  * Which thread is attached, whether a new one is being written instead, and
  * whether the sidebar is covering them: the app's routing. The URL follows
  * the pick, /thread/<id> for a thread and / for a draft or nothing, one
@@ -99,8 +91,10 @@ export function useThreadSelection({
     setSidebarOpen(isDesktop || activeId === null);
   }
 
+  // `history: false` for a pick the browser already made (Back, Forward) or
+  // that the restore writes in place itself; a user's pick pushes.
   const select = useCallback(
-    (id: string, { history = "push" }: { history?: HistoryWrite } = {}) => {
+    (id: string, { history = true }: { history?: boolean } = {}) => {
       pendingLink.current = null;
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: a pick shows its thread, which on a phone means putting the list away
       if (!isDesktop) setSidebarOpen(false);
@@ -115,7 +109,7 @@ export function useThreadSelection({
       threadStore.set(null);
       localStorage.setItem(LAST_THREAD, id);
       clientRef.current?.attach(id);
-      if (history !== "none") navigate(threadPath(id), { replace: history === "replace" });
+      if (history) navigate(threadPath(id));
     },
     [activeRef, clientRef, isDesktop, onLeave, threadStore],
   );
@@ -128,27 +122,32 @@ export function useThreadSelection({
   // changed with every threads broadcast would re-render the memoised sidebar
   // for each one.
   const threadsRef = useLatest(threads);
+  // Detach from the open thread, if there is one, for the draft or for
+  // nothing; whether there was one.
+  const letGo = useCallback(() => {
+    if (!activeRef.current) return false;
+    activeRef.current = null;
+    setActiveId(null);
+    threadStore.set(null);
+    dropResume();
+    clientRef.current?.detach();
+    return true;
+  }, [activeRef, clientRef, dropResume, threadStore]);
   // The draft's history entry is /, flagged so Forward onto it opens a draft
   // again rather than nothing.
   const startNew = useCallback(
-    (preset?: DraftPreset, { history = "push" }: { history?: HistoryWrite } = {}) => {
+    (preset?: DraftPreset, { history = true }: { history?: boolean } = {}) => {
       pendingLink.current = null;
       const asked = preset ?? {};
       const projectId =
         asked.projectId ?? threadsRef.current.find((t) => t.id === activeRef.current)?.projectId;
       nonce.current += 1;
       setCreating({ ...asked, projectId, nonce: nonce.current });
-      if (activeRef.current) {
-        activeRef.current = null;
-        setActiveId(null);
-        threadStore.set(null);
-        dropResume();
-        clientRef.current?.detach();
-      }
+      letGo();
       if (!isDesktop) setSidebarOpen(false);
-      if (history !== "none") navigate("/", { draft: true, replace: history === "replace" });
+      if (history) navigate("/", { draft: true });
     },
-    [activeRef, clientRef, dropResume, isDesktop, threadStore, threadsRef],
+    [activeRef, isDesktop, letGo, threadsRef],
   );
 
   // Back to nothing selected: Back onto the / the app opened at. On a phone
@@ -158,16 +157,9 @@ export function useThreadSelection({
     pendingLink.current = null;
     if (!activeRef.current && !creatingRef.current) return;
     setCreating(null);
-    if (activeRef.current) {
-      activeRef.current = null;
-      setActiveId(null);
-      threadStore.set(null);
-      dropResume();
-      clientRef.current?.detach();
-      onLeave();
-    }
+    if (letGo()) onLeave();
     if (!isDesktop) setSidebarOpen(true);
-  }, [activeRef, clientRef, creatingRef, dropResume, isDesktop, onLeave, threadStore]);
+  }, [activeRef, creatingRef, isDesktop, letGo, onLeave]);
 
   // The draft's own project pick, kept here so the Skills page reads the
   // project being drafted in and the draft comes back on it. A folder or
@@ -207,9 +199,9 @@ export function useThreadSelection({
       if (openable(threads, link)) {
         if (link !== activeId) {
           dropResume();
-          select(link, { history: "none" });
+          select(link, { history: false });
         }
-        restoredUrl(link);
+        writeRestoredUrl(link);
         return;
       }
       // Gone or closed: carry on as if there had been no link.
@@ -222,7 +214,7 @@ export function useThreadSelection({
       // on threads it saw in a list first.
       // It was hydrated at /, from a cache that does not know the URL.
       if (openable(threads, activeId)) {
-        restoredUrl(activeId);
+        writeRestoredUrl(activeId);
         return;
       }
       // Including the position the cache seeded: the scroll prune only drops
@@ -234,11 +226,11 @@ export function useThreadSelection({
     }
     const last = localStorage.getItem(LAST_THREAD);
     if (last && openable(threads, last)) {
-      select(last, { history: "none" });
-      restoredUrl(last);
+      select(last, { history: false });
+      writeRestoredUrl(last);
       return;
     }
-    restoredUrl(null);
+    writeRestoredUrl(null);
     // Nothing to restore into, so the phone lands on the sidebar after all.
     // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- not derived state: the phone's sidebar reopens only once the first thread list shows nothing to restore
     if (!isDesktop) setSidebarOpen(true);
@@ -294,7 +286,7 @@ export function useThreadSelection({
           // Like a tapped notification: whatever covers the thread view goes.
           onOpenLink();
           dropResume();
-          select(id, { history: "none" });
+          select(id, { history: false });
           return;
         }
         // Deleted or closed since: nothing to go back to, so the entry stops
@@ -305,7 +297,7 @@ export function useThreadSelection({
       }
       if (pathname !== "/") return;
       if (isDraftEntry()) {
-        if (!creatingRef.current) startNew(undefined, { history: "none" });
+        if (!creatingRef.current) startNew(undefined, { history: false });
         return;
       }
       goHome();
@@ -367,7 +359,7 @@ export function useThreadSelection({
  * thread's path are the restore's to touch (/setup is a screen of its own),
  * and the query and hash stay: the theme sample is the hash.
  */
-function restoredUrl(id: string | null) {
+function writeRestoredUrl(id: string | null) {
   const { pathname, search, hash } = window.location;
   if (pathname !== "/" && !threadIdFromPath(pathname)) return;
   navigate((id ? threadPath(id) : "/") + search + hash, { replace: true });

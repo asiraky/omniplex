@@ -34,13 +34,16 @@ const layerDepth = () => (window.history.state as { omniplexLayer?: number } | n
 
 // Open state lives outside React so a test can close a sheet "by its own UI"
 // the way a button would: by setting its state, not through history.
-type Handle = { open: boolean; set: (open: boolean) => void };
+// `busy` makes it refuse to close, as a dialog does while it saves.
+type Handle = { open: boolean; busy?: boolean; set: (open: boolean) => void };
 
 function Sheet({ handle, initial = true }: { handle: Handle; initial?: boolean }) {
   const [open, setOpen] = useState(initial);
   handle.open = open;
   handle.set = setOpen;
-  useBackDismiss(open, () => setOpen(false));
+  useBackDismiss(open, () => {
+    if (!handle.busy) setOpen(false);
+  });
   return null;
 }
 
@@ -89,6 +92,25 @@ describe("Back with a sheet open", () => {
     await back();
     expect(lower.open).toBe(false);
     expect(window.location.pathname).toBe("/thread/a");
+  });
+});
+
+describe("Back with a sheet that will not close", () => {
+  it("puts its entry back, so the next Back still leaves the thread alone", async () => {
+    navigate("/thread/a");
+    navigate("/thread/b");
+    const a = sheet();
+    mount(a);
+    a.busy = true;
+
+    await back();
+    expect(a.open).toBe(true);
+    await landsAt(1);
+
+    a.busy = false;
+    await back();
+    expect(a.open).toBe(false);
+    expect(window.location.pathname).toBe("/thread/b");
   });
 });
 
@@ -219,6 +241,27 @@ describe("navigate", () => {
     } finally {
       stop();
     }
+  });
+
+  it("with replace and a sheet open, renames the place under it and leaves the sheet open", async () => {
+    navigate("/thread/a");
+    navigate("/");
+    const a = sheet();
+    mount(a);
+
+    // The restore settling on a thread while the sidebar is up.
+    navigate("/thread/b", { replace: true });
+    expect(a.open).toBe(true);
+    expect(window.location.pathname).toBe("/thread/b");
+    expect(layerDepth()).toBe(1);
+
+    await back();
+    expect(a.open).toBe(false);
+    expect(window.location.pathname).toBe("/thread/b");
+    expect(layerDepth()).toBe(0);
+
+    await back();
+    expect(window.location.pathname).toBe("/thread/a");
   });
 
   it("replaces a draft's entry", async () => {

@@ -23,6 +23,8 @@ import { useIsDesktop } from "~/useMediaQuery";
 import { useLatest } from "~/useLatest";
 
 const LAYER = "omniplexLayer";
+// How long a sheet Back asked to close has before it counts as refusing.
+const REFUSED_MS = 100;
 const DRAFT = "omniplexDraft";
 
 interface Layer {
@@ -39,6 +41,10 @@ let unwindQueued = false;
 let landing: number | null = null;
 const afterLanding: (() => void)[] = [];
 let listening = false;
+// A place renamed while sheets were open over it (the restore settling, a
+// thread found gone): the sheets' entries take the new name now, the place's
+// own when Back or an unwind gets down to it.
+let renamed: { path: string; state: Record<string, unknown> | null } | null = null;
 
 function stateOf(state: unknown = window.history.state): Record<string, unknown> {
   return state && typeof state === "object" ? (state as Record<string, unknown>) : {};
@@ -68,16 +74,23 @@ export function isDraftEntry(state: unknown = window.history.state): boolean {
  * Go to a thread's path, or to / for a draft or for nothing. Pushes, unless
  * told to replace or the current entry is a sheet's or a draft's: the sheet
  * closes as the app moves on, and its entry becomes the new place, so Back
- * from there skips the sheet and the abandoned draft both.
+ * from there skips the sheet and the abandoned draft both. A replace with
+ * sheets open renames the place under them and leaves them open.
  */
 export function navigate(path: string, { draft = false, replace = false } = {}) {
+  const state = draft ? { [DRAFT]: true } : null;
+  if (replace && live.length) {
+    renamed = { path, state };
+    whenLanded(rename);
+    return;
+  }
+  renamed = null;
   // The sheets close themselves as the app moves on; their entries are taken
   // over here rather than unwound.
   live.length = 0;
   closed.clear();
   const write = () => {
     const takeOver = depthOf() > 0 || isDraftEntry();
-    const state = draft ? { [DRAFT]: true } : null;
     if (replace || takeOver) window.history.replaceState(state, "", path);
     else window.history.pushState(state, "", path);
   };
@@ -93,8 +106,15 @@ export function navigate(path: string, { draft = false, replace = false } = {}) 
   });
 }
 
+function rename() {
+  if (!renamed) return;
+  const depth = depthOf();
+  window.history.replaceState({ ...renamed.state, ...(depth > 0 && { [LAYER]: depth }) }, "", renamed.path);
+  if (depth === 0) renamed = null;
+}
+
 /** Put an entry under a sheet that just opened; Back calls `close`. */
-export function pushLayer(close: () => void): Layer {
+function pushLayer(close: () => void): Layer {
   listen();
   const depth = currentDepth();
   // A sheet that closed and opened again before its entry was unwound (React
@@ -117,7 +137,7 @@ export function pushLayer(close: () => void): Layer {
 }
 
 /** The sheet closed on its own: unwind its entry, if no one else has. */
-export function dropLayer(layer: Layer) {
+function dropLayer(layer: Layer) {
   const i = live.indexOf(layer);
   if (i < 0) return;
   live.splice(i, 1);
@@ -156,10 +176,12 @@ function onPopState(e: PopStateEvent) {
     // Nor is it the user going anywhere, so onMove's listeners, which would
     // read the URL a waiting navigate has yet to write, never hear it.
     landing = null;
+    rename();
     // A queued unwind may set off another go; what is left waits for that.
     while (landing === null && afterLanding.length) afterLanding.shift()!();
     return;
   }
+  rename();
   const depth = depthOf(e.state);
   for (let i = live.length - 1; i >= 0; i--) {
     const layer = live[i];
@@ -196,7 +218,22 @@ export function useBackDismiss(open: boolean, close: () => void) {
   const closeRef = useLatest(close);
   useEffect(() => {
     if (!active) return;
-    const layer = pushLayer(() => closeRef.current());
-    return () => dropLayer(layer);
+    let done = false;
+    const put = (): Layer =>
+      pushLayer(() => {
+        closeRef.current();
+        // One that will not close yet (busy saving) has lost its entry all
+        // the same, and the next Back would change thread: put it back. One
+        // that did close is cleaned up by then; if React is slower than
+        // that, the entry put back is unwound when it does.
+        setTimeout(() => {
+          if (!done) layer = put();
+        }, REFUSED_MS);
+      });
+    let layer = put();
+    return () => {
+      done = true;
+      dropLayer(layer);
+    };
   }, [active, closeRef]);
 }

@@ -10,13 +10,10 @@ import { cn } from "~/lib/utils"
 import { Button } from "~/components/ui/button"
 
 function Dialog({
-  backDismiss = true,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Root> & {
-  /** On a phone, Back closes it while open. Only a controlled dialog can. */
-  backDismiss?: boolean
-}) {
-  useBackDismiss(!!props.open && backDismiss, () => props.onOpenChange?.(false))
+}: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  // On a phone, Back closes it while open. Only a controlled dialog can.
+  useBackDismiss(!!props.open, () => props.onOpenChange?.(false))
   return <DialogPrimitive.Root data-slot="dialog" {...props} />
 }
 
