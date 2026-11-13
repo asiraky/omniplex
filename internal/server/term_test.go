@@ -29,6 +29,17 @@ type termRig struct {
 	ts     *httptest.Server
 	guard  *auth.Guard
 	client *http.Client
+
+	logMu sync.Mutex
+	logs  []string
+}
+
+// logged is what the server has logged so far, for a failure message: a
+// shell that failed to start says why only there.
+func (rig *termRig) logged() string {
+	rig.logMu.Lock()
+	defer rig.logMu.Unlock()
+	return strings.Join(rig.logs, "; ")
 }
 
 func newTermRig(t *testing.T, ttl time.Duration) *termRig {
@@ -53,7 +64,12 @@ func newTermRig(t *testing.T, ttl time.Duration) *termRig {
 		t.Fatal(err)
 	}
 
-	srv := New(Options{Manager: mgr, Store: st, Guard: guard})
+	rig := &termRig{guard: guard}
+	srv := New(Options{Manager: mgr, Store: st, Guard: guard, Logf: func(format string, args ...any) {
+		rig.logMu.Lock()
+		defer rig.logMu.Unlock()
+		rig.logs = append(rig.logs, fmt.Sprintf(format, args...))
+	}})
 	srv.termTTL = ttl
 	ts := httptest.NewServer(asRemote(srv.Handler()))
 	t.Cleanup(func() {
@@ -68,7 +84,8 @@ func newTermRig(t *testing.T, ttl time.Duration) *termRig {
 			srv.termRemove(sess)
 		}
 	})
-	return &termRig{srv: srv, ts: ts, guard: guard, client: pairedClient(t, ts, guard)}
+	rig.srv, rig.ts, rig.client = srv, ts, pairedClient(t, ts, guard)
+	return rig
 }
 
 // dial opens a socket to the rig's thread.
@@ -593,13 +610,24 @@ func TestTermConcurrentOpensOfOneIDShareAShell(t *testing.T) {
 			t.Cleanup(func() { conns[i].CloseNow() })
 		}
 		a, b := &termReader{conn: conns[0]}, &termReader{conn: conns[1]}
-		_ = a.next(ctx)
-		_ = b.next(ctx)
+		// Each socket's first frame comes after its attachment is counted,
+		// or is the close that says why there was none.
+		for i, tr := range []*termReader{a, b} {
+			if err := tr.next(ctx); err != nil {
+				t.Fatalf("round %d: socket %d never attached: %v (server log: %s)", round, i, err, rig.logged())
+			}
+		}
 
 		sess := rig.session(id)
-		eventually(t, "both attached to one terminal", func() bool { return attachedCount(sess) == 2 })
-		if isEnded(sess) {
-			t.Fatalf("round %d: the shared shell was ended", round)
+		if sess == nil {
+			t.Fatalf("round %d: no terminal registered (server log: %s)", round, rig.logged())
+		}
+		if n, ended := attachedCount(sess), isEnded(sess); n != 2 || ended {
+			sess.mu.Lock()
+			out, _ := sess.ring.Since(0, 4096)
+			sess.mu.Unlock()
+			t.Fatalf("round %d: %d attached, ended %v, want both on one live shell; it printed %q (server log: %s)",
+				round, n, ended, out, rig.logged())
 		}
 		a.input(t, ctx, "echo sh\"\"ared"+strconv.Itoa(round)+"\n")
 		a.until(t, ctx, "shared"+strconv.Itoa(round))
