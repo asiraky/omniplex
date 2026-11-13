@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Folder, HarnessMeta, Project } from "~/protocol";
-import { searchSettings, settingsIndex, type SettingEntry } from "./settingsSearch";
+import { entryKey, searchSettings, settingsIndex, type SettingEntry } from "./settingsSearch";
 
 const folder = (id: string, path: string, git: boolean): Folder => ({
   id,
@@ -242,12 +242,15 @@ describe("settingsIndex", () => {
     const two = project("p4", "duo", [folder("d1", "/a", true), folder("d2", "/b", true)]);
     const es = settingsIndex({
       projects: [alpha, beta, two],
-      harnesses: [harness("codex", "Codex", [{ id: "c", displayName: "Work" }])],
+      harnesses: [
+        harness("codex", "Codex", [
+          { id: "c", displayName: "Work" },
+          { id: "d", displayName: "Home" },
+        ]),
+      ],
       hasElevenLabsKey: true,
     });
-    const keys = es.map(
-      (e) => `${e.place.kind === "project" ? e.place.id : e.place.kind}:${e.anchor}`,
-    );
+    const keys = es.map(entryKey);
     expect(new Set(keys).size).toBe(keys.length);
   });
 });

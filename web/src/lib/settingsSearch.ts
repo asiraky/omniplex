@@ -230,7 +230,7 @@ function accountEntries(h: HarnessMeta): SettingEntry[] {
         anchor: "account",
         label: name,
         description: `${h.name} account.`,
-        keywords: [i.id, i.account ?? ""],
+        keywords: i.account ? [i.id, i.account] : [i.id],
       },
       {
         anchor: "enabled",

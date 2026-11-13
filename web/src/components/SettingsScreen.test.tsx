@@ -268,6 +268,17 @@ describe("searching", () => {
     expect(screen.getByLabelText("Display name")).toBeTruthy();
   });
 
+  it("opens Providers on its list again once you leave the account a pick opened", () => {
+    open({ harnesses: [codex] });
+    type("zephyr");
+    fireEvent.click(result("Zephyr", "Providers · Zephyr"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    fireEvent.click(screen.getByRole("button", { name: "General" }));
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
+    expect(screen.queryByLabelText("Display name")).toBeNull();
+    expect(target("harness-codex")).toBeTruthy();
+  });
+
   it("moves an open Providers screen to the picked account without losing its edits", () => {
     open({ at: { kind: "providers" }, harnesses: [codex] });
     type("display name");

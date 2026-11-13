@@ -17,8 +17,8 @@ import { ProjectSettings, type AddFolderRequest } from "~/components/ProjectSett
 import ProvidersSettings from "~/components/ProvidersSettings";
 import { SettingsPane } from "~/components/SettingsPane";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "~/components/ui/dialog";
-import { useCanHover, useIsDesktop } from "~/useMediaQuery";
 import { Input } from "~/components/ui/input";
+import { useCanHover, useIsDesktop } from "~/useMediaQuery";
 import {
   entryKey,
   searchSettings,
@@ -158,9 +158,11 @@ export function SettingsScreen({
     picked?.kind === "project" && !projects.some((p) => p.id === picked.id) ? null : picked;
   const section = valid ?? (isDesktop ? GENERAL : null);
   // Moving by hand drops a pick that has not landed yet, so it cannot land
-  // later on a same-named setting somewhere else.
+  // later on a same-named setting somewhere else, and the account a pick
+  // opened, so Providers opens on its list next time.
   const goTo = (s: SettingsSection | null) => {
     setJump(null);
+    setProvidersShow(undefined);
     setPicked(s);
   };
   const back = isDesktop ? undefined : () => goTo(null);
