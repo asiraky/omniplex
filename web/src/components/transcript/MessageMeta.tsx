@@ -24,9 +24,10 @@ const footerButton =
 
 /**
  * The footer under a message: when it arrived, a one-click copy of the raw
- * text, and on an agent's reply a way to answer it. Quiet by design — metadata should not compete with the prose —
- * so with a mouse it fades in on hover, and it stays small everywhere. A touch
- * screen has no hover to bring it in, so there it is always showing.
+ * text, and on an agent's reply a way to answer it. Quiet by design (metadata
+ * should not compete with the prose), so with a mouse it fades in on hover, and
+ * it stays small everywhere. A touch screen has no hover to bring it in, so
+ * there it is always showing.
  *
  * With read-aloud on it also plays the message, or the reader's selection when
  * that reaches into this message. `speakRef` is the message's rendered content

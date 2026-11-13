@@ -1,5 +1,7 @@
 import { createContext, useContext } from "react";
 
+import { listNumber } from "~/lib/listNumber";
+
 /**
  * How an agent's reply is quoted into the attached thread's composer. Provided
  * by the thread view around the transcript; absent (null) wherever there is no
@@ -32,9 +34,10 @@ export function quoteInto(draft: string, text: string): string {
 // What a line of rendered markdown sits in. Moving from one to the next is a
 // line break; text is otherwise run together, as the reader sees it.
 const BLOCKS = "p, li, pre, h1, h2, h3, h4, h5, h6, td, th";
-// Chrome, not content: a code block's header (its language and copy button),
-// and a diagram's drawing, whose labels out of their boxes say nothing.
-const SKIP = '[data-speak-as="code-block"] > :not(pre), [data-speak-as="diagram"] svg';
+// Chrome, not content: a code block's header (its language and copy button).
+const SKIP = '[data-speak-as="code-block"] > :not(pre)';
+// A diagram quotes as its source; its header, status line and drawing are chrome.
+const DIAGRAM = '[data-speak-as="diagram"]';
 const FENCE = "```";
 
 /** What goes between the text of two blocks. */
@@ -46,22 +49,33 @@ function between(prev: Element, next: Element | null): string {
   return prev.closest("li") && next?.closest("li") ? "\n" : "\n\n";
 }
 
-/** A list item's bullet or number, as it starts: not again for its second paragraph. */
-function marker(next: Element | null, prev: Element | null): string {
+function bullet(item: Element): string {
+  const n = listNumber(item);
+  return n === null ? "- " : `${n}. `;
+}
+
+/**
+ * A list item's bullet or number as it starts, indented under the items it is
+ * nested in so it stays nested; its later paragraphs are indented to its text.
+ */
+function marker(prev: Element | null, next: Element | null): string {
   const item = next?.closest("li");
-  if (!item || item === prev?.closest("li")) return "";
-  if (item.parentElement?.tagName !== "OL") return "- ";
-  const start = Number(item.parentElement.getAttribute("start") ?? 1);
-  return `${start + Array.prototype.indexOf.call(item.parentElement.children, item)}. `;
+  if (!item) return "";
+  let lead = 0;
+  for (let up = item.parentElement?.closest("li"); up; up = up.parentElement?.closest("li")) {
+    lead += bullet(up).length;
+  }
+  if (prev && item.contains(prev)) return " ".repeat(lead + bullet(item).length);
+  return " ".repeat(lead) + bullet(item);
 }
 
 /**
  * A selection in a rendered reply, as the text to quote: each paragraph, list
- * item (bulleted or numbered) and table row on its own line, paragraphs a blank line apart, and a
- * code block fenced so it stays code. `Range.toString` would run them all into
- * one line.
+ * item (bulleted or numbered) and table row on its own line, paragraphs a
+ * blank line apart, and a code block fenced so it stays code. `Range.toString`
+ * would run them all into one line.
  */
-export function renderedText(range: Range): string {
+export function quotableSelection(range: Range): string {
   const top = range.commonAncestorContainer;
   const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT);
   let out = "";
@@ -72,19 +86,22 @@ export function renderedText(range: Range): string {
   let node = top.nodeType === Node.TEXT_NODE ? top : walker.nextNode();
   for (; node; node = walker.nextNode()) {
     const el = node.parentElement;
-    if (!range.intersectsNode(node) || el?.closest(SKIP)) continue;
+    if (!range.intersectsNode(node) || !el || el.closest(SKIP)) continue;
+    if (el.closest(DIAGRAM) && !el.closest("pre")) continue;
     let text = node.nodeValue ?? "";
     if (node === range.endContainer) text = text.slice(0, range.endOffset);
     if (node === range.startContainer) text = text.slice(range.startOffset);
-    const here = el?.closest(BLOCKS) ?? null;
+    const here = el.closest(BLOCKS);
     if (here !== block) {
       // The newlines markdown leaves between blocks are layout, not text.
       if (!text.trim()) continue;
       leave();
       if (block && out) out += between(block, here);
       else if (out) out += "\n\n";
-      if (here?.tagName === "PRE") out += `${FENCE}\n`;
-      out += marker(here, block);
+      if (here?.tagName === "PRE") {
+        out += `${FENCE}${here.closest(DIAGRAM) ? "mermaid" : ""}\n`;
+      }
+      out += marker(block, here);
       block = here;
     }
     out += text;

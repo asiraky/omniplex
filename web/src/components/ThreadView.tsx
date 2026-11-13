@@ -124,9 +124,9 @@ export function ThreadView({
     return (model: string, effort: string) => describeSettings(instance, model, effort);
   }, [harnesses, instanceId, harnessId]);
   // A reply's "reply" quotes it into this thread's draft and takes the cursor
-  // there, since what comes next is typing the answer. A closed thread's
-  // composer is locked, so its replies offer nothing.
-  const open = useThread(useThreadStore(), isOpen);
+  // there, since what comes next is typing the answer. While the composer is
+  // locked (thread closed, workspace going away or broken), replies offer nothing.
+  const open = useThread(useThreadStore(), composerWritable);
   const { getDraft, setDraft } = store;
   const { composerRef } = recents;
   const reply = useCallback(
@@ -462,7 +462,7 @@ function ThreadComposer({
       ref={recents.composerRef}
       draft={draft}
       onDraftChange={(text) => activeId && store.setDraft(activeId, text)}
-      disabled={state.closed || workspace.cleaning || workspace.failed}
+      disabled={!composerWritable(state)}
       disabledPlaceholder={workspace.placeholder}
       busy={state.phase === "turn"}
       steers={harnessSteers(harnesses, state.harness)}
@@ -507,7 +507,11 @@ function ThreadComposer({
 }
 
 const titleOf = (state: ThreadState | null) => state?.title;
-const isOpen = (state: ThreadState | null) => !!state && !state.closed;
+const composerWritable = (state: Pick<ThreadState, "closed" | "phase"> | null) => {
+  if (!state || state.closed) return false;
+  const workspace = workspaceStatus(state.phase);
+  return !workspace.cleaning && !workspace.failed;
+};
 const harnessOf = (state: ThreadState | null) => state?.harness;
 
 // What the dock draws. Not jobs: the strip selects those itself, so a job's

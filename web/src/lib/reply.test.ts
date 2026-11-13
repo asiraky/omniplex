@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { quoteInto, renderedText } from "./reply";
+import { quoteInto, quotableSelection } from "./reply";
 
 describe("quoteInto", () => {
   it("quotes into an empty draft, leaving a blank line to answer on", () => {
@@ -44,10 +44,10 @@ function selection(html: string, from: string, to: string): Range {
   return r;
 }
 
-describe("renderedText", () => {
+describe("quotableSelection", () => {
   it("keeps paragraphs apart, with the inline formatting's text run in", () => {
     const r = selection("<div><p>One <strong>bold</strong> line.</p>\n<p>Two.</p></div>", "bold", "Two");
-    expect(renderedText(r)).toBe("bold line.\n\nTwo");
+    expect(quotableSelection(r)).toBe("bold line.\n\nTwo");
   });
 
   it("puts list items and table rows on their own lines, cells on one", () => {
@@ -56,7 +56,7 @@ describe("renderedText", () => {
       "alpha",
       "v2",
     );
-    expect(renderedText(r)).toBe("- alpha\n- beta\n\nk | v\nk2 | v2");
+    expect(quotableSelection(r)).toBe("- alpha\n- beta\n\nk | v\nk2 | v2");
   });
 
   it("numbers an ordered list's items from where it starts, once per item", () => {
@@ -65,7 +65,25 @@ describe("renderedText", () => {
       "three",
       "four",
     );
-    expect(renderedText(r)).toBe("3. three\nmore of three\n4. four");
+    expect(quotableSelection(r)).toBe("3. three\n   more of three\n4. four");
+  });
+
+  it("keeps a nested list nested under its item", () => {
+    const r = selection(
+      "<div><ol><li>top<ul><li>inner<ul><li>deepest</li></ul></li></ul></li><li>next</li></ol></div>",
+      "top",
+      "next",
+    );
+    expect(quotableSelection(r)).toBe("1. top\n   - inner\n     - deepest\n2. next");
+  });
+
+  it("quotes a diagram as its mermaid source, without its chrome", () => {
+    const r = selection(
+      '<div><p>See:</p><div data-speak-as="diagram"><div><div><span>mermaid</span><button>copy</button></div><div role="region"><img alt="Mermaid diagram"></div><details><summary>Diagram source</summary><pre><code>graph TD\nA--&gt;B\n</code></pre></details></div></div><p>Done.</p></div>',
+      "See",
+      "Done",
+    );
+    expect(quotableSelection(r)).toBe("See:\n\n```mermaid\ngraph TD\nA-->B\n```\n\nDone");
   });
 
   it("fences a code block and leaves its header out", () => {
@@ -74,11 +92,11 @@ describe("renderedText", () => {
       "Run",
       "Then",
     );
-    expect(renderedText(r)).toBe("Run it:\n\n```\ngo test\n./...\n```\n\nThen");
+    expect(quotableSelection(r)).toBe("Run it:\n\n```\ngo test\n./...\n```\n\nThen");
   });
 
   it("is the slice of one text node when that is all that is selected", () => {
     const r = selection("<p>Use a mutex here.</p>", "a mutex", "a mutex");
-    expect(renderedText(r)).toBe("a mutex");
+    expect(quotableSelection(r)).toBe("a mutex");
   });
 });

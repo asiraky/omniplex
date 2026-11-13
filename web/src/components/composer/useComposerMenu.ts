@@ -71,6 +71,10 @@ export function useComposerMenu({
 
   const focusAt = useCallback(
     (nextCursor: number) => {
+      // Focus now, inside the tap that asked for it: iOS raises the keyboard
+      // only for a focus made in the gesture. The caret waits a frame for a
+      // draft that was just changed to render.
+      textareaRef.current?.focus();
       window.requestAnimationFrame(() => {
         const el = textareaRef.current;
         if (!el) return;

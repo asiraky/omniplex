@@ -1,7 +1,7 @@
 import { ReplyIcon, TextQuoteIcon } from "lucide-react";
 import type { RefObject } from "react";
 
-import { renderedText } from "~/lib/reply";
+import { quotableSelection } from "~/lib/reply";
 import { currentSelection, useSelects, within } from "~/lib/speechSelection";
 import { cn } from "~/lib/utils";
 import { useCanHover } from "~/useMediaQuery";
@@ -33,7 +33,7 @@ export function ReplyButton({
 
   const reply = () => {
     const selection = mouse ? within(currentSelection(), contentRef.current) : null;
-    const part = selection ? renderedText(selection) : "";
+    const part = selection ? quotableSelection(selection) : "";
     if (part) document.getSelection()?.removeAllRanges();
     onReply(part || text);
   };
