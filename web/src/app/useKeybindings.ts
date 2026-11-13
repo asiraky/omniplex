@@ -39,7 +39,7 @@ const DIALOGS = [
   .map((s) => `${s}:not([data-state="closed"])`)
   .join(", ");
 
-function isEditable(el: Element | null): boolean {
+export function isEditable(el: Element | null): boolean {
   if (!el) return false;
   if (el instanceof HTMLElement && el.isContentEditable) return true;
   if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
@@ -47,6 +47,11 @@ function isEditable(el: Element | null): boolean {
     return !["button", "checkbox", "radio", "range", "reset", "submit", "color", "file"].includes(el.type);
   }
   return false;
+}
+
+/** Something open owns the keyboard: a dialog, sheet, menu or listbox. */
+export function keyboardLayerOpen(): boolean {
+  return !!document.querySelector(DIALOGS);
 }
 
 /** Reads the moment's context: focus and open layers from the DOM, the rest from the app. */
@@ -57,7 +62,7 @@ export function readKeyContext(app: AppKeyState): KeyContext {
     electronApp: isElectronApp(),
     editableFocus: isEditable(active),
     composerFocus: !!active?.matches("[data-composer-input]"),
-    dialogOpen: !!document.querySelector(DIALOGS),
+    dialogOpen: keyboardLayerOpen(),
     modelPickerOpen: !!document.querySelector('[aria-label="Harness and model"][aria-expanded="true"]'),
   };
 }

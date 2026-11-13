@@ -375,6 +375,9 @@ function ComposerDock({
       {elicitation && (
         <Suspense fallback={null}>
           <ElicitationPrompt
+            // A fresh prompt per question, so one queued behind another does
+            // not open on the first one's answers.
+            key={elicitation.requestId}
             request={elicitation}
             onResolve={(action, value) =>
               commands.resolveElicitation(elicitation.requestId, action, value)
