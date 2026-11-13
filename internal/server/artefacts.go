@@ -93,7 +93,7 @@ func artefactFromPayload(p proto.ArtefactShownPayload) projection.Artefact {
 	return projection.Artefact{
 		ID: p.ArtefactID, Name: p.Name, Path: p.Path, Dir: p.Dir, MediaType: p.MediaType, Size: p.Size,
 		Entry: p.Entry, Files: p.Files, ModifiedAt: p.ModifiedAt, Source: p.Source, Note: p.Note,
-		TurnID: p.TurnID, ShownAt: proto.NowMillis(),
+		TurnID: p.TurnID, ShownAt: proto.NowMillis(), Inline: p.Inline,
 	}
 }
 
@@ -402,12 +402,15 @@ func activeContent(mediaType string) bool {
 //
 // When framed by the viewer it also carries the browser chrome across the
 // sandbox boundary: the page reports where it is and what it logged, and takes
-// back and forward from the parent.
+// back and forward from the parent, and reports its height whenever that
+// changes, so a page drawn inline in the conversation can be sized to fit
+// instead of scrolling inside its frame.
 const bridgeScript = `<script>(function(){
 function mem(){var d={};return{getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d={}},key:function(i){var ks=Object.keys(d);return i<ks.length?ks[i]:null},get length(){return Object.keys(d).length}}}
 ["localStorage","sessionStorage"].forEach(function(n){try{window[n].length}catch(e){try{Object.defineProperty(window,n,{value:mem(),configurable:true})}catch(e2){}}});
 var P=window.parent;if(P===window)return;
 function send(m){try{P.postMessage(m,"*")}catch(e){}}
+if(typeof ResizeObserver==="function"){var H=-1,D=document.documentElement;new ResizeObserver(function(){var h=Math.ceil(D.getBoundingClientRect().height);if(h!==H){H=h;send({omniplex:"size",height:h})}}).observe(D)}
 function nav(){send({omniplex:"nav",url:location.pathname+location.search+location.hash,title:document.title})}
 addEventListener("load",nav);addEventListener("popstate",nav);addEventListener("hashchange",nav);
 function fmt(a){if(typeof a==="string")return a;try{return JSON.stringify(a)}catch(e){return String(a)}}
@@ -489,9 +492,10 @@ func (s *Server) handleAgentShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Path  string `json:"path"`
-		Title string `json:"title"`
-		Note  string `json:"note"`
+		Path   string `json:"path"`
+		Title  string `json:"title"`
+		Note   string `json:"note"`
+		Inline bool   `json:"inline"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -527,6 +531,7 @@ func (s *Server) handleAgentShow(w http.ResponseWriter, r *http.Request) {
 	}
 	shown, err := actor.ShowArtefact(r.Context(), thread.Show{
 		Path: p, Name: strings.TrimSpace(body.Title), Note: strings.TrimSpace(body.Note), Info: info, Source: proto.ArtefactFromAgent,
+		Inline: body.Inline,
 	})
 	if err != nil {
 		writeArtefactError(w, err)
